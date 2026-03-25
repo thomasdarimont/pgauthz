@@ -1,0 +1,400 @@
+### OPA + Zanzibar authorization examples against the demo model.
+### Requires: docker compose up (bootstrap.sh)
+### Select the "dev" environment to use the variables below.
+
+### =====================================================================
+### ACCESS CHECKS (allow)
+### =====================================================================
+
+### Alice can read payroll doc (via payroll_team membership)
+POST {{base_url}}/authz/allow
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "internal_user", "id": "alice" },
+    "action":   "can_read",
+    "resource": { "type": "document", "id": "doc_payroll_001" }
+  }
+}
+### Expected: { "result": true }
+
+### Alice can read payroll doc (via payroll_team membership) with subject from token
+POST {{base_url}}/authz/allow
+Content-Type: application/json
+
+{
+  "input": {
+    "token": "{{access_token_alice}}",
+    "action":   "can_read",
+    "resource": { "type": "document", "id": "doc_payroll_001" }
+  }
+}
+### Expected: { "result": true }
+
+###
+
+### Alice can edit payroll doc (payroll_clerk → can_edit)
+POST {{base_url}}/authz/allow
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "internal_user", "id": "alice" },
+    "action":   "can_edit",
+    "resource": { "type": "document", "id": "doc_payroll_001" }
+  }
+}
+### Expected: { "result": true }
+
+###
+
+### Alice cannot read tax doc (wrong team)
+POST {{base_url}}/authz/allow
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "internal_user", "id": "alice" },
+    "action":   "can_read",
+    "resource": { "type": "document", "id": "doc_tax_001" }
+  }
+}
+### Expected: { "result": false }
+
+###
+
+### Bob (advisor on engagement) can read payroll doc
+POST {{base_url}}/authz/allow
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "internal_user", "id": "bob" },
+    "action":   "can_read",
+    "resource": { "type": "document", "id": "doc_payroll_001" }
+  }
+}
+### Expected: { "result": true }
+
+###
+
+### Carol (client org member) can read client-space doc
+POST {{base_url}}/authz/allow
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "client_user", "id": "carol" },
+    "action":   "can_read",
+    "resource": { "type": "document", "id": "doc_client_001" }
+  }
+}
+### Expected: { "result": true }
+
+###
+
+### Carol cannot edit client-space doc (clients get read-only)
+POST {{base_url}}/authz/allow
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "client_user", "id": "carol" },
+    "action":   "can_edit",
+    "resource": { "type": "document", "id": "doc_client_001" }
+  }
+}
+### Expected: { "result": false }
+
+###
+
+### Carol can read a private doc via viewer
+POST {{base_url}}/authz/allow
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "client_user", "id": "carol" },
+    "action":   "can_read",
+    "resource": { "type": "document", "id": "doc_client_private_001" }
+  }
+}
+### Expected: { "result": true }
+
+###
+
+### Dave cannot read the private doc (no explicit grant)
+POST {{base_url}}/authz/allow
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "client_user", "id": "dave" },
+    "action":   "can_read",
+    "resource": { "type": "document", "id": "doc_client_private_001" }
+  }
+}
+### Expected: { "result": false }
+
+###
+
+### Eva (accounting_team) can read accounting doc
+POST {{base_url}}/authz/allow
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "internal_user", "id": "eva" },
+    "action":   "can_read",
+    "resource": { "type": "document", "id": "doc_acc_001" }
+  }
+}
+### Expected: { "result": true }
+
+###
+
+### Eva cannot read payroll doc (wrong team)
+POST {{base_url}}/authz/allow
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "internal_user", "id": "eva" },
+    "action":   "can_read",
+    "resource": { "type": "document", "id": "doc_payroll_001" }
+  }
+}
+### Expected: { "result": false }
+
+###
+
+### =====================================================================
+### ACCESS CHECK WITH CONTEXT (conditional tuples / ABAC)
+### =====================================================================
+
+### Access check with context — useful for time-based or IP-based conditions.
+### Context values are forwarded to the PostgreSQL condition engine.
+POST {{base_url}}/authz/allow
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "internal_user", "id": "alice" },
+    "action":   "can_read",
+    "resource": { "type": "document", "id": "doc_payroll_001" },
+    "context":  { "current_time": "2026-03-12T10:00:00Z" }
+  }
+}
+### Expected: { "result": true }
+
+###
+
+### =====================================================================
+### ACCESS CHECK WITH CONTEXTUAL TUPLES
+### =====================================================================
+
+### Frank normally cannot read doc_client_001.
+### With a contextual tuple granting viewer, access is granted
+### for this request only — the tuple is never persisted.
+POST {{base_url}}/authz/allow
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "internal_user", "id": "frank" },
+    "action":   "can_read",
+    "resource": { "type": "document", "id": "doc_client_001" },
+    "contextual_tuples": [
+      {
+        "user_type":    "internal_user",
+        "user_id":      "frank",
+        "user_relation": null,
+        "relation":     "viewer",
+        "object_type":  "document",
+        "object_id":    "doc_client_001"
+      }
+    ]
+  }
+}
+### Expected: { "result": true }
+
+###
+
+### =====================================================================
+### BATCH ACCESS CHECK (evaluations)
+### =====================================================================
+
+### Batch: check multiple permissions for Alice on payroll doc (execute_all).
+POST {{base_url}}/authz/evaluations
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "internal_user", "id": "alice" },
+    "evaluations": [
+      { "action": "can_read",   "resource": { "type": "document", "id": "doc_payroll_001" } },
+      { "action": "can_edit",   "resource": { "type": "document", "id": "doc_payroll_001" } },
+      { "action": "can_delete", "resource": { "type": "document", "id": "doc_payroll_001" } }
+    ]
+  }
+}
+### Expected: { "result": [true, true, false] }
+
+###
+
+### Batch: different users/resources in one call (each evaluation has its own subject).
+POST {{base_url}}/authz/evaluations
+Content-Type: application/json
+
+{
+  "input": {
+    "evaluations": [
+      { "subject": { "type": "internal_user", "id": "alice" }, "action": "can_read", "resource": { "type": "document", "id": "doc_payroll_001" } },
+      { "subject": { "type": "internal_user", "id": "bob" },   "action": "can_read", "resource": { "type": "document", "id": "doc_payroll_001" } },
+      { "subject": { "type": "internal_user", "id": "eva" },   "action": "can_read", "resource": { "type": "document", "id": "doc_payroll_001" } }
+    ]
+  }
+}
+### Expected: { "result": [true, true, false] }
+
+###
+
+### Batch: deny_on_first_deny — stops at first false, remaining are null.
+POST {{base_url}}/authz/evaluations
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "internal_user", "id": "alice" },
+    "semantic": "deny_on_first_deny",
+    "evaluations": [
+      { "action": "can_read",   "resource": { "type": "document", "id": "doc_payroll_001" } },
+      { "action": "can_edit",   "resource": { "type": "document", "id": "doc_payroll_001" } },
+      { "action": "can_delete", "resource": { "type": "document", "id": "doc_payroll_001" } },
+      { "action": "can_read",   "resource": { "type": "document", "id": "doc_acc_001" } }
+    ]
+  }
+}
+### Expected: { "result": [true, true, false, null] }
+
+###
+
+### Batch: permit_on_first_permit — stops at first true.
+POST {{base_url}}/authz/evaluations
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "internal_user", "id": "eva" },
+    "semantic": "permit_on_first_permit",
+    "evaluations": [
+      { "action": "can_read", "resource": { "type": "document", "id": "doc_payroll_001" } },
+      { "action": "can_read", "resource": { "type": "document", "id": "doc_acc_001" } },
+      { "action": "can_read", "resource": { "type": "document", "id": "doc_tax_001" } }
+    ]
+  }
+}
+### Expected: { "result": [false, true, null] }
+
+###
+
+### =====================================================================
+### RESOURCE SEARCH (accessible_objects)
+### =====================================================================
+
+### Which documents can Bob read?
+POST {{base_url}}/authz/accessible_objects
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "internal_user", "id": "bob" },
+    "action":   "can_read",
+    "resource": { "type": "document" }
+  }
+}
+### Expected: { "result": ["doc_payroll_001", "doc_acc_001", "doc_tax_001"] }
+
+###
+
+### Which documents can Carol read?
+POST {{base_url}}/authz/accessible_objects
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "client_user", "id": "carol" },
+    "action":   "can_read",
+    "resource": { "type": "document" }
+  }
+}
+### Expected: { "result": ["doc_client_001", "doc_client_002", "doc_client_private_001"] }
+
+###
+
+### =====================================================================
+### RESOURCE SEARCH WITH PAGINATION (accessible_objects_page)
+### =====================================================================
+
+### Bob's readable documents — first page (limit=2, offset=0)
+POST {{base_url}}/authz/accessible_objects_page
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "internal_user", "id": "bob" },
+    "action":   "can_read",
+    "resource": { "type": "document" },
+    "page":     { "limit": 2, "offset": 0 }
+  }
+}
+### Expected: { "result": ["doc_acc_001", "doc_payroll_001"] }
+
+###
+
+### Bob's readable documents — second page (limit=2, offset=2)
+POST {{base_url}}/authz/accessible_objects_page
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "internal_user", "id": "bob" },
+    "action":   "can_read",
+    "resource": { "type": "document" },
+    "page":     { "limit": 2, "offset": 2 }
+  }
+}
+### Expected: { "result": ["doc_tax_001"] }
+
+###
+
+### =====================================================================
+### ACTION SEARCH (permitted_actions)
+### =====================================================================
+
+### What can Alice do on the payroll doc?
+POST {{base_url}}/authz/permitted_actions
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "internal_user", "id": "alice" },
+    "resource": { "type": "document", "id": "doc_payroll_001" }
+  }
+}
+### Expected: { "result": ["can_read", "can_edit"] }
+
+###
+
+### What can Carol do on a client-space doc?
+POST {{base_url}}/authz/permitted_actions
+Content-Type: application/json
+
+{
+  "input": {
+    "subject":  { "type": "client_user", "id": "carol" },
+    "resource": { "type": "document", "id": "doc_client_001" }
+  }
+}
+### Expected: { "result": ["can_read"] }

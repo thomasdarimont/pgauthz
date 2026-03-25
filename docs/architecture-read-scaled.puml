@@ -1,0 +1,65 @@
+@startuml architecture-scaled
+
+!theme plain
+skinparam backgroundColor white
+skinparam componentStyle rectangle
+skinparam defaultFontName monospaced
+skinparam nodesep 50
+skinparam ranksep 40
+skinparam padding 6
+
+title Scaled Architecture with read replicas + AuthZEN
+
+actor "Application" as app3
+
+component "Load Balancer" as lb #Plum
+
+node "VM 1 (read)" as vm1 {
+    component "OPA" as opa3a #LightBlue
+    component "AuthZEN" as az3a #PaleGreen
+    component "PostgREST" as pgrst3a #LightGreen
+    database "PG Replica" as pgr3a #LightYellow
+}
+
+node "VM 2 (read)" as vm2 {
+    component "OPA" as opa3b #LightBlue
+    component "AuthZEN" as az3b #PaleGreen
+    component "PostgREST" as pgrst3b #LightGreen
+    database "PG Replica" as pgr3b #LightYellow
+}
+
+database "PG Primary" as pgp3 #Orange
+
+' Read path
+app3 -down-> lb : "authz checks"
+lb -down-> opa3a
+lb -down-> opa3b
+lb -down-> az3a
+lb -down-> az3b
+opa3a -down-> pgrst3a
+opa3b -down-> pgrst3b
+az3a -down-> opa3a
+az3a -down-> pgr3a
+az3b -down-> opa3b
+az3b -down-> pgr3b
+pgrst3a -down-> pgr3a
+pgrst3b -down-> pgr3b
+
+' Writes go to primary
+app3 -down-> pgp3 : "tuple writes\n(direct SQL)"
+
+' Replication
+pgp3 -right-> pgr3a : "  WAL  "
+pgp3 -right-> pgr3b : "  WAL  "
+
+legend bottom left
+  |= Color |= Component |
+  | <#PaleGreen> | AuthZEN API — standard AuthZEN 1.0 (Go) |
+  | <#LightBlue> | OPA — policy evaluation |
+  | <#LightGreen> | PostgREST — internal read API |
+  | <#Orange> | PostgreSQL primary — read-write |
+  | <#LightYellow> | PostgreSQL replica — read-only (WAL) |
+  | <#Plum> | Load Balancer — distributes reads |
+end legend
+
+@enduml

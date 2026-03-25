@@ -1,0 +1,1242 @@
+-- Tests for core API functions.
+-- Covers: write_tuple, delete_tuple, write_tuples, delete_tuples,
+--         write_tuples_jsonb, delete_tuples_jsonb,
+--         check_access_with_contextual_tuples_jsonb,
+--         delete_user_tuples, check_access_batch, audit_check_access,
+--         audit_list_actions, audit_list_user, audit_list_object,
+--         performed_by tracking, JSONB validation, delete_store.
+--
+-- Uses its own 'test_api' store with a minimal model:
+--   type user
+--   type doc
+--     relations
+--       define reader:  [user]
+--       define editor:  [user]
+
+SELECT _test_reset();
+
+-- Setup: create test store with model (idempotent).
+CREATE OR REPLACE FUNCTION _test_setup_api() RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE
+    s smallint;
+BEGIN
+    BEGIN PERFORM authz.delete_store('test_api'); EXCEPTION WHEN OTHERS THEN NULL; END;
+
+    s := authz.create_store('test_api');
+
+    INSERT INTO authz.types (store_id, name) VALUES (s, 'user'), (s, 'doc');
+    INSERT INTO authz.relations (store_id, name) VALUES (s, 'reader'), (s, 'editor');
+    PERFORM authz._ensure_tuple_partition(s, 'doc');
+
+    INSERT INTO authz.models (store_id, object_type, relation, rule_type,
+                              computed_relation, tupleset_relation, tupleset_computed)
+    VALUES
+        (s, authz._t(s, 'doc'), authz._r(s, 'reader'), authz._rel_direct(), NULL, NULL, NULL),
+        (s, authz._t(s, 'doc'), authz._r(s, 'editor'), authz._rel_direct(), NULL, NULL, NULL);
+    RETURN true;
+END;
+$$;
+
+-- Teardown: remove test store and return accumulated results.
+DROP FUNCTION IF EXISTS _test_teardown_api();
+CREATE OR REPLACE FUNCTION _test_teardown_api()
+RETURNS SETOF _test_results LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM authz.delete_store('test_api');
+    RETURN QUERY DELETE FROM _test_results RETURNING *;
+END;
+$$;
+
+-- ================================================================
+-- write_tuple / delete_tuple tests
+-- ================================================================
+
+-- api_01: write_tuple returns true for new tuple
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM _test_assert('api_01_write_tuple_new',
+        authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1')::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+
+-- api_02: write_tuple returns false for duplicate
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    PERFORM _test_assert('api_02_write_tuple_duplicate',
+        authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1')::text, 'false');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_03: written tuple grants access
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    PERFORM _test_assert('api_03_written_tuple_grants_access',
+        authz.check_access('test_api', 'user', 'alice', 'reader', 'doc', 'doc1')::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_04: delete_tuple returns true for existing tuple
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    PERFORM _test_assert('api_04_delete_tuple_existing',
+        authz.delete_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1')::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_05: delete_tuple returns false for nonexistent tuple
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM _test_assert('api_05_delete_tuple_nonexistent',
+        authz.delete_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1')::text, 'false');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_06: deleted tuple revokes access
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    PERFORM authz.delete_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    PERFORM _test_assert('api_06_deleted_tuple_revokes_access',
+        authz.check_access('test_api', 'user', 'alice', 'reader', 'doc', 'doc1')::text, 'false');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- ================================================================
+-- write_tuples / delete_tuples (batch) tests
+-- ================================================================
+
+-- api_07: write_tuples returns count of new tuples
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM _test_assert('api_07_write_tuples_batch_new',
+        authz.write_tuples('test_api', ARRAY[
+            ROW('user', 'alice', NULL, 'reader', 'doc', 'doc2'),
+            ROW('user', 'bob',   NULL, 'reader', 'doc', 'doc2'),
+            ROW('user', 'frank', NULL, 'reader', 'doc', 'doc2')
+        ]::authz.tuple_input[])::text, '3');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_08: write_tuples skips duplicates
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc2');
+    PERFORM _test_assert('api_08_write_tuples_skip_duplicates',
+        authz.write_tuples('test_api', ARRAY[
+            ROW('user', 'alice', NULL, 'reader', 'doc', 'doc2'),
+            ROW('user', 'zara',  NULL, 'reader', 'doc', 'doc2')
+        ]::authz.tuple_input[])::text, '1');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_09: batch-written tuple grants access
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuples('test_api', ARRAY[
+        ROW('user', 'zara', NULL, 'reader', 'doc', 'doc2')
+    ]::authz.tuple_input[]);
+    PERFORM _test_assert('api_09_batch_written_grants_access',
+        authz.check_access('test_api', 'user', 'zara', 'reader', 'doc', 'doc2')::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_10: delete_tuples returns count of deleted tuples
+DO $$
+DECLARE v_int integer;
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc2');
+    PERFORM authz.write_tuple('test_api', 'user', 'bob',   'reader', 'doc', 'doc2');
+    v_int := authz.delete_tuples('test_api', ARRAY[
+        ROW('user', 'alice', NULL, 'reader', 'doc', 'doc2'),
+        ROW('user', 'bob',   NULL, 'reader', 'doc', 'doc2')
+    ]::authz.tuple_input[]);
+    PERFORM _test_assert('api_10_delete_tuples_batch', v_int::text, '2');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_11: delete_tuples returns 0 for nonexistent tuples
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM _test_assert('api_11_delete_tuples_nonexistent',
+        authz.delete_tuples('test_api', ARRAY[
+            ROW('user', 'alice', NULL, 'reader', 'doc', 'doc2')
+        ]::authz.tuple_input[])::text, '0');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_12: batch-deleted tuple revokes access
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuples('test_api', ARRAY[
+        ROW('user', 'alice', NULL, 'reader', 'doc', 'doc2')
+    ]::authz.tuple_input[]);
+    PERFORM authz.delete_tuples('test_api', ARRAY[
+        ROW('user', 'alice', NULL, 'reader', 'doc', 'doc2')
+    ]::authz.tuple_input[]);
+    PERFORM _test_assert('api_12_batch_deleted_revokes_access',
+        authz.check_access('test_api', 'user', 'alice', 'reader', 'doc', 'doc2')::text, 'false');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- ================================================================
+-- delete_user_tuples tests
+-- ================================================================
+
+-- api_13: delete_user_tuples removes all tuples for a user
+DO $$
+DECLARE v_int integer;
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'zara', 'reader', 'doc', 'doc2');
+    PERFORM authz.write_tuple('test_api', 'user', 'zara', 'reader', 'doc', 'doc3');
+    v_int := authz.delete_user_tuples('test_api', 'user', 'zara');
+    PERFORM _test_assert('api_13_delete_user_tuples', v_int::text, '2');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_14: delete_user_tuples revokes access
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'zara', 'reader', 'doc', 'doc2');
+    PERFORM authz.delete_user_tuples('test_api', 'user', 'zara');
+    PERFORM _test_assert('api_14_delete_user_tuples_revokes',
+        authz.check_access('test_api', 'user', 'zara', 'reader', 'doc', 'doc2')::text, 'false');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_15: delete_user_tuples returns 0 when user has no tuples
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM _test_assert('api_15_delete_user_tuples_empty',
+        authz.delete_user_tuples('test_api', 'user', 'zara')::text, '0');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- ================================================================
+-- performed_by audit tracking tests
+-- ================================================================
+
+-- api_16: performed_by tracked on write_tuple
+DO $$
+DECLARE
+    s smallint;
+    v_text text;
+BEGIN
+    PERFORM _test_setup_api();
+    s := authz._s('test_api');
+    PERFORM authz.write_tuple('test_api',
+        'user', 'alice', 'reader', 'doc', 'doc_audit',
+        p_performed_by => 'admin');
+    SELECT a.performed_by INTO v_text
+      FROM authz.tuples_audit a
+     WHERE a.store_id = s AND a.user_id = 'alice'
+       AND a.object_id = 'doc_audit' AND a.action = 'INSERT'
+     ORDER BY a.performed_at DESC LIMIT 1;
+    PERFORM _test_assert('api_16_performed_by_write', v_text, 'admin');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_17: performed_by tracked on delete_tuple
+DO $$
+DECLARE
+    s smallint;
+    v_text text;
+BEGIN
+    PERFORM _test_setup_api();
+    s := authz._s('test_api');
+    PERFORM authz.write_tuple('test_api',
+        'user', 'alice', 'reader', 'doc', 'doc_audit');
+    PERFORM authz.delete_tuple('test_api',
+        'user', 'alice', 'reader', 'doc', 'doc_audit',
+        p_performed_by => 'admin');
+    SELECT a.performed_by INTO v_text
+      FROM authz.tuples_audit a
+     WHERE a.store_id = s AND a.user_id = 'alice'
+       AND a.object_id = 'doc_audit' AND a.action = 'DELETE'
+     ORDER BY a.performed_at DESC LIMIT 1;
+    PERFORM _test_assert('api_17_performed_by_delete', v_text, 'admin');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_18: performed_by tracked on write_tuples (batch)
+DO $$
+DECLARE
+    s smallint;
+    v_text text;
+BEGIN
+    PERFORM _test_setup_api();
+    s := authz._s('test_api');
+    PERFORM authz.write_tuples('test_api', ARRAY[
+        ROW('user', 'alice', NULL, 'reader', 'doc', 'doc_audit2')
+    ]::authz.tuple_input[], p_performed_by => 'batch_admin');
+    SELECT a.performed_by INTO v_text
+      FROM authz.tuples_audit a
+     WHERE a.store_id = s AND a.user_id = 'alice'
+       AND a.object_id = 'doc_audit2' AND a.action = 'INSERT'
+     ORDER BY a.performed_at DESC LIMIT 1;
+    PERFORM _test_assert('api_18_performed_by_batch_write', v_text, 'batch_admin');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_19: performed_by tracked on delete_user_tuples
+DO $$
+DECLARE
+    s smallint;
+    v_text text;
+BEGIN
+    PERFORM _test_setup_api();
+    s := authz._s('test_api');
+    PERFORM authz.write_tuple('test_api', 'user', 'zara', 'reader', 'doc', 'doc_audit3');
+    PERFORM authz.delete_user_tuples('test_api', 'user', 'zara',
+        p_performed_by => 'offboarding');
+    SELECT a.performed_by INTO v_text
+      FROM authz.tuples_audit a
+     WHERE a.store_id = s AND a.user_id = 'zara'
+       AND a.object_id = 'doc_audit3' AND a.action = 'DELETE'
+     ORDER BY a.performed_at DESC LIMIT 1;
+    PERFORM _test_assert('api_19_performed_by_delete_user', v_text, 'offboarding');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- ================================================================
+-- audit_list_user / audit_list_object tests
+-- ================================================================
+
+-- api_20: audit_list_user returns entries
+DO $$
+DECLARE v_count bigint;
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    PERFORM authz.delete_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    SELECT count(*) INTO v_count FROM authz.audit_list_user('test_api', 'user', 'alice');
+    PERFORM _test_assert_true('api_20_audit_list_user', v_count >= 2,
+        v_count::text || ' entries');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_21: audit_list_user returns empty for out-of-range timestamps
+DO $$
+DECLARE v_count bigint;
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    SELECT count(*) INTO v_count FROM authz.audit_list_user('test_api', 'user', 'alice',
+        '2000-01-01'::timestamptz, '2000-01-02'::timestamptz);
+    PERFORM _test_assert('api_21_audit_list_user_empty_range', v_count::text, '0');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_22: audit_list_object returns entries
+DO $$
+DECLARE v_count bigint;
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc_audit',
+        p_performed_by => 'admin');
+    PERFORM authz.delete_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc_audit',
+        p_performed_by => 'admin');
+    SELECT count(*) INTO v_count FROM authz.audit_list_object('test_api', 'doc', 'doc_audit');
+    PERFORM _test_assert_true('api_22_audit_list_object', v_count >= 2,
+        v_count::text || ' entries');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_23: audit_list_object includes performed_by
+DO $$
+DECLARE v_text text;
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc_audit',
+        p_performed_by => 'admin');
+    SELECT a.performed_by INTO v_text
+      FROM authz.audit_list_object('test_api', 'doc', 'doc_audit') a
+     WHERE a.action = 'INSERT' LIMIT 1;
+    PERFORM _test_assert('api_23_object_audit_performed_by', v_text, 'admin');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- ================================================================
+-- audit_check_access / audit_list_actions (time-travel) tests
+-- ================================================================
+
+-- api_24-28: time-travel tests (must share pg_sleep timing, kept in one block)
+DO $$
+DECLARE
+    v_bool    boolean;
+    v_actions text[];
+BEGIN
+    PERFORM _test_setup_api();
+
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc_tt');
+    PERFORM set_config('test.had_access_at', clock_timestamp()::text, false);
+    PERFORM pg_sleep(0.1);
+    PERFORM authz.delete_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc_tt');
+
+    v_bool := authz.audit_check_access('test_api',
+        'user', 'alice', 'reader', 'doc', 'doc_tt',
+        current_setting('test.had_access_at')::timestamptz);
+    PERFORM _test_assert('api_24_access_at_tuple_existed', v_bool::text, 'true');
+
+    v_bool := authz.audit_check_access('test_api',
+        'user', 'alice', 'reader', 'doc', 'doc_tt', clock_timestamp());
+    PERFORM _test_assert('api_25_access_at_after_delete', v_bool::text, 'false');
+
+    v_bool := authz.audit_check_access('test_api',
+        'user', 'alice', 'reader', 'doc', 'doc_tt',
+        '2000-01-01T00:00:00Z'::timestamptz);
+    PERFORM _test_assert('api_26_access_at_before_create', v_bool::text, 'false');
+
+    SELECT array_agg(a.action ORDER BY a.action) INTO v_actions
+      FROM authz.audit_list_actions('test_api',
+          'user', 'alice', 'doc', 'doc_tt',
+          current_setting('test.had_access_at')::timestamptz) a;
+    PERFORM _test_assert_true('api_27_actions_at_tuple_existed',
+        v_actions @> ARRAY['reader'], v_actions::text);
+
+    SELECT array_agg(a.action ORDER BY a.action) INTO v_actions
+      FROM authz.audit_list_actions('test_api',
+          'user', 'alice', 'doc', 'doc_tt', clock_timestamp()) a;
+    PERFORM _test_assert('api_28_actions_at_after_delete', v_actions::text, NULL);
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- ================================================================
+-- model_add_rule / model_remove_rule / model_remove_rules tests
+-- ================================================================
+
+-- api_33: model_add_rule — add a direct rule, verify it exists
+DO $$
+DECLARE
+    v_rule_id smallint;
+    v_count   bigint;
+BEGIN
+    PERFORM _test_setup_api();
+    -- Remove existing direct reader rule so we can re-add it
+    DELETE FROM authz.models
+     WHERE store_id = authz._s('test_api')
+       AND object_type = authz._t(authz._s('test_api'), 'doc')
+       AND relation = authz._r(authz._s('test_api'), 'reader')
+       AND rule_type = authz._rel_direct();
+
+    v_rule_id := authz.model_add_rule('test_api', 'doc', 'reader', 'direct');
+    SELECT count(*) INTO v_count FROM authz.models
+     WHERE id = v_rule_id AND store_id = authz._s('test_api');
+    PERFORM _test_assert('api_33_add_direct_rule', v_count::text, '1');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_34: model_add_rule — add a computed rule, verify check_access works
+DO $$
+DECLARE
+    v_rule_id smallint;
+    v_access  boolean;
+BEGIN
+    PERFORM _test_setup_api();
+    -- Add computed rule: 'reader' is implied by 'editor'
+    v_rule_id := authz.model_add_rule('test_api', 'doc', 'reader', 'computed',
+        p_computed_relation => 'editor');
+
+    -- Write an editor tuple, check reader access via computed rule
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'editor', 'doc', 'doc1');
+    v_access := authz.check_access('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    PERFORM _test_assert('api_34_add_computed_rule', v_access::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_35: model_add_rule — add a TTU rule, verify check_access works
+DO $$
+DECLARE
+    s         smallint;
+    v_rule_id smallint;
+    v_access  boolean;
+BEGIN
+    PERFORM _test_setup_api();
+    s := authz._s('test_api');
+
+    -- Add a 'folder' type and 'parent' + 'can_read' relations for TTU test
+    INSERT INTO authz.types (store_id, name) VALUES (s, 'folder');
+    INSERT INTO authz.relations (store_id, name) VALUES (s, 'parent'), (s, 'can_read');
+    PERFORM authz._ensure_tuple_partition(s, 'folder');
+
+    -- Add direct rule on folder for can_read
+    PERFORM authz.model_add_rule('test_api', 'folder', 'can_read', 'direct');
+
+    -- Add TTU rule on doc: can_read = can_read from parent
+    v_rule_id := authz.model_add_rule('test_api', 'doc', 'can_read', 'ttu',
+        p_tupleset_relation => 'parent',
+        p_tupleset_computed => 'can_read');
+
+    -- Create parent link and permission
+    PERFORM authz.write_tuple('test_api', 'folder', 'folder1', 'parent', 'doc', 'doc1');
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'can_read', 'folder', 'folder1');
+
+    v_access := authz.check_access('test_api', 'user', 'alice', 'can_read', 'doc', 'doc1');
+    PERFORM _test_assert('api_35_add_ttu_rule', v_access::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_36: model_add_rule — duplicate insert is idempotent (returns same ID)
+DO $$
+DECLARE
+    v_id1 smallint;
+    v_id2 smallint;
+BEGIN
+    PERFORM _test_setup_api();
+    -- Remove existing direct reader rule first
+    DELETE FROM authz.models
+     WHERE store_id = authz._s('test_api')
+       AND object_type = authz._t(authz._s('test_api'), 'doc')
+       AND relation = authz._r(authz._s('test_api'), 'reader')
+       AND rule_type = authz._rel_direct();
+
+    v_id1 := authz.model_add_rule('test_api', 'doc', 'reader', 'direct');
+    v_id2 := authz.model_add_rule('test_api', 'doc', 'reader', 'direct');
+    PERFORM _test_assert('api_36_add_rule_idempotent', (v_id1 = v_id2)::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_37: model_add_rule — group_op mismatch raises error
+DO $$
+DECLARE
+    v_raised boolean := false;
+BEGIN
+    PERFORM _test_setup_api();
+    -- First rule in group 1 with 'intersection'
+    PERFORM authz.model_add_rule('test_api', 'doc', 'reader', 'direct',
+        p_group_id => 1::smallint, p_group_op => 'intersection');
+    -- Second rule in group 1 with 'or' should fail
+    BEGIN
+        PERFORM authz.model_add_rule('test_api', 'doc', 'reader', 'computed',
+            p_computed_relation => 'editor',
+            p_group_id => 1::smallint, p_group_op => 'or');
+    EXCEPTION WHEN OTHERS THEN
+        v_raised := true;
+    END;
+    PERFORM _test_assert('api_37_group_op_mismatch', v_raised::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_38: model_add_rule — invalid rule_type raises error
+DO $$
+DECLARE
+    v_raised boolean := false;
+BEGIN
+    PERFORM _test_setup_api();
+    BEGIN
+        PERFORM authz.model_add_rule('test_api', 'doc', 'reader', 'bogus');
+    EXCEPTION WHEN OTHERS THEN
+        v_raised := true;
+    END;
+    PERFORM _test_assert('api_38_invalid_rule_type', v_raised::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_39: model_remove_rule — remove by ID, verify check_access changes
+DO $$
+DECLARE
+    v_rule_id smallint;
+    v_deleted boolean;
+    v_access  boolean;
+BEGIN
+    PERFORM _test_setup_api();
+
+    -- Write a tuple, verify access works
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    v_access := authz.check_access('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    PERFORM _test_assert('api_39a_access_before_remove', v_access::text, 'true');
+
+    -- Get the rule ID for the direct reader rule
+    SELECT id INTO v_rule_id FROM authz.models
+     WHERE store_id = authz._s('test_api')
+       AND object_type = authz._t(authz._s('test_api'), 'doc')
+       AND relation = authz._r(authz._s('test_api'), 'reader')
+       AND rule_type = authz._rel_direct();
+
+    -- Remove the rule
+    v_deleted := authz.model_remove_rule('test_api', v_rule_id);
+    PERFORM _test_assert('api_39b_remove_rule_returns_true', v_deleted::text, 'true');
+
+    -- Access should now be denied
+    v_access := authz.check_access('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    PERFORM _test_assert('api_39c_access_after_remove', v_access::text, 'false');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_40: model_remove_rule — wrong store returns false
+DO $$
+DECLARE
+    v_rule_id smallint;
+    v_deleted boolean;
+    ds        smallint;
+BEGIN
+    PERFORM _test_setup_api();
+    -- Create a second store
+    BEGIN PERFORM authz.delete_store('test_api_other'); EXCEPTION WHEN OTHERS THEN NULL; END;
+    ds := authz.create_store('test_api_other');
+
+    -- Get a rule ID from test_api
+    SELECT id INTO v_rule_id FROM authz.models
+     WHERE store_id = authz._s('test_api') LIMIT 1;
+
+    -- Try to remove it via wrong store
+    v_deleted := authz.model_remove_rule('test_api_other', v_rule_id);
+    PERFORM _test_assert('api_40_wrong_store', v_deleted::text, 'false');
+
+    PERFORM authz.delete_store('test_api_other');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_41: model_remove_rules — remove all rules for a relation, returns count
+DO $$
+DECLARE
+    v_count int;
+BEGIN
+    PERFORM _test_setup_api();
+    -- Add a computed rule alongside the existing direct rule
+    PERFORM authz.model_add_rule('test_api', 'doc', 'reader', 'computed',
+        p_computed_relation => 'editor');
+
+    -- Remove all rules for doc/reader
+    v_count := authz.model_remove_rules('test_api', 'doc', 'reader');
+    PERFORM _test_assert('api_41_remove_rules_count', v_count::text, '2');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- ================================================================
+-- check_access_batch tests
+-- ================================================================
+
+-- api_42: batch check returns correct results for mixed access
+DO $$
+DECLARE
+    v_decisions boolean[];
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    -- alice has reader on doc1, but not editor
+    SELECT array_agg(decision ORDER BY ordinality) INTO v_decisions
+      FROM authz.check_access_batch_typed('test_api', ARRAY[
+          ('user','alice','reader','doc','doc1'),
+          ('user','alice','editor','doc','doc1')
+      ]::authz.access_check[]) WITH ORDINALITY;
+    PERFORM _test_assert('api_42_batch_mixed', v_decisions::text, '{t,f}');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_42b: batch result includes input fields
+DO $$
+DECLARE
+    v_row authz.access_check_result;
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    SELECT * INTO v_row
+      FROM authz.check_access_batch_typed('test_api', ARRAY[
+          ('user','alice','reader','doc','doc1')
+      ]::authz.access_check[]) LIMIT 1;
+    PERFORM _test_assert('api_42b_result_user_type', v_row.user_type, 'user');
+    PERFORM _test_assert('api_42b_result_relation', v_row.relation, 'reader');
+    PERFORM _test_assert_true('api_42b_result_decision', v_row.decision, 'decision should be true');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_43: batch with deny_on_first_deny short-circuits
+DO $$
+DECLARE
+    v_decisions boolean[];
+BEGIN
+    PERFORM _test_setup_api();
+    -- No tuples written — first check will be false
+    SELECT array_agg(decision ORDER BY ordinality) INTO v_decisions
+      FROM authz.check_access_batch_typed('test_api', ARRAY[
+          ('user','alice','reader','doc','doc1'),
+          ('user','alice','editor','doc','doc1')
+      ]::authz.access_check[], p_semantic => 'deny_on_first_deny') WITH ORDINALITY;
+    -- First is false, second should be NULL (short-circuited)
+    PERFORM _test_assert('api_43_deny_short_circuit', v_decisions::text, '{f,NULL}');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_44: batch with permit_on_first_permit short-circuits
+DO $$
+DECLARE
+    v_decisions boolean[];
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    SELECT array_agg(decision ORDER BY ordinality) INTO v_decisions
+      FROM authz.check_access_batch_typed('test_api', ARRAY[
+          ('user','alice','reader','doc','doc1'),
+          ('user','alice','editor','doc','doc1')
+      ]::authz.access_check[], p_semantic => 'permit_on_first_permit') WITH ORDINALITY;
+    -- First is true, second should be NULL (short-circuited)
+    PERFORM _test_assert('api_44_permit_short_circuit', v_decisions::text, '{t,NULL}');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_45: batch execute_all evaluates all checks
+DO $$
+DECLARE
+    v_decisions boolean[];
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'editor', 'doc', 'doc1');
+    SELECT array_agg(decision ORDER BY ordinality) INTO v_decisions
+      FROM authz.check_access_batch_typed('test_api', ARRAY[
+          ('user','alice','reader','doc','doc1'),
+          ('user','alice','editor','doc','doc1')
+      ]::authz.access_check[]) WITH ORDINALITY;
+    PERFORM _test_assert('api_45_batch_all_true', v_decisions::text, '{t,t}');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_46: batch with empty array returns no rows
+DO $$
+DECLARE
+    v_count int;
+BEGIN
+    PERFORM _test_setup_api();
+    SELECT count(*) INTO v_count
+      FROM authz.check_access_batch_typed('test_api', ARRAY[]::authz.access_check[]);
+    PERFORM _test_assert('api_46_batch_empty', v_count::text, '0');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- ================================================================
+-- write_tuples_jsonb / delete_tuples_jsonb tests
+-- ================================================================
+
+-- api_50: write_tuples_jsonb inserts tuples and returns count
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM _test_assert('api_50_write_tuples_jsonb',
+        authz.write_tuples_jsonb('test_api', '[
+            {"user_type":"user","user_id":"alice","relation":"reader","object_type":"doc","object_id":"doc1"},
+            {"user_type":"user","user_id":"bob","relation":"reader","object_type":"doc","object_id":"doc1"}
+        ]'::jsonb)::text, '2');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_51: write_tuples_jsonb grants access (end-to-end)
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuples_jsonb('test_api', '[
+        {"user_type":"user","user_id":"alice","relation":"reader","object_type":"doc","object_id":"doc1"}
+    ]'::jsonb);
+    PERFORM _test_assert('api_51_write_tuples_jsonb_grants',
+        authz.check_access('test_api', 'user', 'alice', 'reader', 'doc', 'doc1')::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_52: write_tuples_jsonb skips duplicates
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    PERFORM _test_assert('api_52_write_tuples_jsonb_skip_dup',
+        authz.write_tuples_jsonb('test_api', '[
+            {"user_type":"user","user_id":"alice","relation":"reader","object_type":"doc","object_id":"doc1"},
+            {"user_type":"user","user_id":"bob","relation":"reader","object_type":"doc","object_id":"doc1"}
+        ]'::jsonb)::text, '1');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_53: write_tuples_jsonb with performed_by tracks audit
+DO $$
+DECLARE
+    s smallint;
+    v_text text;
+BEGIN
+    PERFORM _test_setup_api();
+    s := authz._s('test_api');
+    PERFORM authz.write_tuples_jsonb('test_api', '[
+        {"user_type":"user","user_id":"alice","relation":"reader","object_type":"doc","object_id":"doc_j1"}
+    ]'::jsonb, p_performed_by => 'json_admin');
+    SELECT a.performed_by INTO v_text
+      FROM authz.tuples_audit a
+     WHERE a.store_id = s AND a.user_id = 'alice'
+       AND a.object_id = 'doc_j1' AND a.action = 'INSERT'
+     ORDER BY a.performed_at DESC LIMIT 1;
+    PERFORM _test_assert('api_53_write_tuples_jsonb_audit', v_text, 'json_admin');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_54: write_tuples_jsonb with optional user_relation
+DO $$
+DECLARE
+    s smallint;
+    v_count bigint;
+BEGIN
+    PERFORM _test_setup_api();
+    s := authz._s('test_api');
+    -- user_relation omitted — should be treated as NULL (direct tuple)
+    PERFORM authz.write_tuples_jsonb('test_api', '[
+        {"user_type":"user","user_id":"alice","relation":"reader","object_type":"doc","object_id":"doc1"}
+    ]'::jsonb);
+    SELECT count(*) INTO v_count FROM authz.tuples
+     WHERE store_id = s AND user_id = 'alice' AND user_relation IS NULL;
+    PERFORM _test_assert_true('api_54_jsonb_omit_user_relation', v_count = 1,
+        'user_relation should be NULL');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_55: delete_tuples_jsonb deletes tuples and returns count
+DO $$
+DECLARE v_int integer;
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    PERFORM authz.write_tuple('test_api', 'user', 'bob',   'reader', 'doc', 'doc1');
+    v_int := authz.delete_tuples_jsonb('test_api', '[
+        {"user_type":"user","user_id":"alice","relation":"reader","object_type":"doc","object_id":"doc1"},
+        {"user_type":"user","user_id":"bob","relation":"reader","object_type":"doc","object_id":"doc1"}
+    ]'::jsonb);
+    PERFORM _test_assert('api_55_delete_tuples_jsonb', v_int::text, '2');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_56: delete_tuples_jsonb revokes access (end-to-end)
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    PERFORM authz.delete_tuples_jsonb('test_api', '[
+        {"user_type":"user","user_id":"alice","relation":"reader","object_type":"doc","object_id":"doc1"}
+    ]'::jsonb);
+    PERFORM _test_assert('api_56_delete_tuples_jsonb_revokes',
+        authz.check_access('test_api', 'user', 'alice', 'reader', 'doc', 'doc1')::text, 'false');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_57: delete_tuples_jsonb returns 0 for nonexistent tuples
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM _test_assert('api_57_delete_tuples_jsonb_empty',
+        authz.delete_tuples_jsonb('test_api', '[
+            {"user_type":"user","user_id":"alice","relation":"reader","object_type":"doc","object_id":"doc1"}
+        ]'::jsonb)::text, '0');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- ================================================================
+-- check_access_with_contextual_tuples_jsonb tests
+-- ================================================================
+
+-- api_58: contextual tuples via JSONB grant access
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    -- No stored tuple for alice on doc1
+    PERFORM _test_assert('api_58a_no_access_without_ctx',
+        authz.check_access('test_api', 'user', 'alice', 'reader', 'doc', 'doc1')::text, 'false');
+    -- With contextual tuple via JSONB
+    PERFORM _test_assert('api_58b_access_with_ctx_jsonb',
+        authz.check_access_with_contextual_tuples_jsonb('test_api',
+            'user', 'alice', 'reader', 'doc', 'doc1',
+            NULL,
+            '[{"user_type":"user","user_id":"alice","relation":"reader","object_type":"doc","object_id":"doc1"}]'::jsonb
+        )::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_59: contextual tuples via JSONB are NOT persisted
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.check_access_with_contextual_tuples_jsonb('test_api',
+        'user', 'alice', 'reader', 'doc', 'doc1',
+        NULL,
+        '[{"user_type":"user","user_id":"alice","relation":"reader","object_type":"doc","object_id":"doc1"}]'::jsonb
+    );
+    PERFORM _test_assert('api_59_ctx_jsonb_not_persisted',
+        authz.check_access('test_api', 'user', 'alice', 'reader', 'doc', 'doc1')::text, 'false');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_60: contextual tuples JSONB with NULL contextual_tuples falls back
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    -- NULL contextual_tuples should work (no tuples injected)
+    PERFORM _test_assert('api_60_ctx_jsonb_null_tuples',
+        authz.check_access_with_contextual_tuples_jsonb('test_api',
+            'user', 'alice', 'reader', 'doc', 'doc1',
+            NULL, NULL
+        )::text, 'false');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- ================================================================
+-- check_access_batch_typed_jsonb tests
+-- ================================================================
+
+-- api_70: batch JSONB returns correct results for mixed access
+DO $$
+DECLARE
+    v_decisions boolean[];
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    SELECT array_agg(decision ORDER BY ordinality) INTO v_decisions
+      FROM authz.check_access_batch_typed_jsonb('test_api', '[
+          {"user_type":"user","user_id":"alice","relation":"reader","object_type":"doc","object_id":"doc1"},
+          {"user_type":"user","user_id":"alice","relation":"editor","object_type":"doc","object_id":"doc1"}
+      ]'::jsonb) WITH ORDINALITY;
+    PERFORM _test_assert('api_70_batch_jsonb_mixed', v_decisions::text, '{t,f}');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_71: batch JSONB with deny_on_first_deny short-circuits
+DO $$
+DECLARE
+    v_decisions boolean[];
+BEGIN
+    PERFORM _test_setup_api();
+    SELECT array_agg(decision ORDER BY ordinality) INTO v_decisions
+      FROM authz.check_access_batch_typed_jsonb('test_api', '[
+          {"user_type":"user","user_id":"alice","relation":"reader","object_type":"doc","object_id":"doc1"},
+          {"user_type":"user","user_id":"alice","relation":"editor","object_type":"doc","object_id":"doc1"}
+      ]'::jsonb, p_semantic => 'deny_on_first_deny') WITH ORDINALITY;
+    PERFORM _test_assert('api_71_batch_jsonb_deny_short', v_decisions::text, '{f,NULL}');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_72: batch JSONB result includes input fields
+DO $$
+DECLARE
+    v_row authz.access_check_result;
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    SELECT * INTO v_row
+      FROM authz.check_access_batch_typed_jsonb('test_api', '[
+          {"user_type":"user","user_id":"alice","relation":"reader","object_type":"doc","object_id":"doc1"}
+      ]'::jsonb) LIMIT 1;
+    PERFORM _test_assert('api_72a_result_user_type', v_row.user_type, 'user');
+    PERFORM _test_assert('api_72b_result_relation', v_row.relation, 'reader');
+    PERFORM _test_assert_true('api_72c_result_decision', v_row.decision, 'decision should be true');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_73: batch JSONB validates input (missing key raises error)
+DO $$
+DECLARE
+    v_raised boolean := false;
+BEGIN
+    PERFORM _test_setup_api();
+    BEGIN
+        PERFORM authz.check_access_batch_typed_jsonb('test_api', '[
+            {"user_type":"user","user_id":"alice","object_type":"doc","object_id":"doc1"}
+        ]'::jsonb);
+    EXCEPTION WHEN OTHERS THEN
+        v_raised := true;
+    END;
+    PERFORM _test_assert('api_73_batch_jsonb_validates', v_raised::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_74: batch JSONB with empty array returns no rows
+DO $$
+DECLARE
+    v_count int;
+BEGIN
+    PERFORM _test_setup_api();
+    SELECT count(*) INTO v_count
+      FROM authz.check_access_batch_typed_jsonb('test_api', '[]'::jsonb);
+    PERFORM _test_assert('api_74_batch_jsonb_empty', v_count::text, '0');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- ================================================================
+-- JSONB validation tests (_validate_tuple_jsonb)
+-- ================================================================
+
+-- api_61: missing required key raises error
+DO $$
+DECLARE
+    v_raised boolean := false;
+    v_msg    text;
+BEGIN
+    PERFORM _test_setup_api();
+    BEGIN
+        -- "usr_type" is a typo — should be "user_type"
+        PERFORM authz.write_tuples_jsonb('test_api', '[
+            {"usr_type":"user","user_id":"alice","relation":"reader","object_type":"doc","object_id":"doc1"}
+        ]'::jsonb);
+    EXCEPTION WHEN OTHERS THEN
+        v_raised := true;
+        v_msg := SQLERRM;
+    END;
+    PERFORM _test_assert('api_61a_missing_key_raises', v_raised::text, 'true');
+    PERFORM _test_assert_true('api_61b_error_mentions_key',
+        v_msg LIKE '%user_type%', v_msg);
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_62: null required value raises error
+DO $$
+DECLARE
+    v_raised boolean := false;
+    v_msg    text;
+BEGIN
+    PERFORM _test_setup_api();
+    BEGIN
+        PERFORM authz.write_tuples_jsonb('test_api', '[
+            {"user_type":"user","user_id":null,"relation":"reader","object_type":"doc","object_id":"doc1"}
+        ]'::jsonb);
+    EXCEPTION WHEN OTHERS THEN
+        v_raised := true;
+        v_msg := SQLERRM;
+    END;
+    PERFORM _test_assert('api_62a_null_required_raises', v_raised::text, 'true');
+    PERFORM _test_assert_true('api_62b_error_mentions_user_id',
+        v_msg LIKE '%user_id%', v_msg);
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_63: non-array input raises error
+DO $$
+DECLARE
+    v_raised boolean := false;
+    v_msg    text;
+BEGIN
+    PERFORM _test_setup_api();
+    BEGIN
+        PERFORM authz.write_tuples_jsonb('test_api', '{"not":"an_array"}'::jsonb);
+    EXCEPTION WHEN OTHERS THEN
+        v_raised := true;
+        v_msg := SQLERRM;
+    END;
+    PERFORM _test_assert('api_63a_non_array_raises', v_raised::text, 'true');
+    PERFORM _test_assert_true('api_63b_error_mentions_array',
+        v_msg LIKE '%JSON array%', v_msg);
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_64: non-object element raises error
+DO $$
+DECLARE
+    v_raised boolean := false;
+    v_msg    text;
+BEGIN
+    PERFORM _test_setup_api();
+    BEGIN
+        PERFORM authz.write_tuples_jsonb('test_api', '["not_an_object"]'::jsonb);
+    EXCEPTION WHEN OTHERS THEN
+        v_raised := true;
+        v_msg := SQLERRM;
+    END;
+    PERFORM _test_assert('api_64a_non_object_raises', v_raised::text, 'true');
+    PERFORM _test_assert_true('api_64b_error_mentions_object',
+        v_msg LIKE '%JSON object%', v_msg);
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_65: error message includes tuple index
+DO $$
+DECLARE
+    v_raised boolean := false;
+    v_msg    text;
+BEGIN
+    PERFORM _test_setup_api();
+    BEGIN
+        -- First tuple is valid, second is missing object_id
+        PERFORM authz.write_tuples_jsonb('test_api', '[
+            {"user_type":"user","user_id":"alice","relation":"reader","object_type":"doc","object_id":"doc1"},
+            {"user_type":"user","user_id":"bob","relation":"reader","object_type":"doc"}
+        ]'::jsonb);
+    EXCEPTION WHEN OTHERS THEN
+        v_raised := true;
+        v_msg := SQLERRM;
+    END;
+    PERFORM _test_assert('api_65a_index_in_error', v_raised::text, 'true');
+    PERFORM _test_assert_true('api_65b_mentions_index_1',
+        v_msg LIKE '%index 1%', v_msg);
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_66: validation also works for delete_tuples_jsonb
+DO $$
+DECLARE
+    v_raised boolean := false;
+BEGIN
+    PERFORM _test_setup_api();
+    BEGIN
+        PERFORM authz.delete_tuples_jsonb('test_api', '[
+            {"user_type":"user","relation":"reader","object_type":"doc","object_id":"doc1"}
+        ]'::jsonb);
+    EXCEPTION WHEN OTHERS THEN
+        v_raised := true;
+    END;
+    PERFORM _test_assert('api_66_delete_jsonb_validates', v_raised::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_67: validation also works for check_access_with_contextual_tuples_jsonb
+DO $$
+DECLARE
+    v_raised boolean := false;
+BEGIN
+    PERFORM _test_setup_api();
+    BEGIN
+        PERFORM authz.check_access_with_contextual_tuples_jsonb('test_api',
+            'user', 'alice', 'reader', 'doc', 'doc1',
+            NULL,
+            '[{"usr_type":"user","user_id":"alice","relation":"reader","object_type":"doc","object_id":"doc1"}]'::jsonb
+        );
+    EXCEPTION WHEN OTHERS THEN
+        v_raised := true;
+    END;
+    PERFORM _test_assert('api_67_ctx_jsonb_validates', v_raised::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_68: empty JSON array is accepted (no tuples to insert)
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM _test_assert('api_68_empty_array_ok',
+        authz.write_tuples_jsonb('test_api', '[]'::jsonb)::text, '0');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- ================================================================
+-- delete_store tests (uses its own store, independent of test_api)
+-- ================================================================
+
+-- api_29-32: delete_store creates, verifies, deletes, and checks cleanup
+DO $$
+DECLARE
+    ds smallint;
+    v_count bigint;
+BEGIN
+    BEGIN PERFORM authz.delete_store('test_delete_store'); EXCEPTION WHEN OTHERS THEN NULL; END;
+    PERFORM authz.create_store('test_delete_store');
+    ds := authz._s('test_delete_store');
+
+    INSERT INTO authz.types (store_id, name) VALUES (ds, 'user'), (ds, 'doc');
+    INSERT INTO authz.relations (store_id, name) VALUES (ds, 'reader');
+    PERFORM authz._ensure_tuple_partition(ds, 'doc');
+    INSERT INTO authz.models (store_id, object_type, relation, rule_type,
+                              computed_relation, tupleset_relation, tupleset_computed)
+    VALUES (ds, authz._t(ds, 'doc'), authz._r(ds, 'reader'),
+            authz._rel_direct(), NULL, NULL, NULL);
+    PERFORM authz.write_tuple('test_delete_store', 'user', 'u1', 'reader', 'doc', 'doc1');
+
+    PERFORM _test_assert('api_29_store_accessible_before_delete',
+        authz.check_access('test_delete_store', 'user', 'u1', 'reader', 'doc', 'doc1')::text, 'true');
+
+    PERFORM authz.delete_store('test_delete_store');
+
+    SELECT count(*) INTO v_count FROM authz.stores WHERE name = 'test_delete_store';
+    PERFORM _test_assert('api_30_delete_store_removes_store', v_count::text, '0');
+
+    SELECT count(*) INTO v_count
+      FROM authz.types WHERE name IN ('user', 'doc')
+       AND store_id NOT IN (SELECT id FROM authz.stores);
+    PERFORM _test_assert('api_31_delete_store_cleans_types', v_count::text, '0');
+
+    SELECT count(*) INTO v_count
+      FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'authz'
+       AND c.relname = 'tuples_test_delete_store_doc'
+       AND c.relispartition;
+    PERFORM _test_assert('api_32_delete_store_drops_partition', v_count::text, '0');
+END;
+$$;
+-- No store-specific teardown needed (store already deleted by the test).
+-- Drain results for IDE visibility.
+DELETE FROM _test_results RETURNING *;
+
+-- Cleanup file-level functions
+DROP FUNCTION IF EXISTS _test_teardown_api();
+DROP FUNCTION IF EXISTS _test_setup_api();
+
+SELECT _test_report('checks');

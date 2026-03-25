@@ -1,0 +1,51 @@
+@startuml architecture-write-api
+
+!theme plain
+skinparam backgroundColor white
+skinparam componentStyle rectangle
+skinparam defaultFontName monospaced
+skinparam nodesep 50
+skinparam ranksep 40
+skinparam padding 6
+
+title Architecture with Write Paths
+
+actor "Application" as app
+
+note as N1
+  **Option A: Write API**
+  For applications without
+  direct database access
+  (HTTP clients, microservices)
+end note
+
+node "HTTP Write API" as optA {
+    component "Nginx Gateway\n:3001" as gw #Thistle
+    component "PostgREST Writer\n(internal)" as pgrst #Salmon
+}
+
+database "PostgreSQL\n:5432" as pg #Orange
+
+N1 -right-> gw
+
+app -down-> gw : "POST /rpc/...\n(JWT required)"
+gw -down-> pgrst : "proxy\n(route allowlist)"
+pgrst -down-> pg : "SQL (writer role)"
+
+app -right-> pg : "direct SQL\n(authz_writer role)"
+
+note right of pg
+  **Option B: Direct SQL**
+  For applications with
+  direct PostgreSQL connectivity
+  (lowest latency, no HTTP overhead)
+end note
+
+legend bottom left
+  |= Color |= Component |
+  | <#Thistle> | Nginx — route allowlist, error suppression |
+  | <#Salmon> | PostgREST Writer — JWT role switching |
+  | <#Orange> | PostgreSQL — authz schema |
+end legend
+
+@enduml

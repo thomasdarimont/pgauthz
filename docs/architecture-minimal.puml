@@ -1,0 +1,33 @@
+@startuml architecture-minimal
+
+!theme plain
+skinparam backgroundColor white
+skinparam componentStyle rectangle
+skinparam defaultFontName monospaced
+skinparam nodesep 50
+skinparam ranksep 40
+skinparam padding 6
+
+title Minimal Architecture with Read/Write
+
+actor "Application" as app1
+
+node "Docker Host" as host1 {
+    component "OPA\n:8181" as opa1 #LightBlue
+    component "PostgREST\n:3000 (internal)" as pgrst1 #LightGreen
+    database "PostgreSQL\n:5432" as pg1 #Orange
+}
+
+app1 -down-> opa1 : "POST /v1/data/...\n(authz checks)"
+opa1 -down-> pgrst1 : "http.send\n(internal network)"
+pgrst1 -down-> pg1 : "SQL (api_anon)"
+app1 -down-> pg1 : "direct SQL\n(tuple writes)"
+
+legend bottom left
+  |= Color |= Component |
+  | <#LightBlue> | OPA — policy evaluation |
+  | <#LightGreen> | PostgREST — internal read API |
+  | <#Orange> | PostgreSQL — single instance |
+end legend
+
+@enduml

@@ -1,0 +1,73 @@
+@startuml architecture-full
+
+!theme plain
+skinparam backgroundColor white
+skinparam componentStyle rectangle
+skinparam defaultFontName monospaced
+skinparam nodesep 50
+skinparam ranksep 40
+skinparam padding 6
+
+title Full Architecture (read scaling + write API + AuthZEN)
+
+actor "Application" as app
+
+component "Load Balancer" as lb #Plum
+
+node "VM 1 (read)" as vm1 {
+    component "OPA" as opa_a #LightBlue
+    component "AuthZEN" as az_a #PaleGreen
+    component "PostgREST" as pgrst_a #LightGreen
+    database "PG Replica" as pgr_a #LightYellow
+}
+
+node "VM 2 (read)" as vm2 {
+    component "OPA" as opa_b #LightBlue
+    component "AuthZEN" as az_b #PaleGreen
+    component "PostgREST" as pgrst_b #LightGreen
+    database "PG Replica" as pgr_b #LightYellow
+}
+
+node "VM 0 (primary)" as vm0 {
+    component "Nginx\nGateway\n:3001" as gw #Thistle
+    component "PostgREST\nWriter" as pgrst_w #Salmon
+    database "PG Primary" as pgp #Orange
+}
+
+' Read path
+app -down-> lb : "authz checks\n(read path)"
+lb -down-> opa_a
+lb -down-> opa_b
+lb -down-> az_a
+lb -down-> az_b
+opa_a -down-> pgrst_a
+opa_b -down-> pgrst_b
+az_a -down-> opa_a
+az_a -down-> pgr_a
+az_b -down-> opa_b
+az_b -down-> pgr_b
+pgrst_a -down-> pgr_a
+pgrst_b -down-> pgr_b
+
+' Write path
+app -down-> gw : "POST /rpc/...\n(write path, JWT)"
+gw -down-> pgrst_w : "proxy"
+pgrst_w -down-> pgp : "SQL (writer)"
+
+' Replication
+pgp -right-> pgr_a : "  WAL  "
+pgp -right-> pgr_b : "  WAL  "
+
+legend bottom left
+  |= Color |= Component |
+  | <#PaleGreen> | AuthZEN API — standard AuthZEN 1.0 (Go) |
+  | <#LightBlue> | OPA — policy evaluation + JWT authn |
+  | <#LightGreen> | PostgREST — internal read API |
+  | <#Thistle> | Nginx — route allowlist, error suppression |
+  | <#Salmon> | PostgREST Writer — JWT role switching |
+  | <#Orange> | PostgreSQL primary — read-write |
+  | <#LightYellow> | PostgreSQL replica — read-only (WAL) |
+  | <#Plum> | Load Balancer — distributes reads |
+end legend
+
+@enduml
