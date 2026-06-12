@@ -31,14 +31,14 @@ CREATE TABLE IF NOT EXISTS authz.materialized_permissions (
 ) PARTITION BY HASH (store, user_id);
 
 -- 8 hash partitions (same modulus as the document tuple partitions).
-CREATE TABLE authz.materialized_permissions_0 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 0);
-CREATE TABLE authz.materialized_permissions_1 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 1);
-CREATE TABLE authz.materialized_permissions_2 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 2);
-CREATE TABLE authz.materialized_permissions_3 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 3);
-CREATE TABLE authz.materialized_permissions_4 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 4);
-CREATE TABLE authz.materialized_permissions_5 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 5);
-CREATE TABLE authz.materialized_permissions_6 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 6);
-CREATE TABLE authz.materialized_permissions_7 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 7);
+CREATE TABLE IF NOT EXISTS authz.materialized_permissions_0 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 0);
+CREATE TABLE IF NOT EXISTS authz.materialized_permissions_1 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 1);
+CREATE TABLE IF NOT EXISTS authz.materialized_permissions_2 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 2);
+CREATE TABLE IF NOT EXISTS authz.materialized_permissions_3 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 3);
+CREATE TABLE IF NOT EXISTS authz.materialized_permissions_4 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 4);
+CREATE TABLE IF NOT EXISTS authz.materialized_permissions_5 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 5);
+CREATE TABLE IF NOT EXISTS authz.materialized_permissions_6 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 6);
+CREATE TABLE IF NOT EXISTS authz.materialized_permissions_7 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 7);
 
 ------------------------------------------------------------------------
 -- Refresh queue: tracks which objects need permission re-evaluation.
@@ -122,6 +122,14 @@ $$;
 ------------------------------------------------------------------------
 -- process_permissions_refresh_queue: processes all pending queue entries.
 -- Returns the number of permissions refreshed.
+--
+-- Entries are claimed and removed in a single DELETE so that entries
+-- enqueued by concurrent writers while processing runs stay queued for
+-- the next run (a separate unqualified DELETE would discard them
+-- unprocessed). FOR UPDATE SKIP LOCKED skips entries already claimed
+-- by another worker, so multiple workers can run this concurrently.
+-- If the transaction aborts mid-refresh, the claim rolls back and the
+-- entries remain queued.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.process_permissions_refresh_queue()
 RETURNS integer
@@ -131,18 +139,24 @@ DECLARE
     v_count  integer;
     v_rec    record;
 BEGIN
-    -- Process each unique object (deduplicate multiple changes to same object)
+    -- Claim pending entries, deduplicated per object (multiple changes
+    -- to the same object need only one refresh).
     FOR v_rec IN
-        SELECT DISTINCT store_id, object_type, object_id
-          FROM authz.permissions_refresh_queue
+        WITH claimed AS (
+            DELETE FROM authz.permissions_refresh_queue
+             WHERE id IN (
+                 SELECT id FROM authz.permissions_refresh_queue
+                  FOR UPDATE SKIP LOCKED
+             )
+             RETURNING store_id, object_type, object_id
+        )
+        SELECT DISTINCT store_id, object_type, object_id FROM claimed
     LOOP
         v_count := authz._refresh_permissions_for_object(
             v_rec.store_id, v_rec.object_type, v_rec.object_id
         );
         v_total := v_total + v_count;
     END LOOP;
-
-    DELETE FROM authz.permissions_refresh_queue;
 
     RETURN v_total;
 END;
