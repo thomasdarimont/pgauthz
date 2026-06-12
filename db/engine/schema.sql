@@ -218,6 +218,28 @@ DECLARE
     v_row          authz.tuples;
     v_performed_by text;
 BEGIN
+    -- Read application user from session variable, fall back to DB role
+    v_performed_by := COALESCE(
+        NULLIF(current_setting('authz.performed_by', true), ''),
+        authz._effective_role()
+    );
+
+    -- An UPDATE (condition change via write_tuple upsert) is recorded
+    -- as DELETE(old) + INSERT(new) so time-travel replay (last event
+    -- per tuple wins, ties broken by seq) reconstructs the right
+    -- condition for any point in time.
+    IF TG_OP = 'UPDATE' THEN
+        INSERT INTO authz.tuples_audit (
+            action, performed_at, performed_by, store_id, user_type, user_id, user_relation,
+            relation, object_type, object_id, condition_id, condition_context
+        ) VALUES
+            ('DELETE', clock_timestamp(), v_performed_by, OLD.store_id, OLD.user_type, OLD.user_id, OLD.user_relation,
+             OLD.relation, OLD.object_type, OLD.object_id, OLD.condition_id, OLD.condition_context),
+            ('INSERT', clock_timestamp(), v_performed_by, NEW.store_id, NEW.user_type, NEW.user_id, NEW.user_relation,
+             NEW.relation, NEW.object_type, NEW.object_id, NEW.condition_id, NEW.condition_context);
+        RETURN NEW;
+    END IF;
+
     IF TG_OP = 'INSERT' THEN
         v_row := NEW;
     ELSIF TG_OP = 'DELETE' THEN
@@ -225,12 +247,6 @@ BEGIN
     ELSE
         RETURN NULL;
     END IF;
-
-    -- Read application user from session variable, fall back to DB role
-    v_performed_by := COALESCE(
-        NULLIF(current_setting('authz.performed_by', true), ''),
-        authz._effective_role()
-    );
 
     INSERT INTO authz.tuples_audit (
         action, performed_at, performed_by, store_id, user_type, user_id, user_relation,
@@ -246,7 +262,7 @@ $$;
 
 -- Attach trigger to tuples table (fires for all partitions).
 CREATE TRIGGER trg_tuples_audit
-    AFTER INSERT OR DELETE ON authz.tuples
+    AFTER INSERT OR UPDATE OR DELETE ON authz.tuples
     FOR EACH ROW EXECUTE FUNCTION authz._audit_tuple();
 
 -- The audit trail is append-only. UPDATE is never allowed; DELETE only

@@ -1540,6 +1540,51 @@ END;
 $$;
 SELECT * FROM _test_teardown_api();
 
+-- ================================================================
+-- write_tuple condition upsert: re-writing an existing tuple with a
+-- different condition must apply the new condition (and audit the
+-- change), not silently keep the old state.
+-- ================================================================
+SELECT _test_setup_api();
+DO $$
+DECLARE
+    v_bool boolean;
+    v_cnt  bigint;
+BEGIN
+    INSERT INTO authz.conditions (store_id, name, expression)
+    VALUES (authz._s('test_api'), 'flag_set', $cond$($1->>'ok')::boolean$cond$);
+
+    -- api_101: adding a condition to an existing unconditional tuple
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'up1');
+    v_bool := authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'up1',
+        p_condition => 'flag_set');
+    PERFORM _test_assert('api_101a_condition_change_reports_change', v_bool::text, 'true');
+    PERFORM _test_assert('api_101b_condition_now_enforced',
+        authz.check_access('test_api', 'user', 'alice', 'reader', 'doc', 'up1')::text, 'false');
+    PERFORM _test_assert('api_101c_condition_passes_with_context',
+        authz.check_access_with_context('test_api', 'user', 'alice', 'reader', 'doc', 'up1',
+            '{"ok": true}'::jsonb)::text, 'true');
+
+    -- api_102: removing the condition (unconditional write wins)
+    v_bool := authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'up1');
+    PERFORM _test_assert('api_102a_condition_removal_reports_change', v_bool::text, 'true');
+    PERFORM _test_assert('api_102b_tuple_now_unconditional',
+        authz.check_access('test_api', 'user', 'alice', 'reader', 'doc', 'up1')::text, 'true');
+
+    -- api_103: identical re-write stays an idempotent no-op
+    v_bool := authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'up1');
+    PERFORM _test_assert('api_103_identical_rewrite_noop', v_bool::text, 'false');
+
+    -- api_104: the two condition changes were audited as DELETE+INSERT
+    -- pairs: initial INSERT + 2 changes x 2 events = 5 audit rows
+    SELECT count(*) INTO v_cnt
+      FROM authz.tuples_audit
+     WHERE store_id = authz._s('test_api') AND object_id = 'up1';
+    PERFORM _test_assert('api_104_condition_changes_audited', v_cnt::text, '5');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_api();
 DROP FUNCTION IF EXISTS _test_setup_api();

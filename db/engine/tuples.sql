@@ -5,6 +5,13 @@
 
 ------------------------------------------------------------------------
 -- write_tuple: explicit parameters — no string parsing needed.
+--
+-- Upsert semantics: if the tuple already exists with a DIFFERENT
+-- condition (or condition context), the new condition is applied —
+-- the caller's intent wins, and the change is audited as a
+-- DELETE(old) + INSERT(new) event pair. Returns true if the tuple was
+-- created or its condition changed, false if an identical tuple
+-- already existed.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.write_tuple(
     p_store             text,
@@ -79,8 +86,14 @@ BEGIN
 
     INSERT INTO authz.tuples (store_id, user_type, user_id, user_relation, relation, object_type, object_id, condition_id, condition_context)
     VALUES (v_store_id, v_user_type, p_user_id, v_user_relation, v_relation, v_object_type, p_object_id, v_condition_id, p_condition_context)
-    ON CONFLICT DO NOTHING;
+    ON CONFLICT (store_id, object_type, object_id, relation, user_type, user_id, COALESCE(user_relation::int, 0))
+    DO UPDATE SET
+        condition_id      = EXCLUDED.condition_id,
+        condition_context = EXCLUDED.condition_context
+    WHERE tuples.condition_id      IS DISTINCT FROM EXCLUDED.condition_id
+       OR tuples.condition_context IS DISTINCT FROM EXCLUDED.condition_context;
 
+    -- FOUND: inserted or condition changed; false for an identical tuple.
     RETURN FOUND;
 END;
 $$;
@@ -91,6 +104,10 @@ $$;
 -- one set of audit trigger events, and ID resolution via joins.
 --
 -- Returns the number of tuples actually inserted (duplicates are skipped).
+--
+-- Unlike write_tuple, the batch path is strictly insert-only: existing
+-- tuples are never modified, so a bulk sync cannot accidentally strip
+-- conditions from existing conditional grants.
 --
 -- Examples:
 --   SELECT authz.write_tuples('demo', ARRAY[

@@ -136,7 +136,9 @@ SELECT * FROM authz.list_actions('demo',
 
 ### write_tuple — Write a relationship tuple
 
-Returns `true` if a new tuple was created, `false` if it already existed (idempotent).
+Returns `true` if a new tuple was created **or an existing tuple's condition
+changed** (re-writing with a different condition applies the new one and
+audits the change), `false` if an identical tuple already existed (idempotent).
 An optional `p_performed_by` parameter records the application user identity in the audit trail.
 
 ```sql

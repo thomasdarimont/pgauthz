@@ -252,6 +252,6 @@ $$;
 -- Attach the trigger to the tuples table (fires for all partitions).
 DROP TRIGGER IF EXISTS trg_queue_permissions_refresh ON authz.tuples;
 CREATE TRIGGER trg_queue_permissions_refresh
-    AFTER INSERT OR DELETE ON authz.tuples
+    AFTER INSERT OR UPDATE OR DELETE ON authz.tuples
     FOR EACH ROW
     EXECUTE FUNCTION authz._queue_permissions_refresh();
