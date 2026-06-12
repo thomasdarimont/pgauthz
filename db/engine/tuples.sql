@@ -217,14 +217,20 @@ $$;
 -- write_tuples_jsonb: HTTP/JSON-friendly version of write_tuples.
 -- Accepts tuples as a JSONB array of objects, each with:
 --   {"user_type", "user_id", "relation", "object_type", "object_id"}
---   and optionally "user_relation" (for userset tuples).
--- Delegates to the native array version after conversion.
+--   and optionally "user_relation" (for userset tuples) and
+--   "condition" / "condition_context" (for conditional grants).
+--
+-- Note: the composite authz.tuple_input type used by write_tuples has
+-- no condition fields — use this JSONB variant (or write_tuple) for
+-- conditional grants.
 --
 -- Example via PostgREST:
 --   POST /rpc/write_tuples_jsonb
 --   {"p_store": "demo", "p_tuples": [
 --       {"user_type":"internal_user","user_id":"alice","relation":"member","object_type":"team","object_id":"payroll_team"},
---       {"user_type":"internal_user","user_id":"bob","relation":"member","object_type":"team","object_id":"accounting_team"}
+--       {"user_type":"internal_user","user_id":"bob","relation":"viewer","object_type":"document","object_id":"doc_temp_001",
+--        "condition":"non_expired_grant",
+--        "condition_context":{"grant_time":"2026-03-11T09:00:00Z","grant_duration":"2 hours"}}
 --   ], "p_performed_by": "hr_system"}
 --   => 2
 ------------------------------------------------------------------------
@@ -234,21 +240,46 @@ CREATE OR REPLACE FUNCTION authz.write_tuples_jsonb(
     p_performed_by text DEFAULT NULL
 ) RETURNS integer
 LANGUAGE plpgsql AS $$
+DECLARE
+    v_count integer;
+    t       jsonb;
 BEGIN
     PERFORM authz._validate_tuple_jsonb(p_tuples);
-    RETURN authz.write_tuples(
+
+    -- Unconditional elements take the set-based batch path.
+    v_count := authz.write_tuples(
         p_store,
         (SELECT coalesce(array_agg(ROW(
-            t->>'user_type',
-            t->>'user_id',
-            t->>'user_relation',
-            t->>'relation',
-            t->>'object_type',
-            t->>'object_id'
+            e->>'user_type',
+            e->>'user_id',
+            e->>'user_relation',
+            e->>'relation',
+            e->>'object_type',
+            e->>'object_id'
         )::authz.tuple_input), '{}')
-        FROM jsonb_array_elements(p_tuples) AS t),
+        FROM jsonb_array_elements(p_tuples) AS e
+        WHERE e->>'condition' IS NULL),
         p_performed_by
     );
+
+    -- Conditional elements go through write_tuple, which validates the
+    -- condition name and its required stored-context keys.
+    FOR t IN
+        SELECT e FROM jsonb_array_elements(p_tuples) AS e
+         WHERE e->>'condition' IS NOT NULL
+    LOOP
+        IF authz.write_tuple(p_store,
+               t->>'user_type', t->>'user_id', t->>'relation',
+               t->>'object_type', t->>'object_id',
+               p_user_relation     => t->>'user_relation',
+               p_condition         => t->>'condition',
+               p_condition_context => t->'condition_context',
+               p_performed_by      => p_performed_by) THEN
+            v_count := v_count + 1;
+        END IF;
+    END LOOP;
+
+    RETURN v_count;
 END;
 $$;
 

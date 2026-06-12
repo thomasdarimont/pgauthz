@@ -208,6 +208,17 @@ SELECT authz.write_tuples_jsonb('demo', '[
 ]'::jsonb, p_performed_by => 'hr_system');
 -- => 2
 
+-- JSONB batch elements may also carry conditional grants via the
+-- optional "condition" / "condition_context" keys (the composite
+-- tuple_input type has no condition fields — use this variant or
+-- write_tuple for conditional tuples):
+SELECT authz.write_tuples_jsonb('demo', '[
+    {"user_type":"internal_user","user_id":"alice","relation":"viewer",
+     "object_type":"document","object_id":"doc_temp_001",
+     "condition":"non_expired_grant",
+     "condition_context":{"grant_time":"2026-03-11T09:00:00Z","grant_duration":"2 hours"}}
+]'::jsonb);
+
 SELECT authz.delete_tuples_jsonb('demo', '[
     {"user_type":"internal_user","user_id":"grace","relation":"member","object_type":"team","object_id":"payroll_team"}
 ]'::jsonb);

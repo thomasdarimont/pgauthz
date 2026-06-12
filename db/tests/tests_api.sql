@@ -1492,6 +1492,54 @@ END;
 $$;
 DELETE FROM _test_results RETURNING *;
 
+-- ================================================================
+-- Conditional tuples in JSONB batch writes: elements may carry
+-- optional "condition" / "condition_context" keys.
+-- ================================================================
+SELECT _test_setup_api();
+DO $$
+DECLARE
+    v_count integer;
+BEGIN
+    INSERT INTO authz.conditions (store_id, name, expression)
+    VALUES (authz._s('test_api'), 'flag_set', $cond$($1->>'ok')::boolean$cond$);
+
+    -- api_98: mixed batch — one plain, one conditional — writes both
+    v_count := authz.write_tuples_jsonb('test_api', '[
+        {"user_type":"user","user_id":"alice","relation":"reader","object_type":"doc","object_id":"plain1"},
+        {"user_type":"user","user_id":"alice","relation":"reader","object_type":"doc","object_id":"cond1",
+         "condition":"flag_set"}
+    ]'::jsonb);
+    PERFORM _test_assert('api_98_jsonb_batch_mixed_conditional_count', v_count::text, '2');
+
+    -- api_99: the condition is attached — denied without context,
+    -- allowed with it (a silently unconditional write would grant both)
+    PERFORM _test_assert('api_99a_jsonb_batch_condition_enforced',
+        authz.check_access('test_api', 'user', 'alice', 'reader', 'doc', 'cond1')::text, 'false');
+    PERFORM _test_assert('api_99b_jsonb_batch_condition_passes_with_context',
+        authz.check_access_with_context('test_api', 'user', 'alice', 'reader', 'doc', 'cond1',
+            '{"ok": true}'::jsonb)::text, 'true');
+    PERFORM _test_assert('api_99c_jsonb_batch_plain_unconditional',
+        authz.check_access('test_api', 'user', 'alice', 'reader', 'doc', 'plain1')::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
+-- api_100: unknown condition names in a batch element raise
+SELECT _test_setup_api();
+DO $$
+BEGIN
+    PERFORM authz.write_tuples_jsonb('test_api', '[
+        {"user_type":"user","user_id":"alice","relation":"reader","object_type":"doc","object_id":"cond2",
+         "condition":"no_such_condition"}
+    ]'::jsonb);
+    PERFORM _test_assert_true('api_100_jsonb_batch_unknown_condition_raises', false, 'expected exception');
+EXCEPTION WHEN OTHERS THEN
+    PERFORM _test_assert_true('api_100_jsonb_batch_unknown_condition_raises', true);
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_api();
 DROP FUNCTION IF EXISTS _test_setup_api();
