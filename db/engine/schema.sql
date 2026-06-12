@@ -197,6 +197,13 @@ CREATE INDEX idx_tuples_audit_lookup
 CREATE INDEX idx_tuples_audit_time
     ON authz.tuples_audit (performed_at);
 
+-- Replay index: matches the DISTINCT ON key of _build_audit_snapshot so
+-- point-in-time reconstruction scans the events in order instead of
+-- sorting the store's full audit history on every call.
+CREATE INDEX idx_tuples_audit_replay
+    ON authz.tuples_audit (store_id, user_type, user_id, COALESCE(user_relation, 0),
+                           relation, object_type, object_id, performed_at DESC, seq DESC);
+
 -- Trigger function: logs INSERT and DELETE on authz.tuples.
 -- Reads the optional session variable 'authz.performed_by' to record
 -- which application user triggered the change. Falls back to the

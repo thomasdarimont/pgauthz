@@ -77,43 +77,8 @@ DECLARE
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
 
-    -- Build a temp table with the tuple state as of p_at.
-    -- For each tuple, find the last audit event before p_at.
-    -- If it was INSERT, the tuple existed; if DELETE, it didn't.
-    CREATE TEMP TABLE IF NOT EXISTS _snapshot_tuples (
-        store_id          smallint,
-        user_type         smallint,
-        user_id           text,
-        user_relation     smallint,
-        relation          smallint,
-        object_type       smallint,
-        object_id         text,
-        condition_id      smallint,
-        condition_context jsonb
-    ) ON COMMIT DROP;
-
-    TRUNCATE _snapshot_tuples;
-
-    -- Insert only tuples whose last event at p_at was an INSERT
-    INSERT INTO _snapshot_tuples
-    SELECT sub.store_id, sub.user_type, sub.user_id, sub.user_relation,
-           sub.relation, sub.object_type, sub.object_id,
-           sub.condition_id, sub.condition_context
-      FROM (
-        SELECT DISTINCT ON (
-            a.store_id, a.user_type, a.user_id, COALESCE(a.user_relation, 0),
-            a.relation, a.object_type, a.object_id
-        )
-            a.*
-          FROM authz.tuples_audit a
-         WHERE a.store_id = v_store_id
-           AND a.performed_at <= p_at
-         ORDER BY
-            a.store_id, a.user_type, a.user_id, COALESCE(a.user_relation, 0),
-            a.relation, a.object_type, a.object_id,
-            a.performed_at DESC, a.seq DESC
-      ) sub
-     WHERE sub.action = 'INSERT';
+    -- Build the tuple state as of p_at by replaying the audit log.
+    PERFORM authz._build_audit_snapshot(v_store_id, p_at);
 
     -- Run access check against the snapshot. Caller-supplied request
     -- context is merged in; current_time always reflects p_at.
@@ -144,12 +109,14 @@ CREATE OR REPLACE FUNCTION authz.audit_list_actions(
 LANGUAGE plpgsql AS $$
 DECLARE
     v_store_id    smallint := authz._s(p_store);
+    v_user_type   smallint := authz._t(v_store_id, p_user_type);
     v_object_type smallint := authz._t(v_store_id, p_object_type);
 BEGIN
-    -- Validate user type exists
-    PERFORM authz._t(v_store_id, p_user_type);
-
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
+
+    -- Build the point-in-time snapshot ONCE and evaluate every relation
+    -- against it (previously the snapshot was rebuilt per relation).
+    PERFORM authz._build_audit_snapshot(v_store_id, p_at);
 
     RETURN QUERY
         SELECT r.name
@@ -160,7 +127,8 @@ BEGIN
                  AND mr.object_type = v_object_type
           ) dr
           JOIN authz.relations r ON r.id = dr.relation
-         WHERE authz.audit_check_access(p_store, p_user_type, p_user_id, r.name, p_object_type, p_object_id, p_at, p_request_context);
+         WHERE authz._check_access_snapshot(v_store_id, v_user_type, p_user_id, dr.relation, v_object_type, p_object_id,
+                   COALESCE(p_request_context, '{}'::jsonb) || jsonb_build_object('current_time', p_at));
 END;
 $$;
 

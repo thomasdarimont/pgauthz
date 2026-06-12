@@ -5,6 +5,56 @@
 -- Depends on: engine/core_internal.sql, engine/access_internal.sql
 
 ------------------------------------------------------------------------
+-- _build_audit_snapshot: (re)builds pg_temp._snapshot_tuples with the
+-- tuple state of a store as of p_at by replaying the audit log: the
+-- last event per tuple wins (ties on performed_at broken by seq), and
+-- only tuples whose last event was an INSERT exist in the snapshot.
+-- Shared by audit_check_access and audit_list_actions, which builds
+-- the snapshot once and evaluates every relation against it.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._build_audit_snapshot(
+    p_store_id smallint,
+    p_at       timestamptz
+) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+    CREATE TEMP TABLE IF NOT EXISTS _snapshot_tuples (
+        store_id          smallint,
+        user_type         smallint,
+        user_id           text,
+        user_relation     smallint,
+        relation          smallint,
+        object_type       smallint,
+        object_id         text,
+        condition_id      smallint,
+        condition_context jsonb
+    ) ON COMMIT DROP;
+
+    TRUNCATE _snapshot_tuples;
+
+    INSERT INTO _snapshot_tuples
+    SELECT sub.store_id, sub.user_type, sub.user_id, sub.user_relation,
+           sub.relation, sub.object_type, sub.object_id,
+           sub.condition_id, sub.condition_context
+      FROM (
+        SELECT DISTINCT ON (
+            a.store_id, a.user_type, a.user_id, COALESCE(a.user_relation, 0),
+            a.relation, a.object_type, a.object_id
+        )
+            a.*
+          FROM authz.tuples_audit a
+         WHERE a.store_id = p_store_id
+           AND a.performed_at <= p_at
+         ORDER BY
+            a.store_id, a.user_type, a.user_id, COALESCE(a.user_relation, 0),
+            a.relation, a.object_type, a.object_id,
+            a.performed_at DESC, a.seq DESC
+      ) sub
+     WHERE sub.action = 'INSERT';
+END;
+$$;
+
+------------------------------------------------------------------------
 -- _eval_direct_snapshot: evaluates a DIRECT rule against the
 -- pg_temp._snapshot_tuples temp table (for point-in-time checks).
 -- No tracing, no contextual tuples.
