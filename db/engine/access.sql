@@ -118,7 +118,8 @@ BEGIN
         SELECT
             authz._t(v_store_id, ct.user_type),
             ct.user_id,
-            authz._r(v_store_id, ct.user_relation),
+            CASE WHEN ct.user_relation IS NULL THEN NULL
+                 ELSE authz._r(v_store_id, ct.user_relation) END,
             authz._r(v_store_id, ct.relation),
             authz._t(v_store_id, ct.object_type),
             ct.object_id
@@ -265,10 +266,6 @@ DECLARE
     v_short       boolean := false;
     i             int := 0;
 BEGIN
-    IF v_store_id IS NULL THEN
-        RAISE EXCEPTION 'Unknown store: %', p_store;
-    END IF;
-
     IF p_semantic NOT IN ('execute_all', 'deny_on_first_deny', 'permit_on_first_permit') THEN
         RAISE EXCEPTION 'Invalid semantic: %. Must be execute_all, deny_on_first_deny, or permit_on_first_permit', p_semantic;
     END IF;
@@ -345,10 +342,6 @@ DECLARE
     v_len         int;
     i             int := 0;
 BEGIN
-    IF v_store_id IS NULL THEN
-        RAISE EXCEPTION 'Unknown store: %', p_store;
-    END IF;
-
     IF p_semantic NOT IN ('execute_all', 'deny_on_first_deny', 'permit_on_first_permit') THEN
         RAISE EXCEPTION 'Invalid semantic: %. Must be execute_all, deny_on_first_deny, or permit_on_first_permit', p_semantic;
     END IF;
@@ -583,6 +576,10 @@ CREATE OR REPLACE FUNCTION authz.explain_access(
 ) RETURNS jsonb
 LANGUAGE plpgsql AS $$
 DECLARE
+    v_store_id    smallint := authz._s(p_store);
+    v_user_type   smallint := authz._t(v_store_id, p_user_type);
+    v_relation    smallint := authz._r(v_store_id, p_relation);
+    v_object_type smallint := authz._t(v_store_id, p_object_type);
     v_result  boolean;
     v_trace   jsonb;
     v_summary text;
@@ -591,8 +588,7 @@ DECLARE
     v_icon    text;
     v_line    text;
 BEGIN
-    PERFORM authz._check_namespace_access(
-        authz._s(p_store), authz._t(authz._s(p_store), p_object_type), 'can_read');
+    PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
 
     -- Reuse trace table within the session; ON COMMIT DROP cleans up.
     CREATE TEMP TABLE IF NOT EXISTS _access_trace (
@@ -610,11 +606,11 @@ BEGIN
     PERFORM set_config('authz.trace', 'on', true);
 
     v_result := authz._check_access(
-        authz._s(p_store),
-        authz._t(authz._s(p_store), p_user_type),
+        v_store_id,
+        v_user_type,
         p_user_id,
-        authz._r(authz._s(p_store), p_relation),
-        authz._t(authz._s(p_store), p_object_type),
+        v_relation,
+        v_object_type,
         p_object_id,
         context
     );
@@ -712,10 +708,6 @@ DECLARE
     v_still_ok    boolean;
     v_exclude     authz._tuple_key;
 BEGIN
-    IF v_store_id IS NULL THEN
-        RAISE EXCEPTION 'Unknown store: %', p_store;
-    END IF;
-
     IF p_object_type IS NOT NULL THEN
         v_object_type := authz._t(v_store_id, p_object_type);
     END IF;

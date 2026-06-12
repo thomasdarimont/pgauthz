@@ -387,8 +387,8 @@ The engine is **fail-closed** throughout:
 
 | Condition | Behavior |
 |---|---|
-| Unknown store/type/relation name | `RAISE EXCEPTION` — immediate error |
-| Namespace access denied | Return `false` (deny), no error |
+| Unknown store/type/relation name | `RAISE EXCEPTION` — immediate error (user/object IDs are data and are not validated) |
+| Namespace access denied | `RAISE EXCEPTION` — "Permission denied" |
 | Condition evaluation error | Caught by `_exec_condition`, treated as `false` (deny) |
 | Recursion depth exceeded (>15) | Return `false` (deny) |
 | No matching model rules | Return `false` (deny) |

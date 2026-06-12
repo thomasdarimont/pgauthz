@@ -37,10 +37,6 @@ DECLARE
     v_store_id smallint := authz._s(p_store);
     v_type_id  smallint;
 BEGIN
-    IF v_store_id IS NULL THEN
-        RAISE EXCEPTION 'Unknown store: %', p_store;
-    END IF;
-
     INSERT INTO authz.types (store_id, name, namespace, description)
     VALUES (v_store_id, p_type_name, p_namespace, p_description)
     RETURNING id INTO v_type_id;
@@ -71,10 +67,6 @@ DECLARE
     v_store_id    smallint := authz._s(p_store);
     v_relation_id smallint;
 BEGIN
-    IF v_store_id IS NULL THEN
-        RAISE EXCEPTION 'Unknown store: %', p_store;
-    END IF;
-
     INSERT INTO authz.relations (store_id, name, description)
     VALUES (v_store_id, p_name, p_description)
     ON CONFLICT (store_id, name) DO UPDATE SET name = EXCLUDED.name
@@ -279,10 +271,6 @@ LANGUAGE plpgsql AS $$
 DECLARE
     v_store_id smallint := authz._s(p_store);
 BEGIN
-    IF v_store_id IS NULL THEN
-        RAISE EXCEPTION 'Unknown store: %', p_store;
-    END IF;
-
     INSERT INTO authz.namespace_access (store_id, namespace, db_role, can_read, can_write)
     VALUES (v_store_id, p_namespace, p_db_role, p_can_read, p_can_write)
     ON CONFLICT (store_id, namespace, db_role) DO UPDATE
@@ -311,10 +299,6 @@ LANGUAGE plpgsql AS $$
 DECLARE
     v_store_id smallint := authz._s(p_store);
 BEGIN
-    IF v_store_id IS NULL THEN
-        RAISE EXCEPTION 'Unknown store: %', p_store;
-    END IF;
-
     UPDATE authz.namespace_access
        SET can_read  = can_read  AND NOT p_can_read,
            can_write = can_write AND NOT p_can_write
@@ -369,19 +353,6 @@ DECLARE
     v_allowed_user_rel smallint;
     v_id               smallint;
 BEGIN
-    IF v_store_id IS NULL THEN
-        RAISE EXCEPTION 'Unknown store: %', p_store;
-    END IF;
-    IF v_object_type IS NULL THEN
-        RAISE EXCEPTION 'Unknown type: %', p_object_type;
-    END IF;
-    IF v_relation IS NULL THEN
-        RAISE EXCEPTION 'Unknown relation: %', p_relation;
-    END IF;
-    IF v_allowed_user_type IS NULL THEN
-        RAISE EXCEPTION 'Unknown type: %', p_allowed_user_type;
-    END IF;
-
     -- Wildcard and user_relation are mutually exclusive
     IF p_allow_wildcard AND p_allowed_user_relation IS NOT NULL THEN
         RAISE EXCEPTION 'allow_wildcard and allowed_user_relation cannot be combined';
@@ -389,9 +360,6 @@ BEGIN
 
     IF p_allowed_user_relation IS NOT NULL THEN
         v_allowed_user_rel := authz._r(v_store_id, p_allowed_user_relation);
-        IF v_allowed_user_rel IS NULL THEN
-            RAISE EXCEPTION 'Unknown relation: %', p_allowed_user_relation;
-        END IF;
     END IF;
 
     INSERT INTO authz.type_restrictions (

@@ -43,10 +43,6 @@ DECLARE
     v_part_name  text;
     v_type_rec   record;
 BEGIN
-    IF v_store_id IS NULL THEN
-        RAISE EXCEPTION 'Unknown store: %', p_store;
-    END IF;
-
     DELETE FROM authz.tuples            WHERE store_id = v_store_id;
     DELETE FROM authz.tuples_audit      WHERE store_id = v_store_id;
     DELETE FROM authz.type_restrictions WHERE store_id = v_store_id;

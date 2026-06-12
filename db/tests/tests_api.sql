@@ -1235,6 +1235,103 @@ $$;
 -- Drain results for IDE visibility.
 DELETE FROM _test_results RETURNING *;
 
+-- ================================================================
+-- Unknown name validation: a typo'd store/type/relation name must
+-- raise instead of silently denying (or silently reporting
+-- "nothing deleted"). User/object IDs are data, not schema — they
+-- are never validated.
+-- ================================================================
+
+SELECT _test_setup_api();
+
+-- api_80: check_access raises on unknown store
+DO $$
+BEGIN
+    PERFORM authz.check_access('no_such_store', 'user', 'alice', 'reader', 'doc', 'doc1');
+    PERFORM _test_assert_true('api_80_check_access_unknown_store_raises', false, 'expected exception');
+EXCEPTION WHEN raise_exception THEN
+    PERFORM _test_assert_true('api_80_check_access_unknown_store_raises',
+        SQLERRM LIKE 'Unknown store%', SQLERRM);
+END;
+$$;
+
+-- api_81: check_access raises on unknown user type
+DO $$
+BEGIN
+    PERFORM authz.check_access('test_api', 'no_such_type', 'alice', 'reader', 'doc', 'doc1');
+    PERFORM _test_assert_true('api_81_check_access_unknown_user_type_raises', false, 'expected exception');
+EXCEPTION WHEN raise_exception THEN
+    PERFORM _test_assert_true('api_81_check_access_unknown_user_type_raises',
+        SQLERRM LIKE 'Unknown type%', SQLERRM);
+END;
+$$;
+
+-- api_82: check_access raises on unknown relation
+DO $$
+BEGIN
+    PERFORM authz.check_access('test_api', 'user', 'alice', 'no_such_relation', 'doc', 'doc1');
+    PERFORM _test_assert_true('api_82_check_access_unknown_relation_raises', false, 'expected exception');
+EXCEPTION WHEN raise_exception THEN
+    PERFORM _test_assert_true('api_82_check_access_unknown_relation_raises',
+        SQLERRM LIKE 'Unknown relation%', SQLERRM);
+END;
+$$;
+
+-- api_83: check_access raises on unknown object type
+DO $$
+BEGIN
+    PERFORM authz.check_access('test_api', 'user', 'alice', 'reader', 'no_such_type', 'doc1');
+    PERFORM _test_assert_true('api_83_check_access_unknown_object_type_raises', false, 'expected exception');
+EXCEPTION WHEN raise_exception THEN
+    PERFORM _test_assert_true('api_83_check_access_unknown_object_type_raises',
+        SQLERRM LIKE 'Unknown type%', SQLERRM);
+END;
+$$;
+
+-- api_84: list_objects raises on unknown store
+DO $$
+BEGIN
+    PERFORM authz.list_objects('no_such_store', 'user', 'alice', 'reader', 'doc');
+    PERFORM _test_assert_true('api_84_list_objects_unknown_store_raises', false, 'expected exception');
+EXCEPTION WHEN raise_exception THEN
+    PERFORM _test_assert_true('api_84_list_objects_unknown_store_raises',
+        SQLERRM LIKE 'Unknown store%', SQLERRM);
+END;
+$$;
+
+-- api_85: audit_check_access raises on unknown relation
+DO $$
+BEGIN
+    PERFORM authz.audit_check_access('test_api', 'user', 'alice', 'no_such_relation', 'doc', 'doc1', now());
+    PERFORM _test_assert_true('api_85_audit_check_unknown_relation_raises', false, 'expected exception');
+EXCEPTION WHEN raise_exception THEN
+    PERFORM _test_assert_true('api_85_audit_check_unknown_relation_raises',
+        SQLERRM LIKE 'Unknown relation%', SQLERRM);
+END;
+$$;
+
+-- api_86: delete_tuple raises on unknown relation (instead of returning
+-- false as if the tuple were already gone)
+DO $$
+BEGIN
+    PERFORM authz.delete_tuple('test_api', 'user', 'alice', 'no_such_relation', 'doc', 'doc1');
+    PERFORM _test_assert_true('api_86_delete_tuple_unknown_relation_raises', false, 'expected exception');
+EXCEPTION WHEN raise_exception THEN
+    PERFORM _test_assert_true('api_86_delete_tuple_unknown_relation_raises',
+        SQLERRM LIKE 'Unknown relation%', SQLERRM);
+END;
+$$;
+
+-- api_87: unknown object/user IDs are data, not schema — still plain deny
+DO $$
+BEGIN
+    PERFORM _test_assert('api_87_unknown_ids_still_plain_deny',
+        authz.check_access('test_api', 'user', 'no_such_user', 'reader', 'doc', 'no_such_doc')::text, 'false');
+END;
+$$;
+
+SELECT * FROM _test_teardown_api();
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_api();
 DROP FUNCTION IF EXISTS _test_setup_api();

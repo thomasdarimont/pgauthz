@@ -8,27 +8,72 @@
 ------------------------------------------------------------------------
 -- ID resolution helpers — used at schema-load time and by public API
 -- functions to convert text names to smallint IDs.
+--
+-- Strict by default: unknown names raise instead of returning NULL,
+-- so a typo'd store, type, or relation name surfaces as an error
+-- rather than a silent deny — a silent false is indistinguishable
+-- from a correct denial and makes expected-deny tests pass even when
+-- the name is misspelled. User/object IDs are data, not schema, and
+-- are never validated. Code that genuinely needs to probe for
+-- existence should query the lookup tables directly.
+--
+-- VOLATILE, not STABLE, deliberately: the planner pre-evaluates STABLE
+-- functions used as comparison constants (selectivity estimation) with
+-- a snapshot that can predate same-transaction changes — a query like
+-- "WHERE store_id = authz._s('x')" right after creating store 'x' in
+-- the same transaction would then raise 'Unknown store' at plan time.
+-- VOLATILE functions are never pre-evaluated by the planner.
 ------------------------------------------------------------------------
 
 -- Resolve a store name (e.g. 'demo') to its smallint ID.
 CREATE OR REPLACE FUNCTION authz._s(p_name text) RETURNS smallint
-    LANGUAGE sql STABLE AS $$ SELECT id FROM authz.stores WHERE name = p_name $$;
+LANGUAGE plpgsql VOLATILE AS $$
+DECLARE
+    v_id smallint;
+BEGIN
+    SELECT id INTO v_id FROM authz.stores WHERE name = p_name;
+    IF v_id IS NULL THEN
+        RAISE EXCEPTION 'Unknown store: %', p_name;
+    END IF;
+    RETURN v_id;
+END;
+$$;
 
 -- Resolve a type name (e.g. 'document') to its smallint ID within a store.
 CREATE OR REPLACE FUNCTION authz._t(p_store_id smallint, p_name text) RETURNS smallint
-    LANGUAGE sql STABLE AS $$ SELECT id FROM authz.types WHERE store_id = p_store_id AND name = p_name $$;
+LANGUAGE plpgsql VOLATILE AS $$
+DECLARE
+    v_id smallint;
+BEGIN
+    SELECT id INTO v_id FROM authz.types WHERE store_id = p_store_id AND name = p_name;
+    IF v_id IS NULL THEN
+        RAISE EXCEPTION 'Unknown type: %', p_name;
+    END IF;
+    RETURN v_id;
+END;
+$$;
 
 -- Convenience overload: resolve type by store name instead of store ID.
 CREATE OR REPLACE FUNCTION authz._t(p_store text, p_name text) RETURNS smallint
-    LANGUAGE sql STABLE AS $$ SELECT id FROM authz.types WHERE store_id = authz._s(p_store) AND name = p_name $$;
+    LANGUAGE sql VOLATILE AS $$ SELECT authz._t(authz._s(p_store), p_name) $$;
 
 -- Resolve a relation name (e.g. 'can_read') to its smallint ID within a store.
 CREATE OR REPLACE FUNCTION authz._r(p_store_id smallint, p_name text) RETURNS smallint
-    LANGUAGE sql STABLE AS $$ SELECT id FROM authz.relations WHERE store_id = p_store_id AND name = p_name $$;
+LANGUAGE plpgsql VOLATILE AS $$
+DECLARE
+    v_id smallint;
+BEGIN
+    SELECT id INTO v_id FROM authz.relations WHERE store_id = p_store_id AND name = p_name;
+    IF v_id IS NULL THEN
+        RAISE EXCEPTION 'Unknown relation: %', p_name;
+    END IF;
+    RETURN v_id;
+END;
+$$;
 
 -- Convenience overload: resolve relation by store name instead of store ID.
 CREATE OR REPLACE FUNCTION authz._r(p_store text, p_name text) RETURNS smallint
-    LANGUAGE sql STABLE AS $$ SELECT id FROM authz.relations WHERE store_id = authz._s(p_store) AND name = p_name $$;
+    LANGUAGE sql VOLATILE AS $$ SELECT authz._r(authz._s(p_store), p_name) $$;
 
 ------------------------------------------------------------------------
 -- _validate_tuple_jsonb: validates that each element in a JSONB array
