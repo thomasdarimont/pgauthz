@@ -155,10 +155,48 @@ A default partition catches rows that fall outside explicit partitions.
 
 ### Recursion limit
 
-Access checks have a maximum recursion depth of 15 (`_max_depth()`).
-This prevents unbounded graph traversal in case of cyclic or deeply
-nested model rules. In practice, most resolution chains are 3–5 levels
-deep.
+Access checks have a maximum resolution depth of 32 by default
+(`_max_depth()`), overridable at any level via the `authz.max_depth`
+GUC (the most specific setting wins: session > database > instance):
+
+```sql
+-- This session only (reverts when the connection closes):
+SET authz.max_depth = '64';
+
+-- All new sessions on one database:
+ALTER DATABASE authz SET authz.max_depth = '64';
+
+-- Whole PostgreSQL instance (superuser; persists in
+-- postgresql.auto.conf; applies to new sessions after reload):
+ALTER SYSTEM SET authz.max_depth = '64';
+SELECT pg_reload_conf();
+
+-- Revert the instance-wide setting:
+ALTER SYSTEM RESET authz.max_depth;
+SELECT pg_reload_conf();
+```
+
+Alternatively, set it in `postgresql.conf` (`authz.max_depth = '64'`),
+or — for this project's docker compose stack — as a server flag on the
+`authz-db` service in `compose.yml`:
+
+```yaml
+  authz-db:
+    command:
+      - postgres
+      - -c
+      - authz.max_depth=64
+      # ... existing -c flags ...
+```
+
+Every recursion step — computed-relation hop, tuple-to-userset
+traversal, userset expansion — consumes one level, so a typical schema
+layer costs 2–3 levels; the default accommodates roughly 10 layers or
+~28 levels of folder-style nesting. Exceeding the limit raises an
+exception (like OpenFGA's "resolution too complex") rather than
+silently denying. Cycles in the relationship graph are detected and
+pruned independently of this limit, so the limit only bounds genuinely
+deep chains.
 
 ## Scalability
 

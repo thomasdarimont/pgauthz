@@ -95,7 +95,8 @@ CREATE OR REPLACE FUNCTION authz._eval_direct(
     p_relation_name     text,
     p_object_type_name  text,
     p_step_start        timestamptz,
-    p_exclude           authz._tuple_key DEFAULT NULL
+    p_exclude           authz._tuple_key DEFAULT NULL,
+    p_path              text[] DEFAULT '{}'
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -245,7 +246,7 @@ BEGIN
             tpl.user_type, tpl.user_id,
             p_request_context, p_has_ctx_tuples,
             p_depth + 1, p_trace,
-            p_exclude
+            p_exclude, p_path
         );
         IF p_trace THEN
             INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
@@ -281,7 +282,7 @@ BEGIN
             tpl.user_type, tpl.user_id,
             p_request_context, p_has_ctx_tuples,
             p_depth + 1, p_trace,
-            p_exclude
+            p_exclude, p_path
         );
         IF p_trace THEN
             INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
@@ -310,7 +311,7 @@ BEGIN
                 tpl.user_type, tpl.user_id,
                 p_request_context, p_has_ctx_tuples,
                 p_depth + 1, p_trace,
-                p_exclude
+                p_exclude, p_path
             );
             IF p_trace THEN
                 INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
@@ -371,7 +372,8 @@ CREATE OR REPLACE FUNCTION authz._eval_ttu(
     p_relation_name     text,
     p_object_type_name  text,
     p_step_start        timestamptz,
-    p_exclude           authz._tuple_key DEFAULT NULL
+    p_exclude           authz._tuple_key DEFAULT NULL,
+    p_path              text[] DEFAULT '{}'
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -399,7 +401,7 @@ BEGIN
             tpl.linked_type, tpl.linked_id,
             p_request_context, p_has_ctx_tuples,
             p_depth + 1, p_trace,
-            p_exclude
+            p_exclude, p_path
         );
         IF p_trace THEN
             INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
@@ -433,7 +435,7 @@ BEGIN
                 tpl.linked_type, tpl.linked_id,
                 p_request_context, p_has_ctx_tuples,
                 p_depth + 1, p_trace,
-                p_exclude
+                p_exclude, p_path
             );
             IF p_trace THEN
                 INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
@@ -498,7 +500,8 @@ CREATE OR REPLACE FUNCTION authz._eval_rule(
     p_has_ctx_tuples    boolean DEFAULT false,
     p_depth             int DEFAULT 0,
     p_trace             boolean DEFAULT false,
-    p_exclude           authz._tuple_key DEFAULT NULL
+    p_exclude           authz._tuple_key DEFAULT NULL,
+    p_path              text[] DEFAULT '{}'
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -524,7 +527,7 @@ BEGIN
             p_store_id, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
             p_request_context, p_has_ctx_tuples, p_depth, p_trace,
             v_user_type_name, v_relation_name, v_object_type_name, v_step_start,
-            p_exclude
+            p_exclude, p_path
         );
 
     WHEN authz._rel_computed() THEN
@@ -535,7 +538,7 @@ BEGIN
             p_object_type, p_object_id,
             p_request_context, p_has_ctx_tuples,
             p_depth + 1, p_trace,
-            p_exclude
+            p_exclude, p_path
         );
         IF p_trace THEN
             INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
@@ -554,7 +557,7 @@ BEGIN
             p_tupleset_relation, p_tupleset_computed,
             p_request_context, p_has_ctx_tuples, p_depth, p_trace,
             v_user_type_name, v_relation_name, v_object_type_name, v_step_start,
-            p_exclude
+            p_exclude, p_path
         );
 
     END CASE;
@@ -590,7 +593,8 @@ CREATE OR REPLACE FUNCTION authz._check_access(
     p_has_ctx_tuples  boolean DEFAULT false,
     p_depth           int DEFAULT 0,
     p_trace           boolean DEFAULT NULL,
-    p_exclude         authz._tuple_key DEFAULT NULL
+    p_exclude         authz._tuple_key DEFAULT NULL,
+    p_path            text[] DEFAULT '{}'
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -607,9 +611,14 @@ DECLARE
     v_user_type_name   text;
     v_relation_name    text;
     v_object_type_name text;
+
+    -- Cycle detection: nodes on the current evaluation path
+    v_key  text;
+    v_path text[];
 BEGIN
     IF p_depth > authz._max_depth() THEN
-        RETURN false;
+        RAISE EXCEPTION 'check_access: maximum resolution depth (%) exceeded — relationship chain too deep or relation graph too complex',
+            authz._max_depth();
     END IF;
 
     -- At the root call, decide whether to trace based on session variable.
@@ -623,6 +632,21 @@ BEGIN
         SELECT name INTO v_relation_name    FROM authz.relations WHERE id = p_relation;
         SELECT name INTO v_object_type_name FROM authz.types     WHERE id = p_object_type;
     END IF;
+
+    -- Cycle detection: a node already on the current evaluation path
+    -- cannot contribute a well-founded grant — prune this edge. This
+    -- also guarantees termination on cyclic relationship graphs.
+    v_key := p_relation::text || ':' || p_object_type::text || ':' || p_object_id;
+    IF v_key = ANY(p_path) THEN
+        IF v_trace THEN
+            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
+            VALUES (p_depth, 'cycle', v_user_type_name || ':' || p_user_id,
+                    v_relation_name, v_object_type_name || ':' || p_object_id,
+                    false, 'cycle detected — path pruned', 0);
+        END IF;
+        RETURN false;
+    END IF;
+    v_path := p_path || v_key;
 
     -- Single query: fetch all rules ordered by group, with base rules before negated.
     FOR rule IN
@@ -693,7 +717,7 @@ BEGIN
                 rule.rule_type, rule.computed_relation,
                 rule.tupleset_relation, rule.tupleset_computed,
                 p_request_context, p_has_ctx_tuples,
-                p_depth, v_trace, p_exclude
+                p_depth, v_trace, p_exclude, v_path
             ) THEN
                 RETURN true;
             END IF;
@@ -705,7 +729,7 @@ BEGIN
                 rule.rule_type, rule.computed_relation,
                 rule.tupleset_relation, rule.tupleset_computed,
                 p_request_context, p_has_ctx_tuples,
-                p_depth, v_trace, p_exclude
+                p_depth, v_trace, p_exclude, v_path
             ) THEN
                 v_group_pass := false;
             END IF;
@@ -719,7 +743,7 @@ BEGIN
                     rule.rule_type, rule.computed_relation,
                     rule.tupleset_relation, rule.tupleset_computed,
                     p_request_context, p_has_ctx_tuples,
-                    p_depth, v_trace, p_exclude
+                    p_depth, v_trace, p_exclude, v_path
                 ) THEN
                     v_group_pass := false;
                 END IF;
@@ -731,7 +755,7 @@ BEGIN
                     rule.rule_type, rule.computed_relation,
                     rule.tupleset_relation, rule.tupleset_computed,
                     p_request_context, p_has_ctx_tuples,
-                    p_depth, v_trace, p_exclude
+                    p_depth, v_trace, p_exclude, v_path
                 ) THEN
                     v_group_pass := false;
                 END IF;

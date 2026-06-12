@@ -17,7 +17,8 @@ CREATE OR REPLACE FUNCTION authz._eval_direct_snapshot(
     p_object_type     smallint,
     p_object_id       text,
     p_request_context jsonb,
-    p_depth           int
+    p_depth           int,
+    p_path            text[] DEFAULT '{}'
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -86,7 +87,7 @@ BEGIN
             tpl.user_relation,
             tpl.user_type, tpl.user_id,
             p_request_context,
-            p_depth + 1
+            p_depth + 1, p_path
         ) THEN
             RETURN true;
         END IF;
@@ -112,7 +113,7 @@ BEGIN
             tpl.user_relation,
             tpl.user_type, tpl.user_id,
             p_request_context,
-            p_depth + 1
+            p_depth + 1, p_path
         ) THEN
             RETURN true;
         END IF;
@@ -137,7 +138,8 @@ CREATE OR REPLACE FUNCTION authz._eval_ttu_snapshot(
     p_tupleset_relation smallint,
     p_tupleset_computed smallint,
     p_request_context   jsonb,
-    p_depth             int
+    p_depth             int,
+    p_path              text[] DEFAULT '{}'
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -164,7 +166,7 @@ BEGIN
             p_tupleset_computed,
             tpl.linked_type, tpl.linked_id,
             p_request_context,
-            p_depth + 1
+            p_depth + 1, p_path
         ) THEN
             RETURN true;
         END IF;
@@ -191,7 +193,8 @@ CREATE OR REPLACE FUNCTION authz._eval_rule_snapshot(
     p_tupleset_relation smallint,
     p_tupleset_computed smallint,
     p_request_context   jsonb DEFAULT NULL,
-    p_depth             int DEFAULT 0
+    p_depth             int DEFAULT 0,
+    p_path              text[] DEFAULT '{}'
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 BEGIN
@@ -200,7 +203,7 @@ BEGIN
     WHEN authz._rel_direct() THEN
         RETURN authz._eval_direct_snapshot(
             p_store_id, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
-            p_request_context, p_depth
+            p_request_context, p_depth, p_path
         );
 
     WHEN authz._rel_computed() THEN
@@ -210,14 +213,14 @@ BEGIN
             p_computed_relation,
             p_object_type, p_object_id,
             p_request_context,
-            p_depth + 1
+            p_depth + 1, p_path
         );
 
     WHEN authz._rel_ttu() THEN
         RETURN authz._eval_ttu_snapshot(
             p_store_id, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
             p_tupleset_relation, p_tupleset_computed,
-            p_request_context, p_depth
+            p_request_context, p_depth, p_path
         );
 
     END CASE;
@@ -240,7 +243,8 @@ CREATE OR REPLACE FUNCTION authz._check_access_snapshot(
     p_object_type     smallint,
     p_object_id       text,
     p_request_context jsonb DEFAULT NULL,
-    p_depth           int DEFAULT 0
+    p_depth           int DEFAULT 0,
+    p_path            text[] DEFAULT '{}'
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -248,10 +252,21 @@ DECLARE
     v_group_pass   boolean;
     v_cur_group    smallint := -1;
     v_cur_group_op smallint;
+    v_key          text;
+    v_path         text[];
 BEGIN
     IF p_depth > authz._max_depth() THEN
+        RAISE EXCEPTION 'audit_check_access: maximum resolution depth (%) exceeded — relationship chain too deep or relation graph too complex',
+            authz._max_depth();
+    END IF;
+
+    -- Cycle detection (mirrors _check_access): prune edges that revisit
+    -- a node on the current evaluation path.
+    v_key := p_relation::text || ':' || p_object_type::text || ':' || p_object_id;
+    IF v_key = ANY(p_path) THEN
         RETURN false;
     END IF;
+    v_path := p_path || v_key;
 
     -- Single query: all rules ordered by group_id, negated (false first)
     FOR rule IN
@@ -289,7 +304,7 @@ BEGIN
                 p_relation, p_object_type, p_object_id,
                 rule.rule_type, rule.computed_relation,
                 rule.tupleset_relation, rule.tupleset_computed,
-                p_request_context, p_depth
+                p_request_context, p_depth, v_path
             ) THEN
                 RETURN true;
             END IF;
@@ -300,7 +315,7 @@ BEGIN
                 p_relation, p_object_type, p_object_id,
                 rule.rule_type, rule.computed_relation,
                 rule.tupleset_relation, rule.tupleset_computed,
-                p_request_context, p_depth
+                p_request_context, p_depth, v_path
             ) THEN
                 v_group_pass := false;
             END IF;
@@ -312,7 +327,7 @@ BEGIN
                     p_relation, p_object_type, p_object_id,
                     rule.rule_type, rule.computed_relation,
                     rule.tupleset_relation, rule.tupleset_computed,
-                    p_request_context, p_depth
+                    p_request_context, p_depth, v_path
                 ) THEN
                     v_group_pass := false;
                 END IF;
@@ -322,7 +337,7 @@ BEGIN
                     p_relation, p_object_type, p_object_id,
                     rule.rule_type, rule.computed_relation,
                     rule.tupleset_relation, rule.tupleset_computed,
-                    p_request_context, p_depth
+                    p_request_context, p_depth, v_path
                 ) THEN
                     v_group_pass := false;
                 END IF;

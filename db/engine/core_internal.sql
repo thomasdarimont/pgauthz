@@ -199,9 +199,18 @@ CREATE OR REPLACE FUNCTION authz._rel_computed() RETURNS smallint
 CREATE OR REPLACE FUNCTION authz._rel_ttu() RETURNS smallint
     LANGUAGE sql IMMUTABLE AS $$ SELECT 3::smallint $$;
 
--- Maximum recursion depth for access checks.
+-- Maximum recursion depth for access checks. Every recursion step
+-- (computed hop, TTU traversal, userset expansion) consumes one level,
+-- so a typical schema layer costs 2-3. The default of 32 accommodates
+-- ~10 schema layers or ~28 levels of TTU nesting (OpenFGA defaults
+-- to 25). Cycles are pruned independently of this limit.
+--
+-- Override per session or per database via the authz.max_depth GUC:
+--   SET authz.max_depth = '64';
+--   ALTER DATABASE authz SET authz.max_depth = '64';
 CREATE OR REPLACE FUNCTION authz._max_depth() RETURNS int
-    LANGUAGE sql IMMUTABLE AS $$ SELECT 15 $$;
+    LANGUAGE sql STABLE AS
+    $$ SELECT COALESCE(NULLIF(current_setting('authz.max_depth', true), '')::int, 32) $$;
 
 ------------------------------------------------------------------------
 -- Group operator constants — used when inserting model rules with

@@ -390,7 +390,8 @@ The engine is **fail-closed** throughout:
 | Unknown store/type/relation name | `RAISE EXCEPTION` — immediate error (user/object IDs are data and are not validated) |
 | Namespace access denied | `RAISE EXCEPTION` — "Permission denied" |
 | Condition evaluation error | Caught by `_exec_condition`, treated as `false` (deny) |
-| Recursion depth exceeded (>15) | Return `false` (deny) |
+| Recursion depth exceeded (default 32, `authz.max_depth` GUC) | `RAISE EXCEPTION` — the relationship chain is too deep to resolve (matches OpenFGA's "resolution too complex") |
+| Cyclic relationships | Edge revisiting a node on the current evaluation path is pruned — a cycle cannot grant access, and evaluation always terminates |
 | No matching model rules | Return `false` (deny) |
 | Nginx: non-RPC route | `404 {"message":"Not Found"}` |
 | PostgREST: no JWT for write function | HTTP 401 |
@@ -710,7 +711,7 @@ Quality
 | Risk | Probability | Impact | Mitigation |
 |---|---|---|---|
 | No consistency tokens (zookies) | Medium | Read replicas may serve stale data after a write | Replication lag is typically sub-second. Critical paths can read from primary. |
-| Recursion depth limit (15) | Low | Deeply nested models could hit the ceiling | Most real models are 3-5 levels deep. Limit is configurable in `_max_depth()`. |
+| Recursion depth limit (default 32) | Low | Deeply nested models could hit the ceiling | Each schema layer costs 2-3 levels; 32 covers ~10 layers. Configurable via the `authz.max_depth` GUC (session or database level). Exceeding it raises; cycles are pruned independently. |
 | No Watch API | Medium | Consumers must poll audit log for changes | `pg_notify('authz_permissions_changed')` is available for event-driven consumers. |
 | PostgREST schema leakage | Low | Wrong parameter names reveal function signatures | Nginx gateway intercepts errors. PostgREST not exposed to host network. |
 
