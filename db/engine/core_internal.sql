@@ -368,9 +368,11 @@ BEGIN
         v_table_name, v_start, v_end
     );
 
-    -- Move rows from the default partition into the new partition
+    -- Move rows from the default partition into the new partition.
+    -- OVERRIDING SYSTEM VALUE: the rows keep their original seq values
+    -- (seq is the audit event order and must survive migration).
     EXECUTE format(
-        'INSERT INTO %s SELECT * FROM authz.tuples_audit_default WHERE performed_at >= %L AND performed_at < %L',
+        'INSERT INTO %s OVERRIDING SYSTEM VALUE SELECT * FROM authz.tuples_audit_default WHERE performed_at >= %L AND performed_at < %L',
         v_table_name, v_start, v_end
     );
     EXECUTE format(

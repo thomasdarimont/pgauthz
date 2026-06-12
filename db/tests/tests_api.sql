@@ -1332,6 +1332,47 @@ $$;
 
 SELECT * FROM _test_teardown_api();
 
+-- ================================================================
+-- Audit replay ordering: when two events for the same tuple carry an
+-- identical performed_at timestamp (clock_timestamp() has finite
+-- resolution), the later-inserted event must win during time-travel
+-- reconstruction — not an arbitrary pick.
+-- ================================================================
+SELECT _test_setup_api();
+DO $$
+DECLARE
+    s  smallint := authz._s('test_api');
+    ts timestamptz := now() - interval '1 hour';
+BEGIN
+    -- doc_tie1: granted then revoked in the same microsecond -> no access
+    INSERT INTO authz.tuples_audit (action, performed_at, performed_by,
+        store_id, user_type, user_id, relation, object_type, object_id)
+    VALUES
+        ('INSERT', ts, '_tie_probe', s, authz._t(s, 'user'), 'alice',
+         authz._r(s, 'reader'), authz._t(s, 'doc'), 'doc_tie1'),
+        ('DELETE', ts, '_tie_probe', s, authz._t(s, 'user'), 'alice',
+         authz._r(s, 'reader'), authz._t(s, 'doc'), 'doc_tie1');
+
+    PERFORM _test_assert('api_88_audit_tie_insert_then_delete_denies',
+        authz.audit_check_access('test_api', 'user', 'alice', 'reader', 'doc', 'doc_tie1',
+            ts + interval '1 minute')::text, 'false');
+
+    -- doc_tie2: revoked then re-granted in the same microsecond -> access
+    INSERT INTO authz.tuples_audit (action, performed_at, performed_by,
+        store_id, user_type, user_id, relation, object_type, object_id)
+    VALUES
+        ('DELETE', ts, '_tie_probe', s, authz._t(s, 'user'), 'alice',
+         authz._r(s, 'reader'), authz._t(s, 'doc'), 'doc_tie2'),
+        ('INSERT', ts, '_tie_probe', s, authz._t(s, 'user'), 'alice',
+         authz._r(s, 'reader'), authz._t(s, 'doc'), 'doc_tie2');
+
+    PERFORM _test_assert('api_89_audit_tie_delete_then_insert_allows',
+        authz.audit_check_access('test_api', 'user', 'alice', 'reader', 'doc', 'doc_tie2',
+            ts + interval '1 minute')::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_api();
 DROP FUNCTION IF EXISTS _test_setup_api();

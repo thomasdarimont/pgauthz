@@ -103,7 +103,7 @@ BEGIN
          ORDER BY
             a.store_id, a.user_type, a.user_id, COALESCE(a.user_relation, 0),
             a.relation, a.object_type, a.object_id,
-            a.performed_at DESC
+            a.performed_at DESC, a.seq DESC
       ) sub
      WHERE sub.action = 'INSERT';
 
@@ -208,7 +208,7 @@ BEGIN
            AND a.user_id   = p_user_id
            AND (p_from IS NULL OR a.performed_at >= p_from)
            AND (p_to   IS NULL OR a.performed_at <= p_to)
-         ORDER BY a.performed_at;
+         ORDER BY a.performed_at, a.seq;
 END;
 $$;
 
@@ -264,6 +264,6 @@ BEGIN
            AND a.object_id   = p_object_id
            AND (p_from IS NULL OR a.performed_at >= p_from)
            AND (p_to   IS NULL OR a.performed_at <= p_to)
-         ORDER BY a.performed_at;
+         ORDER BY a.performed_at, a.seq;
 END;
 $$;

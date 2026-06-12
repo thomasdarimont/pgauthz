@@ -168,6 +168,11 @@ CREATE INDEX idx_tuples_user
 -- and easy retention management (DROP old partitions instead of DELETE).
 CREATE TABLE authz.tuples_audit (
     id                uuid NOT NULL DEFAULT gen_random_uuid(),
+    -- Monotonic event order. performed_at (clock_timestamp) has finite
+    -- resolution, so two events for the same tuple can tie on it; seq
+    -- breaks the tie so time-travel replay always applies the
+    -- later-recorded event last.
+    seq               bigint NOT NULL GENERATED ALWAYS AS IDENTITY,
     action            text NOT NULL,  -- 'INSERT' or 'DELETE'
     performed_at      timestamptz NOT NULL DEFAULT now(),
     performed_by      text NOT NULL DEFAULT current_user,
