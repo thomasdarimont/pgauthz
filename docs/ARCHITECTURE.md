@@ -714,6 +714,7 @@ Quality
 | Recursion depth limit (default 32) | Low | Deeply nested models could hit the ceiling | Each schema layer costs 2-3 levels; 32 covers ~10 layers. Configurable via the `authz.max_depth` GUC (session or database level). Exceeding it raises; cycles are pruned independently. |
 | No Watch API | Medium | Consumers must poll audit log for changes | `pg_notify('authz_permissions_changed')` is available for event-driven consumers. |
 | Model changes not versioned | Medium | Time-travel replays past tuples against the **current** model rules and condition expressions; editing the model rewrites historical answers | Keep model migrations in version control; conditions needing non-time request data can be supplied via `audit_check_access(..., p_request_context)`. |
+| Search API is O(candidates) | Medium | `list_objects` runs one recursive check per object of the requested type; `list_subjects` per direct user of the type in the **whole store** (no reverse index from object to candidate users) | Candidates are deduplicated before checking and `LIMIT` terminates early. Practical up to roughly 10⁴ candidates per call; beyond that, use materialized permissions (`db/replication/`) or application-side indexes. Zanzibar-style reverse expansion is future work. |
 | PostgREST schema leakage | Low | Wrong parameter names reveal function signatures | Nginx gateway intercepts errors. PostgREST not exposed to host network. |
 
 ### Technical Debt

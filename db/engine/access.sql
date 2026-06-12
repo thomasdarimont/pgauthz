@@ -474,13 +474,19 @@ DECLARE
     v_object_type smallint := authz._t(v_store_id, p_object_type);
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
+    -- Deduplicate candidates BEFORE running the recursive check: an
+    -- object with N tuples must be checked once, not N times. The inner
+    -- ORDER BY lets the executor stop checking once OFFSET+LIMIT
+    -- matches are found.
     RETURN QUERY
-        SELECT DISTINCT t.object_id
-          FROM authz.tuples t
-         WHERE t.store_id    = v_store_id
-           AND t.object_type = v_object_type
-           AND authz._check_access(v_store_id, v_user_type, p_user_id, v_relation, v_object_type, t.object_id, context)
-         ORDER BY t.object_id
+        SELECT c.object_id
+          FROM (SELECT DISTINCT t.object_id
+                  FROM authz.tuples t
+                 WHERE t.store_id    = v_store_id
+                   AND t.object_type = v_object_type
+                 ORDER BY t.object_id) c
+         WHERE authz._check_access(v_store_id, v_user_type, p_user_id, v_relation, v_object_type, c.object_id, context)
+         ORDER BY c.object_id
          OFFSET p_offset
          LIMIT p_limit;
 END;
@@ -508,14 +514,21 @@ DECLARE
     v_object_type  smallint := authz._t(v_store_id, p_object_type);
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
+    -- Deduplicate candidates BEFORE running the recursive check: a user
+    -- appearing in N tuples must be checked once, not N times. Note the
+    -- candidate set is every direct user of the type in the WHOLE store
+    -- (there is no reverse index from object to potential users) — see
+    -- the scaling note in docs/ARCHITECTURE.md.
     RETURN QUERY
-        SELECT DISTINCT t.user_id
-          FROM authz.tuples t
-         WHERE t.store_id = v_store_id
-           AND t.user_type = v_subject_type
-           AND t.user_relation IS NULL
-           AND authz._check_access(v_store_id, v_subject_type, t.user_id, v_relation, v_object_type, p_object_id, context)
-         ORDER BY t.user_id
+        SELECT c.user_id
+          FROM (SELECT DISTINCT t.user_id
+                  FROM authz.tuples t
+                 WHERE t.store_id = v_store_id
+                   AND t.user_type = v_subject_type
+                   AND t.user_relation IS NULL
+                 ORDER BY t.user_id) c
+         WHERE authz._check_access(v_store_id, v_subject_type, c.user_id, v_relation, v_object_type, p_object_id, context)
+         ORDER BY c.user_id
          OFFSET p_offset
          LIMIT p_limit;
 END;
