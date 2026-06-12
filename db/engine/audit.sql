@@ -44,20 +44,28 @@ $$;
 -- Reconstructs the tuple state at p_at by replaying the audit log
 -- into a snapshot temp table, then runs a check against that snapshot.
 --
--- For conditional tuples, p_at is also passed as request context
--- (as "current_time") so time-based conditions evaluate correctly.
+-- For conditional tuples, p_at is passed as request context (as
+-- "current_time") so time-based conditions evaluate correctly.
+-- Conditions that need other request keys (client IP, quotas, ...)
+-- cannot be reconstructed from the audit log — supply them via
+-- p_request_context; "current_time" is always overridden with p_at.
+--
+-- Note: the snapshot reconstructs the TUPLE state at p_at. Model rules
+-- and condition expressions are read as they are NOW — model changes
+-- are not versioned (see docs/ARCHITECTURE.md).
 --
 -- Note: uses _check_access_snapshot (dynamic SQL against temp table)
 -- to avoid reading current tuples.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.audit_check_access(
-    p_store       text,
-    p_user_type   text,
-    p_user_id     text,
-    p_relation    text,
-    p_object_type text,
-    p_object_id   text,
-    p_at          timestamptz
+    p_store           text,
+    p_user_type       text,
+    p_user_id         text,
+    p_relation        text,
+    p_object_type     text,
+    p_object_id       text,
+    p_at              timestamptz,
+    p_request_context jsonb DEFAULT NULL
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -107,10 +115,11 @@ BEGIN
       ) sub
      WHERE sub.action = 'INSERT';
 
-    -- Run access check against the snapshot
+    -- Run access check against the snapshot. Caller-supplied request
+    -- context is merged in; current_time always reflects p_at.
     v_result := authz._check_access_snapshot(
         v_store_id, v_user_type, p_user_id, v_relation, v_object_type, p_object_id,
-        jsonb_build_object('current_time', p_at)
+        COALESCE(p_request_context, '{}'::jsonb) || jsonb_build_object('current_time', p_at)
     );
 
     -- _snapshot_tuples has ON COMMIT DROP — no explicit cleanup needed.
@@ -124,12 +133,13 @@ $$;
 -- Point-in-time variant of list_actions using the audit log.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.audit_list_actions(
-    p_store       text,
-    p_user_type   text,
-    p_user_id     text,
-    p_object_type text,
-    p_object_id   text,
-    p_at          timestamptz
+    p_store           text,
+    p_user_type       text,
+    p_user_id         text,
+    p_object_type     text,
+    p_object_id       text,
+    p_at              timestamptz,
+    p_request_context jsonb DEFAULT NULL
 ) RETURNS TABLE (action text)
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -150,7 +160,7 @@ BEGIN
                  AND mr.object_type = v_object_type
           ) dr
           JOIN authz.relations r ON r.id = dr.relation
-         WHERE authz.audit_check_access(p_store, p_user_type, p_user_id, r.name, p_object_type, p_object_id, p_at);
+         WHERE authz.audit_check_access(p_store, p_user_type, p_user_id, r.name, p_object_type, p_object_id, p_at, p_request_context);
 END;
 $$;
 

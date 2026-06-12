@@ -89,8 +89,8 @@ GRANT USAGE ON SCHEMA authz TO authz_auditor, authz_reader, authz_writer, authz_
 ------------------------------------------------------------------------
 GRANT EXECUTE ON FUNCTION authz.audit_list_user(text, text, text, timestamptz, timestamptz) TO authz_auditor;
 GRANT EXECUTE ON FUNCTION authz.audit_list_object(text, text, text, timestamptz, timestamptz) TO authz_auditor;
-GRANT EXECUTE ON FUNCTION authz.audit_check_access(text, text, text, text, text, text, timestamptz) TO authz_auditor;
-GRANT EXECUTE ON FUNCTION authz.audit_list_actions(text, text, text, text, text, timestamptz) TO authz_auditor;
+GRANT EXECUTE ON FUNCTION authz.audit_check_access(text, text, text, text, text, text, timestamptz, jsonb) TO authz_auditor;
+GRANT EXECUTE ON FUNCTION authz.audit_list_actions(text, text, text, text, text, timestamptz, jsonb) TO authz_auditor;
 
 ------------------------------------------------------------------------
 -- authz_reader: access checks and search queries
@@ -156,8 +156,8 @@ ALTER FUNCTION authz.list_objects(text, text, text, text, text, jsonb, int, int)
 ALTER FUNCTION authz.list_subjects(text, text, text, text, text, jsonb, int, int) SECURITY DEFINER;
 ALTER FUNCTION authz.list_actions(text, text, text, text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.validate_condition(text, text, jsonb, jsonb) SECURITY DEFINER;
-ALTER FUNCTION authz.audit_check_access(text, text, text, text, text, text, timestamptz) SECURITY DEFINER;
-ALTER FUNCTION authz.audit_list_actions(text, text, text, text, text, timestamptz) SECURITY DEFINER;
+ALTER FUNCTION authz.audit_check_access(text, text, text, text, text, text, timestamptz, jsonb) SECURITY DEFINER;
+ALTER FUNCTION authz.audit_list_actions(text, text, text, text, text, timestamptz, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.audit_list_user(text, text, text, timestamptz, timestamptz) SECURITY DEFINER;
 ALTER FUNCTION authz.audit_list_object(text, text, text, timestamptz, timestamptz) SECURITY DEFINER;
 ALTER FUNCTION authz.explain_access(text, text, text, text, text, text, jsonb, boolean) SECURITY DEFINER;

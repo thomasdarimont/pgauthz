@@ -45,6 +45,13 @@ BEGIN
         ($1->>'current_time')::timestamptz < ($2->>'grant_time')::timestamptz + ($2->>'grant_duration')::interval
      $cond$,
      '{"request": ["current_time"], "stored": ["grant_time", "grant_duration"]}'::jsonb
+    ),
+    (s,
+     'from_allowed_network',
+     $cond$
+        ($1->>'client_ip')::inet <<= ($2->>'allowed_cidr')::cidr
+     $cond$,
+     '{"request": ["client_ip"], "stored": ["allowed_cidr"]}'::jsonb
     );
 
     PERFORM authz.write_tuple('test_contextual',
@@ -326,6 +333,35 @@ BEGIN
             'user', 'carol', 'viewer', 'doc', 'doc3',
             clock_timestamp() + interval '3 hours'
         )::text, 'false');
+END;
+$$;
+SELECT * FROM _test_teardown_contextual();
+
+-- ctx_17/18: audit_check_access accepts request context for conditions
+-- that need more than the reconstructed current_time (e.g. client IP).
+DO $$
+BEGIN
+    PERFORM _test_setup_contextual();
+    PERFORM authz.write_tuple('test_contextual',
+        'user', 'dana', 'viewer', 'doc', 'doc4',
+        p_condition => 'from_allowed_network',
+        p_condition_context => '{"allowed_cidr": "10.0.0.0/8"}'::jsonb
+    );
+
+    -- Without request context the condition cannot pass: fail-safe deny
+    PERFORM _test_assert('ctx_17_audit_condition_without_request_context_denied',
+        authz.audit_check_access('test_contextual',
+            'user', 'dana', 'viewer', 'doc', 'doc4',
+            clock_timestamp()
+        )::text, 'false');
+
+    -- With request context the past grant is reconstructible
+    PERFORM _test_assert('ctx_18_audit_condition_with_request_context_allowed',
+        authz.audit_check_access('test_contextual',
+            'user', 'dana', 'viewer', 'doc', 'doc4',
+            clock_timestamp(),
+            p_request_context => '{"client_ip": "10.1.2.3"}'::jsonb
+        )::text, 'true');
 END;
 $$;
 SELECT * FROM _test_teardown_contextual();

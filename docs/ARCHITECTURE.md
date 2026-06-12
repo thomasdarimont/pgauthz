@@ -25,7 +25,7 @@ using three rule types: direct, computed, and tuple-to-userset (TTU).
 |---|---|---|
 | 1 | **Security** | A compromised application role cannot bypass SECURITY DEFINER to read tuples directly. A malicious condition expression cannot access any table or function. |
 | 2 | **Performance** | `check_access` resolves in sub-millisecond for typical 3-5 level hierarchies with integer ID encoding, partition pruning, and covering indexes. |
-| 3 | **Auditability** | Given a compliance inquiry, reconstruct who had what permissions at any past timestamp via time-travel queries against the immutable audit log. |
+| 3 | **Auditability** | Given a compliance inquiry, reconstruct who had what permissions at any past timestamp via time-travel queries against the immutable audit log. (Scope: the log versions tuples; checks replay them against the current model rules.) |
 | 4 | **Operability** | New developer runs the full system with tests in under 5 minutes via `bootstrap.sh`. No external runtime dependencies beyond PostgreSQL. |
 | 5 | **Compatibility** | Existing OpenFGA models and tuples can be imported directly. AuthZEN 1.0 API (evaluation, batch, search) via Go services. |
 
@@ -713,6 +713,7 @@ Quality
 | No consistency tokens (zookies) | Medium | Read replicas may serve stale data after a write | Replication lag is typically sub-second. Critical paths can read from primary. |
 | Recursion depth limit (default 32) | Low | Deeply nested models could hit the ceiling | Each schema layer costs 2-3 levels; 32 covers ~10 layers. Configurable via the `authz.max_depth` GUC (session or database level). Exceeding it raises; cycles are pruned independently. |
 | No Watch API | Medium | Consumers must poll audit log for changes | `pg_notify('authz_permissions_changed')` is available for event-driven consumers. |
+| Model changes not versioned | Medium | Time-travel replays past tuples against the **current** model rules and condition expressions; editing the model rewrites historical answers | Keep model migrations in version control; conditions needing non-time request data can be supplied via `audit_check_access(..., p_request_context)`. |
 | PostgREST schema leakage | Low | Wrong parameter names reveal function signatures | Nginx gateway intercepts errors. PostgREST not exposed to host network. |
 
 ### Technical Debt

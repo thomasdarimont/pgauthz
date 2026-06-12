@@ -241,7 +241,22 @@ SELECT authz.audit_check_access('demo',
     'internal_user', 'alice', 'can_read', 'document', 'doc_payroll_001',
     '2026-03-11T14:00:00Z'::timestamptz);
 -- => true
+
+-- Conditions that need request data beyond the reconstructed timestamp
+-- (client IP, quotas, ...) take it via p_request_context; current_time
+-- always reflects the requested point in time.
+SELECT authz.audit_check_access('demo',
+    'internal_user', 'alice', 'viewer', 'document', 'doc_vpn_001',
+    '2026-03-11T14:00:00Z'::timestamptz,
+    p_request_context => '{"client_ip": "10.1.2.3"}'::jsonb);
 ```
+
+> **Scope of reconstruction:** the audit log versions **tuples** only.
+> `audit_check_access` replays the tuple state at time T but evaluates it
+> against the **current** model rules and condition expressions — model
+> changes are not versioned, so editing the model rewrites the answers
+> time-travel gives for the past. Keep model migrations in version
+> control if historical fidelity matters.
 
 ### audit_list_user / audit_list_object — Audit trail queries
 
@@ -550,9 +565,12 @@ SELECT action, performed_at, performed_by, relation, object_id
 
 ### Time-travel: "Could user X do Y at time T?"
 
-`audit_check_access` reconstructs the complete tuple state at any past timestamp
-by replaying INSERT/DELETE events from the audit log, then runs a full
-recursive access check against that snapshot:
+`audit_check_access` reconstructs the complete **tuple** state at any past
+timestamp by replaying INSERT/DELETE events from the audit log, then runs a
+full recursive access check against that snapshot. The model rules and
+condition expressions are evaluated **as they are now** — model changes are
+not versioned (see the note under
+[audit_check_access](#audit_check_access--point-in-time-permission-check)).
 
 ```sql
 -- Grant access, record the timestamp, then revoke it
@@ -917,7 +935,7 @@ groups are rejected at write time. See
 | Capability | Notes |
 |---|---|
 | **Full audit trail** | Immutable, monthly-partitioned log with `performed_by` tracking |
-| **Time-travel queries** | `audit_check_access` reconstructs permissions at any past timestamp |
+| **Time-travel queries** | `audit_check_access` reconstructs the tuple state at any past timestamp (evaluated against the current model — model changes are not versioned) |
 | **`list_actions`** | "What can user X do on object Z?" — OpenFGA has no equivalent |
 | **`explain_access`** | Full resolution trace showing every rule evaluated, with timing |
 | **Namespace write control** | Restrict which applications can write tuples for which object types |
