@@ -129,8 +129,6 @@ GRANT EXECUTE ON FUNCTION authz.grant_namespace_access(text, text, text, boolean
 GRANT EXECUTE ON FUNCTION authz.revoke_namespace_access(text, text, text, boolean, boolean) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.find_redundant_tuples(text, text, text, jsonb) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.cleanup_redundant_tuples(text, text, text, jsonb, boolean) TO authz_admin;
-GRANT EXECUTE ON PROCEDURE authz.ensure_tuple_partition_online(smallint, text, int) TO authz_admin;
-GRANT EXECUTE ON PROCEDURE authz.ensure_audit_partition_online(int, int) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.create_store(text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.delete_store(text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_register_type(text, text, int, text, text) TO authz_admin;

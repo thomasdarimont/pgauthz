@@ -285,18 +285,28 @@ starting point, powers of 2 allow future splitting.
 All partition management is idempotent — calling `_ensure_tuple_partition`
 for a type that already has a partition is a no-op.
 
-For **online partition management** on a live system under load, use the
-non-blocking procedures which use `DETACH PARTITION ... CONCURRENTLY`
-(PG14+) to avoid ACCESS EXCLUSIVE locks:
+**Locking behavior:** creating a partition detaches and re-attaches the
+default partition, which briefly takes an `ACCESS EXCLUSIVE` lock on the
+partitioned table — concurrent reads and writes block for the duration.
+The lock is short when the default partition holds few rows for the new
+partition's key (rows must be migrated), but it is not free. A truly
+non-blocking variant is not possible here: PostgreSQL forbids
+`DETACH PARTITION ... CONCURRENTLY` whenever the partitioned table has a
+default partition (and inside functions/procedures altogether), and the
+default partition is what guarantees writes never fail for unpartitioned
+keys.
+
+Therefore, create partitions **ahead of need**, not lazily under load:
+
+- **Tuple partitions:** call `_ensure_tuple_partition` when you register a
+  new object type, while the type has no tuples yet.
+- **Audit partitions:** create the current and next month up front, e.g.
+  from a scheduled job, so rows never accumulate in the default partition:
 
 ```sql
--- Non-blocking: safe to run during peak traffic
-CALL authz.ensure_tuple_partition_online(authz._s('demo'), 'invoice');
-CALL authz.ensure_audit_partition_online(2026, 4);
+SELECT authz._ensure_audit_partition(2026, 6);
+SELECT authz._ensure_audit_partition(2026, 7);
 ```
-
-The transactional `_ensure_tuple_partition` / `_ensure_audit_partition`
-functions are still used for initial schema setup (inside `init.sh`).
 
 ### Suppressing the audit trail (DBA bulk operations)
 

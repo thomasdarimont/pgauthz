@@ -56,5 +56,10 @@ echo "==> Running type restriction checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/db/tests/tests_type_restrictions.sql"
 
+echo ""
+echo "==> Running partition management checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/db/tests/tests_partitions.sql"
+
 # Clean up test helpers
 psql_file "$PG_DB" "$PG_DIR/db/tests/tests_helpers_cleanup.sql"
