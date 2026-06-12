@@ -342,6 +342,12 @@ silently corrupts historical answers. For maintenance jobs, prefer keeping
 the audit rows and tagging them via `p_performed_by` (e.g.
 `'cleanup_redundant_tuples'`) so they remain filterable.
 
+The audit table is also structurally **append-only**: a trigger rejects
+`UPDATE` always and `DELETE` outside of sanctioned maintenance (partition
+row migration, and `delete_store(..., p_purge_audit => true)`). Retention
+by detaching/dropping old monthly partitions is DDL and unaffected.
+`delete_store` preserves the store's audit history by default.
+
 If a bulk operation (large migration, store re-import) genuinely must skip
 audit generation, a **superuser** can disable ordinary triggers — including
 the audit trigger — for the **current session only**:

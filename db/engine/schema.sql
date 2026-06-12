@@ -249,6 +249,32 @@ CREATE TRIGGER trg_tuples_audit
     AFTER INSERT OR DELETE ON authz.tuples
     FOR EACH ROW EXECUTE FUNCTION authz._audit_tuple();
 
+-- The audit trail is append-only. UPDATE is never allowed; DELETE only
+-- as part of sanctioned maintenance — partition row migration in
+-- _ensure_audit_partition (rows are copied first, so data is preserved)
+-- and explicit purge via delete_store(..., p_purge_audit => true) —
+-- which set the transaction-local authz.audit_maintenance GUC around
+-- their statements. Retention by DETACH/DROP of old partitions is DDL
+-- and unaffected.
+--
+-- This guards against bugs in SECURITY DEFINER functions and careless
+-- admin sessions; a superuser can always bypass triggers (e.g. via
+-- session_replication_role — see docs/DEVELOPMENT.md).
+CREATE OR REPLACE FUNCTION authz._audit_block_dml() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE'
+       AND current_setting('authz.audit_maintenance', true) = 'on' THEN
+        RETURN OLD;
+    END IF;
+    RAISE EXCEPTION 'authz.tuples_audit is append-only: % is not allowed', TG_OP;
+END;
+$$;
+
+CREATE TRIGGER trg_tuples_audit_block_dml
+    BEFORE UPDATE OR DELETE ON authz.tuples_audit
+    FOR EACH ROW EXECUTE FUNCTION authz._audit_block_dml();
+
 -- Human-readable view of the audit log (resolves integer IDs to names).
 CREATE VIEW authz.tuples_audit_view AS
 SELECT

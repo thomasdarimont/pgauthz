@@ -1436,6 +1436,62 @@ END;
 $$;
 SELECT * FROM _test_teardown_api();
 
+-- ================================================================
+-- Audit immutability: tuples_audit is append-only. UPDATE is never
+-- allowed; DELETE only via sanctioned maintenance (partition row
+-- migration, explicit purge in delete_store).
+-- ================================================================
+SELECT _test_setup_api();
+DO $$
+DECLARE
+    s     smallint := authz._s('test_api');
+    v_err text;
+    v_cnt bigint;
+BEGIN
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'imm1');
+
+    -- api_94: UPDATE on the audit trail is blocked
+    BEGIN
+        UPDATE authz.tuples_audit SET performed_by = 'tampered' WHERE store_id = s;
+        v_err := 'no exception raised';
+    EXCEPTION WHEN raise_exception THEN
+        v_err := NULL;
+    END;
+    PERFORM _test_assert_true('api_94_audit_update_blocked', v_err IS NULL, v_err);
+
+    -- api_95: DELETE on the audit trail is blocked
+    BEGIN
+        DELETE FROM authz.tuples_audit WHERE store_id = s;
+        v_err := 'no exception raised';
+    EXCEPTION WHEN raise_exception THEN
+        v_err := NULL;
+    END;
+    PERFORM _test_assert_true('api_95_audit_delete_blocked', v_err IS NULL, v_err);
+
+    -- api_96: delete_store preserves the audit history by default
+    PERFORM authz.delete_store('test_api');
+    SELECT count(*) INTO v_cnt FROM authz.tuples_audit WHERE store_id = s;
+    PERFORM _test_assert_true('api_96_delete_store_preserves_audit',
+        v_cnt > 0, 'expected audit rows to remain, found ' || v_cnt);
+END;
+$$;
+DELETE FROM _test_results RETURNING *;
+
+-- api_97: delete_store(p_purge_audit => true) removes the history
+SELECT _test_setup_api();
+DO $$
+DECLARE
+    s     smallint := authz._s('test_api');
+    v_cnt bigint;
+BEGIN
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'imm2');
+    PERFORM authz.delete_store('test_api', p_purge_audit => true);
+    SELECT count(*) INTO v_cnt FROM authz.tuples_audit WHERE store_id = s;
+    PERFORM _test_assert('api_97_delete_store_purges_audit_on_request', v_cnt::text, '0');
+END;
+$$;
+DELETE FROM _test_results RETURNING *;
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_api();
 DROP FUNCTION IF EXISTS _test_setup_api();

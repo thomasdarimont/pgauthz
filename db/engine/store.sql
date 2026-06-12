@@ -29,11 +29,18 @@ $$;
 
 ------------------------------------------------------------------------
 -- delete_store: removes a store and all its associated data.
--- Deletes in dependency order: tuples → audit → models → conditions
+-- Deletes in dependency order: tuples → models → conditions
 -- → types/relations → store. Also drops tuple partitions for the store.
+--
+-- The audit history is PRESERVED by default (the tuple deletions
+-- performed here are themselves audited). Pass p_purge_audit => true
+-- to also remove the store's audit rows. Retained rows reference the
+-- deleted store/type/relation IDs — these are never reused, so the
+-- rows stay unambiguous, but they are no longer resolvable by name.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.delete_store(
-    p_store text
+    p_store       text,
+    p_purge_audit boolean DEFAULT false
 ) RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -44,7 +51,11 @@ DECLARE
     v_type_rec   record;
 BEGIN
     DELETE FROM authz.tuples            WHERE store_id = v_store_id;
-    DELETE FROM authz.tuples_audit      WHERE store_id = v_store_id;
+    IF p_purge_audit THEN
+        PERFORM set_config('authz.audit_maintenance', 'on', true);
+        DELETE FROM authz.tuples_audit  WHERE store_id = v_store_id;
+        PERFORM set_config('authz.audit_maintenance', '', true);
+    END IF;
     DELETE FROM authz.type_restrictions WHERE store_id = v_store_id;
     DELETE FROM authz.models            WHERE store_id = v_store_id;
     DELETE FROM authz.conditions        WHERE store_id = v_store_id;

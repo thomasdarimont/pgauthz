@@ -375,10 +375,14 @@ BEGIN
         'INSERT INTO %s OVERRIDING SYSTEM VALUE SELECT * FROM authz.tuples_audit_default WHERE performed_at >= %L AND performed_at < %L',
         v_table_name, v_start, v_end
     );
+    -- Sanctioned maintenance: the rows were copied above, so deleting
+    -- them from the default partition preserves the audit data overall.
+    PERFORM set_config('authz.audit_maintenance', 'on', true);
     EXECUTE format(
         'DELETE FROM authz.tuples_audit_default WHERE performed_at >= %L AND performed_at < %L',
         v_start, v_end
     );
+    PERFORM set_config('authz.audit_maintenance', '', true);
 
     EXECUTE 'ALTER TABLE authz.tuples_audit ATTACH PARTITION authz.tuples_audit_default DEFAULT';
 
