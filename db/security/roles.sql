@@ -183,3 +183,35 @@ ALTER FUNCTION authz.model_remove_type_restriction(text, smallint) SECURITY DEFI
 ALTER FUNCTION authz.model_remove_type_restrictions(text, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.import_openfga_model(text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.import_openfga_tuples(text, jsonb) SECURITY DEFINER;
+
+------------------------------------------------------------------------
+-- Pin search_path on every SECURITY DEFINER function so a caller's
+-- search_path cannot influence name resolution inside trusted code
+-- (standard definer-function hardening). pg_temp must be listed last:
+-- explain_access / audit_check_access reference their session temp
+-- tables (_access_trace, _snapshot_tuples) unqualified, and an
+-- implicit pg_temp would otherwise be searched FIRST for relations.
+--
+-- Only definer functions are pinned: search_path is dynamically
+-- scoped, so internal helpers called from a pinned entry point resolve
+-- under the pinned path too — and a SET clause would prevent inlining
+-- of the hot-path helper functions.
+--
+-- Runs dynamically over pg_proc so newly added definer functions are
+-- covered on the next init without touching this file.
+------------------------------------------------------------------------
+DO $$
+DECLARE
+    f record;
+BEGIN
+    FOR f IN
+        SELECT p.oid::regprocedure AS sig
+          FROM pg_catalog.pg_proc p
+          JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+         WHERE n.nspname = 'authz'
+           AND p.prosecdef
+    LOOP
+        EXECUTE format('ALTER FUNCTION %s SET search_path = pg_catalog, authz, pg_temp', f.sig);
+    END LOOP;
+END
+$$;

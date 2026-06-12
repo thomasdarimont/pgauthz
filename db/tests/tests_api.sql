@@ -1373,6 +1373,25 @@ END;
 $$;
 SELECT * FROM _test_teardown_api();
 
+-- ================================================================
+-- SECURITY DEFINER hygiene: every definer function must pin
+-- search_path so a caller's search_path cannot influence name
+-- resolution inside the trusted code.
+-- ================================================================
+DO $$
+BEGIN
+    PERFORM _test_assert('api_90_all_security_definer_functions_pin_search_path',
+        (SELECT count(*) FROM pg_catalog.pg_proc p
+           JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = 'authz'
+            AND p.prosecdef
+            AND (p.proconfig IS NULL OR NOT EXISTS (
+                SELECT 1 FROM unnest(p.proconfig) c WHERE c LIKE 'search_path=%')))::text,
+        '0');
+END;
+$$;
+DELETE FROM _test_results RETURNING *;
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_api();
 DROP FUNCTION IF EXISTS _test_setup_api();
