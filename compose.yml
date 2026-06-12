@@ -46,6 +46,8 @@ services:
     # role not existing yet on a pre-initdb volume) — keep restarting.
     restart: unless-stopped
     # No host port — only reachable by OPA via the Docker network.
+    # SECURITY: this endpoint is unauthenticated (api_anon = full reader).
+    # OPA is the mandatory front door; never publish this port.
     expose:
       - "3000"
     depends_on:

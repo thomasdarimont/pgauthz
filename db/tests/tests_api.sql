@@ -1392,6 +1392,50 @@ END;
 $$;
 DELETE FROM _test_results RETURNING *;
 
+-- ================================================================
+-- api_anon boundary: the PostgREST anonymous role is a full READER
+-- by design (OPA is the mandatory front door) and must never gain
+-- write or admin capabilities.
+-- ================================================================
+SELECT _test_setup_api();
+DO $$
+DECLARE
+    v_bool boolean;
+    v_err  text;
+BEGIN
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+
+    -- api_91: anonymous role can run read checks
+    PERFORM set_config('role', 'api_anon', true);
+    v_bool := authz.check_access('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
+    PERFORM set_config('role', 'none', true);
+    PERFORM _test_assert('api_91_anon_can_read', v_bool::text, 'true');
+
+    -- api_92: anonymous role cannot write tuples
+    PERFORM set_config('role', 'api_anon', true);
+    BEGIN
+        PERFORM authz.write_tuple('test_api', 'user', 'bob', 'reader', 'doc', 'doc1');
+        v_err := 'no exception raised';
+    EXCEPTION WHEN insufficient_privilege THEN
+        v_err := NULL;
+    END;
+    PERFORM set_config('role', 'none', true);
+    PERFORM _test_assert_true('api_92_anon_cannot_write', v_err IS NULL, v_err);
+
+    -- api_93: anonymous role cannot manage stores
+    PERFORM set_config('role', 'api_anon', true);
+    BEGIN
+        PERFORM authz.create_store('anon_probe');
+        v_err := 'no exception raised';
+    EXCEPTION WHEN insufficient_privilege THEN
+        v_err := NULL;
+    END;
+    PERFORM set_config('role', 'none', true);
+    PERFORM _test_assert_true('api_93_anon_cannot_admin', v_err IS NULL, v_err);
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_api();
 DROP FUNCTION IF EXISTS _test_setup_api();

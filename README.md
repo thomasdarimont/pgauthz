@@ -775,6 +775,15 @@ which calls PostgreSQL. Write operations (`write_tuple`, `delete_tuple`)
 are performed directly by the application backend using a database user
 with the `authz_writer` role.
 
+> **Trust boundary:** the read PostgREST accepts **unauthenticated**
+> requests — `api_anon` can run every check/list/explain function across
+> all stores (subject only to namespace read grants). This is by design:
+> OPA (or your own authenticating layer) is the mandatory front door, and
+> the compose stack therefore gives the read PostgREST **no host port** —
+> it is reachable only by OPA on the internal Docker network. Never expose
+> it directly; anyone who can reach it can enumerate your authorization
+> data via `list_objects` / `list_subjects`.
+
 ### AuthZEN 1.0 API
 
 The `authzen/` directory contains a Go API layer implementing the
