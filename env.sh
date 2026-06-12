@@ -33,9 +33,11 @@ psql_exec() {
   docker exec -i -e PGPASSWORD=authz "$DB_CONTAINER" psql -U "$PG_USER" -d "$db" "$@"
 }
 
-# Run a SQL file by piping it into the container
+# Run a SQL file by piping it into the container.
+# ON_ERROR_STOP makes psql exit non-zero on the first SQL error — without it,
+# failing test assertions (RAISE EXCEPTION) would not fail the test scripts.
 psql_file() {
   local db="$1"
   local file="$2"
-  docker exec -i -e PGPASSWORD=authz "$DB_CONTAINER" psql -U "$PG_USER" -d "$db" < "$file"
+  docker exec -i -e PGPASSWORD=authz "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d "$db" < "$file"
 }
