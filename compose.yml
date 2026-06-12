@@ -27,16 +27,24 @@ services:
       retries: 5
     volumes:
       - authz-db-data:/var/lib/postgresql:z
+      # Creates the authz_authenticator login role on first init, before
+      # PostgREST connects (it exits if its login role is missing).
+      - ./db/security/initdb:/docker-entrypoint-initdb.d:ro
 
   postgrest:
     image: postgrest/postgrest:v12.2.12
     environment:
-      PGRST_DB_URI: postgres://authz:authz@authz-db:5432/authz
+      # Dedicated non-superuser authenticator (created by db/security/roles.sql).
+      # Connecting as a superuser would bypass namespace access control.
+      PGRST_DB_URI: postgres://authz_authenticator:authz@authz-db:5432/authz
       PGRST_DB_ANON_ROLE: api_anon
       PGRST_DB_SCHEMAS: authz
       PGRST_DB_POOL: "100"
       PGRST_DB_POOL_ACQUISITION_TIMEOUT: "10"
       PGRST_SERVER_PORT: "3000"
+    # PostgREST exits on unrecoverable startup errors (e.g. the authenticator
+    # role not existing yet on a pre-initdb volume) — keep restarting.
+    restart: unless-stopped
     # No host port — only reachable by OPA via the Docker network.
     expose:
       - "3000"
@@ -48,7 +56,7 @@ services:
   postgrest-writer:
     image: postgrest/postgrest:v12.2.12
     environment:
-      PGRST_DB_URI: postgres://authz:authz@authz-db:5432/authz
+      PGRST_DB_URI: postgres://authz_authenticator:authz@authz-db:5432/authz
       PGRST_DB_ANON_ROLE: api_anon
       PGRST_DB_SCHEMAS: authz
       PGRST_DB_POOL: "20"
@@ -57,6 +65,7 @@ services:
       PGRST_JWT_SECRET: "${PGRST_JWT_SECRET:-change-me-at-least-32-characters-long}"
       # Map role from a custom JWT claim (default: .role)
       # PGRST_JWT_ROLE_CLAIM_KEY: ".realm_access.roles[0]"
+    restart: unless-stopped
     # No host port — only reachable via the writer-gateway.
     expose:
       - "3001"

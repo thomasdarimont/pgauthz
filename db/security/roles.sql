@@ -7,6 +7,10 @@
 --   authz_admin   — full control including store management
 --   api_anon      — PostgREST anonymous role (inherits authz_reader)
 --
+-- Connection role (LOGIN, NOINHERIT):
+--   authz_authenticator — PostgREST connects as this role and switches
+--                         to api_anon or the JWT role via SET ROLE
+--
 -- Role hierarchy:
 --
 --   api_anon ─→ authz_reader ─┬─→ authz_auditor ──┬─→ authz_admin
@@ -51,16 +55,31 @@ GRANT authz_writer TO authz_admin;
 GRANT authz_auditor TO authz_admin;
 
 -- PostgREST anonymous role inherits reader privileges.
-GRANT api_anon TO authz;
 GRANT authz_reader TO api_anon;
 
--- PostgREST JWT role switching: the authenticator role (authz) must be
--- able to SET ROLE to any role that a JWT can claim. Since authz is a
--- superuser this works automatically, but explicit grants make the
--- intent clear and survive a future switch to a non-superuser authenticator.
-GRANT authz_writer TO authz;
-GRANT authz_admin TO authz;
-GRANT authz_auditor TO authz;
+-- PostgREST authenticator: a dedicated non-superuser LOGIN role.
+-- PostgREST connects as this role and switches the per-request identity
+-- with SET ROLE (api_anon, or the role claimed in the JWT). NOINHERIT
+-- ensures the authenticator has no privileges of its own — every request
+-- runs as the switched role. Never use a superuser here: namespace
+-- enforcement keys on the effective role and a superuser passes every
+-- pg_has_role() check.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authz_authenticator') THEN
+        -- Dev password — override in production deployments.
+        CREATE ROLE authz_authenticator LOGIN NOINHERIT PASSWORD 'authz';
+    END IF;
+END
+$$;
+
+-- The authenticator must be able to SET ROLE to any role a request
+-- (anonymous or JWT-claimed) may run as.
+GRANT api_anon      TO authz_authenticator;
+GRANT authz_reader  TO authz_authenticator;
+GRANT authz_auditor TO authz_authenticator;
+GRANT authz_writer  TO authz_authenticator;
+GRANT authz_admin   TO authz_authenticator;
 
 -- All roles need schema access.
 GRANT USAGE ON SCHEMA authz TO authz_auditor, authz_reader, authz_writer, authz_admin;

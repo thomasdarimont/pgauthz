@@ -623,7 +623,9 @@ which application can read or write tuples for which object types. This prevents
 one application from accidentally modifying or querying another's authorization data.
 
 - Types with `namespace = NULL` are **unrestricted** — any role can read and write them.
-- Types with a non-NULL namespace require the DB session user to be a member of a granted role.
+- Types with a non-NULL namespace require the **effective request role** to be a member of a
+  granted role. The effective role is the `SET ROLE` identity (what PostgREST switches to
+  per request), falling back to the session user for direct connections.
 - **Read and write access** is controlled via `authz.namespace_access` using `can_read` and `can_write` flags.
 
 ```sql

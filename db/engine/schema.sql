@@ -194,32 +194,18 @@ CREATE INDEX idx_tuples_audit_time
 
 -- Trigger function: logs INSERT and DELETE on authz.tuples.
 -- Reads the optional session variable 'authz.performed_by' to record
--- which application user triggered the change. Falls back to session_user.
+-- which application user triggered the change. Falls back to the
+-- effective request role (authz._effective_role() — the SET ROLE
+-- identity under PostgREST, or session_user for direct connections).
 -- Set via: SELECT set_config('authz.performed_by', 'user@example.com', true);
 -- The write_tuple/delete_tuple functions set this automatically when
 -- a p_performed_by parameter is provided.
---
--- Audit can be temporarily suppressed by setting 'authz.skip_audit' to 'on'
--- (transaction-scoped). Used by admin operations like find_redundant_tuples
--- that do temporary delete/re-insert cycles that should not pollute the
--- audit trail.
 CREATE OR REPLACE FUNCTION authz._audit_tuple() RETURNS trigger
 LANGUAGE plpgsql AS $$
 DECLARE
     v_row          authz.tuples;
     v_performed_by text;
 BEGIN
-    -- Allow admin operations to suppress audit logging for internal bookkeeping.
-    -- Only honored when the current session role is a member of authz_admin,
-    -- preventing non-admin callers from silently bypassing the audit trail.
-    -- Nested IFs ensure pg_has_role (syscache lookup) is only called when
-    -- skip_audit is actually set, avoiding overhead on normal write paths.
-    IF current_setting('authz.skip_audit', true) = 'on' THEN
-        IF pg_has_role(session_user, 'authz_admin', 'MEMBER') THEN
-            IF TG_OP = 'DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;
-        END IF;
-    END IF;
-
     IF TG_OP = 'INSERT' THEN
         v_row := NEW;
     ELSIF TG_OP = 'DELETE' THEN
@@ -231,7 +217,7 @@ BEGIN
     -- Read application user from session variable, fall back to DB role
     v_performed_by := COALESCE(
         NULLIF(current_setting('authz.performed_by', true), ''),
-        session_user
+        authz._effective_role()
     );
 
     INSERT INTO authz.tuples_audit (

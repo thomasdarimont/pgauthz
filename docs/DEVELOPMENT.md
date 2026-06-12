@@ -298,6 +298,39 @@ CALL authz.ensure_audit_partition_online(2026, 4);
 The transactional `_ensure_tuple_partition` / `_ensure_audit_partition`
 functions are still used for initial schema setup (inside `init.sh`).
 
+### Suppressing the audit trail (DBA bulk operations)
+
+There is deliberately **no API-level switch** to skip audit logging: the
+audit trail is meant to be complete, and `audit_check_access` (time travel)
+reconstructs past permissions by replaying it — any unlogged tuple change
+silently corrupts historical answers. For maintenance jobs, prefer keeping
+the audit rows and tagging them via `p_performed_by` (e.g.
+`'cleanup_redundant_tuples'`) so they remain filterable.
+
+If a bulk operation (large migration, store re-import) genuinely must skip
+audit generation, a **superuser** can disable ordinary triggers — including
+the audit trigger — for the **current session only**:
+
+```sql
+-- Superuser-only, affects only this session. Ordinary triggers
+-- (including trg_tuples_audit) do not fire while this is set.
+SET session_replication_role = replica;
+
+-- ... bulk tuple changes without audit rows ...
+
+SET session_replication_role = DEFAULT;
+```
+
+Caveats:
+
+- Requires a real superuser connection. It is not reachable through the
+  API roles or PostgREST — which is the intended barrier.
+- Do **not** use `ALTER TABLE ... DISABLE TRIGGER` instead: that disables
+  the trigger globally for all concurrent sessions until re-enabled.
+- Changes made this way are invisible to `audit_check_access` — time-travel
+  queries will not reflect them. Consider backfilling synthetic audit
+  entries for the affected tuples if historical accuracy matters.
+
 ### Adding a conditional tuple
 
 Conditions let you attach runtime constraints to tuples (time windows,

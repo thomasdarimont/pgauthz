@@ -69,8 +69,22 @@ END;
 $$;
 
 ------------------------------------------------------------------------
+-- _effective_role: the identity used for permission decisions.
+--
+-- API gateways like PostgREST connect as a single authenticator role
+-- and switch the per-request identity with SET ROLE. That updates the
+-- 'role' GUC but not session_user — and inside SECURITY DEFINER
+-- functions current_user is the function owner — so neither built-in
+-- reflects the request identity. The 'role' GUC does; fall back to
+-- session_user for direct connections that never ran SET ROLE.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._effective_role() RETURNS text
+    LANGUAGE sql STABLE AS
+    $$ SELECT COALESCE(NULLIF(current_setting('role', true), 'none'), session_user) $$;
+
+------------------------------------------------------------------------
 -- _check_namespace_access: enforces namespace-based access restrictions.
--- Raises an exception if the session user is not authorized to perform
+-- Raises an exception if the effective role is not authorized to perform
 -- the requested operation on tuples for the given object type's namespace.
 -- p_permission must be 'can_read' or 'can_write'.
 -- Types with namespace = NULL are unrestricted (always allowed).
@@ -85,6 +99,7 @@ DECLARE
     v_namespace text;
     v_type_name text;
     v_action    text;
+    v_role      text := authz._effective_role();
 BEGIN
     SELECT namespace, name INTO v_namespace, v_type_name
       FROM authz.types
@@ -95,7 +110,8 @@ BEGIN
         RETURN;
     END IF;
 
-    -- Check if session_user is a member of any granted role with the required permission
+    -- Check if the effective role is a member of any granted role with
+    -- the required permission
     IF EXISTS (
         SELECT 1 FROM authz.namespace_access na
          WHERE na.store_id  = p_store_id
@@ -105,7 +121,7 @@ BEGIN
                    WHEN 'can_write' THEN na.can_write
                    ELSE false
                END
-           AND pg_has_role(session_user, na.db_role, 'MEMBER')
+           AND pg_has_role(v_role, na.db_role, 'MEMBER')
     ) THEN
         RETURN;
     END IF;
@@ -117,7 +133,7 @@ BEGIN
     END;
 
     RAISE EXCEPTION 'Permission denied: role "%" cannot % object type "%" in namespace "%"',
-        session_user, v_action, v_type_name, v_namespace;
+        v_role, v_action, v_type_name, v_namespace;
 END;
 $$;
 

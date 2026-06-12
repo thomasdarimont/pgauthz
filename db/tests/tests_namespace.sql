@@ -316,6 +316,72 @@ END;
 $$;
 SELECT * FROM _test_teardown_ns_read();
 
+-- ================================================================
+-- namespace enforcement under SET ROLE (PostgREST-style identity)
+--
+-- PostgREST connects as a single authenticator and switches the
+-- request identity with SET ROLE. Enforcement must follow the
+-- SET ROLE identity, not the connection's session_user.
+-- set_config('role', ..., true) is the transaction-local equivalent
+-- of SET LOCAL ROLE.
+-- ================================================================
+
+-- ns_r_10: SET ROLE without a namespace grant is blocked, even though
+-- the connecting session user (authz) is a member of the granted role.
+SELECT _test_setup_ns_read();
+SELECT authz.grant_namespace_access('test_ns_read', 'documents', 'authz_writer', p_can_read := true);
+DO $$
+DECLARE v_err text := NULL;
+BEGIN
+    PERFORM set_config('role', 'api_anon', true);
+    BEGIN
+        PERFORM authz.check_access('test_ns_read', 'user', 'u1', 'viewer', 'doc', 'doc1');
+    EXCEPTION WHEN raise_exception THEN
+        v_err := SQLERRM;
+    END;
+    PERFORM set_config('role', 'none', true);
+    PERFORM _test_assert_true('ns_r_10_set_role_read_without_grant_blocked',
+        v_err LIKE '%Permission denied%cannot query%namespace%',
+        coalesce(v_err, 'no exception raised'));
+END;
+$$;
+SELECT * FROM _test_teardown_ns_read();
+
+-- ns_r_11: SET ROLE to a role covered by a namespace grant succeeds.
+SELECT _test_setup_ns_read();
+SELECT authz.grant_namespace_access('test_ns_read', 'documents', 'authz_reader', p_can_read := true);
+DO $$
+DECLARE v_bool boolean;
+BEGIN
+    PERFORM set_config('role', 'api_anon', true);
+    v_bool := authz.check_access('test_ns_read', 'user', 'u1', 'viewer', 'doc', 'doc1');
+    PERFORM set_config('role', 'none', true);
+    PERFORM _test_assert('ns_r_11_set_role_read_with_grant_allowed', v_bool::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_ns_read();
+
+-- ns_w_07: SET ROLE without a write grant is blocked, even though
+-- the connecting session user (authz) is a member of the granted role.
+SELECT _test_setup_ns_write();
+SELECT authz.grant_namespace_access('test_ns_write', 'documents', 'authz_admin', p_can_write := true);
+DO $$
+DECLARE v_err text := NULL;
+BEGIN
+    PERFORM set_config('role', 'authz_writer', true);
+    BEGIN
+        PERFORM authz.write_tuple('test_ns_write', 'user', 'u1', 'viewer', 'doc', 'doc1');
+    EXCEPTION WHEN raise_exception THEN
+        v_err := SQLERRM;
+    END;
+    PERFORM set_config('role', 'none', true);
+    PERFORM _test_assert_true('ns_w_07_set_role_write_without_grant_blocked',
+        v_err LIKE '%Permission denied%namespace%',
+        coalesce(v_err, 'no exception raised'));
+END;
+$$;
+SELECT * FROM _test_teardown_ns_write();
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_ns_read();
 DROP FUNCTION IF EXISTS _test_setup_ns_read();
