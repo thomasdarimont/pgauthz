@@ -2,10 +2,14 @@
 --
 -- Uses its own 'test_contextual' store with a simple model:
 --   type user
---   type doc
+--   type folder
 --     relations
 --       define viewer: [user]
+--   type doc
+--     relations
+--       define viewer: [user] or viewer from parent
 --       define editor: [user]
+--       define parent: [folder]
 
 SELECT _test_reset();
 
@@ -19,16 +23,20 @@ BEGIN
 
     s := authz.create_store('test_contextual');
 
-    INSERT INTO authz.types (store_id, name) VALUES (s, 'user'), (s, 'doc');
-    INSERT INTO authz.relations (store_id, name) VALUES (s, 'viewer'), (s, 'editor');
+    INSERT INTO authz.types (store_id, name) VALUES (s, 'user'), (s, 'doc'), (s, 'folder');
+    INSERT INTO authz.relations (store_id, name) VALUES (s, 'viewer'), (s, 'editor'), (s, 'parent');
     PERFORM authz._ensure_tuple_partition(s, 'doc');
 
     INSERT INTO authz.models
         (store_id, object_type, relation, rule_type,
          computed_relation, tupleset_relation, tupleset_computed)
     VALUES
-        (s, authz._t(s, 'doc'), authz._r(s, 'viewer'), authz._rel_direct(), NULL, NULL, NULL),
-        (s, authz._t(s, 'doc'), authz._r(s, 'editor'), authz._rel_direct(), NULL, NULL, NULL);
+        (s, authz._t(s, 'doc'),    authz._r(s, 'viewer'), authz._rel_direct(), NULL, NULL, NULL),
+        (s, authz._t(s, 'doc'),    authz._r(s, 'editor'), authz._rel_direct(), NULL, NULL, NULL),
+        (s, authz._t(s, 'folder'), authz._r(s, 'viewer'), authz._rel_direct(), NULL, NULL, NULL),
+        -- TTU: doc viewer ← viewer on the folder linked via parent
+        (s, authz._t(s, 'doc'),    authz._r(s, 'viewer'), authz._rel_ttu(),
+            NULL, authz._r(s, 'parent'), authz._r(s, 'viewer'));
 
     INSERT INTO authz.conditions (store_id, name, expression, required_context) VALUES
     (s,
@@ -46,6 +54,16 @@ BEGIN
     );
 
     PERFORM authz.write_tuple('test_contextual', 'user', 'bob', 'viewer', 'doc', 'doc1');
+
+    -- Conditional TTU link: doc2's parent folder link is itself time-limited.
+    -- Carol is an unconditional viewer on the folder — her access to doc2
+    -- must only be granted while the link's condition holds.
+    PERFORM authz.write_tuple('test_contextual',
+        'folder', 'f1', 'parent', 'doc', 'doc2',
+        p_condition => 'non_expired_grant',
+        p_condition_context => '{"grant_time": "2026-03-11T09:00:00Z", "grant_duration": "2 hours"}'::jsonb
+    );
+    PERFORM authz.write_tuple('test_contextual', 'user', 'carol', 'viewer', 'folder', 'f1');
 
     RETURN true;
 END;
@@ -235,6 +253,79 @@ BEGIN
 EXCEPTION
     WHEN OTHERS THEN
         PERFORM _test_assert_true('ctx_11_write_tuple_missing_stored_key', true);
+END;
+$$;
+SELECT * FROM _test_teardown_contextual();
+
+-- ================================================================
+-- Conditions on TTU (tupleset) link tuples
+-- ================================================================
+
+-- ctx_12: carol can view doc2 via the parent link within the grant window
+DO $$
+BEGIN
+    PERFORM _test_setup_contextual();
+    PERFORM _test_assert('ctx_12_ttu_conditional_link_within_window',
+        authz.check_access_with_context('test_contextual',
+            'user', 'carol', 'viewer', 'doc', 'doc2',
+            '{"current_time": "2026-03-11T10:00:00Z"}'::jsonb
+        )::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_contextual();
+
+-- ctx_13: carol cannot view doc2 after the link's grant expires
+DO $$
+BEGIN
+    PERFORM _test_setup_contextual();
+    PERFORM _test_assert('ctx_13_ttu_conditional_link_after_expiry',
+        authz.check_access_with_context('test_contextual',
+            'user', 'carol', 'viewer', 'doc', 'doc2',
+            '{"current_time": "2026-03-11T12:00:00Z"}'::jsonb
+        )::text, 'false');
+END;
+$$;
+SELECT * FROM _test_teardown_contextual();
+
+-- ctx_14: carol cannot view doc2 without context (link condition fails safely)
+DO $$
+BEGIN
+    PERFORM _test_setup_contextual();
+    PERFORM _test_assert('ctx_14_ttu_conditional_link_without_context',
+        authz.check_access('test_contextual',
+            'user', 'carol', 'viewer', 'doc', 'doc2'
+        )::text, 'false');
+END;
+$$;
+SELECT * FROM _test_teardown_contextual();
+
+-- ctx_15/16: time-travel (audit_check_access) honors conditions on TTU links.
+-- Uses a grant window relative to now() so the snapshot's reconstructed
+-- current_time falls inside / outside the window deterministically.
+DO $$
+BEGIN
+    PERFORM _test_setup_contextual();
+    PERFORM authz.write_tuple('test_contextual',
+        'folder', 'f2', 'parent', 'doc', 'doc3',
+        p_condition => 'non_expired_grant',
+        p_condition_context => jsonb_build_object(
+            'grant_time', now(), 'grant_duration', '2 hours')
+    );
+    PERFORM authz.write_tuple('test_contextual', 'user', 'carol', 'viewer', 'folder', 'f2');
+
+    -- clock_timestamp(), not now(): audit rows are stamped with
+    -- clock_timestamp(), which is later than this transaction's now().
+    PERFORM _test_assert('ctx_15_audit_ttu_conditional_link_within_window',
+        authz.audit_check_access('test_contextual',
+            'user', 'carol', 'viewer', 'doc', 'doc3',
+            clock_timestamp()
+        )::text, 'true');
+
+    PERFORM _test_assert('ctx_16_audit_ttu_conditional_link_after_expiry',
+        authz.audit_check_access('test_contextual',
+            'user', 'carol', 'viewer', 'doc', 'doc3',
+            clock_timestamp() + interval '3 hours'
+        )::text, 'false');
 END;
 $$;
 SELECT * FROM _test_teardown_contextual();

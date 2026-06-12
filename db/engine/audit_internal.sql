@@ -143,6 +143,8 @@ LANGUAGE plpgsql AS $$
 DECLARE
     tpl record;
 BEGIN
+    -- Conditional link tuples are only followed when their condition
+    -- passes — mirrors _eval_ttu in the live engine.
     FOR tpl IN
         EXECUTE '
             SELECT user_type AS linked_type, user_id AS linked_id
@@ -151,8 +153,10 @@ BEGIN
                AND object_type   = $2
                AND object_id     = $3
                AND relation      = $4
-               AND user_relation IS NULL'
-        USING p_store_id, p_object_type, p_object_id, p_tupleset_relation
+               AND user_relation IS NULL
+               AND (condition_id IS NULL
+                    OR authz._eval_condition(condition_id, condition_context, $5))'
+        USING p_store_id, p_object_type, p_object_id, p_tupleset_relation, p_request_context
     LOOP
         IF authz._check_access_snapshot(
             p_store_id,

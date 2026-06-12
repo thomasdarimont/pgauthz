@@ -378,7 +378,9 @@ DECLARE
     tpl     record;
     v_child boolean;
 BEGIN
-    -- Follow stored tuples
+    -- Follow stored tuples. Conditional link tuples are only followed
+    -- when their condition passes — an expired/denied link must not
+    -- confer inherited access.
     FOR tpl IN
         SELECT user_type AS linked_type, user_id AS linked_id
           FROM authz.tuples
@@ -387,6 +389,8 @@ BEGIN
            AND object_id     = p_object_id
            AND relation      = p_tupleset_relation
            AND user_relation IS NULL
+           AND (condition_id IS NULL
+                OR authz._eval_condition(condition_id, condition_context, p_request_context))
     LOOP
         v_child := authz._check_access(
             p_store_id,
