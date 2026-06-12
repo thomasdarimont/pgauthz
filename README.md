@@ -895,7 +895,7 @@ primitives are at full parity — the remaining differences are operational.
 | Tuple-to-userset (`tupleToUserset`) | ✅ | ✅ |
 | Union (OR) | ✅ | ✅ |
 | Intersection (AND) | ✅ | ✅ |
-| Exclusion / Difference (BUT NOT) | ✅ | ✅ |
+| Exclusion / Difference (BUT NOT) | ✅ | ✅ * |
 | Wildcard tuples (`user:*`) | ✅ | ✅ |
 | Conditions (ABAC) | ✅ | ✅ |
 | Contextual tuples | ✅ | ✅ |
@@ -903,6 +903,14 @@ primitives are at full parity — the remaining differences are operational.
 | List users (subject search) | ✅ | ✅ |
 | Multiple stores | ✅ | ✅ |
 | Type restrictions on writes | ✅ | ✅ |
+
+\* Exclusion semantics differ in one detail: in OpenFGA, the base of a
+`difference` is typically a union; here, multiple base rules in one
+exclusion group are **AND-ed**. To express `(viewer OR editor) BUT NOT
+blocked`, use one exclusion group per base alternative (groups are OR'd).
+Exclusion groups must contain at least one base rule — negated-only
+groups are rejected at write time. See
+[MODEL_DESIGN.md](docs/MODEL_DESIGN.md#exclusion-but-not) for details.
 
 ### This solution has, OpenFGA doesn't
 
@@ -916,7 +924,7 @@ primitives are at full parity — the remaining differences are operational.
 | **Condition validation** | Dry-run conditions before writing tuples |
 | **Batch operations** | `write_tuples` / `delete_tuples` in a single statement |
 | **No external service** | Pure SQL — no network hop, no separate process to operate |
-| **OpenFGA import** | Import existing OpenFGA JSON models directly |
+| **OpenFGA import** | Import existing OpenFGA JSON models directly. `intersection` and `difference` are translated natively into rule groups; operators nested deeper than one level below `union` are rejected (never imported as a more permissive approximation) — see [MODEL_DESIGN.md](docs/MODEL_DESIGN.md#example-how-intersectionexclusion-map-to-rule-groups) |
 
 ### OpenFGA has, this solution doesn't
 

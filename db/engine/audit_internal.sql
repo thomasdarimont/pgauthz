@@ -272,6 +272,11 @@ BEGIN
             v_cur_group    := rule.group_id;
             v_cur_group_op := rule.group_op;
             v_group_pass   := true;
+            -- Negated-only exclusion group: no base rule, fail closed
+            -- (mirrors _check_access).
+            IF v_cur_group_op = authz._combine_exclusion() AND rule.negated THEN
+                v_group_pass := false;
+            END IF;
         END IF;
 
         -- Skip remaining rules in a failed group

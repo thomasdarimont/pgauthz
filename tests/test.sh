@@ -61,5 +61,10 @@ echo "==> Running partition management checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/db/tests/tests_partitions.sql"
 
+echo ""
+echo "==> Running OpenFGA import checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/db/tests/tests_openfga.sql"
+
 # Clean up test helpers
 psql_file "$PG_DB" "$PG_DIR/db/tests/tests_helpers_cleanup.sql"

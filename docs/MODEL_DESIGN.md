@@ -504,6 +504,30 @@ END $$;
 
 The `negated = true` flag marks the rule whose match **denies** access.
 
+**Rules for exclusion groups:**
+
+- An exclusion group must contain **at least one base (non-negated) rule**.
+  A negated-only group has no base requirement and would grant access to
+  everyone who is not excluded — fail-open. This is enforced at write
+  time (insert the base rule before or together with negated rules), and
+  the evaluator additionally fails closed if such a group exists anyway.
+- `negated = true` is only allowed in exclusion groups.
+- **Multiple base rules in one exclusion group are AND-ed** — all base
+  rules must match (in addition to no negated rule matching). This
+  differs from OpenFGA, where the base of a `difference` is typically a
+  union. To express `(viewer OR editor) BUT NOT blocked`, use **two
+  exclusion groups** (groups are OR'd):
+
+```sql
+-- Group 1: viewer BUT NOT blocked
+-- Group 2: editor BUT NOT blocked
+-- => (viewer OR editor) BUT NOT blocked
+(s, t_doc, r_can_read, authz._rel_computed(), r_viewer,  1, authz._combine_exclusion(), false),
+(s, t_doc, r_can_read, authz._rel_computed(), r_blocked, 1, authz._combine_exclusion(), true),
+(s, t_doc, r_can_read, authz._rel_computed(), r_editor,  2, authz._combine_exclusion(), false),
+(s, t_doc, r_can_read, authz._rel_computed(), r_blocked, 2, authz._combine_exclusion(), true);
+```
+
 **Use cases:**
 - Blocked users: members can comment UNLESS they are blocked
 - Suspended accounts: registered users can log in UNLESS suspended
@@ -1220,10 +1244,69 @@ The import function automatically:
   `tupleToUserset` → TTU
 - Expands `union` into multiple model rules
 
-> **Note:** OpenFGA `intersection` and `exclusion` are supported natively
-> via rule groups. See [Rule Groups — Intersection and Exclusion](#rule-groups--intersection-and-exclusion).
-> The import function currently maps these as warnings — you may need to
-> set `group_id`, `group_op`, and `negated` manually after import.
+> **Note:** `import_openfga_model` translates OpenFGA `intersection` and
+> `difference` (alias: `exclusion`) natively into rule groups (see
+> [Rule Groups — Intersection and Exclusion](#rule-groups--intersection-and-exclusion)):
+>
+> - `intersection` → one **AND group** containing all children
+> - `difference` → **exclusion group(s)**: because base rules within one
+>   exclusion group are AND-ed, a union base is expanded into one group
+>   per base alternative, each carrying the negated subtract rule(s)
+> - operator children of a `union` get their own groups (groups are OR'd)
+>
+> Operators may nest at most **one level below union**. Deeper nesting
+> raises an error — the importer never silently imports a more
+> permissive approximation. Re-model such relations manually as shown
+> below.
+
+#### Example: how intersection/exclusion map to rule groups
+
+Given this OpenFGA model:
+
+```
+type document
+  relations
+    define member: [user]
+    define licensed: [user]
+    define blocked: [user]
+    define can_view: member and licensed
+    define can_comment: member but not blocked
+```
+
+`import_openfga_model` translates this into:
+
+- `can_view` → one intersection group: `member` AND `licensed`
+- `can_comment` → one exclusion group: `member` base, `blocked` negated
+
+The equivalent manual SQL (useful when re-modeling relations the
+importer rejects for deep operator nesting):
+
+```sql
+-- can_view = member AND licensed (intersection group)
+SELECT authz.model_remove_rules('mystore', 'document', 'can_view');
+SELECT authz.model_add_rule('mystore', 'document', 'can_view', 'computed',
+    p_computed_relation => 'member',
+    p_group_id => 1::smallint, p_group_op => 'intersection');
+SELECT authz.model_add_rule('mystore', 'document', 'can_view', 'computed',
+    p_computed_relation => 'licensed',
+    p_group_id => 1::smallint, p_group_op => 'intersection');
+
+-- can_comment = member BUT NOT blocked (exclusion group;
+-- add the base rule before the negated one)
+SELECT authz.model_remove_rules('mystore', 'document', 'can_comment');
+SELECT authz.model_add_rule('mystore', 'document', 'can_comment', 'computed',
+    p_computed_relation => 'member',
+    p_group_id => 1::smallint, p_group_op => 'exclusion');
+SELECT authz.model_add_rule('mystore', 'document', 'can_comment', 'computed',
+    p_computed_relation => 'blocked',
+    p_group_id => 1::smallint, p_group_op => 'exclusion', p_negated => true);
+```
+
+If the OpenFGA base is a union — e.g.
+`define can_read: (viewer or editor) but not blocked` — remember that
+base rules within one exclusion group are AND-ed: use one exclusion
+group per base alternative as shown in
+[Exclusion (BUT NOT)](#exclusion-but-not).
 
 ---
 

@@ -50,6 +50,11 @@ BEGIN
             PERFORM authz._import_register_relations(p_store_id, v_child);
         END LOOP;
     END IF;
+    -- 'difference' is the OpenFGA API key; 'exclusion' is kept as an alias
+    IF p_node->'difference' IS NOT NULL THEN
+        PERFORM authz._import_register_relations(p_store_id, p_node->'difference'->'base');
+        PERFORM authz._import_register_relations(p_store_id, p_node->'difference'->'subtract');
+    END IF;
     IF p_node->'exclusion' IS NOT NULL THEN
         PERFORM authz._import_register_relations(p_store_id, p_node->'exclusion'->'base');
         PERFORM authz._import_register_relations(p_store_id, p_node->'exclusion'->'subtract');
@@ -58,14 +63,21 @@ END;
 $$;
 
 ------------------------------------------------------------------------
--- _import_rule: converts a single OpenFGA rule node into a models row.
+-- _import_rule: converts a single OpenFGA leaf rule node into a models
+-- row, optionally inside a rule group (intersection/exclusion).
 -- Handles: this (direct), computedUserset (computed), tupleToUserset (ttu).
+-- Anything else (a nested operator where a leaf is required) raises —
+-- importing an approximation would silently grant more access than the
+-- original model.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._import_rule(
     p_store_id  smallint,
     p_type_name text,
     p_rel_name  text,
-    p_node      jsonb
+    p_node      jsonb,
+    p_group_id  smallint DEFAULT 0,
+    p_group_op  smallint DEFAULT 0,
+    p_negated   boolean  DEFAULT false
 ) RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -74,26 +86,84 @@ DECLARE
 BEGIN
     -- this -> direct
     IF p_node ? 'this' THEN
-        INSERT INTO authz.models (store_id, object_type, relation, rule_type, computed_relation, tupleset_relation, tupleset_computed)
-        VALUES (p_store_id, authz._t(p_store_id, p_type_name), authz._r(p_store_id, p_rel_name), authz._rel_direct(), NULL, NULL, NULL);
+        INSERT INTO authz.models (store_id, object_type, relation, rule_type, computed_relation, tupleset_relation, tupleset_computed, group_id, group_op, negated)
+        VALUES (p_store_id, authz._t(p_store_id, p_type_name), authz._r(p_store_id, p_rel_name), authz._rel_direct(), NULL, NULL, NULL, p_group_id, p_group_op, p_negated);
 
     -- computedUserset -> computed
     ELSIF p_node->'computedUserset' IS NOT NULL THEN
         v_computed_rel := p_node->'computedUserset'->>'relation';
-        INSERT INTO authz.models (store_id, object_type, relation, rule_type, computed_relation, tupleset_relation, tupleset_computed)
-        VALUES (p_store_id, authz._t(p_store_id, p_type_name), authz._r(p_store_id, p_rel_name), authz._rel_computed(), authz._r(p_store_id, v_computed_rel), NULL, NULL);
+        INSERT INTO authz.models (store_id, object_type, relation, rule_type, computed_relation, tupleset_relation, tupleset_computed, group_id, group_op, negated)
+        VALUES (p_store_id, authz._t(p_store_id, p_type_name), authz._r(p_store_id, p_rel_name), authz._rel_computed(), authz._r(p_store_id, v_computed_rel), NULL, NULL, p_group_id, p_group_op, p_negated);
 
     -- tupleToUserset -> ttu
     ELSIF p_node->'tupleToUserset' IS NOT NULL THEN
         v_tupleset_rel := p_node->'tupleToUserset'->'tupleset'->>'relation';
         v_computed_rel := p_node->'tupleToUserset'->'computedUserset'->>'relation';
-        INSERT INTO authz.models (store_id, object_type, relation, rule_type, computed_relation, tupleset_relation, tupleset_computed)
-        VALUES (p_store_id, authz._t(p_store_id, p_type_name), authz._r(p_store_id, p_rel_name), authz._rel_ttu(), NULL, authz._r(p_store_id, v_tupleset_rel), authz._r(p_store_id, v_computed_rel));
+        INSERT INTO authz.models (store_id, object_type, relation, rule_type, computed_relation, tupleset_relation, tupleset_computed, group_id, group_op, negated)
+        VALUES (p_store_id, authz._t(p_store_id, p_type_name), authz._r(p_store_id, p_rel_name), authz._rel_ttu(), NULL, authz._r(p_store_id, v_tupleset_rel), authz._r(p_store_id, v_computed_rel), p_group_id, p_group_op, p_negated);
 
     ELSE
-        RAISE WARNING '_import_rule: unrecognized rule node for %.%: %',
+        RAISE EXCEPTION 'import_openfga_model: unsupported rule node for %.% — operators may nest at most one level below union, re-model manually as rule groups: %',
             p_type_name, p_rel_name, p_node::text;
     END IF;
+END;
+$$;
+
+------------------------------------------------------------------------
+-- _import_exclusion: translates an OpenFGA difference/exclusion node
+-- into exclusion rule group(s).
+--
+-- Base rules within ONE exclusion group are AND-ed by this engine,
+-- while an OpenFGA difference base is typically a union — so a union
+-- base is expanded into one exclusion group per base alternative, each
+-- carrying the negated subtract rule(s). A union subtract maps to
+-- multiple negated rules in the same group (any match excludes).
+--
+-- Returns the next free group id.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._import_exclusion(
+    p_store_id    smallint,
+    p_type_name   text,
+    p_rel_name    text,
+    p_base        jsonb,
+    p_subtract    jsonb,
+    p_group_start smallint
+) RETURNS smallint
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_base_children     jsonb[];
+    v_subtract_children jsonb[];
+    v_base              jsonb;
+    v_subtract          jsonb;
+    v_group             smallint := p_group_start;
+BEGIN
+    IF p_base->'union' IS NOT NULL THEN
+        SELECT array_agg(c) INTO v_base_children
+          FROM jsonb_array_elements(p_base->'union'->'child') c;
+    ELSE
+        v_base_children := ARRAY[p_base];
+    END IF;
+
+    IF p_subtract->'union' IS NOT NULL THEN
+        SELECT array_agg(c) INTO v_subtract_children
+          FROM jsonb_array_elements(p_subtract->'union'->'child') c;
+    ELSE
+        v_subtract_children := ARRAY[p_subtract];
+    END IF;
+
+    FOREACH v_base IN ARRAY v_base_children LOOP
+        -- Base rule first: the validation trigger rejects exclusion
+        -- groups that (even transiently) contain only negated rules.
+        PERFORM authz._import_rule(p_store_id, p_type_name, p_rel_name, v_base,
+            v_group, authz._combine_exclusion(), false);
+        FOREACH v_subtract IN ARRAY v_subtract_children LOOP
+            PERFORM authz._import_rule(p_store_id, p_type_name, p_rel_name, v_subtract,
+                v_group, authz._combine_exclusion(), true);
+        END LOOP;
+        v_group := v_group + 1;
+    END LOOP;
+
+    RETURN v_group;
 END;
 $$;
 
@@ -106,7 +176,11 @@ $$;
 --
 -- Supports schema_version 1.1 and 1.2.
 -- Handles: this (direct), computedUserset (computed),
---          tupleToUserset (ttu), and union (multiple rules).
+--          tupleToUserset (ttu), union (OR rules),
+--          intersection (AND rule group), and difference/exclusion
+--          (exclusion rule groups — one per base alternative).
+-- Operators may nest at most one level below union; deeper nesting
+-- raises an error rather than importing a more permissive model.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.import_openfga_model(
     p_store text,
@@ -133,6 +207,8 @@ DECLARE
     v_drut_rel   text;
     v_drut_wild  boolean;
     v_type_restrictions_imported int := 0;
+    v_sub        jsonb;
+    v_next_group smallint;
 BEGIN
     -- Create or get store
     INSERT INTO authz.stores (name) VALUES (p_store)
@@ -242,33 +318,49 @@ BEGIN
                 END IF;
             END IF;
 
-            -- Handle union: process each child
+            -- Translate the relation definition into model rules.
+            -- union children go to group 0 (OR); intersection becomes an
+            -- AND group; difference/exclusion becomes exclusion group(s).
+            -- Operator children of a union get their own groups (groups
+            -- are OR'd), so one nesting level below union is supported.
+            v_next_group := 1;
+
             IF v_rel_def->'union' IS NOT NULL THEN
                 FOR v_child IN SELECT jsonb_array_elements(v_rel_def->'union'->'child')
                 LOOP
-                    PERFORM authz._import_rule(v_store_id, v_type_name, v_rel_name, v_child);
+                    IF v_child->'intersection' IS NOT NULL THEN
+                        FOR v_sub IN SELECT jsonb_array_elements(v_child->'intersection'->'child')
+                        LOOP
+                            PERFORM authz._import_rule(v_store_id, v_type_name, v_rel_name, v_sub,
+                                v_next_group, authz._combine_and(), false);
+                        END LOOP;
+                        v_next_group := v_next_group + 1;
+                    ELSIF COALESCE(v_child->'difference', v_child->'exclusion') IS NOT NULL THEN
+                        v_next_group := authz._import_exclusion(v_store_id, v_type_name, v_rel_name,
+                            COALESCE(v_child->'difference', v_child->'exclusion')->'base',
+                            COALESCE(v_child->'difference', v_child->'exclusion')->'subtract',
+                            v_next_group);
+                    ELSE
+                        PERFORM authz._import_rule(v_store_id, v_type_name, v_rel_name, v_child);
+                    END IF;
                 END LOOP;
 
-            -- Handle intersection/exclusion: not directly supported, but process children
-            -- (the model will be approximate — these need manual review)
+            -- intersection -> one AND group
             ELSIF v_rel_def->'intersection' IS NOT NULL THEN
-                v_warnings := array_append(v_warnings,
-                    format('intersection on %s.%s imported as union (manual review needed)', v_type_name, v_rel_name));
-                RAISE WARNING 'import_openfga_model: intersection on %.% is not natively supported — importing as union (manual review needed)',
-                    v_type_name, v_rel_name;
                 FOR v_child IN SELECT jsonb_array_elements(v_rel_def->'intersection'->'child')
                 LOOP
-                    PERFORM authz._import_rule(v_store_id, v_type_name, v_rel_name, v_child);
+                    PERFORM authz._import_rule(v_store_id, v_type_name, v_rel_name, v_child,
+                        v_next_group, authz._combine_and(), false);
                 END LOOP;
 
-            ELSIF v_rel_def->'exclusion' IS NOT NULL THEN
-                v_warnings := array_append(v_warnings,
-                    format('exclusion on %s.%s imported base only (manual review needed)', v_type_name, v_rel_name));
-                RAISE WARNING 'import_openfga_model: exclusion on %.% is not natively supported — importing base only (manual review needed)',
-                    v_type_name, v_rel_name;
-                PERFORM authz._import_rule(v_store_id, v_type_name, v_rel_name, v_rel_def->'exclusion'->'base');
+            -- difference (OpenFGA API key) / exclusion (alias) -> exclusion group(s)
+            ELSIF COALESCE(v_rel_def->'difference', v_rel_def->'exclusion') IS NOT NULL THEN
+                PERFORM authz._import_exclusion(v_store_id, v_type_name, v_rel_name,
+                    COALESCE(v_rel_def->'difference', v_rel_def->'exclusion')->'base',
+                    COALESCE(v_rel_def->'difference', v_rel_def->'exclusion')->'subtract',
+                    v_next_group);
 
-            -- Single rule (no union wrapper)
+            -- Single rule (no operator wrapper)
             ELSE
                 PERFORM authz._import_rule(v_store_id, v_type_name, v_rel_name, v_rel_def);
             END IF;
@@ -293,8 +385,8 @@ $$;
 -- import_openfga_tuples: imports tuples from an OpenFGA JSON export.
 -- Expects the format returned by the OpenFGA ReadTuples API:
 --   {"tuples": [{"key": {"user": "...", "relation": "...", "object": "..."}, ...}]}
--- Uses write_tuple (colon notation) internally, so user/object formats
--- like "type:id" and "type:id#relation" are supported.
+-- Parses OpenFGA colon notation: user is "type:id", "type:id#relation"
+-- (userset), or "type:*" (wildcard); object is "type:id".
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.import_openfga_tuples(
     p_store  text,
@@ -307,6 +399,11 @@ DECLARE
     v_user      text;
     v_relation  text;
     v_object    text;
+    v_user_type text;
+    v_user_id   text;
+    v_user_rel  text;
+    v_obj_type  text;
+    v_obj_id    text;
     v_condition jsonb;
     v_cond_name text;
     v_cond_ctx  jsonb;
@@ -319,6 +416,27 @@ BEGIN
         v_relation := v_key->>'relation';
         v_object   := v_key->>'object';
 
+        IF v_user IS NULL OR position(':' in v_user) = 0
+           OR v_object IS NULL OR position(':' in v_object) = 0 THEN
+            RAISE EXCEPTION 'import_openfga_tuples: user and object must use "type:id" notation, got user=%, object=%',
+                v_user, v_object;
+        END IF;
+
+        -- user: "type:id", "type:id#relation", or "type:*"
+        -- (split at the FIRST colon — ids may contain colons)
+        v_user_type := split_part(v_user, ':', 1);
+        v_user_id   := substr(v_user, length(v_user_type) + 2);
+        IF position('#' in v_user_id) > 0 THEN
+            v_user_rel := split_part(v_user_id, '#', 2);
+            v_user_id  := split_part(v_user_id, '#', 1);
+        ELSE
+            v_user_rel := NULL;
+        END IF;
+
+        -- object: "type:id"
+        v_obj_type := split_part(v_object, ':', 1);
+        v_obj_id   := substr(v_object, length(v_obj_type) + 2);
+
         -- Handle condition if present
         v_condition := v_key->'condition';
         IF v_condition IS NOT NULL AND v_condition <> 'null'::jsonb THEN
@@ -329,7 +447,11 @@ BEGIN
             v_cond_ctx  := NULL;
         END IF;
 
-        PERFORM authz.write_tuple(p_store, v_user, v_relation, v_object, v_cond_name, v_cond_ctx);
+        PERFORM authz.write_tuple(p_store,
+            v_user_type, v_user_id, v_relation, v_obj_type, v_obj_id,
+            p_user_relation     => v_user_rel,
+            p_condition         => v_cond_name,
+            p_condition_context => v_cond_ctx);
         v_count := v_count + 1;
     END LOOP;
 

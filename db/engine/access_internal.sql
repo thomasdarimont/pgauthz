@@ -666,6 +666,13 @@ BEGIN
             v_cur_group    := rule.group_id;
             v_cur_group_op := rule.group_op;
             v_group_pass   := true;
+            -- Rules are ordered base-before-negated: if an exclusion
+            -- group's first rule is negated, it has no base rule and
+            -- must fail closed (write-time validation normally prevents
+            -- this state).
+            IF v_cur_group_op = authz._combine_exclusion() AND rule.negated THEN
+                v_group_pass := false;
+            END IF;
             IF v_trace THEN
                 v_group_start := clock_timestamp();
             END IF;

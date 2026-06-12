@@ -23,7 +23,7 @@ BEGIN
     INSERT INTO authz.types (store_id, name) VALUES (s, 'user'), (s, 'resource');
     INSERT INTO authz.relations (store_id, name) VALUES
         (s, 'member'), (s, 'licensed'), (s, 'blocked'), (s, 'admin'),
-        (s, 'can_view'), (s, 'can_comment');
+        (s, 'can_view'), (s, 'can_comment'), (s, 'can_react');
 
     t_resource    := authz._t(s, 'resource');
     r_member      := authz._r(s, 'member');
@@ -147,6 +147,111 @@ BEGIN
       INTO v_result, v_detail
       FROM authz.explain_access('test_groups', 'user', 'carol', 'can_comment', 'resource', 'r1') e;
     PERFORM _test_assert_true('grp_14_explain_access_exclusion', v_result, v_detail);
+END;
+$$;
+SELECT * FROM _test_teardown_groups();
+
+-- ================================================================
+-- Exclusion group validation: a group with only negated rules has
+-- no base requirement and would grant access to everyone who is not
+-- excluded (fail-open). Such groups must be rejected at write time,
+-- and the evaluator must fail closed if one exists anyway.
+-- ================================================================
+
+-- grp_15: direct INSERT of a negated-only exclusion group is rejected
+SELECT _test_setup_groups();
+DO $$
+DECLARE s smallint := authz._s('test_groups');
+BEGIN
+    INSERT INTO authz.models (store_id, object_type, relation, rule_type,
+                              computed_relation, group_id, group_op, negated)
+    VALUES (s, authz._t(s, 'resource'), authz._r(s, 'can_react'),
+            authz._rel_computed(), authz._r(s, 'blocked'),
+            1, authz._combine_exclusion(), true);
+    PERFORM _test_assert_true('grp_15_negated_only_group_rejected', false, 'expected exception');
+EXCEPTION WHEN raise_exception THEN
+    PERFORM _test_assert_true('grp_15_negated_only_group_rejected',
+        SQLERRM LIKE '%exclusion group%base%', SQLERRM);
+END;
+$$;
+SELECT * FROM _test_teardown_groups();
+
+-- grp_16: model_add_rule with negated => true into an empty group is rejected
+SELECT _test_setup_groups();
+DO $$
+BEGIN
+    PERFORM authz.model_add_rule('test_groups', 'resource', 'can_react', 'computed',
+        p_computed_relation => 'blocked',
+        p_group_id => 1::smallint, p_group_op => 'exclusion', p_negated => true);
+    PERFORM _test_assert_true('grp_16_add_rule_negated_without_base_rejected', false, 'expected exception');
+EXCEPTION WHEN raise_exception THEN
+    PERFORM _test_assert_true('grp_16_add_rule_negated_without_base_rejected',
+        SQLERRM LIKE '%exclusion group%base%', SQLERRM);
+END;
+$$;
+SELECT * FROM _test_teardown_groups();
+
+-- grp_17: removing the last base rule of an exclusion group is rejected
+SELECT _test_setup_groups();
+DO $$
+DECLARE v_base_id smallint;
+BEGIN
+    v_base_id := authz.model_add_rule('test_groups', 'resource', 'can_react', 'computed',
+        p_computed_relation => 'member',
+        p_group_id => 1::smallint, p_group_op => 'exclusion');
+    PERFORM authz.model_add_rule('test_groups', 'resource', 'can_react', 'computed',
+        p_computed_relation => 'blocked',
+        p_group_id => 1::smallint, p_group_op => 'exclusion', p_negated => true);
+
+    PERFORM authz.model_remove_rule('test_groups', v_base_id);
+    PERFORM _test_assert_true('grp_17_remove_last_base_rule_rejected', false, 'expected exception');
+EXCEPTION WHEN raise_exception THEN
+    PERFORM _test_assert_true('grp_17_remove_last_base_rule_rejected',
+        SQLERRM LIKE '%exclusion group%base%', SQLERRM);
+END;
+$$;
+SELECT * FROM _test_teardown_groups();
+
+-- grp_18: negated rules outside exclusion groups are rejected
+SELECT _test_setup_groups();
+DO $$
+DECLARE s smallint := authz._s('test_groups');
+BEGIN
+    INSERT INTO authz.models (store_id, object_type, relation, rule_type,
+                              computed_relation, group_id, group_op, negated)
+    VALUES (s, authz._t(s, 'resource'), authz._r(s, 'can_react'),
+            authz._rel_computed(), authz._r(s, 'blocked'),
+            1, authz._combine_or(), true);
+    PERFORM _test_assert_true('grp_18_negated_outside_exclusion_rejected', false, 'expected exception');
+EXCEPTION WHEN raise_exception THEN
+    PERFORM _test_assert_true('grp_18_negated_outside_exclusion_rejected',
+        SQLERRM LIKE '%negated%exclusion%', SQLERRM);
+END;
+$$;
+SELECT * FROM _test_teardown_groups();
+
+-- grp_19: the evaluator fails closed on a negated-only exclusion group.
+-- The validation trigger is bypassed via session_replication_role
+-- (superuser-only) to simulate a model that predates validation.
+DO $$
+DECLARE s smallint;
+BEGIN
+    PERFORM _test_setup_groups();
+    s := authz._s('test_groups');
+
+    PERFORM set_config('session_replication_role', 'replica', true);
+    INSERT INTO authz.models (store_id, object_type, relation, rule_type,
+                              computed_relation, group_id, group_op, negated)
+    VALUES (s, authz._t(s, 'resource'), authz._r(s, 'can_react'),
+            authz._rel_computed(), authz._r(s, 'blocked'),
+            1, authz._combine_exclusion(), true);
+    PERFORM set_config('session_replication_role', 'origin', true);
+
+    -- alice is not blocked, but with no base rule nothing grants can_react:
+    -- the group must fail closed, not grant everyone-not-blocked.
+    PERFORM _test_assert('grp_19_negated_only_group_fails_closed',
+        authz.check_access('test_groups', 'user', 'alice', 'can_react', 'resource', 'r1')::text,
+        'false');
 END;
 $$;
 SELECT * FROM _test_teardown_groups();
