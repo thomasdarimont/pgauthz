@@ -684,10 +684,12 @@ SELECT authz.delete_tuple('demo',
 
 -- 6g. Audit partition management --------------------------------------------
 -- The audit table is partitioned by RANGE on performed_at (monthly).
--- Create partitions for specific months to manage retention:
+-- ensure_audit_partitions() creates the current month plus N months
+-- ahead (default 1). init.sh runs it at setup; schedule it (e.g. daily)
+-- so rows never accumulate in the default partition:
 
-SELECT authz._ensure_audit_partition(2026, 3);
-SELECT authz._ensure_audit_partition(2026, 4);
+SELECT authz.ensure_audit_partitions();        -- current + next month
+SELECT authz.ensure_audit_partitions(3);       -- current + three ahead
 
 -- To drop old audit data, just detach and drop old partitions:
 -- ALTER TABLE authz.tuples_audit DETACH PARTITION authz.tuples_audit_2025_01;

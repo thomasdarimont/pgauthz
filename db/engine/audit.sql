@@ -4,6 +4,42 @@
 -- Depends on: engine/core_internal.sql, engine/audit_internal.sql
 
 ------------------------------------------------------------------------
+-- ensure_audit_partitions: creates monthly audit partitions for the
+-- current month and p_months_ahead following months. Returns the
+-- number of partitions created (0 when all already exist).
+--
+-- Run this periodically (e.g. daily) from a scheduler so audit rows
+-- never accumulate in the default partition and old months can be
+-- dropped for retention. init.sh calls it once at setup; see
+-- docs/DEVELOPMENT.md ("Audit partition maintenance") for scheduling.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.ensure_audit_partitions(
+    p_months_ahead int DEFAULT 1
+) RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_created int := 0;
+    v_month   date;
+    i         int;
+BEGIN
+    IF p_months_ahead < 0 THEN
+        RAISE EXCEPTION 'p_months_ahead must be >= 0';
+    END IF;
+
+    FOR i IN 0 .. p_months_ahead LOOP
+        v_month := (date_trunc('month', now()) + make_interval(months => i))::date;
+        IF authz._ensure_audit_partition(
+               extract(year  from v_month)::int,
+               extract(month from v_month)::int) THEN
+            v_created := v_created + 1;
+        END IF;
+    END LOOP;
+
+    RETURN v_created;
+END;
+$$;
+
+------------------------------------------------------------------------
 -- audit_check_access: "Could user X do action Y on resource Z at time T?"
 -- Reconstructs the tuple state at p_at by replaying the audit log
 -- into a snapshot temp table, then runs a check against that snapshot.

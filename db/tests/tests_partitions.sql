@@ -133,6 +133,42 @@ END;
 $$;
 SELECT * FROM _test_teardown_part();
 
+-- ================================================================
+-- ensure_audit_partitions: scheduled/automatic monthly partitions
+-- ================================================================
+-- The created partitions (current + next month) are intentionally
+-- left in place — that is the desired operational state.
+DO $$
+DECLARE
+    v_cur  text := 'tuples_audit_' || to_char(now(), 'YYYY_MM');
+    v_next text := 'tuples_audit_' || to_char(date_trunc('month', now()) + interval '1 month', 'YYYY_MM');
+BEGIN
+    PERFORM authz.ensure_audit_partitions();
+
+    -- part_10: partitions for the current and next month exist
+    PERFORM _test_assert('part_10_current_and_next_month_partitions_exist',
+        (SELECT count(*) FROM pg_catalog.pg_class c
+           JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'authz'
+            AND c.relname IN (v_cur, v_next)
+            AND c.relispartition)::text, '2');
+
+    -- part_11: second call is an idempotent no-op
+    PERFORM _test_assert('part_11_ensure_audit_partitions_idempotent',
+        authz.ensure_audit_partitions()::text, '0');
+
+    -- part_12: new audit rows land in the monthly partition, not the default
+    PERFORM _test_setup_part();
+    PERFORM authz.write_tuple('test_part', 'user', 'u9', 'viewer', 'plain', 'p9');
+    PERFORM _test_assert('part_12_audit_row_in_monthly_partition',
+        (SELECT c.relname FROM authz.tuples_audit a
+           JOIN pg_catalog.pg_class c ON c.oid = a.tableoid
+          WHERE a.store_id = authz._s('test_part')
+            AND a.user_id = 'u9'), v_cur);
+END;
+$$;
+SELECT * FROM _test_teardown_part();
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_part();
 DROP FUNCTION IF EXISTS _test_setup_part();

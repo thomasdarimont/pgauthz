@@ -23,6 +23,9 @@ psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/tuples.sql"
 psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/audit.sql"
 psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/model.sql"
 
+echo "==> Creating audit partitions (current + next month)..."
+psql_exec "$PG_DB" -c "SELECT authz.ensure_audit_partitions();"
+
 echo "==> Loading OpenFGA import functions..."
 psql_file "$PG_DB" "$SCRIPT_DIR/db/openfga/functions_openfga.sql"
 

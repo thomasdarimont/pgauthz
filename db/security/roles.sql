@@ -129,6 +129,7 @@ GRANT EXECUTE ON FUNCTION authz.grant_namespace_access(text, text, text, boolean
 GRANT EXECUTE ON FUNCTION authz.revoke_namespace_access(text, text, text, boolean, boolean) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.find_redundant_tuples(text, text, text, jsonb) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.cleanup_redundant_tuples(text, text, text, jsonb, boolean) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.ensure_audit_partitions(int) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.create_store(text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.delete_store(text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_register_type(text, text, int, text, text) TO authz_admin;
@@ -169,6 +170,7 @@ ALTER FUNCTION authz.grant_namespace_access(text, text, text, boolean, boolean) 
 ALTER FUNCTION authz.revoke_namespace_access(text, text, text, boolean, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.find_redundant_tuples(text, text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.cleanup_redundant_tuples(text, text, text, jsonb, boolean) SECURITY DEFINER;
+ALTER FUNCTION authz.ensure_audit_partitions(int) SECURITY DEFINER;
 ALTER FUNCTION authz.create_store(text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_store(text) SECURITY DEFINER;
 ALTER FUNCTION authz.model_register_type(text, text, int, text, text) SECURITY DEFINER;

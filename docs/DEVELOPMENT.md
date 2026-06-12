@@ -300,12 +300,37 @@ Therefore, create partitions **ahead of need**, not lazily under load:
 
 - **Tuple partitions:** call `_ensure_tuple_partition` when you register a
   new object type, while the type has no tuples yet.
-- **Audit partitions:** create the current and next month up front, e.g.
-  from a scheduled job, so rows never accumulate in the default partition:
+- **Audit partitions:** keep the current and next month created via
+  `ensure_audit_partitions()` (see below).
+
+### Audit partition maintenance
+
+`authz.ensure_audit_partitions(p_months_ahead int DEFAULT 1)` creates
+monthly audit partitions for the current month plus N months ahead and
+migrates any rows of those months out of the default partition. It is
+idempotent (returns the number of partitions created) and granted to
+`authz_admin`. `init.sh` runs it once at setup.
+
+Schedule it so month rollovers never let rows accumulate in the default
+partition — the default partition is only a fail-safe, and retention
+(dropping old months) requires rows to live in their monthly partitions:
+
+```bash
+# External cron (daily):
+0 3 * * *  psql "$AUTHZ_DB_URL" -c 'SELECT authz.ensure_audit_partitions()'
+```
 
 ```sql
-SELECT authz._ensure_audit_partition(2026, 6);
-SELECT authz._ensure_audit_partition(2026, 7);
+-- Or with the pg_cron extension, if installed:
+SELECT cron.schedule('authz-audit-partitions', '0 3 * * *',
+    $$SELECT authz.ensure_audit_partitions()$$);
+```
+
+Retention then becomes a cheap partition drop:
+
+```sql
+ALTER TABLE authz.tuples_audit DETACH PARTITION authz.tuples_audit_2025_01;
+DROP TABLE authz.tuples_audit_2025_01;
 ```
 
 ### Suppressing the audit trail (DBA bulk operations)
