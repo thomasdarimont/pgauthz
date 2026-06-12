@@ -613,6 +613,28 @@ END;
 $$;
 SELECT * FROM _test_teardown_eval();
 
+-- ev_26: a specific tuple shadowed by a wildcard tuple IS redundant.
+-- Excluding the specific tuple must still let the wildcard grant —
+-- the wildcard is a different tuple and stays in effect.
+DO $$
+DECLARE
+    v_count int;
+BEGIN
+    PERFORM _test_setup_eval();
+
+    PERFORM authz.write_tuple('test_eval', 'user', '*',     'viewer', 'doc', 'dw');
+    PERFORM authz.write_tuple('test_eval', 'user', 'alice', 'viewer', 'doc', 'dw');
+
+    SELECT count(*) INTO v_count
+      FROM authz.find_redundant_tuples('test_eval', 'doc', 'viewer')
+     WHERE user_id = 'alice' AND object_id = 'dw';
+
+    PERFORM _test_assert_true('ev_26_wildcard_shadowed_tuple_redundant',
+        v_count = 1, 'count=' || v_count::text);
+END;
+$$;
+SELECT * FROM _test_teardown_eval();
+
 -- ================================================================
 
 DROP FUNCTION IF EXISTS _test_teardown_eval();

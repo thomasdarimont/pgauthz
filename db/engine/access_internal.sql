@@ -103,18 +103,22 @@ DECLARE
     tpl     record;
     v_child boolean;
     v_cond_name text;
-    v_skip_direct boolean := false;
+    v_skip_direct   boolean := false;
+    v_skip_wildcard boolean := false;
 BEGIN
     -- If this exact tuple is excluded (used by find_redundant_tuples),
-    -- skip the direct match but still check userset/contextual paths.
-    v_skip_direct := (
-        p_exclude IS NOT NULL
-        AND p_user_type   = (p_exclude).user_type
-        AND p_user_id     = (p_exclude).user_id
-        AND p_relation    = (p_exclude).relation
-        AND p_object_type = (p_exclude).object_type
-        AND p_object_id   = (p_exclude).object_id
-    );
+    -- skip its direct match but still check every other path — wildcard,
+    -- userset, contextual. The wildcard probe targets a DIFFERENT tuple
+    -- (user_id = '*'), so it is only skipped when the exclusion itself
+    -- targets the wildcard tuple.
+    IF p_exclude IS NOT NULL
+       AND p_user_type   = (p_exclude).user_type
+       AND p_relation    = (p_exclude).relation
+       AND p_object_type = (p_exclude).object_type
+       AND p_object_id   = (p_exclude).object_id THEN
+        v_skip_direct   := p_user_id = (p_exclude).user_id;
+        v_skip_wildcard := (p_exclude).user_id = '*';
+    END IF;
 
     IF NOT v_skip_direct THEN
     -- Direct tuple check: fast path for unconditional tuples, then conditional
@@ -149,7 +153,9 @@ BEGIN
         END IF;
         RETURN true;
     END IF;
+    END IF; -- NOT v_skip_direct (exact tuple probe)
 
+    IF NOT v_skip_wildcard THEN
     -- Wildcard tuple check (user_type:*): fast path then conditional
     IF EXISTS (
         SELECT 1 FROM authz.tuples
@@ -182,7 +188,9 @@ BEGIN
         END IF;
         RETURN true;
     END IF;
+    END IF; -- NOT v_skip_wildcard
 
+    IF NOT v_skip_direct THEN
     -- Trace: tuple exists but condition denied it
     IF p_trace AND EXISTS (
         SELECT 1 FROM authz.tuples
