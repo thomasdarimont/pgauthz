@@ -76,13 +76,13 @@ echo "==> [primary] Loading OpenFGA import functions..."
 psql_primary < "$PG_DIR/db/openfga/functions_openfga.sql"
 
 echo "==> [primary] Loading demo model..."
-psql_primary < "$PG_DIR/db/models/demo/model.sql"
+psql_primary < "$PG_DIR/examples/demo/model.sql"
 
 echo "==> [primary] Loading materialized permissions infrastructure..."
 psql_primary < "$SCRIPT_DIR/materialized_permissions.sql"
 
 echo "==> [primary] Loading demo seed data..."
-psql_primary < "$PG_DIR/db/models/demo/seed.sql"
+psql_primary < "$PG_DIR/examples/demo/seed.sql"
 
 echo "==> [primary] Building materialized permissions (initial full refresh)..."
 psql_primary -c "SELECT authz.refresh_all_materialized_permissions('demo') AS permissions_created;"
@@ -115,7 +115,7 @@ echo "==> [accounting-app] Loading OpenFGA import functions..."
 psql_accounting < "$PG_DIR/db/openfga/functions_openfga.sql"
 
 echo "==> [accounting-app] Loading demo model (creates partitions, no tuples)..."
-psql_accounting < "$PG_DIR/db/models/demo/model.sql"
+psql_accounting < "$PG_DIR/examples/demo/model.sql"
 
 echo "==> [accounting-app] Creating subscriptions..."
 psql_accounting < "$SCRIPT_DIR/setup-subscription.sql"

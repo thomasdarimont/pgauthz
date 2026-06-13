@@ -30,8 +30,13 @@ cd authz/pgauthz
 ./bootstrap.sh
 ```
 
-The bootstrap script starts PostgreSQL, PostgREST, and OPA via docker compose,
-then loads schema, functions, model, seed data, and runs all tests.
+`bootstrap.sh` starts PostgreSQL, PostgREST, and OPA via docker compose,
+installs the engine, loads the **demo** example model, and runs all tests.
+
+To install **only the engine** — schema, functions, OpenFGA import, audit
+partitions, and security roles, with no example stores — run `./init.sh`
+instead. Example models live in [`examples/`](#example-models) and are
+loaded separately (see below).
 
 ## Connecting
 
@@ -695,7 +700,8 @@ Every authorization operation is scoped to a **store** — an independent
 authorization namespace. Each store has its own types, relations, models,
 conditions, and tuples. Stores are fully isolated from each other.
 
-The demo store is called `'demo'` and is created by `db/models/demo/model.sql`.
+The demo store is called `'demo'` and is created by the example model
+`examples/demo/model.sql` (see [Example Models](#example-models)).
 
 ```sql
 -- Create a new store for testing a model change
@@ -968,6 +974,44 @@ GRANT authz_writer TO my_backend_user;
 GRANT authz_admin TO my_admin_user;
 ```
 
+## Example Models
+
+The [`examples/`](examples/) directory contains ready-to-load authorization
+models. They are **not** part of the deployable engine — `init.sh` installs
+only the schema and functions, and you load an example on top of it when you
+want one. Each model is independent; load any combination into the same
+database (every store is isolated).
+
+| Example | Models | Files |
+|---|---|---|
+| `examples/demo/` | Professional-services engagements: internal/client users, teams, data spaces, documents, conditions, audit | `model.sql`, `seed.sql`, `tests.sql`, `demo.sql` |
+| `examples/gdrive/` | Google-Drive-style hierarchical folders and documents (deep TTU nesting) | `model.sql`, `seed.sql`, `demo.sql` |
+| `examples/github/` | GitHub repo roles (`admin → maintainer → writer → triager → reader`), imported from an OpenFGA JSON model | `model.sql`, `seed.sql`, `demo.sql` |
+
+In each: `model.sql` defines the types/relations/rules (creates the store),
+`seed.sql` loads sample tuples, `demo.sql` runs a showcase of example
+queries, and `tests.sql` (demo only) asserts expected decisions.
+
+### Loading an example
+
+The engine must be installed first (`./init.sh`, or `./bootstrap.sh` which
+also loads the demo). Then pipe the model and seed into the database:
+
+```bash
+DB=$(docker compose ps -q authz-db)
+
+# Load the gdrive example (model + sample tuples)
+cat examples/gdrive/model.sql examples/gdrive/seed.sql \
+  | docker exec -i "$DB" psql -U authz -d authz
+
+# Run its showcase queries
+docker exec -i "$DB" psql -U authz -d authz < examples/gdrive/demo.sql
+```
+
+`./bootstrap.sh` loads the `demo` example automatically (it is also the
+fixture for the test suite and the OPA/AuthZEN integration tests, whose
+default store is `demo`).
+
 ## File Structure
 
 | Path | Purpose |
@@ -975,8 +1019,8 @@ GRANT authz_admin TO my_admin_user;
 | `db/engine/` | Core authorization engine — schema, access checks, tuple management, audit, model rules |
 | `db/security/` | Role definitions and GRANT/SECURITY DEFINER setup |
 | `db/openfga/` | OpenFGA JSON model and tuple import |
-| `db/models/` | Example authorization models (demo, gdrive, github) with seed data and tests |
-| `db/tests/` | Test suites (API, search, namespace, wildcards, contextual, intersection, etc.) |
+| `tests/sql/` | Test suites (API, search, namespace, wildcards, contextual, intersection, etc.) |
+| `examples/` | Example authorization models (demo, gdrive, github) — **not** part of the deployable engine; see [Example Models](#example-models) |
 | `authzen/` | Go AuthZEN 1.0 HTTP API layer ([see authzen/README.md](authzen/README.md)) |
 | `opa/` | Rego policies for JWT authn + Zanzibar authz via PostgREST |
 | `docs/` | Design documents, development guide, model design, OPA integration |

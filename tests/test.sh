@@ -10,71 +10,84 @@ PG_DIR="$SCRIPT_DIR/.."
 source "$PG_DIR/env.sh"
 
 # Load shared test helpers (_assert, _assert_true, _test_reset, _test_report)
-psql_file "$PG_DB" "$PG_DIR/db/tests/tests_helpers.sql"
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_helpers.sql"
+
+# Test login roles (app_readonly/app_readwrite/app_auditor) used by the
+# integration suites. These are test scaffolding, not part of the engine,
+# so they live here rather than in init.sh. Idempotent.
+psql_file "$PG_DB" "$PG_DIR/tests/sql/test_users.sql"
+
+# The demo model is a fixture for the integration tests below (and for
+# the OPA/AuthZEN suites, whose DEFAULT_STORE is 'demo'). init.sh no
+# longer loads it, so load it here — idempotent, safe to re-run.
+echo "==> Loading demo model fixture..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/examples/demo/model.sql"
+psql_file "$PG_DB" "$PG_DIR/examples/demo/seed.sql"
 
 echo "==> Running demo model checks..."
 echo ""
-psql_file "$PG_DB" "$PG_DIR/db/models/demo/tests.sql"
+psql_file "$PG_DB" "$PG_DIR/examples/demo/tests.sql"
 
 echo ""
 echo "==> Running contextual / condition checks..."
 echo ""
-psql_file "$PG_DB" "$PG_DIR/db/tests/tests_contextual.sql"
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_contextual.sql"
 
 echo ""
 echo "==> Running search API checks..."
 echo ""
-psql_file "$PG_DB" "$PG_DIR/db/tests/tests_search.sql"
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_search.sql"
 
 echo ""
 echo "==> Running API function checks..."
 echo ""
-psql_file "$PG_DB" "$PG_DIR/db/tests/tests_api.sql"
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_api.sql"
 
 echo ""
 echo "==> Running namespace access control checks..."
 echo ""
-psql_file "$PG_DB" "$PG_DIR/db/tests/tests_namespace.sql"
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_namespace.sql"
 
 echo ""
 echo "==> Running intersection / exclusion checks..."
 echo ""
-psql_file "$PG_DB" "$PG_DIR/db/tests/tests_intersection.sql"
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_intersection.sql"
 
 echo ""
 echo "==> Running wildcard tuple checks..."
 echo ""
-psql_file "$PG_DB" "$PG_DIR/db/tests/tests_wildcard.sql"
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_wildcard.sql"
 
 echo ""
 echo "==> Running eval_rule unit checks..."
 echo ""
-psql_file "$PG_DB" "$PG_DIR/db/tests/tests_eval_rule.sql"
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_eval_rule.sql"
 
 echo ""
 echo "==> Running type restriction checks..."
 echo ""
-psql_file "$PG_DB" "$PG_DIR/db/tests/tests_type_restrictions.sql"
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_type_restrictions.sql"
 
 echo ""
 echo "==> Running partition management checks..."
 echo ""
-psql_file "$PG_DB" "$PG_DIR/db/tests/tests_partitions.sql"
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_partitions.sql"
 
 echo ""
 echo "==> Running OpenFGA import checks..."
 echo ""
-psql_file "$PG_DB" "$PG_DIR/db/tests/tests_openfga.sql"
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_openfga.sql"
 
 echo ""
 echo "==> Running recursion / cycle checks..."
 echo ""
-psql_file "$PG_DB" "$PG_DIR/db/tests/tests_recursion.sql"
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_recursion.sql"
 
 echo ""
 echo "==> Running object wildcard checks..."
 echo ""
-psql_file "$PG_DB" "$PG_DIR/db/tests/tests_object_wildcard.sql"
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_object_wildcard.sql"
 
 # Clean up test helpers
-psql_file "$PG_DB" "$PG_DIR/db/tests/tests_helpers_cleanup.sql"
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_helpers_cleanup.sql"

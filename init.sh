@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 #
-# Starts PostgreSQL and loads the authorization schema, functions,
-# model rules, and seed data. Idempotent — safe to re-run.
+# Starts PostgreSQL and installs the authorization engine: schema,
+# functions, OpenFGA import, audit partitions, and security roles.
+# Idempotent — safe to re-run.
+#
+# This installs the ENGINE ONLY — no example models or stores. To load
+# an example, see examples/ (e.g. ./bootstrap.sh loads the demo model
+# and runs the test suite).
 #
 set -euo pipefail
 
@@ -29,23 +34,16 @@ psql_exec "$PG_DB" -c "SELECT authz.ensure_audit_partitions();"
 echo "==> Loading OpenFGA import functions..."
 psql_file "$PG_DB" "$SCRIPT_DIR/db/openfga/functions_openfga.sql"
 
-echo "==> Loading demo model rules..."
-psql_file "$PG_DB" "$SCRIPT_DIR/db/models/demo/model.sql"
-
-echo "==> Loading demo model seed data..."
-psql_file "$PG_DB" "$SCRIPT_DIR/db/models/demo/seed.sql"
-
 echo "==> Setting up security roles..."
 psql_file "$PG_DB" "$SCRIPT_DIR/db/security/roles.sql"
 
-echo "==> Creating test login users..."
-psql_file "$PG_DB" "$SCRIPT_DIR/db/tests/test_users.sql"
-
 echo ""
-echo "==> Done. Connect with:"
+echo "==> Engine installed (no example stores). Connect with:"
 echo "    docker exec -it $DB_CONTAINER psql -U $PG_USER -d $PG_DB"
 echo ""
-echo "    Example queries:"
-echo "      SELECT authz.check_access('demo','internal_user','alice','can_read','document','doc_payroll_001');"
-echo "      SELECT * FROM authz.list_objects('demo','internal_user','bob','can_read','document');"
+echo "    Load an example model (creates the 'demo' store):"
+echo "      ./tests/test.sh        # loads + tests the demo model"
+echo "      # or manually:"
+echo "      cat examples/demo/model.sql examples/demo/seed.sql | \\"
+echo "        docker exec -i $DB_CONTAINER psql -U $PG_USER -d $PG_DB"
 echo ""

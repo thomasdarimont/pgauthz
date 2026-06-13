@@ -42,7 +42,7 @@ Application → OPA (optional policy layer) → PostgREST (REST bridge) → Post
 ./tests/test-all.sh      # init.sh + all test suites
 ```
 
-SQL tests use helper assertions defined in `db/tests/tests_helpers.sql`. Individual test files can be run via psql against the running database (source `env.sh` first for the `$PSQL` alias).
+SQL tests use helper assertions defined in `tests/sql/tests_helpers.sql`. Individual test files can be run via psql against the running database (source `env.sh` first for the `$PSQL` alias).
 
 ### Build AuthZEN Go Services
 ```bash
@@ -53,8 +53,8 @@ cd authzen && go build ./cmd/authzen-opa
 ## Key Directories
 
 - `db/engine/` — Core authorization engine SQL (schema, access checks, tuples, models, audit)
-- `db/models/` — Example authorization models (demo, gdrive, github) each with model.sql, seed.sql, tests.sql
-- `db/tests/` — SQL test suites (API, search, contextual tuples, namespaces, intersections, wildcards, type restrictions)
+- `tests/sql/` — SQL test suites (API, search, contextual tuples, namespaces, intersections, wildcards, type restrictions)
+- `examples/` — Example authorization models (demo, gdrive, github), each with model.sql, seed.sql, demo.sql; demo also has tests.sql. Not part of the deployable engine — `init.sh` does not load them; `test.sh`/`bootstrap.sh` load the demo model as a test fixture
 - `db/security/` — PostgreSQL role definitions (authz_reader, authz_writer, authz_admin, authz_auditor)
 - `db/openfga/` — Import functions for existing OpenFGA JSON models/tuples
 - `db/replication/` — Logical replication and materialized permissions patterns

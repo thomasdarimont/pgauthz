@@ -1615,14 +1615,22 @@ BEGIN
     END;
     PERFORM _test_assert_true('api_106_dangling_computed_relation_rejected', v_err IS NULL, v_err);
 
-    -- api_107: a relation belonging to ANOTHER store is rejected
+    -- api_107: a relation belonging to ANOTHER store is rejected.
+    -- Uses a dedicated throwaway store so the test does not depend on
+    -- any example model being loaded.
+    BEGIN PERFORM authz.delete_store('test_api_other'); EXCEPTION WHEN OTHERS THEN NULL; END;
+    PERFORM authz.create_store('test_api_other');
+    INSERT INTO authz.relations (store_id, name)
+    VALUES (authz._s('test_api_other'), 'foreign_rel');
     BEGIN
         INSERT INTO authz.models (store_id, object_type, relation, rule_type)
-        VALUES (s, authz._t(s, 'doc'), authz._r(authz._s('demo'), 'member'), authz._rel_direct());
+        VALUES (s, authz._t(s, 'doc'),
+                authz._r(authz._s('test_api_other'), 'foreign_rel'), authz._rel_direct());
         v_err := 'no exception raised';
     EXCEPTION WHEN foreign_key_violation THEN
         v_err := NULL;
     END;
+    PERFORM authz.delete_store('test_api_other');
     PERFORM _test_assert_true('api_107_cross_store_relation_rejected', v_err IS NULL, v_err);
 
     -- api_108: dangling allowed_user_type in type restrictions is rejected

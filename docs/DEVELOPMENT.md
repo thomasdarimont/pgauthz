@@ -223,7 +223,7 @@ INSERT INTO authz.relations (id, store_id, name) OVERRIDING SYSTEM VALUE VALUES
 ./init.sh
 ```
 
-4. **Add tests** in `db/tests/tests.sql` or `db/tests/tests_search.sql`, then run:
+4. **Add tests** in `tests/sql/tests.sql` or `tests/sql/tests_search.sql`, then run:
 
 ```bash
 ./tests/test.sh
@@ -231,7 +231,7 @@ INSERT INTO authz.relations (id, store_id, name) OVERRIDING SYSTEM VALUE VALUES
 
 ### Adding a new type
 
-1. **Register the type** in `db/models/demo/model.sql`:
+1. **Register the type** in `examples/demo/model.sql`:
 
 ```sql
 INSERT INTO authz.types (id, store_id, name) OVERRIDING SYSTEM VALUE VALUES
@@ -257,7 +257,7 @@ gets its own partition so that `check_access` queries benefit from partition
 pruning — only the relevant partition is scanned.
 
 Partitions are created automatically:
-- For the demo model: via `_ensure_tuple_partition` calls in `db/models/demo/model.sql`
+- For the demo model: via `_ensure_tuple_partition` calls in `examples/demo/model.sql`
 - For imported OpenFGA models: `import_openfga_model` calls it for each type
 
 For high-volume object types (e.g. millions of invoices), you can add a
