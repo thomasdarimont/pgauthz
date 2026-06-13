@@ -457,6 +457,28 @@ $$;
 ------------------------------------------------------------------------
 -- list_objects: find all objects of a type that a user can access.
 -- AuthZen Resource Search: "Which objects can user X do Y on?"
+--
+-- Two phases:
+--
+-- 1. Reverse expansion (recursive CTE): starting from the user's own
+--    tuples (and wildcard tuples covering them), expand forward along
+--    the three grant mechanisms — computed relations, userset
+--    membership, and tuple-to-userset links — to collect every
+--    (object, relation) pair the user can possibly reach. This is an
+--    OVER-approximation: conditions, intersection legs, and exclusions
+--    are ignored, so the candidate set is a guaranteed superset of the
+--    accessible objects. Cost is O(user's reachable set), independent
+--    of how many other objects exist in the store.
+--
+-- 2. Verification: each candidate runs through _check_access, which
+--    is the final word on conditions, intersections, and exclusions.
+--    The ordered candidate set lets the executor stop verifying once
+--    OFFSET+LIMIT matches are found.
+--
+-- Note: for a user who can reach most of the store (e.g. a super
+-- admin), the reachable set approaches the store size and this
+-- degrades to the same O(all objects) as a candidate scan — the win
+-- is for the common case of grant-sparse users on large stores.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.list_objects(
     p_store       text,
@@ -476,17 +498,62 @@ DECLARE
     v_object_type smallint := authz._t(v_store_id, p_object_type);
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
-    -- Deduplicate candidates BEFORE running the recursive check: an
-    -- object with N tuples must be checked once, not N times. The inner
-    -- ORDER BY lets the executor stop checking once OFFSET+LIMIT
-    -- matches are found.
     RETURN QUERY
+        WITH RECURSIVE reach (object_type, object_id, relation) AS (
+            -- Seeds: tuples whose subject is the user, or a wildcard
+            -- of the user's type.
+            SELECT t.object_type, t.object_id, t.relation
+              FROM authz.tuples t
+             WHERE t.store_id      = v_store_id
+               AND t.user_type     = v_user_type
+               AND t.user_id       IN (p_user_id, '*')
+               AND t.user_relation IS NULL
+          UNION
+            -- Expansion: from each reached (object A, relation r),
+            -- follow every mechanism that can grant something further.
+            -- The single LATERAL keeps one recursive reference, as
+            -- required for multiple expansion branches.
+            SELECT e.object_type, e.object_id, e.relation
+              FROM reach r
+              CROSS JOIN LATERAL (
+                  -- computed: r on A implies R on A
+                  SELECT r.object_type, r.object_id, m.relation
+                    FROM authz.models m
+                   WHERE m.store_id          = v_store_id
+                     AND m.object_type       = r.object_type
+                     AND m.rule_type         = 2  -- computed
+                     AND m.computed_relation = r.relation
+                UNION ALL
+                  -- userset: tuples granting (A#r) something on B
+                  SELECT t.object_type, t.object_id, t.relation
+                    FROM authz.tuples t
+                   WHERE t.store_id      = v_store_id
+                     AND t.user_type     = r.object_type
+                     AND t.user_id       = r.object_id
+                     AND t.user_relation = r.relation
+                UNION ALL
+                  -- TTU: link tuple (A)-[ts]->(B) plus a rule on B
+                  -- "R from ts" whose computed relation is r
+                  SELECT t.object_type, t.object_id, m.relation
+                    FROM authz.tuples t
+                    JOIN authz.models m
+                      ON m.store_id          = v_store_id
+                     AND m.object_type       = t.object_type
+                     AND m.rule_type         = 3  -- ttu
+                     AND m.tupleset_relation = t.relation
+                     AND m.tupleset_computed = r.relation
+                   WHERE t.store_id      = v_store_id
+                     AND t.user_type     = r.object_type
+                     AND t.user_id       = r.object_id
+                     AND t.user_relation IS NULL
+              ) AS e (object_type, object_id, relation)
+        )
         SELECT c.object_id
-          FROM (SELECT DISTINCT t.object_id
-                  FROM authz.tuples t
-                 WHERE t.store_id    = v_store_id
-                   AND t.object_type = v_object_type
-                 ORDER BY t.object_id) c
+          FROM (SELECT DISTINCT r.object_id
+                  FROM reach r
+                 WHERE r.object_type = v_object_type
+                   AND r.relation    = v_relation
+                 ORDER BY r.object_id) c
          WHERE authz._check_access(v_store_id, v_user_type, p_user_id, v_relation, v_object_type, c.object_id, context)
          ORDER BY c.object_id
          OFFSET p_offset
