@@ -121,8 +121,22 @@ SELECT * FROM authz.list_objects('demo',
 -- Use this for sharing dialogs or compliance reviews.
 SELECT * FROM authz.list_subjects('demo',
     'internal_user', 'can_read', 'document', 'doc_payroll_001');
--- => alice, bob, julia
+--  subject_id | is_wildcard
+-- ------------+-------------
+--  alice      | f
+--  bob        | f
+--  julia      | f
 ```
+
+When a wildcard grant applies, the result includes a typed wildcard row —
+`subject_id = '*'` with `is_wildcard = true` — meaning **every user of
+this type has access**. `'*'` cannot collide with a real user ID
+(`write_tuple` reserves it as the wildcard). Branch on `is_wildcard` and
+render it as "Everyone" in sharing panels; never drop the row from access
+reviews — it is the one that says the object is public. Take care when
+counting or diffing results (the wildcard row is not one user), and when
+passing subject IDs into pattern contexts (`*` is a metacharacter in
+LDAP filters and globs).
 
 ### list_actions — "What can user X do on object Z?"
 
@@ -413,6 +427,12 @@ Wildcards propagate through computed relations and TTU. If `viewer` implies
 -- list_objects includes wildcard-granted objects
 SELECT * FROM authz.list_objects('demo', 'user', 'anyone', 'can_view', 'document');
 -- => includes public_faq
+
+-- list_subjects reports the wildcard as a typed row ('*' with
+-- is_wildcard = true, "every user of this type") alongside
+-- explicitly granted users
+SELECT * FROM authz.list_subjects('demo', 'user', 'can_view', 'document', 'public_faq');
+-- => ('*', true), ...
 
 -- explain_access shows wildcard matches in the trace
 SELECT authz.explain_access('demo', 'user', 'anyone', 'can_view', 'document', 'public_faq');

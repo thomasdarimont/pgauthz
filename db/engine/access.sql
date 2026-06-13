@@ -497,6 +497,14 @@ $$;
 ------------------------------------------------------------------------
 -- list_subjects: find all users of a type that have a relation on an object.
 -- AuthZen Subject Search: "Which users can do Y on object Z?"
+--
+-- Wildcard grants are reported as a typed row: subject_id '*' with
+-- is_wildcard = true — "every user of this type has access". '*'
+-- cannot collide with a real user (write_tuple reserves it as the
+-- wildcard). Callers rendering subject lists (sharing panels, access
+-- reviews) must branch on is_wildcard, typically rendering "Everyone"
+-- — and must never drop the row: it is the one that says the object
+-- is public.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.list_subjects(
     p_store        text,
@@ -507,7 +515,7 @@ CREATE OR REPLACE FUNCTION authz.list_subjects(
     context        jsonb DEFAULT NULL,
     p_limit        int DEFAULT NULL,
     p_offset       int DEFAULT 0
-) RETURNS TABLE (subject_id text)
+) RETURNS TABLE (subject_id text, is_wildcard boolean)
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
     v_store_id     smallint := authz._s(p_store);
@@ -522,7 +530,7 @@ BEGIN
     -- (there is no reverse index from object to potential users) — see
     -- the scaling note in docs/ARCHITECTURE.md.
     RETURN QUERY
-        SELECT c.user_id
+        SELECT c.user_id, c.user_id = '*'
           FROM (SELECT DISTINCT t.user_id
                   FROM authz.tuples t
                  WHERE t.store_id = v_store_id

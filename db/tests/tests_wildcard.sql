@@ -153,16 +153,47 @@ END;
 $$;
 SELECT * FROM _test_teardown_wildcard();
 
--- wc_18: list_subjects returns * for wildcard tuples
+-- wc_18: list_subjects reports wildcard grants as a typed row:
+-- subject_id '*' with is_wildcard = true ("every user of this type
+-- has access"). '*' is a reserved ID (write_tuple treats it as the
+-- wildcard), so no real user can collide with it.
 DO $$
 DECLARE v_exists boolean;
 BEGIN
     PERFORM _test_setup_wildcard();
     SELECT EXISTS (
         SELECT 1 FROM authz.list_subjects('test_wildcard', 'user', 'can_view', 'resource', 'r2')
-         WHERE subject_id = '*'
+         WHERE subject_id = '*' AND is_wildcard
     ) INTO v_exists;
-    PERFORM _test_assert_true('wc_18_list_subjects_returns_wildcard', v_exists);
+    PERFORM _test_assert_true('wc_18_list_subjects_flags_wildcard', v_exists);
+END;
+$$;
+SELECT * FROM _test_teardown_wildcard();
+
+-- wc_19: no wildcard grant on the object -> no wildcard row
+DO $$
+DECLARE v_exists boolean;
+BEGIN
+    PERFORM _test_setup_wildcard();
+    SELECT EXISTS (
+        SELECT 1 FROM authz.list_subjects('test_wildcard', 'user', 'can_view', 'resource', 'r1')
+         WHERE subject_id = '*' OR is_wildcard
+    ) INTO v_exists;
+    PERFORM _test_assert_true('wc_19_no_wildcard_row_without_wildcard_grant', NOT v_exists);
+END;
+$$;
+SELECT * FROM _test_teardown_wildcard();
+
+-- wc_20: concrete subjects are not flagged as wildcard
+DO $$
+DECLARE v_ok boolean;
+BEGIN
+    PERFORM _test_setup_wildcard();
+    SELECT bool_and(NOT is_wildcard) AND count(*) > 0
+      INTO v_ok
+      FROM authz.list_subjects('test_wildcard', 'user', 'can_view', 'resource', 'r3')
+     WHERE subject_id <> '*';
+    PERFORM _test_assert_true('wc_20_concrete_subjects_not_flagged', v_ok);
 END;
 $$;
 SELECT * FROM _test_teardown_wildcard();
