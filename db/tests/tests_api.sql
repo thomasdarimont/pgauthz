@@ -1638,6 +1638,39 @@ END;
 $$;
 SELECT * FROM _test_teardown_api();
 
+-- ================================================================
+-- check_access_batch (JSONB overload) input validation: malformed
+-- payloads must fail with clear validation errors, like the
+-- _typed_jsonb variant.
+-- ================================================================
+SELECT _test_setup_api();
+DO $$
+DECLARE
+    v_err text;
+BEGIN
+    -- api_109: non-array payload is rejected with a clear message
+    BEGIN
+        PERFORM authz.check_access_batch('test_api', '{"not": "an array"}'::jsonb);
+        v_err := 'no exception raised';
+    EXCEPTION WHEN OTHERS THEN
+        v_err := CASE WHEN SQLERRM LIKE '%must be a JSON array%' THEN NULL ELSE SQLERRM END;
+    END;
+    PERFORM _test_assert_true('api_109_batch_jsonb_rejects_non_array', v_err IS NULL, v_err);
+
+    -- api_110: an element missing a required key names the key
+    BEGIN
+        PERFORM authz.check_access_batch('test_api', '[
+            {"user_id":"alice","relation":"reader","object_type":"doc","object_id":"doc1"}
+        ]'::jsonb);
+        v_err := 'no exception raised';
+    EXCEPTION WHEN OTHERS THEN
+        v_err := CASE WHEN SQLERRM LIKE '%Missing required key%user_type%' THEN NULL ELSE SQLERRM END;
+    END;
+    PERFORM _test_assert_true('api_110_batch_jsonb_rejects_missing_key', v_err IS NULL, v_err);
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_api();
 DROP FUNCTION IF EXISTS _test_setup_api();

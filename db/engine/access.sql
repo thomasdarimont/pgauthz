@@ -346,6 +346,8 @@ BEGIN
         RAISE EXCEPTION 'Invalid semantic: %. Must be execute_all, deny_on_first_deny, or permit_on_first_permit', p_semantic;
     END IF;
 
+    PERFORM authz._validate_tuple_jsonb(p_checks);
+
     v_len := jsonb_array_length(p_checks);
 
     FOR i IN 0 .. v_len - 1
