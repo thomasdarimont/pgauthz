@@ -1007,6 +1007,7 @@ primitives are at full parity — the remaining differences are operational.
 | List users (subject search) | ✅ | ✅ |
 | Multiple stores | ✅ | ✅ |
 | Type restrictions on writes | ✅ | ✅ |
+| Idempotent writes/deletes | ✅ opt-in (`on_duplicate` / `on_missing: ignore`) | ✅ default ** |
 
 \* Exclusion semantics differ in one detail: in OpenFGA, the base of a
 `difference` is typically a union; here, multiple base rules in one
@@ -1015,6 +1016,15 @@ blocked`, use one exclusion group per base alternative (groups are OR'd).
 Exclusion groups must contain at least one base rule — negated-only
 groups are rejected at write time. See
 [MODEL_DESIGN.md](docs/MODEL_DESIGN.md#exclusion-but-not) for details.
+
+\** Duplicate writes and deletes of non-existent tuples never fail here —
+no flag needed. Unlike OpenFGA's ignore mode, the outcome stays
+observable: `write_tuple`/`delete_tuple` return whether anything changed,
+and the batch functions return effective counts. One deliberate
+difference: re-writing an existing tuple with a **different condition**
+is not ignored as a duplicate — the new condition is applied (and
+audited), so a grant never silently stays more or less permissive than
+the caller requested.
 
 ### This solution has, OpenFGA doesn't
 
