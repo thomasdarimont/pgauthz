@@ -1585,6 +1585,59 @@ END;
 $$;
 SELECT * FROM _test_teardown_api();
 
+-- ================================================================
+-- Model referential integrity: rules and type restrictions must not
+-- reference unknown (or other-store) types and relations.
+-- ================================================================
+SELECT _test_setup_api();
+DO $$
+DECLARE
+    s     smallint := authz._s('test_api');
+    v_err text;
+BEGIN
+    -- api_105: dangling object_type is rejected
+    BEGIN
+        INSERT INTO authz.models (store_id, object_type, relation, rule_type)
+        VALUES (s, 32000::smallint, authz._r(s, 'reader'), authz._rel_direct());
+        v_err := 'no exception raised';
+    EXCEPTION WHEN foreign_key_violation THEN
+        v_err := NULL;
+    END;
+    PERFORM _test_assert_true('api_105_dangling_object_type_rejected', v_err IS NULL, v_err);
+
+    -- api_106: dangling computed_relation is rejected
+    BEGIN
+        INSERT INTO authz.models (store_id, object_type, relation, rule_type, computed_relation)
+        VALUES (s, authz._t(s, 'doc'), authz._r(s, 'reader'), authz._rel_computed(), 32000::smallint);
+        v_err := 'no exception raised';
+    EXCEPTION WHEN foreign_key_violation THEN
+        v_err := NULL;
+    END;
+    PERFORM _test_assert_true('api_106_dangling_computed_relation_rejected', v_err IS NULL, v_err);
+
+    -- api_107: a relation belonging to ANOTHER store is rejected
+    BEGIN
+        INSERT INTO authz.models (store_id, object_type, relation, rule_type)
+        VALUES (s, authz._t(s, 'doc'), authz._r(authz._s('demo'), 'member'), authz._rel_direct());
+        v_err := 'no exception raised';
+    EXCEPTION WHEN foreign_key_violation THEN
+        v_err := NULL;
+    END;
+    PERFORM _test_assert_true('api_107_cross_store_relation_rejected', v_err IS NULL, v_err);
+
+    -- api_108: dangling allowed_user_type in type restrictions is rejected
+    BEGIN
+        INSERT INTO authz.type_restrictions (store_id, object_type, relation, allowed_user_type)
+        VALUES (s, authz._t(s, 'doc'), authz._r(s, 'reader'), 32000::smallint);
+        v_err := 'no exception raised';
+    EXCEPTION WHEN foreign_key_violation THEN
+        v_err := NULL;
+    END;
+    PERFORM _test_assert_true('api_108_dangling_allowed_user_type_rejected', v_err IS NULL, v_err);
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_api();
 DROP FUNCTION IF EXISTS _test_setup_api();

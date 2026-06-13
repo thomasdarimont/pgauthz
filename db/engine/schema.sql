@@ -40,7 +40,8 @@ CREATE TABLE authz.types (
     name        text NOT NULL,
     namespace   text,              -- NULL = unrestricted, any writer can manage tuples
     description text,
-    UNIQUE (store_id, name)
+    UNIQUE (store_id, name),
+    UNIQUE (id, store_id)          -- composite FK target: same-store references only
 );
 
 -- Namespace-based access control.
@@ -63,7 +64,8 @@ CREATE TABLE authz.relations (
     store_id    smallint NOT NULL REFERENCES authz.stores(id),
     name        text NOT NULL,
     description text,
-    UNIQUE (store_id, name)
+    UNIQUE (store_id, name),
+    UNIQUE (id, store_id)          -- composite FK target: same-store references only
 );
 
 -- Conditions: named expressions evaluated at check time.
@@ -334,7 +336,15 @@ CREATE TABLE authz.models (
     tupleset_computed  smallint,
     group_id           smallint NOT NULL DEFAULT 0,
     group_op           smallint NOT NULL DEFAULT 0,  -- 0=or, 1=intersection, 2=exclusion
-    negated            boolean  NOT NULL DEFAULT false
+    negated            boolean  NOT NULL DEFAULT false,
+    -- Composite FKs: every referenced type/relation must exist AND
+    -- belong to the same store as the rule. NULL columns skip the
+    -- check (MATCH SIMPLE), so optional references stay optional.
+    FOREIGN KEY (object_type,       store_id) REFERENCES authz.types     (id, store_id),
+    FOREIGN KEY (relation,          store_id) REFERENCES authz.relations (id, store_id),
+    FOREIGN KEY (computed_relation, store_id) REFERENCES authz.relations (id, store_id),
+    FOREIGN KEY (tupleset_relation, store_id) REFERENCES authz.relations (id, store_id),
+    FOREIGN KEY (tupleset_computed, store_id) REFERENCES authz.relations (id, store_id)
 );
 
 CREATE INDEX idx_models_lookup
@@ -455,7 +465,12 @@ CREATE TABLE authz.type_restrictions (
     relation              smallint NOT NULL,
     allowed_user_type     smallint NOT NULL,
     allowed_user_relation smallint,          -- NULL = direct user, non-NULL = userset
-    allow_wildcard        boolean NOT NULL DEFAULT false
+    allow_wildcard        boolean NOT NULL DEFAULT false,
+    -- Composite FKs: same-store references only (see authz.models).
+    FOREIGN KEY (object_type,           store_id) REFERENCES authz.types     (id, store_id),
+    FOREIGN KEY (relation,              store_id) REFERENCES authz.relations (id, store_id),
+    FOREIGN KEY (allowed_user_type,     store_id) REFERENCES authz.types     (id, store_id),
+    FOREIGN KEY (allowed_user_relation, store_id) REFERENCES authz.relations (id, store_id)
 );
 
 -- Expression-based unique constraint (COALESCE needed to handle NULL user_relation).
