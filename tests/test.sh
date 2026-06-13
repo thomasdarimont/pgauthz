@@ -71,5 +71,10 @@ echo "==> Running recursion / cycle checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/db/tests/tests_recursion.sql"
 
+echo ""
+echo "==> Running object wildcard checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/db/tests/tests_object_wildcard.sql"
+
 # Clean up test helpers
 psql_file "$PG_DB" "$PG_DIR/db/tests/tests_helpers_cleanup.sql"

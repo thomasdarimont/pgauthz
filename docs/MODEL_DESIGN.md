@@ -615,6 +615,41 @@ When `check_access` evaluates a direct rule, it first looks for an exact
 distinguishes the two: "tuple found" for exact matches, "wildcard tuple (*)"
 for wildcard matches.
 
+### Object Wildcards (Privileged Grants)
+
+**Use when:** a subject must hold a relation on **every object of a type** —
+super admins, compliance auditors, platform operators. The dual of the
+subject wildcard: `object_id = '*'`.
+
+```sql
+-- Mark the relationship as privileged (default-deny; direct rules only):
+SELECT authz.model_add_rule('mystore', 'document', 'viewer', 'direct',
+    p_allow_object_wildcard => true);
+
+-- One tuple per auditor — covers all current AND future documents:
+SELECT authz.write_tuple('mystore', 'user', 'auditor1', 'viewer', 'document', '*');
+
+-- Or one tuple for a whole auditor group (userset + object wildcard):
+SELECT authz.write_tuple('mystore', 'group', 'auditors', 'viewer', 'document', '*',
+    p_user_relation => 'member');
+```
+
+Why this matters at scale: without the wildcard, an all-access role needs a
+tuple per object (and churn on every create), or resolution through deep
+hierarchies; with it, `check_access` is O(1) and `list_objects` answers with
+the typed `('*', is_wildcard = true)` row instead of enumerating the store —
+the application branches on it and lists from its own database.
+
+Everything composes: computed relations propagate the wildcard grant
+(`viewer` → `can_read`), exclusion groups can still subtract per object,
+conditions on the wildcard tuple make time-boxed break-glass grants, and
+time-travel honors it.
+
+**Design guidance:** writes of `object_id = '*'` are rejected unless the
+direct rule is marked — keep the mark on as few relations as possible, and
+never pass untrusted external identifiers as object IDs (a stray literal
+`'*'` would otherwise be a store-wide grant).
+
 ---
 
 ## 6. Step 5 -- Write Tuples

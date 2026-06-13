@@ -489,7 +489,7 @@ CREATE OR REPLACE FUNCTION authz.list_objects(
     context       jsonb DEFAULT NULL,
     p_limit       int DEFAULT NULL,
     p_offset      int DEFAULT 0
-) RETURNS TABLE (object_id text)
+) RETURNS TABLE (object_id text, is_wildcard boolean)
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
     v_store_id    smallint := authz._s(p_store);
@@ -548,7 +548,7 @@ BEGIN
                      AND t.user_relation IS NULL
               ) AS e (object_type, object_id, relation)
         )
-        SELECT c.object_id
+        SELECT c.object_id, c.object_id = '*'
           FROM (SELECT DISTINCT r.object_id
                   FROM reach r
                  WHERE r.object_type = v_object_type
@@ -814,6 +814,7 @@ BEGIN
          WHERE t.store_id      = v_store_id
            AND t.user_relation IS NULL
            AND t.user_id      != '*'   -- skip wildcards: they're foundational, not redundant
+           AND t.object_id    != '*'   -- same for object wildcards (privileged grants)
            AND (v_object_type IS NULL OR t.object_type = v_object_type)
            AND (v_relation    IS NULL OR t.relation    = v_relation)
     LOOP

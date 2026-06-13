@@ -38,6 +38,9 @@ BEGIN
     ('Frank (tax_team) can edit tax doc',                      'internal_user', 'frank', 'can_edit',             'document',          'doc_tax_001',             true),
     ('Dave (client org) can read client-space doc',            'client_user',   'dave',  'can_read',             'document',          'doc_client_001',          true),
     ('Dave cannot read private doc (only carol)',              'client_user',   'dave',  'can_read',             'document',          'doc_client_private_001',  false),
+    ('Nadia (auditor, doc:*) can read payroll doc',            'internal_user', 'nadia_auditor', 'can_read',     'document',          'doc_payroll_001',         true),
+    ('Nadia (auditor, doc:*) can read private client doc',     'internal_user', 'nadia_auditor', 'can_read',     'document',          'doc_client_private_001',  true),
+    ('Nadia (auditor) cannot edit documents',                  'internal_user', 'nadia_auditor', 'can_edit',     'document',          'doc_payroll_001',         false),
     ('Carol can read private doc via viewer',         'client_user',   'carol', 'can_read',             'document',          'doc_client_private_001',  true);
 
     FOR rec IN SELECT * FROM test_checks ORDER BY id LOOP

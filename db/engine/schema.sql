@@ -337,6 +337,11 @@ CREATE TABLE authz.models (
     group_id           smallint NOT NULL DEFAULT 0,
     group_op           smallint NOT NULL DEFAULT 0,  -- 0=or, 1=intersection, 2=exclusion
     negated            boolean  NOT NULL DEFAULT false,
+    -- Privileged grants: when true, this DIRECT rule's relation may
+    -- carry object-wildcard tuples (object_id = '*': the subject holds
+    -- the relation on EVERY object of the type). Default-deny — see
+    -- write_tuple gating.
+    allow_object_wildcard boolean NOT NULL DEFAULT false,
     -- Composite FKs: every referenced type/relation must exist AND
     -- belong to the same store as the rule. NULL columns skip the
     -- check (MATCH SIMPLE), so optional references stay optional.
@@ -394,6 +399,11 @@ BEGIN
         RAISE EXCEPTION 'negated rules are only allowed in exclusion groups';
     END IF;
 
+    IF TG_OP IN ('INSERT', 'UPDATE') AND NEW.allow_object_wildcard
+       AND NEW.rule_type <> 1 THEN  -- 1 = direct (authz._rel_direct)
+        RAISE EXCEPTION 'allow_object_wildcard is only allowed on direct rules';
+    END IF;
+
     -- Check the affected group(s): NEW's group, and on UPDATE/DELETE also
     -- OLD's group (an update may move the last base rule elsewhere).
     IF TG_OP IN ('INSERT', 'UPDATE') THEN
@@ -446,7 +456,8 @@ SELECT
         WHEN 1 THEN 'intersection'
         WHEN 2 THEN 'exclusion'
     END AS group_op,
-    mr.negated
+    mr.negated,
+    mr.allow_object_wildcard
   FROM authz.models mr
   JOIN authz.stores s    ON s.id  = mr.store_id
   JOIN authz.types t     ON t.id  = mr.object_type

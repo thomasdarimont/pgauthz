@@ -287,5 +287,13 @@ BEGIN
     (s, t_upload_req, r_can_manage, authz._rel_ttu(),      NULL, r_in_client_space, r_can_manage_sharing)
     ;
 
+    -- Privileged grants (object wildcards): mark the document viewer
+    -- direct rule so a single tuple like
+    --   write_tuple('demo', 'internal_user', '<auditor>', 'viewer', 'document', '*')
+    -- can grant read on EVERY document (compliance auditor use case).
+    -- model_add_rule upserts the flag onto the direct rule added above.
+    PERFORM authz.model_add_rule('demo', 'document', 'viewer', 'direct',
+        p_allow_object_wildcard => true);
+
 END;
 $$;

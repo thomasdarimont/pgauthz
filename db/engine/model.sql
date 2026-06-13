@@ -97,15 +97,16 @@ $$;
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.model_add_rule(
     p_store              text,
-    p_object_type        text,
-    p_relation           text,
-    p_rule_type          text,                    -- 'direct', 'computed', 'ttu'
-    p_computed_relation  text DEFAULT NULL,
-    p_tupleset_relation  text DEFAULT NULL,
-    p_tupleset_computed  text DEFAULT NULL,
-    p_group_id           smallint DEFAULT 0,
-    p_group_op           text DEFAULT 'or',       -- 'or', 'intersection', 'exclusion'
-    p_negated            boolean DEFAULT false
+    p_object_type           text,
+    p_relation              text,
+    p_rule_type             text,                 -- 'direct', 'computed', 'ttu'
+    p_computed_relation     text DEFAULT NULL,
+    p_tupleset_relation     text DEFAULT NULL,
+    p_tupleset_computed     text DEFAULT NULL,
+    p_group_id              smallint DEFAULT 0,
+    p_group_op              text DEFAULT 'or',    -- 'or', 'intersection', 'exclusion'
+    p_negated               boolean DEFAULT false,
+    p_allow_object_wildcard boolean DEFAULT false -- direct rules only: permit object_id = '*' tuples
 ) RETURNS smallint
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -126,6 +127,10 @@ BEGIN
         WHEN 'ttu'      THEN v_rule_type := authz._rel_ttu();
         ELSE RAISE EXCEPTION 'Invalid rule_type: %. Must be direct, computed, or ttu', p_rule_type;
     END CASE;
+
+    IF p_allow_object_wildcard AND v_rule_type <> authz._rel_direct() THEN
+        RAISE EXCEPTION 'p_allow_object_wildcard is only allowed on direct rules';
+    END IF;
 
     -- Resolve group_op
     CASE p_group_op
@@ -161,15 +166,16 @@ BEGIN
         RAISE EXCEPTION 'group % already uses a different group_op', p_group_id;
     END IF;
 
-    -- Insert (idempotent via unique index)
+    -- Insert (idempotent via unique index). Re-adding an existing rule
+    -- with a different allow_object_wildcard applies the new flag.
     INSERT INTO authz.models (
         store_id, object_type, relation, rule_type,
         computed_relation, tupleset_relation, tupleset_computed,
-        group_id, group_op, negated
+        group_id, group_op, negated, allow_object_wildcard
     ) VALUES (
         v_store_id, v_object_type, v_relation, v_rule_type,
         v_computed_rel, v_tupleset_rel, v_tupleset_cmp,
-        p_group_id, v_group_op, p_negated
+        p_group_id, v_group_op, p_negated, p_allow_object_wildcard
     )
     ON CONFLICT (
         store_id, object_type, relation, rule_type,
@@ -177,7 +183,7 @@ BEGIN
         COALESCE(tupleset_relation, -1),
         COALESCE(tupleset_computed, -1),
         group_id, negated
-    ) DO NOTHING;
+    ) DO UPDATE SET allow_object_wildcard = EXCLUDED.allow_object_wildcard;
 
     -- Return the rule ID (whether newly inserted or already existing)
     SELECT id INTO v_rule_id FROM authz.models

@@ -51,6 +51,11 @@ BEGIN
     -- Explicit per-document exception
     PERFORM authz.write_tuple('demo', 'client_user', 'carol', 'viewer', 'document', 'doc_client_private_001');
 
+    -- Compliance auditor: one privileged (object wildcard) tuple grants
+    -- viewer — and thereby can_read — on EVERY document, including ones
+    -- created later. Requires allow_object_wildcard on the viewer rule.
+    PERFORM authz.write_tuple('demo', 'internal_user', 'nadia_auditor', 'viewer', 'document', '*');
+
     -- Upload request
     PERFORM authz.write_tuple('demo', 'client_data_space', 'eng_42_client', 'in_client_space',  'upload_request', 'req_2026_001');
     PERFORM authz.write_tuple('demo', 'client_org',        'acme',          'requested_from',   'upload_request', 'req_2026_001', 'member');

@@ -446,6 +446,50 @@ SELECT authz.explain_access('demo', 'user', 'anyone', 'can_view', 'document', 'p
 See [MODEL_DESIGN.md](docs/MODEL_DESIGN.md#wildcard-tuples-public-access) for
 detailed design guidance and use cases.
 
+## Object Wildcards (Privileged Grants)
+
+The dual of the subject wildcard: a tuple with `object_id = '*'` grants the
+subject the relation on **every object of the type** — including objects
+created later. This is the efficient way to model super-admin / auditor
+roles: one tuple instead of one per object, O(1) checks instead of walking
+hierarchies, and O(1) listing.
+
+Object wildcards are **privileged and default-deny**: the direct model rule
+must be explicitly marked before such tuples can be written.
+
+```sql
+-- 1. Mark the relationship as privileged (admin operation):
+SELECT authz.model_add_rule('demo', 'document', 'viewer', 'direct',
+    p_allow_object_wildcard => true);
+
+-- 2. Grant: the compliance auditor can view (and via computed relations,
+--    read) every document — current and future:
+SELECT authz.write_tuple('demo', 'internal_user', 'nadia_auditor', 'viewer', 'document', '*');
+
+-- Checks resolve in O(1), even for objects with no tuples at all:
+SELECT authz.check_access('demo', 'internal_user', 'nadia_auditor', 'can_read', 'document', 'doc_created_tomorrow');
+-- => true
+
+-- list_objects answers with the typed wildcard row instead of
+-- enumerating the store — branch on is_wildcard and list from your
+-- application database:
+SELECT * FROM authz.list_objects('demo', 'internal_user', 'nadia_auditor', 'can_read', 'document');
+--  object_id | is_wildcard
+-- -----------+-------------
+--  *         | t
+```
+
+Usersets compose: `write_tuple('demo', 'group', 'auditors', 'viewer', 'document', '*',
+p_user_relation => 'member')` covers all group members × all documents with
+one tuple. Conditions compose too — a time-boxed condition on the wildcard
+tuple makes a break-glass admin grant that expires.
+
+**Security note:** an unmarked relation rejects `object_id = '*'` writes.
+Never pass untrusted external identifiers as object IDs, and keep
+`allow_object_wildcard` limited to relations that genuinely need
+store-wide grants — one such tuple is equivalent to access to everything
+of that type.
+
 ## Intersection and Exclusion (Rule Groups)
 
 By default, multiple rules for the same relation are OR'd (any match grants access).
@@ -985,6 +1029,7 @@ groups are rejected at write time. See
 | **Batch operations** | `write_tuples` / `delete_tuples` in a single statement |
 | **No external service** | Pure SQL — no network hop, no separate process to operate |
 | **OpenFGA import** | Import existing OpenFGA JSON models directly. `intersection` and `difference` are translated natively into rule groups; operators nested deeper than one level below `union` are rejected (never imported as a more permissive approximation) — see [MODEL_DESIGN.md](docs/MODEL_DESIGN.md#example-how-intersectionexclusion-map-to-rule-groups) |
+| **Object wildcards** | `(subject, relation, type, '*')` grants the relation on every object of the type — O(1) super-admin/auditor checks and listing. Default-deny: the direct rule must be marked `allow_object_wildcard`. OpenFGA wildcards are subject-side only |
 
 ### OpenFGA has, this solution doesn't
 

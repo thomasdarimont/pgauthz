@@ -50,6 +50,21 @@ BEGIN
         RAISE EXCEPTION 'Wildcard user_id (*) cannot be combined with a user_relation';
     END IF;
 
+    -- Object wildcards are privileged: one tuple grants the relation on
+    -- EVERY object of the type. Default-deny — the direct model rule
+    -- must be explicitly marked.
+    IF p_object_id = '*' AND NOT EXISTS (
+        SELECT 1 FROM authz.models m
+         WHERE m.store_id    = v_store_id
+           AND m.object_type = v_object_type
+           AND m.relation    = v_relation
+           AND m.rule_type   = authz._rel_direct()
+           AND m.allow_object_wildcard
+    ) THEN
+        RAISE EXCEPTION 'object wildcard (object_id = ''*'') is not allowed for relation "%" on type "%" — mark the direct model rule with allow_object_wildcard',
+            p_relation, p_object_type;
+    END IF;
+
     -- Validate type restrictions (if any are defined for this relation)
     PERFORM authz._check_type_restriction(
         v_store_id, v_object_type, v_relation,
@@ -169,6 +184,26 @@ BEGIN
      WHERE t.user_relation IS NOT NULL AND ur.id IS NULL;
     IF v_bad IS NOT NULL THEN
         RAISE EXCEPTION 'Unknown relation(s) in store "%": %', p_store, v_bad;
+    END IF;
+
+    -- Object wildcards are privileged (see write_tuple): reject batch
+    -- elements targeting object_id = '*' unless the direct rule allows it.
+    SELECT string_agg(DISTINCT format('%s on %s', t.relation, t.object_type), ', ')
+      INTO v_bad
+      FROM unnest(p_tuples) AS t
+      JOIN authz.types ot    ON ot.store_id = v_store_id AND ot.name = t.object_type
+      JOIN authz.relations r ON r.store_id  = v_store_id AND r.name  = t.relation
+     WHERE t.object_id = '*'
+       AND NOT EXISTS (
+           SELECT 1 FROM authz.models m
+            WHERE m.store_id    = v_store_id
+              AND m.object_type = ot.id
+              AND m.relation    = r.id
+              AND m.rule_type   = authz._rel_direct()
+              AND m.allow_object_wildcard
+       );
+    IF v_bad IS NOT NULL THEN
+        RAISE EXCEPTION 'object wildcard (object_id = ''*'') is not allowed for: % — mark the direct model rule with allow_object_wildcard', v_bad;
     END IF;
 
     -- Enforce namespace-based write restrictions for all object types in the batch

@@ -190,13 +190,51 @@ BEGIN
     END IF;
     END IF; -- NOT v_skip_wildcard
 
+    -- Object-wildcard tuple check (object_id = '*'): a privileged grant —
+    -- the subject (or a covering subject wildcard) holds the relation on
+    -- EVERY object of the type. Not guarded by the exclusion flags: an
+    -- excluded concrete tuple is a different tuple, and
+    -- find_redundant_tuples never excludes object wildcards (it skips
+    -- them as candidates).
+    IF EXISTS (
+        SELECT 1 FROM authz.tuples
+         WHERE store_id      = p_store_id
+           AND object_type   = p_object_type
+           AND object_id     = '*'
+           AND relation      = p_relation
+           AND user_type     = p_user_type
+           AND user_id       IN (p_user_id, '*')
+           AND user_relation IS NULL
+           AND condition_id  IS NULL
+    ) OR EXISTS (
+        SELECT 1 FROM authz.tuples
+         WHERE store_id      = p_store_id
+           AND object_type   = p_object_type
+           AND object_id     = '*'
+           AND relation      = p_relation
+           AND user_type     = p_user_type
+           AND user_id       IN (p_user_id, '*')
+           AND user_relation IS NULL
+           AND condition_id  IS NOT NULL
+           AND authz._eval_condition(condition_id, condition_context, p_request_context)
+    ) THEN
+        IF p_trace THEN
+            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
+            VALUES (p_depth, 'direct', p_user_type_name || ':' || p_user_id,
+                    p_relation_name, p_object_type_name || ':' || p_object_id,
+                    true, 'object wildcard tuple (*)',
+                    extract(epoch from clock_timestamp() - p_step_start) * 1000);
+        END IF;
+        RETURN true;
+    END IF;
+
     IF NOT v_skip_direct THEN
     -- Trace: tuple exists but condition denied it
     IF p_trace AND EXISTS (
         SELECT 1 FROM authz.tuples
          WHERE store_id      = p_store_id
            AND object_type   = p_object_type
-           AND object_id     = p_object_id
+           AND object_id     IN (p_object_id, '*')
            AND relation      = p_relation
            AND user_type     = p_user_type
            AND user_id       IN (p_user_id, '*')
@@ -208,7 +246,7 @@ BEGIN
           JOIN authz.conditions c ON c.id = t.condition_id
          WHERE t.store_id      = p_store_id
            AND t.object_type   = p_object_type
-           AND t.object_id     = p_object_id
+           AND t.object_id     IN (p_object_id, '*')
            AND t.relation      = p_relation
            AND t.user_type     = p_user_type
            AND t.user_id       IN (p_user_id, '*')
@@ -242,7 +280,7 @@ BEGIN
           FROM authz.tuples
          WHERE store_id      = p_store_id
            AND object_type   = p_object_type
-           AND object_id     = p_object_id
+           AND object_id     IN (p_object_id, '*')
            AND relation      = p_relation
            AND user_relation IS NOT NULL
            AND condition_id  IS NULL
@@ -277,7 +315,7 @@ BEGIN
           FROM authz.tuples
          WHERE store_id      = p_store_id
            AND object_type   = p_object_type
-           AND object_id     = p_object_id
+           AND object_id     IN (p_object_id, '*')
            AND relation      = p_relation
            AND user_relation IS NOT NULL
            AND condition_id  IS NOT NULL
@@ -340,7 +378,7 @@ BEGIN
         SELECT 1 FROM authz.tuples
          WHERE store_id      = p_store_id
            AND object_type   = p_object_type
-           AND object_id     = p_object_id
+           AND object_id     IN (p_object_id, '*')
            AND relation      = p_relation
            AND user_type     = p_user_type
            AND user_id       IN (p_user_id, '*')

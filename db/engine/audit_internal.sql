@@ -81,7 +81,7 @@ BEGIN
             SELECT 1 FROM _snapshot_tuples
              WHERE store_id      = $1
                AND object_type   = $2
-               AND object_id     = $3
+               AND object_id     IN ($3, ''*'')
                AND relation      = $4
                AND user_type     = $5
                AND user_id       IN ($6, ''*'')
@@ -102,7 +102,7 @@ BEGIN
             SELECT 1 FROM _snapshot_tuples
              WHERE store_id      = $1
                AND object_type   = $2
-               AND object_id     = $3
+               AND object_id     IN ($3, ''*'')
                AND relation      = $4
                AND user_type     = $5
                AND user_id       IN ($6, ''*'')
@@ -125,7 +125,7 @@ BEGIN
               FROM _snapshot_tuples
              WHERE store_id      = $1
                AND object_type   = $2
-               AND object_id     = $3
+               AND object_id     IN ($3, ''*'')
                AND relation      = $4
                AND user_relation IS NOT NULL
                AND condition_id  IS NULL'
@@ -150,7 +150,7 @@ BEGIN
               FROM _snapshot_tuples
              WHERE store_id      = $1
                AND object_type   = $2
-               AND object_id     = $3
+               AND object_id     IN ($3, ''*'')
                AND relation      = $4
                AND user_relation IS NOT NULL
                AND condition_id  IS NOT NULL
