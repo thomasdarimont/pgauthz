@@ -344,7 +344,9 @@ When checking "Can alice read document:doc_payroll_001?":
 6. For userset tuples: expand group membership recursively
 7. Short-circuit on first `true` result
 
-Maximum recursion depth: 15 levels.
+Maximum recursion depth: 32 levels by default, configurable via the
+`authz.max_depth` GUC (see DESIGN.md). Exceeding it raises; cycles are
+pruned independently.
 
 ### Scenario 3: Tuple Write (Write Path)
 

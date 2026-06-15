@@ -191,6 +191,16 @@ BEGIN
         RAISE EXCEPTION 'Unknown relation(s) in store "%": %', p_store, v_bad;
     END IF;
 
+    -- Wildcard users cannot carry a user_relation — usersets on '*' are not
+    -- meaningful. Mirror the single write_tuple guard for the batch path.
+    SELECT string_agg(DISTINCT format('%s:* #%s', t.user_type, t.user_relation), ', ')
+      INTO v_bad
+      FROM unnest(p_tuples) AS t
+     WHERE t.user_id = '*' AND t.user_relation IS NOT NULL;
+    IF v_bad IS NOT NULL THEN
+        RAISE EXCEPTION 'Wildcard user_id (*) cannot be combined with a user_relation: %', v_bad;
+    END IF;
+
     -- Object wildcards are privileged (see write_tuple): reject batch
     -- elements targeting object_id = '*' unless the direct rule allows it.
     SELECT string_agg(DISTINCT format('%s on %s', t.relation, t.object_type), ', ')

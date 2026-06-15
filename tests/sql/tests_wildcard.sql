@@ -198,6 +198,45 @@ END;
 $$;
 SELECT * FROM _test_teardown_wildcard();
 
+-- wc_21: wildcard user_id + user_relation is rejected in the NATIVE batch
+-- path (write_tuples), not only single write_tuple. (setup outside the DO
+-- block: the exception handler would otherwise roll back the setup.)
+SELECT _test_setup_wildcard();
+DO $$
+DECLARE v_err text;
+BEGIN
+    PERFORM authz.write_tuples('test_wildcard', ARRAY[
+        ROW('user', '*', 'editor', 'viewer', 'resource', 'r_bad')::authz.tuple_input
+    ]);
+    PERFORM _test_assert_true('wc_21_batch_wildcard_user_relation_rejected', false,
+        'expected error, got success');
+EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS v_err = MESSAGE_TEXT;
+    PERFORM _test_assert_true('wc_21_batch_wildcard_user_relation_rejected',
+        v_err LIKE '%Wildcard%user_relation%', v_err);
+END;
+$$;
+SELECT * FROM _test_teardown_wildcard();
+
+-- wc_22: same guard via the JSONB batch path (write_tuples_jsonb), for an
+-- unconditional element (which is routed through write_tuples).
+SELECT _test_setup_wildcard();
+DO $$
+DECLARE v_err text;
+BEGIN
+    PERFORM authz.write_tuples_jsonb('test_wildcard', '[
+        {"user_type":"user","user_id":"*","user_relation":"editor","relation":"viewer","object_type":"resource","object_id":"r_bad"}
+    ]'::jsonb);
+    PERFORM _test_assert_true('wc_22_jsonb_batch_wildcard_user_relation_rejected', false,
+        'expected error, got success');
+EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS v_err = MESSAGE_TEXT;
+    PERFORM _test_assert_true('wc_22_jsonb_batch_wildcard_user_relation_rejected',
+        v_err LIKE '%Wildcard%user_relation%', v_err);
+END;
+$$;
+SELECT * FROM _test_teardown_wildcard();
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_wildcard();
 DROP FUNCTION IF EXISTS _test_setup_wildcard();
