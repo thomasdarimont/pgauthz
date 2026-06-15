@@ -882,8 +882,10 @@ initiate queries against which types.
 This section is a quick overview. For the full picture — component and
 sequence diagrams, deployment scenarios, the security model, design decision
 records, and PostgreSQL tuning — see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
-See also [docs/DESIGN.md](docs/DESIGN.md) for design rationale and
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the operations/integration guide.
+See also [docs/DESIGN.md](docs/DESIGN.md) for design rationale,
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the operations/integration guide, and
+[docs/PRODUCTION.md](docs/PRODUCTION.md) for the production hardening checklist
+and role recipes.
 
 ```
 authz.stores             Independent authorization namespaces
@@ -1123,6 +1125,11 @@ Getting the consistency you need:
 The PostgREST anonymous role (`api_anon`) inherits `authz_reader`.
 All public functions are `SECURITY DEFINER` — application roles need no
 direct table access.
+
+> For which role each component should connect as / be granted (OPA→PostgREST,
+> AuthZEN-direct, backend writers, admins, and when to grant
+> `authz_contextual_reader`), see the **[Production Hardening guide → Role
+> recipes](docs/PRODUCTION.md#role-recipes)**.
 
 The schema and all its objects are owned by **`authz_owner`, a
 non-superuser role**, so `SECURITY DEFINER` functions execute with only
