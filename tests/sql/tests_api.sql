@@ -1388,6 +1388,29 @@ BEGIN
             AND (p.proconfig IS NULL OR NOT EXISTS (
                 SELECT 1 FROM unnest(p.proconfig) c WHERE c LIKE 'search_path=%')))::text,
         '0');
+
+    -- api_111: no SECURITY DEFINER function runs as a superuser owner.
+    -- Definer functions execute with the owner's privileges, so a
+    -- superuser owner would make every one a potential superuser entry
+    -- point. They must be owned by the non-superuser authz_owner.
+    PERFORM _test_assert('api_111_no_security_definer_owned_by_superuser',
+        (SELECT count(*) FROM pg_catalog.pg_proc p
+           JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+           JOIN pg_catalog.pg_roles  r ON r.oid = p.proowner
+          WHERE n.nspname = 'authz' AND p.prosecdef AND r.rolsuper)::text,
+        '0');
+
+    -- api_112: the object owner role exists and is NOT a superuser
+    PERFORM _test_assert('api_112_authz_owner_is_not_superuser',
+        (SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = 'authz_owner')::text,
+        'false');
+
+    -- api_113: the condition sandbox is still owned by the zero-privilege
+    -- authz_eval role (ownership transfer must not capture it)
+    PERFORM _test_assert('api_113_exec_condition_owned_by_authz_eval',
+        (SELECT proowner::regrole::text FROM pg_catalog.pg_proc
+          WHERE proname = '_exec_condition' LIMIT 1),
+        'authz_eval');
 END;
 $$;
 DELETE FROM _test_results RETURNING *;

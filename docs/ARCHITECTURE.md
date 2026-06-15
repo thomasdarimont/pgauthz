@@ -596,8 +596,11 @@ gRPC, no SDK ecosystem, no built-in consistency tokens (zookies).
 **Context:** Application roles need to be prevented from reading or
 modifying authorization tables directly.
 
-**Decision:** All public functions are `SECURITY DEFINER` (run as schema
-owner). No direct table grants to any application role.
+**Decision:** All public functions are `SECURITY DEFINER` (run as the
+schema owner). No direct table grants to any application role. The
+schema owner is `authz_owner`, a **non-superuser** role, so definer
+functions execute with table-ownership privileges only — never
+superuser — limiting the blast radius of any flaw in the function layer.
 
 **Consequences:** The table schema is an internal implementation detail
 that can change freely. RLS is unnecessary — the function layer

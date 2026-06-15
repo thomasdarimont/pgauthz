@@ -45,6 +45,11 @@ BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'api_anon') THEN
         CREATE ROLE api_anon NOLOGIN;
     END IF;
+    -- Non-superuser owner of the schema and its objects (see the
+    -- ownership transfer at the end of this file).
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authz_owner') THEN
+        CREATE ROLE authz_owner NOLOGIN;
+    END IF;
 END
 $$;
 
@@ -144,8 +149,9 @@ GRANT EXECUTE ON FUNCTION authz.import_openfga_model(text, jsonb) TO authz_admin
 GRANT EXECUTE ON FUNCTION authz.import_openfga_tuples(text, jsonb) TO authz_admin;
 
 ------------------------------------------------------------------------
--- SECURITY DEFINER: all public functions run as the owning role (authz)
--- so application roles need no direct table access.
+-- SECURITY DEFINER: all public functions run as the owning role
+-- (authz_owner, a non-superuser — see the ownership transfer below) so
+-- application roles need no direct table access.
 ------------------------------------------------------------------------
 ALTER FUNCTION authz.check_access(text, text, text, text, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.check_access_with_context(text, text, text, text, text, text, jsonb) SECURITY DEFINER;
@@ -212,6 +218,88 @@ BEGIN
            AND p.prosecdef
     LOOP
         EXECUTE format('ALTER FUNCTION %s SET search_path = pg_catalog, authz, pg_temp', f.sig);
+    END LOOP;
+END
+$$;
+
+------------------------------------------------------------------------
+-- The condition sandbox stays owned by authz_eval, so authz_owner does
+-- not own it and (PUBLIC execute having been revoked above) needs an
+-- explicit grant to call it. The sandbox boundary is unaffected:
+-- _exec_condition still RUNS as authz_eval; this only lets the engine
+-- invoke it. Every other internal function is owned by authz_owner, so
+-- no other grant is needed.
+------------------------------------------------------------------------
+GRANT EXECUTE ON FUNCTION authz._exec_condition(text, jsonb, jsonb) TO authz_owner;
+
+------------------------------------------------------------------------
+-- Transfer ownership to the non-superuser authz_owner.
+--
+-- The database is bootstrapped by the superuser 'authz', so everything
+-- it created is superuser-owned — which means every SECURITY DEFINER
+-- function would run with superuser privileges. Reassign the schema and
+-- all its objects to authz_owner so definer functions run with only the
+-- privileges they actually need: ownership of the authz tables and
+-- functions, nothing more. Defense in depth — a flaw in a definer
+-- function cannot escalate to superuser.
+--
+-- REASSIGN OWNED is not usable here: 'authz' is the bootstrap superuser
+-- and owns system-required objects, which it refuses to reassign. So we
+-- transfer the authz schema's own objects explicitly.
+--
+-- The condition sandbox (_exec_condition, owned by the zero-privilege
+-- authz_eval role) is deliberately excluded so it keeps running with no
+-- table/function access. The database itself stays owned by 'authz'.
+--
+-- Objects created later through the API functions (store/partition
+-- management) are owned by authz_owner automatically, because those
+-- functions now run as authz_owner.
+------------------------------------------------------------------------
+ALTER SCHEMA authz OWNER TO authz_owner;
+
+DO $$
+DECLARE
+    r record;
+BEGIN
+    -- Tables (incl. partitions), partitioned tables, views, matviews.
+    FOR r IN
+        SELECT c.oid::regclass AS obj,
+               CASE c.relkind WHEN 'v' THEN 'VIEW'
+                              WHEN 'm' THEN 'MATERIALIZED VIEW'
+                              ELSE 'TABLE' END AS kind
+          FROM pg_catalog.pg_class c
+          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'authz'
+           AND c.relkind IN ('r', 'p', 'v', 'm')
+    LOOP
+        EXECUTE format('ALTER %s %s OWNER TO authz_owner', r.kind, r.obj);
+    END LOOP;
+
+    -- Standalone types (composite/base/domain/enum). Excludes array
+    -- types and tables' implicit row types, which follow their table.
+    FOR r IN
+        SELECT t.oid::regtype AS obj
+          FROM pg_catalog.pg_type t
+          JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+         WHERE n.nspname = 'authz'
+           AND t.typtype IN ('c', 'b', 'd', 'e')
+           AND t.typcategory <> 'A'
+           AND (t.typrelid = 0
+                OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c
+                            WHERE c.oid = t.typrelid AND c.relkind = 'c'))
+    LOOP
+        EXECUTE format('ALTER TYPE %s OWNER TO authz_owner', r.obj);
+    END LOOP;
+
+    -- Routines, except the condition sandbox (stays on authz_eval).
+    FOR r IN
+        SELECT p.oid::regprocedure AS obj
+          FROM pg_catalog.pg_proc p
+          JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+         WHERE n.nspname = 'authz'
+           AND p.proname <> '_exec_condition'
+    LOOP
+        EXECUTE format('ALTER ROUTINE %s OWNER TO authz_owner', r.obj);
     END LOOP;
 END
 $$;

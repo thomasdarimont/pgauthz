@@ -627,7 +627,8 @@ who performed the action, when, and the full tuple details.
 
 ### Tracking application users
 
-Since all API functions are `SECURITY DEFINER` (they run as the `authz` DB role),
+Since all API functions are `SECURITY DEFINER` (they run as the function
+owner, the non-superuser `authz_owner` role),
 the optional `p_performed_by` parameter lets your application pass the
 authenticated end-user identity down to the audit trail:
 
@@ -965,6 +966,14 @@ throughput while multiple replicas absorb the read load.
 The PostgREST anonymous role (`api_anon`) inherits `authz_reader`.
 All public functions are `SECURITY DEFINER` — application roles need no
 direct table access.
+
+The schema and all its objects are owned by **`authz_owner`, a
+non-superuser role**, so `SECURITY DEFINER` functions execute with only
+the privileges they need (ownership of the `authz` tables) rather than
+superuser rights — a flaw in a definer function cannot escalate to
+superuser. The condition sandbox (`_exec_condition`) is owned by the
+separate zero-privilege `authz_eval` role; the database itself remains
+owned by the bootstrap `authz` superuser (break-glass DBA only).
 
 ```sql
 -- Backend that needs to write tuples
