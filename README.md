@@ -879,15 +879,23 @@ initiate queries against which types.
 
 ## Architecture
 
+This section is a quick overview. For the full picture — component and
+sequence diagrams, deployment scenarios, the security model, design decision
+records, and PostgreSQL tuning — see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+See also [docs/DESIGN.md](docs/DESIGN.md) for design rationale and
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the operations/integration guide.
+
 ```
 authz.stores             Independent authorization namespaces
 authz.types              Type name -> smallint ID (per store), optional namespace
 authz.relations          Relation name -> smallint ID (per store)
 authz.conditions         Named SQL condition expressions (per store)
+authz.conditions_audit   Immutable condition-expression history (for time-travel)
 authz.models             Model resolution rules (per store)
+authz.models_audit       Immutable model-rule history (for time-travel)
 authz.namespace_access   Namespace -> DB role grants with can_read/can_write flags
 authz.tuples             Relationship tuples (per store, partitioned by object type)
-authz.tuples_audit       Immutable audit trail (partitioned by month)
+authz.tuples_audit       Immutable tuple audit trail (partitioned by month)
 ```
 
 ### How check_access resolves permissions
