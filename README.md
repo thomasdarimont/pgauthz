@@ -1111,6 +1111,12 @@ Getting the consistency you need:
 - **Audit partitioned by month** (old partitions can be detached and archived)
 - **PostgreSQL tuning** (`shared_buffers`, `effective_cache_size`, `work_mem`, `random_page_cost`)
 
+For measured numbers (and a reproducible harness — `./bench/run.sh`), see
+**[docs/BENCHMARKS.md](docs/BENCHMARKS.md)**: `check_access` is sub-millisecond
+for typical checks, and `list_objects` / `list_subjects` are bounded by the
+*reachable set* rather than the store size (a 3-grantee object resolves in
+~12 ms in a 50,000-user store).
+
 ### Access control roles
 
 | Role | Can do | Inherits |
