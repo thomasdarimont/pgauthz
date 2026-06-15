@@ -461,7 +461,7 @@ check_http "GET /health allowed without token" \
     "200" \
     "$OPA_URL/health"
 
-# Blocked: POST to unknown prefix (e.g. /v1/data/keys — would leak JWKS)
+# Blocked: POST to a path not in the endpoint allowlist (e.g. /v1/data/keys — would leak JWKS)
 check_http "POST /v1/data/keys blocked without token" \
     "401" \
     -X POST "$OPA_URL/v1/data/keys" \

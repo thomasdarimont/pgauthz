@@ -554,6 +554,12 @@ Pass `subject.type` and `subject.id` directly. Useful for:
 - Testing and development
 - Systems that handle authentication separately
 
+> **Disabled by default.** This mode lets the caller name any subject, so it is
+> rejected unless `REQUIRE_TOKEN_FOR_READS=false` — set that **only** behind a
+> trusted PEP that authenticates callers (the demo opts in via `env.sh`). In the
+> default token-only mode, requests without a valid `token` are denied. See
+> [PRODUCTION.md → OPA read subject policy](../docs/PRODUCTION.md#opa-read-subject-policy-require_token_for_reads).
+
 ```json
 {
   "input": {
@@ -870,10 +876,11 @@ tokens from `opa/http-client.env.json`.
   `api_anon` (inheriting `authz_reader`) and has no authentication
   layer of its own. Keep it internal to the Docker network — OPA is
   the security boundary for all read-path access checks.
-- **Write PostgREST is exposed with JWT authentication.** Requests
-  without a valid JWT run as `api_anon` (read-only). Write operations
-  require a JWT with the `authz_writer` or `authz_admin` role claim.
-  Protect `PGRST_JWT_SECRET` — anyone with the secret can forge tokens.
+- **Write PostgREST is fronted by OPA, not exposed.** The writer has no host
+  port and does **no** JWT verification of its own — it runs as a fixed
+  `authz_writer` role and is reachable only by OPA, which verifies the token,
+  requires the configured writer role, and forwards the write. See
+  [DEVELOPMENT.md → Write API](../docs/DEVELOPMENT.md#write-api-opa-fronted).
 - **JWKS rotation:** Replace `opa/data/jwks.json` with your identity
   provider's JWKS endpoint, or mount the file from a secrets manager.
   OPA reloads data files automatically when they change (with `--watch`).

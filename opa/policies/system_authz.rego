@@ -4,8 +4,10 @@
 # Activated by running OPA with --authentication=token --authorization=basic.
 #
 # Public (no token required):
-#   - POST /v1/data/<allowed_prefix>/*  — policy evaluation (restricted to
-#     known prefixes to prevent leaking raw data like JWKS keys)
+#   - POST /v1/data/authz/<endpoint>    — policy evaluation, restricted to an
+#     EXACT allowlist of the client-facing endpoints (see _public_eval_paths).
+#     Package-prefix matching is unsafe — it would expose internal rules such as
+#     the admin token under data.system.authz.
 #   - GET  /health                      — health checks
 #   - GET  /v1/status                   — bundle status (monitoring)
 #
