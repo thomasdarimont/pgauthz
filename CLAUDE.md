@@ -65,7 +65,7 @@ cd authzen && go build ./cmd/authzen-opa
 ## SQL Engine Conventions
 
 - All public functions are `SECURITY DEFINER` — app roles never need direct table access
-- Functions are organized: `schema.sql` (DDL) → `core_internal.sql` / `access_internal.sql` / `audit_internal.sql` (internal helpers) → `access.sql` / `tuples.sql` / `model.sql` / `audit.sql` (public API)
+- Functions are organized: `schema.sql` (DDL) → `core_internal.sql` / `access_internal.sql` / `audit_internal.sql` (internal helpers) → `access.sql` / `explain.sql` / `tuples.sql` / `model.sql` / `audit.sql` (public API)
 - Multi-store architecture: every operation is scoped to a `store_id`
 - Tuples are the core data: `(store_id, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, context)`
 - Model rules use rule groups supporting union (OR), intersection (AND), and exclusion (BUT NOT) semantics
