@@ -747,6 +747,15 @@ The Nginx gateway is the only externally accessible entry point. It
 forwards only `POST /rpc/*` to PostgREST and returns a generic 404 for
 everything else, preventing schema information leakage.
 
+> **Serialization failures under concurrent writes.** As of PostgREST 14,
+> PostgREST no longer automatically retries transactions that fail with a
+> serialization error (`SQLSTATE 40001`); the error surfaces to the
+> caller instead. pgauthz writes are single-statement RPC calls and the
+> workload is read-dominant, so `40001` is rare — but a client driving
+> heavy concurrent writes (or running against `SERIALIZABLE`/`REPEATABLE
+> READ` replicas) should be prepared to catch `40001` and retry the call
+> itself. (Earlier PostgREST versions retried transparently.)
+
 ### Writer endpoints
 
 These require a JWT with `"role": "authz_writer"` (or `authz_admin`).
