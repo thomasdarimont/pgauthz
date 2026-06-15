@@ -901,14 +901,24 @@ resource.
 
 #### Read-after-write consistency
 
-In the scaling setup (replicas), a tuple written to the primary may not
-be visible on a replica for a few milliseconds (streaming replication
-lag). If your application needs to verify a permission immediately after
-granting it, either:
+Reads on the primary (the default, non-replicated stack) are always
+read-your-writes — MVCC makes every committed grant/revoke immediately
+visible. With read replicas, streaming replication is asynchronous, so a
+write may not be visible on a replica for a few milliseconds. The
+security-relevant case is a **stale allow after a revoke**: a check routed
+to a lagging replica can still return `allowed` until the revoke
+replicates (a stale *deny* after a grant is only an availability hiccup).
+See the "Consistency model" section in the README for the full contract.
 
-- Wait briefly before the check (replication lag is typically <10ms)
-- Route the confirming check to the primary (bypass the read replica)
-- Accept eventual consistency (sufficient for most workloads)
+If a check must reflect a just-committed change, either:
+
+- **Route the confirming check to the primary** (bypass the replica) — the
+  simplest correct option, and the one to use for revocations
+- Accept eventual consistency (sub-second lag is fine for most workloads)
+- Pin the replica read manually: capture `pg_current_wal_lsn()` on the
+  primary at write time, then wait until the replica's
+  `pg_last_wal_replay_lsn()` reaches it before reading (a manual stand-in
+  for a Zanzibar revision token)
 
 ### Writing tuples from Spring Boot
 

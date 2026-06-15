@@ -298,6 +298,13 @@ The replica receives the full schema, functions, and data — no setup
 beyond the initial `pg_basebackup`. Replication lag is typically
 sub-second.
 
+Replication is asynchronous, so replica reads are eventually consistent:
+the case to guard is a **stale allow after a revoke**. Route
+security-critical checks (especially confirming checks after a revoke) to
+the primary, which is always read-your-writes; there is no revision-token
+(zookie) API yet. See the README "Consistency model" section for the full
+contract.
+
 See `compose-scaling.yml` for a working example.
 
 ### Logical replication (selective data distribution)

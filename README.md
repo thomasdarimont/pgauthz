@@ -1046,6 +1046,45 @@ read-biased: a typical application performs thousands of `check_access`
 calls for every `write_tuple`. A single primary can handle the write
 throughput while multiple replicas absorb the read load.
 
+#### Consistency model
+
+A decision is only as fresh as the data the check reads, so the contract
+depends on **where the read is routed**:
+
+- **Single instance, or any read on the primary — strong, read-your-writes.**
+  PostgreSQL MVCC guarantees a check sees every committed write (grant or
+  revoke) immediately. This is the default for the base (non-replicated) stack.
+- **Read replicas — eventually consistent, bounded by replication lag.**
+  Streaming replication is asynchronous: a write committed on the primary
+  becomes visible on a replica only after the lag (typically sub-second, since
+  authorization data changes infrequently). A check routed to a replica within
+  that window sees the *previous* state.
+
+The asymmetry matters for security:
+
+- **Stale allow after a revoke** is the dangerous case — revoke a grant on the
+  primary and a check on a lagging replica may still return `allowed` until the
+  change replicates (the ReBAC "new enemy" problem).
+- **Stale deny after a grant** is only an availability hiccup — access you just
+  granted isn't visible yet.
+
+Getting the consistency you need:
+
+- **Route security-critical checks — especially the confirming check right
+  after a revoke — to the primary.** Reads on the primary are always
+  read-your-writes.
+- **Accept bounded staleness** for the high-volume common case (sub-second lag
+  is fine for most authorization).
+- **Synchronous replication** (`synchronous_commit = remote_apply`) makes
+  replicas strongly consistent, trading write latency for zero read lag.
+
+> **No revision tokens (zookies) yet.** Unlike Zanzibar, pgauthz has no
+> consistency-token / "minimum LSN" API to pin a read to "at least as fresh as
+> this write." You can approximate read-your-writes on a replica manually:
+> capture the write position with `pg_current_wal_lsn()` on the primary, then
+> before the replica read wait until the replica's `pg_last_wal_replay_lsn()`
+> has caught up to it. A first-class token API is future work.
+
 ### Performance optimizations
 
 - **Integer IDs** for type/relation names (~2-3x faster lookups, ~50% smaller indexes)
