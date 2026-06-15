@@ -59,7 +59,10 @@ by `init.sh` on every run.
 - [ ] **Decide your replica-consistency policy** (which checks must hit the
       primary). See [Replica consistency](#replica-consistency).
 - [ ] **Review namespace grants.** If you use namespaces, grant
-      `namespace_access` per type so reads/writes are scoped.
+      `namespace_access` per type so reads/writes are scoped. For per-app
+      isolation over the OPA write path, issue per-app DB roles and set
+      `WRITER_DB_ROLE_CLAIM` (the writer's `_pre_request` hook assumes the role
+      from the JWT) — see [DEVELOPMENT.md → Per-app namespace isolation](DEVELOPMENT.md#per-app-namespace-isolation-over-the-opa-write-path).
 
 ## Role recipes
 

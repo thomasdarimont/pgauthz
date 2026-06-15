@@ -128,6 +128,48 @@ CREATE OR REPLACE FUNCTION authz._effective_role() RETURNS text
     $$ SELECT COALESCE(NULLIF(current_setting('role', true), 'none'), session_user) $$;
 
 ------------------------------------------------------------------------
+-- _pre_request: PostgREST db-pre-request hook for the OPA-fronted writer.
+--
+-- The writer connects as authz_authenticator and runs as a fixed authz_writer.
+-- To preserve per-application namespace isolation, OPA forwards the caller's
+-- app role in the X-Authz-Role request header; this hook validates it and
+-- SET LOCAL ROLEs to it, so namespace enforcement (_check_namespace_access via
+-- _effective_role) applies to the per-app role rather than the fixed one.
+--
+-- Security:
+--   * Only a role that is a MEMBER of authz_writer (a tuple writer) and is NOT
+--     a member of authz_admin may be assumed — a forged or over-scoped header
+--     can never escalate to admin or any non-writer role.
+--   * The header is trustworthy because the writer is reachable only by OPA,
+--     which sets it from the verified JWT (clients cannot reach the writer).
+--   * SET LOCAL ROLE is transaction-scoped, so the assumed role never leaks
+--     across pooled PostgREST connections.
+-- Wire it on the writer via PGRST_DB_PRE_REQUEST=authz._pre_request.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._pre_request() RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_headers json := nullif(current_setting('request.headers', true), '')::json;
+    v_role    text := v_headers ->> 'x-authz-role';
+BEGIN
+    -- No requested role → keep the default writer role (no namespace scoping).
+    IF v_role IS NULL OR v_role = '' THEN
+        RETURN;
+    END IF;
+
+    -- The role must exist, be a tuple writer, and NOT be an admin role.
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_role)
+       OR NOT pg_has_role(v_role, 'authz_writer', 'MEMBER')
+       OR pg_has_role(v_role, 'authz_admin', 'MEMBER') THEN
+        RAISE EXCEPTION 'Role "%" is not an allowed writer role', v_role
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
+    EXECUTE format('SET LOCAL ROLE %I', v_role);
+END;
+$$;
+
+------------------------------------------------------------------------
 -- _check_namespace_access: enforces namespace-based access restrictions.
 -- Raises an exception if the effective role is not authorized to perform
 -- the requested operation on tuples for the given object type's namespace.

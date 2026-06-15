@@ -25,3 +25,10 @@ roles_claim_path := ["roles"] if not _env.JWT_ROLES_CLAIM
 writer_role := _env.WRITER_ROLE if _env.WRITER_ROLE
 
 writer_role := "authz_writer" if not _env.WRITER_ROLE
+
+# Optional: JWT claim (dot-separated path) carrying the caller's per-app DB role
+# for namespace isolation. When set, the write path forwards that role to the
+# writer as the X-Authz-Role header, and authz._pre_request() SET LOCAL ROLEs to
+# it so namespace enforcement applies per app. Unset → no header (writer stays
+# the fixed authz_writer). Set via WRITER_DB_ROLE_CLAIM, e.g. "db_role".
+writer_db_role_claim_path := split(_env.WRITER_DB_ROLE_CLAIM, ".") if _env.WRITER_DB_ROLE_CLAIM

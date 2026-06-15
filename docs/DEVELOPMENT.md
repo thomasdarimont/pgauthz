@@ -111,6 +111,45 @@ Read namespace enforcement applies to: `check_access`, `check_access_with_contex
 `list_objects`, `list_subjects`, `list_actions`, `explain_access`, `audit_check_access`,
 `audit_list_actions`.
 
+#### Per-app namespace isolation over the OPA write path
+
+Namespace write enforcement keys off the **effective DB role**
+(`current_setting('role')` / `session_user`). On a direct SQL connection that
+is simply the role you connect/`SET ROLE` as. But the OPA-fronted writer runs as
+a **fixed `authz_writer`**, so it can't tell apps apart by itself — a namespaced
+write through it would fail closed.
+
+To restore per-app isolation over HTTP, OPA conveys the caller's app role and the
+writer assumes it for the request:
+
+1. **Issue per-app DB roles** and wire them up (the role must be a member of
+   `authz_writer`, granted the namespace, and assumable by `authz_authenticator`):
+
+   ```sql
+   CREATE ROLE app_hr NOLOGIN;
+   GRANT authz_writer TO app_hr;                 -- tuple-writer privileges
+   GRANT app_hr TO authz_authenticator;          -- so the writer can SET ROLE to it
+   SELECT authz.grant_namespace_access('demo', 'hr', 'app_hr', p_can_write := true);
+   ```
+
+2. **Put the app role in a JWT claim** (e.g. `db_role: "app_hr"`) and point OPA at
+   it with `WRITER_DB_ROLE_CLAIM=db_role`.
+
+3. OPA forwards it to the writer as the `X-Authz-Role` header;
+   `authz._pre_request()` (the writer's `PGRST_DB_PRE_REQUEST` hook) validates it
+   — the role must be a member of `authz_writer` and **not** an admin role, so a
+   forged claim can't escalate — and `SET LOCAL ROLE`s to it. The existing
+   `_check_namespace_access` then enforces against the per-app role.
+
+The header is trustworthy because the writer is reachable only by OPA, which sets
+it from the verified JWT. `SET LOCAL ROLE` is transaction-scoped, so the role
+never leaks across pooled connections. With `WRITER_DB_ROLE_CLAIM` unset (the
+default) no header is sent and the writer stays `authz_writer`.
+
+> **Reads:** the read PostgREST always runs as `api_anon`, so per-app namespace
+> *read* isolation over HTTP would need the same treatment on the read path
+> (not built — reads are isolated per-user by the ReBAC `check_access` instead).
+
 ### Condition Expression Security
 
 Condition expressions are evaluated via `authz._exec_condition()`, which is

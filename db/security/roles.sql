@@ -186,6 +186,8 @@ GRANT EXECUTE ON FUNCTION authz.write_tuples_jsonb(text, jsonb, text) TO authz_w
 GRANT EXECUTE ON FUNCTION authz.delete_tuples(text, authz.tuple_input[], text) TO authz_writer;
 GRANT EXECUTE ON FUNCTION authz.delete_tuples_jsonb(text, jsonb, text) TO authz_writer;
 GRANT EXECUTE ON FUNCTION authz.delete_user_tuples(text, text, text, text) TO authz_writer;
+-- PostgREST db-pre-request hook (runs as the anon->authz_writer role).
+GRANT EXECUTE ON FUNCTION authz._pre_request() TO authz_writer;
 
 ------------------------------------------------------------------------
 -- authz_admin: store lifecycle and namespace management

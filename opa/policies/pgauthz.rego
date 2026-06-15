@@ -304,38 +304,40 @@ list_actions(store, subject_type, subject_id, object_type, object_id) := actions
 # -----------------------------------------------------------------------
 
 # write_tuple: persist a single tuple. Returns {status, body}.
-write_tuple(store, t, performed_by) := _send_write("/rpc/write_tuple", _write_body(store, t, performed_by))
+write_tuple(store, t, performed_by, headers) := _send_write("/rpc/write_tuple", _write_body(store, t, performed_by), headers)
 
 # delete_tuple: remove a single tuple. Returns {status, body}.
-delete_tuple(store, t, performed_by) := _send_write("/rpc/delete_tuple", _delete_body(store, t, performed_by))
+delete_tuple(store, t, performed_by, headers) := _send_write("/rpc/delete_tuple", _delete_body(store, t, performed_by), headers)
 
 # write_tuples / delete_tuples: batch write/delete. The tuples array is passed
 # through as-is (same element shape as a single tuple). body = count affected.
-write_tuples(store, tuples, performed_by) := _send_write("/rpc/write_tuples_jsonb", {
+write_tuples(store, tuples, performed_by, headers) := _send_write("/rpc/write_tuples_jsonb", {
 	"p_store": store,
 	"p_tuples": tuples,
 	"p_performed_by": performed_by,
-})
+}, headers)
 
-delete_tuples(store, tuples, performed_by) := _send_write("/rpc/delete_tuples_jsonb", {
+delete_tuples(store, tuples, performed_by, headers) := _send_write("/rpc/delete_tuples_jsonb", {
 	"p_store": store,
 	"p_tuples": tuples,
 	"p_performed_by": performed_by,
-})
+}, headers)
 
 # delete_user_tuples: offboarding — remove every tuple for a subject.
-delete_user_tuples(store, user, performed_by) := _send_write("/rpc/delete_user_tuples", {
+delete_user_tuples(store, user, performed_by, headers) := _send_write("/rpc/delete_user_tuples", {
 	"p_store": store,
 	"p_user_type": user.user_type,
 	"p_user_id": user.user_id,
 	"p_performed_by": performed_by,
-})
+}, headers)
 
-_send_write(path, body) := {"status": resp.status_code, "body": resp.body} if {
+# headers carries Content-Type and, when namespace isolation is configured, the
+# caller's X-Authz-Role (consumed by authz._pre_request on the writer).
+_send_write(path, body, headers) := {"status": resp.status_code, "body": resp.body} if {
 	resp := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_writer_url, path]),
-		"headers": {"Content-Type": "application/json"},
+		"headers": headers,
 		"body": body,
 		"raise_error": false,
 	})

@@ -62,15 +62,31 @@ write := {"allowed": true, "result": _forward} if {
 }
 
 # Operation dispatch — each clause is selected by input.operation.
-_forward := pgauthz.write_tuple(_store, input.tuple, _performed_by) if input.operation == "write"
+_forward := pgauthz.write_tuple(_store, input.tuple, _performed_by, _headers) if input.operation == "write"
 
-_forward := pgauthz.delete_tuple(_store, input.tuple, _performed_by) if input.operation == "delete"
+_forward := pgauthz.delete_tuple(_store, input.tuple, _performed_by, _headers) if input.operation == "delete"
 
-_forward := pgauthz.write_tuples(_store, input.tuples, _performed_by) if input.operation == "write_batch"
+_forward := pgauthz.write_tuples(_store, input.tuples, _performed_by, _headers) if input.operation == "write_batch"
 
-_forward := pgauthz.delete_tuples(_store, input.tuples, _performed_by) if input.operation == "delete_batch"
+_forward := pgauthz.delete_tuples(_store, input.tuples, _performed_by, _headers) if input.operation == "delete_batch"
 
-_forward := pgauthz.delete_user_tuples(_store, input.user, _performed_by) if input.operation == "delete_user"
+_forward := pgauthz.delete_user_tuples(_store, input.user, _performed_by, _headers) if input.operation == "delete_user"
+
+# Headers forwarded to the writer: JSON content type, plus the caller's per-app
+# DB role as X-Authz-Role when a db-role claim is configured and present in the
+# token. authz._pre_request() on the writer SET LOCAL ROLEs to it for namespace
+# isolation. Absent claim → no header → the writer stays the fixed authz_writer.
+_headers := object.union({"Content-Type": "application/json"}, _role_header)
+
+_role_header := {"X-Authz-Role": _db_role} if _db_role
+
+_role_header := {} if not _db_role
+
+_db_role := role if {
+	authn_config.writer_db_role_claim_path
+	role := object.get(authn.claims, authn_config.writer_db_role_claim_path, "")
+	role != ""
+}
 
 # Authorized iff a valid token carries the configured writer role.
 _write_authorized if {
