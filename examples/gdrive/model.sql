@@ -40,7 +40,15 @@
 --       define can_share: owner or can_share from parent
 --       define can_write: owner or can_write from parent
 
--- Create the store
+-- Create the store. Dropped first so this file is idempotent — re-running
+-- it resets the store from scratch instead of failing on the existing
+-- store. Audit history is purged since this is an example, not production.
+DO $$
+BEGIN
+    PERFORM authz.delete_store('gdrive', p_purge_audit => true);
+EXCEPTION WHEN OTHERS THEN
+    NULL;  -- store did not exist yet
+END $$;
 SELECT authz.create_store('gdrive', 'Google Drive permission model');
 
 DO $$
