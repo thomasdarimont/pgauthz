@@ -700,23 +700,31 @@ SELECT authz.ensure_audit_partitions(3);       -- current + three ahead
 -- 7. MULTI-STORE — independent authorization namespaces
 -- ============================================================================
 
--- Each store has its own model rules, tuples, and conditions.
--- Useful for multi-tenant deployments or staging vs. production.
+-- Each store has its own types, relations, model rules, tuples, and
+-- conditions. Useful for multi-tenant deployments or staging vs. production.
 
-INSERT INTO authz.stores (name) VALUES ('demo')
-ON CONFLICT (name) DO NOTHING;
+-- Create a second, independent store.
+SELECT authz.create_store('demo2');
 
--- The 'demo' store has no model rules or tuples, so all checks return false.
-SELECT authz.check_access('demo',
+-- Give demo2 a minimal model (the same shape as the query below) so name
+-- resolution succeeds. demo2 has NO tuples, so the check returns false —
+-- alice's payroll access in the 'demo' store does not leak into 'demo2'.
+SELECT authz.model_register_type('demo2', 'internal_user');
+SELECT authz.model_register_type('demo2', 'document');
+SELECT authz.model_register_relation('demo2', 'can_read');
+SELECT authz.model_add_rule('demo2', 'document', 'can_read', 'direct');
+
+SELECT authz.check_access('demo2',
     'internal_user', 'alice', 'can_read', 'document', 'doc_payroll_001');
--- => false  (no rules or data in this store)
+-- => false  (demo2 has the model but no tuples — isolated from 'demo')
 
--- Meanwhile the 'demo' store still works as expected.
+-- Meanwhile the original 'demo' store is unaffected.
 SELECT authz.check_access('demo',
     'internal_user', 'alice', 'can_read', 'document', 'doc_payroll_001');
 -- => true
 
-SELECT authz.delete_store('demo');
+-- Clean up the second store (drops its types, relations, models, and tuples).
+SELECT authz.delete_store('demo2');
 
 
 -- ============================================================================
@@ -772,3 +780,75 @@ SELECT authz.check_access('demo',
 
 -- The full resolution: alice ∈ payroll_team#member → payroll_clerk on assignment
 --   → can_view on assignment → can_view on internal_data_space → can_read on document.
+
+
+-- ============================================================================
+-- 9. EXPLAIN — "WHY was access allowed or denied?"
+-- ============================================================================
+--
+-- Section 8 traced the resolution by hand. explain_access does it for you:
+-- it returns a structured decision explanation:
+--
+--   { "result":   bool,                         -- alias of decision.allowed
+--     "decision": { "allowed": bool,
+--                   "reason":  <typed reason> }, -- the minimal cause
+--     "summary":  text,                          -- human-readable tree
+--     "trace":    [ { step, depth, rule_type, reason, subject, relation,
+--                     object, result, detail, duration_ms }, ... ] }
+
+-- 9a. Human-readable summary — the resolution tree from section 8, automatically.
+SELECT authz.explain_access('demo',
+    'internal_user', 'alice', 'can_read', 'document', 'doc_payroll_001')->>'summary';
+-- => internal_user:alice → can_read → document:doc_payroll_001 = ALLOWED (ttu)
+--      ✗ [no_direct_tuple] viewer on document:doc_payroll_001 — no tuple
+--    ✗ [computed] can_read on document:doc_payroll_001 — can_read ← viewer
+--      ... (the failed paths) ...
+--        ✓ [direct_tuple] member on team:payroll_team — tuple found
+--      ✓ [userset] payroll_clerk on assignment:eng_42_payroll — expand team:payroll_team#member
+--      ✓ [ttu] can_read on document:doc_payroll_001 — can_read ← can_view ... (via in_internal_space)
+
+-- 9b. Structured decision — machine-readable "why".
+SELECT authz.explain_access('demo',
+    'internal_user', 'alice', 'can_read', 'document', 'doc_payroll_001')->'decision';
+-- => {"allowed": true, "reason": "ttu"}   (the grant came through a tuple-to-userset chain)
+
+-- 9c. Winning path only — pass p_successful_only to drop the failed branches.
+SELECT authz.explain_access('demo',
+    'internal_user', 'alice', 'can_read', 'document', 'doc_payroll_001',
+    p_successful_only => true)->>'summary';
+-- => only the ✓ steps that make up the decisive path.
+
+-- 9d. A DENY explains itself too.
+SELECT authz.explain_access('demo',
+    'internal_user', 'alice', 'can_read', 'document', 'doc_tax_001')->'decision';
+-- => {"allowed": false, "reason": "no_matching_rule"}  (Alice is on payroll, not tax)
+
+-- 9e. Conditions: when a time/ABAC condition blocks access, the reason says so.
+-- Give Alice a 2-hour conditional grant, then explain a check with no context.
+SELECT authz.write_tuple('demo',
+    'internal_user', 'alice', 'viewer', 'document', 'doc_explain_001',
+    p_condition => 'non_expired_grant',
+    p_condition_context => '{"grant_time": "2026-03-11T09:00:00Z", "grant_duration": "2 hours"}'::jsonb
+);
+
+SELECT authz.explain_access('demo',
+    'internal_user', 'alice', 'viewer', 'document', 'doc_explain_001')->'decision';
+-- => {"allowed": false, "reason": "condition_denied"}  (no current_time supplied)
+
+-- Other decision.reason values you may see: direct_tuple, wildcard_tuple,
+-- object_wildcard_tuple, contextual_tuple, computed, userset,
+-- intersection_satisfied / intersection_unsatisfied, excluded.
+
+-- Clean up
+DELETE FROM authz.tuples
+ WHERE object_id = 'doc_explain_001'
+   AND object_type = authz._t('demo', 'document');
+
+-- 9f. Redacted "safety mode" — surface the explanation to an untrusted UI
+-- without leaking tuple/group identifiers. Subject/object ids and free-text
+-- detail are stripped; types, relations, reasons, and the decision remain.
+SELECT authz.explain_access('demo',
+    'internal_user', 'alice', 'can_read', 'document', 'doc_payroll_001',
+    p_redact => true);
+-- => subjects become "internal_user:***", objects "document:***", detail null,
+--    but "decision" and each step's typed "reason" are preserved.

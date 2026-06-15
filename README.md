@@ -153,6 +153,61 @@ SELECT * FROM authz.list_actions('demo',
 -- => can_edit, can_read
 ```
 
+### explain_access — "WHY was access allowed or denied?"
+
+Like `check_access`, but returns a **structured decision explanation** instead
+of a bare boolean — the resolution tree, a typed reason per step, and a minimal
+"why". Use it for debugging models, building audit/why views, and powering
+"why can/can't I see this?" UIs.
+
+```sql
+SELECT authz.explain_access('demo',
+    'internal_user', 'alice', 'can_read', 'document', 'doc_payroll_001');
+```
+
+Returns JSON:
+
+```jsonc
+{
+  "result":   true,                  // boolean alias of decision.allowed
+  "decision": { "allowed": true,
+                "reason":  "ttu" },  // the minimal cause of the outcome
+  "summary":  "internal_user:alice → can_read → document:doc_payroll_001 = ALLOWED (ttu)\n  ✓ ...",
+  "trace": [
+    { "step": 1, "depth": 4, "rule_type": "direct", "reason": "direct_tuple",
+      "subject": "internal_user:alice", "relation": "member",
+      "object": "team:payroll_team", "result": true, "detail": "tuple found",
+      "duration_ms": 0.07 }
+    // ... one object per evaluation step
+  ]
+}
+```
+
+`decision.reason` is a stable, typed code. For **ALLOW** it is the granting
+step's reason — `direct_tuple`, `wildcard_tuple`, `object_wildcard_tuple`,
+`contextual_tuple`, `computed`, `userset`, `ttu`, or `intersection_satisfied`.
+For **DENY** it is one of `excluded`, `intersection_unsatisfied`,
+`condition_denied`, or `no_matching_rule`.
+
+```sql
+-- Just the winning path (drop the failed branches):
+SELECT authz.explain_access('demo', 'internal_user', 'alice',
+    'can_read', 'document', 'doc_payroll_001', p_successful_only => true);
+
+-- Redacted "safety mode" for untrusted UIs: strips subject/object identifiers
+-- and free-text detail, keeping only types, relations, reasons, and the
+-- decision (so a UI can show *why* without leaking tuple/group names).
+SELECT authz.explain_access('demo', 'internal_user', 'alice',
+    'can_read', 'document', 'doc_payroll_001', p_redact => true);
+-- subjects become "internal_user:***", objects "document:***", detail null.
+```
+
+> Parse the trace `reason` codes and the `decision` object — they are
+> machine-readable; the human-readable `summary` text is not, so don't parse
+> it. `explain_access` is granted to `authz_reader` like the other read
+> functions; gate it (or use `p_redact`) before exposing it to untrusted
+> clients, since an unredacted trace reveals tuple and group names.
+
 ### write_tuple — Write a relationship tuple
 
 Returns `true` if a new tuple was created **or an existing tuple's condition
@@ -1086,7 +1141,7 @@ the caller requested.
 | **Full audit trail** | Immutable, monthly-partitioned log with `performed_by` tracking |
 | **Time-travel queries** | `audit_check_access` reconstructs the tuple state at any past timestamp (evaluated against the current model — model changes are not versioned) |
 | **`list_actions`** | "What can user X do on object Z?" — OpenFGA has no equivalent |
-| **`explain_access`** | Full resolution trace showing every rule evaluated, with timing |
+| **`explain_access`** | Structured decision explanation: resolution tree, a typed `reason` per step, a minimal `decision.reason`, and a redacted safety mode |
 | **Namespace write control** | Restrict which applications can write tuples for which object types |
 | **Condition validation** | Dry-run conditions before writing tuples |
 | **Batch operations** | `write_tuples` / `delete_tuples` in a single statement |

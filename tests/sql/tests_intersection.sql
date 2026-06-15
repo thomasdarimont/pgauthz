@@ -256,6 +256,65 @@ END;
 $$;
 SELECT * FROM _test_teardown_groups();
 
+-- ================================================================
+-- explain_access v2 contract: structured decision, typed reasons,
+-- versioned output, and a redacted safety mode.
+-- ================================================================
+
+-- grp_20: ALLOW carries a structured decision with a typed reason and
+-- every trace step is typed; the legacy 'result' field is preserved.
+DO $$
+DECLARE e jsonb;
+BEGIN
+    PERFORM _test_setup_groups();
+    e := authz.explain_access('test_groups', 'user', 'alice', 'can_view', 'resource', 'r1');
+
+    PERFORM _test_assert('grp_20a_decision_allowed_true',
+        (e->'decision'->>'allowed'), 'true');
+    PERFORM _test_assert('grp_20b_legacy_result_preserved',
+        (e->>'result'), 'true');
+    PERFORM _test_assert('grp_20c_decision_reason_typed',
+        (e->'decision'->>'reason'), 'intersection_satisfied');
+    -- every trace step must carry a non-null typed reason
+    PERFORM _test_assert('grp_20e_all_steps_have_reason',
+        (SELECT bool_and(s->>'reason' IS NOT NULL)::text
+           FROM jsonb_array_elements(e->'trace') s), 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_groups();
+
+-- grp_21: DENY-by-exclusion surfaces the typed reason 'excluded'
+DO $$
+DECLARE e jsonb;
+BEGIN
+    PERFORM _test_setup_groups();
+    e := authz.explain_access('test_groups', 'user', 'carol', 'can_comment', 'resource', 'r1');
+    PERFORM _test_assert('grp_21a_decision_allowed_false',
+        (e->'decision'->>'allowed'), 'false');
+    PERFORM _test_assert('grp_21b_decision_reason_excluded',
+        (e->'decision'->>'reason'), 'excluded');
+END;
+$$;
+SELECT * FROM _test_teardown_groups();
+
+-- grp_22: redacted mode omits subject/object identifiers
+DO $$
+DECLARE e jsonb;
+BEGIN
+    PERFORM _test_setup_groups();
+    e := authz.explain_access('test_groups', 'user', 'alice', 'can_view', 'resource', 'r1',
+                              p_redact => true);
+    -- decision/version still present, but no concrete ids leak anywhere
+    PERFORM _test_assert('grp_22a_redacted_still_has_decision',
+        (e->'decision'->>'allowed'), 'true');
+    PERFORM _test_assert('grp_22b_redacted_hides_subject_id',
+        (e::text LIKE '%alice%')::text, 'false');
+    PERFORM _test_assert('grp_22c_redacted_hides_object_id',
+        (e::text LIKE '%r1%')::text, 'false');
+END;
+$$;
+SELECT * FROM _test_teardown_groups();
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_groups();
 DROP FUNCTION IF EXISTS _test_setup_groups();

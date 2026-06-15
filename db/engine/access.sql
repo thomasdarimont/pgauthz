@@ -644,15 +644,62 @@ END;
 $$;
 
 ------------------------------------------------------------------------
--- explain_access: like check_access, but returns the full resolution
--- trace as a JSON object with {result, summary, trace[]}.
+-- _explain_reason: maps a trace step (rule_type + result + detail) to a
+-- stable, typed reason code for the structured explain_access output.
+-- Keeping the mapping in one place keeps the JSON contract stable.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._explain_reason(
+    p_rule_type text, p_result boolean, p_detail text
+) RETURNS text
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE p_rule_type
+        WHEN 'cycle'        THEN 'cycle_pruned'
+        WHEN 'computed'     THEN 'computed'
+        WHEN 'ttu'          THEN 'ttu'
+        WHEN 'userset'      THEN 'userset'
+        WHEN 'intersection' THEN CASE WHEN p_result THEN 'intersection_satisfied'
+                                                    ELSE 'intersection_unsatisfied' END
+        WHEN 'exclusion'    THEN CASE WHEN p_result THEN 'exclusion_satisfied'
+                                                    ELSE 'exclusion_failed' END
+        WHEN 'direct'       THEN CASE
+            WHEN p_detail = 'tuple found'               THEN 'direct_tuple'
+            WHEN p_detail = 'object wildcard tuple (*)' THEN 'object_wildcard_tuple'
+            WHEN p_detail = 'wildcard tuple (*)'        THEN 'wildcard_tuple'
+            WHEN p_detail = 'contextual tuple'          THEN 'contextual_tuple'
+            WHEN p_detail LIKE '%condition%denied%'     THEN 'condition_denied'
+            WHEN p_detail = 'no tuple'                  THEN 'no_direct_tuple'
+            ELSE 'direct'
+        END
+        ELSE p_rule_type
+    END
+$$;
+
+------------------------------------------------------------------------
+-- explain_access: like check_access, but returns a structured decision
+-- explanation:
 --
--- summary: human-readable indented text showing the resolution tree.
--- trace:   array of step objects for programmatic use.
+--   {
+--     "result":   bool,                  -- alias of decision.allowed
+--     "decision": { "allowed": bool,
+--                   "reason":  <typed reason code> },
+--     "summary":  text,                  -- human-readable resolution tree
+--     "trace":    [ { step, depth, rule_type, reason, subject, relation,
+--                     object, result, detail, duration_ms }, ... ]
+--   }
+--
+-- decision.reason is the minimal cause: for ALLOW, the shallowest
+-- granting step's reason (e.g. direct_tuple, wildcard_tuple, computed,
+-- intersection_satisfied); for DENY, one of excluded /
+-- intersection_unsatisfied / condition_denied / no_matching_rule.
+--
+-- p_redact: safety mode for surfacing explanations to untrusted UIs —
+-- strips subject/object identifiers and free-text detail, keeping only
+-- the typed structure (types, relations, reasons, results).
 --
 -- Examples:
 --   SELECT authz.explain_access('demo',
 --       'internal_user', 'alice', 'can_read', 'document', 'doc_payroll_001');
+--   SELECT authz.explain_access('demo', ..., p_redact => true);
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.explain_access(
     p_store           text,
@@ -662,7 +709,8 @@ CREATE OR REPLACE FUNCTION authz.explain_access(
     p_object_type     text,
     p_object_id       text,
     context           jsonb DEFAULT NULL,
-    p_successful_only boolean DEFAULT false
+    p_successful_only boolean DEFAULT false,
+    p_redact          boolean DEFAULT false
 ) RETURNS jsonb
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -670,9 +718,10 @@ DECLARE
     v_user_type   smallint := authz._t(v_store_id, p_user_type);
     v_relation    smallint := authz._r(v_store_id, p_relation);
     v_object_type smallint := authz._t(v_store_id, p_object_type);
-    v_result  boolean;
-    v_trace   jsonb;
-    v_summary text;
+    v_result          boolean;
+    v_trace           jsonb;
+    v_summary         text;
+    v_decision_reason text;
     t         record;
     v_indent  text;
     v_icon    text;
@@ -704,18 +753,42 @@ BEGIN
         p_object_id,
         context
     );
+    PERFORM set_config('authz.trace', 'off', true);
 
-    -- Build the trace JSON from the temp table.
+    -- Decision reason: minimal cause of the outcome.
+    IF v_result THEN
+        SELECT authz._explain_reason(s.rule_type, s.result, s.detail)
+          INTO v_decision_reason
+          FROM _access_trace s
+         WHERE s.result
+         ORDER BY s.depth ASC, s.step DESC
+         LIMIT 1;
+        v_decision_reason := COALESCE(v_decision_reason, 'allowed');
+    ELSE
+        v_decision_reason := CASE
+            WHEN EXISTS (SELECT 1 FROM _access_trace s
+                          WHERE NOT s.result AND s.rule_type = 'exclusion')      THEN 'excluded'
+            WHEN EXISTS (SELECT 1 FROM _access_trace s
+                          WHERE NOT s.result AND s.rule_type = 'intersection')   THEN 'intersection_unsatisfied'
+            WHEN EXISTS (SELECT 1 FROM _access_trace s
+                          WHERE authz._explain_reason(s.rule_type, s.result, s.detail) = 'condition_denied')
+                                                                                 THEN 'condition_denied'
+            ELSE 'no_matching_rule'
+        END;
+    END IF;
+
+    -- Build the trace JSON (redaction strips ids and free-text detail).
     SELECT coalesce(jsonb_agg(
         jsonb_build_object(
             'step',      s.step,
             'depth',     s.depth,
             'rule_type', s.rule_type,
-            'subject',   s.subject,
+            'reason',    authz._explain_reason(s.rule_type, s.result, s.detail),
+            'subject',   CASE WHEN p_redact THEN split_part(s.subject, ':', 1) || ':***' ELSE s.subject END,
             'relation',  s.relation,
-            'object',    s.object,
+            'object',    CASE WHEN p_redact THEN split_part(s.object, ':', 1) || ':***' ELSE s.object END,
             'result',    s.result,
-            'detail',    s.detail,
+            'detail',    CASE WHEN p_redact THEN NULL ELSE s.detail END,
             'duration_ms', round(s.duration_ms::numeric, 3)
         ) ORDER BY s.step
     ), '[]'::jsonb)
@@ -724,29 +797,38 @@ BEGIN
     WHERE (NOT p_successful_only OR s.result);
 
     -- Build human-readable summary.
-    v_summary := p_user_type || ':' || p_user_id || ' → ' || p_relation
-              || ' → ' || p_object_type || ':' || p_object_id
-              || ' = ' || CASE WHEN v_result THEN 'ALLOWED' ELSE 'DENIED' END
-              || E'\n';
+    IF p_redact THEN
+        v_summary := p_user_type || ' → ' || p_relation || ' → ' || p_object_type
+                  || ' = ' || CASE WHEN v_result THEN 'ALLOWED' ELSE 'DENIED' END
+                  || ' (' || v_decision_reason || ')';
+    ELSE
+        v_summary := p_user_type || ':' || p_user_id || ' → ' || p_relation
+                  || ' → ' || p_object_type || ':' || p_object_id
+                  || ' = ' || CASE WHEN v_result THEN 'ALLOWED' ELSE 'DENIED' END
+                  || ' (' || v_decision_reason || ')' || E'\n';
 
-    FOR t IN SELECT * FROM _access_trace at
-              WHERE (NOT p_successful_only OR at.result)
-              ORDER BY at.step
-    LOOP
-        v_indent := repeat('  ', t.depth);
-        v_icon   := CASE WHEN t.result THEN '✓' ELSE '✗' END;
-        v_line   := v_indent
-                 || v_icon || ' '
-                 || '[' || t.rule_type || '] '
-                 || t.relation || ' on ' || t.object
-                 || ' — ' || t.detail
-                 || ' (' || round(t.duration_ms::numeric, 3) || ' ms)';
-        v_summary := v_summary || v_line || E'\n';
-    END LOOP;
+        FOR t IN SELECT * FROM _access_trace at
+                  WHERE (NOT p_successful_only OR at.result)
+                  ORDER BY at.step
+        LOOP
+            v_indent := repeat('  ', t.depth);
+            v_icon   := CASE WHEN t.result THEN '✓' ELSE '✗' END;
+            v_line   := v_indent
+                     || v_icon || ' '
+                     || '[' || authz._explain_reason(t.rule_type, t.result, t.detail) || '] '
+                     || t.relation || ' on ' || t.object
+                     || ' — ' || t.detail
+                     || ' (' || round(t.duration_ms::numeric, 3) || ' ms)';
+            v_summary := v_summary || v_line || E'\n';
+        END LOOP;
+    END IF;
 
-    PERFORM set_config('authz.trace', 'off', true);
-
-    RETURN jsonb_build_object('result', v_result, 'summary', v_summary, 'trace', v_trace);
+    RETURN jsonb_build_object(
+        'result',   v_result,
+        'decision', jsonb_build_object('allowed', v_result, 'reason', v_decision_reason),
+        'summary',  v_summary,
+        'trace',    v_trace
+    );
 END;
 $$;
 
