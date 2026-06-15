@@ -101,6 +101,37 @@ END
 $$;
 GRANT authz_reader TO authzen_direct;
 
+-- ── Condition-evaluation hardening ──────────────────────────────────
+-- Condition expressions are arbitrary SQL evaluated in a sandbox
+-- (_exec_condition runs as the zero-privilege authz_eval role). That role
+-- already cannot read tables or files (verified: file/table access is denied);
+-- the residual risk is resource exhaustion. Two complementary bounds:
+--
+-- 1. Time — arm a statement_timeout on the service LOGIN roles as a generous
+--    hang-backstop. NOTE: this is per-role and applies to EVERY statement on
+--    those connections (every check, listing, batch write, and PostgREST's
+--    own schema introspection) — not only condition evaluation. So it must be
+--    larger than the slowest LEGITIMATE operation: time-travel
+--    (audit_check_access, ~seconds) and broad list_objects/list_subjects can
+--    take seconds on large stores. 60s reclaims a truly-stuck connection
+--    without tripping those. A timed-out condition fails closed: the cancel
+--    aborts the check (never a silent allow). Tune per deployment; for large
+--    listings prefer pagination (p_limit) and object/user wildcards (O(1)).
+ALTER ROLE authz_authenticator SET statement_timeout = '60s';
+ALTER ROLE authzen_direct      SET statement_timeout = '60s';
+
+-- 2. Capability — pg_sleep is a PUBLIC builtin and the one obvious
+--    hang-via-DoS primitive reachable from the sandbox; revoke it (and its
+--    siblings) from PUBLIC. Superusers bypass grants and are unaffected; no
+--    non-superuser authorization path needs to sleep. NOTE: this is
+--    database-wide for non-superusers — if pgauthz shares its database with
+--    other applications that legitimately call pg_sleep, drop these REVOKEs.
+--    (Blocking named functions is defense-in-depth, not a substitute for the
+--    statement_timeout above — arbitrary expensive pure-SQL needs no builtin.)
+REVOKE EXECUTE ON FUNCTION pg_catalog.pg_sleep(double precision)               FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION pg_catalog.pg_sleep_for(interval)                   FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION pg_catalog.pg_sleep_until(timestamp with time zone) FROM PUBLIC;
+
 -- All roles need schema access.
 GRANT USAGE ON SCHEMA authz TO authz_auditor, authz_reader, authz_writer, authz_admin;
 

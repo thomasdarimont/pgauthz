@@ -543,8 +543,12 @@ BEGIN
         COALESCE(p_condition_context, '{}'::jsonb)
     );
 EXCEPTION
+    WHEN query_canceled THEN
+        RAISE;         -- statement_timeout / cancel must abort the check (fail
+                       -- closed as an error), never be swallowed into a silent
+                       -- deny — this is what bounds a runaway condition
     WHEN OTHERS THEN
-        RETURN false;  -- condition evaluation error = deny
+        RETURN false;  -- genuine condition evaluation error = deny
 END;
 $$;
 

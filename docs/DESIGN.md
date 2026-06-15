@@ -73,9 +73,32 @@ evaluation is sandboxed:
 1. `_exec_condition()` is `SECURITY DEFINER` and owned by `authz_eval`
 2. `authz_eval` is a role with zero table grants and zero function grants
 3. Only pure SQL operators and casts work inside expressions — any
-   attempt to `SELECT` from a table or call a function fails with a
-   permission error
+   attempt to `SELECT` from a table or call a privileged function (file
+   access, `dblink`, …) fails with a permission error
 4. Evaluation errors are caught and treated as deny (fail-closed)
+
+This is a **capability** sandbox: it removes the ability to read data or
+reach the host. The remaining risk is **resource exhaustion** — an
+expression that burns CPU/time (`pg_sleep`, a catastrophic regex, a huge
+`generate_series`/string), which needs no privileged function. Two further
+bounds address that, applied in `db/security/roles.sql`:
+
+5. **Time bound.** The service login roles carry a `statement_timeout`, so
+   every authorization query — condition evaluation included — is bounded.
+   A timed-out condition fails closed: the cancel propagates and aborts the
+   check (`_eval_condition` re-raises `query_canceled` rather than swallowing
+   it into a silent deny). Authorization checks are sub-millisecond, so the
+   timeout only catches pathological expressions.
+6. **Targeted capability removal.** `pg_sleep` (and `pg_sleep_for` /
+   `pg_sleep_until`) — the obvious hang primitive, a PUBLIC builtin — is
+   revoked from `PUBLIC`, so the sandbox cannot call it at all. This is
+   defense-in-depth, not a substitute for the time bound: arbitrary
+   expensive pure-SQL needs no builtin and is bounded only by the timeout.
+
+Expressions are also **syntax-checked at write time** (a `BEFORE
+INSERT/UPDATE` trigger test-compiles them in the sandbox and rejects
+malformed ones), so a broken expression is rejected rather than stored and
+silently denying.
 
 ### Audit trail
 

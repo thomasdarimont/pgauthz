@@ -136,7 +136,7 @@ Three topologies are supported:
 | LIST partitioning by object_type | Performance | Each type gets its own partition. `check_access` benefits from partition pruning — only the relevant partition is scanned. |
 | Three-tier HTTP stack (OPA + PostgREST + PG) | Compatibility | OPA provides policy-as-code with JWT authentication and caching. PostgREST maps SQL functions to REST endpoints. Both are optional. |
 | Models as data, not schema | Operability | Model changes are INSERT/DELETE operations. No schema migrations, no function reloads, no downtime. |
-| Condition sandboxing via `authz_eval` | Security | User-defined SQL expressions run under a role with zero grants. Only pure operators and casts work. Evaluation errors fail closed (deny). |
+| Condition sandboxing via `authz_eval` | Security | User-defined SQL expressions run under a role with zero grants (no table/file/function access). Bounded in time by a `statement_timeout` on the service roles (timeout fails closed); `pg_sleep` revoked from PUBLIC. Evaluation errors fail closed (deny). |
 | Multi-store isolation | Operability | Independent authorization namespaces enable blue-green model deployment, test environments, and parallel experiments. |
 | Immutable audit trail | Auditability | Trigger-based capture of every tuple change. Monthly RANGE partitioning for retention. Time-travel queries reconstruct past permission states. |
 | Nginx gateway for write API | Security | PostgREST leaks schema information in error responses. Nginx allowlists only `POST /rpc/*` and suppresses error details. |
@@ -492,9 +492,12 @@ Layer 4: Data isolation  SECURITY DEFINER — no direct table access
 ```
 
 **Condition sandboxing:** User-defined SQL expressions run under
-`authz_eval`, a role with zero table and function grants. Only pure
-SQL operators and casts work. Evaluation errors are caught and treated
-as deny (fail-closed).
+`authz_eval`, a role with zero table and function grants (no data or host
+access). A `statement_timeout` on the service roles bounds evaluation time
+— a timed-out condition fails closed (the cancel aborts the check, never a
+silent allow) — and `pg_sleep` is revoked from PUBLIC. Evaluation errors
+are caught and treated as deny (fail-closed). See DESIGN.md for the full
+capability/resource breakdown.
 
 **Namespace isolation:** Object types can be assigned to namespaces.
 The engine checks `session_user` membership in namespace-granted roles

@@ -499,6 +499,59 @@ END;
 $$;
 SELECT * FROM _test_teardown_contextual();
 
+-- ctx_23: a condition whose evaluation exceeds statement_timeout aborts the
+-- check (the cancel propagates) rather than being swallowed into a silent
+-- deny — so an operator-configured statement_timeout actually bounds (and
+-- fail-closes) condition evaluation. The slow expression uses heavy compute
+-- (not pg_sleep, which the sandbox can no longer call) and only triggers when
+-- the request context asks for it, so write-time validation stays fast.
+SELECT _test_setup_contextual();
+DO $$
+BEGIN
+    INSERT INTO authz.conditions (store_id, name, expression, required_context)
+    VALUES (authz._s('test_contextual'), 'slow',
+            'CASE WHEN ($1->>''go'') = ''yes'' THEN (SELECT count(*) FROM generate_series(1, 2000000000)) >= 0 ELSE true END',
+            NULL);
+    PERFORM authz.write_tuple('test_contextual', 'user', 'zoe', 'viewer', 'doc', 'doc1', p_condition => 'slow');
+END;
+$$;
+SET statement_timeout = '300ms';   -- armed for the next top-level statement
+DO $$
+BEGIN
+    BEGIN
+        PERFORM authz.check_access_with_context('test_contextual', 'user', 'zoe', 'viewer', 'doc', 'doc1',
+            '{"go": "yes"}'::jsonb);
+        PERFORM _test_assert_true('ctx_23_condition_timeout_aborts', false,
+            'expected query_canceled, got completion');
+    EXCEPTION WHEN query_canceled THEN
+        PERFORM _test_assert_true('ctx_23_condition_timeout_aborts', true);
+    END;
+END;
+$$;
+RESET statement_timeout;
+SELECT * FROM _test_teardown_contextual();
+
+-- ctx_24: the condition sandbox role (authz_eval) cannot call pg_sleep — it is
+-- revoked from PUBLIC, so a hang-via-pg_sleep expression is blocked outright
+-- (defense in depth alongside statement_timeout).
+DO $$
+DECLARE v_state text;
+BEGIN
+    BEGIN
+        SET ROLE authz_eval;
+        PERFORM pg_sleep(0);
+        RESET ROLE;
+        PERFORM _test_assert_true('ctx_24_sandbox_cannot_pg_sleep', false,
+            'expected permission denied');
+    EXCEPTION WHEN OTHERS THEN
+        v_state := SQLSTATE;
+        PERFORM _test_assert_true('ctx_24_sandbox_cannot_pg_sleep',
+            v_state = '42501', 'sqlstate=' || v_state);
+    END;
+    RESET ROLE;
+END;
+$$;
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_contextual();
 DROP FUNCTION IF EXISTS _test_setup_contextual();

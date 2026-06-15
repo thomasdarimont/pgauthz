@@ -178,8 +178,10 @@ BEGIN
         COALESCE(p_condition_context, '{}'::jsonb)
     );
 EXCEPTION
+    WHEN query_canceled THEN
+        RAISE;         -- statement_timeout / cancel must abort, never deny-swallow
     WHEN OTHERS THEN
-        RETURN false;  -- evaluation error = deny
+        RETURN false;  -- genuine evaluation error = deny
 END;
 $$;
 
