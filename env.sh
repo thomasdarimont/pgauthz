@@ -16,6 +16,13 @@ if [ -f "$SCRIPT_DIR/compose-authzen.yml" ]; then
   COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-authzen.yml")
 fi
 
+# The demo/test stack runs the AuthZEN services in trusted-PEP mode (the
+# integration tests evaluate access for arbitrary subjects supplied in the
+# request body). The compose file itself defaults to the SAFE token-only mode,
+# so a copied-to-production compose isn't permissive by accident — the demo
+# opts in here, explicitly.
+export ALLOW_SUBJECT_OVERRIDE="${ALLOW_SUBJECT_OVERRIDE:-true}"
+
 # Ensure containers are running
 docker compose "${COMPOSE_FILES[@]}" up -d --build --wait
 

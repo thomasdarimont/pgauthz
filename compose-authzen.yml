@@ -19,11 +19,14 @@ services:
       JWT_AUDIENCE: "${JWT_AUDIENCE:-authz-api}"
       # REQUIRED_SCOPE: "authz:read"  # If set, JWT must contain this scope
       DEFAULT_STORE: "${DEFAULT_STORE:-demo}"
-      # Trusted-PEP/PDP mode: the caller is a trusted enforcement point that
-      # evaluates access for arbitrary subjects, so the request-body subject
-      # is authoritative. Default is false (token-only) — leave it unset for
-      # user-facing deployments where the JWT identifies the end user.
-      ALLOW_SUBJECT_OVERRIDE: "${ALLOW_SUBJECT_OVERRIDE:-true}"
+      # SECURITY: token-only by default. Set ALLOW_SUBJECT_OVERRIDE=true ONLY
+      # for trusted PEP/PDP deployments, where the caller is an enforcement
+      # point evaluating access for arbitrary request-body subjects. In a
+      # user-facing deployment leave it unset/false so the JWT subject is
+      # authoritative (a mismatched body subject is rejected with 403). The
+      # demo/test stack opts into true via env.sh — NOT this file — so this
+      # compose is safe to copy to production as-is.
+      ALLOW_SUBJECT_OVERRIDE: "${ALLOW_SUBJECT_OVERRIDE:-false}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
     # Keep retrying until the authzen_direct role exists (created by
     # db/security/initdb on first boot, or by init.sh on re-init).
@@ -50,9 +53,9 @@ services:
       JWT_AUDIENCE: "${JWT_AUDIENCE:-authz-api}"
       # REQUIRED_SCOPE: "authz:read"  # If set, JWT must contain this scope
       DEFAULT_STORE: "${DEFAULT_STORE:-demo}"
-      # Trusted-PEP/PDP mode (see authzen-direct above). Default false
-      # (token-only); unset it for user-facing deployments.
-      ALLOW_SUBJECT_OVERRIDE: "${ALLOW_SUBJECT_OVERRIDE:-true}"
+      # SECURITY: token-only by default (see authzen-direct above). The
+      # demo/test stack opts into trusted-PEP mode via env.sh, not this file.
+      ALLOW_SUBJECT_OVERRIDE: "${ALLOW_SUBJECT_OVERRIDE:-false}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
     volumes:
       - ./opa/data:/jwks:ro
