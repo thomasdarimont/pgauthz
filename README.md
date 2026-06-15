@@ -119,6 +119,10 @@ SELECT * FROM authz.list_objects('demo',
 -- => doc_payroll_001, doc_acc_001, doc_tax_001
 ```
 
+`list_objects` finds these by **reverse expansion**: it starts from Bob's
+own grants and walks the relationship graph outward, so its cost tracks
+how much Bob can reach — not how many documents exist in the store.
+
 ### list_subjects — "Which users of type X can do Y on object Z?"
 
 ```sql
@@ -132,6 +136,12 @@ SELECT * FROM authz.list_subjects('demo',
 --  bob        | f
 --  julia      | f
 ```
+
+`list_subjects` is the mirror image of `list_objects`: it starts from the
+object and walks the relationship graph *up* to the users who can reach
+it, so its cost tracks how many users that object is shared with — not the
+total number of users in the store. A public object shared via a `*`
+wildcard returns a single wildcard row (below) instead of every user.
 
 When a wildcard grant applies, the result includes a typed wildcard row —
 `subject_id = '*'` with `is_wildcard = true` — meaning **every user of
@@ -152,6 +162,12 @@ SELECT * FROM authz.list_actions('demo',
     'internal_user', 'alice', 'document', 'doc_payroll_001');
 -- => can_edit, can_read
 ```
+
+`list_actions` needs no graph traversal: it checks the handful of
+relations the *model* defines for the object's type, so its cost is fixed
+by the schema, not the data. (The same holds for `audit_list_actions`;
+the `audit_list_user` / `audit_list_object` trail queries are plain
+indexed scans of the audit log.)
 
 ### explain_access — "WHY was access allowed or denied?"
 

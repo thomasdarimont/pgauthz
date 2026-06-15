@@ -592,21 +592,73 @@ DECLARE
     v_object_type  smallint := authz._t(v_store_id, p_object_type);
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
-    -- Deduplicate candidates BEFORE running the recursive check: a user
-    -- appearing in N tuples must be checked once, not N times. Note the
-    -- candidate set is every direct user of the type in the WHOLE store
-    -- (there is no reverse index from object to potential users) — see
-    -- the scaling note in docs/ARCHITECTURE.md.
+    -- Reverse expansion (the dual of list_objects): walk UP the grant graph
+    -- from the object to the candidate subjects, so the candidate set is
+    -- bounded by the object's reachable subjects — not by the store-wide
+    -- user population. The walk follows the OR-union of all grant paths and
+    -- ignores group_op (AND / BUT NOT) and conditions, so it over-
+    -- approximates; the final _check_access filter makes it exact. A user
+    -- appearing via N paths is deduplicated and checked once.
     RETURN QUERY
-        SELECT c.user_id, c.user_id = '*'
-          FROM (SELECT DISTINCT t.user_id
-                  FROM authz.tuples t
-                 WHERE t.store_id = v_store_id
-                   AND t.user_type = v_subject_type
-                   AND t.user_relation IS NULL
-                 ORDER BY t.user_id) c
-         WHERE authz._check_access(v_store_id, v_subject_type, c.user_id, v_relation, v_object_type, p_object_id, context)
-         ORDER BY c.user_id
+        WITH RECURSIVE reach (object_type, object_id, relation) AS (
+            -- Seed: the queried (object, relation).
+            SELECT v_object_type, p_object_id, v_relation
+          UNION
+            -- Expansion: from each reached (B, R), the (A, r) nodes that,
+            -- if satisfied, imply R on B. One recursive reference (a single
+            -- LATERAL with multiple branches), as the SQL standard requires.
+            SELECT e.object_type, e.object_id, e.relation
+              FROM reach r
+              CROSS JOIN LATERAL (
+                  -- computed: rule "R = computed(C)" on B's type ⇒ (B, C)
+                  SELECT r.object_type, r.object_id, m.computed_relation
+                    FROM authz.models m
+                   WHERE m.store_id          = v_store_id
+                     AND m.object_type       = r.object_type
+                     AND m.rule_type         = 2  -- computed
+                     AND m.relation          = r.relation
+                     AND m.computed_relation IS NOT NULL
+                UNION ALL
+                  -- userset: tuple (B, R, A#ur) ⇒ (A, ur)
+                  SELECT t.user_type, t.user_id, t.user_relation
+                    FROM authz.tuples t
+                   WHERE t.store_id      = v_store_id
+                     AND t.object_type   = r.object_type
+                     AND t.object_id     IN (r.object_id, '*')
+                     AND t.relation      = r.relation
+                     AND t.user_relation IS NOT NULL
+                UNION ALL
+                  -- TTU: rule "R = ts→C" on B + link tuple (B, ts, A) ⇒ (A, C)
+                  SELECT t.user_type, t.user_id, m.tupleset_computed
+                    FROM authz.models m
+                    JOIN authz.tuples t
+                      ON t.store_id      = v_store_id
+                     AND t.object_type   = r.object_type
+                     AND t.object_id     IN (r.object_id, '*')
+                     AND t.relation      = m.tupleset_relation
+                     AND t.user_relation IS NULL
+                   WHERE m.store_id    = v_store_id
+                     AND m.object_type = r.object_type
+                     AND m.rule_type   = 3  -- ttu
+                     AND m.relation    = r.relation
+              ) AS e (object_type, object_id, relation)
+        )
+        SELECT c.subject_id, c.subject_id = '*'
+          FROM (
+              -- Concrete subjects of the requested type sitting at any
+              -- reached node (object-wildcard grants via object_id = '*').
+              SELECT DISTINCT t.user_id AS subject_id
+                FROM reach r
+                JOIN authz.tuples t
+                  ON t.store_id      = v_store_id
+                 AND t.object_type   = r.object_type
+                 AND t.object_id     IN (r.object_id, '*')
+                 AND t.relation      = r.relation
+                 AND t.user_type     = v_subject_type
+                 AND t.user_relation IS NULL
+          ) c
+         WHERE authz._check_access(v_store_id, v_subject_type, c.subject_id, v_relation, v_object_type, p_object_id, context)
+         ORDER BY c.subject_id
          OFFSET p_offset
          LIMIT p_limit;
 END;

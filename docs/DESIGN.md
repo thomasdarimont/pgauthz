@@ -141,6 +141,63 @@ The partial indexes split direct and userset tuples into separate
 B-trees, which keeps each smaller and makes the planner's cost
 estimates more accurate.
 
+### Reverse expansion for search queries
+
+`check_access` answers a single yes/no question. The search functions
+answer set questions — and the naive way to answer them, "enumerate all
+candidates and call `check_access` on each", scales with the store, not
+with the answer. Both avoid that with **reverse expansion**: a recursive
+CTE that walks the grant graph outward from the known end and collects
+candidates, bounding the work by the *reachable set* rather than the
+store size.
+
+- **`list_objects`** ("which objects can subject S reach via relation R?")
+  seeds from the tuples where S is the subject and walks **downward** —
+  computed (`r` on A ⇒ `R` on A), userset (a tuple `A#r` grants something
+  on B), and TTU (a link `A→B` plus a rule on B). Cost is O(S's reachable
+  objects). Seeds use the user-keyed `idx_tuples_user`.
+- **`list_subjects`** ("which subjects of type T hold relation R on object
+  Z?") is the exact dual: it seeds from `(Z, R)` and walks **upward** to
+  the subjects that imply it — computed (rule `R = computed(C)` ⇒ resolve
+  `(B, C)`), userset (a tuple `(B, R, A#ur)` ⇒ resolve `(A, ur)`), and TTU
+  (rule `R = ts→C` plus link `(B, ts, A)` ⇒ resolve `(A, C)`), collecting
+  concrete subjects of type T at every reached node. Cost is O(Z's
+  reachable subjects). It uses the object-keyed `idx_tuples_direct` /
+  `idx_tuples_userset` — the same indexes as the `check_access` hot path.
+
+**Over-approximate, then verify.** The recursive walk follows the
+OR-union of every grant path and deliberately ignores `group_op`
+(intersection / exclusion) and conditions. Because those mechanisms only
+ever *remove* access, the walk is a guaranteed **superset** of the true
+answer; a final `check_access` over each candidate makes the result
+exact. This keeps the recursive query simple (one self-reference, a
+single `LATERAL` with one branch per mechanism) while the authoritative
+engine still decides every row. `UNION` (not `UNION ALL`) deduplicates,
+which also terminates cycles.
+
+**Scaling and the wildcard escape hatch.** For an object (or subject)
+reachable through many individual grants, the candidate set approaches
+that population and the call degrades to O(those rows) — which is just
+the answer size. The escape hatch is a wildcard: a user wildcard
+(`user_id = '*'`) collapses `list_subjects` to a single `('*', true)`
+row, and an object wildcard (`object_id = '*'`) does the same for
+`list_objects` — both O(1). Measured: a 3-grantee object in a 100k-user
+store returns in ~7 ms (the prior all-users scan took ~11 s).
+
+**The other list operations don't traverse the graph.** Only the *set*
+searches over objects or subjects need reverse expansion — the rest are
+already bounded:
+
+- **`list_actions`** ("what can X do on Z?") iterates the relations the
+  *model* defines for the object's type — a handful, fixed by the schema,
+  not a function of the data — and checks each. Cost is O(model size).
+- **`audit_list_actions`** is the point-in-time form of `list_actions`
+  (it resolves against the reconstructed snapshot) and is likewise
+  bounded by the model.
+- **`audit_list_user`** and **`audit_list_object`** are not graph
+  traversals at all — they are indexed scans of the `tuples_audit` log
+  by subject or by object, returning O(matching events).
+
 ### Audit log partitioning
 
 The `tuples_audit` table is RANGE-partitioned by `performed_at` with

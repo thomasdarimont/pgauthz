@@ -564,6 +564,7 @@ concrete integration examples.
 | `tests_eval_rule.sql` | 26 | Rule evaluation unit tests (direct, TTU, tracing) |
 | `tests_namespace.sql` | 23 | Namespace read/write enforcement |
 | `tests_search.sql` | 20 | `list_objects`, `list_subjects`, `list_actions`, pagination |
+| `tests_list_subjects.sql` | 11 | `list_subjects` reverse expansion across every mechanism |
 | `tests_type_restrictions.sql` | 18 | Type restriction enforcement on writes |
 | `tests_contextual.sql` | 15 | Conditions and contextual tuples |
 | `tests_wildcard.sql` | 6 | Wildcard tuple matching |
@@ -719,7 +720,7 @@ Quality
 | No Watch API | Medium | Consumers must poll audit log for changes | `pg_notify('authz_permissions_changed')` is available for event-driven consumers. |
 | Condition expressions not versioned | Low | Time-travel reconstructs past tuples **and model rules** (both versioned via `tuples_audit` / `models_audit`), but condition **expression text** is read as it is now; editing a condition in place rewrites historical answers for conditional grants | Treat conditions as immutable — a change means a new condition name; conditions needing non-time request data can be supplied via `audit_check_access(..., p_request_context)`. |
 | `list_objects` degrades for all-access users | Low | `list_objects` uses reverse expansion: cost is O(the user's reachable set), independent of store size — measured ~140 ms against 1M objects for a grant-sparse user. For a user who can reach most of the store through many individual grants, the reachable set approaches the store size and the call degrades to O(all objects) | Model all-access roles as **object wildcards** (`object_id = '*'`, gated by `allow_object_wildcard` on the direct rule): checks and listing become O(1), with `list_objects` returning the typed `('*', is_wildcard)` row. Alternatively, authorize once and list from the application database |
-| `list_subjects` is O(users) | Medium | `list_subjects` checks every direct user of the type in the **whole store** (no reverse index from object to candidate users); the deduplicated candidate set alone costs ~0.7 s at 500k users | Candidates are deduplicated before checking and `LIMIT` terminates early. Use on grant-bearing objects (folders), not leaf objects against the whole user base; upward reverse expansion is future work |
+| `list_subjects` degrades for all-shared objects | Low | `list_subjects` uses **upward reverse expansion** (the dual of `list_objects`): it walks from the object to its reachable subjects, so cost is O(the object's reachable subject set), independent of the store's user count — ~7 ms for a 3-grantee object in a 100k-user store (vs ~11 s for the old whole-store scan). For an object reachable by most of the user base through many individual grants, the candidate set approaches that population and the call degrades to O(those subjects) | Model public/all-user access as a **user wildcard** (`user_id = '*'`): checks and listing become O(1), with `list_subjects` returning the typed `('*', is_wildcard)` row. The expansion uses the same object-keyed indexes as the `check_access` hot path |
 | PostgREST schema leakage | Low | Wrong parameter names reveal function signatures | Nginx gateway intercepts errors. PostgREST not exposed to host network. |
 
 ### Technical Debt

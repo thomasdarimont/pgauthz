@@ -40,6 +40,11 @@ echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_search.sql"
 
 echo ""
+echo "==> Running list_subjects (reverse expansion) checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_list_subjects.sql"
+
+echo ""
 echo "==> Running API function checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_api.sql"
