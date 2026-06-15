@@ -12,6 +12,11 @@ default_store := _env.DEFAULT_STORE
 # Set via POSTGREST_URL env var on the OPA service.
 postgrest_url := _env.POSTGREST_URL
 
+# PostgREST WRITER base URL — the fixed-role (authz_writer) write instance.
+# OPA forwards authorized writes here; it is not reachable from the host.
+# Set via POSTGREST_WRITER_URL env var on the OPA service.
+postgrest_writer_url := _env.POSTGREST_WRITER_URL
+
 # Default cache TTL for http.send responses (seconds).
 # 0 = no caching.
 # Set via DEFAULT_CACHE_TTL_SECONDS env var on the OPA service.

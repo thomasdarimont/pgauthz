@@ -61,44 +61,31 @@ services:
       authz-db:
         condition: service_healthy
 
-  # Uncomment to enable the write API (JWT-authenticated, see OPA.md §13).
+  # Write API — fronted by OPA (see opa/policies/write.rego). The writer runs as
+  # a FIXED authz_writer role and does NO JWT verification of its own: OPA is the
+  # front door — it verifies the token, requires the configured writer role, and
+  # forwards write/delete here, injecting the authenticated subject as the audit
+  # author. Reachable only by OPA over the Docker network — never host-exposed,
+  # so there is no nginx method-gate to maintain.
   postgrest-writer:
     image: postgrest/postgrest:v14.13
     environment:
       PGRST_DB_URI: postgres://authz_authenticator:${AUTHZ_AUTHENTICATOR_PASSWORD:-authz}@authz-db:5432/authz
-      PGRST_DB_ANON_ROLE: api_anon
+      # Fixed role: every request OPA forwards runs as authz_writer (tuple
+      # writes). authz_authenticator is a member of authz_writer (roles.sql).
+      # No PGRST_JWT_SECRET — authentication/authorization happens in OPA.
+      PGRST_DB_ANON_ROLE: authz_writer
       PGRST_DB_SCHEMAS: authz
       PGRST_DB_POOL: "20"
       PGRST_DB_POOL_ACQUISITION_TIMEOUT: "10"
       PGRST_SERVER_PORT: "3001"
-      # Verify asymmetric (ES256) JWTs against the issuer's PUBLIC JWKS — the
-      # same key OPA and the AuthZEN services use — not a shared HMAC secret.
-      # PostgREST takes a STATIC JWK/JWKS; it does NOT fetch a remote jwks_uri,
-      # so @/jwks/jwks.json reads the mounted file. For production (rotating
-      # jwks_uri) see docs/PRODUCTION.md — sync the JWKS or front the writer
-      # with OPA. Override PGRST_JWT_SECRET to your own JWKS path/JSON.
-      PGRST_JWT_SECRET: "${PGRST_JWT_SECRET:-@/jwks/jwks.json}"
-      # Map the Postgres role from a JWT claim (default: .role). Point this at
-      # your issuer's role/realm claim, e.g. ".realm_access.roles[0]".
-      # PGRST_JWT_ROLE_CLAIM_KEY: ".realm_access.roles[0]"
     restart: unless-stopped
-    # No host port — only reachable via the writer-gateway.
+    # No host port — only OPA reaches this over the Docker network.
     expose:
       - "3001"
-    volumes:
-      - ./opa/data:/jwks:ro
     depends_on:
       authz-db:
         condition: service_healthy
-
-  writer-gateway:
-    image: nginx:1-alpine
-    ports:
-      - "3001:3001"
-    volumes:
-      - ./gateway/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    depends_on:
-      - postgrest-writer
 
   opa:
     image: openpolicyagent/opa:1.17.1
@@ -109,8 +96,13 @@ services:
       JWT_AUDIENCE: "${JWT_AUDIENCE:-authz-api}"
       DEFAULT_STORE: "${DEFAULT_STORE:-demo}"
       POSTGREST_URL: "${POSTGREST_URL:-http://postgrest:3000}"
+      # Writer instance OPA forwards authorized tuple writes to (write.rego).
+      POSTGREST_WRITER_URL: "${POSTGREST_WRITER_URL:-http://postgrest-writer:3001}"
       DEFAULT_CACHE_TTL_SECONDS: "${DEFAULT_CACHE_TTL_SECONDS:-1}"
       # CACHE_TTL_SECONDS: '{"demo":{"_default":5,"document":10}}'
+      # JWT role mapping for writes — match your issuer's claim shape:
+      #   JWT_ROLES_CLAIM: "realm_access.roles"   # dotted path, default "roles"
+      #   WRITER_ROLE:     "authz_writer"         # required role value
     ports:
       - "8181:8181"
     volumes:
@@ -118,6 +110,7 @@ services:
       - ./opa/data:/data:ro
     depends_on:
       - postgrest
+      - postgrest-writer
 
 volumes:
   authz-db-data:

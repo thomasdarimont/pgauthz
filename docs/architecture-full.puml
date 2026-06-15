@@ -29,7 +29,7 @@ node "VM 2 (read)" as vm2 {
 }
 
 node "VM 0 (primary)" as vm0 {
-    component "Nginx\nGateway\n:3001" as gw #Thistle
+    component "OPA\n(write front)" as opa_w #LightBlue
     component "PostgREST\nWriter" as pgrst_w #Salmon
     database "PG Primary" as pgp #Orange
 }
@@ -49,10 +49,10 @@ az_b -down-> pgr_b
 pgrst_a -down-> pgr_a
 pgrst_b -down-> pgr_b
 
-' Write path
-app -down-> gw : "POST /rpc/...\n(write path, JWT)"
-gw -down-> pgrst_w : "proxy"
-pgrst_w -down-> pgp : "SQL (writer)"
+' Write path — OPA fronts the writer (verifies JWT + writer role, forwards)
+app -down-> opa_w : "writes\n(JWT: writer role)"
+opa_w -down-> pgrst_w : "forward write\n(authorized)"
+pgrst_w -down-> pgp : "SQL (authz_writer)"
 
 ' Replication
 pgp -right-> pgr_a : "  WAL  "
@@ -61,10 +61,9 @@ pgp -right-> pgr_b : "  WAL  "
 legend bottom left
   |= Color |= Component |
   | <#PaleGreen> | AuthZEN API — standard AuthZEN 1.0 (Go) |
-  | <#LightBlue> | OPA — policy evaluation + JWT authn |
+  | <#LightBlue> | OPA — policy evaluation + JWT authn (reads and writes) |
   | <#LightGreen> | PostgREST — internal read API |
-  | <#Thistle> | Nginx — route allowlist, error suppression |
-  | <#Salmon> | PostgREST Writer — JWT role switching |
+  | <#Salmon> | PostgREST Writer — fixed authz_writer role, no JWT |
   | <#Orange> | PostgreSQL primary — read-write |
   | <#LightYellow> | PostgreSQL replica — read-only (WAL) |
   | <#Plum> | Load Balancer — distributes reads |

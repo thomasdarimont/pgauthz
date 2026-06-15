@@ -73,21 +73,24 @@ using three rule types: direct, computed, and tuple-to-userset (TTU).
 ### System Context
 
 ```
-                                    ┌──────────────────────────────────────┐
-                                    │     Authorization Engine             │
-                                    │                                      │
-  ┌────────────┐   SQL / HTTP       │  ┌──────────┐  ┌──────────────────┐  │
-  │ Application├───────────────────►│  │   OPA    │  │   PostgREST      │  │
-  │  Backend   │                    │  │ (policy) │  │ (REST-to-SQL)    │  │
-  └────────────┘                    │  └────┬─────┘  └────────┬─────────┘  │
-                                    │       │                 │            │
-        writes ─────────────────────┼───────┼───►┌────────────┘            │
-                                    │       │    │                         │
-  ┌────────────┐                    │  ┌────▼────▼────┐                    │
-  │  Identity  │   JWT/JWKS         │  │  PostgreSQL  │                    │
-  │  Provider  ├───────────────────►│  │  (engine)    │                    │
-  │ (Keycloak) │                    │  └──────────────┘                    │
-  └────────────┘                    └──────────────────────────────────────┘
+                                      ┌──────────────────────────────────────┐
+                                      │      Authorization Engine            │
+                                      │                                      │
+  ┌────────────┐  authz check         │  ┌──────────┐    ┌──────────────────┐│
+  │            │  (HTTP + JWT)        │  │   OPA    ├───►│   PostgREST      ││
+  │ Application├─────────────────────►│  │ (policy) │    │ (REST-to-SQL)    ││
+  │  Backend   │                      │  └────┬─────┘    └────────┬─────────┘│
+  │            │  direct SQL (writes) │       │                   ▼          │
+  │            ├─────────────────────►│       │          ┌──────────────────┐│
+  └─────┬──────┘                      │       │          │   PostgreSQL     ││
+        │                             │       │          │    (engine)      ││
+        │ obtains JWT                 │       │          └──────────────────┘│
+        ▼                             │       │                              │
+  ┌────────────┐                      │       │                              │
+  │  Identity  │◄──── fetch JWKS ─────┼───────┘                              │
+  │  Provider  │      (OPA pulls)     │                                      │
+  │ (Keycloak) │                      └──────────────────────────────────────┘
+  └────────────┘
 ```
 
 ### External Interfaces
@@ -97,7 +100,7 @@ using three rule types: direct, computed, and tuple-to-userset (TTU).
 | OPA API | HTTP POST `:8181` | Inbound | Policy evaluation (access checks, search) |
 | AuthZEN Direct | HTTP `:8090` | Inbound | AuthZEN 1.0 API — Go→PostgreSQL (lowest latency) |
 | AuthZEN OPA | HTTP `:8091` | Inbound | AuthZEN 1.0 API — Go→OPA (policy-enriched) |
-| PostgREST Writer | HTTP POST `:3001` | Inbound | Tuple management (via Nginx gateway, JWT required) |
+| PostgREST Writer | HTTP POST (internal) | Inbound (from OPA only) | Tuple management — OPA forwards authorized writes; fixed `authz_writer` role, no host port |
 | PostgreSQL | TCP `:5432` | Inbound | Direct SQL access for applications |
 | Identity Provider | JWKS (HTTP) | Outbound (OPA, AuthZEN) | JWT verification key fetching |
 
@@ -113,9 +116,9 @@ Three topologies are supported:
    Writes go directly to PostgreSQL via SQL.
    (see [`architecture-minimal.puml`](architecture-minimal.puml))
 
-2. **With Write API** — adds Nginx gateway + PostgREST writer for
-   HTTP-based tuple management with JWT authentication, plus the
-   AuthZEN Go API layer.
+2. **With Write API** — adds an OPA-fronted PostgREST writer for
+   HTTP-based tuple management (OPA verifies the JWT + writer role and
+   forwards), plus the AuthZEN Go API layer.
    (see [`architecture-write-api.puml`](architecture-write-api.puml))
 
 3. **Scaled** — load balancer distributes reads across multiple
@@ -139,17 +142,16 @@ Three topologies are supported:
 | Condition sandboxing via `authz_eval` | Security | User-defined SQL expressions run under a role with zero grants (no table/file/function access). Bounded in time by a `statement_timeout` on the service roles (timeout fails closed); `pg_sleep` revoked from PUBLIC. Evaluation errors fail closed (deny). |
 | Multi-store isolation | Operability | Independent authorization namespaces enable blue-green model deployment, test environments, and parallel experiments. |
 | Immutable audit trail | Auditability | Trigger-based capture of every tuple change. Monthly RANGE partitioning for retention. Time-travel queries reconstruct past permission states. |
-| Nginx gateway for write API | Security | PostgREST leaks schema information in error responses. Nginx allowlists only `POST /rpc/*` and suppresses error details. |
+| OPA fronts the writer | Security | The writer runs as a fixed `authz_writer` role with no JWT and no host port; OPA verifies the token + writer role and forwards the write. One front door for reads and writes — no schema-leaking PostgREST endpoint is exposed, and `jwks_uri` rotation lives in a single place. |
 
 ### Technology Choices
 
 | Technology | Role | Why |
 |---|---|---|
 | PostgreSQL 18 | Authorization engine | Recursive PL/pgSQL, advanced partitioning, `SECURITY DEFINER`, `gen_random_uuid()` |
-| PostgREST | REST-to-SQL bridge | Zero-code HTTP API from SQL functions, JWT role switching, connection pooling |
-| OPA (Rego) | Policy decision point | JWT verification, response caching, policy-as-code, composable rules |
+| PostgREST | REST-to-SQL bridge | Zero-code HTTP API from SQL functions, role-scoped connections, connection pooling |
+| OPA (Rego) | Policy decision point + write front door | JWT verification, response caching, policy-as-code, composable rules; forwards authorized writes |
 | Go (AuthZEN) | Standard authorization API | AuthZEN 1.0 endpoints (evaluation, batch, search). Two variants: direct→PG and via→OPA |
-| Nginx | Write API gateway | Route allowlisting, error suppression, TLS termination |
 | Docker Compose | Deployment | Single-command setup for development and production |
 
 ---
@@ -159,34 +161,33 @@ Three topologies are supported:
 ### Level 1: System Decomposition
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                        Authorization System                      │
-│                                                                  │
-│  ┌──────────────────┐                                            │
-│  │  AuthZEN API     │  ┌──────────────┐                          │
-│  │ (Go, AuthZEN 1.0)│  │  PostgREST   │  ┌───────────────────┐   │
-│  │                  │  │  (read)      │  │ Nginx   PostgREST │   │
-│  │  authzen-direct ─┼──┼──────────────┼─▶│ (gw)  → (writer)  │   │
-│  │  authzen-opa  ───┼──┼─▶┌────────┐  │  └─────────┬─────────┘   │
-│  └──────────────────┘  │  │  OPA   │  │            │             │
-│                        │  │(policy)│──┘            │             │
-│                        │  └────────┘               │             │
-│                        └──────────┬────────────────┘             │
-│                                   ▼                              │
-│                         ┌──────────────────┐                     │
-│                         │   PostgreSQL     │                     │
-│                         │   authz schema   │                     │
-│                         └──────────────────┘                     │
-└──────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│                        Authorization System                        │
+│                                                                    │
+│  ┌──────────────────┐   authzen-opa  ┌────────────┐                │
+│  │  AuthZEN API     ├───────────────▶│    OPA     │  single front  │
+│  │ (Go, AuthZEN 1.0)│                │  (policy)  │  door for      │
+│  │                  │                └──┬──────┬──┘  reads+writes   │
+│  │                  │            reads  │      │  writes (authz'd)  │
+│  │                  │           ┌───────▼──┐ ┌─▼───────────────┐    │
+│  │                  │           │PostgREST │ │ PostgREST       │    │
+│  │                  │           │(read,    │ │ (writer,        │    │
+│  │  authzen-direct  │           │ api_anon)│ │  authz_writer)  │    │
+│  └────────┬─────────┘           └───────┬──┘ └─┬───────────────┘    │
+│           │ SQL (direct)                │      │                    │
+│           └──────────────┐    ┌─────────▼──────▼──┐                 │
+│                          └───▶│    PostgreSQL     │                 │
+│                               │   authz schema    │                 │
+│                               └───────────────────┘                 │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
 | Component | Responsibility |
 |---|---|
 | **AuthZEN API** | Standard AuthZEN 1.0 HTTP endpoints (Go). Two variants: `authzen-direct` (Go→PG) and `authzen-opa` (Go→OPA). JWT verification, routing, pagination. |
-| **OPA** | Policy evaluation, response caching, endpoint security |
+| **OPA** | Single front door (reads + writes). Policy evaluation, JWT verification, response caching, endpoint security. Forwards authorized writes to the writer. |
 | **PostgREST (read)** | Maps SQL functions to REST. Runs as `api_anon` (inherits `authz_reader`). Internal only — no host port. |
-| **Nginx gateway** | Allowlists `POST /rpc/*` for the writer. Blocks table endpoints, suppresses error details. |
-| **PostgREST (writer)** | JWT-authenticated REST for tuple management. Runs as `authz_writer` or `authz_admin` per JWT claim. Internal only. |
+| **PostgREST (writer)** | Receives OPA-forwarded tuple writes. Runs as a fixed `authz_writer` role; does **no** JWT verification of its own. Internal only — no host port. |
 | **PostgreSQL** | The authorization engine. All logic in PL/pgSQL functions within the `authz` schema. |
 
 ### Level 2: PostgreSQL `authz` Schema
@@ -352,30 +353,32 @@ pruned independently.
 ### Scenario 3: Tuple Write (Write Path)
 
 ```
-Application       Nginx Gateway     PostgREST Writer    PostgreSQL
-    │                  │                   │                │
-    │ POST /rpc/       │                   │                │
-    │  write_tuple     │                   │                │
-    │  + JWT           │                   │                │
-    │─────────────────▶│                   │                │
-    │                  │ proxy (POST /rpc/)│                │
-    │                  │──────────────────▶│                │
-    │                  │                   │ SET ROLE       │
-    │                  │                   │ authz_writer   │
-    │                  │                   │───────────────▶│
-    │                  │                   │ SELECT authz.  │
-    │                  │                   │  write_tuple() │
-    │                  │                   │───────────────▶│
-    │                  │                   │                │──┐ INSERT tuple
-    │                  │                   │                │  │ trigger: _audit_tuple()
-    │                  │                   │                │  │ INSERT audit record
-    │                  │                   │                │◀─┘
-    │                  │                   │    200 OK      │
-    │                  │                   │◀───────────────│
-    │                  │    200 OK         │                │
-    │                  │◀──────────────────│                │
-    │    200 OK        │                   │                │
-    │◀─────────────────│                   │                │
+Application             OPA              PostgREST Writer    PostgreSQL
+    │                    │                     │                │
+    │ POST /v1/data/     │                     │                │
+    │  authz/write       │                     │                │
+    │  + JWT (writer)    │                     │                │
+    │───────────────────▶│                     │                │
+    │                    │ verify JWT,         │                │
+    │                    │ require writer role │                │
+    │                    │ forward /rpc/       │                │
+    │                    │  write_tuple        │                │
+    │                    │────────────────────▶│ (anon role =   │
+    │                    │                     │  authz_writer) │
+    │                    │                     │ SELECT authz.  │
+    │                    │                     │  write_tuple(  │
+    │                    │                     │  performed_by  │
+    │                    │                     │  = subject)    │
+    │                    │                     │───────────────▶│
+    │                    │                     │                │──┐ INSERT tuple
+    │                    │                     │                │  │ trigger: _audit_tuple()
+    │                    │                     │                │  │ INSERT audit (author=subject)
+    │                    │                     │                │◀─┘
+    │                    │      200 OK         │                │
+    │                    │◀────────────────────│                │
+    │  {"allowed":true,  │                     │                │
+    │   "result":{...}}  │                     │                │
+    │◀───────────────────│                     │                │
 ```
 
 ### Scenario 4: Time-Travel Query
@@ -398,9 +401,9 @@ The engine is **fail-closed** throughout:
 | Recursion depth exceeded (default 32, `authz.max_depth` GUC) | `RAISE EXCEPTION` — the relationship chain is too deep to resolve (matches OpenFGA's "resolution too complex") |
 | Cyclic relationships | Edge revisiting a node on the current evaluation path is pruned — a cycle cannot grant access, and evaluation always terminates |
 | No matching model rules | Return `false` (deny) |
-| Nginx: non-RPC route | `404 {"message":"Not Found"}` |
-| PostgREST: no JWT for write function | HTTP 401 |
-| PostgREST: JWT role lacks privilege | HTTP 403 |
+| OPA: missing/invalid token on write | `{"allowed": false, "error": "not_authorized"}` |
+| OPA: token lacks the configured writer role | `{"allowed": false, "error": "not_authorized"}` |
+| OPA: writes disabled (no writer configured) | `{"allowed": false, "error": "writes_disabled"}` |
 
 ---
 
@@ -418,29 +421,35 @@ The engine is **fail-closed** throughout:
 │  └────────┬────────┘  └────────┬────────┘                            │
 │           │ SQL (pgx)          │ HTTP                                │
 │           │            ┌───────▼────────┐                            │
-│           │            │ OPA            │    ┌────────────────┐      │
-│           │            │ :8181          │    │ Nginx Gateway  │      │
-│           │            └───────┬────────┘    │ :3001          │      │
-│           │                    │             └───────┬────────┘      │
-│           │            ┌───────▼────────┐            │               │
-│           │            │ PostgREST      │   ┌────────▼───────┐       │
-│           │            │ :3000 (int.)   │   │ PostgREST      │       │
-│           │            └───────┬────────┘   │ (writer, int.) │       │
-│           │                    │            └───────┬────────┘       │
-│           │                    │                    │                │
-│  ┌────────▼────────────────────▼────────────────────▼─────────────┐  │
+│           │            │ OPA :8181      │  (single front door:       │
+│           │            │                │   reads AND writes)        │
+│           │            └──┬──────────┬──┘                            │
+│           │       reads   │          │  writes (authorized)          │
+│           │       ┌───────▼──┐   ┌───▼────────────┐                  │
+│           │       │ PostgREST│   │ PostgREST      │                  │
+│           │       │ :3000    │   │ (writer, int.) │                  │
+│           │       │ (reader) │   │ authz_writer   │                  │
+│           │       └───────┬──┘   └───────┬────────┘                  │
+│           │               │              │                           │
+│  ┌────────▼───────────────▼──────────────▼─────────────────────────┐  │
 │  │ PostgreSQL :5432 (host :55433) — authz schema                  │  │
 │  └────────────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
+OPA is the single front door for **both** reads and writes. The reader and
+writer are separate PostgREST instances bound to separate DB roles
+(`authz_reader` vs `authz_writer`), so the read path is structurally incapable
+of writing. The writer has no host port — only OPA reaches it. For a read-only
+deployment, omit the writer and leave `POSTGREST_WRITER_URL` unset (OPA's write
+rule then returns `writes_disabled`).
+
 | Service | Image | Ports | Notes |
 |---|---|---|---|
 | `authz-db` | `postgres:18.3` | 55433:5432 | `max_connections=250`, tuned `shared_buffers`, `work_mem` |
 | `postgrest` | `postgrest/postgrest:v14.13` | 3000 (internal) | Read-only, `api_anon` role, pool=100 |
-| `opa` | `openpolicyagent/opa:1.17.1` | 8181:8181 | Token auth + basic authorization. Policy config via env vars (`JWT_ISSUER`, `JWT_AUDIENCE`, `DEFAULT_STORE`, `POSTGREST_URL`, `DEFAULT_CACHE_TTL_SECONDS`). |
-| `postgrest-writer` | `postgrest/postgrest:v14.13` | 3001 (internal) | JWT auth, `authz_writer`/`authz_admin` roles, pool=20 |
-| `writer-gateway` | `nginx:1-alpine` | 3001:3001 | Route allowlist (`POST /rpc/*` only) |
+| `opa` | `openpolicyagent/opa:1.17.1` | 8181:8181 | Single front door (reads + writes). Token auth + basic authorization. Env: `JWT_ISSUER`, `JWT_AUDIENCE`, `DEFAULT_STORE`, `POSTGREST_URL`, `POSTGREST_WRITER_URL`, `JWT_ROLES_CLAIM`, `WRITER_ROLE`, `DEFAULT_CACHE_TTL_SECONDS`. |
+| `postgrest-writer` | `postgrest/postgrest:v14.13` | internal only | Fixed `authz_writer` role, **no JWT** (OPA-fronted), pool=20; reachable only by OPA |
 | `authzen-direct` | `authzen` (multi-stage) | 8090:8080 | AuthZEN 1.0 API, Go→PostgreSQL direct (via `compose-authzen.yml`) |
 | `authzen-opa` | `authzen` (multi-stage) | 8091:8080 | AuthZEN 1.0 API, Go→OPA (via `compose-authzen.yml`) |
 
@@ -454,17 +463,18 @@ The engine is **fail-closed** throughout:
               ┌────────────┼────────────┐
               ▼            ▼            ▼
      ┌────────────┐ ┌────────────┐ ┌────────────┐
-     │ VM 1       │ │ VM 2       │ │ VM 0       │
-     │ OPA        │ │ OPA        │ │ Nginx GW   │
-     │ PostgREST  │ │ PostgREST  │ │ PostgREST  │
+     │ VM 1 (read)│ │ VM 2 (read)│ │ VM 0 (prim)│
+     │ OPA        │ │ OPA        │ │ OPA (write)│
+     │ PostgREST  │ │ PostgREST  │ │ PG Writer  │
      │ PG Replica │ │ PG Replica │ │ PG Primary │
      └────────────┘ └────────────┘ └────────────┘
            ▲               ▲              │
            └───────────────┴── WAL ───────┘
 ```
 
-- **Read path:** load balancer distributes OPA requests across replica nodes
-- **Write path:** applications send writes to the primary's Nginx gateway
+- **Read path:** load balancer distributes OPA read requests across replica nodes
+- **Write path:** applications send writes to the primary's OPA, which verifies
+  the JWT + writer role and forwards to the co-located writer (→ PG primary)
 - **Replication lag:** typically sub-second for streaming replication
 
 #### Consistency tokens (zookies): why not, yet
@@ -525,9 +535,9 @@ deployment genuinely needs replica-offloaded *fresh* reads.
 Four independent security layers protect the authorization data:
 
 ```
-Layer 1: Network         Nginx gateway — only POST /rpc/* forwarded
-Layer 2: Authentication  JWT verification (PostgREST / OPA)
-Layer 3: Authorization   PostgreSQL GRANT/REVOKE on functions
+Layer 1: Network         OPA — the only front door (reads + writes); PostgREST internal-only
+Layer 2: Authentication  JWT verification in OPA (and the AuthZEN services)
+Layer 3: Authorization   PostgreSQL GRANT/REVOKE on functions (reader vs writer roles)
 Layer 4: Data isolation  SECURITY DEFINER — no direct table access
 ```
 
@@ -616,8 +626,7 @@ concrete integration examples.
 | `tests_contextual.sql` | 15 | Conditions and contextual tuples |
 | `tests_wildcard.sql` | 6 | Wildcard tuple matching |
 | `tests_intersection.sql` | 3 | Intersection and exclusion groups |
-| `tests/test-opa.sh` | 26 | OPA endpoint + API security (integration) |
-| `tests/test-writer.sh` | 17 | Writer API security (integration) |
+| `tests/test-opa.sh` | 38 | OPA reads, OPA-fronted writes, + API security (integration) |
 | `tests/test-authzen.sh` | 6 | AuthZEN API endpoints (integration) |
 
 Each SQL test suite uses its own isolated store.
@@ -694,20 +703,27 @@ replacement (`import_openfga_model`) and incremental updates
 transactional — PostgreSQL MVCC ensures concurrent readers see either
 the complete old model or the complete new model, with no denial window.
 
-### ADR-6: Nginx Gateway for Write API
+### ADR-6: OPA Fronts the Writer (supersedes the Nginx write gateway)
 
-**Context:** PostgREST exposes REST endpoints for all tables with direct
-grants and leaks function signatures in error responses. There is no
-built-in "RPC-only" mode.
+**Context:** PostgREST exposes REST endpoints for all tables and leaks
+function signatures in error responses (no built-in "RPC-only" mode), and
+it can only verify a *static* JWK/JWKS — it cannot fetch a rotating
+`jwks_uri`. Earlier versions placed an Nginx reverse proxy in front of the
+writer that allowlisted `POST /rpc/*`.
 
-**Decision:** Place an Nginx reverse proxy in front of PostgREST writer.
-Only `POST /rpc/*` is forwarded. PostgREST 404 errors are intercepted
-and replaced with generic responses.
+**Decision:** Make OPA the single front door for writes as well as reads.
+The writer PostgREST runs as a fixed `authz_writer` role, does no JWT
+verification, and has no host port. OPA verifies the token, requires the
+configured writer role (`WRITER_ROLE` within `JWT_ROLES_CLAIM`), and
+forwards `write`/`delete` to the writer — injecting the authenticated
+subject as the audit author. The Nginx gateway is removed.
 
-**Consequences:** No schema information leakage. Table endpoints
-completely blocked. PostgREST is only reachable within the Docker
-network. Additional container, but minimal resource overhead
-(nginx:1-alpine).
+**Consequences:** One place owns JWT verification and `jwks_uri` rotation
+(no JWKS to sync into PostgREST). No write endpoint is host-exposed, so
+there is no schema leakage to suppress and no extra proxy container. Tuple
+writes only — admin/model ops use a separate `authz_admin` channel. A
+read-only deployment omits the writer (and `POSTGREST_WRITER_URL`); OPA
+then returns `writes_disabled`.
 
 ---
 
@@ -721,7 +737,7 @@ Quality
 │   ├── No direct table access (SECURITY DEFINER)
 │   ├── Condition sandboxing (authz_eval role)
 │   ├── Namespace isolation (per-type, per-role)
-│   ├── Route allowlisting (Nginx gateway)
+│   ├── Single front door (OPA verifies reads + writes)
 │   └── Fail-closed on all errors
 ├── Performance
 │   ├── Sub-millisecond check_access (typical graphs)
@@ -768,7 +784,7 @@ Quality
 | Condition expressions can fail on specific data at check time | Low | A `BEFORE INSERT/UPDATE` trigger test-compiles every condition expression in the sandbox and rejects it if it cannot compile (SQLSTATE class 42 — syntax error, unknown function/column/table, type mismatch), so malformed expressions never get stored. *Data-dependent* runtime errors (class 22, e.g. a cast that fails only on certain inputs) are not caught at write time | Those data-dependent failures are caught at check time and treated as deny (`_exec_condition` errors → false), so a condition is always fail-safe (it can deny, never wrongly grant). Time-travel needs request data beyond the reconstructed timestamp supplied via `audit_check_access(..., p_request_context)`. |
 | `list_objects` degrades for all-access users | Low | `list_objects` uses reverse expansion: cost is O(the user's reachable set), independent of store size — measured ~140 ms against 1M objects for a grant-sparse user. For a user who can reach most of the store through many individual grants, the reachable set approaches the store size and the call degrades to O(all objects) | Model all-access roles as **object wildcards** (`object_id = '*'`, gated by `allow_object_wildcard` on the direct rule): checks and listing become O(1), with `list_objects` returning the typed `('*', is_wildcard)` row. Alternatively, authorize once and list from the application database |
 | `list_subjects` degrades for all-shared objects | Low | `list_subjects` uses **upward reverse expansion** (the dual of `list_objects`): it walks from the object to its reachable subjects, so cost is O(the object's reachable subject set), independent of the store's user count — ~7 ms for a 3-grantee object in a 100k-user store (vs ~11 s for the old whole-store scan). For an object reachable by most of the user base through many individual grants, the candidate set approaches that population and the call degrades to O(those subjects) | Model public/all-user access as a **user wildcard** (`user_id = '*'`): checks and listing become O(1), with `list_subjects` returning the typed `('*', is_wildcard)` row. The expansion uses the same object-keyed indexes as the `check_access` hot path |
-| PostgREST schema leakage | Low | Wrong parameter names reveal function signatures | Nginx gateway intercepts errors. PostgREST not exposed to host network. |
+| PostgREST schema leakage | Low | Wrong parameter names reveal function signatures | Neither PostgREST instance is host-exposed — only OPA reaches them. OPA returns structured `{allowed, error}` responses rather than raw PostgREST errors. |
 
 ### Technical Debt
 

@@ -10,6 +10,63 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OPA_URL="${OPA_URL:-http://localhost:8181}"
 ADMIN_TOKEN="${OPA_ADMIN_TOKEN:-change-me-in-production}"
 
+# Demo signing key for minting ES256 JWTs (write path is JWT-authenticated).
+KEY_FILE="${KEY_FILE:-$SCRIPT_DIR/../opa/keys/demo.key.txt}"
+
+b64url_encode() {
+    openssl base64 -A | tr '+/' '-_' | tr -d '='
+}
+
+# Mint an ES256 JWT signed with the demo private key.
+# Usage: make_token <preferred_username> <subject_type> <roles_json>
+# roles_json is a JSON array string, e.g. '["authz_writer"]' (default '[]').
+make_token() {
+    local username="$1"
+    local subject_type="${2:-internal_user}"
+    local roles_json="${3:-[]}"
+    local now exp
+    now=$(date +%s)
+    exp=$((now + 3600))
+
+    local header payload
+    header=$(printf '{"alg":"ES256","typ":"JWT","kid":"my-kid"}' | b64url_encode)
+    payload=$(jq -nc \
+        --arg sub "$username" \
+        --arg pun "$username" \
+        --arg st "$subject_type" \
+        --arg iss "https://auth.example.com" \
+        --arg aud "authz-api" \
+        --argjson iat "$now" \
+        --argjson exp "$exp" \
+        --argjson roles "$roles_json" \
+        '{sub:$sub,preferred_username:$pun,subject_type:$st,roles:$roles,iss:$iss,aud:$aud,iat:$iat,exp:$exp}' | b64url_encode)
+
+    local signing_input="${header}.${payload}"
+
+    # Sign, then convert the DER ECDSA signature to raw R||S (JWS form) via a
+    # temp file (avoids null-byte stripping in command substitution).
+    local tmpfile
+    tmpfile=$(mktemp)
+    printf '%s' "$signing_input" | openssl dgst -sha256 -sign "$KEY_FILE" -binary > "$tmpfile"
+    local sig_b64
+    sig_b64=$(python3 -c "
+import base64
+with open('$tmpfile', 'rb') as f:
+    der = f.read()
+i = 2
+rlen = der[i+1]
+r = der[i+2:i+2+rlen]
+i = i+2+rlen
+slen = der[i+1]
+s = der[i+2:i+2+slen]
+r = r.lstrip(b'\x00').rjust(32, b'\x00')
+s = s.lstrip(b'\x00').rjust(32, b'\x00')
+print(base64.urlsafe_b64encode(r + s).rstrip(b'=').decode())
+")
+    rm -f "$tmpfile"
+    echo "${signing_input}.${sig_b64}"
+}
+
 pass_count=0
 fail_count=0
 total=0
@@ -59,6 +116,36 @@ check_http() {
     else
         fail_count=$((fail_count + 1))
         echo "    FAIL  $description  (expected HTTP $expected_status, got $actual_status)"
+    fi
+}
+
+# Evaluate an OPA rule and compare a jq filter over the result.
+# Usage: check_jq "description" endpoint input jq_filter expected
+check_jq() {
+    local description="$1"
+    local endpoint="$2"
+    local input="$3"
+    local filter="$4"
+    local expected="$5"
+
+    total=$((total + 1))
+
+    result=$(curl -sf -X POST "$OPA_URL/v1/data/$endpoint" \
+        -H "Content-Type: application/json" \
+        -d "$input" 2>/dev/null) || {
+        fail_count=$((fail_count + 1))
+        echo "    FAIL  $description  (HTTP error)"
+        return
+    }
+
+    actual=$(echo "$result" | jq -r "$filter")
+
+    if [ "$actual" = "$expected" ]; then
+        pass_count=$((pass_count + 1))
+        echo "    PASS  $description"
+    else
+        fail_count=$((fail_count + 1))
+        echo "    FAIL  $description  (expected=$expected, got=$actual)"
     fi
 }
 
@@ -218,6 +305,72 @@ else
     fail_count=$((fail_count + 1))
     echo "    FAIL  Batch: Alice can read payroll, Eva cannot  (got $decisions)"
 fi
+
+# --- Write through OPA (fixed-role writer; OPA verifies the JWT) ---
+#
+# The writer PostgREST runs as a fixed authz_writer role and does NOT verify
+# JWTs — OPA is the front door: it verifies the ES256 token, requires the
+# configured writer role in the configured claim, and forwards write/delete to
+# the writer, injecting the JWT subject as the audit author.
+
+echo ""
+echo "==> Running OPA-fronted write checks..."
+echo ""
+
+PROBE_SUBJ="ci_write_probe"
+PROBE_DOC="doc_ci_write_probe_001"
+
+# Writer-role token (authorized) and a token whose roles lack the writer role.
+TOKEN_WRITER=$(make_token "ci_writer" "internal_user" '["authz_writer"]')
+TOKEN_NOWRITE=$(make_token "ci_nowrite" "internal_user" '["viewer"]')
+
+# Build a write/delete request body for the probe viewer tuple.
+# Usage: write_input <token> <operation>
+write_input() {
+    jq -nc --arg tok "$1" --arg op "$2" --arg s "$PROBE_SUBJ" --arg d "$PROBE_DOC" \
+        '{input:{token:$tok,store:"demo",operation:$op,tuple:{user_type:"internal_user",user_id:$s,relation:"viewer",object_type:"document",object_id:$d}}}'
+}
+
+# An unauthenticated can_read check on the probe (viewer ⇒ can_read in the model).
+read_probe_input() {
+    jq -nc --arg s "$PROBE_SUBJ" --arg d "$PROBE_DOC" \
+        '{input:{subject:{type:"internal_user",id:$s},action:"can_read",resource:{type:"document",id:$d}}}'
+}
+
+# Baseline: probe subject has no access yet.
+check "Probe cannot read probe doc (before any write)" \
+    "authz/allow" "$(read_probe_input)" "false"
+
+# Unauthorized writes are denied.
+check_jq "Write denied without a token" \
+    "authz/write" "$(write_input '' write)" ".result.allowed" "false"
+
+check_jq "Write denied for a token lacking the writer role" \
+    "authz/write" "$(write_input "$TOKEN_NOWRITE" write)" ".result.allowed" "false"
+
+# Denied writes must not have persisted.
+check "Probe still cannot read after denied writes" \
+    "authz/allow" "$(read_probe_input)" "false"
+
+# Authorized write succeeds.
+check_jq "Writer-role token writes a viewer tuple" \
+    "authz/write" "$(write_input "$TOKEN_WRITER" write)" ".result.allowed" "true"
+
+# The read cache TTL (DEFAULT_CACHE_TTL_SECONDS, 1s in the demo) holds the
+# baseline 'false'; wait it out so the next check sees the new tuple.
+sleep 2
+
+check "Probe can read probe doc (after write)" \
+    "authz/allow" "$(read_probe_input)" "true"
+
+# Authorized delete succeeds.
+check_jq "Writer-role token deletes the viewer tuple" \
+    "authz/write" "$(write_input "$TOKEN_WRITER" delete)" ".result.allowed" "true"
+
+sleep 2
+
+check "Probe cannot read probe doc (after delete)" \
+    "authz/allow" "$(read_probe_input)" "false"
 
 # --- API security checks ---
 

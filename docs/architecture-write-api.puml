@@ -13,24 +13,26 @@ title Architecture with Write Paths
 actor "Application" as app
 
 note as N1
-  **Option A: Write API**
-  For applications without
-  direct database access
-  (HTTP clients, microservices)
+  **Option A: Write API (OPA-fronted)**
+  For applications without direct
+  database access. OPA verifies the
+  JWT and the writer role, then
+  forwards the write to the fixed-role
+  writer (which does no JWT of its own).
 end note
 
 node "HTTP Write API" as optA {
-    component "Nginx Gateway\n:3001" as gw #Thistle
-    component "PostgREST Writer\n(internal)" as pgrst #Salmon
+    component "OPA\n:8181" as opa #LightBlue
+    component "PostgREST Writer\n(internal, authz_writer)" as pgrst #Salmon
 }
 
 database "PostgreSQL\n:5432" as pg #Orange
 
-N1 -right-> gw
+N1 -right-> opa
 
-app -down-> gw : "POST /rpc/...\n(JWT required)"
-gw -down-> pgrst : "proxy\n(route allowlist)"
-pgrst -down-> pg : "SQL (writer role)"
+app -down-> opa : "POST /v1/data/authz/write\n(JWT: writer role)"
+opa -down-> pgrst : "forward write/delete\n(authorized only)"
+pgrst -down-> pg : "SQL (authz_writer)"
 
 app -right-> pg : "direct SQL\n(authz_writer role)"
 
@@ -43,8 +45,8 @@ end note
 
 legend bottom left
   |= Color |= Component |
-  | <#Thistle> | Nginx — route allowlist, error suppression |
-  | <#Salmon> | PostgREST Writer — JWT role switching |
+  | <#LightBlue> | OPA — verifies JWT + writer role, forwards the write |
+  | <#Salmon> | PostgREST Writer — fixed authz_writer role, no JWT |
   | <#Orange> | PostgreSQL — authz schema |
 end legend
 

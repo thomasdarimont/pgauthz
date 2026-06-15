@@ -296,6 +296,56 @@ list_actions(store, subject_type, subject_id, object_type, object_id) := actions
 	actions := {act.action | some act in response.body}
 }
 
+# -----------------------------------------------------------------------
+# Writes — forwarded to the fixed-role writer instance (config.postgrest_writer_url).
+# OPA has already verified the JWT and the writer role; the writer runs every
+# request as authz_writer and does no JWT verification itself. performed_by is
+# the authenticated subject, recorded in the audit trail. Writes are never cached.
+# -----------------------------------------------------------------------
+
+# write_tuple: persist a single tuple. Returns {status, body}.
+write_tuple(store, t, performed_by) := _send_write("/rpc/write_tuple", _write_body(store, t, performed_by))
+
+# delete_tuple: remove a single tuple. Returns {status, body}.
+delete_tuple(store, t, performed_by) := _send_write("/rpc/delete_tuple", _delete_body(store, t, performed_by))
+
+_send_write(path, body) := {"status": resp.status_code, "body": resp.body} if {
+	resp := http.send({
+		"method": "POST",
+		"url": concat("", [config.postgrest_writer_url, path]),
+		"headers": {"Content-Type": "application/json"},
+		"body": body,
+		"raise_error": false,
+	})
+}
+
+# Required write_tuple parameters plus any present optional fields
+# (user_relation, condition, condition_context).
+_write_body(store, t, performed_by) := object.union(_base_body(store, t, performed_by), _optional_fields(t, {
+	"user_relation": "p_user_relation",
+	"condition": "p_condition",
+	"condition_context": "p_condition_context",
+}))
+
+# delete_tuple takes no condition fields — only the optional user_relation.
+_delete_body(store, t, performed_by) := object.union(_base_body(store, t, performed_by), _optional_fields(t, {"user_relation": "p_user_relation"}))
+
+_base_body(store, t, performed_by) := {
+	"p_store": store,
+	"p_user_type": t.user_type,
+	"p_user_id": t.user_id,
+	"p_relation": t.relation,
+	"p_object_type": t.object_type,
+	"p_object_id": t.object_id,
+	"p_performed_by": performed_by,
+}
+
+# Map present tuple fields to their RPC parameter names; absent fields are skipped.
+_optional_fields(t, mapping) := {pname: t[sname] |
+	some sname, pname in mapping
+	t[sname]
+}
+
 # list_actions with request context.
 list_actions_with_context(store, subject_type, subject_id, object_type, object_id, ctx) := actions if {
 	response := http.send({

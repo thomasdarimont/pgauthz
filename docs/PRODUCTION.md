@@ -84,7 +84,7 @@ created and granted in `db/security/roles.sql`.
 | Component | Connects as | Effective role(s) | Notes |
 |---|---|---|---|
 | OPA → PostgREST (reader, :3000) | `authz_authenticator` | `SET ROLE` → `api_anon` (or a JWT-claimed role) | `authz_authenticator` is `LOGIN NOINHERIT`; it can `SET ROLE` to any app role. Reader serves anonymous reads as `api_anon`. |
-| PostgREST writer (:3001, behind Nginx) | `authz_authenticator` | `SET ROLE` → `authz_writer` / `authz_admin` (from the JWT `role` claim) | Only `POST /rpc/*` is forwarded by the gateway. |
+| PostgREST writer (internal) | `authz_authenticator` | `SET ROLE` → `authz_writer` (fixed anon role) | **No JWT verification** — OPA is the front door (verifies the token + writer role, then forwards). Reachable only by OPA; no host port. |
 | AuthZEN-direct (Go, :8090) | `authzen_direct` | inherits `authz_reader` | Read-only; no `SET ROLE`. Dedicated non-superuser login. |
 | AuthZEN-opa (Go, :8091) | — (no DB connection) | — | Calls OPA → PostgREST. |
 | Backend writers (your app) | a login role granted `authz_writer` (or the writer API with a `role=authz_writer` JWT) | `authz_writer` | |
@@ -104,12 +104,16 @@ GRANT authz_contextual_reader TO <your_trusted_backend_role>;
 
 ## Network exposure
 
-- **OPA is the only front door for reads.** The reader PostgREST (`api_anon`)
-  must not be reachable from the network — it has no per-request authn of its
-  own. Keep it on an internal network; expose only OPA (`:8181`).
-- **The writer is fronted by the Nginx gateway**, which forwards only
-  `POST /rpc/*` and returns a generic 404 for everything else (no schema
-  leakage). The writer PostgREST itself is not host-exposed.
+- **OPA is the only front door** — for reads *and* writes. Neither PostgREST
+  instance has per-request authn of its own; keep both on an internal network
+  and expose only OPA (`:8181`).
+- **Reader and writer are isolated by DB role.** The reader runs as
+  `api_anon`/`authz_reader` (no write grants — structurally cannot mutate); the
+  writer runs as the fixed `authz_writer` and is reachable only by OPA. A bug in
+  the read policy therefore cannot escalate to a write.
+- **Read-only deployments:** omit `postgrest-writer` and leave
+  `POSTGREST_WRITER_URL` unset — OPA's write rule returns
+  `{"allowed": false, "error": "writes_disabled"}`.
 - See [ARCHITECTURE.md → Deployment View](ARCHITECTURE.md#7-deployment-view).
 
 ## Secrets, passwords, and JWT
@@ -127,24 +131,30 @@ GRANT authz_contextual_reader TO <your_trusted_backend_role>;
 Real issuers sign tokens with a private key and publish the public key at a
 `jwks_uri`. Each component verifies tokens independently:
 
-- **OPA** and the **AuthZEN services** verify against a JWKS (the demo ships a
-  static `opa/data/jwks.json` ES256 key). In production, point them at your
-  issuer — OPA can fetch and cache a remote `jwks_uri`; the AuthZEN services
-  take `JWKS_URL` or `JWKS_FILE`.
-- The **PostgREST writer** verifies the token itself (to map the Postgres role
-  from a JWT claim). It uses a **static** JWK/JWKS via `PGRST_JWT_SECRET`
-  (`@/path/to/jwks.json` or the JSON inline) — the demo points it at the same
-  public JWKS. **PostgREST does NOT fetch a remote `jwks_uri`**, so for a
-  rotating issuer key you need one of:
-  1. **Front the writer with OPA** (as the read path is) — OPA owns JWT
-     verification and `jwks_uri` rotation; the writer no longer verifies JWTs.
-     *Recommended* — one place handles tokens, consistent with reads.
-  2. **Sync the JWKS** — a sidecar/cron fetches the issuer's `jwks_uri`, writes
-     the JWKS file the writer reads, and reloads PostgREST config
-     (`NOTIFY pgrst, 'reload config'`) on rotation.
-- Map the writer's role from your issuer's claim with `PGRST_JWT_ROLE_CLAIM_KEY`
-  (e.g. `.realm_access.roles[0]`); the token's mapped role must be one
-  `authz_authenticator` may `SET ROLE` to (`authz_writer` / `authz_admin`).
+**OPA verifies every token** — for reads and writes alike. The demo ships a
+static `opa/data/jwks.json` ES256 key; in production point OPA at your issuer,
+which can fetch and cache a remote `jwks_uri`. The AuthZEN services verify
+independently via `JWKS_URL` or `JWKS_FILE`.
+
+Because OPA fronts the writer (it forwards authorized writes to a fixed-role
+writer that does **no** JWT verification of its own), there is a single place
+that handles tokens and `jwks_uri` rotation — no JWKS to sync into PostgREST,
+and PostgREST's inability to fetch a remote `jwks_uri` is no longer a concern.
+
+**Write authorization** is a faithful port of the old role-claim model into OPA,
+made configurable for any issuer:
+
+- `JWT_ROLES_CLAIM` — dotted path to the roles array in the token, default
+  `roles` (e.g. `realm_access.roles` for Keycloak).
+- `WRITER_ROLE` — the role value that authorizes tuple writes, default
+  `authz_writer`.
+
+OPA verifies the token, requires `WRITER_ROLE` within the configured claim, then
+forwards `write`/`delete` to the writer — recording the authenticated subject as
+the audit author (`performed_by`). The writer always runs as `authz_writer`
+regardless of token contents, so a forged or over-scoped role claim cannot reach
+admin operations. Admin/model management is intentionally **out of** the
+OPA-fronted write path — perform it via a separate `authz_admin` channel.
 
 ## AuthZEN subject policy
 
