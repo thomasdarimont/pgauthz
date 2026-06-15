@@ -41,9 +41,10 @@ by `init.sh` on every run.
       `AUTHZ_AUTHENTICATOR_PASSWORD`, `AUTHZEN_DIRECT_PASSWORD`. The service-role
       passwords are applied at first DB init, so set them before the first
       `./init.sh` (to change them later: `docker compose down -v && ./init.sh`).
-- [ ] **Never host-expose the read PostgREST (`api_anon`).** `api_anon` is a
-      full reader; OPA is the mandatory front door. Only OPA (and the Nginx
-      writer gateway) should reach PostgREST. See [Network exposure](#network-exposure).
+- [ ] **Never host-expose either PostgREST instance.** The reader (`api_anon`)
+      is a full reader and the writer runs as `authz_writer`; OPA is the
+      mandatory front door, and only OPA should reach PostgREST. See
+      [Network exposure](#network-exposure).
 - [ ] **Decide the AuthZEN subject policy.** Keep `ALLOW_SUBJECT_OVERRIDE=false`
       (token-only) unless the caller is a trusted PEP. See [AuthZEN subject policy](#authzen-subject-policy).
 - [ ] **Grant `authz_contextual_reader` only to trusted callers** (it lets a
@@ -115,6 +116,29 @@ GRANT authz_contextual_reader TO <your_trusted_backend_role>;
   `POSTGREST_WRITER_URL` unset — OPA's write rule returns
   `{"allowed": false, "error": "writes_disabled"}`.
 - See [ARCHITECTURE.md → Deployment View](ARCHITECTURE.md#7-deployment-view).
+
+### Edge proxy / mTLS in front of OPA
+
+OPA exposes plain HTTP and its `/v1/data` API reads the JWT from the request
+**body** (`input.token`) — it does not consume the `Authorization` header or any
+TLS client identity (that header feeds only OPA's own admin gating). For
+production, put a TLS-terminating reverse proxy in front of OPA and stop
+publishing OPA's port to the host, so the proxy is the only entry point.
+
+This cleanly separates two concerns:
+
+- **Transport / caller authentication at the edge** — TLS, and optionally
+  **X.509 client certificates (mTLS)** to gate *which callers* (trusted
+  PEPs/backends) may reach OPA at all. Also the place for rate limiting and IP
+  allow-lists.
+- **Per-user authorization in OPA** — the application JWT in the body
+  (`input.token`) identifies the end user; OPA's policy decides what they may do.
+
+A ready template is in [`gateway/nginx.conf`](../gateway/nginx.conf) (TLS +
+optional mTLS → `opa:8181`). It is intentionally **not** wired into the default
+compose — supply `server.crt`/`server.key` and a `client-ca.crt`, mount them at
+`/certs`, run it in front of OPA, and remove OPA's host port. Note that mTLS
+authenticates the caller, not the end user — the JWT still does per-user authz.
 
 ## Secrets, passwords, and JWT
 

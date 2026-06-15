@@ -60,7 +60,7 @@ cd authzen && go build ./cmd/authzen-opa
 - `db/replication/` — Logical replication and materialized permissions patterns
 - `authzen/` — Go AuthZEN 1.0 HTTP API (cmd/, internal/api/, internal/pgbackend/, internal/opabackend/)
 - `opa/policies/` — Rego policies (pgauthz client, application policy, JWT authn, system authz)
-- `gateway/` — Nginx config for write API protection
+- `gateway/` — Nginx OPA edge-proxy template (TLS / optional mTLS); optional, not wired into the default compose
 
 ## SQL Engine Conventions
 
