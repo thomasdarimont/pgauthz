@@ -468,6 +468,28 @@ check_http "POST /v1/data/keys blocked without token" \
     -H "Content-Type: application/json" \
     -d '{}'
 
+# Blocked: POST to the system.authz package must NOT leak the admin token.
+# (Regression for an unauthenticated admin-token disclosure: package-prefix
+# allowlisting exposed data.system.authz.admin_token.)
+check_http "POST /v1/data/system/authz/admin_token blocked (no admin-token leak)" \
+    "401" \
+    -X POST "$OPA_URL/v1/data/system/authz/admin_token" \
+    -H "Content-Type: application/json" \
+    -d '{}'
+
+check_http "POST /v1/data/system/authz blocked" \
+    "401" \
+    -X POST "$OPA_URL/v1/data/system/authz" \
+    -H "Content-Type: application/json" \
+    -d '{}'
+
+# Blocked: POST into the authn package (e.g. data.authn.jwks) — internal only.
+check_http "POST /v1/data/authn/jwks blocked" \
+    "401" \
+    -X POST "$OPA_URL/v1/data/authn/jwks" \
+    -H "Content-Type: application/json" \
+    -d '{}'
+
 # Blocked: GET /v1/data (raw data read requires admin token)
 check_http "GET /v1/data blocked without token" \
     "401" \

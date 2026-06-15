@@ -135,10 +135,15 @@ This cleanly separates two concerns:
   (`input.token`) identifies the end user; OPA's policy decides what they may do.
 
 A ready template is in [`gateway/nginx.conf`](../gateway/nginx.conf) (TLS +
-optional mTLS → `opa:8181`). It is intentionally **not** wired into the default
-compose — supply `server.crt`/`server.key` and a `client-ca.crt`, mount them at
-`/certs`, run it in front of OPA, and remove OPA's host port. Note that mTLS
-authenticates the caller, not the end user — the JWT still does per-user authz.
+optional mTLS → `opa:8181`). It is **default-deny**: only `/health` and the
+application decision API (`POST /v1/data/authz/*`) are forwarded, so OPA's
+management surface (`/v1/policies`, `/v1/config`, raw `/v1/data`,
+`/v1/data/system`, `/v1/data/keys`) is unreachable through the edge — a second
+layer on top of `system_authz.rego`. It is intentionally **not** wired into the
+default compose — supply `server.crt`/`server.key` and a `client-ca.crt`, mount
+them at `/certs`, run it in front of OPA, and remove OPA's host port. Note that
+mTLS authenticates the caller, not the end user — the JWT still does per-user
+authz.
 
 ## Secrets, passwords, and JWT
 
