@@ -122,8 +122,10 @@ Three topologies are supported:
    (see [`architecture-write-api.puml`](architecture-write-api.puml))
 
 3. **Scaled** — load balancer distributes reads across multiple
-   OPA + PostgREST + replica nodes. Writes go directly to the primary.
-   (see [`architecture-read-scaled.puml`](architecture-read-scaled.puml))
+   OPA + PostgREST + replica nodes. Writes go to the primary — either
+   directly via SQL (see [`architecture-read-scaled.puml`](architecture-read-scaled.puml))
+   or through the primary's OPA-fronted writer (see
+   [`architecture-full.puml`](architecture-full.puml)).
 
 ---
 
@@ -293,11 +295,12 @@ Deployment View).
 
 | File | Package | Responsibility |
 |---|---|---|
-| `pgauthz.rego` | `authz.pgauthz` | Client library — wraps PostgREST HTTP calls with caching |
-| `pgauthz_config.rego` | `authz.pgauthz.config` | PostgREST URL, cache TTL, default store (from env vars) |
-| `policy.rego` | `authz` | Application-facing policy (`allow`, `evaluations`, `accessible_objects`, `permitted_actions`) |
-| `authn.rego` | `authn` | JWT verification and claim extraction |
-| `authn_config.rego` | `authn.config` | Required issuer / audience (from env vars) |
+| `pgauthz.rego` | `authz.pgauthz` | Client library — wraps the PostgREST read calls (cached) and the writer's `write_tuple` / `delete_tuple` forwarders |
+| `pgauthz_config.rego` | `authz.pgauthz.config` | PostgREST reader + writer URLs, cache TTL, default store (from env vars) |
+| `policy.rego` | `authz` | Read policy (`allow`, `evaluations`, `accessible_objects`, `permitted_actions`) |
+| `write.rego` | `authz` | Write policy (`write`) — verifies the JWT + writer role, then forwards `write`/`delete` to the writer (injecting the subject as audit author) |
+| `authn.rego` | `authn` | JWT verification + claim extraction (subject, roles via the configurable claim path) |
+| `authn_config.rego` | `authn.config` | Issuer / audience, roles-claim path (`JWT_ROLES_CLAIM`), writer role (`WRITER_ROLE`) — from env vars |
 | `system_authz.rego` | `system.authz` | OPA API endpoint security (admin token gating) |
 
 ---
