@@ -2,8 +2,19 @@
 -- Equivalent of model.fga encoded as data.
 
 ----------------------------------------------------------------------
--- Demo store
+-- Demo store.
+-- Dropped first so this file is idempotent — re-running it (e.g.
+-- test.sh standalone, without a preceding init.sh) resets the demo
+-- store from scratch instead of failing on the existing store. The
+-- audit history is purged since the demo store is a fixture, not
+-- production data.
 ----------------------------------------------------------------------
+DO $$
+BEGIN
+    PERFORM authz.delete_store('demo', p_purge_audit => true);
+EXCEPTION WHEN OTHERS THEN
+    NULL;  -- store did not exist yet
+END $$;
 SELECT authz.create_store('demo');
 
 ----------------------------------------------------------------------
