@@ -51,6 +51,11 @@ echo "==> Running AuthZEN integration tests..."
 echo ""
 run_tests "$SCRIPT_DIR/test-authzen.sh"
 
+echo ""
+echo "==> Running AuthZEN Go unit tests..."
+echo ""
+run_tests "$SCRIPT_DIR/test-go.sh"
+
 test_duration=$((SECONDS - test_start))
 
 echo ""

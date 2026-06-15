@@ -3,11 +3,17 @@ package api
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
 	"thomasdarimont.de/authz/authzen/internal/authz"
 	"thomasdarimont.de/authz/authzen/internal/config"
+)
+
+var (
+	errSubjectRequired  = errors.New("subject.type and subject.id are required")
+	errSubjectForbidden = errors.New("request subject does not match the authenticated subject (body-subject override is disabled)")
 )
 
 const defaultPageSize = 100
@@ -51,26 +57,61 @@ func (h *Handler) store(r *http.Request) string {
 	return h.cfg.DefaultStore
 }
 
-// resolveSubject merges JWT-derived subject with request body subject.
-// Body subject takes precedence (AuthZEN requires explicit subject).
-func resolveSubject(r *http.Request, body Subject) (subjectType, subjectID string, err error) {
-	if body.Type != "" && body.ID != "" {
-		return body.Type, body.ID, nil
+// resolveSubjectPair applies the subject-override policy to a body-supplied
+// subject and the JWT-derived subject.
+//
+//   - Secure default (AllowSubjectOverride=false): the authenticated JWT
+//     subject is authoritative. A body subject is accepted only if it matches
+//     the token; a differing one is rejected (errSubjectForbidden) — it would
+//     be an impersonation attempt. When no JWT subject is present (e.g. a
+//     no-auth/system deployment), the body subject is the only source.
+//   - Override (AllowSubjectOverride=true): the trusted-PEP/PDP mode — the
+//     body subject wins, with the JWT subject as a fallback.
+func (h *Handler) resolveSubjectPair(bodyType, bodyID, jwtType, jwtID string) (subjectType, subjectID string, err error) {
+	if h.cfg.AllowSubjectOverride {
+		subjectType, subjectID = bodyType, bodyID
+		if subjectType == "" {
+			subjectType = jwtType
+		}
+		if subjectID == "" {
+			subjectID = jwtID
+		}
+		if subjectType == "" || subjectID == "" {
+			return "", "", errSubjectRequired
+		}
+		return subjectType, subjectID, nil
 	}
-	// Fall back to JWT-derived subject
+
+	// Secure default: the JWT subject is authoritative when present.
+	if jwtType != "" && jwtID != "" {
+		if (bodyType != "" && bodyType != jwtType) || (bodyID != "" && bodyID != jwtID) {
+			return "", "", errSubjectForbidden
+		}
+		return jwtType, jwtID, nil
+	}
+
+	// No authenticated subject: the body is the only available source.
+	if bodyType == "" || bodyID == "" {
+		return "", "", errSubjectRequired
+	}
+	return bodyType, bodyID, nil
+}
+
+// resolveSubject resolves the effective subject for single-subject endpoints,
+// applying the override policy against the JWT-derived subject.
+func (h *Handler) resolveSubject(r *http.Request, body Subject) (subjectType, subjectID string, err error) {
 	jwtType, jwtID := SubjectFromContext(r.Context())
-	subjectType = body.Type
-	if subjectType == "" {
-		subjectType = jwtType
+	return h.resolveSubjectPair(body.Type, body.ID, jwtType, jwtID)
+}
+
+// writeSubjectError maps a subject-resolution error to the right HTTP status:
+// 403 for a rejected override attempt, 400 for a missing subject.
+func writeSubjectError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errSubjectForbidden) {
+		writeForbidden(w, err.Error())
+		return
 	}
-	subjectID = body.ID
-	if subjectID == "" {
-		subjectID = jwtID
-	}
-	if subjectType == "" || subjectID == "" {
-		return "", "", fmt.Errorf("subject.type and subject.id are required")
-	}
-	return subjectType, subjectID, nil
+	writeBadRequest(w, err.Error())
 }
 
 // Evaluation handles POST /access/v1/evaluation
@@ -81,9 +122,9 @@ func (h *Handler) Evaluation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	subjectType, subjectID, err := resolveSubject(r, req.Subject)
+	subjectType, subjectID, err := h.resolveSubject(r, req.Subject)
 	if err != nil {
-		writeBadRequest(w, err.Error())
+		writeSubjectError(w, err)
 		return
 	}
 	if req.Action.Name == "" {
@@ -142,24 +183,25 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 	// Build individual eval requests, merging shared subject/action/resource
 	evals := make([]authz.EvalRequest, len(req.Evaluations))
 	for i, e := range req.Evaluations {
-		subType := e.Subject.Type
-		if subType == "" && req.Subject != nil {
-			subType = req.Subject.Type
+		// Effective body subject: per-evaluation, falling back to the
+		// batch-level subject. The override policy (vs the JWT subject) is
+		// then applied centrally by resolveSubjectPair.
+		bodyType := e.Subject.Type
+		if bodyType == "" && req.Subject != nil {
+			bodyType = req.Subject.Type
 		}
-		if subType == "" {
-			subType = jwtType
-		}
-
-		subID := e.Subject.ID
-		if subID == "" && req.Subject != nil {
-			subID = req.Subject.ID
-		}
-		if subID == "" {
-			subID = jwtID
+		bodyID := e.Subject.ID
+		if bodyID == "" && req.Subject != nil {
+			bodyID = req.Subject.ID
 		}
 
-		if subType == "" || subID == "" {
-			writeBadRequest(w, fmt.Sprintf("evaluation[%d]: subject.type and subject.id are required", i))
+		subType, subID, serr := h.resolveSubjectPair(bodyType, bodyID, jwtType, jwtID)
+		if serr != nil {
+			if errors.Is(serr, errSubjectForbidden) {
+				writeForbidden(w, fmt.Sprintf("evaluation[%d]: %s", i, serr.Error()))
+			} else {
+				writeBadRequest(w, fmt.Sprintf("evaluation[%d]: %s", i, serr.Error()))
+			}
 			return
 		}
 
@@ -261,9 +303,9 @@ func (h *Handler) SearchResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	subjectType, subjectID, err := resolveSubject(r, req.Subject)
+	subjectType, subjectID, err := h.resolveSubject(r, req.Subject)
 	if err != nil {
-		writeBadRequest(w, err.Error())
+		writeSubjectError(w, err)
 		return
 	}
 	if req.Action.Name == "" {
@@ -306,9 +348,9 @@ func (h *Handler) SearchAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	subjectType, subjectID, err := resolveSubject(r, req.Subject)
+	subjectType, subjectID, err := h.resolveSubject(r, req.Subject)
 	if err != nil {
-		writeBadRequest(w, err.Error())
+		writeSubjectError(w, err)
 		return
 	}
 	if req.Resource.Type == "" || req.Resource.ID == "" {

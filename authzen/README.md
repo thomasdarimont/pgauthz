@@ -139,7 +139,18 @@ All endpoints (except `/healthz` and `/.well-known/*`) require a Bearer JWT.
 | Subject ID | `subject.id` | `preferred_username` (fallback: `sub`) |
 | Subject type | `subject.type` | `subject_type` (fallback: config default) |
 
-If the request body includes a `subject`, it takes precedence over JWT claims.
+**Subject override.** By default (`ALLOW_SUBJECT_OVERRIDE=false`) the
+JWT-derived subject is authoritative: a request-body `subject` is accepted
+only if it matches the token, and a *differing* one is rejected with `403`
+(it would be an impersonation attempt). This is the safe default for
+**user-facing** deployments where the JWT identifies the end user.
+
+Set `ALLOW_SUBJECT_OVERRIDE=true` for **trusted PEP/PDP** deployments — where
+the caller is an enforcement point evaluating access for arbitrary subjects.
+Then the request-body `subject` is authoritative (JWT subject as fallback),
+which is also what batch `evaluations` with per-evaluation subjects requires.
+When no JWT subject is present (e.g. a no-auth/system deployment), the body
+subject is used regardless of the flag.
 
 ## Multi-Store Support
 
@@ -167,6 +178,7 @@ All configuration is via environment variables.
 | `SUBJECT_ID_FALLBACK_CLAIM` | `sub` | Fallback JWT claim for subject ID |
 | `SUBJECT_TYPE_CLAIM` | `subject_type` | JWT claim for subject type |
 | `SUBJECT_TYPE_DEFAULT` | `internal_user` | Default subject type if claim missing |
+| `ALLOW_SUBJECT_OVERRIDE` | `false` | Allow a request-body subject to override the JWT subject (trusted PEP/PDP mode). Default false = token-only; a mismatched body subject is rejected with `403` |
 | `DEFAULT_STORE` | `demo` | Default authorization store |
 | `STORE_HEADER` | `X-AuthZ-Store` | HTTP header for store selection |
 | `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |

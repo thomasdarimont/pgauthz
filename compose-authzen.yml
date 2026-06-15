@@ -19,6 +19,11 @@ services:
       JWT_AUDIENCE: "${JWT_AUDIENCE:-authz-api}"
       # REQUIRED_SCOPE: "authz:read"  # If set, JWT must contain this scope
       DEFAULT_STORE: "${DEFAULT_STORE:-demo}"
+      # Trusted-PEP/PDP mode: the caller is a trusted enforcement point that
+      # evaluates access for arbitrary subjects, so the request-body subject
+      # is authoritative. Default is false (token-only) — leave it unset for
+      # user-facing deployments where the JWT identifies the end user.
+      ALLOW_SUBJECT_OVERRIDE: "${ALLOW_SUBJECT_OVERRIDE:-true}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
     # Keep retrying until the authzen_direct role exists (created by
     # db/security/initdb on first boot, or by init.sh on re-init).
@@ -45,6 +50,9 @@ services:
       JWT_AUDIENCE: "${JWT_AUDIENCE:-authz-api}"
       # REQUIRED_SCOPE: "authz:read"  # If set, JWT must contain this scope
       DEFAULT_STORE: "${DEFAULT_STORE:-demo}"
+      # Trusted-PEP/PDP mode (see authzen-direct above). Default false
+      # (token-only); unset it for user-facing deployments.
+      ALLOW_SUBJECT_OVERRIDE: "${ALLOW_SUBJECT_OVERRIDE:-true}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
     volumes:
       - ./opa/data:/jwks:ro
