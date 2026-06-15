@@ -450,6 +450,49 @@ END;
 $$;
 SELECT * FROM _test_teardown_contextual();
 
+-- ctx_22: a condition whose expression cannot compile (a syntax/resolution
+-- error) is rejected at write time, rather than stored and silently failing
+-- closed at every check. Valid expressions still insert; data-dependent
+-- runtime errors are NOT rejected (they remain deny-at-check).
+DO $$
+DECLARE v_raised boolean; v_msg text; v_ok boolean;
+BEGIN
+    PERFORM _test_setup_contextual();
+
+    -- Syntactically invalid expression -> rejected, message names the condition.
+    v_raised := false;
+    BEGIN
+        INSERT INTO authz.conditions (store_id, name, expression, required_context)
+        VALUES (authz._s('test_contextual'), 'bad', '1 +', NULL);
+    EXCEPTION WHEN OTHERS THEN
+        v_raised := true; v_msg := SQLERRM;
+    END;
+    PERFORM _test_assert('ctx_22a_invalid_expression_rejected', v_raised::text, 'true');
+    PERFORM _test_assert('ctx_22b_error_names_condition',
+        (v_msg LIKE '%bad%')::text, 'true');
+
+    -- A valid expression still inserts fine.
+    v_ok := false;
+    BEGIN
+        INSERT INTO authz.conditions (store_id, name, expression, required_context)
+        VALUES (authz._s('test_contextual'), 'good', '($1->>''level'')::int >= 5', '{"request":["level"]}'::jsonb);
+        v_ok := true;
+    EXCEPTION WHEN OTHERS THEN v_ok := false;
+    END;
+    PERFORM _test_assert('ctx_22c_valid_expression_accepted', v_ok::text, 'true');
+
+    -- Editing a valid condition to garbage is rejected too.
+    v_raised := false;
+    BEGIN
+        UPDATE authz.conditions SET expression = '1 +'
+         WHERE store_id = authz._s('test_contextual') AND name = 'good';
+    EXCEPTION WHEN OTHERS THEN v_raised := true;
+    END;
+    PERFORM _test_assert('ctx_22d_invalid_update_rejected', v_raised::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_contextual();
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_contextual();
 DROP FUNCTION IF EXISTS _test_setup_contextual();

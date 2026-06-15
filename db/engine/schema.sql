@@ -81,6 +81,39 @@ CREATE TABLE authz.conditions (
     UNIQUE (store_id, name)
 );
 
+-- Reject a condition whose expression cannot compile. A malformed or
+-- unresolvable expression (SQLSTATE class 42 — syntax error, unknown
+-- function/column/table, type mismatch, or an attempt to touch a table
+-- the sandbox can't see) would otherwise insert successfully and then
+-- silently fail closed (deny) at every check. We test-compile it once at
+-- write time in the same sandbox used at check time: _exec_condition runs
+-- as the zero-privilege authz_eval role, so validating an untrusted
+-- expression cannot itself do harm. Empty context is passed, so only
+-- compile-time errors are caught; data-dependent runtime errors (class 22,
+-- e.g. a cast that fails only on certain inputs) are legitimate and remain
+-- deny-at-check, not write-time rejections.
+--
+-- SECURITY DEFINER so the trigger (whoever runs the INSERT) can reach
+-- _exec_condition; the expression still executes only as authz_eval.
+CREATE OR REPLACE FUNCTION authz._validate_condition_expression() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+    BEGIN
+        PERFORM authz._exec_condition(NEW.expression, '{}'::jsonb, '{}'::jsonb);
+    EXCEPTION
+        WHEN syntax_error_or_access_rule_violation THEN  -- SQLSTATE class 42
+            RAISE EXCEPTION 'condition "%" has an invalid expression: %', NEW.name, SQLERRM
+                USING ERRCODE = 'invalid_parameter_value',
+                      HINT = 'Expression must be a valid SQL boolean over $1 (request) and $2 (stored) context.';
+    END;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_conditions_validate_expression
+    BEFORE INSERT OR UPDATE ON authz.conditions
+    FOR EACH ROW EXECUTE FUNCTION authz._validate_condition_expression();
+
 -- Internal composite type for identifying a specific direct tuple.
 -- Used by find_redundant_tuples to exclude a tuple from access checks
 -- without requiring write access (replica-safe).
