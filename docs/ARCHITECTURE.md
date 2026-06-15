@@ -277,6 +277,7 @@ api_anon ── authz_reader            ├── authz_admin
 | `api_anon` | Inherits `authz_reader` | PostgREST anonymous role |
 | `authz_auditor` | Reader + `audit_*` functions | Compliance / security teams |
 | `authz_reader` | `check_access`, `list_*`, `explain_access` | Read-only access checks |
+| `authz_contextual_reader` | `check_access_with_contextual_tuples*` | Contextual-tuple checks (inject ephemeral tuples) — trusted PDP callers only; granted to no one by default |
 | `authz_writer` | Reader + `write_tuple`, `delete_tuple`, batch ops | Application backends |
 | `authz_admin` | Writer + auditor + store/model management | Full administrative control |
 | `app_readonly` | Inherits `authz_reader` (LOGIN) | Test user for read-only integration testing |

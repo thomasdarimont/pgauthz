@@ -45,6 +45,12 @@ BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'api_anon') THEN
         CREATE ROLE api_anon NOLOGIN;
     END IF;
+    -- Dedicated privilege for contextual-tuple checks (see grants below):
+    -- callers can inject ephemeral tuples into a decision, so this is kept
+    -- separate from the general authz_reader and granted only to trusted PDPs.
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authz_contextual_reader') THEN
+        CREATE ROLE authz_contextual_reader NOLOGIN;
+    END IF;
     -- Non-superuser owner of the schema and its objects (see the
     -- ownership transfer at the end of this file).
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authz_owner') THEN
@@ -133,7 +139,7 @@ REVOKE EXECUTE ON FUNCTION pg_catalog.pg_sleep_for(interval)                   F
 REVOKE EXECUTE ON FUNCTION pg_catalog.pg_sleep_until(timestamp with time zone) FROM PUBLIC;
 
 -- All roles need schema access.
-GRANT USAGE ON SCHEMA authz TO authz_auditor, authz_reader, authz_writer, authz_admin;
+GRANT USAGE ON SCHEMA authz TO authz_auditor, authz_reader, authz_writer, authz_admin, authz_contextual_reader;
 
 ------------------------------------------------------------------------
 -- authz_auditor: audit trail and time-travel queries (compliance/security)
@@ -148,8 +154,19 @@ GRANT EXECUTE ON FUNCTION authz.audit_list_actions(text, text, text, text, text,
 ------------------------------------------------------------------------
 GRANT EXECUTE ON FUNCTION authz.check_access(text, text, text, text, text, text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.check_access_with_context(text, text, text, text, text, text, jsonb) TO authz_reader;
-GRANT EXECUTE ON FUNCTION authz.check_access_with_contextual_tuples(text, text, text, text, text, text, jsonb, authz.tuple_input[]) TO authz_reader;
-GRANT EXECUTE ON FUNCTION authz.check_access_with_contextual_tuples_jsonb(text, text, text, text, text, text, jsonb, jsonb) TO authz_reader;
+-- Contextual-tuple checks let the caller inject EPHEMERAL tuples into a
+-- decision (e.g. "would alice be a viewer if this grant existed?"). That is
+-- powerful for trusted backend/PDP usage, but if exposed to user-controlled
+-- clients a caller could inject the very grant being tested. So they live
+-- behind a SEPARATE role — authz_contextual_reader — NOT the general
+-- authz_reader (which api_anon inherits). Grant authz_contextual_reader only
+-- to trusted callers; never to a role reachable by untrusted clients.
+--   e.g.  GRANT authz_contextual_reader TO <trusted_backend_role>;
+-- (REVOKE from authz_reader too, in case an older install granted it there.)
+REVOKE EXECUTE ON FUNCTION authz.check_access_with_contextual_tuples(text, text, text, text, text, text, jsonb, authz.tuple_input[]) FROM authz_reader;
+REVOKE EXECUTE ON FUNCTION authz.check_access_with_contextual_tuples_jsonb(text, text, text, text, text, text, jsonb, jsonb) FROM authz_reader;
+GRANT EXECUTE ON FUNCTION authz.check_access_with_contextual_tuples(text, text, text, text, text, text, jsonb, authz.tuple_input[]) TO authz_contextual_reader;
+GRANT EXECUTE ON FUNCTION authz.check_access_with_contextual_tuples_jsonb(text, text, text, text, text, text, jsonb, jsonb) TO authz_contextual_reader;
 GRANT EXECUTE ON FUNCTION authz.check_access_batch(text, jsonb, jsonb, text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.check_access_batch_typed(text, authz.access_check[], jsonb, text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.check_access_batch_typed_jsonb(text, jsonb, jsonb, text) TO authz_reader;

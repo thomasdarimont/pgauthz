@@ -87,6 +87,11 @@ runtime context that is not stored as a permanent relationship — for example,
 granting access only while a user is connected via VPN, during a specific
 time slot, or within a particular client session. Can also be used to implement temporary deputy arrangements.
 
+> **Privilege:** because a caller can inject the very tuple being tested, this
+> is gated by a dedicated `authz_contextual_reader` role (not the general
+> `authz_reader`). Grant it only to trusted PDP/backend callers; never expose
+> it to untrusted clients. See [Access control roles](#access-control-roles).
+
 ```sql
 -- Frank has no stored viewer tuple on doc_client_001
 SELECT authz.check_access('demo',
@@ -1099,7 +1104,8 @@ Getting the consistency you need:
 | Role | Can do | Inherits |
 |---|---|---|
 | `authz_auditor` | `audit_check_access`, `audit_list_actions`, `audit_list_user`, `audit_list_object` | `authz_reader` |
-| `authz_reader` | `check_access`, `check_access_with_context`, `check_access_with_contextual_tuples`, `list_objects`, `list_subjects`, `list_actions`, `validate_condition`, `explain_access` | -- |
+| `authz_reader` | `check_access`, `check_access_with_context`, `list_objects`, `list_subjects`, `list_actions`, `validate_condition`, `explain_access` | -- |
+| `authz_contextual_reader` | `check_access_with_contextual_tuples`, `check_access_with_contextual_tuples_jsonb` — inject ephemeral tuples into a check. **Separate from `authz_reader`**: a caller could inject the grant being tested, so grant this only to trusted PDP/backend callers, never to a role reachable by untrusted clients. | -- |
 | `authz_writer` | `write_tuple`, `delete_tuple`, `write_tuples`, `delete_tuples`, `delete_user_tuples` | `authz_reader` |
 | `authz_admin` | `create_store`, `delete_store`, `model_register_type`, `model_register_relation`, manage `namespace_access` table | `authz_writer` |
 

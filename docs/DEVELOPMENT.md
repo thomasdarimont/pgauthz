@@ -51,7 +51,8 @@ controlled through four application roles:
 | Role | Can do | Inherits |
 |---|---|---|
 | `authz_auditor` | `audit_check_access`, `audit_list_actions`, `audit_list_user`, `audit_list_object` | — |
-| `authz_reader` | `check_access`, `check_access_with_context`, `check_access_with_contextual_tuples`, `check_access_with_contextual_tuples_jsonb`, `list_objects`, `list_subjects`, `list_actions`, `validate_condition`, `explain_access` | — |
+| `authz_reader` | `check_access`, `check_access_with_context`, `list_objects`, `list_subjects`, `list_actions`, `validate_condition`, `explain_access` | — |
+| `authz_contextual_reader` | `check_access_with_contextual_tuples`, `check_access_with_contextual_tuples_jsonb` (inject ephemeral tuples — grant only to trusted PDP callers, NOT to roles reachable by untrusted clients) | — |
 | `authz_writer` | `write_tuple`, `delete_tuple`, `write_tuples`, `delete_tuples`, `write_tuples_jsonb`, `delete_tuples_jsonb`, `delete_user_tuples` | `authz_reader` |
 | `authz_admin` | `create_store`, `delete_store`, `model_register_type`, `model_register_relation`, `model_add_rule`, `model_remove_rule`, `model_remove_rules`, `find_redundant_tuples`, manage `namespace_access` table | `authz_writer` |
 

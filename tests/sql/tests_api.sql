@@ -946,6 +946,41 @@ END;
 $$;
 SELECT * FROM _test_teardown_api();
 
+-- api_114: contextual-tuple checks require the dedicated authz_contextual_reader
+-- role, NOT the general authz_reader. A caller can inject ephemeral tuples into
+-- a decision, so the privilege is separated: a plain reader (api_anon, which
+-- inherits authz_reader) can run a normal check but cannot inject contextual
+-- tuples. (set_config('role', ...) is the transaction-local SET ROLE the
+-- engine honors; the test session is the superuser, which we switch away from.)
+SELECT _test_setup_api();
+DO $$
+DECLARE v_normal_ok boolean; v_ctx_state text := NULL;
+BEGIN
+    PERFORM set_config('role', 'api_anon', true);
+
+    -- A normal check still works (api_anon has authz_reader).
+    v_normal_ok := authz.check_access('test_api', 'user', 'alice', 'reader', 'doc', 'doc1') IS NOT NULL;
+
+    -- Injecting contextual tuples is blocked (separate privilege).
+    BEGIN
+        PERFORM authz.check_access_with_contextual_tuples('test_api',
+            'user', 'mallory', 'reader', 'doc', 'doc1',
+            contextual_tuples => ARRAY[
+                ROW('user', 'mallory', NULL, 'reader', 'doc', 'doc1')
+            ]::authz.tuple_input[]);
+    EXCEPTION WHEN insufficient_privilege THEN
+        v_ctx_state := SQLSTATE;   -- 42501
+    END;
+
+    PERFORM set_config('role', 'none', true);
+
+    PERFORM _test_assert_true('api_114a_reader_can_normal_check', v_normal_ok,
+        'plain reader should still run check_access');
+    PERFORM _test_assert('api_114b_reader_cannot_inject_contextual', v_ctx_state, '42501');
+END;
+$$;
+SELECT * FROM _test_teardown_api();
+
 -- ================================================================
 -- check_access_batch_typed_jsonb tests
 -- ================================================================
