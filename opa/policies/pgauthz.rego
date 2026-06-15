@@ -309,6 +309,28 @@ write_tuple(store, t, performed_by) := _send_write("/rpc/write_tuple", _write_bo
 # delete_tuple: remove a single tuple. Returns {status, body}.
 delete_tuple(store, t, performed_by) := _send_write("/rpc/delete_tuple", _delete_body(store, t, performed_by))
 
+# write_tuples / delete_tuples: batch write/delete. The tuples array is passed
+# through as-is (same element shape as a single tuple). body = count affected.
+write_tuples(store, tuples, performed_by) := _send_write("/rpc/write_tuples_jsonb", {
+	"p_store": store,
+	"p_tuples": tuples,
+	"p_performed_by": performed_by,
+})
+
+delete_tuples(store, tuples, performed_by) := _send_write("/rpc/delete_tuples_jsonb", {
+	"p_store": store,
+	"p_tuples": tuples,
+	"p_performed_by": performed_by,
+})
+
+# delete_user_tuples: offboarding — remove every tuple for a subject.
+delete_user_tuples(store, user, performed_by) := _send_write("/rpc/delete_user_tuples", {
+	"p_store": store,
+	"p_user_type": user.user_type,
+	"p_user_id": user.user_id,
+	"p_performed_by": performed_by,
+})
+
 _send_write(path, body) := {"status": resp.status_code, "body": resp.body} if {
 	resp := http.send({
 		"method": "POST",

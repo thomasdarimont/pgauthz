@@ -17,23 +17,28 @@ import data.authz.pgauthz.config
 # claim (authn_config.roles_claim_path), and only then forwards the write/delete
 # to the writer — recording the authenticated subject as the audit author.
 #
+# Operations:
+#   "write"  / "delete"        → single tuple (input.tuple)
+#   "write_batch" / "delete_batch" → array of tuples (input.tuples)
+#   "delete_user"              → all tuples for a subject (input.user) [offboarding]
+#
 # Input:
 #   {
 #     "token":     "eyJ...",            # required — identifies + authorizes the caller
 #     "store":     "demo",              # optional — defaults to config.default_store
-#     "operation": "write" | "delete",
-#     "tuple": {
-#       "user_type": "...", "user_id": "...", "relation": "...",
-#       "object_type": "...", "object_id": "...",
-#       "user_relation": "...",         # optional
-#       "condition": "...",             # optional (write only)
-#       "condition_context": {...}      # optional (write only)
-#     }
+#     "operation": "write" | "delete" | "write_batch" | "delete_batch" | "delete_user",
+#     "tuple":  { "user_type", "user_id", "relation", "object_type", "object_id",
+#                 "user_relation"?, "condition"?, "condition_context"? },  # write/delete
+#     "tuples": [ {<tuple>}, ... ],                                        # *_batch
+#     "user":   { "user_type", "user_id" }                                # delete_user
 #   }
 #
 # Result (data.authz.write):
 #   {"allowed": true,  "result": {"status": 200, "body": <pg return>}}
-#   {"allowed": false, "error": "not_authorized" | "invalid_request"}
+#   {"allowed": false, "error": "not_authorized" | "invalid_request" | "writes_disabled"}
+#
+# Admin/model operations (create_store, model_*, namespace, OpenFGA import) are
+# intentionally NOT exposed here — run them as authz_admin via direct SQL.
 # -----------------------------------------------------------------------
 
 default write := {"allowed": false, "error": "not_authorized"}
@@ -49,19 +54,23 @@ write := {"allowed": false, "error": "invalid_request"} if {
 	not _valid_write_request
 }
 
-write := {"allowed": true, "result": pgauthz.write_tuple(_store, input.tuple, _performed_by)} if {
+# Authorized + well-formed → dispatch to the matching writer call.
+write := {"allowed": true, "result": _forward} if {
 	config.postgrest_writer_url
 	_write_authorized
 	_valid_write_request
-	input.operation == "write"
 }
 
-write := {"allowed": true, "result": pgauthz.delete_tuple(_store, input.tuple, _performed_by)} if {
-	config.postgrest_writer_url
-	_write_authorized
-	_valid_write_request
-	input.operation == "delete"
-}
+# Operation dispatch — each clause is selected by input.operation.
+_forward := pgauthz.write_tuple(_store, input.tuple, _performed_by) if input.operation == "write"
+
+_forward := pgauthz.delete_tuple(_store, input.tuple, _performed_by) if input.operation == "delete"
+
+_forward := pgauthz.write_tuples(_store, input.tuples, _performed_by) if input.operation == "write_batch"
+
+_forward := pgauthz.delete_tuples(_store, input.tuples, _performed_by) if input.operation == "delete_batch"
+
+_forward := pgauthz.delete_user_tuples(_store, input.user, _performed_by) if input.operation == "delete_user"
 
 # Authorized iff a valid token carries the configured writer role.
 _write_authorized if {
@@ -70,14 +79,32 @@ _write_authorized if {
 	authn_config.writer_role in authn.roles
 }
 
-# A well-formed request: a known operation and the required tuple fields.
+# A well-formed request, per operation.
 _valid_write_request if {
 	input.operation in {"write", "delete"}
-	input.tuple.user_type
-	input.tuple.user_id
-	input.tuple.relation
-	input.tuple.object_type
-	input.tuple.object_id
+	_valid_tuple(input.tuple)
+}
+
+_valid_write_request if {
+	input.operation in {"write_batch", "delete_batch"}
+	is_array(input.tuples)
+	count(input.tuples) > 0
+	every t in input.tuples { _valid_tuple(t) }
+}
+
+_valid_write_request if {
+	input.operation == "delete_user"
+	input.user.user_type
+	input.user.user_id
+}
+
+# The five identifying fields every tuple needs.
+_valid_tuple(t) if {
+	t.user_type
+	t.user_id
+	t.relation
+	t.object_type
+	t.object_id
 }
 
 _store := input.store if input.store

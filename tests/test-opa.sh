@@ -372,6 +372,70 @@ sleep 2
 check "Probe cannot read probe doc (after delete)" \
     "authz/allow" "$(read_probe_input)" "false"
 
+# --- Batch writes + user offboarding through OPA ---
+
+echo ""
+echo "==> Running OPA-fronted batch + offboarding checks..."
+echo ""
+
+PROBE_DOC_A="doc_ci_batch_a_001"
+PROBE_DOC_B="doc_ci_batch_b_001"
+
+# A write_batch/delete_batch request: two viewer tuples for the probe subject.
+batch_input() {   # <token> <operation>
+    jq -nc --arg tok "$1" --arg op "$2" --arg s "$PROBE_SUBJ" --arg a "$PROBE_DOC_A" --arg b "$PROBE_DOC_B" \
+        '{input:{token:$tok,store:"demo",operation:$op,tuples:[
+            {user_type:"internal_user",user_id:$s,relation:"viewer",object_type:"document",object_id:$a},
+            {user_type:"internal_user",user_id:$s,relation:"viewer",object_type:"document",object_id:$b}
+        ]}}'
+}
+
+# A delete_user (offboarding) request: remove every tuple for the probe subject.
+deluser_input() {   # <token>
+    jq -nc --arg tok "$1" --arg s "$PROBE_SUBJ" \
+        '{input:{token:$tok,store:"demo",operation:"delete_user",user:{user_type:"internal_user",user_id:$s}}}'
+}
+
+# An unauthenticated can_read check for a given probe document.
+read_doc_input() {   # <object_id>
+    jq -nc --arg s "$PROBE_SUBJ" --arg d "$1" \
+        '{input:{subject:{type:"internal_user",id:$s},action:"can_read",resource:{type:"document",id:$d}}}'
+}
+
+# Batch write: two tuples inserted (RETURNS the count).
+check_jq "Batch write inserts 2 viewer tuples" \
+    "authz/write" "$(batch_input "$TOKEN_WRITER" write_batch)" ".result.result.body" "2"
+
+sleep 2
+
+check "Probe can read batch doc A (after batch write)" "authz/allow" "$(read_doc_input "$PROBE_DOC_A")" "true"
+check "Probe can read batch doc B (after batch write)" "authz/allow" "$(read_doc_input "$PROBE_DOC_B")" "true"
+
+# Batch delete: both tuples removed.
+check_jq "Batch delete removes 2 viewer tuples" \
+    "authz/write" "$(batch_input "$TOKEN_WRITER" delete_batch)" ".result.result.body" "2"
+
+sleep 2
+
+check "Probe cannot read batch doc A (after batch delete)" "authz/allow" "$(read_doc_input "$PROBE_DOC_A")" "false"
+check "Probe cannot read batch doc B (after batch delete)" "authz/allow" "$(read_doc_input "$PROBE_DOC_B")" "false"
+
+# Offboarding: re-write the batch, then delete every tuple for the subject.
+check_jq "Re-write batch for delete_user test" \
+    "authz/write" "$(batch_input "$TOKEN_WRITER" write_batch)" ".result.allowed" "true"
+
+sleep 2
+
+check "Probe can read batch doc A (before delete_user)" "authz/allow" "$(read_doc_input "$PROBE_DOC_A")" "true"
+
+check_jq "delete_user removes all of the subject's tuples" \
+    "authz/write" "$(deluser_input "$TOKEN_WRITER")" ".result.allowed" "true"
+
+sleep 2
+
+check "Probe cannot read batch doc A (after delete_user)" "authz/allow" "$(read_doc_input "$PROBE_DOC_A")" "false"
+check "Probe cannot read batch doc B (after delete_user)" "authz/allow" "$(read_doc_input "$PROBE_DOC_B")" "false"
+
 # --- API security checks ---
 
 echo ""

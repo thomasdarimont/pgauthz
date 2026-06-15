@@ -233,7 +233,9 @@ ALTER FUNCTION authz.explain_access(text, text, text, text, text, text, jsonb, b
 ALTER FUNCTION authz.write_tuple(text, text, text, text, text, text, text, text, jsonb, text) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_tuple(text, text, text, text, text, text, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.write_tuples(text, authz.tuple_input[], text) SECURITY DEFINER;
+ALTER FUNCTION authz.write_tuples_jsonb(text, jsonb, text) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_tuples(text, authz.tuple_input[], text) SECURITY DEFINER;
+ALTER FUNCTION authz.delete_tuples_jsonb(text, jsonb, text) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_user_tuples(text, text, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.grant_namespace_access(text, text, text, boolean, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.revoke_namespace_access(text, text, text, boolean, boolean) SECURITY DEFINER;

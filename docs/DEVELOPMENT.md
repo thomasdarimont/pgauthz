@@ -46,7 +46,7 @@ SELECT authz.check_access('v2_experiment',
 ### Access Control Roles
 
 All `authz` functions have `EXECUTE` revoked from `PUBLIC`. Access is
-controlled through four application roles:
+controlled through these application roles:
 
 | Role | Can do | Inherits |
 |---|---|---|
@@ -632,121 +632,138 @@ err := pool.QueryRow(ctx,
 ).Scan(&allowed)
 ```
 
-## Write API (PostgREST)
+## Write API (OPA-fronted)
 
-The read path (OPA / AuthZEN) handles authorization checks. A separate
-**write path** handles tuple management — creating, updating, and deleting
-permission relationships, as well as model evolution. The write PostgREST
-instance connects directly to the PostgreSQL primary and uses JWT
-authentication for access control.
+The read path (OPA / AuthZEN) handles authorization checks. Tuple **writes**
+go through the **same front door**: OPA verifies the JWT, requires the
+configured writer role, and forwards the operation to a PostgREST **writer**
+instance that runs as a fixed `authz_writer` role and is reachable only by OPA.
 
 ```
-Read path (authorization checks):
-Application ──▶ OPA / AuthZEN ──▶ PostgREST (replica, port 3000)
+Read path  (authorization checks):
+Application ──▶ OPA / AuthZEN ──▶ PostgREST (reader, :3000) ──▶ PG
 
-Write path (tuple + model management):
-Application ──▶ Nginx gateway (:3001) ──▶ PostgREST-writer ──▶ PG primary
+Write path (tuple management):
+Application ──▶ OPA (:8181, POST /v1/data/authz/write)
+                 │ verifies JWT + writer role
+                 ▼
+              PostgREST-writer (fixed authz_writer, internal) ──▶ PG
 ```
 
-### Write API authentication
+There is **no** host-exposed write endpoint and **no** Nginx gateway — the
+writer has no host port and does no JWT verification of its own. (Earlier
+versions put an Nginx gateway + JWT-verifying writer on `:3001`; that's removed
+— see [ARCHITECTURE.md ADR-6](ARCHITECTURE.md).)
 
-The write PostgREST instance uses **JWT authentication** for role
-switching. Without a valid JWT, requests run as `api_anon` (read-only).
-With a JWT containing the appropriate `role` claim, PostgREST switches
-to that role for the duration of the request.
+### Write authorization
 
-#### Role hierarchy
+OPA verifies the JWT (ES256 against the issuer's JWKS, like the read path) and
+requires the configured **writer role** to appear in the JWT's **roles claim**.
+Both are configurable on the OPA service:
 
-| JWT `role` claim | Access level |
-|---|---|
-| *(no JWT)* | `api_anon` → `authz_reader` (read-only) |
-| `authz_writer` | Read + write/delete tuples |
-| `authz_admin` | Full control: store lifecycle, model management, tuples |
-| `authz_auditor` | Audit trail and time-travel queries |
+| Env var | Default | Meaning |
+|---|---|---|
+| `JWT_ROLES_CLAIM` | `roles` | Dotted path to the roles array in the token (e.g. `realm_access.roles` for Keycloak) |
+| `WRITER_ROLE` | `authz_writer` | Role value that authorizes tuple writes |
+| `POSTGREST_WRITER_URL` | *(unset)* | Writer instance OPA forwards to. **Unset ⇒ writes disabled** (read-only deployment) |
 
-#### JWT format
-
-The JWT must include a `role` claim matching one of the roles above.
-Use HS256 with the shared secret configured in `PGRST_JWT_SECRET`:
+The Postgres role is **not** taken from the token — the writer always runs as
+`authz_writer`, so a forged or over-scoped role claim cannot reach admin
+operations. A token that authorizes writes (with the default config):
 
 ```json
 {
-  "role": "authz_writer",
-  "iss": "my-backend",
-  "iat": 1710000000,
+  "preferred_username": "svc-docs",
+  "subject_type": "internal_user",
+  "roles": ["authz_writer"],
+  "iss": "https://auth.example.com",
+  "aud": "authz-api",
   "exp": 1710003600
 }
 ```
 
-**Custom role claim path:** If your IdP (e.g., Keycloak) puts the role
-in a different claim, configure `PGRST_JWT_ROLE_CLAIM_KEY` using
-jq-style syntax:
+### The write endpoint
 
-```yaml
-# Keycloak: role nested in realm_access.roles
-PGRST_JWT_ROLE_CLAIM_KEY: ".realm_access.roles[0]"
+`POST /v1/data/authz/write` with an OPA `{"input": {...}}` envelope. The
+`operation` field selects the action:
 
-# Custom claim
-PGRST_JWT_ROLE_CLAIM_KEY: ".db_role"
-```
-
-#### JWT secret / JWKS
-
-The `PGRST_JWT_SECRET` setting supports multiple formats:
-
-| Format | Example | Use case |
+| `operation` | Payload field | Maps to |
 |---|---|---|
-| Plain string | `"my-secret-at-least-32-chars..."` | HS256 symmetric (dev/internal) |
-| JWKS JSON | `'{"keys":[...]}'` | RS256/ES256 asymmetric |
-| File reference | `"@/etc/postgrest/jwks.json"` | JWKS from mounted file |
+| `write` / `delete` | `tuple` (object) | `write_tuple` / `delete_tuple` |
+| `write_batch` / `delete_batch` | `tuples` (array) | `write_tuples_jsonb` / `delete_tuples_jsonb` |
+| `delete_user` | `user` (`{user_type, user_id}`) | `delete_user_tuples` (offboarding) |
 
-For production with Keycloak, use asymmetric verification with the same
-JWKS that OPA uses for `authn.rego`. Note that PostgREST does not
-support fetching JWKS from a URL directly — sync the JWKS file from
-your IdP's endpoint or mount it from a secrets manager.
-
-#### Generating tokens
+A tuple object is `{user_type, user_id, relation, object_type, object_id}` plus
+optional `user_relation` and (writes only) `condition` + `condition_context`.
+`store` is optional (defaults to OPA's `DEFAULT_STORE`). The authenticated
+subject is recorded as the audit author (`performed_by`).
 
 ```bash
-# Using jwt-cli (https://github.com/mike-engel/jwt-cli)
-export PGRST_JWT_SECRET="change-me-at-least-32-characters-long"
+TOKEN=...   # JWT whose roles claim contains authz_writer
 
-jwt encode --secret "$PGRST_JWT_SECRET" \
-  '{"role":"authz_writer","exp":'$(($(date +%s)+3600))'}'
+# Single write
+curl -sX POST http://localhost:8181/v1/data/authz/write \
+  -H "Content-Type: application/json" \
+  -d '{"input":{"token":"'"$TOKEN"'","store":"demo","operation":"write",
+        "tuple":{"user_type":"internal_user","user_id":"alice","relation":"viewer",
+                 "object_type":"document","object_id":"doc_new_001"}}}'
+# => {"result":{"allowed":true,"result":{"status":200,"body":true}}}
+
+# Batch write (body = number of tuples inserted)
+curl -sX POST http://localhost:8181/v1/data/authz/write \
+  -H "Content-Type: application/json" \
+  -d '{"input":{"token":"'"$TOKEN"'","store":"demo","operation":"write_batch",
+        "tuples":[
+          {"user_type":"internal_user","user_id":"alice","relation":"viewer","object_type":"document","object_id":"doc_001"},
+          {"user_type":"internal_user","user_id":"bob","relation":"editor","object_type":"document","object_id":"doc_001"}
+        ]}}'
+# => {"result":{"allowed":true,"result":{"status":200,"body":2}}}
+
+# Offboarding — remove every tuple for a subject
+curl -sX POST http://localhost:8181/v1/data/authz/write \
+  -H "Content-Type: application/json" \
+  -d '{"input":{"token":"'"$TOKEN"'","store":"demo","operation":"delete_user",
+        "user":{"user_type":"internal_user","user_id":"alice"}}}'
 ```
 
-#### Docker Compose configuration
+Outcomes:
 
-The write API consists of two services (pre-configured but commented out
-in `compose.yml`). Uncomment to enable:
+| Result | Meaning |
+|---|---|
+| `{"allowed":true,"result":{"status":200,"body":…}}` | applied; `body` is the function return (boolean, or the affected count for batch) |
+| `{"allowed":false,"error":"not_authorized"}` | missing/invalid token, or roles claim lacks `WRITER_ROLE` |
+| `{"allowed":false,"error":"invalid_request"}` | authorized, but malformed `operation` / `tuple` / `tuples` / `user` |
+| `{"allowed":false,"error":"writes_disabled"}` | no `POSTGREST_WRITER_URL` configured (read-only deployment) |
+
+### Admin / model operations
+
+Store lifecycle (`create_store`/`delete_store`), model evolution (`model_*`),
+namespace management, and OpenFGA import are **not** exposed over OPA — they
+require `authz_admin` and are run via **direct SQL** (or your own admin
+tooling), not the public write API. See [direct SQL](#via-direct-sql-jdbc).
+
+### Compose configuration
+
+The writer + OPA wiring ships **enabled** in `compose.yml`:
 
 ```yaml
 postgrest-writer:
   image: postgrest/postgrest:v14.13
   environment:
-    PGRST_DB_URI: postgres://authz:authz@authz-db:5432/authz
-    PGRST_DB_ANON_ROLE: api_anon
+    PGRST_DB_URI: postgres://authz_authenticator:${AUTHZ_AUTHENTICATOR_PASSWORD:-authz}@authz-db:5432/authz
+    PGRST_DB_ANON_ROLE: authz_writer   # fixed role; NO JWT verification
     PGRST_DB_SCHEMAS: authz
     PGRST_DB_POOL: "20"
-    PGRST_DB_POOL_ACQUISITION_TIMEOUT: "10"
     PGRST_SERVER_PORT: "3001"
-    PGRST_JWT_SECRET: "${PGRST_JWT_SECRET}"
   expose:
-    - "3001"       # internal only — not exposed to host
+    - "3001"            # internal only — reachable solely by OPA
 
-writer-gateway:
-  image: nginx:1-alpine
-  ports:
-    - "3001:3001"  # external entry point
-  volumes:
-    - ./gateway/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-  depends_on:
-    - postgrest-writer
+opa:
+  environment:
+    POSTGREST_WRITER_URL: "http://postgrest-writer:3001"
+    # JWT_ROLES_CLAIM: "realm_access.roles"   # default: roles
+    # WRITER_ROLE: "authz_writer"             # default
 ```
-
-The Nginx gateway is the only externally accessible entry point. It
-forwards only `POST /rpc/*` to PostgREST and returns a generic 404 for
-everything else, preventing schema information leakage.
 
 > **Serialization failures under concurrent writes.** As of PostgREST 14,
 > PostgREST no longer automatically retries transactions that fail with a
@@ -757,99 +774,30 @@ everything else, preventing schema information leakage.
 > READ` replicas) should be prepared to catch `40001` and retry the call
 > itself. (Earlier PostgREST versions retried transparently.)
 
-### Writer endpoints
+### Operations reference
 
-These require a JWT with `"role": "authz_writer"` (or `authz_admin`).
+All tuple writes go through `POST /v1/data/authz/write` (above). The `operation`
+maps to a SQL function:
 
-#### `POST /rpc/write_tuple` — single tuple
+| Operation | SQL function | `body` returns |
+|---|---|---|
+| `write` | `write_tuple` | boolean (created?) |
+| `delete` | `delete_tuple` | boolean (deleted?) |
+| `write_batch` | `write_tuples_jsonb` | count inserted (duplicates skipped) |
+| `delete_batch` | `delete_tuples_jsonb` | count deleted |
+| `delete_user` | `delete_user_tuples` | count removed |
 
-```bash
-curl -X POST http://localhost:3001/rpc/write_tuple \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "p_store": "demo",
-    "p_user_type": "internal_user",
-    "p_user_id": "alice",
-    "p_relation": "viewer",
-    "p_object_type": "document",
-    "p_object_id": "doc_new_001",
-    "p_performed_by": "my-service"
-  }'
-```
+**Admin / model operations** require `authz_admin` and are **direct SQL only**
+(not exposed over OPA):
 
-#### `POST /rpc/write_tuples_jsonb` — batch write
-
-```bash
-curl -X POST http://localhost:3001/rpc/write_tuples_jsonb \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "p_store": "demo",
-    "p_tuples": [
-      {"user_type":"internal_user","user_id":"alice","relation":"viewer","object_type":"document","object_id":"doc_001"},
-      {"user_type":"internal_user","user_id":"bob","relation":"editor","object_type":"document","object_id":"doc_001"}
-    ],
-    "p_performed_by": "my-service"
-  }'
-```
-
-Returns the number of tuples actually inserted (duplicates are skipped).
-
-#### `POST /rpc/delete_tuple` — single delete
-
-```bash
-curl -X POST http://localhost:3001/rpc/delete_tuple \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "p_store": "demo",
-    "p_user_type": "internal_user",
-    "p_user_id": "alice",
-    "p_relation": "viewer",
-    "p_object_type": "document",
-    "p_object_id": "doc_new_001",
-    "p_performed_by": "my-service"
-  }'
-```
-
-#### `POST /rpc/delete_tuples_jsonb` — batch delete
-
-Same format as `write_tuples_jsonb`. Returns the number of tuples actually
-deleted.
-
-#### `POST /rpc/delete_user_tuples` — revoke all access for a user
-
-```bash
-curl -X POST http://localhost:3001/rpc/delete_user_tuples \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "p_store": "demo",
-    "p_user_type": "internal_user",
-    "p_user_id": "alice",
-    "p_performed_by": "offboarding-service"
-  }'
-```
-
-### Admin endpoints
-
-These require a JWT with `"role": "authz_admin"`.
-
-| Endpoint | Purpose |
+| Function | Purpose |
 |---|---|
-| `POST /rpc/create_store` | Create a new authorization store |
-| `POST /rpc/delete_store` | Delete a store and all its data |
-| `POST /rpc/model_register_type` | Register a new object type |
-| `POST /rpc/model_register_relation` | Register a new relation |
-| `POST /rpc/model_add_rule` | Add a single model rule (idempotent) |
-| `POST /rpc/model_remove_rule` | Remove a single model rule by ID |
-| `POST /rpc/model_remove_rules` | Remove all rules for a (type, relation) |
-| `POST /rpc/import_openfga_model` | Import an OpenFGA model (JSON) |
-| `POST /rpc/import_openfga_tuples` | Import OpenFGA tuples (JSON) |
-| `POST /rpc/grant_namespace_access` | Grant namespace access to a role |
-| `POST /rpc/revoke_namespace_access` | Revoke namespace access |
-| `POST /rpc/find_redundant_tuples` | Find tuples that are already implied |
+| `create_store` / `delete_store` | Store lifecycle |
+| `model_register_type` / `model_register_relation` | Register types / relations |
+| `model_add_rule` / `model_remove_rule` / `model_remove_rules` | Model-rule management |
+| `import_openfga_model` / `import_openfga_tuples` | OpenFGA import |
+| `grant_namespace_access` / `revoke_namespace_access` | Namespace access |
+| `find_redundant_tuples` / `cleanup_redundant_tuples` | Redundant-tuple maintenance |
 
 ### Integration patterns
 
@@ -862,7 +810,7 @@ Application:
   1. BEGIN
   2. INSERT INTO documents (id, ...) VALUES ('doc_123', ...);
   3. COMMIT
-  4. POST /rpc/write_tuple → PostgREST-writer → PG primary
+  4. POST /v1/data/authz/write → OPA → writer → PG primary
 ```
 
 Simple, but if step 4 fails, the document exists without the permission
@@ -882,7 +830,7 @@ Application (single transaction):
   COMMIT;
 
 Outbox processor (async):
-  3. Read from outbox → POST to PostgREST-writer → mark as processed
+  3. Read from outbox → POST /v1/data/authz/write (OPA) → mark as processed
 ```
 
 No distributed transactions. The outbox processor retries on failure.
@@ -894,7 +842,7 @@ For event-driven architectures, publish authorization changes to a topic.
 A consumer calls the write API:
 
 ```
-Application ──▶ Kafka topic ──▶ Consumer ──▶ PostgREST-writer ──▶ PG primary
+Application ──▶ Kafka topic ──▶ Consumer ──▶ OPA ──▶ writer ──▶ PG primary
 ```
 
 Partition by `(object_type, object_id)` to preserve ordering per
@@ -925,10 +873,12 @@ If a check must reflect a just-committed change, either:
 ### Writing tuples from Spring Boot
 
 When your application creates resources or changes ownership, it needs to
-write authorization tuples. Use the PostgREST writer API (JWT-authenticated)
-or direct SQL.
+write authorization tuples. Use the OPA write endpoint (which verifies the JWT
+and forwards to the writer) or direct SQL.
 
-**Via PostgREST writer API (HTTP):**
+**Via OPA (HTTP):** POST `/v1/data/authz/write` with an `{"input": {...}}`
+envelope. Pass the caller's JWT (its roles claim must contain the writer role);
+OPA records the subject as the audit author.
 
 ```java
 @Component
@@ -936,81 +886,69 @@ public class AuthZWriter {
 
     private final RestClient rest;
 
-    public AuthZWriter(@Value("${authz.writer-url}") String writerUrl,
-                       @Value("${authz.writer-token}") String token) {
-        this.rest = RestClient.builder()
-            .baseUrl(writerUrl)
-            .defaultHeader("Authorization", "Bearer " + token)
-            .defaultHeader("Content-Type", "application/json")
-            .build();
+    public AuthZWriter(@Value("${authz.opa-url}") String opaUrl) {
+        this.rest = RestClient.builder().baseUrl(opaUrl).build();
     }
 
     /** Grant a relation on a resource to a subject. */
-    public void writeTuple(String store, String userType, String userId,
-                           String relation, String objectType, String objectId,
-                           String performedBy) {
-        rest.post()
-            .uri("/rpc/write_tuple")
-            .body(Map.of(
-                "p_store", store,
-                "p_user_type", userType,
-                "p_user_id", userId,
-                "p_relation", relation,
-                "p_object_type", objectType,
-                "p_object_id", objectId,
-                "p_performed_by", performedBy
-            ))
-            .retrieve()
-            .toBodilessEntity();
+    public void writeTuple(String token, String store, String userType, String userId,
+                           String relation, String objectType, String objectId) {
+        send(token, store, "write", "tuple", tuple(userType, userId, relation, objectType, objectId));
     }
 
-    /** Write multiple tuples in a single round-trip (uses the _jsonb variant). */
-    public int writeTuples(String store, List<Map<String, String>> tuples,
-                           String performedBy) {
-        var resp = rest.post()
-            .uri("/rpc/write_tuples_jsonb")
-            .body(Map.of(
-                "p_store", store,
-                "p_tuples", tuples,
-                "p_performed_by", performedBy
-            ))
-            .retrieve()
-            .body(Integer.class);
-        return resp != null ? resp : 0;
+    /** Write multiple tuples in a single round-trip. Returns the number inserted. */
+    public int writeTuples(String token, String store, List<Map<String, String>> tuples) {
+        return count(send(token, store, "write_batch", "tuples", tuples));
     }
 
     /** Revoke a relation. */
-    public void deleteTuple(String store, String userType, String userId,
-                            String relation, String objectType, String objectId,
-                            String performedBy) {
-        rest.post()
-            .uri("/rpc/delete_tuple")
-            .body(Map.of(
-                "p_store", store,
-                "p_user_type", userType,
-                "p_user_id", userId,
-                "p_relation", relation,
-                "p_object_type", objectType,
-                "p_object_id", objectId,
-                "p_performed_by", performedBy
-            ))
-            .retrieve()
-            .toBodilessEntity();
+    public void deleteTuple(String token, String store, String userType, String userId,
+                            String relation, String objectType, String objectId) {
+        send(token, store, "delete", "tuple", tuple(userType, userId, relation, objectType, objectId));
     }
 
     /** Remove all tuples for a user (offboarding). */
-    public void deleteUserTuples(String store, String userType, String userId,
-                                 String performedBy) {
-        rest.post()
-            .uri("/rpc/delete_user_tuples")
-            .body(Map.of(
-                "p_store", store,
-                "p_user_type", userType,
-                "p_user_id", userId,
-                "p_performed_by", performedBy
-            ))
+    public void deleteUserTuples(String token, String store, String userType, String userId) {
+        send(token, store, "delete_user", "user",
+             Map.of("user_type", userType, "user_id", userId));
+    }
+
+    private static Map<String, String> tuple(String userType, String userId, String relation,
+                                              String objectType, String objectId) {
+        return Map.of("user_type", userType, "user_id", userId, "relation", relation,
+                      "object_type", objectType, "object_id", objectId);
+    }
+
+    private WriteResponse send(String token, String store, String operation,
+                               String payloadKey, Object payload) {
+        var input = new HashMap<String, Object>();
+        input.put("token", token);
+        input.put("store", store);
+        input.put("operation", operation);
+        input.put(payloadKey, payload);
+
+        var resp = rest.post()
+            .uri("/v1/data/authz/write")
+            .body(Map.of("input", input))
             .retrieve()
-            .toBodilessEntity();
+            .body(WriteResponse.class);
+
+        if (resp == null || resp.result() == null || !resp.result().allowed()) {
+            throw new IllegalStateException("authz write denied: " +
+                (resp != null && resp.result() != null ? resp.result().error() : "no response"));
+        }
+        return resp;
+    }
+
+    private int count(WriteResponse resp) {
+        var fwd = resp.result().result();
+        return fwd != null && fwd.body() instanceof Number n ? n.intValue() : 0;
+    }
+
+    // OPA wraps the policy decision under "result".
+    record WriteResponse(Decision result) {
+        record Decision(boolean allowed, String error, Forward result) {}
+        record Forward(int status, Object body) {}
     }
 }
 ```
@@ -1024,38 +962,35 @@ public class DocumentService {
     private final AuthZWriter authzWriter;
     private final DocumentRepository repo;
 
-    /** Create a document and grant the creator edit + read access. */
+    /** Create a document and grant the creator edit + read access.
+     *  `token` is the caller's JWT (its roles claim carries the writer role). */
     @Transactional
-    public Document create(String title, String creatorId) {
+    public Document create(String token, String title, String creatorId) {
         Document doc = repo.save(new Document(title));
 
         // Grant the creator ownership via authorization tuples
-        authzWriter.writeTuples("demo", List.of(
+        authzWriter.writeTuples(token, "demo", List.of(
             Map.of("user_type", "internal_user", "user_id", creatorId,
                    "relation", "owner", "object_type", "document",
                    "object_id", doc.getId()),
             Map.of("user_type", "internal_user", "user_id", creatorId,
                    "relation", "editor", "object_type", "document",
                    "object_id", doc.getId())
-        ), "document-service");
+        ));
 
         return doc;
     }
 
     /** Share a document with another user. */
-    public void share(String docId, String userId, String relation,
-                      String sharedBy) {
-        authzWriter.writeTuple("demo",
-            "internal_user", userId, relation, "document", docId,
-            sharedBy);
+    public void share(String token, String docId, String userId, String relation) {
+        authzWriter.writeTuple(token, "demo",
+            "internal_user", userId, relation, "document", docId);
     }
 
     /** Revoke a user's access to a document. */
-    public void unshare(String docId, String userId, String relation,
-                        String revokedBy) {
-        authzWriter.deleteTuple("demo",
-            "internal_user", userId, relation, "document", docId,
-            revokedBy);
+    public void unshare(String token, String docId, String userId, String relation) {
+        authzWriter.deleteTuple(token, "demo",
+            "internal_user", userId, relation, "document", docId);
     }
 }
 ```
@@ -1064,9 +999,9 @@ Configure in `application.yml`:
 
 ```yaml
 authz:
-  url: http://localhost:8090          # authzen-direct (read checks)
-  writer-url: http://localhost:3001   # PostgREST writer (via gateway)
-  writer-token: ${AUTHZ_WRITER_TOKEN} # JWT with role=authz_writer
+  opa-url: http://localhost:8181      # OPA — read checks AND the write endpoint
+  # AuthZEN read API (alternative to calling OPA directly):
+  #   http://localhost:8090 (authzen-direct) / :8091 (authzen-opa)
 ```
 
 **Via direct SQL (JDBC):**
