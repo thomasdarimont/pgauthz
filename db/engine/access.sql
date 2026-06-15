@@ -522,7 +522,7 @@ BEGIN
                     FROM authz.models m
                    WHERE m.store_id          = v_store_id
                      AND m.object_type       = r.object_type
-                     AND m.rule_type         = 2  -- computed
+                     AND m.rule_type         = authz._rel_computed()
                      AND m.computed_relation = r.relation
                 UNION ALL
                   -- userset: tuples granting (A#r) something on B
@@ -540,7 +540,7 @@ BEGIN
                     JOIN authz.models m
                       ON m.store_id          = v_store_id
                      AND m.object_type       = t.object_type
-                     AND m.rule_type         = 3  -- ttu
+                     AND m.rule_type         = authz._rel_ttu()
                      AND m.tupleset_relation = t.relation
                      AND m.tupleset_computed = r.relation
                    WHERE t.store_id      = v_store_id
@@ -615,7 +615,7 @@ BEGIN
                     FROM authz.models m
                    WHERE m.store_id          = v_store_id
                      AND m.object_type       = r.object_type
-                     AND m.rule_type         = 2  -- computed
+                     AND m.rule_type         = authz._rel_computed()
                      AND m.relation          = r.relation
                      AND m.computed_relation IS NOT NULL
                 UNION ALL
@@ -639,7 +639,7 @@ BEGIN
                      AND t.user_relation IS NULL
                    WHERE m.store_id    = v_store_id
                      AND m.object_type = r.object_type
-                     AND m.rule_type   = 3  -- ttu
+                     AND m.rule_type   = authz._rel_ttu()
                      AND m.relation    = r.relation
               ) AS e (object_type, object_id, relation)
         )
