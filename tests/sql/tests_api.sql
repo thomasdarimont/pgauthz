@@ -401,17 +401,24 @@ SELECT * FROM _test_teardown_api();
 -- audit_check_access / audit_list_actions (time-travel) tests
 -- ================================================================
 
--- api_24-28: time-travel tests (must share pg_sleep timing, kept in one block)
+-- api_24-28: time-travel tests. Versioning is transactional, so the write
+-- and the delete go in SEPARATE transactions with the "had access" marker
+-- captured between them. (A write+delete in one transaction would be atomic
+-- — the tuple would never be observable at any timestamp.)
+--   tx1: grant access
+DO $$
+BEGIN
+    PERFORM _test_setup_api();
+    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc_tt');
+END;
+$$;
+SELECT set_config('test.had_access_at', clock_timestamp()::text, false);
+--   tx2: revoke, then time-travel around the marker
 DO $$
 DECLARE
     v_bool    boolean;
     v_actions text[];
 BEGIN
-    PERFORM _test_setup_api();
-
-    PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc_tt');
-    PERFORM set_config('test.had_access_at', clock_timestamp()::text, false);
-    PERFORM pg_sleep(0.1);
     PERFORM authz.delete_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc_tt');
 
     v_bool := authz.audit_check_access('test_api',
@@ -1334,9 +1341,10 @@ SELECT * FROM _test_teardown_api();
 
 -- ================================================================
 -- Audit replay ordering: when two events for the same tuple carry an
--- identical performed_at timestamp (clock_timestamp() has finite
--- resolution), the later-inserted event must win during time-travel
--- reconstruction — not an arbitrary pick.
+-- identical performed_at timestamp — the normal case now that audit rows
+-- are stamped with the transaction timestamp, so all events in one
+-- transaction tie — the later-inserted event (higher seq) must win during
+-- time-travel reconstruction, not an arbitrary pick.
 --
 -- The tuple events are backdated, but the model is versioned too, so we
 -- probe at clock_timestamp() (after the model was created in setup) —

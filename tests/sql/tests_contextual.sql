@@ -416,23 +416,29 @@ $$;
 SELECT * FROM _test_teardown_contextual();
 
 -- ctx_21: condition expression versioning — editing a condition's expression
--- in place must NOT rewrite historical answers. Time-travel evaluates the
--- expression that was in effect at p_at, reconstructed from conditions_audit.
+-- in a LATER transaction must NOT rewrite historical answers. Time-travel
+-- evaluates the expression in effect at p_at, reconstructed from
+-- conditions_audit. Versioning is transactional, so the original grant and
+-- the edit are in separate transactions with the marker captured between
+-- (an in-place edit in the SAME transaction would be atomic — unobservable).
+--   tx1: permissive condition + a grant that uses it
 DO $$
-DECLARE v_t1 timestamptz;
 BEGIN
     PERFORM _test_setup_contextual();
-    -- A permissive condition and a grant that uses it.
     INSERT INTO authz.conditions (store_id, name, expression, required_context)
     VALUES (authz._s('test_contextual'), 'always', 'true', NULL);
     PERFORM authz.write_tuple('test_contextual',
         'user', 'zoe', 'viewer', 'doc', 'doc1', p_condition => 'always');
 
-    v_t1 := clock_timestamp();
     PERFORM _test_assert('ctx_21a_live_allowed_before_edit',
         authz.check_access('test_contextual','user','zoe','viewer','doc','doc1')::text, 'true');
-
-    -- Tighten the condition in place to always-false.
+END;
+$$;
+SELECT set_config('test.ctx21_t1', clock_timestamp()::text, false);
+--   tx2: tighten the condition in place to always-false
+DO $$
+DECLARE v_t1 timestamptz := current_setting('test.ctx21_t1')::timestamptz;
+BEGIN
     UPDATE authz.conditions SET expression = 'false'
      WHERE store_id = authz._s('test_contextual') AND name = 'always';
 

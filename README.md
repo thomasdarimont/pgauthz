@@ -382,6 +382,14 @@ SELECT authz.audit_check_access('demo',
 > tuples, rules, *and* condition expressions as they were then — adding or
 > removing a rule, or editing a condition's expression in place, does not
 > rewrite past answers.
+>
+> **Versioning is transactional.** Audit rows are stamped with the
+> *transaction* timestamp, so every change committed in one transaction
+> shares a single version and time-travel sees that transaction's effect
+> atomically — it can never land in the middle of a multi-step edit. To
+> group related changes into one version, make them in one transaction
+> (`BEGIN; … COMMIT;`); to make them separately observable in history,
+> commit them separately.
 
 ### audit_list_user / audit_list_object — Audit trail queries
 

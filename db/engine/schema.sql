@@ -203,10 +203,12 @@ CREATE INDEX idx_tuples_user
 -- and easy retention management (DROP old partitions instead of DELETE).
 CREATE TABLE authz.tuples_audit (
     id                uuid NOT NULL DEFAULT gen_random_uuid(),
-    -- Monotonic event order. performed_at (clock_timestamp) has finite
-    -- resolution, so two events for the same tuple can tie on it; seq
-    -- breaks the tie so time-travel replay always applies the
-    -- later-recorded event last.
+    -- Monotonic event order. performed_at is the TRANSACTION timestamp
+    -- (transaction_timestamp), so every change in one transaction shares
+    -- one value — time-travel sees a transaction's effect atomically,
+    -- never a partial mid-transaction state. seq then orders the events
+    -- within that shared timestamp, so replay always applies the
+    -- later-recorded event last (the last-event-wins tiebreaker).
     seq               bigint NOT NULL GENERATED ALWAYS AS IDENTITY,
     action            text NOT NULL,  -- 'INSERT' or 'DELETE'
     performed_at      timestamptz NOT NULL DEFAULT now(),
@@ -268,9 +270,9 @@ BEGIN
             action, performed_at, performed_by, store_id, user_type, user_id, user_relation,
             relation, object_type, object_id, condition_id, condition_context
         ) VALUES
-            ('DELETE', clock_timestamp(), v_performed_by, OLD.store_id, OLD.user_type, OLD.user_id, OLD.user_relation,
+            ('DELETE', transaction_timestamp(), v_performed_by, OLD.store_id, OLD.user_type, OLD.user_id, OLD.user_relation,
              OLD.relation, OLD.object_type, OLD.object_id, OLD.condition_id, OLD.condition_context),
-            ('INSERT', clock_timestamp(), v_performed_by, NEW.store_id, NEW.user_type, NEW.user_id, NEW.user_relation,
+            ('INSERT', transaction_timestamp(), v_performed_by, NEW.store_id, NEW.user_type, NEW.user_id, NEW.user_relation,
              NEW.relation, NEW.object_type, NEW.object_id, NEW.condition_id, NEW.condition_context);
         RETURN NEW;
     END IF;
@@ -287,7 +289,7 @@ BEGIN
         action, performed_at, performed_by, store_id, user_type, user_id, user_relation,
         relation, object_type, object_id, condition_id, condition_context
     ) VALUES (
-        TG_OP, clock_timestamp(), v_performed_by, v_row.store_id, v_row.user_type, v_row.user_id, v_row.user_relation,
+        TG_OP, transaction_timestamp(), v_performed_by, v_row.store_id, v_row.user_type, v_row.user_id, v_row.user_relation,
         v_row.relation, v_row.object_type, v_row.object_id, v_row.condition_id, v_row.condition_context
     );
 
@@ -527,10 +529,10 @@ BEGIN
             rule_type, computed_relation, tupleset_relation, tupleset_computed,
             group_id, group_op, negated, allow_object_wildcard
         ) VALUES
-            ('DELETE', clock_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.object_type, OLD.relation,
+            ('DELETE', transaction_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.object_type, OLD.relation,
              OLD.rule_type, OLD.computed_relation, OLD.tupleset_relation, OLD.tupleset_computed,
              OLD.group_id, OLD.group_op, OLD.negated, OLD.allow_object_wildcard),
-            ('INSERT', clock_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.object_type, NEW.relation,
+            ('INSERT', transaction_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.object_type, NEW.relation,
              NEW.rule_type, NEW.computed_relation, NEW.tupleset_relation, NEW.tupleset_computed,
              NEW.group_id, NEW.group_op, NEW.negated, NEW.allow_object_wildcard);
         RETURN NEW;
@@ -540,7 +542,7 @@ BEGIN
             rule_type, computed_relation, tupleset_relation, tupleset_computed,
             group_id, group_op, negated, allow_object_wildcard
         ) VALUES (
-            'INSERT', clock_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.object_type, NEW.relation,
+            'INSERT', transaction_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.object_type, NEW.relation,
             NEW.rule_type, NEW.computed_relation, NEW.tupleset_relation, NEW.tupleset_computed,
             NEW.group_id, NEW.group_op, NEW.negated, NEW.allow_object_wildcard);
         RETURN NEW;
@@ -550,7 +552,7 @@ BEGIN
             rule_type, computed_relation, tupleset_relation, tupleset_computed,
             group_id, group_op, negated, allow_object_wildcard
         ) VALUES (
-            'DELETE', clock_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.object_type, OLD.relation,
+            'DELETE', transaction_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.object_type, OLD.relation,
             OLD.rule_type, OLD.computed_relation, OLD.tupleset_relation, OLD.tupleset_computed,
             OLD.group_id, OLD.group_op, OLD.negated, OLD.allow_object_wildcard);
         RETURN OLD;
@@ -609,20 +611,20 @@ BEGIN
         INSERT INTO authz.conditions_audit (
             action, performed_at, performed_by, condition_id, store_id, name, expression, required_context
         ) VALUES
-            ('DELETE', clock_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.name, OLD.expression, OLD.required_context),
-            ('INSERT', clock_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.name, NEW.expression, NEW.required_context);
+            ('DELETE', transaction_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.name, OLD.expression, OLD.required_context),
+            ('INSERT', transaction_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.name, NEW.expression, NEW.required_context);
         RETURN NEW;
     ELSIF TG_OP = 'INSERT' THEN
         INSERT INTO authz.conditions_audit (
             action, performed_at, performed_by, condition_id, store_id, name, expression, required_context
         ) VALUES
-            ('INSERT', clock_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.name, NEW.expression, NEW.required_context);
+            ('INSERT', transaction_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.name, NEW.expression, NEW.required_context);
         RETURN NEW;
     ELSIF TG_OP = 'DELETE' THEN
         INSERT INTO authz.conditions_audit (
             action, performed_at, performed_by, condition_id, store_id, name, expression, required_context
         ) VALUES
-            ('DELETE', clock_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.name, OLD.expression, OLD.required_context);
+            ('DELETE', transaction_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.name, OLD.expression, OLD.required_context);
         RETURN OLD;
     END IF;
 

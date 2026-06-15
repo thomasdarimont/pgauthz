@@ -554,6 +554,7 @@ concrete integration examples.
 - **Monthly RANGE partitioning:** efficient time-range queries, easy retention (`DROP PARTITION`)
 - **`performed_by` tracking:** application-level user identity (distinct from DB role), transaction-local via `set_config`
 - **Time-travel queries:** reconstruct permission state at any past timestamp by replaying the audit log
+- **Transactional versioning:** audit rows carry the transaction timestamp (`transaction_timestamp()`), so all changes in one transaction share one version and time-travel applies a transaction's effect atomically — never a partial, mid-transaction state. The `seq` identity orders events that share a timestamp (last-write-wins replay). Group related changes in one transaction to give them one version
 - **Audit suppression control:** only `authz_admin` can suppress audit logging (for maintenance operations)
 
 ### Testability
