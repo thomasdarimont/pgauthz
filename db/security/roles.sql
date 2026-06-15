@@ -86,6 +86,21 @@ GRANT authz_auditor TO authz_authenticator;
 GRANT authz_writer  TO authz_authenticator;
 GRANT authz_admin   TO authz_authenticator;
 
+-- AuthZEN Go service (authzen-direct): connects directly and calls the
+-- read API (evaluation + search). A dedicated non-superuser LOGIN role
+-- that INHERITs authz_reader — read-only, no SET ROLE in the service.
+-- Created in db/security/initdb on first boot; created here too so
+-- existing databases pick it up on re-init.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authzen_direct') THEN
+        -- Dev password — override in production deployments.
+        CREATE ROLE authzen_direct LOGIN PASSWORD 'authz';
+    END IF;
+END
+$$;
+GRANT authz_reader TO authzen_direct;
+
 -- All roles need schema access.
 GRANT USAGE ON SCHEMA authz TO authz_auditor, authz_reader, authz_writer, authz_admin;
 

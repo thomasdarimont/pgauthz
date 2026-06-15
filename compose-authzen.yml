@@ -9,7 +9,10 @@ services:
       - "8090:8080"
     environment:
       LISTEN_ADDR: ":8080"
-      DATABASE_URL: "postgres://authz:authz@authz-db:5432/authz"
+      # Dedicated non-superuser, read-only role (inherits authz_reader),
+      # created by db/security/initdb on first init. Never use the authz
+      # superuser here.
+      DATABASE_URL: "postgres://authzen_direct:authz@authz-db:5432/authz"
       DB_POOL_MAX: "25"
       JWKS_FILE: "/jwks/jwks.json"
       JWT_ISSUER: "${JWT_ISSUER:-https://auth.example.com}"
@@ -17,6 +20,9 @@ services:
       # REQUIRED_SCOPE: "authz:read"  # If set, JWT must contain this scope
       DEFAULT_STORE: "${DEFAULT_STORE:-demo}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
+    # Keep retrying until the authzen_direct role exists (created by
+    # db/security/initdb on first boot, or by init.sh on re-init).
+    restart: unless-stopped
     volumes:
       - ./opa/data:/jwks:ro
     depends_on:
