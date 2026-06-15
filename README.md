@@ -1,5 +1,7 @@
 # PostgreSQL Authorization Engine
 
+[![CI](https://github.com/thomasdarimont/pgauthz/actions/workflows/ci.yml/badge.svg)](https://github.com/thomasdarimont/pgauthz/actions/workflows/ci.yml)
+
 A pure PostgreSQL implementation of the [Google Zanzibar](https://research.google/pubs/zanzibar-googles-consistent-global-authorization-system/) /
 [OpenFGA](https://openfga.dev/) authorization model.
 No external authorization service needed — just SQL functions

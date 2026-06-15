@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build + full-stack tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Host Go is used by tests/test-go.sh (AuthZEN unit tests); the AuthZEN
+      # service images themselves build inside Docker via docker compose.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: authzen/go.mod
+          cache-dependency-path: authzen/go.sum
+
+      # Fast pre-check: surface Go compile/vet errors before the slow stack.
+      - name: Go build + vet
+        working-directory: authzen
+        run: |
+          go build ./...
+          go vet ./...
+
+      # init.sh sources env.sh, which brings the full stack up
+      # (docker compose up --build --wait) and then loads schema/roles/etc.
+      - name: Initialize database and bring up the stack
+        run: ./init.sh
+
+      # SQL suites + OPA + AuthZEN integration + AuthZEN Go unit tests.
+      - name: Run all tests
+        run: ./tests/test-all.sh
+
+      - name: Service logs on failure
+        if: failure()
+        run: docker compose -f compose.yml -f compose-authzen.yml logs --no-color --tail=300
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f compose.yml -f compose-authzen.yml down -v || true
