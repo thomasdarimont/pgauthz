@@ -79,8 +79,13 @@ BEGIN
             v_key      text;
         BEGIN
             SELECT id, required_context
-              INTO STRICT v_condition_id, v_required
+              INTO v_condition_id, v_required
               FROM authz.conditions WHERE store_id = v_store_id AND name = p_condition;
+
+            IF NOT FOUND THEN
+                RAISE EXCEPTION 'Unknown condition "%" in store "%"', p_condition, p_store
+                    USING HINT = 'Define it in authz.conditions, or omit p_condition';
+            END IF;
 
             -- Validate required stored context keys
             IF v_required IS NOT NULL AND v_required ? 'stored' THEN

@@ -392,6 +392,29 @@ END;
 $$;
 SELECT * FROM _test_teardown_contextual();
 
+-- ctx_20: write_tuple with an unknown condition raises a clear, named error
+-- naming the condition and store — not the opaque "query returned no rows"
+-- that a bare INTO STRICT miss would produce.
+DO $$
+DECLARE v_msg text; v_raised boolean := false;
+BEGIN
+    PERFORM _test_setup_contextual();
+    BEGIN
+        PERFORM authz.write_tuple('test_contextual',
+            'user', 'bob', 'viewer', 'doc', 'doc1',
+            p_condition => 'no_such_condition',
+            p_condition_context => '{}'::jsonb);
+    EXCEPTION WHEN OTHERS THEN
+        v_raised := true;
+        v_msg := SQLERRM;
+    END;
+    PERFORM _test_assert('ctx_20a_unknown_condition_raises', v_raised::text, 'true');
+    PERFORM _test_assert('ctx_20b_message_names_condition',
+        (v_msg LIKE '%Unknown condition%no_such_condition%')::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_contextual();
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_contextual();
 DROP FUNCTION IF EXISTS _test_setup_contextual();

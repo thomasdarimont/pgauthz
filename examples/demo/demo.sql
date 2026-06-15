@@ -879,10 +879,9 @@ SELECT s->>'condition_name'         AS condition,
 -- object_wildcard_tuple, contextual_tuple, computed, userset,
 -- intersection_satisfied / intersection_unsatisfied, excluded.
 
--- Clean up
--- DELETE FROM authz.tuples
---  WHERE object_id = 'doc_explain_001'
---    AND object_type = authz._t('demo', 'document');
+-- doc_explain_001's conditional grant is left in place so the queries above
+-- stay re-runnable on their own; re-running this section is idempotent
+-- (write_tuple upserts the same tuple).
 
 -- 9f. Redacted "safety mode" — surface the explanation to an untrusted UI
 -- without leaking tuple/group identifiers. Subject/object ids and free-text
