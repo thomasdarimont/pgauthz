@@ -467,6 +467,45 @@ The engine is **fail-closed** throughout:
 - **Write path:** applications send writes to the primary's Nginx gateway
 - **Replication lag:** typically sub-second for streaming replication
 
+#### Consistency tokens (zookies): why not, yet
+
+Reads on the primary are strongly consistent (read-your-writes via MVCC);
+replicas are eventually consistent, bounded by replication lag. The
+security-relevant case is a **stale allow after a revoke**. The full
+contract and recommended patterns are in the README "Consistency model"
+section. This is a deliberate design decision, not an oversight:
+
+- **Route-to-primary already covers the real cases.** Given the heavy
+  read:write ratio, the few checks that must reflect a just-made change
+  (notably the confirming check after a *revoke*) can simply be routed to
+  the primary, which is right there at low latency. A revision-token
+  (zookie) only adds value when you want to keep serving even those checks
+  from a replica — a Google-scale concern (distant/sharded primary, large
+  replica fleets serving from snapshots), and it pushes real complexity
+  onto clients (capture a token on write, thread it onto the right later
+  check). For a single-primary + read-replica Postgres deployment, that
+  trade isn't worth it.
+
+- **A WAL LSN cannot be a sound single-RPC zookie.** `pg_current_wal_lsn()`
+  read *inside* `write_tuple`'s transaction is **pre-commit** (call it X);
+  the commit record lands later at Y, with arbitrary interleaved WAL (own +
+  concurrent transactions) between them. A replica only exposes the write
+  once it replays the COMMIT at Y (MVCC), so a `replay_lsn ≥ X` (or `X+1`)
+  test false-positives — in a busy system `replay_lsn` crosses X almost
+  instantly from *unrelated* traffic, before Y. A sound token must be
+  `≥ Y`, i.e. captured *after* the write commits (a follow-up
+  `pg_current_wal_lsn()` on the primary), which a single PostgREST RPC
+  can't return — so it's not the cheap win it first appears to be.
+
+- **For a general staleness gauge** (not read-your-writes), use replication
+  lag directly — `pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn())`
+  and `now() - pg_last_xact_replay_timestamp()` — to avoid serving from a
+  replica that has fallen too far behind. That is the right primitive for
+  "is this replica reasonably current," independent of any specific write.
+
+Revisit a first-class min-LSN / revision-token API only if a concrete
+deployment genuinely needs replica-offloaded *fresh* reads.
+
 ### PostgreSQL Tuning
 
 | Parameter | Value | Rationale |
