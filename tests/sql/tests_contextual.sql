@@ -366,6 +366,32 @@ END;
 $$;
 SELECT * FROM _test_teardown_contextual();
 
+-- ctx_19: explain_access annotates a condition_denied step with the
+-- condition name and the required context keys that were missing.
+-- alice's viewer tuple on doc1 is conditional (non_expired_grant); a
+-- check with NO request context is denied because current_time is absent.
+DO $$
+DECLARE e jsonb; v_step jsonb;
+BEGIN
+    PERFORM _test_setup_contextual();
+    e := authz.explain_access('test_contextual', 'user', 'alice', 'viewer', 'doc', 'doc1');
+
+    SELECT s INTO v_step
+      FROM jsonb_array_elements(e->'trace') s
+     WHERE s->>'condition_name' IS NOT NULL
+     LIMIT 1;
+
+    PERFORM _test_assert('ctx_19a_condition_name_surfaced',
+        v_step->>'condition_name', 'non_expired_grant');
+    PERFORM _test_assert('ctx_19b_missing_request_key_reported',
+        (v_step->'condition_missing_keys' @> '["request.current_time"]'::jsonb)::text, 'true');
+    -- stored keys WERE provided on the tuple, so they are not reported missing
+    PERFORM _test_assert('ctx_19c_present_stored_keys_not_reported',
+        (v_step->'condition_missing_keys' @> '["stored.grant_time"]'::jsonb)::text, 'false');
+END;
+$$;
+SELECT * FROM _test_teardown_contextual();
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_contextual();
 DROP FUNCTION IF EXISTS _test_setup_contextual();

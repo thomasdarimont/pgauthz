@@ -350,6 +350,38 @@ END;
 $$;
 SELECT * FROM _test_teardown_groups();
 
+-- grp_24: trace steps carry model-rule references (model_rule_id,
+-- group_id, group_op, negated) so a decision can be traced to the exact
+-- model row and its group semantics.
+DO $$
+DECLARE e jsonb;
+BEGIN
+    PERFORM _test_setup_groups();
+
+    -- Intersection (can_view = member AND licensed): the group verdict is
+    -- tagged 'intersection', and the rule-eval steps carry a model_rule_id.
+    e := authz.explain_access('test_groups', 'user', 'alice', 'can_view', 'resource', 'r1');
+    PERFORM _test_assert_true('grp_24a_intersection_verdict_tagged',
+        EXISTS (SELECT 1 FROM jsonb_array_elements(e->'trace') s
+                 WHERE s->>'rule_type' = 'intersection'
+                   AND s->>'group_op'  = 'intersection'));
+    PERFORM _test_assert_true('grp_24b_rule_steps_reference_model_row',
+        EXISTS (SELECT 1 FROM jsonb_array_elements(e->'trace') s
+                 WHERE s->>'rule_type'     = 'computed'
+                   AND s->>'group_op'      = 'intersection'
+                   AND s->>'model_rule_id' IS NOT NULL));
+
+    -- Exclusion (can_comment = member BUT NOT blocked): the negated
+    -- (subtracted) rule step is flagged negated = true.
+    e := authz.explain_access('test_groups', 'user', 'carol', 'can_comment', 'resource', 'r1');
+    PERFORM _test_assert_true('grp_24c_negated_rule_flagged',
+        EXISTS (SELECT 1 FROM jsonb_array_elements(e->'trace') s
+                 WHERE s->>'group_op' = 'exclusion'
+                   AND (s->>'negated')::boolean = true));
+END;
+$$;
+SELECT * FROM _test_teardown_groups();
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_groups();
 DROP FUNCTION IF EXISTS _test_setup_groups();

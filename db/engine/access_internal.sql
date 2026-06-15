@@ -96,13 +96,19 @@ CREATE OR REPLACE FUNCTION authz._eval_direct(
     p_object_type_name  text,
     p_step_start        timestamptz,
     p_exclude           authz._tuple_key DEFAULT NULL,
-    p_path              text[] DEFAULT '{}'
+    p_path              text[] DEFAULT '{}',
+    p_model_rule_id     smallint DEFAULT NULL,
+    p_group_id          smallint DEFAULT NULL,
+    p_group_op          smallint DEFAULT NULL,
+    p_negated           boolean  DEFAULT NULL
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
     tpl     record;
     v_child boolean;
     v_cond_name text;
+    v_cond_id   smallint;
+    v_cond_ctx  jsonb;
     v_skip_direct   boolean := false;
     v_skip_wildcard boolean := false;
 BEGIN
@@ -145,11 +151,11 @@ BEGIN
            AND authz._eval_condition(condition_id, condition_context, p_request_context)
     ) THEN
         IF p_trace THEN
-            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
+            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
             VALUES (p_depth, 'direct', p_user_type_name || ':' || p_user_id,
                     p_relation_name, p_object_type_name || ':' || p_object_id,
                     true, 'tuple found',
-                    extract(epoch from clock_timestamp() - p_step_start) * 1000);
+                    extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated);
         END IF;
         RETURN true;
     END IF;
@@ -180,11 +186,11 @@ BEGIN
            AND authz._eval_condition(condition_id, condition_context, p_request_context)
     ) THEN
         IF p_trace THEN
-            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
+            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
             VALUES (p_depth, 'direct', p_user_type_name || ':' || p_user_id,
                     p_relation_name, p_object_type_name || ':' || p_object_id,
                     true, 'wildcard tuple (*)',
-                    extract(epoch from clock_timestamp() - p_step_start) * 1000);
+                    extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated);
         END IF;
         RETURN true;
     END IF;
@@ -219,11 +225,11 @@ BEGIN
            AND authz._eval_condition(condition_id, condition_context, p_request_context)
     ) THEN
         IF p_trace THEN
-            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
+            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
             VALUES (p_depth, 'direct', p_user_type_name || ':' || p_user_id,
                     p_relation_name, p_object_type_name || ':' || p_object_id,
                     true, 'object wildcard tuple (*)',
-                    extract(epoch from clock_timestamp() - p_step_start) * 1000);
+                    extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated);
         END IF;
         RETURN true;
     END IF;
@@ -241,7 +247,8 @@ BEGIN
            AND user_relation IS NULL
            AND condition_id  IS NOT NULL
     ) THEN
-        SELECT c.name INTO v_cond_name
+        SELECT c.name, t.condition_id, t.condition_context
+          INTO v_cond_name, v_cond_id, v_cond_ctx
           FROM authz.tuples t
           JOIN authz.conditions c ON c.id = t.condition_id
          WHERE t.store_id      = p_store_id
@@ -252,11 +259,12 @@ BEGIN
            AND t.user_id       IN (p_user_id, '*')
            AND t.user_relation IS NULL
          LIMIT 1;
-        INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
+        INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated, condition_name, condition_missing_keys)
         VALUES (p_depth, 'direct', p_user_type_name || ':' || p_user_id,
                 p_relation_name, p_object_type_name || ':' || p_object_id,
                 false, 'tuple found, condition "' || v_cond_name || '" denied',
-                extract(epoch from clock_timestamp() - p_step_start) * 1000);
+                extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated,
+                v_cond_name, authz._condition_missing_keys(v_cond_id, v_cond_ctx, p_request_context));
     END IF;
     END IF; -- v_skip_direct
 
@@ -265,11 +273,11 @@ BEGIN
         p_user_type, p_user_id, p_relation, p_object_type, p_object_id
     ) THEN
         IF p_trace THEN
-            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
+            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
             VALUES (p_depth, 'direct', p_user_type_name || ':' || p_user_id,
                     p_relation_name, p_object_type_name || ':' || p_object_id,
                     true, 'contextual tuple',
-                    extract(epoch from clock_timestamp() - p_step_start) * 1000);
+                    extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated);
         END IF;
         RETURN true;
     END IF;
@@ -295,14 +303,14 @@ BEGIN
             p_exclude, p_path
         );
         IF p_trace THEN
-            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
+            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
             VALUES (p_depth, 'userset', p_user_type_name || ':' || p_user_id,
                     p_relation_name, p_object_type_name || ':' || p_object_id,
                     v_child,
                     'expand ' || (SELECT name FROM authz.types WHERE id = tpl.user_type)
                     || ':' || tpl.user_id || '#'
                     || (SELECT name FROM authz.relations WHERE id = tpl.user_relation),
-                    extract(epoch from clock_timestamp() - p_step_start) * 1000);
+                    extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated);
         END IF;
         IF v_child THEN
             RETURN true;
@@ -331,14 +339,14 @@ BEGIN
             p_exclude, p_path
         );
         IF p_trace THEN
-            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
+            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
             VALUES (p_depth, 'userset', p_user_type_name || ':' || p_user_id,
                     p_relation_name, p_object_type_name || ':' || p_object_id,
                     v_child,
                     'expand ' || (SELECT name FROM authz.types WHERE id = tpl.user_type)
                     || ':' || tpl.user_id || '#'
                     || (SELECT name FROM authz.relations WHERE id = tpl.user_relation),
-                    extract(epoch from clock_timestamp() - p_step_start) * 1000);
+                    extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated);
         END IF;
         IF v_child THEN
             RETURN true;
@@ -360,11 +368,11 @@ BEGIN
                 p_exclude, p_path
             );
             IF p_trace THEN
-                INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
+                INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
                 VALUES (p_depth, 'userset', p_user_type_name || ':' || p_user_id,
                         p_relation_name, p_object_type_name || ':' || p_object_id,
                         v_child, 'expand contextual userset',
-                        extract(epoch from clock_timestamp() - p_step_start) * 1000);
+                        extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated);
             END IF;
             IF v_child THEN
                 RETURN true;
@@ -384,11 +392,11 @@ BEGIN
            AND user_id       IN (p_user_id, '*')
            AND user_relation IS NULL
     ) THEN
-        INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
+        INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
         VALUES (p_depth, 'direct', p_user_type_name || ':' || p_user_id,
                 p_relation_name, p_object_type_name || ':' || p_object_id,
                 false, 'no tuple',
-                extract(epoch from clock_timestamp() - p_step_start) * 1000);
+                extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated);
     END IF;
 
     RETURN false;
@@ -419,7 +427,11 @@ CREATE OR REPLACE FUNCTION authz._eval_ttu(
     p_object_type_name  text,
     p_step_start        timestamptz,
     p_exclude           authz._tuple_key DEFAULT NULL,
-    p_path              text[] DEFAULT '{}'
+    p_path              text[] DEFAULT '{}',
+    p_model_rule_id     smallint DEFAULT NULL,
+    p_group_id          smallint DEFAULT NULL,
+    p_group_op          smallint DEFAULT NULL,
+    p_negated           boolean  DEFAULT NULL
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -450,7 +462,7 @@ BEGIN
             p_exclude, p_path
         );
         IF p_trace THEN
-            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
+            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
             VALUES (p_depth, 'ttu', p_user_type_name || ':' || p_user_id,
                     p_relation_name, p_object_type_name || ':' || p_object_id,
                     v_child,
@@ -462,7 +474,7 @@ BEGIN
                     || ' (via '
                     || (SELECT name FROM authz.relations WHERE id = p_tupleset_relation)
                     || ')',
-                    extract(epoch from clock_timestamp() - p_step_start) * 1000);
+                    extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated);
         END IF;
         IF v_child THEN
             RETURN true;
@@ -484,7 +496,7 @@ BEGIN
                 p_exclude, p_path
             );
             IF p_trace THEN
-                INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
+                INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
                 VALUES (p_depth, 'ttu', p_user_type_name || ':' || p_user_id,
                         p_relation_name, p_object_type_name || ':' || p_object_id,
                         v_child,
@@ -495,7 +507,7 @@ BEGIN
                         || ' (via '
                         || (SELECT name FROM authz.relations WHERE id = p_tupleset_relation)
                         || ')',
-                        extract(epoch from clock_timestamp() - p_step_start) * 1000);
+                        extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated);
             END IF;
             IF v_child THEN
                 RETURN true;
@@ -512,12 +524,12 @@ BEGIN
            AND relation      = p_tupleset_relation
            AND user_relation IS NULL
     ) THEN
-        INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
+        INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
         VALUES (p_depth, 'ttu', p_user_type_name || ':' || p_user_id,
                 p_relation_name, p_object_type_name || ':' || p_object_id,
                 false,
                 'no ' || (SELECT name FROM authz.relations WHERE id = p_tupleset_relation) || ' link',
-                extract(epoch from clock_timestamp() - p_step_start) * 1000);
+                extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated);
     END IF;
 
     RETURN false;
@@ -547,7 +559,11 @@ CREATE OR REPLACE FUNCTION authz._eval_rule(
     p_depth             int DEFAULT 0,
     p_trace             boolean DEFAULT false,
     p_exclude           authz._tuple_key DEFAULT NULL,
-    p_path              text[] DEFAULT '{}'
+    p_path              text[] DEFAULT '{}',
+    p_model_rule_id     smallint DEFAULT NULL,
+    p_group_id          smallint DEFAULT NULL,
+    p_group_op          smallint DEFAULT NULL,
+    p_negated           boolean  DEFAULT NULL
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -573,7 +589,8 @@ BEGIN
             p_store_id, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
             p_request_context, p_has_ctx_tuples, p_depth, p_trace,
             v_user_type_name, v_relation_name, v_object_type_name, v_step_start,
-            p_exclude, p_path
+            p_exclude, p_path,
+            p_model_rule_id, p_group_id, p_group_op, p_negated
         );
 
     WHEN authz._rel_computed() THEN
@@ -587,13 +604,13 @@ BEGIN
             p_exclude, p_path
         );
         IF p_trace THEN
-            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
+            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
             VALUES (p_depth, 'computed', v_user_type_name || ':' || p_user_id,
                     v_relation_name, v_object_type_name || ':' || p_object_id,
                     v_child,
                     v_relation_name || ' ← '
                     || (SELECT name FROM authz.relations WHERE id = p_computed_relation),
-                    extract(epoch from clock_timestamp() - v_step_start) * 1000);
+                    extract(epoch from clock_timestamp() - v_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated);
         END IF;
         RETURN v_child;
 
@@ -603,7 +620,8 @@ BEGIN
             p_tupleset_relation, p_tupleset_computed,
             p_request_context, p_has_ctx_tuples, p_depth, p_trace,
             v_user_type_name, v_relation_name, v_object_type_name, v_step_start,
-            p_exclude, p_path
+            p_exclude, p_path,
+            p_model_rule_id, p_group_id, p_group_op, p_negated
         );
 
     END CASE;
@@ -685,10 +703,10 @@ BEGIN
     v_key := p_relation::text || ':' || p_object_type::text || ':' || p_object_id;
     IF v_key = ANY(p_path) THEN
         IF v_trace THEN
-            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
+            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
             VALUES (p_depth, 'cycle', v_user_type_name || ':' || p_user_id,
                     v_relation_name, v_object_type_name || ':' || p_object_id,
-                    false, 'cycle detected — path pruned', 0);
+                    false, 'cycle detected — path pruned', 0, NULL::smallint, NULL::smallint, NULL::smallint, NULL::boolean);
         END IF;
         RETURN false;
     END IF;
@@ -696,7 +714,7 @@ BEGIN
 
     -- Single query: fetch all rules ordered by group, with base rules before negated.
     FOR rule IN
-        SELECT rule_type, computed_relation, tupleset_relation, tupleset_computed,
+        SELECT id, rule_type, computed_relation, tupleset_relation, tupleset_computed,
                group_id, group_op, negated
           FROM authz.models
          WHERE store_id    = p_store_id
@@ -709,27 +727,27 @@ BEGIN
             -- Finalize previous group (intersection/exclusion need end-of-group check).
             IF v_cur_group >= 0 AND v_group_pass AND v_cur_group_op <> authz._combine_or() THEN
                 IF v_trace THEN
-                    INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
+                    INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
                     VALUES (p_depth,
                             CASE v_cur_group_op WHEN authz._combine_and() THEN 'intersection' ELSE 'exclusion' END,
                             v_user_type_name || ':' || p_user_id,
                             v_relation_name, v_object_type_name || ':' || p_object_id,
                             true,
                             CASE v_cur_group_op WHEN authz._combine_and() THEN 'all rules matched' ELSE 'base matched, not excluded' END,
-                            extract(epoch from clock_timestamp() - v_group_start) * 1000);
+                            extract(epoch from clock_timestamp() - v_group_start) * 1000, NULL::smallint, v_cur_group, v_cur_group_op, NULL::boolean);
                 END IF;
                 RETURN true;
             END IF;
             -- Trace failed intersection/exclusion.
             IF v_trace AND v_cur_group >= 0 AND NOT v_group_pass AND v_cur_group_op <> authz._combine_or() THEN
-                INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
+                INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
                 VALUES (p_depth,
                         CASE v_cur_group_op WHEN authz._combine_and() THEN 'intersection' ELSE 'exclusion' END,
                         v_user_type_name || ':' || p_user_id,
                         v_relation_name, v_object_type_name || ':' || p_object_id,
                         false,
                         CASE v_cur_group_op WHEN authz._combine_and() THEN 'not all rules matched' ELSE 'base not matched or excluded' END,
-                        extract(epoch from clock_timestamp() - v_group_start) * 1000);
+                        extract(epoch from clock_timestamp() - v_group_start) * 1000, NULL::smallint, v_cur_group, v_cur_group_op, NULL::boolean);
             END IF;
 
             -- Start new group.
@@ -763,7 +781,8 @@ BEGIN
                 rule.rule_type, rule.computed_relation,
                 rule.tupleset_relation, rule.tupleset_computed,
                 p_request_context, p_has_ctx_tuples,
-                p_depth, v_trace, p_exclude, v_path
+                p_depth, v_trace, p_exclude, v_path,
+                rule.id, rule.group_id, rule.group_op, rule.negated
             ) THEN
                 RETURN true;
             END IF;
@@ -775,7 +794,8 @@ BEGIN
                 rule.rule_type, rule.computed_relation,
                 rule.tupleset_relation, rule.tupleset_computed,
                 p_request_context, p_has_ctx_tuples,
-                p_depth, v_trace, p_exclude, v_path
+                p_depth, v_trace, p_exclude, v_path,
+                rule.id, rule.group_id, rule.group_op, rule.negated
             ) THEN
                 v_group_pass := false;
             END IF;
@@ -789,7 +809,8 @@ BEGIN
                     rule.rule_type, rule.computed_relation,
                     rule.tupleset_relation, rule.tupleset_computed,
                     p_request_context, p_has_ctx_tuples,
-                    p_depth, v_trace, p_exclude, v_path
+                    p_depth, v_trace, p_exclude, v_path,
+                rule.id, rule.group_id, rule.group_op, rule.negated
                 ) THEN
                     v_group_pass := false;
                 END IF;
@@ -801,7 +822,8 @@ BEGIN
                     rule.rule_type, rule.computed_relation,
                     rule.tupleset_relation, rule.tupleset_computed,
                     p_request_context, p_has_ctx_tuples,
-                    p_depth, v_trace, p_exclude, v_path
+                    p_depth, v_trace, p_exclude, v_path,
+                rule.id, rule.group_id, rule.group_op, rule.negated
                 ) THEN
                     v_group_pass := false;
                 END IF;
@@ -813,27 +835,27 @@ BEGIN
     -- Finalize last group.
     IF v_cur_group >= 0 AND v_group_pass AND v_cur_group_op <> authz._combine_or() THEN
         IF v_trace THEN
-            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
+            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
             VALUES (p_depth,
                     CASE v_cur_group_op WHEN authz._combine_and() THEN 'intersection' ELSE 'exclusion' END,
                     v_user_type_name || ':' || p_user_id,
                     v_relation_name, v_object_type_name || ':' || p_object_id,
                     true,
                     CASE v_cur_group_op WHEN authz._combine_and() THEN 'all rules matched' ELSE 'base matched, not excluded' END,
-                    extract(epoch from clock_timestamp() - v_group_start) * 1000);
+                    extract(epoch from clock_timestamp() - v_group_start) * 1000, NULL::smallint, v_cur_group, v_cur_group_op, NULL::boolean);
         END IF;
         RETURN true;
     END IF;
     -- Trace failed intersection/exclusion for the last group.
     IF v_trace AND v_cur_group >= 0 AND NOT v_group_pass AND v_cur_group_op <> authz._combine_or() THEN
-        INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms)
+        INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
         VALUES (p_depth,
                 CASE v_cur_group_op WHEN authz._combine_and() THEN 'intersection' ELSE 'exclusion' END,
                 v_user_type_name || ':' || p_user_id,
                 v_relation_name, v_object_type_name || ':' || p_object_id,
                 false,
                 CASE v_cur_group_op WHEN authz._combine_and() THEN 'not all rules matched' ELSE 'base not matched or excluded' END,
-                extract(epoch from clock_timestamp() - v_group_start) * 1000);
+                extract(epoch from clock_timestamp() - v_group_start) * 1000, NULL::smallint, v_cur_group, v_cur_group_op, NULL::boolean);
     END IF;
 
     RETURN false;

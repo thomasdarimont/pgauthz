@@ -547,3 +547,31 @@ EXCEPTION
         RETURN false;  -- condition evaluation error = deny
 END;
 $$;
+
+------------------------------------------------------------------------
+-- _condition_missing_keys: given a condition and the contexts available
+-- at check time, returns the required_context keys that were NOT
+-- supplied (prefixed request./stored.). Empty when all required keys
+-- are present — i.e. a denial with no missing keys means the condition
+-- evaluated to false on the given inputs, not that inputs were absent.
+-- Used by explain_access to annotate condition_denied trace steps.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._condition_missing_keys(
+    p_condition_id      smallint,
+    p_condition_context jsonb,
+    p_request_context   jsonb
+) RETURNS text[]
+LANGUAGE sql STABLE AS $$
+    SELECT coalesce(array_agg(missing ORDER BY missing), '{}')
+      FROM authz.conditions c
+      CROSS JOIN LATERAL (
+          SELECT 'request.' || k AS missing
+            FROM jsonb_array_elements_text(c.required_context->'request') AS k
+           WHERE NOT (coalesce(p_request_context, '{}'::jsonb) ? k)
+          UNION ALL
+          SELECT 'stored.' || k
+            FROM jsonb_array_elements_text(c.required_context->'stored') AS k
+           WHERE NOT (coalesce(p_condition_context, '{}'::jsonb) ? k)
+      ) m
+     WHERE c.id = p_condition_id;
+$$;

@@ -269,16 +269,24 @@ BEGIN
     PERFORM _test_setup_eval();
     s := authz._s('test_eval');
 
+    -- Mirror the _access_trace schema that explain_access creates
+    -- (the engine's trace INSERTs reference all of these columns).
     CREATE TEMP TABLE IF NOT EXISTS _access_trace (
-        step        serial,
-        depth       int,
-        rule_type   text,
-        subject     text,
-        relation    text,
-        object      text,
-        result      boolean,
-        detail      text,
-        duration_ms double precision
+        step          serial,
+        depth         int,
+        rule_type     text,
+        subject       text,
+        relation      text,
+        object        text,
+        result        boolean,
+        detail        text,
+        duration_ms   double precision,
+        model_rule_id smallint,
+        group_id      smallint,
+        group_op      smallint,
+        negated       boolean,
+        condition_name         text,
+        condition_missing_keys text[]
     ) ON COMMIT DROP;
 
     v := authz._eval_direct(

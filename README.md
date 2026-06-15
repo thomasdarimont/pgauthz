@@ -177,6 +177,7 @@ Returns JSON:
     { "step": 1, "depth": 4, "rule_type": "direct", "reason": "direct_tuple",
       "subject": "internal_user:alice", "relation": "member",
       "object": "team:payroll_team", "result": true, "detail": "tuple found",
+      "model_rule_id": 1889, "group_id": 0, "group_op": "or", "negated": false,
       "duration_ms": 0.07 }
     // ... one object per evaluation step
   ],
@@ -191,6 +192,18 @@ Returns JSON:
 `trace` is the flat step list; `tree` is the same steps reshaped into the
 nested resolution tree (a synthetic root with the decision, the recursion
 nested underneath) — render it directly as a collapsible tree.
+
+Each step also carries `model_rule_id`, `group_id`, `group_op`
+(`or`/`intersection`/`exclusion`), and `negated`, so a step ties back to the
+exact model row — join `model_rule_id` to `authz.models_view` to see the rule
+definition. (Group-verdict and cycle steps have no single rule, so
+`model_rule_id` is null there.)
+
+A `condition_denied` step also reports `condition_name` and
+`condition_missing_keys` — the required request/stored context keys that were
+not supplied (e.g. `["request.current_time"]`). An empty list means the
+condition simply evaluated to false on the given inputs (e.g. an expired
+grant) rather than missing input.
 
 `decision.reason` is a stable, typed code. For **ALLOW** it is the granting
 step's reason — `direct_tuple`, `wildcard_tuple`, `object_wildcard_tuple`,

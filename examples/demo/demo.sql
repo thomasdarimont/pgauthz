@@ -259,7 +259,7 @@ SELECT authz.write_tuples('demo', ARRAY[
 
 SELECT authz.delete_user_tuples('demo', 'internal_user', 'grace',
     p_performed_by => 'admin');
--- => 2 (all of grace's direct tuples removed)
+-- => 3 (all of grace's direct tuples removed)
 
 -- Note: this removes direct grants only. If the user has access through
 -- group/team membership, remove them from the group as well:
@@ -827,6 +827,25 @@ SELECT jsonb_pretty(authz.explain_access('demo',
 -- => can_read (ttu) → can_view (ttu) → can_view (computed)
 --      → payroll_clerk (userset) → member (direct_tuple)
 
+-- 9c''. Rule references — every step carries the model_rule_id, group_id,
+-- group_op, and negated flag, so a decision ties back to the exact model
+-- row. Join model_rule_id to authz.models_view to see which rule each
+-- step used:
+SELECT (s->>'step')::int          AS step,
+       s->>'reason'               AS reason,
+       s->>'relation'             AS relation,
+       (s->>'model_rule_id')::int AS rule_id,
+       mv.rule_type,
+       mv.group_op
+  FROM jsonb_array_elements(authz.explain_access('demo',
+           'internal_user', 'alice', 'can_read', 'document', 'doc_payroll_001',
+           p_successful_only => true)->'trace') AS t(s)
+  LEFT JOIN authz.models_view mv ON mv.id = (s->>'model_rule_id')::int
+ ORDER BY 1;
+-- => each ✓ step resolved to its exact model rule. group_op is 'or' here
+--    (the demo model uses unions); on a model with rule groups it shows
+--    'intersection' / 'exclusion', and negated = true on subtracted rules.
+
 -- 9d. A DENY explains itself too.
 SELECT authz.explain_access('demo',
     'internal_user', 'alice', 'can_read', 'document', 'doc_tax_001')->'decision';
@@ -844,14 +863,26 @@ SELECT authz.explain_access('demo',
     'internal_user', 'alice', 'viewer', 'document', 'doc_explain_001')->'decision';
 -- => {"allowed": false, "reason": "condition_denied"}  (no current_time supplied)
 
+-- The condition_denied step says WHICH condition denied and which required
+-- context keys were missing — pinpointing the cause of an ABAC denial:
+SELECT s->>'condition_name'         AS condition,
+       s->'condition_missing_keys'  AS missing_keys
+  FROM jsonb_array_elements(authz.explain_access('demo',
+           'internal_user', 'alice', 'viewer', 'document', 'doc_explain_001')->'trace') AS t(s)
+ WHERE s->>'condition_name' IS NOT NULL;
+-- => non_expired_grant | ["request.current_time"]
+--    (the stored keys grant_time/grant_duration were present on the tuple,
+--     so they are not listed; an empty list would mean the condition simply
+--     evaluated to false on the given inputs, e.g. the grant had expired.)
+
 -- Other decision.reason values you may see: direct_tuple, wildcard_tuple,
 -- object_wildcard_tuple, contextual_tuple, computed, userset,
 -- intersection_satisfied / intersection_unsatisfied, excluded.
 
 -- Clean up
-DELETE FROM authz.tuples
- WHERE object_id = 'doc_explain_001'
-   AND object_type = authz._t('demo', 'document');
+-- DELETE FROM authz.tuples
+--  WHERE object_id = 'doc_explain_001'
+--    AND object_type = authz._t('demo', 'document');
 
 -- 9f. Redacted "safety mode" — surface the explanation to an untrusted UI
 -- without leaking tuple/group identifiers. Subject/object ids and free-text

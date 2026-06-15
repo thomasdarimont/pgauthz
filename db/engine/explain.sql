@@ -90,7 +90,9 @@ $$;
 --                   "reason":  <typed reason code> },
 --     "summary":  text,                  -- human-readable resolution tree
 --     "trace":    [ { step, depth, rule_type, reason, subject, relation,
---                     object, result, detail, duration_ms }, ... ],
+--                     object, result, detail, duration_ms,
+--                     model_rule_id, group_id, group_op, negated,
+--                     condition_name, condition_missing_keys }, ... ],
 --     "tree":     { subject, relation, object, allowed, reason,
 --                   children: [ <trace step + nested children>, ... ] }
 --   }
@@ -144,15 +146,23 @@ BEGIN
 
     -- Reuse trace table within the session; ON COMMIT DROP cleans up.
     CREATE TEMP TABLE IF NOT EXISTS _access_trace (
-        step        serial,
-        depth       int,
-        rule_type   text,
-        subject     text,
-        relation    text,
-        object      text,
-        result      boolean,
-        detail      text,
-        duration_ms double precision
+        step          serial,
+        depth         int,
+        rule_type     text,
+        subject       text,
+        relation      text,
+        object        text,
+        result        boolean,
+        detail        text,
+        duration_ms   double precision,
+        -- model rule references (NULL for cycle/group-verdict steps)
+        model_rule_id smallint,
+        group_id      smallint,
+        group_op      smallint,
+        negated       boolean,
+        -- condition explain (set only on condition_denied steps)
+        condition_name        text,
+        condition_missing_keys text[]
     ) ON COMMIT DROP;
     TRUNCATE _access_trace RESTART IDENTITY;
     PERFORM set_config('authz.trace', 'on', true);
@@ -202,6 +212,16 @@ BEGIN
             'object',    CASE WHEN p_redact THEN split_part(s.object, ':', 1) || ':***' ELSE s.object END,
             'result',    s.result,
             'detail',    CASE WHEN p_redact THEN NULL ELSE s.detail END,
+            -- model rule references (structural, not redacted)
+            'model_rule_id', s.model_rule_id,
+            'group_id',  s.group_id,
+            'group_op',  CASE s.group_op WHEN 0 THEN 'or' WHEN 1 THEN 'intersection'
+                                         WHEN 2 THEN 'exclusion' END,
+            'negated',   s.negated,
+            -- condition explain: which condition denied and which
+            -- required context keys were missing (null on non-condition steps)
+            'condition_name',         s.condition_name,
+            'condition_missing_keys', to_jsonb(s.condition_missing_keys),
             'duration_ms', round(s.duration_ms::numeric, 3)
         ) ORDER BY s.step
     ), '[]'::jsonb)
