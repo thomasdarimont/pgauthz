@@ -75,7 +75,7 @@ services:
 
   # ── PostgREST on replica (read-only access checks) ──────────────
   postgrest:
-    image: postgrest/postgrest:v12.2.12
+    image: postgrest/postgrest:v14.13
     environment:
       PGRST_DB_URI: postgres://authz:authz@authz-replica:5432/authz
       PGRST_DB_ANON_ROLE: api_anon
@@ -92,7 +92,7 @@ services:
   # ── PostgREST on primary (write API, see OPA.md §13) ─────────────
   # Uncomment to enable the JWT-authenticated write API.
   # postgrest-writer:
-  #   image: postgrest/postgrest:v12.2.12
+  #   image: postgrest/postgrest:v14.13
   #   environment:
   #     PGRST_DB_URI: postgres://authz:authz@authz-primary:5432/authz
   #     PGRST_DB_ANON_ROLE: api_anon
@@ -120,7 +120,7 @@ services:
 
   # ── OPA (read-only access checks via replica) ───────────────────
   opa:
-    image: openpolicyagent/opa:1.4.2
+    image: openpolicyagent/opa:1.17.1
     command: run --server --watch --addr :8181 --authentication=token --authorization=basic /policies /data
     environment:
       OPA_ADMIN_TOKEN: "${OPA_ADMIN_TOKEN:-change-me-in-production}"

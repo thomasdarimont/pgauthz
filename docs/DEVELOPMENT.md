@@ -721,7 +721,7 @@ in `compose.yml`). Uncomment to enable:
 
 ```yaml
 postgrest-writer:
-  image: postgrest/postgrest:v12.2.12
+  image: postgrest/postgrest:v14.13
   environment:
     PGRST_DB_URI: postgres://authz:authz@authz-db:5432/authz
     PGRST_DB_ANON_ROLE: api_anon

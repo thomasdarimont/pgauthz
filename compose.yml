@@ -32,7 +32,7 @@ services:
       - ./db/security/initdb:/docker-entrypoint-initdb.d:ro
 
   postgrest:
-    image: postgrest/postgrest:v12.2.12
+    image: postgrest/postgrest:v14.13
     environment:
       # Dedicated non-superuser authenticator (created by db/security/roles.sql).
       # Connecting as a superuser would bypass namespace access control.
