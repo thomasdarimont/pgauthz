@@ -105,9 +105,11 @@ services:
       POSTGREST_WRITER_URL: "${POSTGREST_WRITER_URL:-http://postgrest-writer:3001}"
       DEFAULT_CACHE_TTL_SECONDS: "${DEFAULT_CACHE_TTL_SECONDS:-1}"
       # CACHE_TTL_SECONDS: '{"demo":{"_default":5,"document":10}}'
-      # JWT role mapping for writes — match your issuer's claim shape:
-      #   JWT_ROLES_CLAIM: "realm_access.roles"   # dotted path, default "roles"
-      #   WRITER_ROLE:     "authz_writer"         # required role value
+      # JWT role mapping for writes — match your issuer's claim shape.
+      # JWT_ROLES_CLAIM is a comma-separated list of dotted paths; roles are
+      # aggregated across all of them (default "roles"). For Keycloak:
+      #   JWT_ROLES_CLAIM: "realm_access.roles,resource_access.authz-api.roles"
+      #   WRITER_ROLE:     "authz_writer"         # required role value (in any path)
       # Per-app namespace isolation (optional): JWT claim carrying the caller's
       # app DB role, forwarded to the writer as X-Authz-Role (see _pre_request).
       #   WRITER_DB_ROLE_CLAIM: "db_role"

@@ -12,13 +12,16 @@ required_issuer := _env.JWT_ISSUER
 # Set via JWT_AUDIENCE env var on the OPA service.
 required_audience := _env.JWT_AUDIENCE
 
-# Path to the roles claim inside the JWT, as a dot-separated string.
-# Defaults to "roles"; set JWT_ROLES_CLAIM to match your issuer, e.g.
-# "realm_access.roles" (Keycloak) or "https://example.com/roles".
-# Split into a path array for nested object.get lookups.
-roles_claim_path := split(_env.JWT_ROLES_CLAIM, ".") if _env.JWT_ROLES_CLAIM
+# Paths to the roles claim(s) inside the JWT, as a comma-separated list of
+# dot-separated paths. Roles are aggregated (set-union) across ALL of them, so a
+# token's required role may live in any one — useful for issuers that split
+# roles across claims. Defaults to "roles". Examples:
+#   JWT_ROLES_CLAIM=roles
+#   JWT_ROLES_CLAIM=realm_access.roles,resource_access.authz-api.roles   # Keycloak
+# (realm roles + this client's roles; the client_id is fixed per deployment.)
+roles_claim_paths := [split(trim(p, " "), ".") | some p in split(_env.JWT_ROLES_CLAIM, ",")] if _env.JWT_ROLES_CLAIM
 
-roles_claim_path := ["roles"] if not _env.JWT_ROLES_CLAIM
+roles_claim_paths := [["roles"]] if not _env.JWT_ROLES_CLAIM
 
 # Role value (within the roles claim) that authorizes tuple writes.
 # Defaults to "authz_writer"; set WRITER_ROLE to your issuer's role name.

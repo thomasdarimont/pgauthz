@@ -176,10 +176,12 @@ and PostgREST's inability to fetch a remote `jwks_uri` is no longer a concern.
 **Write authorization** is a faithful port of the old role-claim model into OPA,
 made configurable for any issuer:
 
-- `JWT_ROLES_CLAIM` — dotted path to the roles array in the token, default
-  `roles` (e.g. `realm_access.roles` for Keycloak).
-- `WRITER_ROLE` — the role value that authorizes tuple writes, default
-  `authz_writer`.
+- `JWT_ROLES_CLAIM` — comma-separated list of dotted paths to roles arrays;
+  roles are aggregated (set-union) across all of them, default `roles`. For
+  Keycloak, roles split across realm and client claims:
+  `realm_access.roles,resource_access.authz-api.roles`.
+- `WRITER_ROLE` — the role value that authorizes tuple writes (matched in any
+  configured claim), default `authz_writer`.
 
 OPA verifies the token, requires `WRITER_ROLE` within the configured claim, then
 forwards `write`/`delete` to the writer — recording the authenticated subject as

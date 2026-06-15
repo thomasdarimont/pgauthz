@@ -702,8 +702,8 @@ Both are configurable on the OPA service:
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `JWT_ROLES_CLAIM` | `roles` | Dotted path to the roles array in the token (e.g. `realm_access.roles` for Keycloak) |
-| `WRITER_ROLE` | `authz_writer` | Role value that authorizes tuple writes |
+| `JWT_ROLES_CLAIM` | `roles` | Comma-separated list of dotted paths to roles arrays; roles are aggregated (set-union) across all. Keycloak: `realm_access.roles,resource_access.<client>.roles` |
+| `WRITER_ROLE` | `authz_writer` | Role value that authorizes tuple writes (matched in any configured claim) |
 | `POSTGREST_WRITER_URL` | *(unset)* | Writer instance OPA forwards to. **Unset ⇒ writes disabled** (read-only deployment) |
 
 The Postgres role is **not** taken from the token — the writer always runs as

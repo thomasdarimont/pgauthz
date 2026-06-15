@@ -59,6 +59,11 @@ subject_type := "internal_user" if {
 	not claims.subject_type
 }
 
-# Roles extracted from the token, read from the configured claim path
-# (authn_config.roles_claim_path, default ["roles"]). Missing claim → [].
-roles := object.get(claims, authn_config.roles_claim_path, []) if token_is_valid
+# Roles aggregated (set-union) from every configured claim path
+# (authn_config.roles_claim_paths, default [["roles"]]). A token's roles may be
+# split across claims (e.g. Keycloak's realm_access.roles + resource_access.
+# <client>.roles); a missing claim contributes nothing.
+roles := {r |
+	some path in authn_config.roles_claim_paths
+	some r in object.get(claims, path, [])
+} if token_is_valid
