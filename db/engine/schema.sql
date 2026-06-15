@@ -537,6 +537,74 @@ CREATE TRIGGER trg_models_audit_block_dml
     BEFORE UPDATE OR DELETE ON authz.models_audit
     FOR EACH ROW EXECUTE FUNCTION authz._audit_block_dml();
 
+-- Condition change log: versions condition expressions so time-travel
+-- queries evaluate conditional grants against the expression that was in
+-- effect at a past timestamp, not the current one. Mirrors models_audit:
+-- append-only, one row per INSERT/DELETE (an UPDATE is split into
+-- DELETE+INSERT), seq tiebreaker. A condition's replay identity is its
+-- id — stable across in-place edits, and what tuples reference via
+-- condition_id. (Defined here, after _audit_block_dml, though it versions
+-- the conditions table above.)
+CREATE TABLE authz.conditions_audit (
+    seq              bigint NOT NULL GENERATED ALWAYS AS IDENTITY,
+    action           text NOT NULL,  -- 'INSERT' or 'DELETE'
+    performed_at     timestamptz NOT NULL DEFAULT now(),
+    performed_by     text NOT NULL DEFAULT current_user,
+    condition_id     smallint NOT NULL,  -- authz.conditions.id
+    store_id         smallint NOT NULL,
+    name             text NOT NULL,
+    expression       text NOT NULL,
+    required_context jsonb,
+    PRIMARY KEY (seq)
+);
+
+-- Replay index: reconstruct a condition's expression as of a timestamp.
+CREATE INDEX idx_conditions_audit_replay
+    ON authz.conditions_audit (condition_id, performed_at DESC, seq DESC);
+
+CREATE OR REPLACE FUNCTION authz._audit_condition() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_performed_by text;
+BEGIN
+    v_performed_by := COALESCE(
+        NULLIF(current_setting('authz.performed_by', true), ''),
+        authz._effective_role()
+    );
+
+    IF TG_OP = 'UPDATE' THEN
+        INSERT INTO authz.conditions_audit (
+            action, performed_at, performed_by, condition_id, store_id, name, expression, required_context
+        ) VALUES
+            ('DELETE', clock_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.name, OLD.expression, OLD.required_context),
+            ('INSERT', clock_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.name, NEW.expression, NEW.required_context);
+        RETURN NEW;
+    ELSIF TG_OP = 'INSERT' THEN
+        INSERT INTO authz.conditions_audit (
+            action, performed_at, performed_by, condition_id, store_id, name, expression, required_context
+        ) VALUES
+            ('INSERT', clock_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.name, NEW.expression, NEW.required_context);
+        RETURN NEW;
+    ELSIF TG_OP = 'DELETE' THEN
+        INSERT INTO authz.conditions_audit (
+            action, performed_at, performed_by, condition_id, store_id, name, expression, required_context
+        ) VALUES
+            ('DELETE', clock_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.name, OLD.expression, OLD.required_context);
+        RETURN OLD;
+    END IF;
+
+    RETURN NULL;
+END;
+$$;
+
+CREATE TRIGGER trg_conditions_audit
+    AFTER INSERT OR UPDATE OR DELETE ON authz.conditions
+    FOR EACH ROW EXECUTE FUNCTION authz._audit_condition();
+
+CREATE TRIGGER trg_conditions_audit_block_dml
+    BEFORE UPDATE OR DELETE ON authz.conditions_audit
+    FOR EACH ROW EXECUTE FUNCTION authz._audit_block_dml();
+
 -- Human-readable view of model rules (resolves integer IDs to names).
 CREATE VIEW authz.models_view AS
 SELECT

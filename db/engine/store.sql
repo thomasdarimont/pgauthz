@@ -66,6 +66,12 @@ BEGIN
         PERFORM set_config('authz.audit_maintenance', '', true);
     END IF;
     DELETE FROM authz.conditions        WHERE store_id = v_store_id;
+    IF p_purge_audit THEN
+        -- The condition deletes above are logged to conditions_audit; purge.
+        PERFORM set_config('authz.audit_maintenance', 'on', true);
+        DELETE FROM authz.conditions_audit WHERE store_id = v_store_id;
+        PERFORM set_config('authz.audit_maintenance', '', true);
+    END IF;
     DELETE FROM authz.namespace_access  WHERE store_id = v_store_id;
 
     -- Drop tuple partitions for this store's types

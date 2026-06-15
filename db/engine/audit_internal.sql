@@ -115,6 +115,75 @@ END;
 $$;
 
 ------------------------------------------------------------------------
+-- _build_condition_snapshot: (re)builds pg_temp._snapshot_conditions with
+-- each condition's EXPRESSION as of p_at by replaying conditions_audit
+-- (last event per condition id wins, ties broken by seq, INSERT survives).
+-- This makes time-travel evaluate conditional grants against the
+-- expression in effect at p_at, not an expression edited in place later.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._build_condition_snapshot(
+    p_store_id smallint,
+    p_at       timestamptz
+) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+    CREATE TEMP TABLE IF NOT EXISTS _snapshot_conditions (
+        id         smallint,
+        expression text
+    ) ON COMMIT DROP;
+
+    TRUNCATE _snapshot_conditions;
+
+    INSERT INTO _snapshot_conditions
+    SELECT sub.condition_id, sub.expression
+      FROM (
+        SELECT DISTINCT ON (a.condition_id) a.*
+          FROM authz.conditions_audit a
+         WHERE a.store_id = p_store_id
+           AND a.performed_at <= p_at
+         ORDER BY a.condition_id, a.performed_at DESC, a.seq DESC
+      ) sub
+     WHERE sub.action = 'INSERT';
+END;
+$$;
+
+------------------------------------------------------------------------
+-- _eval_condition_snapshot: like _eval_condition, but resolves the
+-- expression from pg_temp._snapshot_conditions (the as-of-p_at version)
+-- instead of the current authz.conditions. Same sandbox (_exec_condition
+-- runs as authz_eval). Dynamic SQL because the temp table is per-session.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._eval_condition_snapshot(
+    p_condition_id      smallint,
+    p_condition_context jsonb,
+    p_request_context   jsonb
+) RETURNS boolean
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_expr text;
+BEGIN
+    IF p_condition_id IS NULL THEN
+        RETURN true;   -- unconditional
+    END IF;
+
+    EXECUTE 'SELECT expression FROM _snapshot_conditions WHERE id = $1'
+       INTO v_expr USING p_condition_id;
+    IF v_expr IS NULL THEN
+        RETURN false;  -- condition did not exist as of p_at = deny
+    END IF;
+
+    RETURN authz._exec_condition(
+        v_expr,
+        COALESCE(p_request_context, '{}'::jsonb),
+        COALESCE(p_condition_context, '{}'::jsonb)
+    );
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN false;  -- evaluation error = deny
+END;
+$$;
+
+------------------------------------------------------------------------
 -- _eval_direct_snapshot: evaluates a DIRECT rule against the
 -- pg_temp._snapshot_tuples temp table (for point-in-time checks).
 -- No tracing, no contextual tuples.
@@ -168,7 +237,7 @@ BEGIN
                AND user_id       IN ($6, ''*'')
                AND user_relation IS NULL
                AND condition_id  IS NOT NULL
-               AND authz._eval_condition(condition_id, condition_context, $7)
+               AND authz._eval_condition_snapshot(condition_id, condition_context, $7)
         )'
     INTO v_found
     USING p_store_id, p_object_type, p_object_id, p_relation,
@@ -214,7 +283,7 @@ BEGIN
                AND relation      = $4
                AND user_relation IS NOT NULL
                AND condition_id  IS NOT NULL
-               AND authz._eval_condition(condition_id, condition_context, $5)'
+               AND authz._eval_condition_snapshot(condition_id, condition_context, $5)'
         USING p_store_id, p_object_type, p_object_id, p_relation, p_request_context
     LOOP
         IF authz._check_access_snapshot(
@@ -267,7 +336,7 @@ BEGIN
                AND relation      = $4
                AND user_relation IS NULL
                AND (condition_id IS NULL
-                    OR authz._eval_condition(condition_id, condition_context, $5))'
+                    OR authz._eval_condition_snapshot(condition_id, condition_context, $5))'
         USING p_store_id, p_object_type, p_object_id, p_tupleset_relation, p_request_context
     LOOP
         IF authz._check_access_snapshot(

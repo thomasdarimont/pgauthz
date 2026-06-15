@@ -50,14 +50,13 @@ $$;
 -- cannot be reconstructed from the audit log — supply them via
 -- p_request_context; "current_time" is always overridden with p_at.
 --
--- Note: the snapshot reconstructs both the TUPLE state and the MODEL rule
--- set as of p_at (replaying tuples_audit and models_audit), so the check
--- resolves against the model as it was, not the current model. Condition
--- expression text is still read as it is NOW — in-place condition edits
--- are not versioned (treat conditions as immutable; see docs/ARCHITECTURE.md).
+-- Note: the snapshot reconstructs the TUPLE state, the MODEL rule set, AND
+-- the CONDITION expressions as of p_at (replaying tuples_audit, models_audit,
+-- and conditions_audit), so the check resolves against the tuples, rules, and
+-- condition expressions as they were then — not the current ones.
 --
 -- Note: uses _check_access_snapshot (dynamic SQL against temp tables)
--- to avoid reading current tuples or model rules.
+-- to avoid reading current tuples, model rules, or condition expressions.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.audit_check_access(
     p_store           text,
@@ -79,9 +78,12 @@ DECLARE
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
 
-    -- Build the tuple AND model state as of p_at by replaying the logs.
+    -- Build the tuple, model AND condition state as of p_at by replaying
+    -- the logs, so the check resolves tuples, rules, and condition
+    -- expressions all as they were then.
     PERFORM authz._build_audit_snapshot(v_store_id, p_at);
     PERFORM authz._build_model_snapshot(v_store_id, p_at);
+    PERFORM authz._build_condition_snapshot(v_store_id, p_at);
 
     -- Run access check against the snapshot. Caller-supplied request
     -- context is merged in; current_time always reflects p_at.
@@ -117,10 +119,11 @@ DECLARE
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
 
-    -- Build the point-in-time tuple AND model snapshots ONCE and evaluate
-    -- every relation against them (previously rebuilt per relation).
+    -- Build the point-in-time tuple, model AND condition snapshots ONCE and
+    -- evaluate every relation against them (previously rebuilt per relation).
     PERFORM authz._build_audit_snapshot(v_store_id, p_at);
     PERFORM authz._build_model_snapshot(v_store_id, p_at);
+    PERFORM authz._build_condition_snapshot(v_store_id, p_at);
 
     -- Candidate relations come from the model AS OF p_at (the snapshot),
     -- not the current model, so a relation whose rule was added later is
