@@ -6,6 +6,9 @@ target/
 
 *.zip
 
+# Local config / secrets (copy .env.example -> .env). Never commit .env.
+.env
+
 .claude/
 .mvn/
 scratch/

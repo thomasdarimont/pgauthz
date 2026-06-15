@@ -12,7 +12,7 @@ services:
       # Dedicated non-superuser, read-only role (inherits authz_reader),
       # created by db/security/initdb on first init. Never use the authz
       # superuser here.
-      DATABASE_URL: "postgres://authzen_direct:authz@authz-db:5432/authz"
+      DATABASE_URL: "postgres://authzen_direct:${AUTHZEN_DIRECT_PASSWORD:-authz}@authz-db:5432/authz"
       DB_POOL_MAX: "25"
       JWKS_FILE: "/jwks/jwks.json"
       JWT_ISSUER: "${JWT_ISSUER:-https://auth.example.com}"

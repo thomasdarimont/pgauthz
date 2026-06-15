@@ -7,8 +7,20 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Load local customizations (passwords, JWT, etc.) from .env if present, so the
+# shell (psql connections) and docker compose use the same values. See
+# .env.example. docker compose also reads .env on its own; this just makes the
+# variables available to this script too.
+if [ -f "$SCRIPT_DIR/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/.env"
+  set +a
+fi
+
 PG_USER="${PG_USER:-authz}"
 PG_DB="authz"
+PG_PASSWORD="${PG_PASSWORD:-authz}"
 
 # Compose files — base stack + optional authzen overlay
 COMPOSE_FILES=(-f "$SCRIPT_DIR/compose.yml")
@@ -37,7 +49,7 @@ fi
 psql_exec() {
   local db="$1"
   shift
-  docker exec -i -e PGPASSWORD=authz "$DB_CONTAINER" psql -U "$PG_USER" -d "$db" "$@"
+  docker exec -i -e PGPASSWORD="$PG_PASSWORD" "$DB_CONTAINER" psql -U "$PG_USER" -d "$db" "$@"
 }
 
 # Run a SQL file by piping it into the container.
@@ -46,5 +58,5 @@ psql_exec() {
 psql_file() {
   local db="$1"
   local file="$2"
-  docker exec -i -e PGPASSWORD=authz "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d "$db" < "$file"
+  docker exec -i -e PGPASSWORD="$PG_PASSWORD" "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d "$db" < "$file"
 }

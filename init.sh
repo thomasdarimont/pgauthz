@@ -38,6 +38,19 @@ psql_file "$PG_DB" "$SCRIPT_DIR/db/openfga/functions_openfga.sql"
 echo "==> Setting up security roles..."
 psql_file "$PG_DB" "$SCRIPT_DIR/db/security/roles.sql"
 
+# Optional env-driven overrides on top of the roles.sql defaults (see
+# .env.example). Service-role PASSWORDS are set at initdb instead (changing them
+# needs a fresh DB: down -v + init); these knobs apply on every init.
+if [ -n "${CONDITION_STATEMENT_TIMEOUT:-}" ]; then
+  echo "==> Setting statement_timeout=$CONDITION_STATEMENT_TIMEOUT on service roles..."
+  psql_exec "$PG_DB" -c "ALTER ROLE authz_authenticator SET statement_timeout = '$CONDITION_STATEMENT_TIMEOUT';
+                         ALTER ROLE authzen_direct      SET statement_timeout = '$CONDITION_STATEMENT_TIMEOUT';" >/dev/null
+fi
+if [ -n "${AUTHZ_CONTEXTUAL_READER_GRANTEE:-}" ]; then
+  echo "==> Granting authz_contextual_reader to $AUTHZ_CONTEXTUAL_READER_GRANTEE..."
+  psql_exec "$PG_DB" -c "GRANT authz_contextual_reader TO \"$AUTHZ_CONTEXTUAL_READER_GRANTEE\";" >/dev/null
+fi
+
 # A PostgREST instance that connected before the engine schema existed (e.g. a
 # freshly started stack, as in CI) holds a stale/empty schema cache and its
 # /rpc/* endpoints won't see the engine functions. Nudge a reload now that the

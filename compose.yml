@@ -16,8 +16,13 @@ services:
       - random_page_cost=1.1
     environment:
       POSTGRES_USER: authz
-      POSTGRES_PASSWORD: authz
+      POSTGRES_PASSWORD: "${PG_PASSWORD:-authz}"
       POSTGRES_DB: authz
+      # Passed to db/security/initdb/01_authenticator.sh to set the service
+      # login-role passwords on first boot — must match the connection strings
+      # below. Default to the dev password; override via .env (see .env.example).
+      AUTHZ_AUTHENTICATOR_PASSWORD: "${AUTHZ_AUTHENTICATOR_PASSWORD:-authz}"
+      AUTHZEN_DIRECT_PASSWORD: "${AUTHZEN_DIRECT_PASSWORD:-authz}"
     ports:
       - "55433:5432"
     healthcheck:
@@ -38,7 +43,7 @@ services:
     environment:
       # Dedicated non-superuser authenticator (created by db/security/roles.sql).
       # Connecting as a superuser would bypass namespace access control.
-      PGRST_DB_URI: postgres://authz_authenticator:authz@authz-db:5432/authz
+      PGRST_DB_URI: postgres://authz_authenticator:${AUTHZ_AUTHENTICATOR_PASSWORD:-authz}@authz-db:5432/authz
       PGRST_DB_ANON_ROLE: api_anon
       PGRST_DB_SCHEMAS: authz
       PGRST_DB_POOL: "100"
@@ -60,19 +65,28 @@ services:
   postgrest-writer:
     image: postgrest/postgrest:v14.13
     environment:
-      PGRST_DB_URI: postgres://authz_authenticator:authz@authz-db:5432/authz
+      PGRST_DB_URI: postgres://authz_authenticator:${AUTHZ_AUTHENTICATOR_PASSWORD:-authz}@authz-db:5432/authz
       PGRST_DB_ANON_ROLE: api_anon
       PGRST_DB_SCHEMAS: authz
       PGRST_DB_POOL: "20"
       PGRST_DB_POOL_ACQUISITION_TIMEOUT: "10"
       PGRST_SERVER_PORT: "3001"
-      PGRST_JWT_SECRET: "${PGRST_JWT_SECRET:-change-me-at-least-32-characters-long}"
-      # Map role from a custom JWT claim (default: .role)
+      # Verify asymmetric (ES256) JWTs against the issuer's PUBLIC JWKS — the
+      # same key OPA and the AuthZEN services use — not a shared HMAC secret.
+      # PostgREST takes a STATIC JWK/JWKS; it does NOT fetch a remote jwks_uri,
+      # so @/jwks/jwks.json reads the mounted file. For production (rotating
+      # jwks_uri) see docs/PRODUCTION.md — sync the JWKS or front the writer
+      # with OPA. Override PGRST_JWT_SECRET to your own JWKS path/JSON.
+      PGRST_JWT_SECRET: "${PGRST_JWT_SECRET:-@/jwks/jwks.json}"
+      # Map the Postgres role from a JWT claim (default: .role). Point this at
+      # your issuer's role/realm claim, e.g. ".realm_access.roles[0]".
       # PGRST_JWT_ROLE_CLAIM_KEY: ".realm_access.roles[0]"
     restart: unless-stopped
     # No host port — only reachable via the writer-gateway.
     expose:
       - "3001"
+    volumes:
+      - ./opa/data:/jwks:ro
     depends_on:
       authz-db:
         condition: service_healthy

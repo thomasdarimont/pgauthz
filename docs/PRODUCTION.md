@@ -7,12 +7,40 @@ the engine to real traffic. Deeper background is in
 [DEVELOPMENT.md](DEVELOPMENT.md) (JWT/PostgREST/operations), and
 [DESIGN.md](DESIGN.md) (rationale).
 
+## Configuration
+
+Customize the deployment through a `.env` file rather than editing the compose
+files or SQL — copy the template and edit:
+
+```bash
+cp .env.example .env
+# edit .env: passwords, JWT, condition timeout, ...
+docker compose down -v && ./init.sh   # fresh DB so initdb applies the passwords
+```
+
+`docker compose` reads `.env` automatically, and the helper scripts (`env.sh`,
+`init.sh`) source it too. The real `.env` is **gitignored** — keep secrets out
+of version control, and prefer a secret manager in real production. Every knob
+defaults to the demo value, so an unset variable is never a surprise. Each
+setting and its default is documented in
+[`.env.example`](../.env.example); the relevant ones are called out in the
+sections below.
+
+Two things flow at *different* times: service-role **passwords** are applied
+when the database is first initialized (so set them before the first
+`./init.sh`; to rotate, recreate with `down -v`), while the condition
+`statement_timeout` and an optional `authz_contextual_reader` grant are applied
+by `init.sh` on every run.
+
 ## Before-production checklist
 
-- [ ] **Change every default password.** The dev/test stack uses `authz` for
-      `authz_authenticator`, `authzen_direct`, and the DB superuser. Replace
-      them (`db/security/initdb`, `compose*.yml`, `env.sh`, your connection
-      strings / secrets store).
+- [ ] **Configure via `.env`** (copy `.env.example` → `.env`) rather than
+      editing files. `docker compose` and the helper scripts read it; the real
+      `.env` is gitignored. See [Configuration](#configuration).
+- [ ] **Change every default password** in `.env`: `PG_PASSWORD` (superuser),
+      `AUTHZ_AUTHENTICATOR_PASSWORD`, `AUTHZEN_DIRECT_PASSWORD`. The service-role
+      passwords are applied at first DB init, so set them before the first
+      `./init.sh` (to change them later: `docker compose down -v && ./init.sh`).
 - [ ] **Never host-expose the read PostgREST (`api_anon`).** `api_anon` is a
       full reader; OPA is the mandatory front door. Only OPA (and the Nginx
       writer gateway) should reach PostgREST. See [Network exposure](#network-exposure).
@@ -67,7 +95,8 @@ caller inject the very grant being tested, so the privilege is separate. Grant
 it **only** to a trusted PDP/backend role that constructs contextual tuples
 from legitimate request context — e.g. a backend that already authenticates
 its callers. **Never** grant it to `api_anon`, `authzen_direct`, or any role
-reachable by untrusted clients:
+reachable by untrusted clients. Set `AUTHZ_CONTEXTUAL_READER_GRANTEE` in `.env`
+and `init.sh` applies the grant, or do it manually:
 
 ```sql
 GRANT authz_contextual_reader TO <your_trusted_backend_role>;
@@ -85,11 +114,37 @@ GRANT authz_contextual_reader TO <your_trusted_backend_role>;
 
 ## Secrets, passwords, and JWT
 
-- Replace all `authz` dev passwords (see the checklist). Store secrets in your
-  platform's secret manager, not in compose files.
+- Replace all `authz` dev passwords via `.env` (`PG_PASSWORD`,
+  `AUTHZ_AUTHENTICATOR_PASSWORD`, `AUTHZEN_DIRECT_PASSWORD`) — see
+  [Configuration](#configuration). Store secrets in your platform's secret
+  manager, not in committed files.
 - Configure JWT verification on OPA and the AuthZEN services: `JWKS_URL` (or
   `JWKS_FILE`), `JWT_ISSUER`, `JWT_AUDIENCE`, and optionally `REQUIRED_SCOPE`.
   See [DEVELOPMENT.md → JWT](DEVELOPMENT.md#jwt-secret--jwks).
+
+### JWT signature verification (asymmetric / JWKS)
+
+Real issuers sign tokens with a private key and publish the public key at a
+`jwks_uri`. Each component verifies tokens independently:
+
+- **OPA** and the **AuthZEN services** verify against a JWKS (the demo ships a
+  static `opa/data/jwks.json` ES256 key). In production, point them at your
+  issuer — OPA can fetch and cache a remote `jwks_uri`; the AuthZEN services
+  take `JWKS_URL` or `JWKS_FILE`.
+- The **PostgREST writer** verifies the token itself (to map the Postgres role
+  from a JWT claim). It uses a **static** JWK/JWKS via `PGRST_JWT_SECRET`
+  (`@/path/to/jwks.json` or the JSON inline) — the demo points it at the same
+  public JWKS. **PostgREST does NOT fetch a remote `jwks_uri`**, so for a
+  rotating issuer key you need one of:
+  1. **Front the writer with OPA** (as the read path is) — OPA owns JWT
+     verification and `jwks_uri` rotation; the writer no longer verifies JWTs.
+     *Recommended* — one place handles tokens, consistent with reads.
+  2. **Sync the JWKS** — a sidecar/cron fetches the issuer's `jwks_uri`, writes
+     the JWKS file the writer reads, and reloads PostgREST config
+     (`NOTIFY pgrst, 'reload config'`) on rotation.
+- Map the writer's role from your issuer's claim with `PGRST_JWT_ROLE_CLAIM_KEY`
+  (e.g. `.realm_access.roles[0]`); the token's mapped role must be one
+  `authz_authenticator` may `SET ROLE` to (`authz_writer` / `authz_admin`).
 
 ## AuthZEN subject policy
 
@@ -116,7 +171,8 @@ the zero-privilege `authz_eval` role). Layered defenses (in `roles.sql`):
 - **`statement_timeout`** on the service login roles (default `60s`) bounds
   evaluation time; a timed-out condition fails closed. **It applies to every
   statement on those connections** (checks, listings, time-travel), so size it
-  above your slowest legitimate operation — tune in `roles.sql`.
+  above your slowest legitimate operation — set `CONDITION_STATEMENT_TIMEOUT`
+  in `.env`.
 - **`pg_sleep*` revoked from `PUBLIC`** so the sandbox can't hang on it.
 - **Write-time validation:** a malformed condition expression is rejected at
   `INSERT`/`UPDATE`, not stored and silently denied.
