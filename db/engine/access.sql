@@ -675,6 +675,50 @@ LANGUAGE sql IMMUTABLE AS $$
 $$;
 
 ------------------------------------------------------------------------
+-- _explain_tree: reconstructs the nested resolution tree from the flat,
+-- evaluation-ordered trace steps. Steps are emitted children-before-
+-- parent (post-order), and each step's `depth` is its recursion depth,
+-- so when a step is processed all of its descendants are already on the
+-- stack at a greater depth. Returns an array of root-level step nodes
+-- (each with a recursive `children` array); explain_access wraps these
+-- under a synthetic root carrying the overall decision.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._explain_tree(p_steps jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_stack    jsonb := '[]'::jsonb;   -- of { "depth": int, "node": {..} }
+    s          jsonb;
+    v_depth    int;
+    v_children jsonb;
+    v_node     jsonb;
+BEGIN
+    FOR s IN
+        SELECT elem FROM jsonb_array_elements(p_steps) WITH ORDINALITY AS a(elem, ord)
+         ORDER BY ord
+    LOOP
+        v_depth    := (s->>'depth')::int;
+        v_children := '[]'::jsonb;
+        -- Pop this step's children: the deeper pending subtrees on top of
+        -- the stack. Prepend each to restore left-to-right order.
+        WHILE jsonb_array_length(v_stack) > 0
+              AND ((v_stack -> -1) ->> 'depth')::int > v_depth LOOP
+            v_children := jsonb_build_array((v_stack -> -1) -> 'node') || v_children;
+            v_stack := v_stack - -1;   -- pop last
+        END LOOP;
+        v_node  := s || jsonb_build_object('children', v_children);
+        v_stack := v_stack || jsonb_build_array(jsonb_build_object('depth', v_depth, 'node', v_node));
+    END LOOP;
+
+    -- Remaining entries are the shallowest (root-level) steps, in order.
+    SELECT coalesce(jsonb_agg(a.elem -> 'node' ORDER BY a.ord), '[]'::jsonb)
+      INTO v_children
+      FROM jsonb_array_elements(v_stack) WITH ORDINALITY AS a(elem, ord);
+    RETURN v_children;
+END;
+$$;
+
+------------------------------------------------------------------------
 -- explain_access: like check_access, but returns a structured decision
 -- explanation:
 --
@@ -684,8 +728,14 @@ $$;
 --                   "reason":  <typed reason code> },
 --     "summary":  text,                  -- human-readable resolution tree
 --     "trace":    [ { step, depth, rule_type, reason, subject, relation,
---                     object, result, detail, duration_ms }, ... ]
+--                     object, result, detail, duration_ms }, ... ],
+--     "tree":     { subject, relation, object, allowed, reason,
+--                   children: [ <trace step + nested children>, ... ] }
 --   }
+--
+-- `trace` is the flat, evaluation-ordered step list. `tree` is the same
+-- steps reshaped into the nested resolution tree (a synthetic root with
+-- the decision, the recursion nested underneath) for direct rendering.
 --
 -- decision.reason is the minimal cause: for ALLOW, the shallowest
 -- granting step's reason (e.g. direct_tuple, wildcard_tuple, computed,
@@ -720,6 +770,7 @@ DECLARE
     v_object_type smallint := authz._t(v_store_id, p_object_type);
     v_result          boolean;
     v_trace           jsonb;
+    v_tree            jsonb;
     v_summary         text;
     v_decision_reason text;
     t         record;
@@ -823,11 +874,25 @@ BEGIN
         END LOOP;
     END IF;
 
+    -- Nested resolution tree: the same steps as `trace`, reshaped under a
+    -- synthetic root that carries the overall decision.
+    v_tree := jsonb_build_object(
+        'subject',  CASE WHEN p_redact THEN p_user_type   || ':***'
+                         ELSE p_user_type   || ':' || p_user_id END,
+        'relation', p_relation,
+        'object',   CASE WHEN p_redact THEN p_object_type || ':***'
+                         ELSE p_object_type || ':' || p_object_id END,
+        'allowed',  v_result,
+        'reason',   v_decision_reason,
+        'children', authz._explain_tree(v_trace)
+    );
+
     RETURN jsonb_build_object(
         'result',   v_result,
         'decision', jsonb_build_object('allowed', v_result, 'reason', v_decision_reason),
         'summary',  v_summary,
-        'trace',    v_trace
+        'trace',    v_trace,
+        'tree',     v_tree
     );
 END;
 $$;

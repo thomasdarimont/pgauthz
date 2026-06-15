@@ -173,15 +173,24 @@ Returns JSON:
   "decision": { "allowed": true,
                 "reason":  "ttu" },  // the minimal cause of the outcome
   "summary":  "internal_user:alice → can_read → document:doc_payroll_001 = ALLOWED (ttu)\n  ✓ ...",
-  "trace": [
+  "trace": [                           // flat, evaluation-ordered steps
     { "step": 1, "depth": 4, "rule_type": "direct", "reason": "direct_tuple",
       "subject": "internal_user:alice", "relation": "member",
       "object": "team:payroll_team", "result": true, "detail": "tuple found",
       "duration_ms": 0.07 }
     // ... one object per evaluation step
-  ]
+  ],
+  "tree": {                            // the same steps as a nested tree
+    "subject": "internal_user:alice", "relation": "can_read",
+    "object": "document:doc_payroll_001", "allowed": true, "reason": "ttu",
+    "children": [ /* each step's nested children, for direct rendering */ ]
+  }
 }
 ```
+
+`trace` is the flat step list; `tree` is the same steps reshaped into the
+nested resolution tree (a synthetic root with the decision, the recursion
+nested underneath) — render it directly as a collapsible tree.
 
 `decision.reason` is a stable, typed code. For **ALLOW** it is the granting
 step's reason — `direct_tuple`, `wildcard_tuple`, `object_wildcard_tuple`,

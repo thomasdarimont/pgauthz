@@ -257,8 +257,8 @@ $$;
 SELECT * FROM _test_teardown_groups();
 
 -- ================================================================
--- explain_access v2 contract: structured decision, typed reasons,
--- versioned output, and a redacted safety mode.
+-- explain_access: structured decision, typed reasons, a nested tree,
+-- and a redacted safety mode.
 -- ================================================================
 
 -- grp_20: ALLOW carries a structured decision with a typed reason and
@@ -311,6 +311,41 @@ BEGIN
         (e::text LIKE '%alice%')::text, 'false');
     PERFORM _test_assert('grp_22c_redacted_hides_object_id',
         (e::text LIKE '%r1%')::text, 'false');
+END;
+$$;
+SELECT * FROM _test_teardown_groups();
+
+-- grp_23: nested 'tree' — a single synthetic root carrying the decision,
+-- with the resolution nested underneath (children of children exist).
+DO $$
+DECLARE e jsonb; t jsonb;
+BEGIN
+    PERFORM _test_setup_groups();
+    e := authz.explain_access('test_groups', 'user', 'alice', 'can_view', 'resource', 'r1');
+    t := e->'tree';
+
+    PERFORM _test_assert('grp_23a_tree_root_allowed',
+        (t->>'allowed'), 'true');
+    PERFORM _test_assert('grp_23b_tree_root_reason',
+        (t->>'reason'), 'intersection_satisfied');
+    PERFORM _test_assert('grp_23c_tree_root_has_children',
+        (jsonb_array_length(t->'children') > 0)::text, 'true');
+    -- the tree actually nests: at least one top-level child has children
+    -- (e.g. the computed check wrapping its direct-tuple leaf)
+    PERFORM _test_assert('grp_23d_tree_is_nested',
+        (EXISTS (SELECT 1 FROM jsonb_array_elements(t->'children') c
+                  WHERE jsonb_array_length(c->'children') > 0))::text, 'true');
+    -- every node in the tree carries a typed reason (recursive check)
+    PERFORM _test_assert('grp_23e_tree_reason_count_matches_trace',
+        (SELECT count(*) FROM jsonb_array_elements(e->'trace'))::text,
+        (WITH RECURSIVE nodes(n) AS (
+            SELECT t
+            UNION ALL
+            SELECT jsonb_array_elements(n->'children') FROM nodes
+            WHERE jsonb_array_length(n->'children') > 0
+         )
+         -- count nodes that came from trace steps (exclude the synthetic root)
+         SELECT count(*) FROM nodes WHERE n->>'step' IS NOT NULL)::text);
 END;
 $$;
 SELECT * FROM _test_teardown_groups();

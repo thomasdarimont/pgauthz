@@ -818,6 +818,15 @@ SELECT authz.explain_access('demo',
     p_successful_only => true)->>'summary';
 -- => only the ✓ steps that make up the decisive path.
 
+-- 9c'. Nested 'tree' — the same steps as a renderable tree (a root node
+-- with the decision, the recursion nested in 'children'). Combine with
+-- p_successful_only for just the winning path.
+SELECT jsonb_pretty(authz.explain_access('demo',
+    'internal_user', 'alice', 'can_read', 'document', 'doc_payroll_001',
+    p_successful_only => true)->'tree');
+-- => can_read (ttu) → can_view (ttu) → can_view (computed)
+--      → payroll_clerk (userset) → member (direct_tuple)
+
 -- 9d. A DENY explains itself too.
 SELECT authz.explain_access('demo',
     'internal_user', 'alice', 'can_read', 'document', 'doc_tax_001')->'decision';
