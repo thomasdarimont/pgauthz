@@ -35,6 +35,12 @@ fi
 # opts in here, explicitly.
 export ALLOW_SUBJECT_OVERRIDE="${ALLOW_SUBJECT_OVERRIDE:-true}"
 
+# Same for the OPA read path: the demo's OPA integration tests evaluate access
+# for explicit subjects with no JWT, so the demo opts into trusted-PEP mode
+# here. compose.yml defaults to the SAFE token-only mode (REQUIRE_TOKEN_FOR_READS
+# true), so production stays token-only unless explicitly opted out.
+export REQUIRE_TOKEN_FOR_READS="${REQUIRE_TOKEN_FOR_READS:-false}"
+
 # Ensure containers are running
 docker compose "${COMPOSE_FILES[@]}" up -d --build --wait
 

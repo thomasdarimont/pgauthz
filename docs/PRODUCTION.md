@@ -47,6 +47,9 @@ by `init.sh` on every run.
       [Network exposure](#network-exposure).
 - [ ] **Decide the AuthZEN subject policy.** Keep `ALLOW_SUBJECT_OVERRIDE=false`
       (token-only) unless the caller is a trusted PEP. See [AuthZEN subject policy](#authzen-subject-policy).
+- [ ] **Keep OPA reads token-only.** Leave `REQUIRE_TOKEN_FOR_READS=true`
+      (default) unless OPA sits behind a trusted PEP; otherwise any caller could
+      ask for an arbitrary subject. See [OPA read subject policy](#opa-read-subject-policy-require_token_for_reads).
 - [ ] **Grant `authz_contextual_reader` only to trusted callers** (it lets a
       caller inject ephemeral tuples into a decision). It is granted to no one
       by default. See [Role recipes](#role-recipes).
@@ -204,6 +207,24 @@ the JWT-derived subject:
 
 The compose file defaults to `false`; the demo/test stack opts into `true`
 via `env.sh`, so the shipped compose is safe to copy to production as-is.
+
+### OPA read subject policy (`REQUIRE_TOKEN_FOR_READS`)
+
+OPA's read/evaluation policy has the same concern: for backward compatibility it
+can derive the subject from an explicit `input.subject` when no JWT is present.
+`REQUIRE_TOKEN_FOR_READS` gates that:
+
+- **`true` (default, token-only):** a request with `input.subject` but no
+  `input.token` is rejected (the decision is deny). The verified JWT is the only
+  trusted identity — use this whenever OPA is reachable by anything but a trusted
+  PEP, since OPA's `:8181` and the public `data.authz.*` endpoints would
+  otherwise let any caller ask "can subject X do Y?" for an arbitrary X.
+- **`false` (trusted PEP):** explicit-subject requests are accepted. Set this
+  **only** when OPA sits behind a PEP that authenticates callers and passes the
+  subject (and ideally the mTLS edge, see [Network exposure](#network-exposure)).
+
+Like `ALLOW_SUBJECT_OVERRIDE`, `compose.yml` defaults to the safe value (`true`)
+and the demo opts into `false` via `env.sh`.
 
 ## Condition (ABAC) policy
 

@@ -100,6 +100,10 @@ services:
       JWT_ISSUER: "${JWT_ISSUER:-https://auth.example.com}"
       JWT_AUDIENCE: "${JWT_AUDIENCE:-authz-api}"
       DEFAULT_STORE: "${DEFAULT_STORE:-demo}"
+      # SECURITY: token-only reads by default. Explicit-subject reads
+      # (input.subject with no JWT) are rejected unless this is set false, which
+      # is ONLY safe behind a trusted PEP. The demo opts into false via env.sh.
+      REQUIRE_TOKEN_FOR_READS: "${REQUIRE_TOKEN_FOR_READS:-true}"
       POSTGREST_URL: "${POSTGREST_URL:-http://postgrest:3000}"
       # Writer instance OPA forwards authorized tuple writes to (write.rego).
       POSTGREST_WRITER_URL: "${POSTGREST_WRITER_URL:-http://postgrest-writer:3001}"

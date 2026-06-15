@@ -31,3 +31,13 @@ default_cache_ttl_seconds := 1 if not _env.DEFAULT_CACHE_TTL_SECONDS
 cache_ttl_seconds := json.unmarshal(_env.CACHE_TTL_SECONDS) if _env.CACHE_TTL_SECONDS
 
 cache_ttl_seconds := {} if not _env.CACHE_TTL_SECONDS
+
+# Require a verified JWT for read / evaluation requests (production default).
+# When true, explicit-subject requests (input.subject with NO input.token) are
+# rejected by the policy — the token is the only trusted source of identity.
+# Set REQUIRE_TOKEN_FOR_READS=false ONLY when OPA sits behind a trusted PEP that
+# authenticates callers and passes the subject (mirrors AuthZEN's
+# ALLOW_SUBJECT_OVERRIDE). The demo opts into false via env.sh.
+default require_token_for_reads := true
+
+require_token_for_reads := false if _env.REQUIRE_TOKEN_FOR_READS == "false"

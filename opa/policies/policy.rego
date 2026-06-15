@@ -18,8 +18,10 @@ store := config.default_store if not input.store
 #   - subject_type: from "subject_type" claim (default: "internal_user")
 #   - subject_id:   from "preferred_username" claim (fallback: "sub")
 #
-# When no token is present, the subject comes from input.subject directly
-# (backward compatible with the unauthenticated API).
+# When no token is present, the subject comes from input.subject directly —
+# but that path is only honored when config.require_token_for_reads is false
+# (trusted-PEP mode); see _subject_valid. In the default token-only mode such
+# requests are denied.
 # -----------------------------------------------------------------------
 subject_type := authn.subject_type if input.token
 subject_type := input.subject.type if not input.token
@@ -116,7 +118,9 @@ allow if {
 }
 
 # -----------------------------------------------------------------------
-# Subject validation: token must be valid, or explicit subject must be set.
+# Subject validation: a valid token, or — only when explicitly allowed for
+# trusted-PEP deployments (config.require_token_for_reads = false) — an
+# explicit input.subject with no token.
 # -----------------------------------------------------------------------
 _subject_valid if {
 	input.token
@@ -125,6 +129,7 @@ _subject_valid if {
 
 _subject_valid if {
 	not input.token
+	not config.require_token_for_reads
 	input.subject
 }
 
@@ -178,12 +183,14 @@ evaluations := pgauthz.check_access_batch_with_options(
 	input.context
 }
 
-# Batch subject validation: either top-level subject/token exists,
-# or every evaluation carries its own subject.
+# Batch subject validation: either top-level subject/token exists, or — only in
+# trusted-PEP mode (config.require_token_for_reads = false) — every evaluation
+# carries its own explicit subject.
 _batch_subject_valid if _subject_valid
 
 _batch_subject_valid if {
 	not input.token
+	not config.require_token_for_reads
 	not input.subject
 	count([1 |
 		some eval in input.evaluations

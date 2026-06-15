@@ -903,9 +903,12 @@ The system authorization policy is at `opa/policies/system_authz.rego`. It
 implements three layers of protection:
 
 **Public access (no token):**
-- `POST /v1/data/<allowed_prefix>/*` — policy evaluation, restricted to
-  known prefixes (`authz`, `authn`, `system`). This prevents unauthenticated
-  callers from querying raw data paths like `/v1/data/keys` (JWKS).
+- `POST /v1/data/authz/<endpoint>` — policy evaluation, restricted to an
+  **exact allowlist** of the client-facing endpoints (`allow`, `evaluations`,
+  `accessible_objects[_page]`, `accessible_subjects[_page]`, `permitted_actions`,
+  `identity`, `write`). Package-prefix matching is **unsafe** — it would expose
+  internal rules such as the admin token under `data.system.authz` — so only
+  exact paths are public.
 - `GET /health` and `GET /v1/status` — health checks and monitoring.
 
 **Admin access (bearer token required):**
@@ -977,7 +980,7 @@ curl -X POST http://localhost:8181/v1/data/authz/allow \
 | `POST /v1/data/authz/allow` | Allowed | Allowed |
 | `GET /health` | Allowed | Allowed |
 | `GET /v1/status` | Allowed | Allowed |
-| `POST /v1/data/keys` | **401** (not an allowed prefix) | **401** |
+| `POST /v1/data/keys` | **401** (not in the endpoint allowlist) | **401** |
 | `GET /v1/data/keys` | **401** (would leak JWKS) | Allowed |
 | `PUT /v1/data/keys` | **401** | **401** (data writes always denied) |
 | `GET /v1/policies` | **401** (would leak source) | Allowed |
