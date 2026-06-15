@@ -70,13 +70,19 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
-echo "==> Waiting for PostgREST (via OPA health proxy)..."
-# PostgREST is not exposed to the host — verify it's reachable by
-# making a test query through OPA that would fail if PostgREST is down.
-for i in $(seq 1 30); do
+echo "==> Waiting for a warm PostgREST schema cache (via OPA)..."
+# PostgREST is not exposed to the host. On a freshly started stack it may have
+# connected before the engine schema existed and be serving a stale/empty
+# schema cache (init.sh sends a reload). Wait until a KNOWN demo grant actually
+# resolves true through OPA -> PostgREST, so the suite never runs against a
+# cold cache. (The demo store is loaded by test.sh before this script.)
+for i in $(seq 1 60); do
     result=$(curl -sf -X POST "$OPA_URL/v1/data/authz/allow" \
         -H "Content-Type: application/json" \
-        -d '{"input":{"subject":{"type":"internal_user","id":"__probe__"},"action":"__probe__","resource":{"type":"__probe__","id":"__probe__"}}}' 2>/dev/null) && break
+        -d '{"input":{"subject":{"type":"internal_user","id":"alice"},"action":"can_read","resource":{"type":"document","id":"doc_payroll_001"}}}' 2>/dev/null)
+    if [ "$(echo "$result" | jq -r '.result' 2>/dev/null)" = "true" ]; then
+        break
+    fi
     sleep 1
 done
 

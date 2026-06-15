@@ -26,7 +26,9 @@ services:
       timeout: 5s
       retries: 5
     volumes:
-      - authz-db-data:/var/lib/postgresql:z
+      # Named volume — no :z (that SELinux relabel flag is for bind mounts;
+      # Docker manages a named volume's SELinux context itself).
+      - authz-db-data:/var/lib/postgresql
       # Creates the authz_authenticator login role on first init, before
       # PostgREST connects (it exits if its login role is missing).
       - ./db/security/initdb:/docker-entrypoint-initdb.d:ro
