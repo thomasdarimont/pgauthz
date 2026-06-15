@@ -35,17 +35,29 @@ default allow := false
 # paths like /v1/data/keys (which would leak JWKS keys).
 # -----------------------------------------------------------------------
 
-# Allowed policy path prefixes for unauthenticated evaluation.
-# Add entries here when you add new policy packages.
-_allowed_prefixes := {"authz", "authn", "system"}
+# Exact data paths a client may evaluate without a token.
+#
+# SECURITY: this is an allowlist of EXACT endpoint paths, not package prefixes.
+# Prefix matching is unsafe — it exposes every rule in the package, including
+# internal ones. Allowing the `system` prefix previously leaked the admin token
+# via `POST /v1/data/system/authz/admin_token`. Add a line here when you expose
+# a new client-facing rule under `data.authz`.
+_public_eval_paths := {
+	["v1", "data", "authz", "allow"],
+	["v1", "data", "authz", "evaluations"],
+	["v1", "data", "authz", "accessible_objects"],
+	["v1", "data", "authz", "accessible_objects_page"],
+	["v1", "data", "authz", "accessible_subjects"],
+	["v1", "data", "authz", "accessible_subjects_page"],
+	["v1", "data", "authz", "permitted_actions"],
+	["v1", "data", "authz", "identity"],
+	["v1", "data", "authz", "write"],
+}
 
-# POST /v1/data/<allowed_prefix>/* — policy evaluation
+# POST /v1/data/authz/<endpoint> — policy evaluation (exact paths only)
 allow if {
 	input.method == "POST"
-	input.path[0] == "v1"
-	input.path[1] == "data"
-	count(input.path) > 2
-	input.path[2] in _allowed_prefixes
+	input.path in _public_eval_paths
 }
 
 # GET /health — health checks
@@ -71,10 +83,6 @@ allow if {
 # to inject malicious JWKS keys or modify authorization data.
 # -----------------------------------------------------------------------
 
-# Admin token from environment variable only.
-# Environment variables cannot be read via OPA's REST API.
-admin_token := opa.runtime().env.OPA_ADMIN_TOKEN
-
 # Policy management (GET/PUT/DELETE)
 allow if {
 	_is_admin
@@ -98,7 +106,12 @@ allow if {
 	input.path[1] == "config"
 }
 
+# Admin identity check. The token is read from the env var inline (a local
+# var, NOT a package rule) so it can never be exposed as a queryable document
+# under data.system.authz. Environment variables are not otherwise readable via
+# OPA's REST API.
 _is_admin if {
-	admin_token
-	input.identity == admin_token
+	token := opa.runtime().env.OPA_ADMIN_TOKEN
+	token != ""
+	input.identity == token
 }
