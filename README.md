@@ -340,8 +340,8 @@ SELECT authz.delete_user_tuples('demo', 'internal_user', 'grace',
 
 ### audit_check_access — Point-in-time permission check
 
-Reconstructs the tuple state at any past point in time by replaying the audit
-log, then runs a full access check against that snapshot.
+Reconstructs the tuple state **and the model rules** at any past point in time
+by replaying the audit log, then runs a full access check against that snapshot.
 
 ```sql
 -- Forensic analysis: verify whether a user had access at a specific past moment.
@@ -360,12 +360,13 @@ SELECT authz.audit_check_access('demo',
     p_request_context => '{"client_ip": "10.1.2.3"}'::jsonb);
 ```
 
-> **Scope of reconstruction:** the audit log versions **tuples** only.
-> `audit_check_access` replays the tuple state at time T but evaluates it
-> against the **current** model rules and condition expressions — model
-> changes are not versioned, so editing the model rewrites the answers
-> time-travel gives for the past. Keep model migrations in version
-> control if historical fidelity matters.
+> **Scope of reconstruction:** the audit log versions both **tuples** and
+> **model rules** (`tuples_audit` and `models_audit`), so `audit_check_access`
+> resolves time T against the rule set as it was then — adding or removing a
+> rule does not rewrite past answers. The one exception is condition
+> **expression text**, which is still read as it is now; treat conditions as
+> immutable (a change means a new condition name) if you need full historical
+> fidelity for conditional grants.
 
 ### audit_list_user / audit_list_object — Audit trail queries
 
@@ -727,9 +728,9 @@ SELECT action, performed_at, performed_by, relation, object_id
 
 `audit_check_access` reconstructs the complete **tuple** state at any past
 timestamp by replaying INSERT/DELETE events from the audit log, then runs a
-full recursive access check against that snapshot. The model rules and
-condition expressions are evaluated **as they are now** — model changes are
-not versioned (see the note under
+full recursive access check against that snapshot. The model rules are
+reconstructed as of T as well (replaying `models_audit`); only condition
+**expression text** is read **as it is now** (see the note under
 [audit_check_access](#audit_check_access--point-in-time-permission-check)).
 
 ```sql
@@ -1161,7 +1162,7 @@ the caller requested.
 | Capability | Notes |
 |---|---|
 | **Full audit trail** | Immutable, monthly-partitioned log with `performed_by` tracking |
-| **Time-travel queries** | `audit_check_access` reconstructs the tuple state at any past timestamp (evaluated against the current model — model changes are not versioned) |
+| **Time-travel queries** | `audit_check_access` reconstructs the tuple state **and model rules** at any past timestamp (both versioned; only condition expression text is read as-now) |
 | **`list_actions`** | "What can user X do on object Z?" — OpenFGA has no equivalent |
 | **`explain_access`** | Structured decision explanation: resolution tree, a typed `reason` per step, a minimal `decision.reason`, and a redacted safety mode |
 | **Namespace write control** | Restrict which applications can write tuples for which object types |

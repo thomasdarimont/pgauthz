@@ -55,6 +55,66 @@ END;
 $$;
 
 ------------------------------------------------------------------------
+-- _build_model_snapshot: (re)builds pg_temp._snapshot_models with the
+-- MODEL rule set of a store as of p_at by replaying authz.models_audit:
+-- the last event per rule wins (a rule's identity is its idx_models_unique
+-- business key; ties on performed_at broken by seq), and only rules whose
+-- last event was an INSERT exist in the snapshot. This is what makes
+-- time-travel resolve against the model as it was, not the current model.
+-- Shared by audit_check_access and audit_list_actions.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._build_model_snapshot(
+    p_store_id smallint,
+    p_at       timestamptz
+) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+    CREATE TEMP TABLE IF NOT EXISTS _snapshot_models (
+        store_id          smallint,
+        object_type       smallint,
+        relation          smallint,
+        rule_type         smallint,
+        computed_relation smallint,
+        tupleset_relation smallint,
+        tupleset_computed smallint,
+        group_id          smallint,
+        group_op          smallint,
+        negated           boolean,
+        allow_object_wildcard boolean,
+        model_id          smallint
+    ) ON COMMIT DROP;
+
+    TRUNCATE _snapshot_models;
+
+    INSERT INTO _snapshot_models
+    SELECT sub.store_id, sub.object_type, sub.relation, sub.rule_type,
+           sub.computed_relation, sub.tupleset_relation, sub.tupleset_computed,
+           sub.group_id, sub.group_op, sub.negated, sub.allow_object_wildcard, sub.model_id
+      FROM (
+        SELECT DISTINCT ON (
+            a.store_id, a.object_type, a.relation, a.rule_type,
+            COALESCE(a.computed_relation, -1),
+            COALESCE(a.tupleset_relation, -1),
+            COALESCE(a.tupleset_computed, -1),
+            a.group_id, a.negated
+        )
+            a.*
+          FROM authz.models_audit a
+         WHERE a.store_id = p_store_id
+           AND a.performed_at <= p_at
+         ORDER BY
+            a.store_id, a.object_type, a.relation, a.rule_type,
+            COALESCE(a.computed_relation, -1),
+            COALESCE(a.tupleset_relation, -1),
+            COALESCE(a.tupleset_computed, -1),
+            a.group_id, a.negated,
+            a.performed_at DESC, a.seq DESC
+      ) sub
+     WHERE sub.action = 'INSERT';
+END;
+$$;
+
+------------------------------------------------------------------------
 -- _eval_direct_snapshot: evaluates a DIRECT rule against the
 -- pg_temp._snapshot_tuples temp table (for point-in-time checks).
 -- No tracing, no contextual tuples.
@@ -318,15 +378,21 @@ BEGIN
     END IF;
     v_path := p_path || v_key;
 
-    -- Single query: all rules ordered by group_id, negated (false first)
+    -- Single query: all rules ordered by group_id, negated (false first).
+    -- Reads the point-in-time model snapshot (pg_temp._snapshot_models),
+    -- not authz.models, so the check resolves against the model as it was
+    -- at p_at. Dynamic SQL because the temp table is per-session (mirrors
+    -- the _snapshot_tuples reads above).
     FOR rule IN
-        SELECT rule_type, computed_relation, tupleset_relation, tupleset_computed,
-               group_id, group_op, negated
-          FROM authz.models
-         WHERE store_id    = p_store_id
-           AND object_type = p_object_type
-           AND relation    = p_relation
-         ORDER BY group_id, negated
+        EXECUTE '
+            SELECT rule_type, computed_relation, tupleset_relation, tupleset_computed,
+                   group_id, group_op, negated
+              FROM _snapshot_models
+             WHERE store_id    = $1
+               AND object_type = $2
+               AND relation    = $3
+             ORDER BY group_id, negated'
+        USING p_store_id, p_object_type, p_relation
     LOOP
         -- Detect group boundary
         IF rule.group_id <> v_cur_group THEN

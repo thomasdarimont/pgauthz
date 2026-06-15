@@ -25,7 +25,7 @@ using three rule types: direct, computed, and tuple-to-userset (TTU).
 |---|---|---|
 | 1 | **Security** | A compromised application role cannot bypass SECURITY DEFINER to read tuples directly. A malicious condition expression cannot access any table or function. |
 | 2 | **Performance** | `check_access` resolves in sub-millisecond for typical 3-5 level hierarchies with integer ID encoding, partition pruning, and covering indexes. |
-| 3 | **Auditability** | Given a compliance inquiry, reconstruct who had what permissions at any past timestamp via time-travel queries against the immutable audit log. (Scope: the log versions tuples; checks replay them against the current model rules.) |
+| 3 | **Auditability** | Given a compliance inquiry, reconstruct who had what permissions at any past timestamp via time-travel queries against the immutable audit log. (Scope: the log versions both tuples and model rules; checks reconstruct both as of T. Only condition expression text is read as-now.) |
 | 4 | **Operability** | New developer runs the full system with tests in under 5 minutes via `bootstrap.sh`. No external runtime dependencies beyond PostgreSQL. |
 | 5 | **Compatibility** | Existing OpenFGA models and tuples can be imported directly. AuthZEN 1.0 API (evaluation, batch, search) via Go services. |
 
@@ -200,9 +200,10 @@ Three topologies are supported:
 | `relations` | Relation registry (smallint ID) | — |
 | `conditions` | Named SQL expressions for ABAC | — |
 | `models` | Authorization rules (direct/computed/TTU, groups). PK + unique index. | — |
+| `models_audit` | Immutable model-rule change log (versions the model for time-travel) | — |
 | `namespace_access` | Per-namespace role grants (read/write) | — |
 | `tuples` | Relationship facts (the core data) | LIST by `object_type`, optional HASH sub-partitioning |
-| `tuples_audit` | Immutable change log | RANGE by `performed_at` (monthly) |
+| `tuples_audit` | Immutable tuple change log | RANGE by `performed_at` (monthly) |
 
 #### Indexes
 
@@ -376,10 +377,10 @@ Application       Nginx Gateway     PostgREST Writer    PostgreSQL
 ### Scenario 4: Time-Travel Query
 
 1. Caller invokes `audit_check_access(store, user, relation, object, timestamp)`
-2. Engine queries `tuples_audit` for all events up to the target timestamp
-3. Replays events into a temporary table (INSERT for `INSERT` events, DELETE for `DELETE` events)
-4. Runs `_check_access` against the snapshot table using the current model rules
-5. Drops the temp table at transaction end
+2. Engine queries `tuples_audit` **and `models_audit`** for all events up to the target timestamp
+3. Replays each into a temp table — the last event per tuple / per model rule wins (ties broken by `seq`), keeping only those whose last event was an `INSERT`
+4. Runs the snapshot check against the reconstructed tuples **and the reconstructed model** (`_snapshot_models`), so both reflect time T
+5. Drops the temp tables at transaction end
 
 ### Scenario 5: Error Handling
 
@@ -716,7 +717,7 @@ Quality
 | No consistency tokens (zookies) | Medium | Read replicas may serve stale data after a write | Replication lag is typically sub-second. Critical paths can read from primary. |
 | Recursion depth limit (default 32) | Low | Deeply nested models could hit the ceiling | Each schema layer costs 2-3 levels; 32 covers ~10 layers. Configurable via the `authz.max_depth` GUC (session or database level). Exceeding it raises; cycles are pruned independently. |
 | No Watch API | Medium | Consumers must poll audit log for changes | `pg_notify('authz_permissions_changed')` is available for event-driven consumers. |
-| Model changes not versioned | Medium | Time-travel replays past tuples against the **current** model rules and condition expressions; editing the model rewrites historical answers | Keep model migrations in version control; conditions needing non-time request data can be supplied via `audit_check_access(..., p_request_context)`. |
+| Condition expressions not versioned | Low | Time-travel reconstructs past tuples **and model rules** (both versioned via `tuples_audit` / `models_audit`), but condition **expression text** is read as it is now; editing a condition in place rewrites historical answers for conditional grants | Treat conditions as immutable — a change means a new condition name; conditions needing non-time request data can be supplied via `audit_check_access(..., p_request_context)`. |
 | `list_objects` degrades for all-access users | Low | `list_objects` uses reverse expansion: cost is O(the user's reachable set), independent of store size — measured ~140 ms against 1M objects for a grant-sparse user. For a user who can reach most of the store through many individual grants, the reachable set approaches the store size and the call degrades to O(all objects) | Model all-access roles as **object wildcards** (`object_id = '*'`, gated by `allow_object_wildcard` on the direct rule): checks and listing become O(1), with `list_objects` returning the typed `('*', is_wildcard)` row. Alternatively, authorize once and list from the application database |
 | `list_subjects` is O(users) | Medium | `list_subjects` checks every direct user of the type in the **whole store** (no reverse index from object to candidate users); the deduplicated candidate set alone costs ~0.7 s at 500k users | Candidates are deduplicated before checking and `LIMIT` terminates early. Use on grant-bearing objects (folders), not leaf objects against the whole user base; upward reverse expansion is future work |
 | PostgREST schema leakage | Low | Wrong parameter names reveal function signatures | Nginx gateway intercepts errors. PostgREST not exposed to host network. |

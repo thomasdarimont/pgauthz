@@ -1337,6 +1337,11 @@ SELECT * FROM _test_teardown_api();
 -- identical performed_at timestamp (clock_timestamp() has finite
 -- resolution), the later-inserted event must win during time-travel
 -- reconstruction — not an arbitrary pick.
+--
+-- The tuple events are backdated, but the model is versioned too, so we
+-- probe at clock_timestamp() (after the model was created in setup) —
+-- the reconstructed model must include the reader rule for the check to
+-- reach the tuple evaluation this test is about.
 -- ================================================================
 SELECT _test_setup_api();
 DO $$
@@ -1355,7 +1360,7 @@ BEGIN
 
     PERFORM _test_assert('api_88_audit_tie_insert_then_delete_denies',
         authz.audit_check_access('test_api', 'user', 'alice', 'reader', 'doc', 'doc_tie1',
-            ts + interval '1 minute')::text, 'false');
+            clock_timestamp())::text, 'false');
 
     -- doc_tie2: revoked then re-granted in the same microsecond -> access
     INSERT INTO authz.tuples_audit (action, performed_at, performed_by,
@@ -1368,7 +1373,7 @@ BEGIN
 
     PERFORM _test_assert('api_89_audit_tie_delete_then_insert_allows',
         authz.audit_check_access('test_api', 'user', 'alice', 'reader', 'doc', 'doc_tie2',
-            ts + interval '1 minute')::text, 'true');
+            clock_timestamp())::text, 'true');
 END;
 $$;
 SELECT * FROM _test_teardown_api();

@@ -58,6 +58,13 @@ BEGIN
     END IF;
     DELETE FROM authz.type_restrictions WHERE store_id = v_store_id;
     DELETE FROM authz.models            WHERE store_id = v_store_id;
+    IF p_purge_audit THEN
+        -- The model deletes above are themselves logged to models_audit;
+        -- purge those rows too (append-only, so under a maintenance window).
+        PERFORM set_config('authz.audit_maintenance', 'on', true);
+        DELETE FROM authz.models_audit  WHERE store_id = v_store_id;
+        PERFORM set_config('authz.audit_maintenance', '', true);
+    END IF;
     DELETE FROM authz.conditions        WHERE store_id = v_store_id;
     DELETE FROM authz.namespace_access  WHERE store_id = v_store_id;
 

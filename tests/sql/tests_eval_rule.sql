@@ -319,6 +319,9 @@ BEGIN
 
     CREATE TEMP TABLE _snapshot_tuples ON COMMIT DROP AS
         SELECT * FROM authz.tuples WHERE store_id = s;
+    -- Snapshot eval resolves rules from _snapshot_models (mirror the model).
+    CREATE TEMP TABLE _snapshot_models ON COMMIT DROP AS
+        SELECT * FROM authz.models WHERE store_id = s;
 
     v := authz._eval_direct_snapshot(
         s, authz._t(s,'user'), 'alice', authz._r(s,'viewer'),
@@ -328,6 +331,7 @@ BEGIN
     PERFORM _test_assert_true('ev_11_snapshot_direct_found', v);
 
     DROP TABLE IF EXISTS _snapshot_tuples;
+    DROP TABLE IF EXISTS _snapshot_models;
 END;
 $$;
 SELECT * FROM _test_teardown_eval();
@@ -341,6 +345,9 @@ BEGIN
 
     CREATE TEMP TABLE _snapshot_tuples ON COMMIT DROP AS
         SELECT * FROM authz.tuples WHERE store_id = s;
+    -- Snapshot eval resolves rules from _snapshot_models (mirror the model).
+    CREATE TEMP TABLE _snapshot_models ON COMMIT DROP AS
+        SELECT * FROM authz.models WHERE store_id = s;
 
     v := authz._eval_direct_snapshot(
         s, authz._t(s,'user'), 'nobody', authz._r(s,'viewer'),
@@ -350,6 +357,7 @@ BEGIN
     PERFORM _test_assert_true('ev_12_snapshot_direct_not_found', NOT v);
 
     DROP TABLE IF EXISTS _snapshot_tuples;
+    DROP TABLE IF EXISTS _snapshot_models;
 END;
 $$;
 SELECT * FROM _test_teardown_eval();
@@ -363,6 +371,9 @@ BEGIN
 
     CREATE TEMP TABLE _snapshot_tuples ON COMMIT DROP AS
         SELECT * FROM authz.tuples WHERE store_id = s;
+    -- Snapshot eval resolves rules from _snapshot_models (mirror the model).
+    CREATE TEMP TABLE _snapshot_models ON COMMIT DROP AS
+        SELECT * FROM authz.models WHERE store_id = s;
 
     v := authz._eval_ttu_snapshot(
         s, authz._t(s,'user'), 'bob', authz._r(s,'can_read'),
@@ -373,6 +384,7 @@ BEGIN
     PERFORM _test_assert_true('ev_13_snapshot_ttu_access', v);
 
     DROP TABLE IF EXISTS _snapshot_tuples;
+    DROP TABLE IF EXISTS _snapshot_models;
 END;
 $$;
 SELECT * FROM _test_teardown_eval();
@@ -386,6 +398,9 @@ BEGIN
 
     CREATE TEMP TABLE _snapshot_tuples ON COMMIT DROP AS
         SELECT * FROM authz.tuples WHERE store_id = s;
+    -- Snapshot eval resolves rules from _snapshot_models (mirror the model).
+    CREATE TEMP TABLE _snapshot_models ON COMMIT DROP AS
+        SELECT * FROM authz.models WHERE store_id = s;
 
     v := authz._eval_ttu_snapshot(
         s, authz._t(s,'user'), 'bob', authz._r(s,'can_read'),
@@ -396,6 +411,7 @@ BEGIN
     PERFORM _test_assert_true('ev_14_snapshot_ttu_no_link', NOT v);
 
     DROP TABLE IF EXISTS _snapshot_tuples;
+    DROP TABLE IF EXISTS _snapshot_models;
 END;
 $$;
 SELECT * FROM _test_teardown_eval();

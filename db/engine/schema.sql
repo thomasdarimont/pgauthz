@@ -285,7 +285,7 @@ BEGIN
        AND current_setting('authz.audit_maintenance', true) = 'on' THEN
         RETURN OLD;
     END IF;
-    RAISE EXCEPTION 'authz.tuples_audit is append-only: % is not allowed', TG_OP;
+    RAISE EXCEPTION 'audit log is append-only: % is not allowed', TG_OP;
 END;
 $$;
 
@@ -434,6 +434,108 @@ CREATE UNIQUE INDEX idx_models_unique ON authz.models (
     COALESCE(tupleset_computed, -1),
     group_id, negated
 );
+
+-- Model change log: versions model rules so time-travel queries
+-- (audit_check_access) resolve against the rule set as it was at a past
+-- timestamp, not the current model. Mirrors tuples_audit: append-only,
+-- one row per rule INSERT/DELETE (an UPDATE is split into DELETE+INSERT),
+-- with a seq tiebreaker so replay applies the later event last. The model
+-- is tiny and low-churn, so this table is not partitioned.
+CREATE TABLE authz.models_audit (
+    seq               bigint NOT NULL GENERATED ALWAYS AS IDENTITY,
+    action            text NOT NULL,  -- 'INSERT' or 'DELETE'
+    performed_at      timestamptz NOT NULL DEFAULT now(),
+    performed_by      text NOT NULL DEFAULT current_user,
+    model_id          smallint NOT NULL,  -- authz.models.id of the rule
+    store_id          smallint NOT NULL,
+    object_type       smallint NOT NULL,
+    relation          smallint NOT NULL,
+    rule_type         smallint NOT NULL,
+    computed_relation smallint,
+    tupleset_relation smallint,
+    tupleset_computed smallint,
+    group_id          smallint NOT NULL,
+    group_op          smallint NOT NULL,
+    negated           boolean  NOT NULL,
+    allow_object_wildcard boolean NOT NULL,
+    PRIMARY KEY (seq)
+);
+
+-- Replay index: matches the DISTINCT ON key of _build_model_snapshot (a
+-- rule's business identity = the idx_models_unique columns) plus recency,
+-- so point-in-time reconstruction scans in order instead of sorting the
+-- store's full model history on every call.
+CREATE INDEX idx_models_audit_replay
+    ON authz.models_audit (
+        store_id, object_type, relation, rule_type,
+        COALESCE(computed_relation, -1),
+        COALESCE(tupleset_relation, -1),
+        COALESCE(tupleset_computed, -1),
+        group_id, negated, performed_at DESC, seq DESC
+    );
+
+-- Trigger: log INSERT/DELETE on authz.models. An UPDATE (e.g. a group_op
+-- change via upsert) is recorded as DELETE(old) + INSERT(new) so replay
+-- (last event per rule wins, ties broken by seq) reconstructs the right
+-- rule set for any point in time. Mirrors authz._audit_tuple.
+CREATE OR REPLACE FUNCTION authz._audit_model() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_performed_by text;
+BEGIN
+    v_performed_by := COALESCE(
+        NULLIF(current_setting('authz.performed_by', true), ''),
+        authz._effective_role()
+    );
+
+    IF TG_OP = 'UPDATE' THEN
+        INSERT INTO authz.models_audit (
+            action, performed_at, performed_by, model_id, store_id, object_type, relation,
+            rule_type, computed_relation, tupleset_relation, tupleset_computed,
+            group_id, group_op, negated, allow_object_wildcard
+        ) VALUES
+            ('DELETE', clock_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.object_type, OLD.relation,
+             OLD.rule_type, OLD.computed_relation, OLD.tupleset_relation, OLD.tupleset_computed,
+             OLD.group_id, OLD.group_op, OLD.negated, OLD.allow_object_wildcard),
+            ('INSERT', clock_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.object_type, NEW.relation,
+             NEW.rule_type, NEW.computed_relation, NEW.tupleset_relation, NEW.tupleset_computed,
+             NEW.group_id, NEW.group_op, NEW.negated, NEW.allow_object_wildcard);
+        RETURN NEW;
+    ELSIF TG_OP = 'INSERT' THEN
+        INSERT INTO authz.models_audit (
+            action, performed_at, performed_by, model_id, store_id, object_type, relation,
+            rule_type, computed_relation, tupleset_relation, tupleset_computed,
+            group_id, group_op, negated, allow_object_wildcard
+        ) VALUES (
+            'INSERT', clock_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.object_type, NEW.relation,
+            NEW.rule_type, NEW.computed_relation, NEW.tupleset_relation, NEW.tupleset_computed,
+            NEW.group_id, NEW.group_op, NEW.negated, NEW.allow_object_wildcard);
+        RETURN NEW;
+    ELSIF TG_OP = 'DELETE' THEN
+        INSERT INTO authz.models_audit (
+            action, performed_at, performed_by, model_id, store_id, object_type, relation,
+            rule_type, computed_relation, tupleset_relation, tupleset_computed,
+            group_id, group_op, negated, allow_object_wildcard
+        ) VALUES (
+            'DELETE', clock_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.object_type, OLD.relation,
+            OLD.rule_type, OLD.computed_relation, OLD.tupleset_relation, OLD.tupleset_computed,
+            OLD.group_id, OLD.group_op, OLD.negated, OLD.allow_object_wildcard);
+        RETURN OLD;
+    END IF;
+
+    RETURN NULL;
+END;
+$$;
+
+CREATE TRIGGER trg_models_audit
+    AFTER INSERT OR UPDATE OR DELETE ON authz.models
+    FOR EACH ROW EXECUTE FUNCTION authz._audit_model();
+
+-- Same append-only protection as tuples_audit (DELETE only under the
+-- authz.audit_maintenance maintenance window, used by delete_store purge).
+CREATE TRIGGER trg_models_audit_block_dml
+    BEFORE UPDATE OR DELETE ON authz.models_audit
+    FOR EACH ROW EXECUTE FUNCTION authz._audit_block_dml();
 
 -- Human-readable view of model rules (resolves integer IDs to names).
 CREATE VIEW authz.models_view AS

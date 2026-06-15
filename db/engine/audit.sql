@@ -50,12 +50,14 @@ $$;
 -- cannot be reconstructed from the audit log — supply them via
 -- p_request_context; "current_time" is always overridden with p_at.
 --
--- Note: the snapshot reconstructs the TUPLE state at p_at. Model rules
--- and condition expressions are read as they are NOW — model changes
--- are not versioned (see docs/ARCHITECTURE.md).
+-- Note: the snapshot reconstructs both the TUPLE state and the MODEL rule
+-- set as of p_at (replaying tuples_audit and models_audit), so the check
+-- resolves against the model as it was, not the current model. Condition
+-- expression text is still read as it is NOW — in-place condition edits
+-- are not versioned (treat conditions as immutable; see docs/ARCHITECTURE.md).
 --
--- Note: uses _check_access_snapshot (dynamic SQL against temp table)
--- to avoid reading current tuples.
+-- Note: uses _check_access_snapshot (dynamic SQL against temp tables)
+-- to avoid reading current tuples or model rules.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.audit_check_access(
     p_store           text,
@@ -77,8 +79,9 @@ DECLARE
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
 
-    -- Build the tuple state as of p_at by replaying the audit log.
+    -- Build the tuple AND model state as of p_at by replaying the logs.
     PERFORM authz._build_audit_snapshot(v_store_id, p_at);
+    PERFORM authz._build_model_snapshot(v_store_id, p_at);
 
     -- Run access check against the snapshot. Caller-supplied request
     -- context is merged in; current_time always reflects p_at.
@@ -114,21 +117,26 @@ DECLARE
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
 
-    -- Build the point-in-time snapshot ONCE and evaluate every relation
-    -- against it (previously the snapshot was rebuilt per relation).
+    -- Build the point-in-time tuple AND model snapshots ONCE and evaluate
+    -- every relation against them (previously rebuilt per relation).
     PERFORM authz._build_audit_snapshot(v_store_id, p_at);
+    PERFORM authz._build_model_snapshot(v_store_id, p_at);
 
-    RETURN QUERY
+    -- Candidate relations come from the model AS OF p_at (the snapshot),
+    -- not the current model, so a relation whose rule was added later is
+    -- not considered. Dynamic SQL because _snapshot_models is per-session.
+    RETURN QUERY EXECUTE '
         SELECT r.name
           FROM (
-              SELECT DISTINCT mr.relation
-                FROM authz.models mr
-               WHERE mr.store_id    = v_store_id
-                 AND mr.object_type = v_object_type
+              SELECT DISTINCT sm.relation
+                FROM _snapshot_models sm
+               WHERE sm.store_id    = $1
+                 AND sm.object_type = $2
           ) dr
           JOIN authz.relations r ON r.id = dr.relation
-         WHERE authz._check_access_snapshot(v_store_id, v_user_type, p_user_id, dr.relation, v_object_type, p_object_id,
-                   COALESCE(p_request_context, '{}'::jsonb) || jsonb_build_object('current_time', p_at));
+         WHERE authz._check_access_snapshot($1, $3, $4, dr.relation, $2, $5, $6)'
+    USING v_store_id, v_object_type, v_user_type, p_user_id, p_object_id,
+          COALESCE(p_request_context, '{}'::jsonb) || jsonb_build_object('current_time', p_at);
 END;
 $$;
 

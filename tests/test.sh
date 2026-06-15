@@ -89,5 +89,10 @@ echo "==> Running object wildcard checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_object_wildcard.sql"
 
+echo ""
+echo "==> Running model versioning (time-travel) checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_model_versioning.sql"
+
 # Clean up test helpers
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_helpers_cleanup.sql"
