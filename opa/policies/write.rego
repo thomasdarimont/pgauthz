@@ -72,6 +72,15 @@ _forward := pgauthz.delete_tuples(_store, input.tuples, _performed_by, _headers)
 
 _forward := pgauthz.delete_user_tuples(_store, input.user, _performed_by, _headers) if input.operation == "delete_user"
 
+# Conditional / atomic write: check preconditions, then apply deletes + writes.
+_forward := pgauthz.write_tuples_checked(
+	_store,
+	object.get(input, "preconditions", []),
+	object.get(input, "deletes", []),
+	object.get(input, "writes", []),
+	_performed_by, _headers,
+) if input.operation == "write_checked"
+
 # Headers forwarded to the writer: JSON content type, plus the caller's per-app
 # DB role as X-Authz-Role when a db-role claim is configured and present in the
 # token. authz._pre_request() on the writer SET LOCAL ROLEs to it for namespace
@@ -112,6 +121,12 @@ _valid_write_request if {
 	input.operation == "delete_user"
 	input.user.user_type
 	input.user.user_id
+}
+
+# write_checked carries preconditions/deletes/writes arrays — the DB function
+# validates their tuple shapes and the precondition semantics.
+_valid_write_request if {
+	input.operation == "write_checked"
 }
 
 # The five identifying fields every tuple needs.

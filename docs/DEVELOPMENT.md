@@ -731,6 +731,7 @@ operations. A token that authorizes writes (with the default config):
 | `write` / `delete` | `tuple` (object) | `write_tuple` / `delete_tuple` |
 | `write_batch` / `delete_batch` | `tuples` (array) | `write_tuples_jsonb` / `delete_tuples_jsonb` |
 | `delete_user` | `user` (`{user_type, user_id}`) | `delete_user_tuples` (offboarding) |
+| `write_checked` | `preconditions` + `deletes` + `writes` (arrays) | `write_tuples_checked` (conditional/atomic — see below) |
 
 A tuple object is `{user_type, user_id, relation, object_type, object_id}` plus
 optional `user_relation` and (writes only) `condition` + `condition_context`.
@@ -773,6 +774,66 @@ Outcomes:
 | `{"allowed":false,"error":"not_authorized"}` | missing/invalid token, or roles claim lacks `WRITER_ROLE` |
 | `{"allowed":false,"error":"invalid_request"}` | authorized, but malformed `operation` / `tuple` / `tuples` / `user` |
 | `{"allowed":false,"error":"writes_disabled"}` | no `POSTGREST_WRITER_URL` configured (read-only deployment) |
+
+### Conditional / atomic writes (optimistic concurrency)
+
+`write_checked` checks **preconditions** and then applies `deletes` + `writes`
+**atomically in one transaction**. Any failed precondition aborts everything —
+the only race-free way to do "write X only if state Y holds" over the API (each
+plain-write RPC is its own transaction). A precondition is a partial tuple
+filter with `"match": "exists" | "absent"` (only the fields you supply are
+constrained, so `{relation, object_type, object_id}` means "any tuple with that
+relation on that object").
+
+It's a general conditional-mutate, despite the name — pass `deletes` with no
+`writes` for a **conditional delete** ("revoke X only if Y still holds"), and
+with `{match:"exists"}` on the deleted tuple you get an *assertive* delete that
+**fails if it's already gone** (unlike the idempotent `delete` operation, which
+no-ops).
+
+Race-free **ownership transfer** — make Bob the owner only if Alice still is:
+
+```bash
+curl -sX POST http://localhost:8181/v1/data/authz/write \
+  -H "Content-Type: application/json" \
+  -d '{"input":{"token":"'"$TOKEN"'","store":"acme","operation":"write_checked",
+        "preconditions":[{"match":"exists","user_type":"user","user_id":"alice",
+                          "relation":"owner","object_type":"document","object_id":"d1"}],
+        "deletes":[{"user_type":"user","user_id":"alice","relation":"owner",
+                    "object_type":"document","object_id":"d1"}],
+        "writes":[{"user_type":"user","user_id":"bob","relation":"owner",
+                   "object_type":"document","object_id":"d1"}]}}'
+# => {"result":{"allowed":true,"result":{"status":200,"body":{"deleted":1,"written":1}}}}
+```
+
+"At most one owner" — assign only if none exists (`absent`, partial filter):
+
+```jsonc
+"operation":"write_checked",
+"preconditions":[{"match":"absent","relation":"owner","object_type":"document","object_id":"d1"}],
+"writes":[{"user_type":"user","user_id":"alice","relation":"owner","object_type":"document","object_id":"d1"}]
+```
+
+A failed precondition returns the writer's `400` with
+`"Write precondition failed: …"` and **nothing is written**.
+
+Same call in **direct SQL**:
+
+```sql
+SELECT authz.write_tuples_checked('acme',
+    p_preconditions := '[{"match":"exists","user_type":"user","user_id":"alice",
+                          "relation":"owner","object_type":"document","object_id":"d1"}]',
+    p_deletes       := '[{"user_type":"user","user_id":"alice","relation":"owner",
+                          "object_type":"document","object_id":"d1"}]',
+    p_writes        := '[{"user_type":"user","user_id":"bob","relation":"owner",
+                          "object_type":"document","object_id":"d1"}]');
+```
+
+> **Concurrency.** A transaction-scoped advisory lock on each referenced object
+> serializes concurrent checked-writes, giving compare-and-swap semantics (two
+> racing transfers: one wins, the other's precondition then fails). This protects
+> checked-writes **against each other** — for a hard invariant, route *all*
+> mutators of those tuples through `write_checked` (or add a DB constraint).
 
 ### Admin / model operations
 
@@ -825,6 +886,7 @@ maps to a SQL function:
 | `write_batch` | `write_tuples_jsonb` | count inserted (duplicates skipped) |
 | `delete_batch` | `delete_tuples_jsonb` | count deleted |
 | `delete_user` | `delete_user_tuples` | count removed |
+| `write_checked` | `write_tuples_checked` | `{"written": n, "deleted": m}` (conditional/atomic) |
 
 **Admin / model operations** require `authz_admin` and are **direct SQL only**
 (not exposed over OPA):

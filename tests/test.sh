@@ -50,6 +50,11 @@ echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_api.sql"
 
 echo ""
+echo "==> Running write precondition (optimistic concurrency) checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_preconditions.sql"
+
+echo ""
 echo "==> Running namespace access control checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_namespace.sql"

@@ -331,6 +331,16 @@ delete_user_tuples(store, user, performed_by, headers) := _send_write("/rpc/dele
 	"p_performed_by": performed_by,
 }, headers)
 
+# write_tuples_checked: conditional/atomic write — preconditions, then deletes
+# and writes, in one transaction (optimistic concurrency).
+write_tuples_checked(store, preconditions, deletes, writes, performed_by, headers) := _send_write("/rpc/write_tuples_checked", {
+	"p_store": store,
+	"p_preconditions": preconditions,
+	"p_deletes": deletes,
+	"p_writes": writes,
+	"p_performed_by": performed_by,
+}, headers)
+
 # headers carries Content-Type and, when namespace isolation is configured, the
 # caller's X-Authz-Role (consumed by authz._pre_request on the writer).
 _send_write(path, body, headers) := {"status": resp.status_code, "body": resp.body} if {

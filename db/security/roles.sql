@@ -189,6 +189,7 @@ GRANT EXECUTE ON FUNCTION authz.write_tuples_jsonb(text, jsonb, text) TO authz_w
 GRANT EXECUTE ON FUNCTION authz.delete_tuples(text, authz.tuple_input[], text) TO authz_writer;
 GRANT EXECUTE ON FUNCTION authz.delete_tuples_jsonb(text, jsonb, text) TO authz_writer;
 GRANT EXECUTE ON FUNCTION authz.delete_user_tuples(text, text, text, text) TO authz_writer;
+GRANT EXECUTE ON FUNCTION authz.write_tuples_checked(text, jsonb, jsonb, jsonb, text) TO authz_writer;
 -- PostgREST db-pre-request hook (runs as the anon->authz_writer role).
 GRANT EXECUTE ON FUNCTION authz._pre_request() TO authz_writer;
 
@@ -244,6 +245,7 @@ ALTER FUNCTION authz.write_tuples_jsonb(text, jsonb, text) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_tuples(text, authz.tuple_input[], text) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_tuples_jsonb(text, jsonb, text) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_user_tuples(text, text, text, text) SECURITY DEFINER;
+ALTER FUNCTION authz.write_tuples_checked(text, jsonb, jsonb, jsonb, text) SECURITY DEFINER;
 ALTER FUNCTION authz.grant_namespace_access(text, text, text, boolean, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.revoke_namespace_access(text, text, text, boolean, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.find_redundant_tuples(text, text, text, jsonb) SECURITY DEFINER;
