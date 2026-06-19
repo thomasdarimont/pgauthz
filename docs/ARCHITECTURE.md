@@ -241,6 +241,10 @@ Three topologies are supported:
 - `explain_access` — full resolution trace with timing
 - `validate_condition` — test condition expressions
 
+**Watch / changefeed:**
+- `watch_changes` — stream tuple changes since a cursor (lag-gated; pairs with `NOTIFY authz_changes`)
+- `watch_cursor` — the store's current high-water cursor
+
 **Administration:**
 - `create_store` / `delete_store` — store lifecycle
 - `model_register_type` / `model_register_relation` — model evolution
@@ -783,7 +787,7 @@ Quality
 |---|---|---|---|
 | No consistency tokens (zookies) | Medium | With read replicas, an asynchronous replica can serve stale data after a write. The risk is a **stale allow after a revoke** (a lagging replica still returns `allowed`); a stale deny after a grant is only an availability hiccup. Reads on the primary are always read-your-writes (MVCC) | Route security-critical checks — especially confirming checks after a revoke — to the primary; lag is typically sub-second; `synchronous_commit = remote_apply` removes it entirely. A min-LSN/token API is future work — approximate it by waiting for the replica's `pg_last_wal_replay_lsn()` to reach the write's `pg_current_wal_lsn()`. See README → Consistency model |
 | Recursion depth limit (default 32) | Low | Deeply nested models could hit the ceiling | Each schema layer costs 2-3 levels; 32 covers ~10 layers. Configurable via the `authz.max_depth` GUC (session or database level). Exceeding it raises; cycles are pruned independently. |
-| No Watch API | Medium | Consumers must poll audit log for changes | `pg_notify('authz_permissions_changed')` is available for event-driven consumers. |
+| No streaming push *transport* (WebSocket/SSE) | Low | Real-time UIs must bridge the changefeed themselves | The Watch changefeed exists — `authz.watch_changes` (cursored, lag-gated stream over `tuples_audit`) + a `NOTIFY authz_changes` doorbell. Only an HTTP streaming bridge (WebSocket/SSE) is left to the deployment; exactly-once consumers can use logical replication. |
 | Condition expressions can fail on specific data at check time | Low | A `BEFORE INSERT/UPDATE` trigger test-compiles every condition expression in the sandbox and rejects it if it cannot compile (SQLSTATE class 42 — syntax error, unknown function/column/table, type mismatch), so malformed expressions never get stored. *Data-dependent* runtime errors (class 22, e.g. a cast that fails only on certain inputs) are not caught at write time | Those data-dependent failures are caught at check time and treated as deny (`_exec_condition` errors → false), so a condition is always fail-safe (it can deny, never wrongly grant). Time-travel needs request data beyond the reconstructed timestamp supplied via `audit_check_access(..., p_request_context)`. |
 | `list_objects` degrades for all-access users | Low | `list_objects` uses reverse expansion: cost is O(the user's reachable set), independent of store size — measured ~140 ms against 1M objects for a grant-sparse user. For a user who can reach most of the store through many individual grants, the reachable set approaches the store size and the call degrades to O(all objects) | Model all-access roles as **object wildcards** (`object_id = '*'`, gated by `allow_object_wildcard` on the direct rule): checks and listing become O(1), with `list_objects` returning the typed `('*', is_wildcard)` row. Alternatively, authorize once and list from the application database |
 | `list_subjects` degrades for all-shared objects | Low | `list_subjects` uses **upward reverse expansion** (the dual of `list_objects`): it walks from the object to its reachable subjects, so cost is O(the object's reachable subject set), independent of the store's user count — ~7 ms for a 3-grantee object in a 100k-user store (vs ~11 s for the old whole-store scan). For an object reachable by most of the user base through many individual grants, the candidate set approaches that population and the call degrades to O(those subjects) | Model public/all-user access as a **user wildcard** (`user_id = '*'`): checks and listing become O(1), with `list_subjects` returning the typed `('*', is_wildcard)` row. The expansion uses the same object-keyed indexes as the `check_access` hot path |
@@ -803,7 +807,7 @@ These are intentional trade-offs, not technical debt:
 - **No built-in model versioning** — multi-store isolation provides blue-green model deployment; `model_add_rule` / `model_remove_rule` handle incremental evolution
 - **No gRPC / SDK ecosystem** — SQL and REST are the integration points
 - **No distributed transactions** — writes go to one PostgreSQL instance
-- **No real-time push notifications** — `pg_notify` is available but no built-in WebSocket/SSE support
+- **No built-in WebSocket/SSE transport** — the Watch changefeed (`watch_changes` + `NOTIFY authz_changes`) is available, but bridging it to browser push (WebSocket/SSE) is left to the deployment
 - **No built-in rate limiting** — expected to be handled at the infrastructure layer (load balancer, Nginx)
 
 ---

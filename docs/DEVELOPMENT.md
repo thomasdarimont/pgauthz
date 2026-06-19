@@ -1076,6 +1076,50 @@ unnecessary network round-trips when access is denied, but the
 downstream service should not trust the caller blindly. Forward the
 JWT so each service can verify independently.
 
+## Watching for changes (changefeed)
+
+To react to tuple changes in real time — cache invalidation, materialization,
+sync — stream them from the audit log instead of polling. Two pieces:
+
+- **`NOTIFY authz_changes`** — the audit trigger emits a doorbell on every write,
+  deduplicated to **one per store per transaction** (a 50-tuple batch → one
+  notification). Payload is the `store_id`.
+- **`authz.watch_changes(store, after_at, after_seq, …)`** — returns the decoded
+  changes after a `(performed_at, seq)` cursor. The notify is only a doorbell;
+  the cursor is the source of truth, so nothing is lost if a notification is
+  missed, and a consumer resumes from its persisted cursor after a restart.
+
+```sql
+-- everything in 'demo' since a cursor:
+SELECT * FROM authz.watch_changes('demo', '2026-06-01', 0);
+
+-- filter by object types, namespaces, and/or relations (one watch covers many —
+-- pass arrays; each is OR-within, all AND together; NULL = all). e.g. "viewer on
+-- document/folder within the dms namespace":
+SELECT * FROM authz.watch_changes('acme',
+    p_object_types => ARRAY['document','folder'],
+    p_namespaces   => ARRAY['dms'],
+    p_relations    => ARRAY['viewer']);
+-- The feed reports the raw changed tuple, not derived permission impact.
+
+-- current high-water cursor (to start "from now"):
+SELECT * FROM authz.watch_cursor('demo');
+```
+
+Consumer loop: `LISTEN authz_changes` → on notification call `watch_changes`
+after the last cursor → process → persist the new cursor.
+
+**Safety / lag.** `seq` is assigned at INSERT time, not commit time, so changes
+are cursored by `(performed_at, seq)` and gated by a stability lag (`p_lag`,
+default 1s): only rows older than `now() - p_lag` are returned. Because the
+writer roles carry a `statement_timeout`, a write transaction cannot outlive it
+— a lag at or above that bound is a hard no-skip guarantee; a smaller lag trades
+that for lower latency (fine for at-least-once cache invalidation). For strict
+exactly-once streaming, use logical replication on `tuples_audit`.
+
+A runnable end-to-end demo (a `LISTEN` consumer + compose overlay) is in
+[`examples/watch/`](../examples/watch/README.md).
+
 ## Debugging
 
 ### Trace which tuples exist for an object

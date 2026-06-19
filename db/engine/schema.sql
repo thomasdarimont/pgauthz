@@ -234,6 +234,12 @@ CREATE INDEX idx_tuples_audit_lookup
 CREATE INDEX idx_tuples_audit_time
     ON authz.tuples_audit (performed_at);
 
+-- Watch / changefeed cursor: (store_id, performed_at, seq) supports the
+-- watch_changes scan `WHERE store_id = ? AND (performed_at, seq) > (?, ?)
+-- ORDER BY performed_at, seq`, with partition pruning on performed_at.
+CREATE INDEX idx_tuples_audit_watch
+    ON authz.tuples_audit (store_id, performed_at, seq);
+
 -- Replay index: matches the DISTINCT ON key of _build_audit_snapshot so
 -- point-in-time reconstruction scans the events in order instead of
 -- sorting the store's full audit history on every call.
@@ -274,6 +280,8 @@ BEGIN
              OLD.relation, OLD.object_type, OLD.object_id, OLD.condition_id, OLD.condition_context),
             ('INSERT', transaction_timestamp(), v_performed_by, NEW.store_id, NEW.user_type, NEW.user_id, NEW.user_relation,
              NEW.relation, NEW.object_type, NEW.object_id, NEW.condition_id, NEW.condition_context);
+        -- Watch doorbell — deduplicated to one per store per transaction.
+        PERFORM pg_notify('authz_changes', NEW.store_id::text);
         RETURN NEW;
     END IF;
 
@@ -292,6 +300,9 @@ BEGIN
         TG_OP, transaction_timestamp(), v_performed_by, v_row.store_id, v_row.user_type, v_row.user_id, v_row.user_relation,
         v_row.relation, v_row.object_type, v_row.object_id, v_row.condition_id, v_row.condition_context
     );
+
+    -- Watch doorbell — deduplicated to one per store per transaction.
+    PERFORM pg_notify('authz_changes', v_row.store_id::text);
 
     RETURN v_row;
 END;

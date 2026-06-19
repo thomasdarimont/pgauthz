@@ -148,6 +148,9 @@ GRANT EXECUTE ON FUNCTION authz.audit_list_user(text, text, text, timestamptz, t
 GRANT EXECUTE ON FUNCTION authz.audit_list_object(text, text, text, timestamptz, timestamptz) TO authz_auditor;
 GRANT EXECUTE ON FUNCTION authz.audit_check_access(text, text, text, text, text, text, timestamptz, jsonb) TO authz_auditor;
 GRANT EXECUTE ON FUNCTION authz.audit_list_actions(text, text, text, text, text, timestamptz, jsonb) TO authz_auditor;
+-- Watch / changefeed (reads the audit log) — auditor-level privilege.
+GRANT EXECUTE ON FUNCTION authz.watch_changes(text, timestamptz, bigint, int, interval, text[], text[], text[]) TO authz_auditor;
+GRANT EXECUTE ON FUNCTION authz.watch_cursor(text) TO authz_auditor;
 
 ------------------------------------------------------------------------
 -- authz_reader: access checks and search queries
@@ -231,6 +234,8 @@ ALTER FUNCTION authz.audit_check_access(text, text, text, text, text, text, time
 ALTER FUNCTION authz.audit_list_actions(text, text, text, text, text, timestamptz, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.audit_list_user(text, text, text, timestamptz, timestamptz) SECURITY DEFINER;
 ALTER FUNCTION authz.audit_list_object(text, text, text, timestamptz, timestamptz) SECURITY DEFINER;
+ALTER FUNCTION authz.watch_changes(text, timestamptz, bigint, int, interval, text[], text[], text[]) SECURITY DEFINER;
+ALTER FUNCTION authz.watch_cursor(text) SECURITY DEFINER;
 ALTER FUNCTION authz.explain_access(text, text, text, text, text, text, jsonb, boolean, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.write_tuple(text, text, text, text, text, text, text, text, jsonb, text) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_tuple(text, text, text, text, text, text, text, text) SECURITY DEFINER;

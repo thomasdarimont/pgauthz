@@ -1269,7 +1269,7 @@ the caller requested.
 | Capability | Impact | Notes |
 |---|---|---|
 | **Consistency tokens** | Low–Medium | Zanzibar-style tokens for read-after-write consistency in distributed setups. This solution uses PostgreSQL MVCC — strong consistency on a single instance, eventual consistency with read replicas (negligible lag for authorization data). |
-| **Watch API** | Low | OpenFGA can stream tuple changes. This solution has the audit log for polling; PostgreSQL LISTEN/NOTIFY could fill the gap if needed. |
+| **Watch API** | Low | OpenFGA can stream tuple changes. This solution provides `authz.watch_changes` (a cursored, lag-gated changefeed over the audit log) plus a `NOTIFY authz_changes` doorbell; a WebSocket/SSE transport bridge is left to the deployment. |
 | **gRPC API** | Low | OpenFGA has native gRPC. This solution uses SQL directly or PostgREST for HTTP REST. |
 | **SDK ecosystem** | Medium | OpenFGA has official SDKs for Go, JS, Python, Java, .NET. This solution requires direct SQL or HTTP calls via PostgREST — simpler for teams already on PostgreSQL, but lacks the plug-and-play SDK experience. |
 | **Modular models** | Low | OpenFGA 1.2 supports splitting models into modules. Less relevant here since the model is SQL rows that can be organized however you like. |
@@ -1285,5 +1285,5 @@ the caller requested.
 
 - You need official language SDKs and gRPC for a polyglot microservices architecture
 - You want a managed/hosted authorization service (e.g., Okta FGA)
-- You need the Watch API for real-time streaming of tuple changes
+- You need a managed gRPC streaming Watch transport out of the box (this solution provides the changefeed via `watch_changes` + `NOTIFY`, but you bridge it to your transport)
 - You prefer the OpenFGA DSL for defining and reviewing models

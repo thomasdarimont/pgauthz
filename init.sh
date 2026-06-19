@@ -27,6 +27,7 @@ psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/access.sql"
 psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/explain.sql"
 psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/tuples.sql"
 psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/audit.sql"
+psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/watch.sql"
 psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/model.sql"
 
 echo "==> Creating audit partitions (current + next month)..."

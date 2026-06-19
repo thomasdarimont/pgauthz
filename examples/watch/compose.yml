@@ -1,0 +1,54 @@
+# Watch-API demo — a consumer that LISTENs on the `authz_changes` pg_notify
+# doorbell and streams tuple changes via authz.watch_changes.
+#
+# This is an OVERLAY on the main stack. Run from the repo root:
+#
+#   ./start.sh && ./init.sh                       # bring up + load the engine
+#   cat examples/demo/model.sql examples/demo/seed.sql | \
+#     docker compose -f compose.yml -f compose-authzen.yml \
+#       exec -T authz-db psql -U authz -d authz   # load the 'demo' store
+#
+#   docker compose -f compose.yml -f compose-authzen.yml -f examples/watch/compose.yml \
+#     up watch-consumer                           # start the consumer (watch its logs)
+#
+# Then, in another terminal, make a change and watch it stream in the logs:
+#
+#   docker compose -f compose.yml -f compose-authzen.yml \
+#     exec -T authz-db psql -U authz -d authz -c \
+#     "SELECT authz.write_tuple('demo','internal_user','grace','viewer','document','doc_payroll_001');"
+#
+# A 50-tuple batch in one transaction still wakes the consumer with ONE
+# notification (the doorbell is deduplicated per store per transaction).
+
+services:
+  watch-consumer:
+    image: python:3.12-slim
+    environment:
+      # The watcher SET ROLEs to authz_auditor (see consumer.py), so it connects
+      # as the authenticator. In production use a dedicated login role granted
+      # authz_auditor instead of the demo authenticator.
+      DATABASE_URL: "postgres://authz_authenticator:${AUTHZ_AUTHENTICATOR_PASSWORD:-authz}@authz-db:5432/authz"
+      WATCH_STORE: "${WATCH_STORE:-demo}"
+      # Single watch — optional filters (comma-separated; unset = all):
+      # WATCH_OBJECT_TYPES: "document,folder"
+      # WATCH_NAMESPACES: "docs"
+      # WATCH_RELATIONS: "viewer"
+      #
+      # Or MANY watches over one connection — one block per precise combination
+      # (each gets its own cursor). e.g. "viewer on folder/docs in foo" AND
+      # "can_manage on contract in bar":
+      # WATCH_SPECS: >-
+      #   [{"name":"docs","object_types":["folder","docs"],"namespaces":["foo"],"relations":["viewer"]},
+      #    {"name":"contracts","object_types":["contract"],"namespaces":["bar"],"relations":["can_manage"]}]
+      #
+      # WATCH_FROM_BEGINNING: "true"   # replay the whole audit log on start
+    volumes:
+      - ./examples/watch/consumer.py:/app/consumer.py:ro
+    working_dir: /app
+    command: >
+      sh -c "pip install --quiet --root-user-action=ignore psycopg2-binary &&
+             exec python -u consumer.py"
+    depends_on:
+      authz-db:
+        condition: service_healthy
+    restart: unless-stopped
