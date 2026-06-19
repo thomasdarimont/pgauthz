@@ -106,7 +106,7 @@ func (b *Backend) ListResources(ctx context.Context, store string,
 	subjectType, subjectID, action, objectType string,
 	reqContext map[string]any, page *authz.PageRequest) ([]string, *authz.PageResponse, error) {
 
-	limit, offset := pageParams(page)
+	limit, offset, after := pageParams(page)
 
 	var ctxJSON []byte
 	if reqContext != nil {
@@ -121,8 +121,8 @@ func (b *Backend) ListResources(ctx context.Context, store string,
 	queryLimit := limit + 1
 
 	rows, err := b.pool.Query(ctx,
-		"SELECT object_id FROM authz.list_objects($1, $2, $3, $4, $5, $6, $7, $8)",
-		store, subjectType, subjectID, action, objectType, ctxJSON, queryLimit, offset,
+		"SELECT object_id FROM authz.list_objects($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+		store, subjectType, subjectID, action, objectType, ctxJSON, queryLimit, offset, textOrNil(after),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list_objects: %w", err)
@@ -134,14 +134,14 @@ func (b *Backend) ListResources(ctx context.Context, store string,
 		return nil, nil, err
 	}
 
-	return buildPage(ids, limit, offset)
+	return buildPage(ids, limit)
 }
 
 func (b *Backend) ListSubjects(ctx context.Context, store string,
 	subjectType, action, objectType, objectID string,
 	reqContext map[string]any, page *authz.PageRequest) ([]string, *authz.PageResponse, error) {
 
-	limit, offset := pageParams(page)
+	limit, offset, after := pageParams(page)
 
 	var ctxJSON []byte
 	if reqContext != nil {
@@ -155,8 +155,8 @@ func (b *Backend) ListSubjects(ctx context.Context, store string,
 	queryLimit := limit + 1
 
 	rows, err := b.pool.Query(ctx,
-		"SELECT subject_id FROM authz.list_subjects($1, $2, $3, $4, $5, $6, $7, $8)",
-		store, subjectType, action, objectType, objectID, ctxJSON, queryLimit, offset,
+		"SELECT subject_id FROM authz.list_subjects($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+		store, subjectType, action, objectType, objectID, ctxJSON, queryLimit, offset, textOrNil(after),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list_subjects: %w", err)
@@ -168,7 +168,7 @@ func (b *Backend) ListSubjects(ctx context.Context, store string,
 		return nil, nil, err
 	}
 
-	return buildPage(ids, limit, offset)
+	return buildPage(ids, limit)
 }
 
 func (b *Backend) ListActions(ctx context.Context, store string,
@@ -202,15 +202,25 @@ func (b *Backend) Healthz(ctx context.Context) error {
 
 // --- helpers ---
 
-func pageParams(page *authz.PageRequest) (limit, offset int) {
+func pageParams(page *authz.PageRequest) (limit, offset int, after string) {
 	if page == nil {
-		return 100, 0
+		return 100, 0, ""
 	}
 	limit = page.Limit
 	if limit <= 0 {
 		limit = 100
 	}
-	return limit, page.Offset
+	return limit, page.Offset, page.After
+}
+
+// textOrNil maps an empty keyset cursor to a SQL NULL so list_objects /
+// list_subjects fall back to offset paging; a non-empty cursor stays a value
+// (and, being non-NULL, takes precedence over p_offset in the SQL function).
+func textOrNil(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 func collectStrings(rows pgx.Rows, _ int) ([]string, error) {
@@ -225,7 +235,7 @@ func collectStrings(rows pgx.Rows, _ int) ([]string, error) {
 	return result, rows.Err()
 }
 
-func buildPage(ids []string, limit, offset int) ([]string, *authz.PageResponse, error) {
+func buildPage(ids []string, limit int) ([]string, *authz.PageResponse, error) {
 	hasMore := len(ids) > limit
 	if hasMore {
 		ids = ids[:limit]
@@ -233,9 +243,10 @@ func buildPage(ids []string, limit, offset int) ([]string, *authz.PageResponse, 
 
 	var pageResp *authz.PageResponse
 	if hasMore {
+		// Keyset cursor: the next page starts after the last id we return.
 		pageResp = &authz.PageResponse{
 			HasMore:   true,
-			NextToken: api.EncodePage(offset + limit),
+			NextToken: api.EncodePageAfter(ids[len(ids)-1]),
 		}
 	}
 

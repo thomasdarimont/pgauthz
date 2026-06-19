@@ -489,7 +489,8 @@ CREATE OR REPLACE FUNCTION authz.list_objects(
     p_object_type text,
     context       jsonb DEFAULT NULL,
     p_limit       int DEFAULT NULL,
-    p_offset      int DEFAULT 0
+    p_offset      int DEFAULT 0,
+    p_after       text DEFAULT NULL   -- keyset cursor: last object_id of the previous page
 ) RETURNS TABLE (object_id text, is_wildcard boolean)
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
@@ -554,10 +555,14 @@ BEGIN
                   FROM reach r
                  WHERE r.object_type = v_object_type
                    AND r.relation    = v_relation
+                   -- keyset cursor: only candidates after the previous page, so
+                   -- _check_access never re-runs on earlier pages' objects.
+                   AND (p_after IS NULL OR r.object_id > p_after)
                  ORDER BY r.object_id) c
          WHERE authz._check_access(v_store_id, v_user_type, p_user_id, v_relation, v_object_type, c.object_id, context)
          ORDER BY c.object_id
-         OFFSET p_offset
+         -- p_after (keyset) takes precedence over p_offset when supplied.
+         OFFSET (CASE WHEN p_after IS NULL THEN p_offset ELSE 0 END)
          LIMIT p_limit;
 END;
 $$;
@@ -582,7 +587,8 @@ CREATE OR REPLACE FUNCTION authz.list_subjects(
     p_object_id    text,
     context        jsonb DEFAULT NULL,
     p_limit        int DEFAULT NULL,
-    p_offset       int DEFAULT 0
+    p_offset       int DEFAULT 0,
+    p_after        text DEFAULT NULL   -- keyset cursor: last subject_id of the previous page
 ) RETURNS TABLE (subject_id text, is_wildcard boolean)
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
@@ -656,10 +662,13 @@ BEGIN
                  AND t.relation      = r.relation
                  AND t.user_type     = v_subject_type
                  AND t.user_relation IS NULL
+                 -- keyset cursor: only candidates after the previous page.
+                 AND (p_after IS NULL OR t.user_id > p_after)
           ) c
          WHERE authz._check_access(v_store_id, v_subject_type, c.subject_id, v_relation, v_object_type, p_object_id, context)
          ORDER BY c.subject_id
-         OFFSET p_offset
+         -- p_after (keyset) takes precedence over p_offset when supplied.
+         OFFSET (CASE WHEN p_after IS NULL THEN p_offset ELSE 0 END)
          LIMIT p_limit;
 END;
 $$;

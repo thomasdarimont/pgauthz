@@ -217,9 +217,20 @@ SELECT authz.check_access_with_context('demo',
 -- Which documents can Bob read?
 SELECT * FROM authz.list_objects('demo', 'internal_user', 'bob', 'can_read', 'document');
 
--- With pagination (stable ordering by object_id / subject_id)
+-- Offset pagination (stable ordering by object_id / subject_id)
 SELECT * FROM authz.list_objects('demo', 'internal_user', 'bob', 'can_read', 'document',
     p_limit => 10, p_offset => 0);
+
+-- Keyset (cursor) pagination — pass p_after = the last id of the previous page.
+-- Prefer this for large result sets: offset paging re-runs the per-candidate
+-- access check on every object of every earlier page (O(offset) wasted checks),
+-- while keyset prunes those candidates in the index scan before the check runs.
+-- p_after wins over p_offset when both are given; omit p_after (NULL) for page 1.
+SELECT * FROM authz.list_objects('demo', 'internal_user', 'bob', 'can_read', 'document',
+    p_limit => 10);                       -- page 1
+SELECT * FROM authz.list_objects('demo', 'internal_user', 'bob', 'can_read', 'document',
+    p_limit => 10, p_after => 'doc_042'); -- next page, starts after doc_042
+-- list_subjects takes the same p_after (the previous page's last subject_id).
 
 -- Which users can read this document?
 SELECT * FROM authz.list_subjects('demo', 'internal_user', 'can_read', 'document', 'doc_payroll_001');

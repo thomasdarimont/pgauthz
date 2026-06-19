@@ -245,8 +245,11 @@ accessible_objects := pgauthz.list_objects(
 
 # -----------------------------------------------------------------------
 # Resource search (paginated): ordered page of accessible object IDs.
-# Input: { ..., "page": {"limit": 10, "offset": 0} }
-# Returns an array (not a set) to preserve deterministic sort order.
+# Input: { ..., "page": {"limit": 10, "offset": 0} }  (offset paging)
+#    or: { ..., "page": {"limit": 10, "after": "doc_042"} }  (keyset paging)
+# Returns an array (not a set) to preserve deterministic sort order. The four
+# rules are mutually exclusive on (context?, after?) so the complete rule never
+# has two matching bodies.
 # -----------------------------------------------------------------------
 accessible_objects_page := pgauthz.list_objects_page_with_context(
 	store,
@@ -261,6 +264,7 @@ accessible_objects_page := pgauthz.list_objects_page_with_context(
 	_subject_valid
 	input.page
 	input.context
+	not input.page.after
 }
 
 accessible_objects_page := pgauthz.list_objects_page(
@@ -275,6 +279,38 @@ accessible_objects_page := pgauthz.list_objects_page(
 	_subject_valid
 	input.page
 	not input.context
+	not input.page.after
+}
+
+accessible_objects_page := pgauthz.list_objects_page_after_with_context(
+	store,
+	subject_type,
+	subject_id,
+	input.action,
+	input.resource.type,
+	input.context,
+	input.page.limit,
+	input.page.after,
+) if {
+	_subject_valid
+	input.page
+	input.context
+	input.page.after
+}
+
+accessible_objects_page := pgauthz.list_objects_page_after(
+	store,
+	subject_type,
+	subject_id,
+	input.action,
+	input.resource.type,
+	input.page.limit,
+	input.page.after,
+) if {
+	_subject_valid
+	input.page
+	not input.context
+	input.page.after
 }
 
 # -----------------------------------------------------------------------
@@ -305,6 +341,21 @@ accessible_subjects_page := pgauthz.list_subjects_page(
 ) if {
 	_subject_valid
 	input.page
+	not input.page.after
+}
+
+accessible_subjects_page := pgauthz.list_subjects_page_after(
+	store,
+	input.subject_type,
+	input.action,
+	input.resource.type,
+	input.resource.id,
+	input.page.limit,
+	input.page.after,
+) if {
+	_subject_valid
+	input.page
+	input.page.after
 }
 
 # -----------------------------------------------------------------------

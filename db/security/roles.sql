@@ -173,8 +173,8 @@ GRANT EXECUTE ON FUNCTION authz.check_access_with_contextual_tuples_jsonb(text, 
 GRANT EXECUTE ON FUNCTION authz.check_access_batch(text, jsonb, jsonb, text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.check_access_batch_typed(text, authz.access_check[], jsonb, text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.check_access_batch_typed_jsonb(text, jsonb, jsonb, text) TO authz_reader;
-GRANT EXECUTE ON FUNCTION authz.list_objects(text, text, text, text, text, jsonb, int, int) TO authz_reader;
-GRANT EXECUTE ON FUNCTION authz.list_subjects(text, text, text, text, text, jsonb, int, int) TO authz_reader;
+GRANT EXECUTE ON FUNCTION authz.list_objects(text, text, text, text, text, jsonb, int, int, text) TO authz_reader;
+GRANT EXECUTE ON FUNCTION authz.list_subjects(text, text, text, text, text, jsonb, int, int, text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.list_actions(text, text, text, text, text, jsonb) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.validate_condition(text, text, jsonb, jsonb) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.explain_access(text, text, text, text, text, text, jsonb, boolean, boolean) TO authz_reader;
@@ -228,8 +228,8 @@ ALTER FUNCTION authz.check_access_with_context(text, text, text, text, text, tex
 ALTER FUNCTION authz.check_access_with_contextual_tuples(text, text, text, text, text, text, jsonb, authz.tuple_input[]) SECURITY DEFINER;
 ALTER FUNCTION authz.check_access_batch_typed(text, authz.access_check[], jsonb, text) SECURITY DEFINER;
 ALTER FUNCTION authz.check_access_batch(text, jsonb, jsonb, text) SECURITY DEFINER;
-ALTER FUNCTION authz.list_objects(text, text, text, text, text, jsonb, int, int) SECURITY DEFINER;
-ALTER FUNCTION authz.list_subjects(text, text, text, text, text, jsonb, int, int) SECURITY DEFINER;
+ALTER FUNCTION authz.list_objects(text, text, text, text, text, jsonb, int, int, text) SECURITY DEFINER;
+ALTER FUNCTION authz.list_subjects(text, text, text, text, text, jsonb, int, int, text) SECURITY DEFINER;
 ALTER FUNCTION authz.list_actions(text, text, text, text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.validate_condition(text, text, jsonb, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.audit_check_access(text, text, text, text, text, text, timestamptz, jsonb) SECURITY DEFINER;

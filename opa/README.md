@@ -178,10 +178,13 @@ Available functions:
 | `check_access_with_contextual_tuples_ctx(... , ctx, ctx_tuples)` | `/rpc/check_access_with_contextual_tuples` | `true` / `false` |
 | `list_objects(store, subject_type, subject_id, relation, object_type)` | `/rpc/list_objects` | `set{object_id}` |
 | `list_objects_with_context(... , ctx)` | `/rpc/list_objects` | `set{object_id}` |
-| `list_objects_page(... , limit, offset)` | `/rpc/list_objects` | `[object_id]` (ordered) |
-| `list_objects_page_with_context(... , ctx, limit, offset)` | `/rpc/list_objects` | `[object_id]` (ordered) |
+| `list_objects_page(... , limit, offset)` | `/rpc/list_objects` | `[object_id]` (ordered, offset) |
+| `list_objects_page_with_context(... , ctx, limit, offset)` | `/rpc/list_objects` | `[object_id]` (ordered, offset) |
+| `list_objects_page_after(... , limit, after)` | `/rpc/list_objects` | `[object_id]` (ordered, keyset) |
+| `list_objects_page_after_with_context(... , ctx, limit, after)` | `/rpc/list_objects` | `[object_id]` (ordered, keyset) |
 | `list_subjects(store, subject_type, relation, object_type, object_id)` | `/rpc/list_subjects` | `set{subject_id}` |
-| `list_subjects_page(... , limit, offset)` | `/rpc/list_subjects` | `[subject_id]` (ordered) |
+| `list_subjects_page(... , limit, offset)` | `/rpc/list_subjects` | `[subject_id]` (ordered, offset) |
+| `list_subjects_page_after(... , limit, after)` | `/rpc/list_subjects` | `[subject_id]` (ordered, keyset) |
 | `list_actions(store, subject_type, subject_id, object_type, object_id)` | `/rpc/list_actions` | `set{action}` |
 | `list_actions_with_context(... , ctx)` | `/rpc/list_actions` | `set{action}` |
 
@@ -448,8 +451,16 @@ object type. Note: `resource.id` is omitted since we're searching for it.
 
 **Endpoint:** `POST /v1/data/authz/accessible_objects_page`
 
-Returns an ordered array (not a set) for stable pagination. Pass `page.limit`
-and `page.offset`:
+Returns an ordered array (not a set) for stable pagination. Supports two paging
+modes via `page`:
+
+- **Offset** — `{ "limit": 10, "offset": 0 }`; fetch the next page with
+  `"offset": 10`.
+- **Keyset (cursor)** — `{ "limit": 10, "after": "<last id of previous page>" }`;
+  preferred for large result sets. Offset paging re-runs the per-candidate
+  access check on every object of every earlier page (O(offset) wasted checks);
+  keyset prunes those candidates before the check runs. When both are present,
+  `after` wins.
 
 ```json
 {
@@ -457,7 +468,7 @@ and `page.offset`:
     "subject":  { "type": "internal_user", "id": "bob" },
     "action":   "can_read",
     "resource": { "type": "document" },
-    "page":     { "limit": 10, "offset": 0 }
+    "page":     { "limit": 10, "after": "doc_payroll_001" }
   }
 }
 ```
@@ -468,8 +479,8 @@ and `page.offset`:
 { "result": ["doc_acc_001", "doc_payroll_001", "doc_tax_001"] }
 ```
 
-Fetch the next page with `"offset": 10`. When the result array is shorter
-than `limit`, you've reached the last page.
+When the result array is shorter than `limit`, you've reached the last page.
+For keyset paging, the cursor for the next page is the last id of this one.
 
 ### Subject Search (`accessible_subjects`)
 

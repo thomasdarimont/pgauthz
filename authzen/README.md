@@ -94,6 +94,13 @@ curl -X POST http://localhost:8090/access/v1/search/resource \
 # => {"results": [{"resource": {"type": "document", "id": "doc_payroll_001"}}, ...]}
 ```
 
+Add `"page": {"size": 10}` to paginate. The response then carries
+`"page": {"next_token": "..."}` when more results exist; pass that token back as
+`"page": {"size": 10, "token": "<next_token>"}` for the next page. The token is
+opaque and internally a keyset cursor (the last id of the page), so paging never
+re-runs the per-candidate access check on earlier pages. Subject search
+paginates the same way.
+
 ### Subject search
 
 Find all subjects with access to a specific resource.

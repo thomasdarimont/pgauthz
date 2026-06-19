@@ -135,6 +135,62 @@ check_http() {
     fi
 }
 
+# Walk every page of a resource search using keyset pagination (page size 1),
+# following the opaque next_token each time. Asserts the union of pages covers
+# exactly expected_total distinct ids and that paging terminates. This exercises
+# the full chain: handler -> decodePage(keyset) -> backend p_after -> SQL.
+check_keyset_paging() {
+    local description="$1"
+    local base_url="$2"
+    local auth_header="$3"
+    local base_payload="$4"   # search/resource body WITHOUT a page field
+    local expected_total="$5"
+
+    total=$((total + 1))
+
+    local collected="" token="" iter=0
+    while :; do
+        iter=$((iter + 1))
+        if [ "$iter" -gt 20 ]; then
+            fail_count=$((fail_count + 1))
+            echo "    FAIL  $description  (paging did not terminate)"
+            return
+        fi
+
+        local page payload resp
+        if [ -z "$token" ]; then
+            page='{"size":1}'
+        else
+            page=$(jq -nc --arg t "$token" '{size:1,token:$t}')
+        fi
+        payload=$(echo "$base_payload" | jq -c --argjson pg "$page" '. + {page:$pg}')
+
+        resp=$(curl -sf -X POST "$base_url/access/v1/search/resource" \
+            -H "Content-Type: application/json" -H "$auth_header" \
+            -d "$payload" 2>/dev/null) || {
+            fail_count=$((fail_count + 1))
+            echo "    FAIL  $description  (HTTP error)"
+            return
+        }
+
+        collected+=$(echo "$resp" | jq -rc '.results[].resource.id')$'\n'
+        token=$(echo "$resp" | jq -rc '.page.next_token // ""')
+        [ -z "$token" ] && break
+    done
+
+    local count distinct
+    count=$(printf '%s' "$collected" | grep -c .)
+    distinct=$(printf '%s' "$collected" | grep . | sort -u | grep -c .)
+
+    if [ "$count" = "$expected_total" ] && [ "$distinct" = "$expected_total" ]; then
+        pass_count=$((pass_count + 1))
+        echo "    PASS  $description"
+    else
+        fail_count=$((fail_count + 1))
+        echo "    FAIL  $description  (count=$count distinct=$distinct expected=$expected_total)"
+    fi
+}
+
 run_tests() {
     local base_url="$1"
     local label="$2"
@@ -231,6 +287,11 @@ run_tests() {
         "$base_url/access/v1/search/resource" "$AUTH_BOB" \
         '{"subject":{"type":"internal_user","id":"bob"},"action":{"name":"can_read"},"resource":{"type":"document"}}' \
         '.results | length' \
+        "3"
+
+    check_keyset_paging "Keyset paging covers all 3 of Bob's documents (size 1)" \
+        "$base_url" "$AUTH_BOB" \
+        '{"subject":{"type":"internal_user","id":"bob"},"action":{"name":"can_read"},"resource":{"type":"document"}}' \
         "3"
 
     # --- Action search ---

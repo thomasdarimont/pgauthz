@@ -60,6 +60,11 @@ echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_describe.sql"
 
 echo ""
+echo "==> Running keyset (cursor) pagination checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_keyset.sql"
+
+echo ""
 echo "==> Running namespace access control checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_namespace.sql"

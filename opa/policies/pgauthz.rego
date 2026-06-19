@@ -184,6 +184,55 @@ list_objects_page_with_context(store, subject_type, subject_id, relation, object
 	objects := [obj.object_id | some obj in response.body]
 }
 
+# list_objects with keyset pagination — `after` is the last object_id of the
+# previous page (the SQL function ignores p_offset when p_after is set). Returns
+# an ordered array.
+list_objects_page_after(store, subject_type, subject_id, relation, object_type, limit, after) := objects if {
+	response := http.send({
+		"method": "POST",
+		"url": concat("", [config.postgrest_url, "/rpc/list_objects"]),
+		"headers": {"Content-Type": "application/json"},
+		"body": {
+			"p_store": store,
+			"p_user_type": subject_type,
+			"p_user_id": subject_id,
+			"p_relation": relation,
+			"p_object_type": object_type,
+			"p_limit": limit,
+			"p_after": after,
+		},
+		"raise_error": false,
+		"force_cache": true,
+		"force_cache_duration_seconds": _cache_ttl(store, object_type),
+	})
+	response.status_code == 200
+	objects := [obj.object_id | some obj in response.body]
+}
+
+# list_objects with keyset pagination and request context.
+list_objects_page_after_with_context(store, subject_type, subject_id, relation, object_type, ctx, limit, after) := objects if {
+	response := http.send({
+		"method": "POST",
+		"url": concat("", [config.postgrest_url, "/rpc/list_objects"]),
+		"headers": {"Content-Type": "application/json"},
+		"body": {
+			"p_store": store,
+			"p_user_type": subject_type,
+			"p_user_id": subject_id,
+			"p_relation": relation,
+			"p_object_type": object_type,
+			"context": ctx,
+			"p_limit": limit,
+			"p_after": after,
+		},
+		"raise_error": false,
+		"force_cache": true,
+		"force_cache_duration_seconds": _cache_ttl(store, object_type),
+	})
+	response.status_code == 200
+	objects := [obj.object_id | some obj in response.body]
+}
+
 # list_subjects returns which subjects have access to an object.
 list_subjects(store, subject_type, relation, object_type, object_id) := subjects if {
 	response := http.send({
@@ -219,6 +268,30 @@ list_subjects_page(store, subject_type, relation, object_type, object_id, limit,
 			"p_object_id": object_id,
 			"p_limit": limit,
 			"p_offset": offset,
+		},
+		"raise_error": false,
+		"force_cache": true,
+		"force_cache_duration_seconds": _cache_ttl(store, object_type),
+	})
+	response.status_code == 200
+	subjects := [subj.subject_id | some subj in response.body]
+}
+
+# list_subjects with keyset pagination — `after` is the last subject_id of the
+# previous page. Returns an ordered array.
+list_subjects_page_after(store, subject_type, relation, object_type, object_id, limit, after) := subjects if {
+	response := http.send({
+		"method": "POST",
+		"url": concat("", [config.postgrest_url, "/rpc/list_subjects"]),
+		"headers": {"Content-Type": "application/json"},
+		"body": {
+			"p_store": store,
+			"p_subject_type": subject_type,
+			"p_relation": relation,
+			"p_object_type": object_type,
+			"p_object_id": object_id,
+			"p_limit": limit,
+			"p_after": after,
 		},
 		"raise_error": false,
 		"force_cache": true,

@@ -124,17 +124,14 @@ func (b *Backend) ListResources(ctx context.Context, store string,
 	}
 
 	if page != nil {
-		input["page"] = map[string]int{
-			"limit":  page.Limit + 1,
-			"offset": page.Offset,
-		}
+		input["page"] = pageInput(page)
 
 		var ids []string
 		if err := b.query(ctx, "accessible_objects_page", input, &ids); err != nil {
 			return nil, nil, err
 		}
 
-		return buildPage(ids, page.Limit, page.Offset)
+		return buildPage(ids, page.Limit)
 	}
 
 	// Unpaginated — returns a set from OPA
@@ -168,17 +165,14 @@ func (b *Backend) ListSubjects(ctx context.Context, store string,
 	}
 
 	if page != nil {
-		input["page"] = map[string]int{
-			"limit":  page.Limit + 1,
-			"offset": page.Offset,
-		}
+		input["page"] = pageInput(page)
 
 		var ids []string
 		if err := b.query(ctx, "accessible_subjects_page", input, &ids); err != nil {
 			return nil, nil, err
 		}
 
-		return buildPage(ids, page.Limit, page.Offset)
+		return buildPage(ids, page.Limit)
 	}
 
 	var ids []string
@@ -286,7 +280,21 @@ func (b *Backend) query(ctx context.Context, rule string, input any, dest any) e
 	return nil
 }
 
-func buildPage(ids []string, limit, offset int) ([]string, *authz.PageResponse, error) {
+// pageInput builds the OPA `page` object. limit is +1 so the policy returns one
+// extra row for has-more detection. after (keyset cursor) is included only when
+// set, so the policy's offset rules still fire for first/legacy pages.
+func pageInput(page *authz.PageRequest) map[string]any {
+	p := map[string]any{
+		"limit":  page.Limit + 1,
+		"offset": page.Offset,
+	}
+	if page.After != "" {
+		p["after"] = page.After
+	}
+	return p
+}
+
+func buildPage(ids []string, limit int) ([]string, *authz.PageResponse, error) {
 	hasMore := len(ids) > limit
 	if hasMore {
 		ids = ids[:limit]
@@ -294,9 +302,10 @@ func buildPage(ids []string, limit, offset int) ([]string, *authz.PageResponse, 
 
 	var pageResp *authz.PageResponse
 	if hasMore {
+		// Keyset cursor: the next page starts after the last id we return.
 		pageResp = &authz.PageResponse{
 			HasMore:   true,
-			NextToken: api.EncodePage(offset + limit),
+			NextToken: api.EncodePageAfter(ids[len(ids)-1]),
 		}
 	}
 

@@ -2,10 +2,14 @@ package authz
 
 import "context"
 
-// PageRequest holds pagination parameters.
+// PageRequest holds pagination parameters. After is a keyset cursor (the last
+// id of the previous page); when set it takes precedence over Offset, so paging
+// never re-runs the per-candidate access check on earlier pages. Offset is kept
+// for back-compat with legacy offset-encoded continuation tokens.
 type PageRequest struct {
 	Limit  int
 	Offset int
+	After  string
 }
 
 // PageResponse holds pagination state for the response.

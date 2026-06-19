@@ -409,8 +409,12 @@ func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
 
 // --- Pagination helpers ---
 
+// pageState is the decoded form of the opaque next_token. A is the keyset
+// cursor (last id of the previous page); O is the legacy offset, still decoded
+// so tokens minted before the keyset switch keep working.
 type pageState struct {
-	O int `json:"o"`
+	A string `json:"a,omitempty"`
+	O int    `json:"o,omitempty"`
 }
 
 func decodePage(p *PageToken) *authz.PageRequest {
@@ -421,21 +425,26 @@ func decodePage(p *PageToken) *authz.PageRequest {
 	if size <= 0 {
 		size = defaultPageSize
 	}
-	offset := 0
+	var state pageState
 	if p.Token != "" {
 		data, err := base64.RawURLEncoding.DecodeString(p.Token)
 		if err == nil {
-			var state pageState
-			if json.Unmarshal(data, &state) == nil {
-				offset = state.O
-			}
+			_ = json.Unmarshal(data, &state)
 		}
 	}
-	return &authz.PageRequest{Limit: size, Offset: offset}
+	return &authz.PageRequest{Limit: size, Offset: state.O, After: state.A}
 }
 
+// EncodePage mints a legacy offset cursor. Retained for back-compat; new pages
+// use EncodePageAfter (keyset).
 func EncodePage(offset int) string {
 	data, _ := json.Marshal(pageState{O: offset})
+	return base64.RawURLEncoding.EncodeToString(data)
+}
+
+// EncodePageAfter mints a keyset cursor carrying the last id of the page.
+func EncodePageAfter(after string) string {
+	data, _ := json.Marshal(pageState{A: after})
 	return base64.RawURLEncoding.EncodeToString(data)
 }
 
