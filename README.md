@@ -16,12 +16,14 @@ that resolve relationship tuples recursively.
 - **Contextual tuples** — ephemeral per-request relationships that are not persisted (VPN context, org selection)
 - **Multi-store** — independent authorization namespaces with isolated types, relations, models, and tuples
 - **Batch operations** — `write_tuples` / `delete_tuples` for efficient bulk insert and delete
+- **Conditional / atomic writes** — `write_tuples_checked` applies preconditions (exists/absent) plus deletes and writes in one transaction (optimistic concurrency: race-free ownership transfer, "at most one owner")
 - **Full audit trail** — immutable, monthly-partitioned audit log with application user tracking (`performed_by`)
 - **Time-travel queries** — `audit_check_access` reconstructs permissions at any past point in time from the audit log
+- **Watch / changefeed** — `watch_changes` streams tuple changes (cursored, filterable by object type / namespace / relation) plus a `NOTIFY authz_changes` doorbell, for cache invalidation / materialization / sync
 - **AuthZen Search API** — `list_objects`, `list_subjects`, `list_actions` for discovery queries
 - **OpenFGA import** — import existing OpenFGA JSON models and tuples directly
 - **Namespace-based write access control** — restrict which applications can manage tuples for which object types within a shared store
-- **PostgREST + OPA integration** — expose authorization as an HTTP API with policy-as-code
+- **PostgREST + OPA integration** — OPA is the single front door for reads *and* writes (JWT verification, policy-as-code, response caching); PostgREST bridges SQL functions to HTTP
 - **AuthZEN 1.0 API** — standard [AuthZEN](https://openid.net/specs/authorization-api-1_0.html) Go API layer with two backends: direct PostgreSQL (`authzen-direct`) and OPA (`authzen-opa`)
 - **Performance** — integer IDs, LIST partitioning by object type, covering partial indexes, store-scoped index pruning
 
