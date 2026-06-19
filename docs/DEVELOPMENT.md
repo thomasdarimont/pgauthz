@@ -1196,7 +1196,32 @@ SELECT t.*, ty.name AS user_type_name, r.name AS relation_name
    AND t.object_id = 'doc_payroll_001';
 ```
 
+### Review a model in readable form
+
+`authz.describe_model(store)` renders the whole stored model as readable,
+OpenFGA-DSL-flavored text — for review, debugging, or eyeballing a diff:
+
+```sql
+SELECT authz.describe_model('demo');
+```
+```
+type document
+  relations
+    define viewer: [internal_user, team#member]
+    define can_read: viewer or can_view from in_internal_space or can_view from in_client_space
+    define can_edit: editor or can_edit from in_internal_space
+```
+
+Each relation's expression is reconstructed from the rule groups (`or` / `and` /
+`but not`); direct rules show their type restrictions (`[user, team#member,
+user:*]`, or `[any]` when none are declared). It's a one-way rendering for
+humans — a round-trippable **OpenFGA JSON export** (`export_openfga_model`,
+convertible to `.fga` via `fga model transform`) is on the roadmap.
+
 ### List all model rules for a type
+
+For tabular inspection there are also the `models_view` and
+`type_restrictions_view` views (names, not smallint ids):
 
 ```sql
 SELECT relation, rule_type, computed_relation, tupleset_relation, tupleset_computed

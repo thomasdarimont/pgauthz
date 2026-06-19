@@ -437,3 +437,101 @@ BEGIN
     RETURN v_count;
 END;
 $$;
+
+------------------------------------------------------------------------
+-- describe_model: render a store's model as readable, OpenFGA-DSL-flavored
+-- text (for review/debugging — NOT a round-trippable export; see the
+-- export_openfga_model roadmap item). Reconstructs each relation's expression
+-- from the stored rule groups: groups are OR'd; within a group rules combine
+-- with `or` / `and` / `but not` (negated rules are the excluded part). Direct
+-- rules render their type restrictions as `[user, team#member, user:*]`.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._describe_type_restrictions(
+    p_store_id smallint, p_object_type smallint, p_relation smallint
+) RETURNS text LANGUAGE sql STABLE AS $$
+    SELECT string_agg(
+               aut.name
+               || CASE WHEN tr.allow_wildcard                 THEN ':*'
+                       WHEN tr.allowed_user_relation IS NOT NULL THEN '#' || aur.name
+                       ELSE '' END,
+               ', ' ORDER BY aut.name, aur.name)
+      FROM authz.type_restrictions tr
+      JOIN authz.types aut          ON aut.id = tr.allowed_user_type
+      LEFT JOIN authz.relations aur ON aur.id = tr.allowed_user_relation
+     WHERE tr.store_id = p_store_id AND tr.object_type = p_object_type AND tr.relation = p_relation;
+$$;
+
+CREATE OR REPLACE FUNCTION authz._describe_atom(
+    p_store_id smallint, p_object_type smallint, p_relation smallint, m authz.models
+) RETURNS text LANGUAGE plpgsql STABLE AS $$
+BEGIN
+    IF m.rule_type = authz._rel_direct() THEN
+        RETURN '[' || coalesce(authz._describe_type_restrictions(p_store_id, p_object_type, p_relation), 'any') || ']';
+    ELSIF m.rule_type = authz._rel_computed() THEN
+        RETURN (SELECT name FROM authz.relations WHERE id = m.computed_relation);
+    ELSIF m.rule_type = authz._rel_ttu() THEN
+        RETURN (SELECT name FROM authz.relations WHERE id = m.tupleset_computed)
+            || ' from ' || (SELECT name FROM authz.relations WHERE id = m.tupleset_relation);
+    END IF;
+    RETURN '?';
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION authz.describe_model(p_store text)
+RETURNS text LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_store_id smallint := authz._s(p_store);
+    v_out      text := 'store: ' || p_store || E'\n';
+    v_type     record;
+    v_rel      record;
+    v_grp      record;
+    v_expr     text;
+    v_group    text;
+    v_base     text;
+    v_excl     text;
+BEGIN
+    FOR v_type IN SELECT id, name FROM authz.types WHERE store_id = v_store_id ORDER BY name
+    LOOP
+        v_out := v_out || E'\ntype ' || v_type.name || E'\n';
+        IF EXISTS (SELECT 1 FROM authz.models m WHERE m.store_id = v_store_id AND m.object_type = v_type.id) THEN
+            v_out := v_out || '  relations' || E'\n';
+            FOR v_rel IN
+                SELECT DISTINCT r.id, r.name
+                  FROM authz.models m JOIN authz.relations r ON r.id = m.relation
+                 WHERE m.store_id = v_store_id AND m.object_type = v_type.id
+                 ORDER BY r.name
+            LOOP
+                v_expr := NULL;
+                FOR v_grp IN
+                    SELECT group_id, min(group_op) AS group_op
+                      FROM authz.models m
+                     WHERE m.store_id = v_store_id AND m.object_type = v_type.id AND m.relation = v_rel.id
+                     GROUP BY group_id ORDER BY group_id
+                LOOP
+                    IF v_grp.group_op = authz._combine_exclusion() THEN
+                        SELECT string_agg(authz._describe_atom(v_store_id, v_type.id, v_rel.id, m), ' and ' ORDER BY m.id)
+                          INTO v_base FROM authz.models m
+                         WHERE m.store_id=v_store_id AND m.object_type=v_type.id AND m.relation=v_rel.id
+                           AND m.group_id=v_grp.group_id AND NOT m.negated;
+                        SELECT string_agg(authz._describe_atom(v_store_id, v_type.id, v_rel.id, m), ' and ' ORDER BY m.id)
+                          INTO v_excl FROM authz.models m
+                         WHERE m.store_id=v_store_id AND m.object_type=v_type.id AND m.relation=v_rel.id
+                           AND m.group_id=v_grp.group_id AND m.negated;
+                        v_group := coalesce(v_base, '?') || ' but not ' || coalesce(v_excl, '?');
+                    ELSE
+                        SELECT string_agg(authz._describe_atom(v_store_id, v_type.id, v_rel.id, m),
+                                          CASE WHEN v_grp.group_op = authz._combine_and() THEN ' and ' ELSE ' or ' END
+                                          ORDER BY m.id)
+                          INTO v_group FROM authz.models m
+                         WHERE m.store_id=v_store_id AND m.object_type=v_type.id AND m.relation=v_rel.id
+                           AND m.group_id=v_grp.group_id;
+                    END IF;
+                    v_expr := CASE WHEN v_expr IS NULL THEN v_group ELSE v_expr || ' or ' || v_group END;
+                END LOOP;
+                v_out := v_out || '    define ' || v_rel.name || ': ' || v_expr || E'\n';
+            END LOOP;
+        END IF;
+    END LOOP;
+    RETURN v_out;
+END;
+$$;

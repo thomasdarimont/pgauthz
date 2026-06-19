@@ -55,6 +55,11 @@ echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_preconditions.sql"
 
 echo ""
+echo "==> Running describe_model (readable rendering) checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_describe.sql"
+
+echo ""
 echo "==> Running namespace access control checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_namespace.sql"
