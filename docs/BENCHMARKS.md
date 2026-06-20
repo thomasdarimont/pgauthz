@@ -52,27 +52,27 @@ Steady-state (warm cache); `drive` suite, 60,031 tuples.
 
 | Operation | ms/op | Bounded by |
 |---|--:|---|
-| `check_access` — shallow (direct grant) | **0.05** | one index probe |
-| `check_access` — via group membership (userset) | **0.13** | userset expansion |
-| `check_access` — via `*` wildcard | **0.06** | one index probe |
-| `check_access` — deep (15-folder TTU chain) | **2.47** | recursion depth |
-| `check_access` — DENY (no path, full traversal) | **2.53** | recursion depth |
-| `list_objects` — grant-sparse user (10 of 50,000 docs) | **0.97** | the user's reachable objects |
-| `list_actions` (one user, one doc) | **3.06** | number of relations on the type |
-| `check_access_with_contextual_tuples` (inject 1) | **0.19** | one index probe + injected set |
-| `list_subjects` — `*` wildcard doc | **13.0** | O(1) — one `('*', …)` row |
-| `list_subjects` — shared doc (3 of 50,000 users) | **13.1** | the object's reachable subjects |
-| `list_subjects` — group doc (userset of 50) | **18.6** | the object's reachable subjects |
-| `audit_check_access` — time-travel (replay ~60 k events) | **27.4** | audit-log size up to `p_at` |
+| `check_access` — shallow (direct grant) | **0.04** | one index probe |
+| `check_access` — via group membership (userset) | **0.09** | userset expansion |
+| `check_access` — via `*` wildcard | **0.05** | one index probe |
+| `check_access` — deep (15-folder TTU chain) | **1.48** | recursion depth |
+| `check_access` — DENY (no path, full traversal) | **1.63** | recursion depth |
+| `list_objects` — grant-sparse user (10 of 50,000 docs) | **0.49** | the user's reachable objects |
+| `list_actions` (one user, one doc) | **1.83** | number of relations on the type |
+| `check_access_with_contextual_tuples` (inject 1) | **0.16** | one index probe + injected set |
+| `list_subjects` — `*` wildcard doc | **12.4** | O(1) — one `('*', …)` row |
+| `list_subjects` — shared doc (3 of 50,000 users) | **12.1** | the object's reachable subjects |
+| `list_subjects` — group doc (userset of 50) | **15.9** | the object's reachable subjects |
+| `audit_check_access` — time-travel (replay ~60 k events) | **108** | audit-log size up to `p_at` |
 
-Numbers are measured after warm-up; a cold buffer cache (e.g. the first call
-right after a bulk load) is slower — `list_objects` here was ~70 ms cold vs
-~1 ms warm.
+Numbers are the median of three warm-up passes on PostgreSQL 18.4; a cold buffer
+cache (e.g. the first call right after a bulk load) is slower — `list_objects`
+here was ~70 ms cold vs ~0.5 ms warm.
 
 ## Takeaways
 
 - **`check_access` is sub-millisecond** for typical direct/userset/wildcard
-  checks, and ~2.3 ms for a 15-level folder-inheritance chain. A full DENY
+  checks, and ~1.5 ms for a 15-level folder-inheritance chain. A full DENY
   traversal (no granting path) costs about the same as the deepest allow — the
   engine explores the graph, not the store.
 - **Search is bounded by the reachable set, not the store size.** `list_subjects`
@@ -86,9 +86,15 @@ right after a bulk load) is slower — `list_objects` here was ~70 ms cold vs
   all-access/public relationships as wildcards (see the README "Object
   Wildcards" / "Wildcard Tuples" sections).
 - **Time-travel cost scales with the audit-log size** replayed up to the
-  target timestamp (~28 ms at 60 k events here). It is a forensic/compliance
+  target timestamp (~108 ms at 60 k events here). It is a forensic/compliance
   path, not a hot path — keep it off latency-critical flows, and retain the
   audit log per your needs (see [PRODUCTION.md → Audit retention](PRODUCTION.md#audit-retention)).
+  Effectively all of that cost is rebuilding the point-in-time snapshot (a full
+  scan + `DISTINCT ON` sort of the store's audit log); the graph traversal
+  itself is ~0.1 ms. If time-travel ever needs to be sublinear, the lever is
+  periodic **materialized snapshots/checkpoints** so a replay only covers the
+  delta since the last checkpoint (the deferred materialized-permissions
+  direction in `db/replication/`) — not worth it for a forensic path today.
 
 ## Scaling the benchmark / adding suites
 
