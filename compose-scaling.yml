@@ -24,7 +24,7 @@ services:
 
   # ── Primary PostgreSQL (read-write) ──────────────────────────────
   authz-primary:
-    image: postgres:18.3
+    image: postgres:18.4
     command:
       - postgres
       - -c
@@ -54,7 +54,7 @@ services:
 
   # ── Read-only replica ────────────────────────────────────────────
   authz-replica:
-    image: postgres:18.3
+    image: postgres:18.4
     environment:
       PGUSER: replicator
       PGPASSWORD: replicator

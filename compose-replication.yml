@@ -28,7 +28,7 @@ services:
 
   # ── Central authz database (read-write, publishes changes) ─────────
   authz-primary:
-    image: postgres:18.3
+    image: postgres:18.4
     command:
       - postgres
       - -c
@@ -60,7 +60,7 @@ services:
 
   # ── Accounting app database (subscribes to accounting-relevant tuples) ──
   accounting-app-db:
-    image: postgres:18.3
+    image: postgres:18.4
     command:
       - postgres
       - -c
@@ -90,7 +90,7 @@ services:
 
   # ── Accounting app with derived permissions (no authz schema needed) ──
   accounting-app-derived-db:
-    image: postgres:18.3
+    image: postgres:18.4
     command:
       - postgres
       - -c

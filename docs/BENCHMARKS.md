@@ -38,7 +38,7 @@ dropping a new file in `bench/suites/`.
 **Environment** — these numbers were taken on a developer laptop:
 
 - **Host:** MacBook Pro, Apple M3 Max, 64 GB RAM, 1 TB NVMe, macOS.
-- **Database:** PostgreSQL 18.3 in a single Docker container (Docker Desktop
+- **Database:** PostgreSQL 18.4 in a single Docker container (Docker Desktop
   Linux VM; ~16 vCPU / ~7.7 GB visible to the container), default-ish tuning —
   not production hardware, and not a tuned/bare-metal Postgres.
 

@@ -13,7 +13,7 @@ Three-tier deployment:
 Application → OPA (optional policy layer) → PostgREST (REST bridge) → PostgreSQL (engine)
 ```
 
-- **PostgreSQL 18.3** — Core engine: ~4200 lines of PL/pgSQL implementing recursive relationship resolution, conditions/ABAC, audit trail, time-travel queries
+- **PostgreSQL 18.4** — Core engine: ~4200 lines of PL/pgSQL implementing recursive relationship resolution, conditions/ABAC, audit trail, time-travel queries
 - **PostgREST v14.13** — Exposes SQL functions as REST API (read on port 3000, write on port 3001 behind Nginx)
 - **OPA 1.17.1** — Rego policies for JWT authn and policy-as-code authz
 - **Go AuthZEN API** — Two services implementing AuthZEN 1.0 standard: `authzen-direct` (Go→PostgreSQL, port 8090) and `authzen-opa` (Go→OPA→PostgREST→PostgreSQL, port 8091)

@@ -72,7 +72,7 @@ The `compose.yml` defines all three services:
 ```yaml
 services:
   authz-db:
-    image: postgres:18.3
+    image: postgres:18.4
     environment:
       POSTGRES_USER: authz
       POSTGRES_PASSWORD: authz
