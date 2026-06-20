@@ -79,3 +79,35 @@ spec:
         - namespaceSelector: {}
       ports: [{ port: 8080 }]
 {{- end }}
+{{- if .Values.database.networkPolicy.enabled }}
+{{- $name := include "pgauthz.name" . }}
+{{- $full := include "pgauthz.fullname" . }}
+---
+# Gate SQL access to the PostgreSQL pods: only the allowed clients may reach
+# 5432. CloudNativePG internals (operator namespace + same-cluster instances)
+# are allowed on ALL ports so replication, status and metrics keep working.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $full }}-db-ingress
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { cnpg.io/cluster: {{ include "pgauthz.dbCluster" . }} }
+  policyTypes: [Ingress]
+  ingress:
+    # CloudNativePG operator + same-cluster instances (replication, failover,
+    # status, metrics) — all ports, or the cluster breaks.
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: {{ .Values.database.networkPolicy.operatorNamespace }} }
+        - podSelector:
+            matchLabels: { cnpg.io/cluster: {{ include "pgauthz.dbCluster" . }} }
+    # SQL clients (chart components + your extraRoles apps) on 5432 only.
+    - from:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }} } }
+        {{- range .Values.database.networkPolicy.allowedClientSelectors }}
+        - podSelector: {{- toYaml . | nindent 12 }}
+        {{- end }}
+      ports: [{ port: 5432 }]
+{{- end }}

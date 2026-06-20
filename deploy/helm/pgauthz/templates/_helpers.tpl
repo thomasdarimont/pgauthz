@@ -42,3 +42,11 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 {{- define "pgauthz.image" -}}
 {{- $img := . -}}{{ printf "%s:%s" $img.repository (toString $img.tag) }}
 {{- end -}}
+
+{{/* Map an extraRoles access tier to the privilege role it should inherit. */}}
+{{- define "pgauthz.accessRole" -}}
+{{- $m := dict "read" "authz_reader" "readwrite" "authz_writer" "audit" "authz_auditor" "admin" "authz_admin" -}}
+{{- $r := index $m . -}}
+{{- if not $r -}}{{- fail (printf "extraRoles: access must be one of read|readwrite|audit|admin, got %q" .) -}}{{- end -}}
+{{- $r -}}
+{{- end -}}

@@ -62,6 +62,20 @@ spec:
         inRoles: [authz_reader]   # see note above — CNPG maintains this membership
         passwordSecret:
           name: {{ include "pgauthz.fullname" . }}-authzen-direct
+      {{- range .Values.extraRoles }}
+      # App role for direct SQL access (bypasses OPA — a TRUSTED service that
+      # does its own authn/authz). Inherits the function-API privileges of its
+      # access tier; no raw table access. Point it at -ro (read) or -rw (write).
+      - name: {{ .name }}
+        ensure: present
+        login: true
+        inherit: {{ .inherit | default true }}
+        inRoles: [{{ include "pgauthz.accessRole" .access }}]
+        passwordSecret:
+          # Secret names can't contain '_' (RFC 1123); PG role names can, so
+          # sanitize for the resource name while the role keeps its real name.
+          name: {{ if .existingSecret }}{{ .existingSecret }}{{ else }}{{ include "pgauthz.fullname" $ }}-extrarole-{{ .name | replace "_" "-" }}{{ end }}
+      {{- end }}
 
   storage:
     size: {{ .Values.database.storage.size }}

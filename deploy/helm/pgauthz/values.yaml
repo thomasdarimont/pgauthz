@@ -34,6 +34,18 @@ database:
     effective_cache_size: 768MB
     work_mem: 16MB
     random_page_cost: "1.1"
+  # Optional NetworkPolicy gating ingress to the PostgreSQL pods on 5432, so only
+  # known clients (the chart's components + the selectors below) can open SQL
+  # connections. OFF by default. CAUTION: locking the database pods can break
+  # CloudNativePG internals if your CNI enforces policies on operator/kubelet
+  # traffic — the policy allows the cnpg-system namespace and same-cluster pods
+  # on all ports for that reason; test in your environment before relying on it.
+  networkPolicy:
+    enabled: false
+    operatorNamespace: cnpg-system
+    # Extra pod selectors allowed to reach 5432 (e.g. your extraRoles apps).
+    allowedClientSelectors: []
+      # - matchLabels: { pgauthz.io/db-client: "true" }
   # The migrations Job needs a role that can CREATE ROLE + REPLACE functions.
   # CloudNativePG exposes its superuser secret only when this is enabled; the
   # Job is its only consumer. (No-superuser alternative: run the SQL via
@@ -48,6 +60,22 @@ database:
     destinationPath: ""        # e.g. s3://my-bucket/pgauthz
     endpointURL: ""
     s3CredentialsSecret: ""    # Secret with ACCESS_KEY_ID / SECRET_ACCESS_KEY
+
+# ── Extra service login roles (direct SQL clients) ───────────────────────────
+# For applications that connect to PostgreSQL directly (SQL) and call the
+# authz.* function API, bypassing OPA. Each becomes a CloudNativePG managed role
+# that inherits the privileges of its access tier — function-API access only, no
+# raw table access. Point the app at the -ro Service for reads, -rw for writes.
+#
+# SECURITY: a direct DB connection bypasses OPA's JWT/policy layer, so these are
+# TRUSTED services that do their own authn/authz (like authzen-direct). Never
+# hand DB credentials to untrusted/end-user clients — route those through OPA.
+extraRoles: []
+  # - name: reporting_app
+  #   access: read              # read | readwrite | audit | admin
+  #   password: "change-me"     # chart creates a kubernetes.io/basic-auth Secret
+  #   # existingSecret: my-secret  # OR reference an existing basic-auth Secret
+  #   # inherit: true
 
 # ── Schema install / migration Job ───────────────────────────────────────────
 migrations:

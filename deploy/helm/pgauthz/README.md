@@ -123,6 +123,90 @@ Three things that bite in practice (all handled by the chart, learned the hard w
   freshness-sensitive checks to `rw`; the staleness window is replication lag
   plus the OPA cache TTL.
 
+## Direct SQL access for applications (`extraRoles`)
+
+Some apps need to talk to PostgreSQL directly (SQL) instead of going through the
+OPA HTTP front door — e.g. a backend that calls `authz.check_access(...)` over a
+JDBC/pgx connection, or a sync job that writes tuples. `authzen-direct` already
+works this way; `extraRoles` lets you declare more such roles in `values.yaml`
+without hand-editing the Cluster template.
+
+**Security:** a direct DB connection bypasses OPA's JWT verification and Rego
+policy, so these roles are for **trusted services that do their own
+authn/authz**. Never give DB credentials to untrusted/end-user clients — route
+those through OPA. Even so, the roles are confined to the `SECURITY DEFINER`
+function API: they get `EXECUTE` on `authz.*` but **no raw table access**, so
+audit, namespace enforcement and the condition sandbox still apply.
+
+### Declare the roles
+
+```yaml
+# values.yaml
+extraRoles:
+  - name: reporting_app        # read-only SQL client
+    access: read               # read | readwrite | audit | admin
+    password: "change-me"      # chart creates a kubernetes.io/basic-auth Secret
+  - name: sync_worker          # read/write client
+    access: readwrite
+    existingSecret: sync-worker-db   # OR reference an existing basic-auth Secret
+```
+
+Access tier → privileges (the role the app inherits):
+
+| `access` | inherits | can call |
+|---|---|---|
+| `read` | `authz_reader` | `check_access`, `list_objects`, `list_subjects`, `list_actions`, `explain_access` |
+| `readwrite` | `authz_writer` | the reads above **plus** `write_tuple`, `delete_tuple`, `write_tuples_*`, `delete_user_tuples` |
+| `audit` | `authz_auditor` | reads + `audit_check_access`, `audit_list_*` (time-travel) |
+| `admin` | `authz_admin` | writes + store/model management |
+
+CloudNativePG creates each role at the database, sets its password from the
+Secret (and rotates it on change), and **maintains the membership** (via
+`inRoles`) so it isn't reconciled away. Role names may use `_` (e.g.
+`reporting_app`); the generated Secret name sanitizes it to `-`.
+
+### Connect from the app
+
+Point the app at the right Service for its workload — **`<release>-db-ro`** for
+read-only, **`<release>-db-rw`** for read/write — using the username + password
+from the Secret. For the example above:
+
+```
+# reporting_app (read-only) → replicas
+postgres://reporting_app:<pw>@pgauthz-db-ro:5432/authz
+# in SQL: SELECT authz.check_access('store','user','alice','can_read','doc','d1');
+
+# sync_worker (read/write) → primary
+postgres://sync_worker:<pw>@pgauthz-db-rw:5432/authz
+# in SQL: SELECT authz.write_tuple('store','user','alice','viewer','doc','d1');
+```
+
+The chart-created Secret is `kubernetes.io/basic-auth` named
+`<release>-extrarole-<sanitized-name>` (here `pgauthz-extrarole-reporting-app`)
+with `username` / `password` keys — mount it into your app or build the DSN from
+it. See [`examples/rw-split/`](examples/rw-split/) for a working write-to-primary
+/ read-from-replica Job using exactly this pattern.
+
+### Optionally gate DB access (NetworkPolicy)
+
+By default the database Service is reachable by any in-cluster pod (the role +
+password is the gate). To also restrict at the network layer, enable the DB
+NetworkPolicy and label your client pods:
+
+```yaml
+database:
+  networkPolicy:
+    enabled: true
+    allowedClientSelectors:
+      - matchLabels: { pgauthz.io/db-client: "true" }   # add this label to your app pods
+```
+
+It allows the chart's own components and the selectors above to reach `5432`,
+and permits the CloudNativePG operator namespace + same-cluster instances on all
+ports (replication/status/metrics). **Test it in your environment** — if your
+CNI enforces policies on kubelet/operator traffic you may need to widen the
+allow-list, which is why it's off by default.
+
 ## Security defaults (keep these)
 
 - Only OPA (and optionally AuthZEN) is exposed; PostgREST + Postgres are
