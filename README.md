@@ -813,7 +813,7 @@ authorization namespace. Each store has its own types, relations, models,
 conditions, and tuples. Stores are fully isolated from each other.
 
 The demo store is called `'demo'` and is created by the example model
-`examples/demo/model.sql` (see [Example Models](#example-models)).
+`examples/models/demo/model.sql` (see [Example Models](#example-models)).
 
 ```sql
 -- Create a new store for testing a model change
@@ -1157,17 +1157,19 @@ GRANT authz_admin TO my_admin_user;
 
 ## Example Models
 
-The [`examples/`](examples/) directory contains ready-to-load authorization
-models. They are **not** part of the deployable engine — `init.sh` installs
-only the schema and functions, and you load an example on top of it when you
-want one. Each model is independent; load any combination into the same
-database (every store is isolated).
+The [`examples/models/`](examples/models/) directory contains ready-to-load
+authorization models. They are **not** part of the deployable engine —
+`init.sh` installs only the schema and functions, and you load an example on
+top of it when you want one. Each model is independent; load any combination
+into the same database (every store is isolated). (Runnable setup examples like
+the watch/changefeed consumer live alongside under
+[`examples/watch/`](examples/watch/).)
 
 | Example | Models | Files |
 |---|---|---|
-| `examples/demo/` | Professional-services engagements: internal/client users, teams, data spaces, documents, conditions, audit | `model.sql`, `seed.sql`, `tests.sql`, `demo.sql` |
-| `examples/gdrive/` | Google-Drive-style hierarchical folders and documents (deep TTU nesting) | `model.sql`, `seed.sql`, `demo.sql` |
-| `examples/github/` | GitHub repo roles (`admin → maintainer → writer → triager → reader`), imported from an OpenFGA JSON model | `model.sql`, `seed.sql`, `demo.sql` |
+| `examples/models/demo/` | Professional-services engagements: internal/client users, teams, data spaces, documents, conditions, audit | `model.sql`, `seed.sql`, `tests.sql`, `demo.sql` |
+| `examples/models/gdrive/` | Google-Drive-style hierarchical folders and documents (deep TTU nesting) | `model.sql`, `seed.sql`, `demo.sql` |
+| `examples/models/github/` | GitHub repo roles (`admin → maintainer → writer → triager → reader`), imported from an OpenFGA JSON model | `model.sql`, `seed.sql`, `demo.sql` |
 
 In each: `model.sql` defines the types/relations/rules (creates the store),
 `seed.sql` loads sample tuples, `demo.sql` runs a showcase of example
@@ -1182,11 +1184,11 @@ also loads the demo). Then pipe the model and seed into the database:
 DB=$(docker compose ps -q authz-db)
 
 # Load the gdrive example (model + sample tuples)
-cat examples/gdrive/model.sql examples/gdrive/seed.sql \
+cat examples/models/gdrive/model.sql examples/models/gdrive/seed.sql \
   | docker exec -i "$DB" psql -U authz -d authz
 
 # Run its showcase queries
-docker exec -i "$DB" psql -U authz -d authz < examples/gdrive/demo.sql
+docker exec -i "$DB" psql -U authz -d authz < examples/models/gdrive/demo.sql
 ```
 
 `./bootstrap.sh` loads the `demo` example automatically (it is also the
@@ -1201,7 +1203,8 @@ default store is `demo`).
 | `db/security/` | Role definitions and GRANT/SECURITY DEFINER setup |
 | `db/openfga/` | OpenFGA JSON model and tuple import |
 | `tests/sql/` | Test suites (API, search, namespace, wildcards, contextual, intersection, etc.) |
-| `examples/` | Example authorization models (demo, gdrive, github) — **not** part of the deployable engine; see [Example Models](#example-models) |
+| `examples/models/` | Example authorization models (demo, gdrive, github) — **not** part of the deployable engine; see [Example Models](#example-models) |
+| `examples/watch/` | Runnable setup example for the watch/changefeed feature (compose overlay + Python consumer) |
 | `authzen/` | Go AuthZEN 1.0 HTTP API layer ([see authzen/README.md](authzen/README.md)) |
 | `opa/` | Rego policies for JWT authn + Zanzibar authz via PostgREST |
 | `docs/` | Design documents, development guide, model design, OPA integration |

@@ -22,12 +22,12 @@ psql_file "$PG_DB" "$PG_DIR/tests/sql/test_users.sql"
 # longer loads it, so load it here — idempotent, safe to re-run.
 echo "==> Loading demo model fixture..."
 echo ""
-psql_file "$PG_DB" "$PG_DIR/examples/demo/model.sql"
-psql_file "$PG_DB" "$PG_DIR/examples/demo/seed.sql"
+psql_file "$PG_DB" "$PG_DIR/examples/models/demo/model.sql"
+psql_file "$PG_DB" "$PG_DIR/examples/models/demo/seed.sql"
 
 echo "==> Running demo model checks..."
 echo ""
-psql_file "$PG_DB" "$PG_DIR/examples/demo/tests.sql"
+psql_file "$PG_DB" "$PG_DIR/examples/models/demo/tests.sql"
 
 echo ""
 echo "==> Running contextual / condition checks..."

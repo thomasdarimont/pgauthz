@@ -23,7 +23,7 @@ From the repo root:
 ./start.sh && ./init.sh                       # bring up + load the engine
 
 # load the 'demo' store (init.sh doesn't load examples):
-cat examples/demo/model.sql examples/demo/seed.sql | \
+cat examples/models/demo/model.sql examples/models/demo/seed.sql | \
   docker compose -f compose.yml -f compose-authzen.yml \
     exec -T authz-db psql -U authz -d authz
 
