@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pgauthz.fullname" . }}-opa-policies
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+data:
+  # Single-sourced from opa/policies via deploy/helm/pgauthz/sync-files.sh.
+  {{- range $path, $_ := .Files.Glob "files/opa/policies/*.rego" }}
+  {{ base $path }}: |-
+{{ $.Files.Get $path | indent 4 }}
+  {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pgauthz.fullname" . }}-opa-data
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+data:
+  # JWKS for JWT verification. Override opa.jwks with your IdP's keys, or point
+  # OPA's authn at a JWKS URL instead. Defaults to the chart's demo keys.
+  jwks.json: |-
+{{- if .Values.opa.jwks }}
+{{ .Values.opa.jwks | indent 4 }}
+{{- else }}
+{{ .Files.Get "files/opa/data/jwks.json" | indent 4 }}
+{{- end }}

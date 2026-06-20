@@ -1,0 +1,27 @@
+pgauthz {{ .Chart.AppVersion }} installed as release "{{ .Release.Name }}".
+
+Database (CloudNativePG): {{ include "pgauthz.dbCluster" . }}
+  primary (rw): {{ include "pgauthz.dbRW" . }}    replicas (ro): {{ include "pgauthz.dbRO" . }}
+
+1. Watch the cluster come up and the schema migration Job finish:
+
+     kubectl get cluster {{ include "pgauthz.dbCluster" . }} -w
+     kubectl logs -l job-name={{ include "pgauthz.fullname" . }}-migrate-{{ .Release.Revision }} -f
+
+2. The ONLY externally reachable service is OPA (the front door). PostgREST
+   (reader + writer) and PostgreSQL are ClusterIP-only and NetworkPolicy-locked.
+
+{{- if .Values.ingress.enabled }}
+   Reach OPA at: http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}/
+{{- else }}
+   Port-forward OPA to test locally:
+     kubectl port-forward svc/{{ include "pgauthz.fullname" . }}-opa 8181:8181
+{{- end }}
+
+3. SECURITY CHECKLIST before any real use:
+   - Override secrets.* (authenticator/authzenDirect passwords, opaAdminToken)
+     — the defaults are DEV ONLY. Prefer secrets.existingSecret + a secret store.
+   - Replace opa.jwks with your IdP's JWKS (or switch OPA authn to a JWKS URL).
+   - Keep opa.requireTokenForReads=true and authzen ALLOW_SUBJECT_OVERRIDE=false
+     unless a trusted PEP fronts the stack.
+   - Enable database.backup for the audit log (system of record).

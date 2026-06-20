@@ -1,0 +1,63 @@
+# Read/write-split demo: write a tuple to the PRIMARY (-rw), then watch the
+# REPLICA (-ro) pick it up. Mirrors how an app should split traffic — writes to
+# the primary, reads off the replicas — using the same authz_authenticator role
+# + SET ROLE pattern PostgREST uses (writer for the write, reader for the read).
+#
+# Assumes the default release name "pgauthz" (services pgauthz-db-rw /
+# pgauthz-db-ro, secret pgauthz-authenticator). Run with:
+#   kubectl apply -f job.yaml
+#   kubectl logs -f job/pgauthz-rw-split
+#   kubectl delete -f job.yaml         # cleanup
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pgauthz-rw-split
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: rw-split
+          # Reuse the migrations image — it is postgres-based, so it has psql.
+          image: pgauthz-migrations:0.1.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: STORE,      value: "demo" }
+            - { name: WRITE_HOST, value: "pgauthz-db-rw" }   # primary
+            - { name: READ_HOST,  value: "pgauthz-db-ro" }   # replicas only
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: pgauthz-authenticator, key: password }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              WRITE="host=$WRITE_HOST port=5432 user=authz_authenticator dbname=authz"
+              READ="host=$READ_HOST port=5432 user=authz_authenticator dbname=authz"
+              ST=internal_user; SID=rw_split_user; REL=viewer; OT=document; OID=rw_split_doc
+
+              echo "write conn -> $(psql "$WRITE" -tAc 'select host(inet_server_addr())||'"'"' in_recovery='"'"'||pg_is_in_recovery();')"
+              echo "read conn  -> $(psql "$READ"  -tAc 'select host(inet_server_addr())||'"'"' in_recovery='"'"'||pg_is_in_recovery();')"
+              echo
+
+              echo "[1] replica BEFORE write (expect f):"
+              psql "$READ" -tAc "set role authz_reader; select authz.check_access('$STORE','$ST','$SID','$REL','$OT','$OID');"
+
+              echo "[2] write tuple on the PRIMARY (as authz_writer):"
+              psql "$WRITE" -tAc "set role authz_writer; select authz.write_tuple('$STORE','$ST','$SID','$REL','$OT','$OID');" >/dev/null
+              echo "    wrote: $SID is $REL of $OT:$OID"
+
+              echo "[3] poll the REPLICA until the change streams over:"
+              start=$(date +%s%3N); seen=f
+              for i in $(seq 1 200); do
+                # tail -n1: the "set role" statement prints a SET command tag on
+                # its own line before the result; we want only the boolean.
+                v=$(psql "$READ" -tAc "set role authz_reader; select authz.check_access('$STORE','$ST','$SID','$REL','$OT','$OID');" | tail -n1 | tr -d '[:space:]')
+                if [ "$v" = "t" ]; then seen=t; echo "    replica saw it after $(( $(date +%s%3N) - start )) ms"; break; fi
+                sleep 0.05
+              done
+              [ "$seen" = t ] || { echo "    TIMEOUT — replica never saw the write"; exit 1; }
+
+              echo "[4] cleanup (delete on the primary):"
+              psql "$WRITE" -tAc "set role authz_writer; select authz.delete_tuple('$STORE','$ST','$SID','$REL','$OT','$OID');" >/dev/null
+              echo "    done"

@@ -1,0 +1,84 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "pgauthz.dbCluster" . }}
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  instances: {{ .Values.database.instances }}
+  imageName: {{ include "pgauthz.image" .Values.images.postgres }}
+
+  # No-superuser by default aligns with pgauthz's SECURITY DEFINER /
+  # authz_owner model. Enabled here only so the migrations Job can CREATE ROLE
+  # and REPLACE functions; CloudNativePG then exposes a <cluster>-superuser
+  # secret consumed solely by that Job.
+  enableSuperuserAccess: {{ .Values.database.enableSuperuserAccess }}
+
+  postgresql:
+    parameters:
+      {{- range $k, $v := .Values.database.parameters }}
+      {{ $k }}: {{ $v | quote }}
+      {{- end }}
+
+  bootstrap:
+    initdb:
+      database: authz
+      owner: authz_owner          # non-superuser schema owner (roles.sql expects it)
+      # Create the NOLOGIN privilege roles that the managed-role `inRoles` below
+      # reference, AT BOOTSTRAP — before CloudNativePG reconciles the managed
+      # roles. Without this, CNPG cannot create authz_authenticator/authzen_direct
+      # ("role api_anon does not exist") because their inRoles targets are
+      # otherwise only created later by the migration Job — a fresh-install
+      # deadlock. roles.sql re-creates these idempotently and adds the full grant
+      # model. (postInit runs once, as superuser, only on first bootstrap.)
+      postInitApplicationSQL:
+        - CREATE ROLE api_anon NOLOGIN
+        - CREATE ROLE authz_reader NOLOGIN
+        - CREATE ROLE authz_writer NOLOGIN
+        - CREATE ROLE authz_auditor NOLOGIN
+        - CREATE ROLE authz_admin NOLOGIN
+
+  # Declarative service-login roles: passwords come from Secrets and are
+  # reconciled (rotated) by the operator. roles.sql still owns the privilege
+  # model (GRANTs) — its IF NOT EXISTS guards skip re-creating these.
+  managed:
+    roles:
+      - name: authz_authenticator
+        ensure: present
+        comment: "PostgREST connects, SET ROLE per request"
+        login: true
+        inherit: false            # NOINHERIT — core to the per-request SET ROLE model
+        # CloudNativePG OWNS managed-role memberships and reconciles away any it
+        # didn't grant — so the GRANTs roles.sql issues to this role get stripped
+        # on the next reconcile. Declare them here as desired state instead. The
+        # targets are created by the migration Job; CNPG retries until they exist.
+        inRoles: [api_anon, authz_reader, authz_auditor, authz_writer, authz_admin]
+        passwordSecret:
+          name: {{ include "pgauthz.fullname" . }}-authenticator
+      - name: authzen_direct
+        ensure: present
+        comment: "AuthZEN direct Go service (read-only)"
+        login: true
+        inherit: true             # inherits authz_reader
+        inRoles: [authz_reader]   # see note above — CNPG maintains this membership
+        passwordSecret:
+          name: {{ include "pgauthz.fullname" . }}-authzen-direct
+
+  storage:
+    size: {{ .Values.database.storage.size }}
+    {{- with .Values.database.storage.storageClass }}
+    storageClass: {{ . }}
+    {{- end }}
+
+  resources: {{- toYaml .Values.database.resources | nindent 4 }}
+
+  {{- if .Values.database.backup.enabled }}
+  backup:
+    barmanObjectStore:
+      destinationPath: {{ .Values.database.backup.destinationPath | quote }}
+      {{- with .Values.database.backup.endpointURL }}
+      endpointURL: {{ . | quote }}
+      {{- end }}
+      s3Credentials:
+        accessKeyId:     { name: {{ .Values.database.backup.s3CredentialsSecret }}, key: ACCESS_KEY_ID }
+        secretAccessKey: { name: {{ .Values.database.backup.s3CredentialsSecret }}, key: ACCESS_SECRET_KEY }
+  {{- end }}

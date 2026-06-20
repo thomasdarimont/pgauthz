@@ -1,0 +1,51 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Revision in the name so each upgrade gets a fresh, immutable Job.
+  name: {{ include "pgauthz.fullname" . }}-migrate-{{ .Release.Revision }}
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+  annotations:
+    # post-install ONLY: the installer runs db/engine/schema.sql, which begins
+    # with `DROP SCHEMA authz CASCADE` — a full reset, not an incremental
+    # migration. Running it on every upgrade would wipe all stores/tuples/audit.
+    # The function/roles files are idempotent, but schema.sql is destructive, so
+    # schema changes need bespoke migration SQL run deliberately (see chart
+    # README → "schema install / upgrade"). Set migrations.runOnUpgrade=true to
+    # re-run the FULL installer on upgrade (DESTRUCTIVE — dev/reset only).
+    "helm.sh/hook": {{ if .Values.migrations.runOnUpgrade }}post-install,post-upgrade{{ else }}post-install{{ end }}
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 20              # tolerate the DB still bootstrapping
+  activeDeadlineSeconds: 1200
+  template:
+    metadata:
+      labels: {{- include "pgauthz.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: {{ include "pgauthz.image" .Values.images.migrations }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          env:
+            # Connect to the PRIMARY as the CloudNativePG superuser (the only
+            # role that can CREATE ROLE + REPLACE functions across the schema).
+            - name: PGHOST
+              value: {{ include "pgauthz.dbRW" . }}
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: authz
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef: { name: {{ include "pgauthz.dbCluster" . }}-superuser, key: username }
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ include "pgauthz.dbCluster" . }}-superuser, key: password }
+            {{- with .Values.database.conditionStatementTimeout }}
+            - name: CONDITION_STATEMENT_TIMEOUT
+              value: {{ . | quote }}
+            {{- end }}
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits:   { memory: 256Mi }

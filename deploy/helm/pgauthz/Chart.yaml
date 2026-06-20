@@ -1,0 +1,18 @@
+apiVersion: v2
+name: pgauthz
+description: >-
+  PostgreSQL-native Zanzibar/OpenFGA authorization engine on Kubernetes, backed
+  by CloudNativePG. OPA is the single front door for reads and writes; PostgREST
+  (reader + writer) and PostgreSQL are internal-only.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords: [authorization, zanzibar, openfga, rebac, postgres, cloudnative-pg, opa]
+home: https://github.com/thomasdarimont/authz-dev
+maintainers:
+  - name: Thomas Darimont
+annotations:
+  # CloudNativePG is a CLUSTER-SCOPED operator and a prerequisite, not a
+  # subchart — install it once per cluster (see the chart README). This chart
+  # only creates a CloudNativePG `Cluster` (and `Pooler`) custom resource.
+  category: Security

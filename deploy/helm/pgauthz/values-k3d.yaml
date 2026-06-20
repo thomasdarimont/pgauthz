@@ -1,0 +1,46 @@
+# Local k3d overrides: small footprint, locally-built images, Traefik ingress.
+#   helm install pgauthz ./deploy/helm/pgauthz -f ./deploy/helm/pgauthz/values-k3d.yaml
+
+images:
+  pullPolicy: IfNotPresent      # images are imported into k3d, not pulled
+
+database:
+  instances: 2                  # 1 primary + 1 replica (drop to 1 for a lighter laptop run)
+  storage:
+    size: 2Gi
+    storageClass: local-path    # k3d default provisioner
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { memory: 512Mi }
+
+# Pooler left OFF for the local demo: reads go straight to the -ro Service.
+# The CNPG pooler is PgBouncer in transaction mode, which rejects the prepared
+# statements both PostgREST and pgx use — so pooler-ro needs prepared statements
+# disabled (or session mode). Not worth it for a laptop; enable for real scale.
+pooler:
+  enabled: false
+
+postgrestReader:
+  replicas: 1
+  # Read from the replica (-ro). The chart auto-disables PostgREST's LISTEN
+  # channel for replica targets (LISTEN is rejected on a hot standby). Set to
+  # "rw" to read the primary instead (keeps live schema-cache reload).
+  target: "ro"
+  autoscaling: { enabled: false, minReplicas: 1, maxReplicas: 2, targetCPUUtilizationPercentage: 80 }
+
+postgrestWriter:
+  replicas: 1
+
+opa:
+  replicas: 1
+  autoscaling: { enabled: false, minReplicas: 1, maxReplicas: 2, targetCPUUtilizationPercentage: 80 }
+
+authzen:
+  direct: { enabled: true, replicas: 1, dbPoolMax: 10 }
+  opa:    { enabled: true, replicas: 1 }
+  exposeViaIngress: true
+
+ingress:
+  enabled: true
+  className: traefik
+  host: pgauthz.local

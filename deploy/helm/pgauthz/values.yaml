@@ -1,0 +1,142 @@
+# Default values for pgauthz.
+# Secure-by-default: OPA is the only externally reachable service; PostgREST
+# (reader + writer) and PostgreSQL are ClusterIP-only and locked down with
+# NetworkPolicies. Override the dev secrets before any real deployment.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Images. The migrations + authzen images are built from this repo (see
+# deploy/migrations/Dockerfile and authzen/Dockerfile) and must be pushed to a
+# registry your cluster can pull from (or imported into a local cluster).
+images:
+  pullPolicy: IfNotPresent
+  postgres:   { repository: ghcr.io/cloudnative-pg/postgresql, tag: "18.4" }
+  postgrest:  { repository: postgrest/postgrest,               tag: "v14.13" }
+  opa:        { repository: openpolicyagent/opa,               tag: "1.17.1" }
+  migrations: { repository: pgauthz-migrations,                tag: "0.1.0" }
+  authzenDirect: { repository: pgauthz-authzen-direct,         tag: "0.1.0" }
+  authzenOpa:    { repository: pgauthz-authzen-opa,            tag: "0.1.0" }
+
+# ── Database: CloudNativePG cluster ──────────────────────────────────────────
+database:
+  instances: 3                 # 1 primary + 2 replicas → -rw and -ro services
+  storage:
+    size: 10Gi
+    storageClass: ""           # "" = cluster default (local-path on k3d)
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits:   { memory: 1Gi }
+  # Postgres tuning — mirrors the compose `command` flags.
+  parameters:
+    max_connections: "250"
+    shared_buffers: 256MB
+    effective_cache_size: 768MB
+    work_mem: 16MB
+    random_page_cost: "1.1"
+  # The migrations Job needs a role that can CREATE ROLE + REPLACE functions.
+  # CloudNativePG exposes its superuser secret only when this is enabled; the
+  # Job is its only consumer. (No-superuser alternative: run the SQL via
+  # bootstrap.initdb.postInitApplicationSQLRefs — see the chart README.)
+  enableSuperuserAccess: true
+  # statement_timeout applied to the service login roles (parity with init.sh).
+  conditionStatementTimeout: ""   # e.g. "60s"
+  # Continuous backups to object storage (Barman). Off by default; strongly
+  # recommended in production — the audit log is the system of record.
+  backup:
+    enabled: false
+    destinationPath: ""        # e.g. s3://my-bucket/pgauthz
+    endpointURL: ""
+    s3CredentialsSecret: ""    # Secret with ACCESS_KEY_ID / SECRET_ACCESS_KEY
+
+# ── Schema install / migration Job ───────────────────────────────────────────
+migrations:
+  # Re-run the FULL installer on `helm upgrade`. DESTRUCTIVE — schema.sql drops
+  # the authz schema (all stores/tuples/audit). Leave false in production; the
+  # installer is a first-install/reset tool, not an incremental migrator.
+  runOnUpgrade: false
+
+# PgBouncer pooler in front of the read replicas, so the stateless reader fleet
+# does not exhaust max_connections (replicas x PGRST_DB_POOL must stay under it).
+pooler:
+  enabled: true
+  instances: 2
+
+# ── Secrets ──────────────────────────────────────────────────────────────────
+# DEV DEFAULTS — override every value here for any real deployment, ideally via
+# an external secret store (External Secrets Operator / Vault) and existingSecret.
+secrets:
+  existingSecret: ""           # if set, the chart creates no Secret and reads keys from it
+  authenticatorPassword: "authz"    # authz_authenticator login (PostgREST)
+  authzenDirectPassword: "authz"    # authzen_direct login (read-only Go service)
+  opaAdminToken: "change-me-in-production"
+
+# ── OPA: the single front door ───────────────────────────────────────────────
+opa:
+  replicas: 2
+  # Read into the rego at startup via opa.runtime().env (same as compose).
+  jwtIssuer: "https://auth.example.com"
+  jwtAudience: "authz-api"
+  defaultStore: "demo"
+  # SECURITY: token-only reads. Keep true unless a trusted PEP fronts OPA.
+  requireTokenForReads: true
+  defaultCacheTtlSeconds: 1
+  # JWT → writer-role mapping (see opa/policies/write.rego). Match your issuer.
+  writerRole: ""               # e.g. "authz_writer"
+  jwtRolesClaim: ""            # e.g. "realm_access.roles,resource_access.authz-api.roles"
+  writerDbRoleClaim: ""        # e.g. "db_role" — per-app namespace isolation
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { memory: 256Mi }
+  autoscaling: { enabled: true, minReplicas: 2, maxReplicas: 6, targetCPUUtilizationPercentage: 70 }
+  # JWKS for JWT verification. Replace the demo keys with your IdP's JWKS
+  # (or point OPA's authn at a JWKS URL instead of this file).
+  jwks: ""                     # "" = use files/opa/data/jwks.json from the chart
+
+# ── PostgREST reader (internal only) ─────────────────────────────────────────
+postgrestReader:
+  replicas: 3
+  dbPool: 20                   # replicas x dbPool must stay < max_connections
+  # Route reads at the pooler (replicas) by default. Set to "rw" to send reads
+  # to the primary when read-your-writes freshness matters more than scale-out
+  # (the project deliberately has no consistency tokens; replica lag + the OPA
+  # cache TTL are the staleness window).
+  target: "pooler-ro"          # one of: pooler-ro | ro | rw
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { memory: 256Mi }
+  autoscaling: { enabled: true, minReplicas: 3, maxReplicas: 10, targetCPUUtilizationPercentage: 70 }
+
+# ── PostgREST writer (internal only, fronted by OPA) ─────────────────────────
+postgrestWriter:
+  replicas: 2
+  dbPool: 10
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { memory: 256Mi }
+
+# ── AuthZEN 1.0 Go services (optional) ───────────────────────────────────────
+authzen:
+  direct:
+    enabled: true
+    replicas: 2
+    dbPoolMax: 25
+  opa:
+    enabled: true
+    replicas: 2
+  # Expose the AuthZEN HTTP API via Ingress in addition to OPA.
+  exposeViaIngress: false
+
+# ── Ingress ──────────────────────────────────────────────────────────────────
+# Only OPA (and optionally AuthZEN) are ever exposed. PostgREST + Postgres never.
+ingress:
+  enabled: true
+  className: ""                # "traefik" on k3d
+  host: pgauthz.local
+  annotations: {}
+  tls: { enabled: false, secretName: "" }
+
+# Default-deny NetworkPolicies + explicit allow rules. Keep enabled — this is a
+# core part of the security model (PostgREST is unauthenticated behind OPA).
+networkPolicies:
+  enabled: true

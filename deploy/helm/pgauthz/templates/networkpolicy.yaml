@@ -1,0 +1,81 @@
+{{- if .Values.networkPolicies.enabled }}
+{{- $name := include "pgauthz.name" . }}
+{{- $full := include "pgauthz.fullname" . }}
+# Default-deny ingress for all chart pods; the rules below re-open only the
+# required paths. This is a core part of the security model: PostgREST is
+# unauthenticated behind OPA, so nothing but OPA may reach it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $full }}-default-deny
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: {{ $name }} }
+  policyTypes: [Ingress]
+---
+# Reader: only OPA may connect.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $full }}-reader-from-opa
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: postgrest-reader }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: opa } }
+      ports: [{ port: 3000 }]
+---
+# Writer: only OPA may connect.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $full }}-writer-from-opa
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: postgrest-writer }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: opa } }
+      ports: [{ port: 3001 }]
+---
+# OPA: from the ingress controller and from authzen-opa.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $full }}-opa-ingress
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: opa }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: authzen-opa } }
+        # Ingress-controller traffic: namespaceSelector is empty here (allow
+        # from any namespace's ingress controller). Tighten to your controller's
+        # namespace/labels in production.
+        - namespaceSelector: {}
+      ports: [{ port: 8181 }]
+---
+# AuthZEN services: from the ingress controller (only if exposed).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $full }}-authzen-ingress
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app.kubernetes.io/component, operator: In, values: [authzen-direct, authzen-opa] }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {}
+      ports: [{ port: 8080 }]
+{{- end }}

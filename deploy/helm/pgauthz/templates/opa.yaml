@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pgauthz.fullname" . }}-opa
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.opa.autoscaling.enabled }}
+  replicas: {{ .Values.opa.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "pgauthz.name" . }}
+      app.kubernetes.io/component: opa
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "pgauthz.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: opa
+      annotations:
+        # Roll pods when policies change.
+        checksum/policies: {{ .Files.Glob "files/opa/policies/*.rego" | toString | sha256sum }}
+    spec:
+      containers:
+        - name: opa
+          image: {{ include "pgauthz.image" .Values.images.opa }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          args:
+            - run
+            - --server
+            - --addr=:8181
+            - --authentication=token
+            - --authorization=basic
+            # ConfigMap mounts expose ..data / ..<timestamp> symlink dirs;
+            # without this OPA's recursive loader double-loads every policy
+            # ("multiple default rules"). Ignore dot-prefixed entries.
+            - --ignore=.*
+            - /policies
+            - /data
+          env:
+            - name: OPA_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef: { name: {{ include "pgauthz.secretName" . }}, key: opa-admin-token }
+            - { name: JWT_ISSUER,   value: {{ .Values.opa.jwtIssuer | quote }} }
+            - { name: JWT_AUDIENCE, value: {{ .Values.opa.jwtAudience | quote }} }
+            - { name: DEFAULT_STORE, value: {{ .Values.opa.defaultStore | quote }} }
+            - { name: REQUIRE_TOKEN_FOR_READS, value: {{ .Values.opa.requireTokenForReads | quote }} }
+            - { name: DEFAULT_CACHE_TTL_SECONDS, value: {{ .Values.opa.defaultCacheTtlSeconds | quote }} }
+            - name: POSTGREST_URL
+              value: http://{{ include "pgauthz.fullname" . }}-postgrest:3000
+            - name: POSTGREST_WRITER_URL
+              value: http://{{ include "pgauthz.fullname" . }}-postgrest-writer:3001
+            {{- with .Values.opa.writerRole }}
+            - { name: WRITER_ROLE, value: {{ . | quote }} }
+            {{- end }}
+            {{- with .Values.opa.jwtRolesClaim }}
+            - { name: JWT_ROLES_CLAIM, value: {{ . | quote }} }
+            {{- end }}
+            {{- with .Values.opa.writerDbRoleClaim }}
+            - { name: WRITER_DB_ROLE_CLAIM, value: {{ . | quote }} }
+            {{- end }}
+          ports:
+            - { name: http, containerPort: 8181 }
+          readinessProbe:
+            httpGet: { path: /health, port: 8181 }
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: 8181 }
+            initialDelaySeconds: 10
+          resources: {{- toYaml .Values.opa.resources | nindent 12 }}
+          volumeMounts:
+            - { name: policies, mountPath: /policies, readOnly: true }
+            # subPath → a REAL file at /data/jwks.json (not a ConfigMap symlink
+            # into ..data/). OPA derives a data document's path from its
+            # directory, so the JWKS must sit directly in the load root for
+            # authn.rego's `data.keys` to resolve (a symlinked path lands the
+            # document under the wrong key and JWT verification fails closed).
+            - { name: data, mountPath: /data/jwks.json, subPath: jwks.json, readOnly: true }
+      volumes:
+        - name: policies
+          configMap: { name: {{ include "pgauthz.fullname" . }}-opa-policies }
+        - name: data
+          configMap: { name: {{ include "pgauthz.fullname" . }}-opa-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pgauthz.fullname" . }}-opa
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "pgauthz.name" . }}
+    app.kubernetes.io/component: opa
+  ports:
+    - { name: http, port: 8181, targetPort: 8181 }
+{{- if .Values.opa.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "pgauthz.fullname" . }}-opa
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: {{ include "pgauthz.fullname" . }}-opa }
+  minReplicas: {{ .Values.opa.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.opa.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: {{ .Values.opa.autoscaling.targetCPUUtilizationPercentage }} }
+{{- end }}

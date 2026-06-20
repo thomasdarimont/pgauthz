@@ -1,0 +1,40 @@
+{{- if .Values.ingress.enabled }}
+{{- $full := include "pgauthz.fullname" . }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $full }}
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts: [{{ .Values.ingress.host | quote }}]
+      secretName: {{ .Values.ingress.tls.secretName | quote }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          # OPA is the single front door.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $full }}-opa
+                port: { number: 8181 }
+          {{- if and .Values.authzen.exposeViaIngress .Values.authzen.opa.enabled }}
+          # Optional: AuthZEN 1.0 API (OPA-backed) under /authzen.
+          - path: /authzen
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $full }}-authzen-opa
+                port: { number: 8080 }
+          {{- end }}
+{{- end }}
