@@ -974,25 +974,87 @@ authz.tuples_audit       Immutable tuple audit trail (partitioned by month)
 6. Traverses tuple-to-userset links (e.g., `can_view from in_internal_space`)
 7. Unions contextual tuples into each step (if provided)
 
-These steps compose recursively. For example, checking if Alice can read
-`doc_payroll_001` traverses a tree like this:
+These steps compose recursively. Here's the simplest real check against the
+seeded **demo** store — Carol can read a document because she was granted
+`viewer` on it directly, and `can_read` is computed from `viewer`:
 
-```
-can_read on document:doc_payroll_001
-  ← computed: check viewer → miss (no direct tuple)
-  ← computed: check editor → miss
-  ← TTU: follow in_internal_space → internal_data_space:eng_42_payroll_internal
-    ← can_view on internal_data_space:eng_42_payroll_internal
-      ← TTU: follow parent_assignment → assignment:eng_42_payroll
-        ← can_view on assignment:eng_42_payroll
-          ← computed: check payroll_clerk
-            ← direct: team:payroll_team#member is payroll_clerk on assignment
-              ← userset expansion: is alice a member of team:payroll_team?
-                ← direct: tuple exists → YES
+```sql
+SELECT authz.explain_access('demo',
+    'client_user', 'carol', 'can_read', 'document', 'doc_client_private_001') ->> 'summary';
 ```
 
-The engine stops as soon as any path returns true. Use `explain_access` to
-see the full resolution trace for any check.
+```
+client_user:carol → can_read → document:doc_client_private_001 = ALLOWED (computed)
+  ✓ [direct_tuple] viewer on document:doc_client_private_001 — tuple found (1.174 ms)
+✓ [computed] can_read on document:doc_client_private_001 — can_read ← viewer (1.498 ms)
+```
+
+Two ideas do most of the work: a **direct tuple** (the stored `viewer` grant)
+and a **computed relation** (`can_read` is satisfied by `viewer`). Real models
+simply nest more of the same. The check below — *can Alice read
+`doc_payroll_001`?* — adds **userset expansion** (group membership) and
+**tuple-to-userset (TTU)** steps that hop from a document to the space and
+assignment it belongs to, but every line is still one of the same handful of
+move types. Ask the engine for this trace with `explain_access`:
+
+```sql
+SELECT authz.explain_access('demo',
+    'internal_user', 'alice', 'can_read', 'document', 'doc_payroll_001');
+```
+
+It returns the structured JSON described under
+[explain_access](#explain_access--why-was-access-allowed-or-denied) above. That
+JSON already carries a ready-made visualization in its `summary` field — extract
+it with the `->>` operator to print the trace as a tree:
+
+```sql
+SELECT authz.explain_access('demo',
+    'internal_user', 'alice', 'can_read', 'document', 'doc_payroll_001') ->> 'summary';
+```
+
+```
+internal_user:alice → can_read → document:doc_payroll_001 = ALLOWED (ttu)
+  ✗ [no_direct_tuple] viewer on document:doc_payroll_001 — no tuple (1.937 ms)
+✗ [computed] can_read on document:doc_payroll_001 — can_read ← viewer (2.347 ms)
+    ✗ [no_direct_tuple] viewer on internal_data_space:eng_42_payroll_internal — no tuple (0.610 ms)
+  ✗ [computed] can_view on internal_data_space:eng_42_payroll_internal — can_view ← viewer (0.767 ms)
+      ✗ [no_direct_tuple] accountant on assignment:eng_42_payroll — no tuple (0.573 ms)
+    ✗ [computed] can_view on assignment:eng_42_payroll — can_view ← accountant (0.680 ms)
+        ✓ [direct_tuple] member on team:payroll_team — tuple found (0.342 ms)
+      ✓ [userset] payroll_clerk on assignment:eng_42_payroll — expand team:payroll_team#member (0.777 ms)
+    ✓ [computed] can_view on assignment:eng_42_payroll — can_view ← payroll_clerk (0.839 ms)
+  ✓ [ttu] can_view on internal_data_space:eng_42_payroll_internal — can_view ← can_view on assignment:eng_42_payroll (via parent_assignment) (1.822 ms)
+✓ [ttu] can_read on document:doc_payroll_001 — can_read ← can_view on internal_data_space:eng_42_payroll_internal (via in_internal_space) (3.020 ms)
+```
+
+Read each line as `✓/✗ [reason] relation on object — detail (timing)`. Indentation
+is recursion depth and steps are listed in **evaluation order** (children before
+their parent), so the bottom line is the top-level decision. Here the engine first
+tries the cheap `viewer` paths (all ✗), then follows the TTU chain
+`document → internal_data_space → assignment`, where Alice's `team:payroll_team`
+membership finally satisfies `payroll_clerk` and the whole check resolves to
+ALLOWED. Per-step `duration_ms` timings vary run to run.
+
+The engine stops as soon as any path returns true. Pass `p_successful_only => true`
+to drop the ✗ branches and keep only the winning path:
+
+```sql
+SELECT authz.explain_access('demo',
+    'internal_user', 'alice', 'can_read', 'document', 'doc_payroll_001',
+    p_successful_only => true) ->> 'summary';
+```
+
+```
+internal_user:alice → can_read → document:doc_payroll_001 = ALLOWED (ttu)
+        ✓ [direct_tuple] member on team:payroll_team — tuple found (0.345 ms)
+      ✓ [userset] payroll_clerk on assignment:eng_42_payroll — expand team:payroll_team#member (0.829 ms)
+    ✓ [computed] can_view on assignment:eng_42_payroll — can_view ← payroll_clerk (0.903 ms)
+  ✓ [ttu] can_view on internal_data_space:eng_42_payroll_internal — can_view ← can_view on assignment:eng_42_payroll (via parent_assignment) (1.902 ms)
+✓ [ttu] can_read on document:doc_payroll_001 — can_read ← can_view on internal_data_space:eng_42_payroll_internal (via in_internal_space) (3.136 ms)
+```
+
+The machine-readable `trace` (flat) and `tree` (nested) fields carry the same
+steps for programmatic use.
 
 All recursive calls use integer IDs internally. Text-to-ID resolution
 happens once at the top-level public function.
