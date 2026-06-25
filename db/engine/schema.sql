@@ -69,7 +69,14 @@ CREATE TABLE authz.relations (
 );
 
 -- Conditions: named expressions evaluated at check time.
--- Scoped per store. The expression is a SQL boolean expression that can reference:
+-- Scoped per store. `lang` tags the expression language; today only the
+-- dependency-free 'sql' executor exists, so the CHECK permits just that.
+-- Additional languages (cel, cedar, rego, …) plug in later by widening the
+-- CHECK and adding an executor branch in authz._eval_condition_expr — they
+-- are expected to be backed by optional extensions, while 'sql' stays the
+-- built-in default that needs nothing extra.
+--
+-- For lang = 'sql' the expression is a SQL boolean expression that can reference:
 --   $1 = request-time context (passed by caller)
 --   $2 = tuple-stored context (from condition_context JSONB)
 CREATE TABLE authz.conditions (
@@ -77,6 +84,7 @@ CREATE TABLE authz.conditions (
     store_id         smallint NOT NULL REFERENCES authz.stores(id),
     name             text NOT NULL,
     expression       text NOT NULL,
+    lang             text NOT NULL DEFAULT 'sql' CHECK (lang IN ('sql')),
     required_context jsonb,
     UNIQUE (store_id, name)
 );
@@ -98,14 +106,24 @@ CREATE TABLE authz.conditions (
 CREATE OR REPLACE FUNCTION authz._validate_condition_expression() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
-    BEGIN
-        PERFORM authz._exec_condition(NEW.expression, '{}'::jsonb, '{}'::jsonb);
-    EXCEPTION
-        WHEN syntax_error_or_access_rule_violation THEN  -- SQLSTATE class 42
-            RAISE EXCEPTION 'condition "%" has an invalid expression: %', NEW.name, SQLERRM
-                USING ERRCODE = 'invalid_parameter_value',
-                      HINT = 'Expression must be a valid SQL boolean over $1 (request) and $2 (stored) context.';
-    END;
+    -- Validation is language-specific (SQL test-compiles by executing; future
+    -- languages parse/type-check). Dispatch on NEW.lang. The CHECK constraint
+    -- already restricts lang to 'sql', so the ELSE is defensive.
+    CASE NEW.lang
+        WHEN 'sql' THEN
+            BEGIN
+                PERFORM authz._exec_condition(NEW.expression, '{}'::jsonb, '{}'::jsonb);
+            EXCEPTION
+                WHEN syntax_error_or_access_rule_violation THEN  -- SQLSTATE class 42
+                    RAISE EXCEPTION 'condition "%" has an invalid expression: %', NEW.name, SQLERRM
+                        USING ERRCODE = 'invalid_parameter_value',
+                              HINT = 'Expression must be a valid SQL boolean over $1 (request) and $2 (stored) context.';
+            END;
+        ELSE
+            RAISE EXCEPTION 'condition "%" uses unsupported language "%"', NEW.name, NEW.lang
+                USING ERRCODE = 'feature_not_supported',
+                      HINT = 'Only ''sql'' conditions are supported in this build.';
+    END CASE;
     RETURN NEW;
 END;
 $$;
@@ -600,6 +618,7 @@ CREATE TABLE authz.conditions_audit (
     store_id         smallint NOT NULL,
     name             text NOT NULL,
     expression       text NOT NULL,
+    lang             text NOT NULL DEFAULT 'sql',  -- no CHECK: history records whatever was in effect
     required_context jsonb,
     PRIMARY KEY (seq)
 );
@@ -620,22 +639,22 @@ BEGIN
 
     IF TG_OP = 'UPDATE' THEN
         INSERT INTO authz.conditions_audit (
-            action, performed_at, performed_by, condition_id, store_id, name, expression, required_context
+            action, performed_at, performed_by, condition_id, store_id, name, expression, lang, required_context
         ) VALUES
-            ('DELETE', transaction_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.name, OLD.expression, OLD.required_context),
-            ('INSERT', transaction_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.name, NEW.expression, NEW.required_context);
+            ('DELETE', transaction_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.name, OLD.expression, OLD.lang, OLD.required_context),
+            ('INSERT', transaction_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.name, NEW.expression, NEW.lang, NEW.required_context);
         RETURN NEW;
     ELSIF TG_OP = 'INSERT' THEN
         INSERT INTO authz.conditions_audit (
-            action, performed_at, performed_by, condition_id, store_id, name, expression, required_context
+            action, performed_at, performed_by, condition_id, store_id, name, expression, lang, required_context
         ) VALUES
-            ('INSERT', transaction_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.name, NEW.expression, NEW.required_context);
+            ('INSERT', transaction_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.name, NEW.expression, NEW.lang, NEW.required_context);
         RETURN NEW;
     ELSIF TG_OP = 'DELETE' THEN
         INSERT INTO authz.conditions_audit (
-            action, performed_at, performed_by, condition_id, store_id, name, expression, required_context
+            action, performed_at, performed_by, condition_id, store_id, name, expression, lang, required_context
         ) VALUES
-            ('DELETE', transaction_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.name, OLD.expression, OLD.required_context);
+            ('DELETE', transaction_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.name, OLD.expression, OLD.lang, OLD.required_context);
         RETURN OLD;
     END IF;
 

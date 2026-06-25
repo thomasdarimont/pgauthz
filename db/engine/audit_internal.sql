@@ -129,13 +129,14 @@ LANGUAGE plpgsql AS $$
 BEGIN
     CREATE TEMP TABLE IF NOT EXISTS _snapshot_conditions (
         id         smallint,
-        expression text
+        expression text,
+        lang       text
     ) ON COMMIT DROP;
 
     TRUNCATE _snapshot_conditions;
 
     INSERT INTO _snapshot_conditions
-    SELECT sub.condition_id, sub.expression
+    SELECT sub.condition_id, sub.expression, sub.lang
       FROM (
         SELECT DISTINCT ON (a.condition_id) a.*
           FROM authz.conditions_audit a
@@ -149,9 +150,10 @@ $$;
 
 ------------------------------------------------------------------------
 -- _eval_condition_snapshot: like _eval_condition, but resolves the
--- expression from pg_temp._snapshot_conditions (the as-of-p_at version)
--- instead of the current authz.conditions. Same sandbox (_exec_condition
--- runs as authz_eval). Dynamic SQL because the temp table is per-session.
+-- expression and lang from pg_temp._snapshot_conditions (the as-of-p_at
+-- version) instead of the current authz.conditions, then dispatches via
+-- _eval_condition_expr (so 'sql' still runs in the authz_eval sandbox).
+-- Dynamic SQL because the temp table is per-session.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._eval_condition_snapshot(
     p_condition_id      smallint,
@@ -161,18 +163,20 @@ CREATE OR REPLACE FUNCTION authz._eval_condition_snapshot(
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
     v_expr text;
+    v_lang text;
 BEGIN
     IF p_condition_id IS NULL THEN
         RETURN true;   -- unconditional
     END IF;
 
-    EXECUTE 'SELECT expression FROM _snapshot_conditions WHERE id = $1'
-       INTO v_expr USING p_condition_id;
+    EXECUTE 'SELECT expression, lang FROM _snapshot_conditions WHERE id = $1'
+       INTO v_expr, v_lang USING p_condition_id;
     IF v_expr IS NULL THEN
         RETURN false;  -- condition did not exist as of p_at = deny
     END IF;
 
-    RETURN authz._exec_condition(
+    RETURN authz._eval_condition_expr(
+        v_lang,
         v_expr,
         COALESCE(p_request_context, '{}'::jsonb),
         COALESCE(p_condition_context, '{}'::jsonb)
