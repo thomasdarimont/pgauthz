@@ -516,6 +516,10 @@ in one store do not affect another.
 
 ## Data Model at a Glance
 
+This is the **demo** example model ([`examples/models/demo/`](../examples/models/demo/))
+used throughout these examples — a consulting-firm scenario — not the engine's own
+schema (`authz.stores`, `authz.tuples`, …).
+
 ```
 engagement
  +-- advisor, assistant, client
