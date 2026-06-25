@@ -85,6 +85,11 @@ echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_eval_rule.sql"
 
 echo ""
+echo "==> Running condition language checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_condition_lang.sql"
+
+echo ""
 echo "==> Running type restriction checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_type_restrictions.sql"

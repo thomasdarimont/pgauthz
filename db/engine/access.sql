@@ -407,7 +407,7 @@ DECLARE
     v_missing text[];
     v_key    text;
 BEGIN
-    SELECT id, expression, required_context
+    SELECT id, expression, lang, required_context
       INTO v_cond
       FROM authz.conditions
      WHERE store_id = authz._s(p_store)
@@ -443,9 +443,9 @@ BEGIN
         END IF;
     END IF;
 
-    -- Try evaluating the expression via the sandboxed evaluator
+    -- Try evaluating the expression via the language dispatcher (sandboxed for 'sql')
     BEGIN
-        v_result := authz._exec_condition(v_cond.expression, p_request_context, p_condition_context);
+        v_result := authz._eval_condition_expr(v_cond.lang, v_cond.expression, p_request_context, p_condition_context);
     EXCEPTION
         WHEN OTHERS THEN
             RAISE EXCEPTION 'Condition "%" failed evaluation: %', p_condition_name, SQLERRM;

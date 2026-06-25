@@ -552,13 +552,46 @@ $$;
 ALTER FUNCTION authz._exec_condition(text, jsonb, jsonb) OWNER TO authz_eval;
 
 ------------------------------------------------------------------------
+-- _eval_condition_expr: single dispatch point for condition languages.
+-- Given a condition's language tag, raw expression, and the request /
+-- stored context bags, evaluates it to a boolean.
+--
+-- Today only 'sql' is supported (enforced by the CHECK on
+-- authz.conditions.lang), evaluated in the zero-privilege authz_eval
+-- sandbox via _exec_condition. Additional languages — cel, cedar, rego,
+-- … — are added here as new CASE branches, each delegating to its own
+-- executor (typically backed by an optional extension). The 'sql' branch
+-- stays dependency-free; this is the one place to extend.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._eval_condition_expr(
+    p_lang              text,
+    p_expression        text,
+    p_request_context   jsonb,
+    p_condition_context jsonb
+) RETURNS boolean
+LANGUAGE plpgsql STABLE AS $$
+BEGIN
+    CASE p_lang
+        WHEN 'sql' THEN
+            RETURN authz._exec_condition(p_expression, p_request_context, p_condition_context);
+        ELSE
+            -- Unreachable while the CHECK permits only 'sql'; guards against a
+            -- future language slipping in without a matching executor.
+            RAISE EXCEPTION 'unsupported condition language: %', p_lang
+                USING ERRCODE = 'feature_not_supported';
+    END CASE;
+END;
+$$;
+
+------------------------------------------------------------------------
 -- _eval_condition: evaluates a condition expression against context.
 -- Returns true if no condition (unconditional tuple) or condition passes.
 -- Takes condition_id (PK) so no store scoping needed.
 --
--- Security: the expression is evaluated via _exec_condition which runs
--- as authz_eval — a role with zero table/function access. Only pure SQL
--- operators and casts work inside expressions.
+-- Security: the expression is evaluated via _eval_condition_expr →
+-- _exec_condition which runs as authz_eval — a role with zero
+-- table/function access. Only pure SQL operators and casts work inside
+-- 'sql' expressions.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._eval_condition(
     p_condition_id      smallint,
@@ -568,18 +601,21 @@ CREATE OR REPLACE FUNCTION authz._eval_condition(
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
     v_expr   text;
+    v_lang   text;
 BEGIN
     -- No condition = unconditional access
     IF p_condition_id IS NULL THEN
         RETURN true;
     END IF;
 
-    SELECT expression INTO v_expr FROM authz.conditions WHERE id = p_condition_id;
+    SELECT expression, lang INTO v_expr, v_lang
+      FROM authz.conditions WHERE id = p_condition_id;
     IF v_expr IS NULL THEN
         RETURN false;  -- unknown condition = deny
     END IF;
 
-    RETURN authz._exec_condition(
+    RETURN authz._eval_condition_expr(
+        v_lang,
         v_expr,
         COALESCE(p_request_context, '{}'::jsonb),
         COALESCE(p_condition_context, '{}'::jsonb)
