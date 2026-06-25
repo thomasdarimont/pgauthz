@@ -27,6 +27,68 @@ that resolve relationship tuples recursively.
 - **AuthZEN 1.0 API** — standard [AuthZEN](https://openid.net/specs/authorization-api-1_0.html) Go API layer with two backends: direct PostgreSQL (`authzen-direct`) and OPA (`authzen-opa`)
 - **Performance** — integer IDs, LIST partitioning by object type, covering partial indexes, store-scoped index pruning
 
+## Why PostgreSQL?
+
+Zanzibar-style authorization is fundamentally a **graph-resolution problem over
+relationship data** — exactly the kind of work a relational database with
+recursive queries is built for. Implementing it *inside* PostgreSQL, rather than
+as a separate service in front of it, has concrete advantages:
+
+- **No separate service to operate** — the engine is SQL functions, not another
+  process with its own deployment, scaling, monitoring, and failure modes. If
+  you already run PostgreSQL, you already run the authorization engine. One
+  thing to back up, patch, and secure.
+
+- **No network hop on the hot path** — `check_access` is a function call, not a
+  round-trip to an external PDP. Authorization decisions resolve at memory and
+  index speed, in the same process that already holds your data.
+
+- **Deploy it where it fits your topology** — because it's just SQL, you choose
+  where it lives. Run it *inside* your application database and authorization
+  checks and writes participate in the **same transaction** as your business
+  logic — grant a relationship and update the resource atomically, with no
+  dual-write problem and no drift between an external authz store and your data.
+  Or run it as a **dedicated authorization database** and materialize a scoped
+  extract of the effective permissions into an application-specific table that is
+  periodically refreshed and replicated to where it's consumed (see
+  [`db/replication/`](db/replication/)). Same engine, two valid topologies.
+
+- **Strong consistency by default** — PostgreSQL MVCC gives read-after-write
+  consistency on a single instance with no consistency tokens to manage. Writes
+  are immediately visible to subsequent checks in the same connection and, once
+  committed, to everyone else.
+
+- **Mature platform features come for free** — point-in-time recovery, logical
+  and streaming replication, partitioning, fine-grained roles and `SECURITY
+  DEFINER` privilege boundaries, and a decades-hardened query planner. The audit
+  trail, time-travel queries, monthly partitioning, and read-replica scaling in
+  this project are all built on stock PostgreSQL, not bespoke infrastructure.
+
+- **Expressive enough for the whole model** — recursive CTEs and PL/pgSQL handle
+  userset expansion, computed relations, and tuple-to-userset traversal directly,
+  while conditions/ABAC reuse PostgreSQL's own expression evaluation. Condition
+  expressions are evaluated in a **sandbox**: they run as a dedicated `authz_eval`
+  role that has zero table and function access, so a malicious or buggy condition
+  can compute over the supplied context but cannot read or modify any data. The
+  full Zanzibar/OpenFGA model fits in ~4200 lines of SQL with no external
+  dependencies.
+
+- **Scales horizontally with stock replication** — authorization is read-heavy
+  (`check_access` vastly outnumbers tuple writes), which is exactly the workload
+  read replicas serve well. Send writes to the primary and fan checks out across
+  streaming read replicas ([`compose-scaling.yml`](compose-scaling.yml)), or use
+  logical replication to push a derived/materialized permissions table out to
+  consumers ([`db/replication/`](db/replication/)) — all built on PostgreSQL's
+  native replication, no custom sharding layer.
+
+- **SQL-native integration** — query and join authorization data with the rest
+  of your schema, expose it over HTTP with PostgREST, or front it with OPA — all
+  without inventing a new transport or data format.
+
+This is not the right tradeoff for everyone — if you need official polyglot SDKs,
+native gRPC streaming, or a fully managed hosted service, see
+[When to choose OpenFGA](#when-to-choose-openfga) below for an honest comparison.
+
 ## Setup
 
 ```bash
