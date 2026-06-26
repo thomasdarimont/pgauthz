@@ -1,0 +1,5 @@
+comment = 'CEL (Common Expression Language) evaluation for pgauthz conditions'
+default_version = '0.1.0'
+module_pathname = '$libdir/pg_cel'
+relocatable = true
+superuser = false

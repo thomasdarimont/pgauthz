@@ -791,6 +791,32 @@ INSERT INTO authz.conditions (store_id, name, expression) VALUES
  $$($1->>'usage_count')::int < ($2->>'max_allowed')::int$$);
 ```
 
+### Condition languages (`lang`)
+
+Conditions carry a `lang` column selecting the expression language. `'sql'` is
+the built-in default shown above — a SQL boolean over `$1` (request context) and
+`$2` (stored context), evaluated in a zero-privilege sandbox, no dependencies.
+
+`'cel'` is an **optional** language for friendlier ABAC expressions, evaluated by
+the [`extensions/pg-cel`](extensions/pg-cel/) Rust/pgrx extension. The two
+context bags are exposed as `request.*` and `stored.*`:
+
+```sql
+-- Same "not expired" rule, in CEL (requires the pg_cel extension; see
+-- compose-cel.yml). lang='cel' rows are rejected unless the evaluator is
+-- installed, so the default stack is never left with conditions it can't run.
+INSERT INTO authz.conditions (store_id, name, expression, lang, required_context)
+VALUES (authz._s('demo'), 'cel_not_expired',
+        'timestamp(request.current_time) < timestamp(stored.expires)',
+        'cel',
+        '{"request": ["current_time"], "stored": ["expires"]}');
+```
+
+The engine dispatches languages in one place (`authz._eval_condition_expr`), so
+adding cedar/rego later is additive. See
+[`extensions/pg-cel/README.md`](extensions/pg-cel/README.md) for the build and
+the SQL-vs-CEL trade-offs (e.g. IP-range conditions stay `lang='sql'`).
+
 ## Audit Trail and Time Travel
 
 Every `write_tuple` and `delete_tuple` call is recorded in `authz.tuples_audit` —

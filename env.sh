@@ -28,6 +28,17 @@ if [ -f "$SCRIPT_DIR/compose-authzen.yml" ]; then
   COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-authzen.yml")
 fi
 
+# Optional: CEL condition support. When PGAUTHZ_CEL is truthy, overlay
+# compose-cel.yml so the Postgres image is (re)built with the pg_cel extension
+# (extensions/pg-cel). init.sh then runs CREATE EXTENSION pg_cel, enabling
+# lang='cel' conditions. Off by default → stock postgres, sql conditions only.
+# Enable with: PGAUTHZ_CEL=1 ./bootstrap.sh   (or ./start.sh --cel / .env).
+case "${PGAUTHZ_CEL:-}" in
+  1|true|yes|on)
+    COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-cel.yml")
+    ;;
+esac
+
 # The demo/test stack runs the AuthZEN services in trusted-PEP mode (the
 # integration tests evaluate access for arbitrary subjects supplied in the
 # request body). The compose file itself defaults to the SAFE token-only mode,

@@ -54,7 +54,7 @@ cd authzen && go build ./cmd/authzen-opa
 
 - `db/engine/` — Core authorization engine SQL (schema, access checks, tuples, models, audit)
 - `tests/sql/` — SQL test suites (API, search, contextual tuples, namespaces, intersections, wildcards, type restrictions)
-- `examples/models/` — Example authorization models (demo, gdrive, github), each with model.sql, seed.sql, demo.sql; demo also has tests.sql. Not part of the deployable engine — `init.sh` does not load them; `test.sh`/`bootstrap.sh` load the demo model as a test fixture
+- `examples/models/` — Example authorization models (demo, gdrive, github), each with model.sql, seed.sql, demo.sql; demo also has tests.sql and demo_cel.sql (CEL-condition showcase, needs the pg_cel extension). Not part of the deployable engine — `init.sh` does not load them; `test.sh`/`bootstrap.sh` load the demo model as a test fixture
 - `examples/watch/` — Runnable setup example for the watch/changefeed feature (compose overlay + Python consumer)
 - `db/security/` — PostgreSQL role definitions (authz_reader, authz_writer, authz_admin, authz_auditor)
 - `db/openfga/` — Import functions for existing OpenFGA JSON models/tuples

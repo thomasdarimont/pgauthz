@@ -1,0 +1,20 @@
+# CEL condition support overlay.
+#
+# Builds the pg_cel extension (extensions/pg-cel) into the Postgres image so
+# `lang='cel'` conditions can be evaluated in-database. Everything else is
+# unchanged; without this overlay the stack runs stock postgres and only
+# `lang='sql'` conditions work.
+#
+# Usage:
+#   docker compose -f compose.yml -f compose-cel.yml up -d --build
+#   ./init.sh            # auto-runs CREATE EXTENSION IF NOT EXISTS pg_cel
+#
+services:
+  authz-db:
+    build:
+      context: .
+      dockerfile: extensions/pg-cel/Dockerfile
+      args:
+        PG_MAJOR: "18"
+        POSTGRES_TAG: "18.4"
+    image: pgauthz-postgres-cel:18.4

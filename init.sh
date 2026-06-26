@@ -39,6 +39,22 @@ psql_file "$PG_DB" "$SCRIPT_DIR/db/openfga/functions_openfga.sql"
 echo "==> Setting up security roles..."
 psql_file "$PG_DB" "$SCRIPT_DIR/db/security/roles.sql"
 
+# Optional: enable the CEL condition evaluator if the pg_cel extension is
+# present in this image (see extensions/pg-cel + compose-cel.yml). This is a
+# no-op on the stock postgres image, so the default stack is unaffected and
+# only lang='sql' conditions are available; with the extension installed,
+# lang='cel' conditions become writable and evaluable.
+echo "==> Enabling CEL evaluator (pg_cel) if available..."
+# Install into the engine's own schema: the CEL evaluator is an engine
+# dependency, so it belongs in authz (not public), and the engine references
+# authz.cel_eval_bool / authz.cel_compile_check explicitly. SCHEMA authz also
+# makes DROP SCHEMA authz CASCADE clean it up with everything else on re-init.
+if psql_exec "$PG_DB" -c "CREATE EXTENSION IF NOT EXISTS pg_cel SCHEMA authz;" >/dev/null 2>&1; then
+  echo "    pg_cel enabled — CEL conditions available"
+else
+  echo "    pg_cel not installed — CEL conditions disabled (sql conditions unaffected)"
+fi
+
 # Optional env-driven overrides on top of the roles.sql defaults (see
 # .env.example). Service-role PASSWORDS are set at initdb instead (changing them
 # needs a fresh DB: down -v + init); these knobs apply on every init.
