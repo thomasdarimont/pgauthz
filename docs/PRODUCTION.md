@@ -257,6 +257,19 @@ consistent (sub-second lag). The risk is a **stale allow after a revoke**.
 - `synchronous_commit = remote_apply` makes replicas strongly consistent at a
   write-latency cost.
 
+A practical way to operationalise this is to classify each decision and pin its
+read path:
+
+| Decision class | Examples | Read path |
+|---|---|---|
+| **Critical** | revoke admin, payment approval, the confirming check after a write | **Primary** (read-your-writes) |
+| **Normal** | viewing a document, listing resources | Replica or embedded read-only engine (bounded staleness) |
+| **Analytical** | access reviews, historical / audit reporting | Dedicated replica |
+
+Application roles should get only runtime reader/writer roles; model
+administration, condition management, and namespace grants belong to a separate
+control plane (`db/security/roles.sql`).
+
 There is no revision-token (zookie) API; see
 [ARCHITECTURE.md → Consistency tokens](ARCHITECTURE.md#consistency-tokens-zookies-why-not-yet)
 and the README "Consistency model" section.

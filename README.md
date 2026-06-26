@@ -111,6 +111,24 @@ loaded separately (see below).
 docker exec -it $(docker compose ps -q authz-db) psql -U authz -d authz
 ```
 
+## Compatibility
+
+Versions the stack is built and tested against (the pinned versions in
+`compose*.yml` / the build files). The engine is pure PL/pgSQL with no
+extensions on the default path, so the only hard requirement is PostgreSQL; the
+rest are the components of the reference deployment.
+
+| Component | Version | Required? | Notes |
+|---|---|---|---|
+| **PostgreSQL** | 18.4 | **required** | The engine. Uses partitioning, generated identity, and JSONB; developed and tested on 18.x. |
+| PostgREST | v14.13 | optional | REST bridge (read on 3000, write on 3001). |
+| OPA | 1.17.1 | optional | Policy/JWT front door for reads and writes. |
+| Go (AuthZEN services) | 1.26 | optional | `authzen-direct` / `authzen-opa`. |
+| `pg_cel` extension | pgrx 0.19.1, `cel` 0.13 | optional | Only for `lang='cel'` conditions; built per PostgreSQL major (see [`extensions/pg-cel`](extensions/pg-cel/)). |
+
+There are no formal releases yet — pin to a specific commit for reproducible
+deployments, and watch [`SECURITY.md`](SECURITY.md) for the supported line.
+
 ## API
 
 All public functions take the **store name** (e.g. `'demo'`) as the first parameter.
