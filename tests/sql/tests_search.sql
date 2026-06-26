@@ -319,6 +319,78 @@ END;
 $$;
 SELECT * FROM _test_teardown_search();
 
+-- ================================================================
+-- Authorization-as-a-JOIN filtering pattern (wildcard-safe)
+-- ================================================================
+-- Verifies the documented pattern (README "Authorization as a JOIN"): filter an
+-- application table by JOINing list_objects(...), honouring is_wildcard. Uses
+-- its own object-wildcard-capable store and a temp app table.
+DO $$
+DECLARE
+    v_explicit   text;
+    v_wild       text;
+    v_none       text;
+    v_naive_wild text;
+BEGIN
+    BEGIN PERFORM authz.delete_store('test_aojoin'); EXCEPTION WHEN OTHERS THEN NULL; END;
+    PERFORM authz.create_store('test_aojoin');
+
+    INSERT INTO authz.types (store_id, name) VALUES
+        (authz._s('test_aojoin'), 'user'), (authz._s('test_aojoin'), 'doc');
+    INSERT INTO authz.relations (store_id, name) VALUES
+        (authz._s('test_aojoin'), 'viewer'), (authz._s('test_aojoin'), 'can_read');
+    PERFORM authz._ensure_tuple_partition(authz._s('test_aojoin'), 'doc');
+    PERFORM authz.model_add_rule('test_aojoin', 'doc', 'viewer', 'direct',
+        p_allow_object_wildcard => true);
+    PERFORM authz.model_add_rule('test_aojoin', 'doc', 'can_read', 'computed',
+        p_computed_relation => 'viewer');
+
+    -- bob: explicit grants on d1,d2; auditor: object-wildcard (every doc)
+    PERFORM authz.write_tuple('test_aojoin', 'user', 'bob',     'viewer', 'doc', 'd1');
+    PERFORM authz.write_tuple('test_aojoin', 'user', 'bob',     'viewer', 'doc', 'd2');
+    PERFORM authz.write_tuple('test_aojoin', 'user', 'auditor', 'viewer', 'doc', '*');
+
+    -- stand-in for the application's own table
+    DROP TABLE IF EXISTS _aojoin_docs;
+    CREATE TEMP TABLE _aojoin_docs (id text PRIMARY KEY);
+    INSERT INTO _aojoin_docs VALUES ('d1'), ('d2'), ('d3');
+
+    -- aojoin_01: explicit grants filter to exactly the authorized rows
+    SELECT array_agg(d.id ORDER BY d.id)::text INTO v_explicit
+      FROM _aojoin_docs d
+     WHERE EXISTS (SELECT 1 FROM authz.list_objects('test_aojoin','user','bob','can_read','doc') WHERE is_wildcard)
+        OR d.id IN (SELECT object_id FROM authz.list_objects('test_aojoin','user','bob','can_read','doc'));
+    PERFORM _test_assert('aojoin_01_explicit_grants_filter', v_explicit, '{d1,d2}');
+
+    -- aojoin_02: a wildcard grant widens the filter to ALL rows
+    SELECT array_agg(d.id ORDER BY d.id)::text INTO v_wild
+      FROM _aojoin_docs d
+     WHERE EXISTS (SELECT 1 FROM authz.list_objects('test_aojoin','user','auditor','can_read','doc') WHERE is_wildcard)
+        OR d.id IN (SELECT object_id FROM authz.list_objects('test_aojoin','user','auditor','can_read','doc'));
+    PERFORM _test_assert('aojoin_02_wildcard_returns_all', v_wild, '{d1,d2,d3}');
+
+    -- aojoin_03: no grants → no rows
+    SELECT array_agg(d.id ORDER BY d.id)::text INTO v_none
+      FROM _aojoin_docs d
+     WHERE EXISTS (SELECT 1 FROM authz.list_objects('test_aojoin','user','nobody','can_read','doc') WHERE is_wildcard)
+        OR d.id IN (SELECT object_id FROM authz.list_objects('test_aojoin','user','nobody','can_read','doc'));
+    PERFORM _test_assert('aojoin_03_no_access_returns_none', v_none, NULL);
+
+    -- aojoin_04: the FOOTGUN — a naive id-only JOIN silently returns nothing for
+    -- the wildcard user (its set is the single '*' row), which is why the
+    -- is_wildcard branch above is required.
+    SELECT array_agg(d.id ORDER BY d.id)::text INTO v_naive_wild
+      FROM _aojoin_docs d
+      JOIN authz.list_objects('test_aojoin','user','auditor','can_read','doc') a
+        ON a.object_id = d.id;
+    PERFORM _test_assert_true('aojoin_04_naive_id_join_misses_wildcard',
+        v_naive_wild IS NULL, 'naive join result=' || coalesce(v_naive_wild, '<null>'));
+
+    DROP TABLE IF EXISTS _aojoin_docs;
+    PERFORM authz.delete_store('test_aojoin');
+END;
+$$;
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_search();
 DROP FUNCTION IF EXISTS _test_setup_search();

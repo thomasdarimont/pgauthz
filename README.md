@@ -484,6 +484,75 @@ SELECT * FROM authz.audit_list_object('demo', 'document', 'doc_payroll_001');
 Returns columns: `action` (INSERT/DELETE), `performed_at`, `performed_by`,
 `relation`, `object_type`, `object_id`, `condition_name`, `condition_context`.
 
+## Authorization as a JOIN (data filtering)
+
+The "which rows can this user see?" problem — *list filtering* — is usually
+solved by external engines with **partial evaluation**: evaluate the policy
+against the known inputs, emit a residual filter, then translate that filter
+(an AST) into a `WHERE` clause via a per-ORM adapter so the database returns
+only authorized rows.
+
+Because pgauthz **is** SQL running in the same Postgres as your data, you skip
+the residual-expression compiler and the adapter entirely — you just **JOIN**.
+`authz.list_objects(...)` returns the set a subject can reach (called without a
+limit it returns all of them), and you compose it into a query over your own
+table:
+
+```sql
+-- Return only the documents Bob can read, with your own ordering/paging,
+-- in one round-trip. The authorization set is computed once (MATERIALIZED).
+WITH authorized AS MATERIALIZED (
+    SELECT object_id, is_wildcard
+      FROM authz.list_objects('demo','internal_user','bob','can_read','document')
+)
+SELECT d.*
+  FROM documents d                                   -- your application table
+ WHERE EXISTS (SELECT 1 FROM authorized WHERE is_wildcard)   -- public/wildcard → all rows
+    OR d.id IN (SELECT object_id FROM authorized)            -- else: explicit grants
+ ORDER BY d.created_at DESC
+ LIMIT 20;
+```
+
+The cost tracks what Bob can reach (reverse expansion), not how many rows
+`documents` has — and there is no second service, no network hop, and no
+dialect translation.
+
+> **Wildcard rows are not ids.** A row with `is_wildcard = true` (e.g. an
+> object-wildcard grant, `object_id = '*'`) means *every* object of the type is
+> authorized. It must **widen** the filter, as above — a naive
+> `JOIN … ON a.object_id = d.id` would match nothing for it and silently deny a
+> user who actually has access to everything. Always branch on `is_wildcard`.
+
+### Bounding the cost
+
+Counter-intuitively, **a wildcard grant is the cheap case**: `list_objects`
+returns a single `is_wildcard` row, not an enumeration, and the `is_wildcard`
+branch hands filtering back to your own `WHERE`/`LIMIT`. The unbounded case is a
+subject with a very large *reachable* set (e.g. via huge groups), where
+`list_objects` returns many concrete ids and the `IN (…)` materialises all of
+them — your `LIMIT` bounds the output, not that set. (Don't cap it by passing a
+limit to `list_objects` — that silently under-authorises.) When the reachable set
+can be large but your query is already selective, invert to
+**filter-then-authorise** — let the indexed business filter pick candidates and
+check each:
+
+```sql
+SELECT d.* FROM documents d
+ WHERE d.team_id = 42                                    -- selective, indexed
+   AND authz.check_access('demo','internal_user','bob','can_read','document', d.id)
+ ORDER BY d.created_at DESC LIMIT 20;                    -- work ∝ rows scanned
+```
+
+Rule of thumb: **authorize-then-filter** (the JOIN) when the reachable set is
+modest or authz drives the result; **filter-then-authorize** when your business
+query is selective and the reachable set could be huge.
+
+This is ReBAC's native answer to data filtering. What it deliberately does *not*
+do is compile conditions into predicates over your application's columns — if a
+decision depends on an attribute that lives only in your tables, an ABAC/policy
+engine's partial evaluation is the better fit (see
+[Comparison with OpenFGA](#comparison-with-openfga) and `examples/filtering/`).
+
 ## Example Queries
 
 ### Permission checks
