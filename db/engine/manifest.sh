@@ -24,6 +24,7 @@ ENGINE_MANIFEST=(
   "schema.sql:substrate"
   "schema_audit.sql:audit"
   "core_internal.sql:substrate"
+  "conditions.sql:substrate"
   "access_internal.sql:read"
   "audit_internal.sql:audit"
   "store.sql:write"
@@ -34,6 +35,7 @@ ENGINE_MANIFEST=(
   "audit.sql:audit"
   "watch.sql:audit"
   "model.sql:write"
+  "conditions_admin.sql:write"
 )
 
 # engine_files_for <profile> [<profile>...]

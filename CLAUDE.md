@@ -69,9 +69,9 @@ cd authzen && go build ./cmd/authzen-opa
 
 - All public functions are `SECURITY DEFINER` — app roles never need direct table access
 - Engine files are grouped by **deployment profile** in `db/engine/manifest.sh` (the single source of truth for load order, sourced by `init.sh`, `init-readonly.sh`, `deploy/migrations/run-migrations.sh`, and `db/replication/init-replication.sh`):
-  - **substrate** (`schema.sql`, `core_internal.sql`) — read tables/partitions/constraints + core internals; every deployment
-  - **read** (`access_internal.sql`, `access.sql`, `explain.sql`) — checks, search (`list_*`), explain, condition validation
-  - **write** (`store.sql`, `tuples.sql`, `model.sql`, `maintenance.sql`) — tuple/model/store/condition management + redundant-tuple cleanup
+  - **substrate** (`schema.sql`, `core_internal.sql`, `conditions.sql`) — read tables/partitions/constraints + core internals + condition evaluation; every deployment
+  - **read** (`access_internal.sql`, `access.sql`, `explain.sql`) — checks, search (`list_*`), explain, condition validation (dry-run)
+  - **write** (`store.sql`, `tuples.sql`, `model.sql`, `maintenance.sql`, `conditions_admin.sql`) — tuple/model/store management, redundant-tuple cleanup, condition create/delete + write-time validation trigger
   - **audit** (`schema_audit.sql`, `audit_internal.sql`, `audit.sql`, `watch.sql`) — audit tables/triggers, time-travel, changefeed
   - Read-only deployment = substrate + read (`init-readonly.sh`); full = all four (`init.sh`). To add an engine file, register it in the manifest with its profile.
 - Within a profile the order is DDL → internal helpers → public API
