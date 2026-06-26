@@ -1200,16 +1200,31 @@ pattern:
 | Topology | Where authz data lives | How an app reads it | Data filtering |
 |---|---|---|---|
 | **Central authz service** (common) | its own database / cluster | over the wire — REST (OPA → PostgREST) or AuthZEN | `list_objects` returns the id set; the app filters its own query by it (`WHERE id = ANY(:ids)` + wildcard flag), like an OpenFGA-style engine |
-| **Replicated permissions** | central, with a derived slice replicated into the app DB | local SQL against the replica ([`db/replication/`](db/replication/)) | JOIN the replicated permissions locally |
+| **Embedded read-only engine** | central, with raw tuples + model replicated into the app DB | the **read-only engine excerpt** runs locally (`init-readonly.sh`) — full `check_access` / `list_*` / `explain` | JOIN `list_objects(...)` locally |
+| **Replicated permissions (derived)** | central, with a *flattened* permissions table replicated into the app DB | local lookups on the derived table ([`db/replication/`](db/replication/)) | JOIN the derived table |
 | **Co-located** (minority) | inside the app's own database | local SQL | JOIN `list_objects(...)` directly ([Authorization as a JOIN](#authorization-as-a-join-data-filtering)) |
 
 Most deployments are the **central** one: a single authorization database
 populated by many applications, each calling it over REST or AuthZEN for checks
-and `list_*` queries and writing tuples through the OPA-fronted writer. Co-locate
-the engine, or replicate a derived permissions slice, only when an application
-genuinely needs authorization data *inside* its own database — e.g. to filter
-large result sets in a single query. The subsections below detail the central
-stack (PostgREST + OPA, AuthZEN) and read-replica scaling.
+and `list_*` queries and writing tuples through the OPA-fronted writer. The other
+three put authorization data *inside* an application's database, only when it
+genuinely needs that — e.g. to filter large result sets in a single query.
+
+#### Embedded read-only engine
+
+`init-readonly.sh` installs only the **substrate + read** profiles
+(see [`db/engine/manifest.sh`](db/engine/manifest.sh)) — access checks, search,
+explain, and condition evaluation, with **no write/management API and no audit
+tables**. Point it at an application database that receives the raw `authz.tuples`
++ model by logical replication ([`db/replication/`](db/replication/)); access
+checks then resolve **locally**, with the same engine logic as central — not a
+lossy precomputed snapshot like the *derived* permissions approach. Because it
+runs in the app's own Postgres you also get [Authorization as a
+JOIN](#authorization-as-a-join-data-filtering). It is eventually consistent
+(replication lag); route freshness-sensitive checks to the central primary.
+
+The subsections below detail the central stack (PostgREST + OPA, AuthZEN) and
+read-replica scaling.
 
 ### Deployment with PostgREST and OPA
 
