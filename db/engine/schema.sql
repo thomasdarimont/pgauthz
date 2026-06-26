@@ -140,7 +140,12 @@ BEGIN
                           HINT = 'Install a CEL evaluator extension (e.g. pg_cel from extensions/pg-cel) to enable CEL conditions.';
             END IF;
             -- Compile-check the expression up front; the evaluator raises on a
-            -- malformed expression, mirroring the 'sql' write-time guard.
+            -- malformed expression, mirroring the 'sql' write-time guard. This
+            -- is a PARSE check only — undeclared variables, type mismatches, and
+            -- bad value formats (e.g. a Postgres interval where CEL duration()
+            -- wants "2h") are not caught here; they surface at evaluation and
+            -- deny. Use authz.validate_condition to exercise them with sample
+            -- context.
             BEGIN
                 PERFORM authz.cel_compile_check(NEW.expression);
             EXCEPTION

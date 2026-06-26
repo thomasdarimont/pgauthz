@@ -37,6 +37,14 @@ fn cel_eval_bool(expression: &str, json_data: &str) -> Option<bool> {
 /// Compile-check a CEL expression without evaluating it. Returns true if it
 /// parses; raises otherwise. pgauthz calls this at condition write time so a
 /// malformed expression is rejected up front rather than denying at check time.
+///
+/// This is a PARSE check only — it verifies syntax, not variable bindings,
+/// types, or value formats (CEL is dynamically typed and the context is
+/// arbitrary JSON). Undeclared-variable references, type mismatches, and bad
+/// value formats (e.g. a Postgres interval `"2 hours"` passed to CEL
+/// `duration()`, which wants `"2h"`) surface at evaluation time and deny
+/// (fail closed). Use authz.validate_condition with representative request /
+/// stored context to exercise those before relying on the condition.
 #[pg_extern(immutable, strict, parallel_safe)]
 fn cel_compile_check(expression: &str) -> bool {
     match Program::compile(expression) {

@@ -21,6 +21,8 @@ DECLARE
     v_lang   text;
     v_ok     boolean;
     v_threw  boolean;
+    v_id     smallint;
+    v_id2    smallint;
 BEGIN
     BEGIN PERFORM authz.delete_store('test_condlang'); EXCEPTION WHEN OTHERS THEN NULL; END;
     s := authz.create_store('test_condlang');
@@ -131,8 +133,78 @@ BEGIN
             'user', 'bob', 'can_read', 'doc', 'd2',
             '{"current_time": "2100-01-01T00:00:00Z"}'::jsonb);
         PERFORM _test_assert_true('cl_10_cel_condition_denies_after_expiry', NOT v_ok);
+
+        -- cl_15..cl_17: CEL duration() wants a Go-style unit ("2h"); a Postgres
+        -- interval ("2 hours") is NOT caught at write (parse-only) — it fails at
+        -- evaluation. validate_condition surfaces it; the real check path
+        -- swallows it to a deny (fail closed).
+        PERFORM authz.create_condition_cel('test_condlang', 'cel_window',
+            'timestamp(request.now) < timestamp(stored.start) + duration(stored.dur)',
+            '{"request": ["now"], "stored": ["start", "dur"]}'::jsonb);
+
+        -- cl_15: a valid CEL duration unit validates fine
+        PERFORM _test_assert_true('cl_15_cel_duration_valid_unit',
+            authz.validate_condition('test_condlang', 'cel_window',
+                '{"start": "2026-01-01T00:00:00Z", "dur": "2h"}'::jsonb,
+                '{"now": "2026-01-01T00:30:00Z"}'::jsonb));
+
+        -- cl_16: validate_condition raises on the Postgres-style "2 hours"
+        v_threw := false;
+        BEGIN
+            PERFORM authz.validate_condition('test_condlang', 'cel_window',
+                '{"start": "2026-01-01T00:00:00Z", "dur": "2 hours"}'::jsonb,
+                '{"now": "2026-01-01T00:30:00Z"}'::jsonb);
+        EXCEPTION WHEN OTHERS THEN v_threw := true; END;
+        PERFORM _test_assert_true('cl_16_cel_duration_invalid_unit_raises', v_threw);
+
+        -- cl_17: the same bad value on a real tuple denies (fail closed), it does
+        -- not error the check_access call
+        PERFORM authz.write_tuple('test_condlang',
+            'user', 'carol', 'viewer', 'doc', 'd3',
+            p_condition => 'cel_window',
+            p_condition_context => '{"start": "2026-01-01T00:00:00Z", "dur": "2 hours"}'::jsonb);
+        v_ok := authz.check_access_with_context('test_condlang',
+            'user', 'carol', 'can_read', 'doc', 'd3',
+            '{"now": "2026-01-01T00:30:00Z"}'::jsonb);
+        PERFORM _test_assert_true('cl_17_cel_bad_duration_denies_fail_closed', NOT v_ok);
     ELSE
-        RAISE NOTICE '    SKIP  cl_09/cl_10 CEL e2e (no cel_eval_bool evaluator installed)';
+        RAISE NOTICE '    SKIP  cl_09/cl_10/cl_15-17 CEL e2e (no cel_eval_bool evaluator installed)';
+    END IF;
+
+    -- cl_11: create_condition / create_condition_sql create a sql condition
+    -- and return its id (no direct table INSERT needed).
+    v_id := authz.create_condition_sql('test_condlang', 'api_cond',
+        $cond$($1->>'n')::int > 0$cond$, '{"request": ["n"]}'::jsonb);
+    SELECT lang INTO v_lang FROM authz.conditions WHERE store_id = s AND name = 'api_cond';
+    PERFORM _test_assert_true('cl_11_create_condition_sql', v_id IS NOT NULL AND v_lang = authz._cond_lang_sql(),
+        'id=' || coalesce(v_id::text, '<null>') || ' lang=' || v_lang);
+
+    -- cl_12: create_condition upserts — same name returns the same id, and the
+    -- expression is updated in place.
+    v_id2 := authz.create_condition('test_condlang', 'api_cond',
+        $cond$($1->>'n')::int > 10$cond$, authz._cond_lang_sql(), '{"request": ["n"]}'::jsonb);
+    SELECT expression INTO v_lang FROM authz.conditions WHERE id = v_id2;  -- reuse v_lang as scratch
+    PERFORM _test_assert_true('cl_12_create_condition_upsert',
+        v_id2 = v_id AND v_lang LIKE '%> 10%', 'id=' || v_id2::text);
+
+    -- cl_13: delete_condition returns true the first time, false the second.
+    PERFORM _test_assert_true('cl_13_delete_condition_true',
+        authz.delete_condition('test_condlang', 'api_cond'));
+    PERFORM _test_assert_true('cl_13b_delete_condition_absent_false',
+        NOT authz.delete_condition('test_condlang', 'api_cond'));
+
+    -- cl_14: create_condition_cel is gated on the evaluator, like a raw write.
+    v_threw := false;
+    BEGIN
+        v_id := authz.create_condition_cel('test_condlang', 'api_cel',
+            'request.n > 0', '{"request": ["n"]}'::jsonb);
+    EXCEPTION WHEN OTHERS THEN v_threw := true; END;
+    IF to_regprocedure('authz.cel_eval_bool(text, text)') IS NULL THEN
+        PERFORM _test_assert_true('cl_14_create_condition_cel_rejected_without_evaluator', v_threw);
+    ELSE
+        SELECT lang INTO v_lang FROM authz.conditions WHERE store_id = s AND name = 'api_cel';
+        PERFORM _test_assert_true('cl_14_create_condition_cel_accepted_with_evaluator',
+            NOT v_threw AND v_lang = authz._cond_lang_cel());
     END IF;
 
     PERFORM authz.delete_store('test_condlang');

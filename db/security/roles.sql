@@ -217,6 +217,10 @@ GRANT EXECUTE ON FUNCTION authz.model_remove_type_restriction(text, smallint) TO
 GRANT EXECUTE ON FUNCTION authz.model_remove_type_restrictions(text, text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.import_openfga_model(text, jsonb) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.import_openfga_tuples(text, jsonb) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.create_condition(text, text, text, text, jsonb) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.create_condition_sql(text, text, text, jsonb) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.create_condition_cel(text, text, text, jsonb) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.delete_condition(text, text) TO authz_admin;
 
 ------------------------------------------------------------------------
 -- SECURITY DEFINER: all public functions run as the owning role
@@ -265,6 +269,8 @@ ALTER FUNCTION authz.model_remove_type_restriction(text, smallint) SECURITY DEFI
 ALTER FUNCTION authz.model_remove_type_restrictions(text, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.import_openfga_model(text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.import_openfga_tuples(text, jsonb) SECURITY DEFINER;
+ALTER FUNCTION authz.create_condition(text, text, text, text, jsonb) SECURITY DEFINER;
+ALTER FUNCTION authz.delete_condition(text, text) SECURITY DEFINER;
 
 ------------------------------------------------------------------------
 -- Pin search_path on every SECURITY DEFINER function so a caller's

@@ -28,15 +28,20 @@
 
 -- 1. Create a time-based condition in CEL: access expires after a grant window.
 --    Note: CEL duration() takes a Go-style duration string ("2h"), not "2 hours".
-INSERT INTO authz.conditions (store_id, name, expression, lang, required_context)
-VALUES (
-    authz._s('demo'),
+SELECT authz.create_condition_cel('demo',
     'non_expired_grant_cel',
     'timestamp(request.current_time) < timestamp(stored.grant_time) + duration(stored.grant_duration)',
-    authz._cond_lang_cel(),
     '{"request": ["current_time"], "stored": ["grant_time", "grant_duration"]}'::jsonb
-)
-ON CONFLICT (store_id, name) DO NOTHING;
+);
+
+
+-- 1b. The write only PARSE-checks the expression; value formats are validated at
+--     evaluation time. Dry-run with representative context to catch mistakes
+--     early — e.g. CEL duration() needs "2h", not the Postgres interval "2 hours".
+SELECT authz.validate_condition('demo', 'non_expired_grant_cel',
+    '{"grant_time": "2026-03-11T09:00:00Z", "grant_duration": "2h"}'::jsonb,  -- stored context
+    '{"current_time": "2026-03-11T10:00:00Z"}'::jsonb);                       -- request context
+-- => true   (changing "2h" to "2 hours" raises a CEL duration parse error)
 
 
 -- 2. Write a conditional tuple: Bob can view doc_temp_cel_001, but only for

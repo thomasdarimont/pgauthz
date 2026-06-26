@@ -305,17 +305,14 @@ WHERE NOT EXISTS (
 );
 
 -- Create a time-based condition: access expires after a grant window.
-INSERT INTO authz.conditions (store_id, name, expression, required_context)
-VALUES (
-    authz._s('demo'),
+SELECT authz.create_condition_sql('demo',
     'non_expired_grant',
     $cond$
         ($1->>'current_time')::timestamptz
         < ($2->>'grant_time')::timestamptz + ($2->>'grant_duration')::interval
     $cond$,
     '{"request": ["current_time"], "stored": ["grant_time", "grant_duration"]}'::jsonb
-)
-ON CONFLICT (store_id, name) DO NOTHING;
+);
 
 -- Write a conditional tuple: Alice can view doc_temp_001, but only for 2 hours.
 SELECT authz.write_tuple('demo',
@@ -353,9 +350,7 @@ DELETE FROM authz.tuples
 -- composite condition that combines them in one SQL expression.
 -- No schema changes needed — just a more specific expression.
 
-INSERT INTO authz.conditions (store_id, name, expression, required_context)
-VALUES (
-    authz._s('demo'),
+SELECT authz.create_condition_sql('demo',
     'non_expired_grant_and_ip',
     $cond$
         -- Time window: $1.current_time must be before $2.grant_time + $2.grant_duration
@@ -365,8 +360,7 @@ VALUES (
         AND ($1->>'client_ip')::inet <<= ($2->>'allowed_cidr')::cidr
     $cond$,
     '{"request": ["current_time", "client_ip"], "stored": ["grant_time", "grant_duration", "allowed_cidr"]}'::jsonb
-)
-ON CONFLICT (store_id, name) DO NOTHING;
+);
 
 -- Write a conditional tuple: Bob can view doc_secure_001, but only
 -- within a 2-hour window AND from the 10.0.0.0/8 network.
@@ -512,17 +506,14 @@ WHERE NOT EXISTS (
        AND rule_type   = 1
 );
 
-INSERT INTO authz.conditions (store_id, name, expression, required_context)
-VALUES (
-    authz._s('demo'),
+SELECT authz.create_condition_sql('demo',
     'non_expired_grant',
     $cond$
         ($1->>'current_time')::timestamptz
         < ($2->>'grant_time')::timestamptz + ($2->>'grant_duration')::interval
     $cond$,
     '{"request": ["current_time"], "stored": ["grant_time", "grant_duration"]}'::jsonb
-)
-ON CONFLICT (store_id, name) DO NOTHING;
+);
 
 -- Alice gets temporary viewer access to a document (2-hour window on March 11).
 SELECT authz.write_tuple('demo',

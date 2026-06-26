@@ -721,19 +721,23 @@ receives two JSONB arguments:
 
 ### Defining a condition
 
+Create conditions with `authz.create_condition_sql` (or `create_condition_cel`
+for CEL, below). Like the rest of the write API these are `SECURITY DEFINER`, so
+no direct table access is needed; re-running with the same name updates the
+expression in place.
+
 ```sql
 -- "non_expired_grant": access is granted only if the current time
 -- (from request context $1) is before grant_time + grant_duration
 -- (from stored context $2).
-INSERT INTO authz.conditions (store_id, name, expression, required_context) VALUES
-(authz._s('demo'),
- 'non_expired_grant',
- $$
-   ($1->>'current_time')::timestamptz                    -- $1 = request context
-   < ($2->>'grant_time')::timestamptz                    -- $2 = stored context
-     + ($2->>'grant_duration')::interval                 -- $2 = stored context
- $$,
- '{"request": ["current_time"], "stored": ["grant_time", "grant_duration"]}'::jsonb
+SELECT authz.create_condition_sql('demo',
+    'non_expired_grant',
+    $$
+      ($1->>'current_time')::timestamptz                  -- $1 = request context
+      < ($2->>'grant_time')::timestamptz                  -- $2 = stored context
+        + ($2->>'grant_duration')::interval               -- $2 = stored context
+    $$,
+    '{"request": ["current_time"], "stored": ["grant_time", "grant_duration"]}'::jsonb
 );
 ```
 
@@ -779,18 +783,15 @@ SELECT authz.check_access('demo',
 
 ```sql
 -- IP allowlist: $1 has the client IP, $2 has the allowed CIDR range
-INSERT INTO authz.conditions (store_id, name, expression) VALUES
-(authz._s('demo'), 'ip_in_range',
+SELECT authz.create_condition_sql('demo', 'ip_in_range',
  $$($1->>'client_ip')::inet <<= ($2->>'allowed_cidr')::cidr$$);
 
 -- Office hours only: $1 has the current time, no stored context needed
-INSERT INTO authz.conditions (store_id, name, expression) VALUES
-(authz._s('demo'), 'office_hours',
+SELECT authz.create_condition_sql('demo', 'office_hours',
  $$extract(hour from ($1->>'current_time')::timestamptz) BETWEEN 8 AND 17$$);
 
 -- Usage quota: $1 has the current usage count, $2 has the max allowed
-INSERT INTO authz.conditions (store_id, name, expression) VALUES
-(authz._s('demo'), 'under_quota',
+SELECT authz.create_condition_sql('demo', 'under_quota',
  $$($1->>'usage_count')::int < ($2->>'max_allowed')::int$$);
 ```
 
@@ -806,11 +807,9 @@ context bags are exposed as `request.*` and `stored.*`:
 
 ```sql
 -- Same "not expired" rule, in CEL (requires the pg_cel extension).
-INSERT INTO authz.conditions (store_id, name, expression, lang, required_context)
-VALUES (authz._s('demo'), 'cel_not_expired',
-        'timestamp(request.current_time) < timestamp(stored.expires)',
-        authz._cond_lang_cel(),
-        '{"request": ["current_time"], "stored": ["expires"]}');
+SELECT authz.create_condition_cel('demo', 'cel_not_expired',
+    'timestamp(request.current_time) < timestamp(stored.expires)',
+    '{"request": ["current_time"], "stored": ["expires"]}');
 ```
 
 Enable CEL by building the extension into the Postgres image and turning it on:
@@ -823,6 +822,20 @@ PGAUTHZ_CEL=1 ./init.sh     # runs CREATE EXTENSION pg_cel SCHEMA authz
 `lang='cel'` writes are rejected until the evaluator is installed, so the default
 stack is never left with conditions it can't run. For a runnable walk-through see
 [`examples/models/demo/demo_cel.sql`](examples/models/demo/demo_cel.sql).
+
+**Validation is parse-only.** Both languages are syntax-checked at write time
+(SQL test-compile / CEL compile), but undeclared variables, type mismatches, and
+value formats are not — those deny at check time. A common CEL gotcha: `duration()`
+wants a Go-style string (`"2h"`), not a Postgres interval (`"2 hours"`). Dry-run a
+condition against representative context with `validate_condition` to catch such
+issues early — it evaluates the real expression and raises on a bad value:
+
+```sql
+SELECT authz.validate_condition('demo', 'cel_not_expired',
+    '{"expires": "2026-03-11T11:00:00Z"}'::jsonb,         -- stored context
+    '{"current_time": "2026-03-11T10:00:00Z"}'::jsonb);   -- request context
+-- => true   (a malformed timestamp/duration in the context would raise here)
+```
 
 The engine dispatches languages in one place (`authz._eval_condition_expr`), so
 adding cedar/rego later is additive. See
