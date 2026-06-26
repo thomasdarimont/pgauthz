@@ -69,22 +69,32 @@ CREATE TABLE authz.relations (
 );
 
 -- Conditions: named expressions evaluated at check time.
--- Scoped per store. `lang` tags the expression language; today only the
--- dependency-free 'sql' executor exists, so the CHECK permits just that.
--- Additional languages (cel, cedar, rego, …) plug in later by widening the
--- CHECK and adding an executor branch in authz._eval_condition_expr — they
--- are expected to be backed by optional extensions, while 'sql' stays the
--- built-in default that needs nothing extra.
+-- Scoped per store. `lang` tags the expression language; the executor is
+-- dispatched in authz._eval_condition_expr:
+--   'sql' — built-in, dependency-free, runs in the zero-privilege authz_eval
+--           sandbox. The default; needs nothing extra.
+--   'cel' — Common Expression Language, evaluated by an OPTIONAL extension
+--           (the cel_eval_bool / cel_compile_check function contract, e.g. the
+--           Rust/pgrx extensions/pg-cel). lang='cel' rows can only be written
+--           when that evaluator is installed (enforced at write time); without
+--           it the engine is unaffected and 'sql' keeps working.
+-- Further languages (cedar, rego, …) plug in the same way: widen this CHECK
+-- and add a branch in authz._eval_condition_expr.
 --
 -- For lang = 'sql' the expression is a SQL boolean expression that can reference:
 --   $1 = request-time context (passed by caller)
 --   $2 = tuple-stored context (from condition_context JSONB)
+-- For lang = 'cel' the expression is a CEL boolean expression over two
+--   variables: request.* (request-time context) and stored.* (tuple context).
 CREATE TABLE authz.conditions (
     id               smallint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     store_id         smallint NOT NULL REFERENCES authz.stores(id),
     name             text NOT NULL,
     expression       text NOT NULL,
-    lang             text NOT NULL DEFAULT 'sql' CHECK (lang IN ('sql')),
+    -- Allowed values mirror authz._cond_lang_sql() / authz._cond_lang_cel()
+    -- (literals here because the CHECK/DEFAULT resolve before those helpers
+    -- load; keep the two in sync).
+    lang             text NOT NULL DEFAULT 'sql' CHECK (lang IN ('sql', 'cel')),
     required_context jsonb,
     UNIQUE (store_id, name)
 );
@@ -106,11 +116,11 @@ CREATE TABLE authz.conditions (
 CREATE OR REPLACE FUNCTION authz._validate_condition_expression() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
-    -- Validation is language-specific (SQL test-compiles by executing; future
-    -- languages parse/type-check). Dispatch on NEW.lang. The CHECK constraint
-    -- already restricts lang to 'sql', so the ELSE is defensive.
+    -- Validation is language-specific (SQL test-compiles by executing; CEL
+    -- parse/type-checks via the evaluator). Dispatch on NEW.lang; the CHECK
+    -- constraint restricts lang to the known set, so the ELSE is defensive.
     CASE NEW.lang
-        WHEN 'sql' THEN
+        WHEN authz._cond_lang_sql() THEN
             BEGIN
                 PERFORM authz._exec_condition(NEW.expression, '{}'::jsonb, '{}'::jsonb);
             EXCEPTION
@@ -119,10 +129,30 @@ BEGIN
                         USING ERRCODE = 'invalid_parameter_value',
                               HINT = 'Expression must be a valid SQL boolean over $1 (request) and $2 (stored) context.';
             END;
+        WHEN authz._cond_lang_cel() THEN
+            -- CEL needs the optional evaluator extension (cel_eval_bool /
+            -- cel_compile_check contract, e.g. extensions/pg-cel). Refuse to
+            -- store a lang='cel' condition that could never be evaluated:
+            -- gate on the contract function existing (works for any provider).
+            IF to_regprocedure('authz.cel_compile_check(text)') IS NULL THEN
+                RAISE EXCEPTION 'condition "%" uses lang=cel but no CEL evaluator is installed', NEW.name
+                    USING ERRCODE = 'feature_not_supported',
+                          HINT = 'Install a CEL evaluator extension (e.g. pg_cel from extensions/pg-cel) to enable CEL conditions.';
+            END IF;
+            -- Compile-check the expression up front; the evaluator raises on a
+            -- malformed expression, mirroring the 'sql' write-time guard.
+            BEGIN
+                PERFORM authz.cel_compile_check(NEW.expression);
+            EXCEPTION
+                WHEN OTHERS THEN
+                    RAISE EXCEPTION 'condition "%" has an invalid CEL expression: %', NEW.name, SQLERRM
+                        USING ERRCODE = 'invalid_parameter_value',
+                              HINT = 'Expression must be a valid CEL boolean over request.* and stored.*';
+            END;
         ELSE
             RAISE EXCEPTION 'condition "%" uses unsupported language "%"', NEW.name, NEW.lang
                 USING ERRCODE = 'feature_not_supported',
-                      HINT = 'Only ''sql'' conditions are supported in this build.';
+                      HINT = 'Supported condition languages: sql, cel.';
     END CASE;
     RETURN NEW;
 END;

@@ -1,0 +1,44 @@
+[package]
+name = "pg_cel"
+version = "0.1.0"
+edition = "2021"
+description = "CEL (Common Expression Language) evaluation for pgauthz conditions, via pgrx"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+# Default targets PostgreSQL 18 (the version pgauthz ships). Build for another
+# major with e.g. `cargo pgrx package --features pg17 --no-default-features`.
+default = ["pg18"]
+pg13 = ["pgrx/pg13"]
+pg14 = ["pgrx/pg14"]
+pg15 = ["pgrx/pg15"]
+pg16 = ["pgrx/pg16"]
+pg17 = ["pgrx/pg17"]
+pg18 = ["pgrx/pg18"]
+pg_test = []
+
+[dependencies]
+# Pin pgrx to a release that supports pg18; keep this in lockstep with the
+# cargo-pgrx version used in the Dockerfile (PGRX_VERSION build arg).
+pgrx = "0.19.1"
+# cel-rust interpreter (the crate was renamed cel-interpreter -> cel). Default
+# features include `chrono`, which provides timestamp()/duration(). serde_json
+# Values bind directly via add_variable (blanket Serialize impl), so no extra
+# feature is needed for context variables.
+cel = "0.13"
+serde_json = "1"
+
+[dev-dependencies]
+pgrx-tests = "0.19.1"
+
+[profile.dev]
+panic = "unwind"
+
+[profile.release]
+panic = "unwind"
+opt-level = 3
+lto = "fat"
+codegen-units = 1

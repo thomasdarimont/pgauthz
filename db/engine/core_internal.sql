@@ -272,6 +272,24 @@ CREATE OR REPLACE FUNCTION authz._combine_exclusion() RETURNS smallint
     LANGUAGE sql IMMUTABLE AS $$ SELECT 2::smallint $$;
 
 ------------------------------------------------------------------------
+-- Condition language constants — the `lang` tag on authz.conditions.
+-- Use these instead of bare 'sql'/'cel' literals in engine code, the demo,
+-- and tests. (The CHECK and DEFAULT on authz.conditions still spell the
+-- literals out: they are resolved when schema.sql creates the table, before
+-- this file loads — keep them in sync with these helpers.)
+------------------------------------------------------------------------
+
+-- SQL: built-in boolean expression over $1 (request) / $2 (stored) context,
+-- evaluated in the zero-privilege authz_eval sandbox. The default; no deps.
+CREATE OR REPLACE FUNCTION authz._cond_lang_sql() RETURNS text
+    LANGUAGE sql IMMUTABLE AS $$ SELECT 'sql'::text $$;
+
+-- CEL: Common Expression Language over request.* / stored.* variables,
+-- evaluated by the optional cel_eval_bool extension (extensions/pg-cel).
+CREATE OR REPLACE FUNCTION authz._cond_lang_cel() RETURNS text
+    LANGUAGE sql IMMUTABLE AS $$ SELECT 'cel'::text $$;
+
+------------------------------------------------------------------------
 -- _check_type_restriction: validates a single tuple against type
 -- restrictions. If no restrictions exist for the (store, object_type,
 -- relation), any type is allowed (backward compatible).
@@ -572,11 +590,26 @@ CREATE OR REPLACE FUNCTION authz._eval_condition_expr(
 LANGUAGE plpgsql STABLE AS $$
 BEGIN
     CASE p_lang
-        WHEN 'sql' THEN
+        WHEN authz._cond_lang_sql() THEN
             RETURN authz._exec_condition(p_expression, p_request_context, p_condition_context);
+        WHEN authz._cond_lang_cel() THEN
+            -- Delegate to the optional CEL evaluator (cel_eval_bool contract,
+            -- e.g. the Rust/pgrx extensions/pg-cel). The two context bags are
+            -- exposed to the expression as the CEL variables request.* and
+            -- stored.*. A non-boolean / NULL result denies (fail-closed); an
+            -- evaluator error propagates and is caught by the callers'
+            -- exception handlers (also deny). lang='cel' rows can only exist
+            -- when the evaluator was installed at write time.
+            RETURN COALESCE(
+                authz.cel_eval_bool(
+                    p_expression,
+                    jsonb_build_object('request', p_request_context,
+                                       'stored',  p_condition_context)::text
+                ),
+                false);
         ELSE
-            -- Unreachable while the CHECK permits only 'sql'; guards against a
-            -- future language slipping in without a matching executor.
+            -- Unreachable while the CHECK permits only known languages; guards
+            -- against a future language slipping in without a matching executor.
             RAISE EXCEPTION 'unsupported condition language: %', p_lang
                 USING ERRCODE = 'feature_not_supported';
     END CASE;
