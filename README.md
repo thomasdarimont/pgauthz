@@ -12,7 +12,7 @@ that resolve relationship tuples recursively.
 - **Relationship-based access control (ReBAC)** — Zanzibar/OpenFGA model with direct, computed, and tuple-to-userset rules
 - **Wildcard tuples** — `user:*` grants a relation to all users of a type without individual tuples (public/anonymous access)
 - **Intersection and exclusion** — rule groups support AND (all rules must match) and BUT NOT (base must match, negated must not) semantics
-- **Attribute-based access control (ABAC)** — conditions on tuples (time windows, IP ranges, quotas) evaluated at check time
+- **Attribute-based access control (ABAC)** — conditions on tuples (time windows, IP ranges, quotas) evaluated at check time, written in SQL or, optionally, [CEL](#condition-languages-lang)
 - **Contextual tuples** — ephemeral per-request relationships that are not persisted (VPN context, org selection)
 - **Multi-store** — independent authorization namespaces with isolated types, relations, models, and tuples
 - **Batch operations** — `write_tuples` / `delete_tuples` for efficient bulk insert and delete
@@ -710,8 +710,11 @@ for detailed examples and use cases.
 
 ## Conditions (Time-Based / ABAC)
 
-Tuples can carry a **condition** — a SQL expression that must evaluate to `true`
-at check time for the tuple to grant access. Conditions receive two JSONB arguments:
+Tuples can carry a **condition** — an expression that must evaluate to `true`
+at check time for the tuple to grant access. Conditions are written in SQL by
+default (an optional **CEL** language is also available — see
+[Condition languages](#condition-languages-lang) below). A SQL condition
+receives two JSONB arguments:
 
 - **`$1` = request context** — provided by the caller at check time (e.g., the current timestamp, client IP, usage count)
 - **`$2` = stored context** — saved with the tuple when it was written (e.g., the grant start time, allowed CIDR, max quota)
@@ -802,15 +805,24 @@ the [`extensions/pg-cel`](extensions/pg-cel/) Rust/pgrx extension. The two
 context bags are exposed as `request.*` and `stored.*`:
 
 ```sql
--- Same "not expired" rule, in CEL (requires the pg_cel extension; see
--- compose-cel.yml). lang='cel' rows are rejected unless the evaluator is
--- installed, so the default stack is never left with conditions it can't run.
+-- Same "not expired" rule, in CEL (requires the pg_cel extension).
 INSERT INTO authz.conditions (store_id, name, expression, lang, required_context)
 VALUES (authz._s('demo'), 'cel_not_expired',
         'timestamp(request.current_time) < timestamp(stored.expires)',
-        'cel',
+        authz._cond_lang_cel(),
         '{"request": ["current_time"], "stored": ["expires"]}');
 ```
+
+Enable CEL by building the extension into the Postgres image and turning it on:
+
+```bash
+PGAUTHZ_CEL=1 ./start.sh    # or ./start.sh --cel — builds the pg_cel image
+PGAUTHZ_CEL=1 ./init.sh     # runs CREATE EXTENSION pg_cel SCHEMA authz
+```
+
+`lang='cel'` writes are rejected until the evaluator is installed, so the default
+stack is never left with conditions it can't run. For a runnable walk-through see
+[`examples/models/demo/demo_cel.sql`](examples/models/demo/demo_cel.sql).
 
 The engine dispatches languages in one place (`authz._eval_condition_expr`), so
 adding cedar/rego later is additive. See
