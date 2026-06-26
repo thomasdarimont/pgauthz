@@ -10,6 +10,15 @@ residual policy expression into a `WHERE` clause via an ORM adapter — you JOIN
 [`authz.list_objects(...)`](../../db/engine/access.sql) (called without a limit,
 so it returns the full authorized set) against your own table.
 
+> **Topology note.** This works only when your app data shares a database with
+> the engine — pgauthz **co-located** in the app DB, or a derived permissions
+> slice **replicated** into it (see [`db/replication/`](../../db/replication/)).
+> That is the *minority* setup. The common deployment is a **central authz
+> service** reached over REST (OPA → PostgREST) or AuthZEN, where the data is in
+> separate databases — there you call `list_objects` and filter your own query by
+> the returned ids (`WHERE id = ANY(:ids)`, plus the wildcard flag) rather than
+> JOINing. This example uses one database to show the co-located form.
+
 ## Run
 
 ```bash

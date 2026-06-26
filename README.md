@@ -51,7 +51,8 @@ as a separate service in front of it, has concrete advantages:
   Or run it as a **dedicated authorization database** and materialize a scoped
   extract of the effective permissions into an application-specific table that is
   periodically refreshed and replicated to where it's consumed (see
-  [`db/replication/`](db/replication/)). Same engine, two valid topologies.
+  [`db/replication/`](db/replication/)). The dedicated, central database is the
+  common deployment — see [Deployment topologies](#deployment-topologies).
 
 - **Strong consistency by default** — PostgreSQL MVCC gives read-after-write
   consistency on a single instance with no consistency tokens to manage. Writes
@@ -492,11 +493,22 @@ against the known inputs, emit a residual filter, then translate that filter
 (an AST) into a `WHERE` clause via a per-ORM adapter so the database returns
 only authorized rows.
 
-Because pgauthz **is** SQL running in the same Postgres as your data, you skip
-the residual-expression compiler and the adapter entirely — you just **JOIN**.
-`authz.list_objects(...)` returns the set a subject can reach (called without a
-limit it returns all of them), and you compose it into a query over your own
-table:
+**When does this apply?** Only in the **co-located** (or replicated-permissions)
+[deployment topology](#deployment-topologies) — when your application data shares
+a database with the engine. This is the *minority* setup. Most applications use
+pgauthz as a **central authorization service** over REST (OPA → PostgREST) or
+AuthZEN, where the authz data and your business tables live in **different
+databases** — there you do **not** JOIN. Instead `list_objects` returns the
+authorized id set over the wire and your app filters by it (`WHERE id =
+ANY(:ids)`, honoring the wildcard flag), exactly as an OpenFGA-style engine hands
+back ids for the app to query. The JOIN below is the *bonus* you get when the
+data happens to be co-located — not a reason to move your schema into the authz
+database.
+
+In that co-located case, because pgauthz **is** SQL in the same Postgres as your
+data, you skip the residual-expression compiler and the ORM adapter entirely —
+you just **JOIN** `authz.list_objects(...)` (called without a limit it returns
+the full reachable set) into a query over your own table:
 
 ```sql
 -- Return only the documents Bob can read, with your own ordering/paging,
@@ -514,8 +526,8 @@ SELECT d.*
 ```
 
 The cost tracks what Bob can reach (reverse expansion), not how many rows
-`documents` has — and there is no second service, no network hop, and no
-dialect translation.
+`documents` has — and, co-located, there is no second service, no network hop,
+and no dialect translation.
 
 > **Wildcard rows are not ids.** A row with `is_wildcard = true` (e.g. an
 > object-wildcard grant, `object_id = '*'`) means *every* object of the type is
@@ -1178,6 +1190,26 @@ steps for programmatic use.
 
 All recursive calls use integer IDs internally. Text-to-ID resolution
 happens once at the top-level public function.
+
+### Deployment topologies
+
+Because the engine is just SQL, you choose where it sits relative to your
+application data — and that choice, not a rewrite, is what changes the access
+pattern:
+
+| Topology | Where authz data lives | How an app reads it | Data filtering |
+|---|---|---|---|
+| **Central authz service** (common) | its own database / cluster | over the wire — REST (OPA → PostgREST) or AuthZEN | `list_objects` returns the id set; the app filters its own query by it (`WHERE id = ANY(:ids)` + wildcard flag), like an OpenFGA-style engine |
+| **Replicated permissions** | central, with a derived slice replicated into the app DB | local SQL against the replica ([`db/replication/`](db/replication/)) | JOIN the replicated permissions locally |
+| **Co-located** (minority) | inside the app's own database | local SQL | JOIN `list_objects(...)` directly ([Authorization as a JOIN](#authorization-as-a-join-data-filtering)) |
+
+Most deployments are the **central** one: a single authorization database
+populated by many applications, each calling it over REST or AuthZEN for checks
+and `list_*` queries and writing tuples through the OPA-fronted writer. Co-locate
+the engine, or replicate a derived permissions slice, only when an application
+genuinely needs authorization data *inside* its own database — e.g. to filter
+large result sets in a single query. The subsections below detail the central
+stack (PostgREST + OPA, AuthZEN) and read-replica scaling.
 
 ### Deployment with PostgREST and OPA
 
