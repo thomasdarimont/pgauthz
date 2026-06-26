@@ -30,7 +30,9 @@ Application → OPA (optional policy layer) → PostgREST (REST bridge) → Post
 
 ### Initialize Database
 ```bash
-./init.sh            # Load schema, functions, models, seed data, security roles
+./init.sh            # Install the full engine (substrate + read + write + audit) + roles
+./init-readonly.sh   # Install only the read-only excerpt (substrate + read) for an app
+                     # DB fed by replication — no write API, no audit tables
 ./bootstrap.sh       # Full init + run all tests
 ```
 
@@ -66,7 +68,13 @@ cd authzen && go build ./cmd/authzen-opa
 ## SQL Engine Conventions
 
 - All public functions are `SECURITY DEFINER` — app roles never need direct table access
-- Functions are organized: `schema.sql` (DDL) → `core_internal.sql` / `access_internal.sql` / `audit_internal.sql` (internal helpers) → `access.sql` / `explain.sql` / `tuples.sql` / `model.sql` / `audit.sql` (public API)
+- Engine files are grouped by **deployment profile** in `db/engine/manifest.sh` (the single source of truth for load order, sourced by `init.sh`, `init-readonly.sh`, `deploy/migrations/run-migrations.sh`, and `db/replication/init-replication.sh`):
+  - **substrate** (`schema.sql`, `core_internal.sql`) — read tables/partitions/constraints + core internals; every deployment
+  - **read** (`access_internal.sql`, `access.sql`, `explain.sql`) — checks, search (`list_*`), explain, condition validation
+  - **write** (`store.sql`, `tuples.sql`, `model.sql`, `maintenance.sql`) — tuple/model/store/condition management + redundant-tuple cleanup
+  - **audit** (`schema_audit.sql`, `audit_internal.sql`, `audit.sql`, `watch.sql`) — audit tables/triggers, time-travel, changefeed
+  - Read-only deployment = substrate + read (`init-readonly.sh`); full = all four (`init.sh`). To add an engine file, register it in the manifest with its profile.
+- Within a profile the order is DDL → internal helpers → public API
 - Multi-store architecture: every operation is scoped to a `store_id`
 - Tuples are the core data: `(store_id, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, context)`
 - Model rules use rule groups supporting union (OR), intersection (AND), and exclusion (BUT NOT) semantics

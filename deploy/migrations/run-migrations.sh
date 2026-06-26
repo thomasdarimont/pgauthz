@@ -35,19 +35,15 @@ echo "==> Ensuring superuser role 'authz' exists (engine install identity)..."
   END IF;
 END \$\$;"
 
-# Build the ordered file list (identical to init.sh).
-FILES=(
-  "$SQL/engine/schema.sql"
-  "$SQL/engine/core_internal.sql"
-  "$SQL/engine/access_internal.sql"
-  "$SQL/engine/audit_internal.sql"
-  "$SQL/engine/store.sql"
-  "$SQL/engine/access.sql"
-  "$SQL/engine/explain.sql"
-  "$SQL/engine/tuples.sql"
-  "$SQL/engine/audit.sql"
-  "$SQL/engine/watch.sql"
-  "$SQL/engine/model.sql"
+# Build the ordered file list from the engine manifest (identical to init.sh:
+# the full profile = substrate + read + write + audit), then the OpenFGA import
+# and security roles.
+source "$SQL/engine/manifest.sh"
+FILES=()
+while IFS= read -r f; do
+  FILES+=("$SQL/engine/$f")
+done < <(engine_files_for substrate read write audit)
+FILES+=(
   "$SQL/openfga/functions_openfga.sql"
   "$SQL/security/roles.sql"
 )

@@ -15,6 +15,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PG_DIR="$(dirname "$SCRIPT_DIR")"
 COMPOSE_FILE="$PG_DIR/compose-replication.yml"
+source "$PG_DIR/db/engine/manifest.sh"
 
 psql_primary() {
     docker exec -i -e PGPASSWORD=authz \
@@ -57,21 +58,10 @@ wait_for_sync() {
 # Primary: full schema + model + seed data + materialized permissions
 # ══════════════════════════════════════════════════════════════════════
 
-echo "==> [primary] Loading schema..."
-psql_primary < "$PG_DIR/db/engine/schema.sql"
-
-echo "==> [primary] Loading internal functions..."
-psql_primary < "$PG_DIR/db/engine/core_internal.sql"
-psql_primary < "$PG_DIR/db/engine/access_internal.sql"
-psql_primary < "$PG_DIR/db/engine/audit_internal.sql"
-
-echo "==> [primary] Loading public API functions..."
-psql_primary < "$PG_DIR/db/engine/store.sql"
-psql_primary < "$PG_DIR/db/engine/access.sql"
-psql_primary < "$PG_DIR/db/engine/explain.sql"
-psql_primary < "$PG_DIR/db/engine/tuples.sql"
-psql_primary < "$PG_DIR/db/engine/audit.sql"
-psql_primary < "$PG_DIR/db/engine/model.sql"
+echo "==> [primary] Loading engine (full)..."
+while IFS= read -r f; do
+  psql_primary < "$PG_DIR/db/engine/$f"
+done < <(engine_files_for substrate read write audit)
 
 echo "==> [primary] Loading OpenFGA import functions..."
 psql_primary < "$PG_DIR/db/openfga/functions_openfga.sql"
@@ -97,21 +87,10 @@ psql_primary < "$SCRIPT_DIR/setup-publication.sql"
 # ══════════════════════════════════════════════════════════════════════
 
 echo ""
-echo "==> [accounting-app] Loading schema..."
-psql_accounting < "$PG_DIR/db/engine/schema.sql"
-
-echo "==> [accounting-app] Loading internal functions..."
-psql_accounting < "$PG_DIR/db/engine/core_internal.sql"
-psql_accounting < "$PG_DIR/db/engine/access_internal.sql"
-psql_accounting < "$PG_DIR/db/engine/audit_internal.sql"
-
-echo "==> [accounting-app] Loading public API functions..."
-psql_accounting < "$PG_DIR/db/engine/store.sql"
-psql_accounting < "$PG_DIR/db/engine/access.sql"
-psql_accounting < "$PG_DIR/db/engine/explain.sql"
-psql_accounting < "$PG_DIR/db/engine/tuples.sql"
-psql_accounting < "$PG_DIR/db/engine/audit.sql"
-psql_accounting < "$PG_DIR/db/engine/model.sql"
+echo "==> [accounting-app] Loading engine (full)..."
+while IFS= read -r f; do
+  psql_accounting < "$PG_DIR/db/engine/$f"
+done < <(engine_files_for substrate read write audit)
 
 echo "==> [accounting-app] Loading OpenFGA import functions..."
 psql_accounting < "$PG_DIR/db/openfga/functions_openfga.sql"

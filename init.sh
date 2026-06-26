@@ -12,23 +12,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
+source "$SCRIPT_DIR/db/engine/manifest.sh"
 
-echo "==> Loading schema..."
-psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/schema.sql"
-
-echo "==> Loading internal functions..."
-psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/core_internal.sql"
-psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/access_internal.sql"
-psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/audit_internal.sql"
-
-echo "==> Loading public API functions..."
-psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/store.sql"
-psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/access.sql"
-psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/explain.sql"
-psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/tuples.sql"
-psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/audit.sql"
-psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/watch.sql"
-psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/model.sql"
+echo "==> Loading engine (full: substrate + read + write + audit)..."
+while IFS= read -r f; do
+  psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/$f"
+done < <(engine_files_for substrate read write audit)
 
 echo "==> Creating audit partitions (current + next month)..."
 psql_exec "$PG_DB" -c "SELECT authz.ensure_audit_partitions();"
