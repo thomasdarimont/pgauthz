@@ -23,8 +23,11 @@
 ENGINE_MANIFEST=(
   "schema.sql:substrate"
   "schema_audit.sql:audit"
+  "audit_triggers.sql:audit"
   "core_internal.sql:substrate"
   "conditions.sql:substrate"
+  "model_constraints.sql:substrate"
+  "views.sql:substrate"
   "access_internal.sql:read"
   "audit_internal.sql:audit"
   "store.sql:write"

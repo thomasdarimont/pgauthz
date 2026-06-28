@@ -223,75 +223,8 @@ CREATE TABLE authz.models (
 CREATE INDEX idx_models_lookup
     ON authz.models (store_id, object_type, relation);
 
--- Validation: exclusion groups must keep at least one base (non-negated)
--- rule. A negated-only group has no base requirement and would grant
--- access to everyone who is not excluded (fail-open). Negated rules are
--- only meaningful in exclusion groups.
--- AFTER ROW triggers fire once the full statement has completed, so a
--- single INSERT adding base and negated rules together passes; adding
--- rules one by one requires the base rule first.
-CREATE OR REPLACE FUNCTION authz._check_exclusion_group_has_base(
-    p_store_id    smallint,
-    p_object_type smallint,
-    p_relation    smallint,
-    p_group_id    smallint
-) RETURNS void
-LANGUAGE plpgsql AS $$
-BEGIN
-    IF EXISTS (
-        SELECT 1 FROM authz.models m
-         WHERE m.store_id    = p_store_id
-           AND m.object_type = p_object_type
-           AND m.relation    = p_relation
-           AND m.group_id    = p_group_id
-           AND m.negated
-    ) AND NOT EXISTS (
-        SELECT 1 FROM authz.models m
-         WHERE m.store_id    = p_store_id
-           AND m.object_type = p_object_type
-           AND m.relation    = p_relation
-           AND m.group_id    = p_group_id
-           AND NOT m.negated
-    ) THEN
-        RAISE EXCEPTION 'exclusion group % has no base (non-negated) rule — a negated-only group would grant access to everyone not excluded',
-            p_group_id;
-    END IF;
-END;
-$$;
-
-CREATE OR REPLACE FUNCTION authz._validate_model_group() RETURNS trigger
-LANGUAGE plpgsql AS $$
-BEGIN
-    IF TG_OP IN ('INSERT', 'UPDATE') AND NEW.negated
-       AND NEW.group_op <> 2 THEN  -- 2 = exclusion (authz._combine_exclusion)
-        RAISE EXCEPTION 'negated rules are only allowed in exclusion groups';
-    END IF;
-
-    IF TG_OP IN ('INSERT', 'UPDATE') AND NEW.allow_object_wildcard
-       AND NEW.rule_type <> 1 THEN  -- 1 = direct (authz._rel_direct)
-        RAISE EXCEPTION 'allow_object_wildcard is only allowed on direct rules';
-    END IF;
-
-    -- Check the affected group(s): NEW's group, and on UPDATE/DELETE also
-    -- OLD's group (an update may move the last base rule elsewhere).
-    IF TG_OP IN ('INSERT', 'UPDATE') THEN
-        PERFORM authz._check_exclusion_group_has_base(
-            NEW.store_id, NEW.object_type, NEW.relation, NEW.group_id);
-    END IF;
-    IF TG_OP = 'DELETE'
-       OR (TG_OP = 'UPDATE' AND (OLD.store_id, OLD.object_type, OLD.relation, OLD.group_id)
-           IS DISTINCT FROM (NEW.store_id, NEW.object_type, NEW.relation, NEW.group_id)) THEN
-        PERFORM authz._check_exclusion_group_has_base(
-            OLD.store_id, OLD.object_type, OLD.relation, OLD.group_id);
-    END IF;
-
-    RETURN NULL;
-END;
-$$;
-
-CREATE TRIGGER trg_models_validate_group
-    AFTER INSERT OR UPDATE OR DELETE ON authz.models
-    FOR EACH ROW EXECUTE FUNCTION authz._validate_model_group();
+-- (Model-rule validation: _check_exclusion_group_has_base / _validate_model_group
+--  + trigger moved to model_constraints.sql.)
 
 -- Unique constraint on all business columns. Uses COALESCE to handle NULLs
 -- (PostgreSQL UNIQUE treats NULLs as distinct, which would allow duplicates).
@@ -303,36 +236,7 @@ CREATE UNIQUE INDEX idx_models_unique ON authz.models (
     group_id, negated
 );
 
--- Human-readable view of model rules (resolves integer IDs to names).
-CREATE VIEW authz.models_view AS
-SELECT
-    mr.id,
-    s.name  AS store,
-    t.name  AS object_type,
-    r.name  AS relation,
-    CASE mr.rule_type
-        WHEN 1 THEN 'direct'
-        WHEN 2 THEN 'computed'
-        WHEN 3 THEN 'ttu'
-    END AS rule_type,
-    cr.name AS computed_relation,
-    tr.name AS tupleset_relation,
-    tc.name AS tupleset_computed,
-    mr.group_id,
-    CASE mr.group_op
-        WHEN 0 THEN 'or'
-        WHEN 1 THEN 'intersection'
-        WHEN 2 THEN 'exclusion'
-    END AS group_op,
-    mr.negated,
-    mr.allow_object_wildcard
-  FROM authz.models mr
-  JOIN authz.stores s    ON s.id  = mr.store_id
-  JOIN authz.types t     ON t.id  = mr.object_type
-  JOIN authz.relations r ON r.id  = mr.relation
-  LEFT JOIN authz.relations cr ON cr.id = mr.computed_relation
-  LEFT JOIN authz.relations tr ON tr.id = mr.tupleset_relation
-  LEFT JOIN authz.relations tc ON tc.id = mr.tupleset_computed;
+-- (models_view moved to views.sql.)
 
 -- Type restrictions: constrain which subject types can be directly assigned
 -- to a relation. If no restrictions are defined for a (store, object_type, relation),
@@ -361,19 +265,4 @@ CREATE UNIQUE INDEX idx_type_restrictions_unique
 CREATE INDEX idx_type_restrictions_lookup
     ON authz.type_restrictions (store_id, object_type, relation);
 
--- Human-readable view of type restrictions (resolves integer IDs to names).
-CREATE VIEW authz.type_restrictions_view AS
-SELECT
-    tr.id,
-    s.name  AS store,
-    ot.name AS object_type,
-    r.name  AS relation,
-    aut.name AS allowed_user_type,
-    aur.name AS allowed_user_relation,
-    tr.allow_wildcard
-  FROM authz.type_restrictions tr
-  JOIN authz.stores s     ON s.id  = tr.store_id
-  JOIN authz.types ot     ON ot.id = tr.object_type
-  JOIN authz.relations r  ON r.id  = tr.relation
-  JOIN authz.types aut    ON aut.id = tr.allowed_user_type
-  LEFT JOIN authz.relations aur ON aur.id = tr.allowed_user_relation;
+-- (type_restrictions_view moved to views.sql.)

@@ -183,11 +183,12 @@ migrations may be added per change but are not required.
 
 Ordered; each step keeps `./init.sh` + `./tests/test.sh` green.
 
-1. **Prerequisite refactor.** Move the trigger *functions*, the
-   `CREATE … TRIGGER` statements (rewritten as `CREATE OR REPLACE TRIGGER`), and
-   the views out of `schema.sql` / `schema_audit.sql` into manifest-loaded code
-   files; register them in `db/engine/manifest.sh`. After this, those two files
-   hold only structural DDL.
+1. **Prerequisite refactor — DONE.** Moved the trigger *functions*, the triggers
+   (now `CREATE OR REPLACE TRIGGER`), and the views out of `schema.sql` /
+   `schema_audit.sql` into manifest-loaded code: `audit_triggers.sql` (audit),
+   `model_constraints.sql` + `views.sql` (substrate). `schema.sql` and
+   `schema_audit.sql` are now **pure structural DDL** (the future baseline).
+   Full init + suite green; read-only footprint preserved.
 2. **Baseline migration.** Create `db/migrations/0001_baseline.sql` = the
    remaining structure (schema, roles, tables, indexes, types, default
    partitions), with `CREATE SCHEMA authz` instead of `DROP SCHEMA … CASCADE`.
