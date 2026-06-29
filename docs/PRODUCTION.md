@@ -239,6 +239,11 @@ the zero-privilege `authz_eval` role). Layered defenses (in `roles.sql`):
   above your slowest legitimate operation — set `CONDITION_STATEMENT_TIMEOUT`
   in `.env`.
 - **`pg_sleep*` revoked from `PUBLIC`** so the sandbox can't hang on it.
+- **Context size cap:** a request/stored context JSONB larger than
+  `authz._max_context_bytes()` (default **256 KiB**) is rejected before
+  evaluation with a clear error, bounding memory pressure from an oversized
+  context. Tune per session/database via the GUC, e.g.
+  `ALTER DATABASE authz SET authz.max_context_bytes = '524288';`.
 - **Write-time validation:** a malformed condition expression is rejected at
   `INSERT`/`UPDATE`, not stored and silently denied.
 
