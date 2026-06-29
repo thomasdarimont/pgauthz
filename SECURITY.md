@@ -21,10 +21,12 @@ us a reasonable window to remediate before public disclosure.
 
 ## Supported versions
 
-The project does not yet ship formal releases or backports. The supported line
-is the **default branch (`main`)** at the latest commit; fixes land there. Once
-tagged releases exist this section will list the supported version window. Pin to
-a specific commit for reproducible deployments until then.
+The project is pre-1.0 and does not ship backports. The supported line is the
+**latest tagged release** (currently **v0.1.0**) and the **default branch
+(`main`)**; fixes land on `main` and ship in the next tag. Per semver, 0.x
+releases may carry breaking changes between minor versions — review the
+[CHANGELOG](CHANGELOG.md) before upgrading. Pin to a tag (or a specific commit)
+for reproducible deployments.
 
 ## Scope
 
