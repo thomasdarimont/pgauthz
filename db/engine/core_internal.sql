@@ -390,7 +390,9 @@ DECLARE
     v_start      date;
     v_end        date;
 BEGIN
-    v_table_name := format('authz.tuples_audit_%s_%s', p_year, lpad(p_month::text, 2, '0'));
+    -- Unqualified name (integer-derived, so already safe); %I-quoted in the DDL
+    -- below for consistency with the tuple partitions. See SECURITY-AUDIT F3.
+    v_table_name := format('tuples_audit_%s_%s', p_year, lpad(p_month::text, 2, '0'));
     v_start      := make_date(p_year, p_month, 1);
     v_end        := v_start + interval '1 month';
 
@@ -408,7 +410,7 @@ BEGIN
     -- Detach default, create monthly partition, migrate rows, re-attach default
     EXECUTE 'ALTER TABLE authz.tuples_audit DETACH PARTITION authz.tuples_audit_default';
     EXECUTE format(
-        'CREATE TABLE %s PARTITION OF authz.tuples_audit FOR VALUES FROM (%L) TO (%L)',
+        'CREATE TABLE authz.%I PARTITION OF authz.tuples_audit FOR VALUES FROM (%L) TO (%L)',
         v_table_name, v_start, v_end
     );
 
@@ -416,7 +418,7 @@ BEGIN
     -- OVERRIDING SYSTEM VALUE: the rows keep their original seq values
     -- (seq is the audit event order and must survive migration).
     EXECUTE format(
-        'INSERT INTO %s OVERRIDING SYSTEM VALUE SELECT * FROM authz.tuples_audit_default WHERE performed_at >= %L AND performed_at < %L',
+        'INSERT INTO authz.%I OVERRIDING SYSTEM VALUE SELECT * FROM authz.tuples_audit_default WHERE performed_at >= %L AND performed_at < %L',
         v_table_name, v_start, v_end
     );
     -- Sanctioned maintenance: the rows were copied above, so deleting
@@ -484,14 +486,14 @@ BEGIN
     v_suffix     := regexp_replace(v_store_name, '[^a-zA-Z0-9]', '_', 'g')
                  || '_'
                  || regexp_replace(p_type_name, '[^a-zA-Z0-9]', '_', 'g');
-    v_table_name := 'authz.tuples_' || v_suffix;
+    v_table_name := 'tuples_' || v_suffix;  -- unqualified; quoted via %I in the DDL below
 
     -- Check if a partition for this type already exists
     IF EXISTS (
         SELECT 1 FROM pg_catalog.pg_class c
           JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
          WHERE n.nspname = 'authz'
-           AND c.relname = 'tuples_' || v_suffix
+           AND c.relname = v_table_name
            AND c.relispartition
     ) THEN
         RETURN false;  -- partition already exists
@@ -500,23 +502,26 @@ BEGIN
     -- Detach default partition to allow creating a specific one
     EXECUTE 'ALTER TABLE authz.tuples DETACH PARTITION authz.tuples_default';
 
+    -- v_type_id is a smallint; %s is safe for the integer partition value.
+    -- The table name is %I-quoted (defense-in-depth; the suffix is already
+    -- regexp-sanitized to [a-zA-Z0-9_]). See SECURITY-AUDIT F3.
     IF COALESCE(p_hash_modulus, 0) > 0 THEN
         -- Create a sub-partitioned table (HASH on object_id)
         EXECUTE format(
-            'CREATE TABLE %s PARTITION OF authz.tuples FOR VALUES IN (%s) PARTITION BY HASH (object_id)',
+            'CREATE TABLE authz.%I PARTITION OF authz.tuples FOR VALUES IN (%s) PARTITION BY HASH (object_id)',
             v_table_name, v_type_id
         );
         -- Create hash sub-partitions
         FOR i IN 0 .. (p_hash_modulus - 1) LOOP
             EXECUTE format(
-                'CREATE TABLE %s_%s PARTITION OF %s FOR VALUES WITH (MODULUS %s, REMAINDER %s)',
-                v_table_name, i, v_table_name, p_hash_modulus, i
+                'CREATE TABLE authz.%I PARTITION OF authz.%I FOR VALUES WITH (MODULUS %s, REMAINDER %s)',
+                v_table_name || '_' || i, v_table_name, p_hash_modulus, i
             );
         END LOOP;
     ELSE
         -- Simple single partition
         EXECUTE format(
-            'CREATE TABLE %s PARTITION OF authz.tuples FOR VALUES IN (%s)',
+            'CREATE TABLE authz.%I PARTITION OF authz.tuples FOR VALUES IN (%s)',
             v_table_name, v_type_id
         );
     END IF;

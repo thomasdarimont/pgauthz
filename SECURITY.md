@@ -62,6 +62,9 @@ docs call out, not engine vulnerabilities:
 
 ## Hardening references
 
+- [`docs/SECURITY-AUDIT.md`](docs/SECURITY-AUDIT.md) — first-party security
+  self-audit: threat model, the verified defense-in-depth mechanisms, findings,
+  and a hardening checklist (prep for an external review).
 - README — *Access control roles*, the PostgREST trust-boundary note, and the
   *Compatibility* matrix.
 - `docs/PRODUCTION.md` — production hardening checklist, role recipes, replica

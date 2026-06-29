@@ -232,6 +232,11 @@ ALTER FUNCTION authz.check_access_with_context(text, text, text, text, text, tex
 ALTER FUNCTION authz.check_access_with_contextual_tuples(text, text, text, text, text, text, jsonb, authz.tuple_input[]) SECURITY DEFINER;
 ALTER FUNCTION authz.check_access_batch_typed(text, authz.access_check[], jsonb, text) SECURITY DEFINER;
 ALTER FUNCTION authz.check_access_batch(text, jsonb, jsonb, text) SECURITY DEFINER;
+-- jsonb-input wrappers: keep the whole public API uniformly SECURITY DEFINER
+-- (they only validate + delegate to the variants above, but this makes the
+-- posture explicit and gets them search_path pinning below). See SECURITY-AUDIT F1.
+ALTER FUNCTION authz.check_access_with_contextual_tuples_jsonb(text, text, text, text, text, text, jsonb, jsonb) SECURITY DEFINER;
+ALTER FUNCTION authz.check_access_batch_typed_jsonb(text, jsonb, jsonb, text) SECURITY DEFINER;
 ALTER FUNCTION authz.list_objects(text, text, text, text, text, jsonb, int, int, text) SECURITY DEFINER;
 ALTER FUNCTION authz.list_subjects(text, text, text, text, text, jsonb, int, int, text) SECURITY DEFINER;
 ALTER FUNCTION authz.list_actions(text, text, text, text, text, jsonb) SECURITY DEFINER;
@@ -270,6 +275,11 @@ ALTER FUNCTION authz.model_remove_type_restrictions(text, text, text) SECURITY D
 ALTER FUNCTION authz.import_openfga_model(text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.import_openfga_tuples(text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.create_condition(text, text, text, text, jsonb) SECURITY DEFINER;
+-- The lang-specific wrappers delegate to create_condition; making them definer
+-- keeps the API uniform and prevents inlining from running them as the caller.
+-- See SECURITY-AUDIT F2.
+ALTER FUNCTION authz.create_condition_sql(text, text, text, jsonb) SECURITY DEFINER;
+ALTER FUNCTION authz.create_condition_cel(text, text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_condition(text, text) SECURITY DEFINER;
 
 ------------------------------------------------------------------------
