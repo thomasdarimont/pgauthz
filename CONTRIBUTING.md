@@ -98,3 +98,9 @@ the deny paths. `./tests/test.sh` must be green.
   changes to authorization semantics, capture the reasoning there.
 - Report security vulnerabilities privately — see [`SECURITY.md`](SECURITY.md),
   not a public issue or PR.
+
+## Releasing
+
+Cutting a tagged release follows a fixed flow (bump → write CHANGELOG notes →
+push → CI green → tag) with a pre-release checklist. See
+[`docs/RELEASING.md`](docs/RELEASING.md).
