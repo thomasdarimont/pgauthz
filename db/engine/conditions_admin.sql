@@ -72,7 +72,8 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER trg_conditions_validate_expression
+-- CREATE OR REPLACE so re-running the installer (migrate-then-load) is idempotent.
+CREATE OR REPLACE TRIGGER trg_conditions_validate_expression
     BEFORE INSERT OR UPDATE ON authz.conditions
     FOR EACH ROW EXECUTE FUNCTION authz._validate_condition_expression();
 

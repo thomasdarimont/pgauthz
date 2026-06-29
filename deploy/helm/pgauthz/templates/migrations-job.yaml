@@ -5,13 +5,12 @@ metadata:
   name: {{ include "pgauthz.fullname" . }}-migrate-{{ .Release.Revision }}
   labels: {{- include "pgauthz.labels" . | nindent 4 }}
   annotations:
-    # post-install ONLY: the installer runs db/engine/schema.sql, which begins
-    # with `DROP SCHEMA authz CASCADE` — a full reset, not an incremental
-    # migration. Running it on every upgrade would wipe all stores/tuples/audit.
-    # The function/roles files are idempotent, but schema.sql is destructive, so
-    # schema changes need bespoke migration SQL run deliberately (see chart
-    # README → "schema install / upgrade"). Set migrations.runOnUpgrade=true to
-    # re-run the FULL installer on upgrade (DESTRUCTIVE — dev/reset only).
+    # Non-destructive: run-migrations.sh applies only pending forward-only
+    # migrations from db/migrations/ (tracked in public._sqlx_migrations) and
+    # reloads the idempotent engine code (CREATE OR REPLACE … / IF NOT EXISTS) —
+    # no DROP SCHEMA. Safe on a fresh DB and on every upgrade, so it runs as a
+    # post-install AND post-upgrade hook by default (migrations.runOnUpgrade).
+    # Set runOnUpgrade=false to run on install only and migrate out of band.
     "helm.sh/hook": {{ if .Values.migrations.runOnUpgrade }}post-install,post-upgrade{{ else }}post-install{{ end }}
     "helm.sh/hook-weight": "5"
     "helm.sh/hook-delete-policy": before-hook-creation

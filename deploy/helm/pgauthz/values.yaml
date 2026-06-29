@@ -79,10 +79,13 @@ extraRoles: []
 
 # ── Schema install / migration Job ───────────────────────────────────────────
 migrations:
-  # Re-run the FULL installer on `helm upgrade`. DESTRUCTIVE — schema.sql drops
-  # the authz schema (all stores/tuples/audit). Leave false in production; the
-  # installer is a first-install/reset tool, not an incremental migrator.
-  runOnUpgrade: false
+  # Run the migrate Job on `helm upgrade` as well as install. NON-DESTRUCTIVE:
+  # the Job applies only pending forward-only migrations from db/migrations/
+  # (tracked in public._sqlx_migrations) and reloads the idempotent engine code
+  # (CREATE OR REPLACE …) — no DROP SCHEMA, stores/tuples/audit are preserved.
+  # Keep true so upgrades actually pick up new migrations and code; set false to
+  # pin the schema and run migrations out of band.
+  runOnUpgrade: true
 
 # PgBouncer pooler in front of the read replicas, so the stateless reader fleet
 # does not exhaust max_connections (replicas x PGRST_DB_POOL must stay under it).

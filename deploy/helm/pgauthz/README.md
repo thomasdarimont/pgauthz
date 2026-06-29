@@ -65,10 +65,17 @@ kubectl port-forward svc/pgauthz-opa 8181:8181
 
 ## How schema install / upgrade works
 
-The engine SQL (`db/engine`, `db/openfga`, `db/security`) is baked into the
-`pgauthz-migrations` image and run by a Helm `post-install,post-upgrade` hook
-Job — the same SQL, same order, as `init.sh`. It is idempotent (`CREATE OR
-REPLACE` functions, `IF NOT EXISTS` roles), so upgrades just re-run it. The Job
+The schema SQL (`db/migrations`, `db/engine`, `db/openfga`, `db/security`) is
+baked into the `pgauthz-migrations` image and run by a Helm
+`post-install,post-upgrade` hook Job — the same migrate-then-load flow, same
+order, as `init.sh`. Structure comes from **forward-only migrations** in
+`db/migrations/`, applied by `sqlx migrate run` and tracked in
+`public._sqlx_migrations` (only pending ones run); the engine code
+(`db/engine`, functions/views/triggers) is idempotent (`CREATE OR REPLACE …`,
+incl. `CREATE OR REPLACE TRIGGER`), and roles are `IF NOT EXISTS`. It is
+**non-destructive** — no `DROP SCHEMA`, stores/tuples/audit are preserved — so
+the same Job safely runs on a fresh install **and** on every upgrade
+(`migrations.runOnUpgrade`, default `true`). The Job
 connects to the primary as the CloudNativePG superuser (the only role that can
 `CREATE ROLE` and replace functions across the schema); set
 `database.enableSuperuserAccess=false` and use
