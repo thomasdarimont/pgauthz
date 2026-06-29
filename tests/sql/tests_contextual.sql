@@ -552,6 +552,41 @@ BEGIN
 END;
 $$;
 
+-- ctx_25: write_tuples_jsonb carries conditions per element — conditional
+-- elements (with a "condition" key) are routed to write_tuple, which validates
+-- the condition name + its stored-context keys; unconditional elements take the
+-- set-based path. Regression guard for batch conditional writes (the jsonb API
+-- used by HTTP/Go callers); the composite-array write_tuples() has no condition
+-- fields, so this is the supported way to batch conditional grants.
+DO $$
+BEGIN
+    PERFORM _test_setup_contextual();
+
+    PERFORM authz.write_tuples_jsonb('test_contextual', $j$[
+      {"user_type":"user","user_id":"erin","relation":"viewer","object_type":"doc","object_id":"batch_doc"},
+      {"user_type":"user","user_id":"dave","relation":"viewer","object_type":"doc","object_id":"batch_doc",
+       "condition":"non_expired_grant",
+       "condition_context":{"grant_time":"2026-03-11T09:00:00Z","grant_duration":"2 hours"}}
+    ]$j$::jsonb);
+
+    -- unconditional element granted
+    PERFORM _test_assert('ctx_25a_batch_unconditional_granted',
+        authz.check_access('test_contextual','user','erin','viewer','doc','batch_doc')::text, 'true');
+
+    -- conditional element carried its condition: allowed within the grant window
+    PERFORM _test_assert('ctx_25b_batch_conditional_within_window',
+        authz.check_access_with_context('test_contextual','user','dave','viewer','doc','batch_doc',
+            '{"current_time": "2026-03-11T10:00:00Z"}'::jsonb)::text, 'true');
+
+    -- ...and denied after it — proves the condition was actually attached, not
+    -- written as a plain (unconditional) grant
+    PERFORM _test_assert('ctx_25c_batch_conditional_after_window',
+        authz.check_access_with_context('test_contextual','user','dave','viewer','doc','batch_doc',
+            '{"current_time": "2026-03-11T12:00:00Z"}'::jsonb)::text, 'false');
+END;
+$$;
+SELECT * FROM _test_teardown_contextual();
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_contextual();
 DROP FUNCTION IF EXISTS _test_setup_contextual();
