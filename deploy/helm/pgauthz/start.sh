@@ -14,7 +14,7 @@
 #   K3D_CLUSTER   k3d cluster name to import images into       (pgauthz-demo)
 #   RELEASE       helm release name                             (pgauthz)
 #   NAMESPACE     kubernetes namespace                          (default)
-#   IMAGE_TAG     tag for the locally built images             (0.1.3)
+#   IMAGE_TAG     tag for the locally built images             (0.1.4)
 #   CNPG_VERSION  CloudNativePG version ("" = latest release)  (auto)
 #   VALUES        extra helm values file                       (values-k3d.yaml)
 #   SKIP_BUILD    set to 1 to skip docker build + k3d import
@@ -26,7 +26,7 @@ REPO_ROOT="$(cd "$CHART_DIR/../../.." && pwd)"
 K3D_CLUSTER="${K3D_CLUSTER:-pgauthz-demo}"
 RELEASE="${RELEASE:-pgauthz}"
 NAMESPACE="${NAMESPACE:-default}"
-IMAGE_TAG="${IMAGE_TAG:-0.1.3}"
+IMAGE_TAG="${IMAGE_TAG:-0.1.4}"
 VALUES="${VALUES:-$CHART_DIR/values-k3d.yaml}"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "!! '$1' not found in PATH" >&2; exit 1; }; }

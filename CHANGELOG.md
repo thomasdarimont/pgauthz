@@ -7,6 +7,23 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-06-29
+
+Release-process tooling and docs (no engine changes).
+
+### Added
+- `docs/RELEASING.md` — a release runbook + pre-release checklist (the bump →
+  notes → push → CI-green → tag flow, with the gotchas we've hit); linked from
+  `CONTRIBUTING.md`.
+- `scripts/release.sh` automation:
+  - `--auto` — wait for the GitHub CI run on HEAD to pass, then tag and push
+    (= `--wait-ci` + `--push` + `--strict-changelog`).
+  - `--wait-ci` — block until CI is green before tagging, so a red commit is
+    never tagged (needs the `gh` CLI).
+  - `--strict-changelog` — fail instead of warn when the release notes are empty.
+- `scripts/release.sh` now warns when the `## [X.Y.Z]` CHANGELOG section has no
+  notes (empty-release-notes guard).
+
 ## [0.1.3] - 2026-06-29
 
 ### Added
@@ -117,7 +134,8 @@ PL/pgSQL.
 - PostgreSQL 18.x (developed/tested on 18.4). PostgREST, OPA, the AuthZEN
   services, and `pg_cel` are optional components of the reference deployment.
 
-[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.0...v0.1.1
