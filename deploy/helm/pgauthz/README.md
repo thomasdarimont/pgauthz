@@ -195,6 +195,12 @@ plugin; `MODE=failover` needs no plugin and auto-handles the single-node-k3d
 stuck-`Terminating` case. Knobs: `RELEASE`, `NAMESPACE`, `CLUSTER`, `TARGET`,
 `TIMEOUT`, `KEEP=1`. The manual steps it automates are below.
 
+> Validated live on k3d (both modes pass, RPO 0 preserved): a graceful
+> **switchover completes in ~5s**, while an unplanned **failover can take a
+> couple of minutes** on a freshly-built cluster — CNPG waits for WAL receivers
+> to drain before electing — hence the 300s default `TIMEOUT`. Prefer
+> `switchover` for routine drills.
+
 First confirm synchronous replication is actually engaged (with `HA=1` /
 `values-ha.yaml`) — `synchronous_standby_names` must be non-empty and the standby
 `sync_state` should be `quorum`/`sync`:
