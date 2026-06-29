@@ -293,8 +293,51 @@ condition history (`models_audit`, `conditions_audit`) are append-only logs.
 - The audit trail is append-only (a trigger blocks `UPDATE`/`DELETE` outside
   the sanctioned maintenance window). `delete_store(..., p_purge_audit => true)`
   removes a store's audit rows.
+- **Retire stores; don't delete them, where audit history matters.**
+  `delete_store` removes the store and its `types`/`relations` rows, so even when
+  audit rows are *preserved* (`p_purge_audit => false`) their `store_id` /
+  `object_type` / `relation` IDs are no longer name-resolvable — and the public
+  historical API (`audit_check_access`, `audit_list_*`) resolves *current* names
+  first, so it can no longer query that store's preserved history normally. For
+  regulated / audit-critical deployments, **stop using a store** (retire it)
+  rather than deleting it, keep its model/types intact, and reserve
+  `delete_store` for non-audited or test stores. (A first-class soft-delete /
+  retire flag is a planned enhancement — see the project review notes.)
 
 See [DEVELOPMENT.md → Audit partition maintenance](DEVELOPMENT.md#audit-partition-maintenance).
+
+## Scale & supported limits
+
+pgauthz targets **bounded** relationship graphs with a fairly fixed set of
+models. Know these limits before sizing a deployment:
+
+- **Identifier ceiling (`smallint`).** Stores, types, relations, models, and
+  conditions use `smallint GENERATED ALWAYS AS IDENTITY` keys — capped at
+  **32,767**, and IDENTITY **never reuses** a value, so the limit is on the
+  *cumulative number ever created*, not the live count. Type/relation IDs are
+  **global** (one sequence across all stores), so in a many-store deployment they
+  are the tighter constraint (e.g. 1,000 stores × 30 types ≈ 30k types, near the
+  cap). Static models (defined once, rarely changed) never get close; **churny**
+  environments that create-and-delete many stores/types/relations over time can
+  exhaust the space. If you need more, migrating the ID columns to `integer`
+  (≈2.1 B headroom) is a planned, well-scoped structural migration — it rewrites
+  the `tuples` partition key plus dependent FK columns and function signatures,
+  and is not needed for bounded installations.
+- **Partition growth.** `authz.tuples` has one LIST partition per object *type*
+  (hash sub-partitioned for high-cardinality types); `authz.tuples_audit` has one
+  RANGE partition per month. Both grow the partition/catalog count — keep the type
+  count bounded and prune old audit partitions (above). Thousands of partitions
+  are fine; tens of thousands begin to pressure planning and the catalog.
+- **Search result size.** `check_access` is bounded by graph depth/fan-out;
+  `list_objects` / `list_subjects` are bounded by the **reachable set**, not the
+  store size (see [BENCHMARKS.md](BENCHMARKS.md)). A query whose answer is large
+  (e.g. a document readable by a whole org) is correspondingly expensive —
+  paginate, and route large listings to a dedicated replica.
+- **Tuple volume / concurrency — not yet measured.** Published benchmarks cover
+  tens of thousands of tuples on a laptop. Capacity at 1M–100M tuples, under
+  concurrent reads/writes, cold cache, skewed fan-out, and replica failover is
+  **not yet characterized** — validate against your own data shape before relying
+  on it at scale.
 
 ## Upgrades & migrations
 

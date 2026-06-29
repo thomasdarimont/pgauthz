@@ -41,8 +41,10 @@ END \$\$;"
 # superuser; the baseline's `SET LOCAL ROLE authz` makes the structural objects
 # authz-owned, matching the engine code loaded below.
 #
-# NOTE: this CNPG path is not exercised by the local test suite — validate in a
-# real CloudNativePG cluster (auth/ownership, sqlx-cli in the image).
+# NOTE: validated manually against a local CloudNativePG cluster on k3d (fresh
+# install + non-destructive upgrade via the post-upgrade hook, auth/ownership,
+# sqlx-cli in the image). It is NOT yet exercised by automated CI — a real-cluster
+# upgrade + failover CI job is still on the roadmap; re-validate in your cluster.
 echo "==> Applying structural migrations (sqlx)..."
 DBURL="postgresql://${PGUSER}"
 [ -n "${PGPASSWORD:-}" ] && DBURL="${DBURL}:${PGPASSWORD}"

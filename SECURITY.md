@@ -9,10 +9,12 @@ privately.
 
 **Do not open a public issue for security problems.**
 
-- Preferred: GitHub **private vulnerability reporting** — on the repository's
-  **Security** tab, choose **“Report a vulnerability.”**
-- Alternatively, email the maintainer: **security contact — _set in repo
-  settings_** (replace with a monitored address before publishing).
+- **GitHub private vulnerability reporting** is the channel — on the
+  repository's **Security** tab, choose **“Report a vulnerability.”** It opens a
+  private advisory thread with the maintainers.
+- If private reporting is unavailable to you, reach the maintainer via their
+  GitHub profile to arrange a private channel — do **not** post details in a
+  public issue or pull request.
 
 Please include: affected component(s) and version/commit, a description, and a
 minimal reproduction (SQL, model, tuples, request). We aim to acknowledge within
@@ -22,8 +24,9 @@ us a reasonable window to remediate before public disclosure.
 ## Supported versions
 
 The project is pre-1.0 and does not ship backports. The supported line is the
-**latest tagged release** (currently **v0.1.0**) and the **default branch
-(`main`)**; fixes land on `main` and ship in the next tag. Per semver, 0.x
+**latest tagged release** (see the [CHANGELOG](CHANGELOG.md) / the repository's
+Releases) and the **default branch (`main`)**; fixes land on `main` and ship in
+the next tag. Per semver, 0.x
 releases may carry breaking changes between minor versions — review the
 [CHANGELOG](CHANGELOG.md) before upgrading. Pin to a tag (or a specific commit)
 for reproducible deployments.

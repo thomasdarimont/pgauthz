@@ -127,10 +127,10 @@ rest are the components of the reference deployment.
 | `sqlx-cli` | 0.9.0 | install/upgrade | Applies the structural migrations in [`db/migrations/`](db/migrations/) (tracked in `public._sqlx_migrations`). Slim Postgres-only build — `cargo install sqlx-cli --no-default-features --features rustls,postgres`. Baked into the [migration image](deploy/migrations/Dockerfile); `init*.sh` use a local install. Not needed at query time. |
 | `pg_cel` extension | pgrx 0.19.1, `cel` 0.13 | optional | Only for `lang='cel'` conditions; built per PostgreSQL major (see [`extensions/pg-cel`](extensions/pg-cel/)). |
 
-Current release: **v0.1.0** (pre-1.0). Pin to a tag (or a specific commit) for
-reproducible deployments; per semver, 0.x releases may carry breaking changes
-between minor versions, so review the [CHANGELOG](CHANGELOG.md) before upgrading.
-See [`SECURITY.md`](SECURITY.md) for the supported line.
+Pre-1.0 — pin to a tag (latest in the [CHANGELOG](CHANGELOG.md) / Releases) or a
+specific commit for reproducible deployments; per semver, 0.x releases may carry
+breaking changes between minor versions, so review the CHANGELOG before
+upgrading. See [`SECURITY.md`](SECURITY.md) for the supported line.
 
 ## API
 
