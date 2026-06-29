@@ -194,3 +194,62 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose -f compose-scaling.yml down -v || true
+
+  # Builds the optional pg_cel (Rust/pgrx) extension and runs the full suite
+  # against the CEL-enabled stack — so the CEL-gated tests actually execute:
+  # the lang-discriminator end-to-end cases (cl_09/cl_10) and the SQL≡CEL
+  # equivalence property checks (tests_condition_equivalence.sql), which SKIP
+  # on the default jobs. The pg_cel image build is cached (buildx + GHA cache),
+  # so only the first run pays the cargo-pgrx compile cost.
+  cel-test:
+    name: CEL conditions (pg_cel)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build pg_cel postgres image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: extensions/pg-cel/Dockerfile
+          tags: pgauthz-postgres-cel:18.4
+          build-args: |
+            PG_MAJOR=18
+            POSTGRES_TAG=18.4
+          load: true
+          cache-from: type=gha,scope=pg-cel
+          cache-to: type=gha,scope=pg-cel,mode=max
+
+      - name: Cache sqlx-cli
+        id: cache-sqlx
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/sqlx
+          key: sqlx-cli-0.9.0-${{ runner.os }}
+      - name: Install sqlx-cli
+        if: steps.cache-sqlx.outputs.cache-hit != 'true'
+        run: cargo install sqlx-cli --version 0.9.0 --no-default-features --features rustls,postgres --locked
+
+      # PGAUTHZ_CEL=1 overlays compose-cel.yml; COMPOSE_NO_BUILD=1 reuses the
+      # pg_cel image built (and cached) above instead of rebuilding it. init.sh
+      # installs the engine + CREATE EXTENSION pg_cel, then the full suite runs
+      # with the CEL-gated checks active.
+      - name: Install (CEL stack) + run full suite
+        env:
+          PGAUTHZ_CEL: "1"
+          COMPOSE_NO_BUILD: "1"
+        run: |
+          ./init.sh
+          ./tests/test.sh
+
+      - name: Service logs on failure
+        if: failure()
+        run: docker compose -f compose.yml -f compose-authzen.yml -f compose-cel.yml logs --no-color --tail=300 || true
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f compose.yml -f compose-authzen.yml -f compose-cel.yml down -v || true

@@ -66,8 +66,12 @@ export ALLOW_SUBJECT_OVERRIDE="${ALLOW_SUBJECT_OVERRIDE:-true}"
 # true), so production stays token-only unless explicitly opted out.
 export REQUIRE_TOKEN_FOR_READS="${REQUIRE_TOKEN_FOR_READS:-false}"
 
-# Ensure containers are running
-docker compose "${COMPOSE_FILES[@]}" up -d --build --wait
+# Ensure containers are running. COMPOSE_NO_BUILD=1 skips the implicit --build
+# and reuses already-present images (e.g. CI pre-builds the pg_cel image with a
+# cached buildx step, then brings the stack up without rebuilding it).
+COMPOSE_BUILD_FLAG="--build"
+[ "${COMPOSE_NO_BUILD:-}" = "1" ] && COMPOSE_BUILD_FLAG=""
+docker compose "${COMPOSE_FILES[@]}" up -d $COMPOSE_BUILD_FLAG --wait
 
 # Resolve the database container. The default stack names it authz-db; the
 # streaming-replication topology (compose-scaling.yml) names the writable
