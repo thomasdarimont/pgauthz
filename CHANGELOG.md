@@ -7,6 +7,8 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-06-29
+
 ## [0.1.2] - 2026-06-29
 
 ### Added
@@ -95,7 +97,8 @@ PL/pgSQL.
 - PostgreSQL 18.x (developed/tested on 18.4). PostgREST, OPA, the AuthZEN
   services, and `pg_cel` are optional components of the reference deployment.
 
-[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/thomasdarimont/pgauthz/releases/tag/v0.1.0
