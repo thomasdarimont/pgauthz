@@ -90,6 +90,29 @@ This is not the right tradeoff for everyone — if you need official polyglot SD
 native gRPC streaming, or a fully managed hosted service, see
 [When to choose OpenFGA](#when-to-choose-openfga) below for an honest comparison.
 
+## Who is it for?
+
+Primarily **enterprise platform teams** — the people who operate authorization as
+shared infrastructure rather than wire it into a single application. The natural
+users are:
+
+- **IAM / authorization architects** designing the relationship model
+- **central platform engineering teams** operating it as a service
+- **security engineering teams** that need explainable, auditable decisions
+- **PostgreSQL-focused SaaS vendors** embedding authz in a Postgres-native stack
+- **regulated organisations** that must answer "who could do what, when, and why"
+
+It is **less suited to an ordinary application team looking for a drop-in
+library**. Those teams are usually better served consuming pgauthz through a
+centrally operated service or an opinionated internal SDK than by running the
+engine themselves.
+
+The intended adoption model is **central operation, federated ownership**: a
+platform team runs pgauthz (schema, upgrades, replication, the OPA front door),
+while domain teams own their authorization models and relationship data within
+governed boundaries — which **multi-store** isolation and **namespace-based write
+control** make enforceable rather than a matter of convention.
+
 ## Setup
 
 ```bash
