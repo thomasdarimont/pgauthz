@@ -138,3 +138,26 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose -f compose.yml -f compose-authzen.yml down -v || true
+
+  # Exercises the logical-replication demo (primary + full replica + derived
+  # replica). No sqlx/Go needed — the baseline is applied via psql. Asserts the
+  # subscribers reach 'ready', the full replica resolves access on replicated
+  # data, the derived replica gets the flat permissions table, and a live write
+  # on the primary propagates.
+  replication-test:
+    name: Logical replication topologies
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run replication integration test
+        run: ./tests/test-replication.sh
+
+      - name: Replication logs on failure
+        if: failure()
+        run: docker compose -f compose-replication.yml logs --no-color --tail=300 || true
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f compose-replication.yml down -v || true

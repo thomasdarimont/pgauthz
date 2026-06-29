@@ -235,7 +235,7 @@ BEGIN
 
         -- Second level: objects referencing the parent (e.g., documents in a data space)
         INSERT INTO authz.permissions_refresh_queue (store_id, object_type, object_id)
-        SELECT DISTINCT t2.object_type, t2.object_id
+        SELECT DISTINCT t2.store_id, t2.object_type, t2.object_id
           FROM authz.tuples t2
          WHERE t2.store_id  = v_row.store_id
            AND t2.user_type = v_parent.object_type

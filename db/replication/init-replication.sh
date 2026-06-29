@@ -12,8 +12,8 @@
 #
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PG_DIR="$(dirname "$SCRIPT_DIR")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # db/replication
+PG_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"                    # repo root
 COMPOSE_FILE="$PG_DIR/compose-replication.yml"
 source "$PG_DIR/db/engine/manifest.sh"
 

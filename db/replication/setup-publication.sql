@@ -19,7 +19,7 @@
 -- Grant the replicator role SELECT on the authz schema.
 GRANT USAGE ON SCHEMA authz TO replicator;
 GRANT SELECT ON ALL TABLES IN SCHEMA authz TO replicator;
-ALTER DEFAULT PRIVILEGES IN SCHEMA authz GRANT SELECT TO replicator;
+ALTER DEFAULT PRIVILEGES IN SCHEMA authz GRANT SELECT ON TABLES TO replicator;
 
 -- Logical replication requires a replica identity for UPDATE/DELETE.
 -- Tables with a PRIMARY KEY use it automatically; tables without one
