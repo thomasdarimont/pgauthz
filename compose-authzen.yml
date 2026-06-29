@@ -5,6 +5,7 @@ services:
       context: ./authzen
       args:
         BINARY: authzen-direct
+        VERSION: ${VERSION:-dev}   # `VERSION=0.2.2 docker compose build` stamps it; else dev
     ports:
       - "8090:8080"
     environment:
@@ -42,6 +43,7 @@ services:
       context: ./authzen
       args:
         BINARY: authzen-opa
+        VERSION: ${VERSION:-dev}   # `VERSION=0.2.2 docker compose build` stamps it; else dev
     ports:
       - "8091:8080"
     environment:
