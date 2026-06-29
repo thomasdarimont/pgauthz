@@ -1404,20 +1404,28 @@ The asymmetry matters for security:
 
 Getting the consistency you need:
 
-- **Route security-critical checks — especially the confirming check right
-  after a revoke — to the primary.** Reads on the primary are always
-  read-your-writes.
+- **Route the affected subject's security-critical checks to the primary** —
+  and after a *revoke*, not just the admin's confirming check: the revoked
+  subject's own later requests may keep hitting replicas, so route *their*
+  sensitive actions (or temporarily pin them) to the primary too. Primary reads
+  are read-your-writes given a fresh snapshot (a new transaction, and no stale
+  OPA cache hit).
 - **Accept bounded staleness** for the high-volume common case (sub-second lag
   is fine for most authorization).
-- **Synchronous replication** (`synchronous_commit = remote_apply`) makes
-  replicas strongly consistent, trading write latency for zero read lag.
+- **Synchronous replication** (`synchronous_commit = remote_apply`) makes the
+  standbys in the *synchronous set* read-your-writes, trading write latency for
+  zero lag on those replicas (only).
 
 > **No revision tokens (zookies) yet.** Unlike Zanzibar, pgauthz has no
-> consistency-token / "minimum LSN" API to pin a read to "at least as fresh as
-> this write." You can approximate read-your-writes on a replica manually:
-> capture the write position with `pg_current_wal_lsn()` on the primary, then
-> before the replica read wait until the replica's `pg_last_wal_replay_lsn()`
-> has caught up to it. A first-class token API is future work.
+> consistency-token API to pin a read to "at least as fresh as this write." You
+> can approximate read-your-writes on a replica manually, but only with a
+> **post-commit** position: *after* the write commits, `SELECT
+> pg_current_wal_insert_lsn()` on the primary, then wait until the replica's
+> `pg_last_wal_replay_lsn()` reaches it (an LSN captured *inside* the write
+> transaction is pre-commit and unsound). The documented forward design is a
+> per-store signed **revision** token with `at_least_as_fresh` /
+> `fully_consistent` modes — see
+> [ARCHITECTURE.md → Consistency tokens](docs/ARCHITECTURE.md).
 
 ### Performance optimizations
 
