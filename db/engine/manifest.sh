@@ -1,44 +1,43 @@
 #!/usr/bin/env bash
 #
-# Engine file load order, grouped by deployment profile. Single source of truth
-# for which SQL files make up the engine, sourced by init.sh, init-readonly.sh,
-# and db/replication/init-replication.sh.
+# Engine CODE load order, grouped by deployment profile. Single source of truth
+# for the function/view/trigger files (all CREATE OR REPLACE, idempotent),
+# sourced by init.sh, init-readonly.sh, deploy/migrations/run-migrations.sh, and
+# db/replication/init-replication.sh.
+#
+# Structural DDL is NOT here — it lives in db/migrations/ and is applied by
+# `sqlx migrate run` BEFORE these files load (migrations-only model; see
+# docs/adr/0001-schema-migrations.md). These files re-apply on every deploy.
 #
 # Profiles:
-#   substrate — DDL (read tables, partitions, constraints) + core internals.
-#               Every deployment needs it.
+#   substrate — core internals + condition evaluation. Every deployment.
 #   read      — access checks, search (list_*), explain, condition validation.
-#               Read-only and full deployments.
 #   write     — tuple / model / store / condition management + maintenance.
-#               Full deployments only.
-#   audit     — audit tables & triggers, time-travel, changefeed.
-#               Full deployments (and time-travel reads).
+#   audit     — audit triggers/functions, time-travel, changefeed.
 #
 # Read-only deployment loads: substrate + read   (see init-readonly.sh).
 # Full deployment loads:      substrate + read + write + audit (see init.sh).
 #
-# The list below is an authoritative, valid full-load order; engine_files_for
+# The list below is an authoritative, valid load order; engine_files_for
 # preserves that order while filtering to the requested profiles.
 
 ENGINE_MANIFEST=(
-  "schema.sql:substrate"
-  "schema_audit.sql:audit"
-  "audit_triggers.sql:audit"
   "core_internal.sql:substrate"
   "conditions.sql:substrate"
   "model_constraints.sql:substrate"
   "views.sql:substrate"
   "access_internal.sql:read"
-  "audit_internal.sql:audit"
-  "store.sql:write"
   "access.sql:read"
   "explain.sql:read"
+  "store.sql:write"
   "tuples.sql:write"
   "maintenance.sql:write"
-  "audit.sql:audit"
-  "watch.sql:audit"
   "model.sql:write"
   "conditions_admin.sql:write"
+  "audit_triggers.sql:audit"
+  "audit_internal.sql:audit"
+  "audit.sql:audit"
+  "watch.sql:audit"
 )
 
 # engine_files_for <profile> [<profile>...]

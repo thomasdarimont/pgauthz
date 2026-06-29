@@ -124,6 +124,7 @@ rest are the components of the reference deployment.
 | PostgREST | v14.13 | optional | REST bridge (read on 3000, write on 3001). |
 | OPA | 1.17.1 | optional | Policy/JWT front door for reads and writes. |
 | Go (AuthZEN services) | 1.26 | optional | `authzen-direct` / `authzen-opa`. |
+| `sqlx-cli` | 0.9.0 | install/upgrade | Applies the structural migrations in [`db/migrations/`](db/migrations/) (tracked in `public._sqlx_migrations`). Slim Postgres-only build — `cargo install sqlx-cli --no-default-features --features rustls,postgres`. Baked into the [migration image](deploy/migrations/Dockerfile); `init*.sh` use a local install. Not needed at query time. |
 | `pg_cel` extension | pgrx 0.19.1, `cel` 0.13 | optional | Only for `lang='cel'` conditions; built per PostgreSQL major (see [`extensions/pg-cel`](extensions/pg-cel/)). |
 
 There are no formal releases yet — pin to a specific commit for reproducible
@@ -1230,10 +1231,13 @@ genuinely needs that — e.g. to filter large result sets in a single query.
 
 #### Embedded read-only engine
 
-`init-readonly.sh` installs only the **substrate + read** profiles
+`init-readonly.sh` runs the structural migrations and then loads only the
+**substrate + read** profiles of engine code
 (see [`db/engine/manifest.sh`](db/engine/manifest.sh)) — access checks, search,
 explain, and condition evaluation, with **no write/management API and no audit
-tables**. Point it at an application database that receives the raw `authz.tuples`
+trigger functions**. (The migrations create *all* tables, audit included, so the
+audit tables are present but stay **inert** — nothing writes to them without the
+audit-profile triggers.) Point it at an application database that receives the raw `authz.tuples`
 + model by logical replication ([`db/replication/`](db/replication/)); access
 checks then resolve **locally**, with the same engine logic as central — not a
 lossy precomputed snapshot like the *derived* permissions approach. Because it

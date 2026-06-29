@@ -22,6 +22,13 @@ PG_USER="${PG_USER:-authz}"
 PG_DB="authz"
 PG_PASSWORD="${PG_PASSWORD:-authz}"
 
+# Host-side connection for sqlx-cli (migrations). The compose stack maps the
+# DB to localhost:55433; sqlx connects over that port (psql still goes through
+# docker exec). DATABASE_URL is what sqlx reads.
+PG_HOST="${PG_HOST:-localhost}"
+PG_PORT="${PG_PORT:-55433}"
+export DATABASE_URL="${DATABASE_URL:-postgres://${PG_USER}:${PG_PASSWORD}@${PG_HOST}:${PG_PORT}/${PG_DB}}"
+
 # Compose files — base stack + optional authzen overlay
 COMPOSE_FILES=(-f "$SCRIPT_DIR/compose.yml")
 if [ -f "$SCRIPT_DIR/compose-authzen.yml" ]; then
@@ -76,4 +83,29 @@ psql_file() {
   local db="$1"
   local file="$2"
   docker exec -i -e PGPASSWORD="$PG_PASSWORD" "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d "$db" < "$file"
+}
+
+# Locate sqlx-cli (PATH, then the default cargo bin dir).
+SQLX_BIN="${SQLX_BIN:-sqlx}"
+if ! command -v "$SQLX_BIN" >/dev/null 2>&1 && [ -x "$HOME/.cargo/bin/sqlx" ]; then
+  SQLX_BIN="$HOME/.cargo/bin/sqlx"
+fi
+
+# Apply structural migrations (db/migrations) via sqlx-cli. Idempotent — only
+# pending migrations run; tracked in public._sqlx_migrations.
+apply_migrations() {
+  if ! { command -v "$SQLX_BIN" >/dev/null 2>&1 || [ -x "$SQLX_BIN" ]; }; then
+    echo "ERROR: sqlx-cli not found. Install it:" >&2
+    echo "  cargo install sqlx-cli --no-default-features --features rustls,postgres" >&2
+    return 1
+  fi
+  "$SQLX_BIN" migrate run --source "$SCRIPT_DIR/db/migrations"
+}
+
+# Wipe the engine for a clean (re)install: drop the authz schema and the sqlx
+# migration ledger so the baseline re-applies. Dev/CI only (init.sh) — never in
+# production (run-migrations.sh migrates in place).
+reset_schema() {
+  psql_exec "$PG_DB" -q -c \
+    "DROP SCHEMA IF EXISTS authz CASCADE; DROP TABLE IF EXISTS public._sqlx_migrations;" >/dev/null
 }

@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 #
-# Installs the pgauthz engine inside a CloudNativePG database. Mirrors init.sh's
-# load order, connecting over the network via libpq env vars (PGHOST/PGUSER/...).
+# Installs OR upgrades the pgauthz engine inside a CloudNativePG database.
+# Mirrors init.sh's load order, connecting over the network via libpq env vars
+# (PGHOST/PGUSER/...).
 #
-# IMPORTANT: db/engine/schema.sql begins with `DROP SCHEMA authz CASCADE`, so
-# this is a full (re)install, NOT an incremental migration — running it wipes
-# all stores/tuples/audit. It is wired to the chart's post-install hook only.
-# Incremental schema changes need bespoke migration SQL (the engine ships a
-# full-reset installer, not versioned migrations); the function/roles files are
-# all idempotent (CREATE OR REPLACE / IF NOT EXISTS) and safe to re-run.
+# Non-destructive: structural changes are forward-only migrations in
+# db/migrations/, applied by `sqlx migrate run` (only pending ones run, tracked
+# in public._sqlx_migrations); the engine function/view/trigger files and
+# roles.sql are all idempotent (CREATE OR REPLACE / IF NOT EXISTS). Safe on a
+# fresh database AND on an existing one — no DROP SCHEMA, no data loss — so it
+# can run from the chart's install hook on every deploy.
 #
 # The engine expects to be installed by a role named `authz` (in docker-compose
 # that is POSTGRES_USER=authz, the superuser). CloudNativePG's superuser is
@@ -35,9 +36,21 @@ echo "==> Ensuring superuser role 'authz' exists (engine install identity)..."
   END IF;
 END \$\$;"
 
-# Build the ordered file list from the engine manifest (identical to init.sh:
-# the full profile = substrate + read + write + audit), then the OpenFGA import
-# and security roles.
+# Apply structural migrations with sqlx (non-destructive: only pending
+# migrations run, tracked in public._sqlx_migrations). We connect as the cluster
+# superuser; the baseline's `SET LOCAL ROLE authz` makes the structural objects
+# authz-owned, matching the engine code loaded below.
+#
+# NOTE: this CNPG path is not exercised by the local test suite — validate in a
+# real CloudNativePG cluster (auth/ownership, sqlx-cli in the image).
+echo "==> Applying structural migrations (sqlx)..."
+DBURL="postgresql://${PGUSER}"
+[ -n "${PGPASSWORD:-}" ] && DBURL="${DBURL}:${PGPASSWORD}"
+DBURL="${DBURL}@${PGHOST}:${PGPORT:-5432}/${PGDATABASE}"
+DATABASE_URL="$DBURL" sqlx migrate run --source "$SQL/migrations"
+
+# Build the engine CODE list from the manifest (functions/views/triggers; the
+# structure was applied above), then the OpenFGA import and security roles.
 source "$SQL/engine/manifest.sh"
 FILES=()
 while IFS= read -r f; do
@@ -48,7 +61,7 @@ FILES+=(
   "$SQL/security/roles.sql"
 )
 
-echo "==> Installing engine (schema + functions + roles) as role authz..."
+echo "==> Loading engine code (functions + roles) as role authz..."
 # One session so `SET ROLE authz` applies to every statement, and the trailing
 # operations (audit partitions, optional knobs, schema-cache reload) run too.
 {

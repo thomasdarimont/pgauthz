@@ -291,6 +291,31 @@ condition history (`models_audit`, `conditions_audit`) are append-only logs.
 
 See [DEVELOPMENT.md → Audit partition maintenance](DEVELOPMENT.md#audit-partition-maintenance).
 
+## Upgrades & migrations
+
+Schema **structure** is versioned as forward-only migrations in `db/migrations/`,
+applied by `sqlx migrate run` and tracked in `public._sqlx_migrations`; engine
+**code** (functions/views/triggers) is idempotent and reloaded on top. There is
+no `DROP SCHEMA` install path — installing and upgrading are the same operation
+(only pending migrations run). See
+[ADR 0001](adr/0001-schema-migrations.md).
+
+- **Take a backup before upgrading.** Migrations are forward-only — there are no
+  `down` scripts. Rollback = restore from backup / PITR. A logical
+  `pg_dump -n authz` (or your usual base backup + WAL) immediately before
+  applying a new release is the supported rollback path.
+- **`public._sqlx_migrations` is per-database and must not be replicated.** Each
+  replica / embedded read-only engine runs its own migrations to build structure;
+  publications cover only `authz.*`, so the ledger is naturally excluded — keep
+  it that way.
+- **Apply migrations once, ahead of code.** On CloudNativePG the migration image
+  ([`deploy/migrations/`](../deploy/migrations/)) does `sqlx migrate run` then
+  loads the engine code in a single `SET ROLE authz` session; run it from an
+  install/upgrade hook (it is safe to re-run — idempotent).
+- A structural change requiring `CREATE INDEX CONCURRENTLY` (to avoid locking a
+  large `authz.tuples`) ships as a `-- no-transaction` migration; schedule those
+  during low-write windows.
+
 ## Further reading
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — security model (defense in depth),

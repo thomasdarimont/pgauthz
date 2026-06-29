@@ -14,7 +14,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 source "$SCRIPT_DIR/db/engine/manifest.sh"
 
-echo "==> Loading engine (full: substrate + read + write + audit)..."
+# init.sh is the dev/CI full installer: reset to a clean slate, then apply the
+# structural baseline + migrations and (re)load the idempotent engine code.
+# (Production upgrades use deploy/migrations/run-migrations.sh, which migrates
+# in place without the reset.)
+echo "==> Resetting schema (clean install)..."
+reset_schema
+
+echo "==> Applying structural migrations (sqlx)..."
+apply_migrations
+
+echo "==> Loading engine code (substrate + read + write + audit)..."
 while IFS= read -r f; do
   psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/$f"
 done < <(engine_files_for substrate read write audit)

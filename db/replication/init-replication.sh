@@ -58,7 +58,11 @@ wait_for_sync() {
 # Primary: full schema + model + seed data + materialized permissions
 # ══════════════════════════════════════════════════════════════════════
 
-echo "==> [primary] Loading engine (full)..."
+echo "==> [primary] Applying structural baseline + loading engine (full)..."
+# One-shot demo setup: apply the structural baseline via psql (the connection is
+# already authz, so SET LOCAL ROLE is a harmless no-op), then the idempotent
+# engine code. No sqlx migration ledger here — the demo does not do upgrades.
+psql_primary < "$PG_DIR/db/migrations/0001_baseline.sql"
 while IFS= read -r f; do
   psql_primary < "$PG_DIR/db/engine/$f"
 done < <(engine_files_for substrate read write audit)
@@ -87,7 +91,8 @@ psql_primary < "$SCRIPT_DIR/setup-publication.sql"
 # ══════════════════════════════════════════════════════════════════════
 
 echo ""
-echo "==> [accounting-app] Loading engine (full)..."
+echo "==> [accounting-app] Applying structural baseline + loading engine (full)..."
+psql_accounting < "$PG_DIR/db/migrations/0001_baseline.sql"
 while IFS= read -r f; do
   psql_accounting < "$PG_DIR/db/engine/$f"
 done < <(engine_files_for substrate read write audit)

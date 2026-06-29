@@ -4,6 +4,8 @@ target/
 !**/src/test/**/target/
 .kotlin
 
+db/schema.generated.sql
+
 *.zip
 
 # Local config / secrets (copy .env.example -> .env). Never commit .env.

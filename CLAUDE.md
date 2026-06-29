@@ -54,7 +54,9 @@ cd authzen && go build ./cmd/authzen-opa
 
 ## Key Directories
 
-- `db/engine/` — Core authorization engine SQL (schema, access checks, tuples, models, audit)
+- `db/migrations/` — Forward-only structural migrations (`0001_baseline.sql` + deltas), applied by `sqlx`; the single source of schema *structure*
+- `db/engine/` — Core authorization engine *code* (access checks, tuples, models, audit, conditions) — idempotent functions/views/triggers loaded after migrations
+- `scripts/gen-schema.sh` — Regenerates the gitignored `db/schema.generated.sql` (full assembled schema reference) on demand
 - `tests/sql/` — SQL test suites (API, search, contextual tuples, namespaces, intersections, wildcards, type restrictions)
 - `examples/models/` — Example authorization models (demo, gdrive, github), each with model.sql, seed.sql, demo.sql; demo also has tests.sql and demo_cel.sql (CEL-condition showcase, needs the pg_cel extension). Not part of the deployable engine — `init.sh` does not load them; `test.sh`/`bootstrap.sh` load the demo model as a test fixture
 - `examples/watch/` — Runnable setup example for the watch/changefeed feature (compose overlay + Python consumer)
@@ -68,13 +70,16 @@ cd authzen && go build ./cmd/authzen-opa
 ## SQL Engine Conventions
 
 - All public functions are `SECURITY DEFINER` — app roles never need direct table access
-- Engine files are grouped by **deployment profile** in `db/engine/manifest.sh` (the single source of truth for load order, sourced by `init.sh`, `init-readonly.sh`, `deploy/migrations/run-migrations.sh`, and `db/replication/init-replication.sh`):
-  - **substrate** (`schema.sql`, `core_internal.sql`, `conditions.sql`) — read tables/partitions/constraints + core internals + condition evaluation; every deployment
+- **Structure vs code are tracked separately** (see [`docs/adr/0001-schema-migrations.md`](docs/adr/0001-schema-migrations.md)):
+  - **Structure** (tables, indexes, types, partitioned parents + default partitions, the `authz_eval` role) lives in **forward-only migrations** under `db/migrations/`, applied by `sqlx migrate run` and tracked in `public._sqlx_migrations`. `0001_baseline.sql` is the frozen baseline; later structural changes are new `NNNN_*.sql` files. There is no `DROP SCHEMA` install path.
+  - **Code** (functions, views, triggers) lives in `db/engine/`, all idempotent (`CREATE OR REPLACE …`, incl. `CREATE OR REPLACE TRIGGER`), loaded **after** migrations.
+- Engine code files are grouped by **deployment profile** in `db/engine/manifest.sh` (the single source of truth for code load order, sourced by `init.sh`, `init-readonly.sh`, `deploy/migrations/run-migrations.sh`, and `db/replication/init-replication.sh`):
+  - **substrate** (`core_internal.sql`, `conditions.sql`, `model_constraints.sql`, `views.sql`) — core internals, condition evaluation, model-validation trigger, base views; every deployment
   - **read** (`access_internal.sql`, `access.sql`, `explain.sql`) — checks, search (`list_*`), explain, condition validation (dry-run)
-  - **write** (`store.sql`, `tuples.sql`, `model.sql`, `maintenance.sql`, `conditions_admin.sql`) — tuple/model/store management, redundant-tuple cleanup, condition create/delete + write-time validation trigger
-  - **audit** (`schema_audit.sql`, `audit_internal.sql`, `audit.sql`, `watch.sql`) — audit tables/triggers, time-travel, changefeed
-  - Read-only deployment = substrate + read (`init-readonly.sh`); full = all four (`init.sh`). To add an engine file, register it in the manifest with its profile.
-- Within a profile the order is DDL → internal helpers → public API
+  - **write** (`store.sql`, `tuples.sql`, `maintenance.sql`, `model.sql`, `conditions_admin.sql`) — tuple/model/store management, redundant-tuple cleanup, condition create/delete + write-time validation trigger
+  - **audit** (`audit_triggers.sql`, `audit_internal.sql`, `audit.sql`, `watch.sql`) — audit trigger functions/triggers, time-travel, changefeed
+  - Read-only deployment = substrate + read (`init-readonly.sh`); full = all four (`init.sh`). The migrations always run (they create *all* tables incl. audit); profiles only select which **code** loads, so on a read-only install the audit tables exist but stay inert (no triggers/functions). To add an engine file, register it in the manifest with its profile.
+- Within a profile the order is internal helpers → public API (structure already exists from migrations; functions reference tables at runtime)
 - Multi-store architecture: every operation is scoped to a `store_id`
 - Tuples are the core data: `(store_id, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, context)`
 - Model rules use rule groups supporting union (OR), intersection (AND), and exclusion (BUT NOT) semantics

@@ -13,10 +13,18 @@ are held to a high bar for correctness and security — please read this first.
 Day to day:
 
 ```bash
-./init.sh           # (re)install the full engine — DROP SCHEMA authz CASCADE, then reload
+./init.sh           # (re)install the full engine: reset → sqlx migrate run → load all profiles' code
 ./init-readonly.sh  # install only the read-only excerpt (substrate + read profiles)
 ./tests/test.sh     # SQL unit tests
 ./tests/test-all.sh # init + all suites (SQL, OPA, AuthZEN)
+```
+
+`init.sh` resets the dev schema, then applies the structural migrations in
+`db/migrations/` with `sqlx` before loading the idempotent engine code — so it
+needs `sqlx-cli` on PATH (`env.sh` also looks in `~/.cargo/bin`):
+
+```bash
+cargo install sqlx-cli --version 0.9.0 --no-default-features --features rustls,postgres
 ```
 
 CEL work: `PGAUTHZ_CEL=1 ./bootstrap.sh` (builds and enables the `pg_cel`
@@ -31,6 +39,35 @@ order, consumed by `init.sh`, `init-readonly.sh`, `deploy/migrations/`, and the
 replication scripts. **When you add an engine SQL file, register it in the
 manifest with its profile** (and keep read-only deployments able to load
 `substrate + read` alone). See `CLAUDE.md` → *SQL Engine Conventions*.
+
+## Schema changes (migrations)
+
+Structure (tables, indexes, types, partitioned parents) and code (functions,
+views, triggers) are tracked **separately** — see
+[`docs/adr/0001-schema-migrations.md`](docs/adr/0001-schema-migrations.md):
+
+- **Code** in `db/engine/` is idempotent (`CREATE OR REPLACE …`, and
+  `CREATE OR REPLACE TRIGGER` for triggers). Just edit the file and re-run
+  `init.sh` — no migration needed for a function/view/trigger change.
+- **Structure** changes are **forward-only migrations** in `db/migrations/`,
+  applied by `sqlx` and tracked in `public._sqlx_migrations`. Add one with:
+
+  ```bash
+  sqlx migrate add --source db/migrations <short_change_name>   # sequential NNNN_ file
+  ```
+
+  Write the `ALTER`/`CREATE` delta (no `DROP SCHEMA`, no `down` file).
+  `0001_baseline.sql` is **frozen** once a release is tagged — never edit it;
+  every later structural change is a new file. A migration needing
+  non-transactional DDL (e.g. `CREATE INDEX CONCURRENTLY`) gets `-- no-transaction`
+  at the top. Run `./init.sh` to apply and keep `./tests/test.sh` green.
+
+To eyeball the full assembled schema (structure + code), regenerate the
+gitignored reference on demand:
+
+```bash
+./scripts/gen-schema.sh     # writes db/schema.generated.sql (throwaway container)
+```
 
 ## Conventions
 

@@ -1,6 +1,6 @@
 # ADR 0001 — Schema migrations (non-destructive upgrades)
 
-- **Status:** Accepted (design) — implementation pending
+- **Status:** Accepted — implemented (CI upgrade test pending first release tag)
 - **Date:** 2026-06-26
 - **Deciders:** maintainers
 - **Supersedes:** the current full-reset install model
@@ -78,7 +78,7 @@ db/migrations/
   0002_<change>.sql            # forward-only ALTER/CREATE deltas, one per structural change
   ...
 db/engine/                     # unchanged: idempotent code, loaded by manifest.sh
-db/schema.generated.sql        # NEW: pg_dump --schema-only after `sqlx migrate run`, checked in for review
+db/schema.generated.sql        # on-demand reference (gitignored): pg_dump --schema-only after `sqlx migrate run`
 ```
 
 - **Sequential** integer versions (`sqlx migrate add --sequential`), forward-only
@@ -137,11 +137,14 @@ migrations may be added per change but are not required.
 
 ### CI / verification
 
-- **Generated-schema freshness** (replaces the old "baseline-vs-migrations drift"
-  problem — which *disappears* under migrations-only, since structure has a single
-  source): CI runs `sqlx migrate run` on an empty DB, `pg_dump --schema-only`,
-  and asserts the result matches the checked-in `db/schema.generated.sql`. Keeps a
-  human-readable current schema in the repo and current.
+- **Generated schema — on-demand, not gated.** The "baseline-vs-migrations drift"
+  problem *disappears* under migrations-only (structure has a single source), so
+  there is no freshness gate to keep. `db/schema.generated.sql` is a convenience
+  reference produced by `./scripts/gen-schema.sh` (`sqlx migrate run` on a
+  throwaway DB → load code → `pg_dump --schema-only -n authz`). It is **gitignored**,
+  not checked in: regenerate it locally whenever you want a current human-readable
+  view of the full schema. (Decision: keeping a 5.5k-line generated file in review
+  churn bought nothing once drift was structurally impossible.)
 - **Upgrade test:** **regenerate the prior state from git, no stored snapshots** —
   check out the previous release tag, install it (its migrations + code), load
   fixtures, then check out HEAD, `sqlx migrate run`, and run the full SQL suite —
@@ -169,14 +172,14 @@ migrations may be added per change but are not required.
 
 ## Consequences
 
-- A structural change now ships with a `db/migrations/NNNN_*.sql` and an updated
-  `db/schema.generated.sql` in the same PR (the freshness test enforces it).
+- A structural change now ships with a `db/migrations/NNNN_*.sql`. The generated
+  schema reference is regenerated on demand (`./scripts/gen-schema.sh`), not in the PR.
 - The prerequisite refactor (triggers/views/trigger-functions → idempotent code)
   is a one-time change that further sharpens the substrate/code boundary.
 - `deploy/migrations/run-migrations.sh` and the Helm post-install hook flip from
   full-reset to migrate-then-load → safe on an existing database.
-- New surface: `db/migrations/`, the `sqlx-cli` binary in the migration image, the
-  generated-schema file, and three CI jobs. Small, because code stays idempotent.
+- New surface: `db/migrations/`, the `sqlx-cli` binary in the migration image, and
+  two CI jobs (upgrade + fresh-install). Small, because code stays idempotent.
 - Requires **PostgreSQL 14+** for `CREATE OR REPLACE TRIGGER` (we target 18 — fine).
 
 ## Implementation plan
@@ -189,21 +192,30 @@ Ordered; each step keeps `./init.sh` + `./tests/test.sh` green.
    `model_constraints.sql` + `views.sql` (substrate). `schema.sql` and
    `schema_audit.sql` are now **pure structural DDL** (the future baseline).
    Full init + suite green; read-only footprint preserved.
-2. **Baseline migration.** Create `db/migrations/0001_baseline.sql` = the
+2. **Baseline migration — DONE.** `db/migrations/0001_baseline.sql` = the
    remaining structure (schema, roles, tables, indexes, types, default
-   partitions), with `CREATE SCHEMA authz` instead of `DROP SCHEMA … CASCADE`.
-3. **Runner image.** Bake a pinned `sqlx-cli` (slim Postgres build) into
-   `deploy/migrations/` (and document local install for `init*.sh`).
-4. **Rewire installers.** `init.sh`, `init-readonly.sh`,
-   `deploy/migrations/run-migrations.sh`: `sqlx migrate run` → load the relevant
-   profiles' code via `engine_files_for`. Remove the destructive reset path.
-5. **Generated schema.** Add `db/schema.generated.sql` (`pg_dump --schema-only`
-   after a clean migrate) + the CI freshness check.
-6. **CI.** Add the upgrade test (regenerate-from-tag) and keep the fresh-install
-   (`bootstrap.sh`) test.
-7. **Docs.** README *Compatibility* (add `sqlx-cli`), CLAUDE.md (engine layout +
-   "add a migration" note), CONTRIBUTING (how to author a migration and refresh
-   the generated schema), PRODUCTION (backup-before-upgrade procedure).
+   partitions), with `CREATE SCHEMA authz` (preceded by `SET LOCAL ROLE authz` so
+   CNPG-path objects are authz-owned) instead of `DROP SCHEMA … CASCADE`.
+   `schema.sql` / `schema_audit.sql` were `git rm`'d (their structure now lives
+   here).
+3. **Runner image — DONE.** `deploy/migrations/Dockerfile` bakes a pinned
+   `sqlx-cli` 0.9.0 (slim, `--features rustls,postgres`) over `postgres:18.4`;
+   `env.sh` detects a local `sqlx` for `init*.sh`.
+4. **Rewire installers — DONE.** `init.sh`, `init-readonly.sh`,
+   `deploy/migrations/run-migrations.sh`, and `db/replication/init-replication.sh`
+   all `sqlx migrate run` (or apply the baseline directly, for the one-shot
+   replication demo) → load the relevant profiles' code via `engine_files_for`.
+   The destructive reset path is gone from the install flow (`reset_schema()`
+   remains in `env.sh` as an explicit dev-only convenience).
+5. **Generated schema — DONE (on-demand).** `scripts/gen-schema.sh` produces
+   `db/schema.generated.sql` deterministically in a throwaway container. The file
+   is **gitignored** and there is **no CI freshness gate** (see *CI / verification*
+   — drift is structurally impossible under migrations-only).
+6. **CI — pending.** Add the upgrade test (regenerate-from-tag) once the first
+   release tag exists; keep the fresh-install (`bootstrap.sh`) test.
+7. **Docs — DONE.** README *Compatibility* (added `sqlx-cli` row), CLAUDE.md
+   (engine layout = migrations + code manifest), CONTRIBUTING (how to author a
+   migration and regenerate the schema reference), PRODUCTION (backup-before-upgrade).
 
 All three earlier open questions are resolved above: `_sqlx_migrations` →
 `public` (never replicated); upgrade-test baselines → regenerate from the
