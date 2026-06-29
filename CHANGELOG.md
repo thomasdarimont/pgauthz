@@ -7,6 +7,19 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Synchronous-replication / zero-RPO failover knob in the Helm chart.**
+  CloudNativePG already does automatic write failover when
+  `database.instances >= 2` (promotes a standby, repoints the `-rw` Service); the
+  new `database.replication.synchronous` block lets a commit wait for a standby
+  ack so an acknowledged grant/revoke is never lost on failover (RPO 0). Off by
+  default (asynchronous); enable via the new
+  [`values-ha.yaml`](deploy/helm/pgauthz/values-ha.yaml) overlay. A render-time
+  guard fails the install if `maxSyncReplicas >= instances`. Documented in
+  [`docs/PRODUCTION.md` → High availability & failover](docs/PRODUCTION.md) and
+  the chart README.
+
 ### Changed
 
 - **Read-replica memo now fails fast at its cap instead of silently degrading.**

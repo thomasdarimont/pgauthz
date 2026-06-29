@@ -1,0 +1,31 @@
+# High-availability overlay: zero-RPO failover for the write path.
+#   helm install pgauthz ./deploy/helm/pgauthz -f values.yaml -f values-ha.yaml
+#
+# CloudNativePG already fails over automatically (promotes a standby, repoints
+# the -rw Service) whenever instances >= 2 — this overlay adds SYNCHRONOUS
+# replication so an acknowledged grant/revoke is never lost when the primary
+# dies (RPO 0), which is the conservative default for an authorization store.
+# The price is some write latency: each commit waits for a standby to confirm.
+#
+# Pair this with continuous backups (database.backup) — failover protects
+# against node loss, backups against corruption / operator error.
+
+database:
+  instances: 3                  # 1 primary + 2 standbys (need >= 2 for failover)
+  replication:
+    synchronous:
+      enabled: true
+      # ANY 1 of the 2 standbys must ack each commit → RPO 0, and a single node
+      # loss still leaves a sync candidate so writes keep flowing.
+      maxSyncReplicas: 1
+      # 0 = stay available (async fallback) if ALL standbys are down.
+      # Set to 1 for STRICT RPO 0 (writes block rather than ack un-replicated
+      # data) — choose availability vs. zero-loss for your environment.
+      minSyncReplicas: 0
+
+  # Strongly recommended alongside HA — the audit log is the system of record.
+  # backup:
+  #   enabled: true
+  #   destinationPath: s3://my-bucket/pgauthz
+  #   endpointURL: https://s3.example.com
+  #   s3CredentialsSecret: pgauthz-backup-s3

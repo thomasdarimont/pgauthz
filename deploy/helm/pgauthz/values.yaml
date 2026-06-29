@@ -21,6 +21,31 @@ images:
 # ── Database: CloudNativePG cluster ──────────────────────────────────────────
 database:
   instances: 3                 # 1 primary + 2 replicas → -rw and -ro services
+  # ── High availability / failover ──────────────────────────────────────────
+  # CloudNativePG ALREADY does automatic failover when instances >= 2: it
+  # promotes a healthy standby to primary and repoints the -rw Service, so the
+  # writer/migrations/OPA-writer (all connect to -rw) reconnect transparently.
+  # During the promotion window (seconds) writes fail — clients must retry.
+  #
+  # This block only controls the RPO (data-loss) guarantee, i.e. whether a
+  # commit is acknowledged BEFORE a standby has the data:
+  #   off  (default) → ASYNCHRONOUS: fast writes, but commits not yet shipped to
+  #                    a standby are lost if the primary dies (small RPO > 0).
+  #   on             → SYNCHRONOUS: a commit waits for a standby ack → an acked
+  #                    grant/revoke is never lost on failover (RPO 0), at the
+  #                    cost of some write latency. Recommended for an authz store.
+  #
+  # maxSyncReplicas must be < instances. With instances: 3, maxSyncReplicas: 1
+  # means a commit waits for ANY 1 of the 2 standbys → RPO 0, and a single node
+  # loss still leaves a sync candidate so writes keep flowing.
+  # minSyncReplicas: 0 keeps writes available if ALL standbys are down (async
+  # fallback, availability > RPO). Set it to 1 for STRICT RPO 0 — writes then
+  # block rather than ack data they could not replicate.
+  replication:
+    synchronous:
+      enabled: false
+      minSyncReplicas: 0
+      maxSyncReplicas: 1
   storage:
     size: 10Gi
     storageClass: ""           # "" = cluster default (local-path on k3d)

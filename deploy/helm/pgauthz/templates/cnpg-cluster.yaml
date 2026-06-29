@@ -7,6 +7,22 @@ spec:
   instances: {{ .Values.database.instances }}
   imageName: {{ include "pgauthz.image" .Values.images.postgres }}
 
+  {{- if .Values.database.replication.synchronous.enabled }}
+  {{- $min := int .Values.database.replication.synchronous.minSyncReplicas }}
+  {{- $max := int .Values.database.replication.synchronous.maxSyncReplicas }}
+  {{- if ge $max (int .Values.database.instances) }}
+  {{- fail (printf "database.replication.synchronous.maxSyncReplicas (%d) must be < database.instances (%d): there must be a standby left to ack each commit" $max (int .Values.database.instances)) }}
+  {{- end }}
+  {{- if gt $min $max }}
+  {{- fail (printf "database.replication.synchronous.minSyncReplicas (%d) must be <= maxSyncReplicas (%d)" $min $max) }}
+  {{- end }}
+  # Synchronous replication → commits wait for a standby ack (RPO 0 on failover).
+  # CloudNativePG renders these into synchronous_standby_names as ANY <max> of the
+  # standbys; minSyncReplicas <= maxSyncReplicas < instances (enforced above).
+  minSyncReplicas: {{ $min }}
+  maxSyncReplicas: {{ $max }}
+  {{- end }}
+
   # No-superuser by default aligns with pgauthz's SECURITY DEFINER /
   # authz_owner model. Enabled here only so the migrations Job can CREATE ROLE
   # and REPLACE functions; CloudNativePG then exposes a <cluster>-superuser

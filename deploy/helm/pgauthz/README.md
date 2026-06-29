@@ -143,6 +143,37 @@ A few things that bite in practice (all handled by the chart, learned the hard w
   [`db/replication/`](../../../db/replication/) for the logical-replication
   tooling.
 
+## High availability & failover (the write path)
+
+The same `instances >= 2` topology that gives you read replicas also gives you
+**automatic write failover** — CloudNativePG promotes a healthy standby to
+primary on failure and **repoints the `-rw` Service**, so the migrations Job,
+`postgrest-writer`, and the OPA write front door (all use `-rw`) reconnect to the
+new primary transparently. PostgreSQL is single-primary: a standby is read-only
+**until promoted**, so this is failover, not active-active.
+
+Two things to decide:
+
+- **Clients must retry writes** during the promotion window (seconds) — see the
+  retry note in
+  [PRODUCTION.md → High availability & failover](../../../docs/PRODUCTION.md#high-availability--failover-the-write-path).
+- **RPO** — the default is asynchronous replication (fast, but a tiny window of
+  acked-but-unreplicated writes can be lost on failover). For an authorization
+  store, prefer **synchronous** replication so an acked grant/revoke is never
+  lost. Enable it with the HA overlay:
+
+  ```bash
+  helm upgrade pgauthz ./deploy/helm/pgauthz \
+    -f deploy/helm/pgauthz/values.yaml \
+    -f deploy/helm/pgauthz/values-ha.yaml      # instances:3 + sync replication (RPO 0)
+  ```
+
+  Or directly: `--set database.replication.synchronous.enabled=true`
+  (`maxSyncReplicas` must be `< database.instances`; `minSyncReplicas: 1` makes
+  RPO 0 *strict*, blocking writes rather than acking un-replicated data). Pair
+  with `database.backup` — failover survives node loss, backups survive
+  corruption.
+
 ## Direct SQL access for applications (`extraRoles`)
 
 Some apps need to talk to PostgreSQL directly (SQL) instead of going through the

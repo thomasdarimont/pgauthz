@@ -61,6 +61,10 @@ by `init.sh` on every run.
       operation. See [Condition (ABAC) policy](#condition-abac-policy).
 - [ ] **Decide your replica-consistency policy** (which checks must hit the
       primary). See [Replica consistency](#replica-consistency).
+- [ ] **Run >= 2 database instances and pick a failover RPO.** Automatic
+      failover needs a standby; synchronous replication avoids losing an acked
+      grant/revoke. Ensure clients retry writes during promotion. See
+      [High availability & failover](#high-availability--failover-the-write-path).
 - [ ] **Review namespace grants.** If you use namespaces, grant
       `namespace_access` per type so reads/writes are scoped. For per-app
       isolation over the OPA write path, issue per-app DB roles and set
@@ -278,6 +282,61 @@ control plane (`db/security/roles.sql`).
 There is no revision-token (zookie) API; see
 [ARCHITECTURE.md → Consistency tokens](ARCHITECTURE.md#consistency-tokens-zookies-why-not-yet)
 and the README "Consistency model" section.
+
+## High availability & failover (the write path)
+
+[Replica consistency](#replica-consistency) is about the **read** path; this is
+about keeping **writes** available when the primary dies. pgauthz is
+**single-primary** — PostgreSQL has no native multi-master, so a hot standby is
+read-only *until it is promoted*. High availability here means **automatic
+failover** (promote a standby to primary), not two simultaneously-writable nodes.
+
+On the Helm/CloudNativePG deployment this is **already handled** when
+`database.instances >= 2`:
+
+- CNPG monitors the primary and, on failure, **promotes the most-advanced
+  standby** and **repoints the `-rw` Service** to it.
+- Everything that writes connects to that `-rw` name — the migrations Job,
+  `postgrest-writer`, and therefore the OPA write front door — so after failover
+  they reconnect to the **same DNS name** and land on the new primary. No
+  redeploy, no config change.
+- The `-ro`/`-r` read Services drop the dead node from rotation automatically.
+
+**The application must retry writes.** During the promotion window (seconds to
+tens of seconds) the old primary is gone and the new one is not yet writable, so
+in-flight writes fail. Clients should retry on connection drop / `57P01`
+(admin shutdown) / `25006` (read-only transaction — seen briefly mid-promotion).
+pgauthz writes are retry-friendly: `write_tuples_checked` uses optimistic
+concurrency / preconditions, so a retried conditional write re-validates rather
+than blindly double-applying.
+
+### Data-loss guarantee (RPO): synchronous vs. asynchronous
+
+Failover *promotes* a standby; whether the promoted node has **all** acknowledged
+commits depends on the replication mode:
+
+| Mode | On primary failure | Write cost | Chart setting |
+|---|---|---|---|
+| **Asynchronous** (default) | commits not yet shipped to a standby are lost (small RPO > 0) | none | `database.replication.synchronous.enabled: false` |
+| **Synchronous** | an acked commit is guaranteed on a standby → **RPO 0** | each commit waits for a standby ack | `enabled: true` (see [`values-ha.yaml`](../deploy/helm/pgauthz/values-ha.yaml)) |
+
+For an **authorization** store, losing an acknowledged grant/revoke on failover
+can resurrect a revoked permission, so **synchronous replication is the
+conservative choice**. With `instances: 3` and `maxSyncReplicas: 1`, a commit
+waits for **any 1 of the 2 standbys** → RPO 0, and a single node loss still
+leaves a sync candidate so writes keep flowing. `minSyncReplicas: 0` keeps writes
+available (async fallback) if **all** standbys are down; set it to `1` for
+**strict** RPO 0 (writes block rather than ack un-replicated data) — an
+availability-vs.-zero-loss choice for your environment. Equivalent on a
+hand-rolled cluster: `synchronous_commit = remote_apply` /
+`remote_write` + `synchronous_standby_names`.
+
+> Failover and backups are complementary: failover survives **node loss**,
+> continuous backups (`database.backup` / Barman, or external WAL archiving)
+> survive **corruption and operator error**. Run both. The memo's per-session
+> temp tables and the audit log need no special handling — connections re-open
+> against the new primary and rebuild session state; audit partitions stream
+> across with the rest of the data.
 
 ## Audit retention
 
