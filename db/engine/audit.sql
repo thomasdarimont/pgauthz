@@ -70,7 +70,7 @@ CREATE OR REPLACE FUNCTION authz.audit_check_access(
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id    integer := authz._s(p_store);
+    v_store_id    integer := authz._s(p_store, true);  -- retired stores stay queryable
     v_user_type   integer := authz._t(v_store_id, p_user_type);
     v_relation    integer := authz._r(v_store_id, p_relation);
     v_object_type integer := authz._t(v_store_id, p_object_type);
@@ -113,7 +113,7 @@ CREATE OR REPLACE FUNCTION authz.audit_list_actions(
 ) RETURNS TABLE (action text)
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id    integer := authz._s(p_store);
+    v_store_id    integer := authz._s(p_store, true);  -- retired stores stay queryable
     v_user_type   integer := authz._t(v_store_id, p_user_type);
     v_object_type integer := authz._t(v_store_id, p_object_type);
 BEGIN
@@ -173,7 +173,7 @@ CREATE OR REPLACE FUNCTION authz.audit_list_user(
 )
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
-    v_store_id    integer := authz._s(p_store);
+    v_store_id    integer := authz._s(p_store, true);  -- retired stores stay queryable
     v_user_type   integer := authz._t(v_store_id, p_user_type);
 BEGIN
     RETURN QUERY
@@ -230,7 +230,7 @@ CREATE OR REPLACE FUNCTION authz.audit_list_object(
 )
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
-    v_store_id    integer := authz._s(p_store);
+    v_store_id    integer := authz._s(p_store, true);  -- retired stores stay queryable
     v_object_type integer := authz._t(v_store_id, p_object_type);
 BEGIN
     RETURN QUERY

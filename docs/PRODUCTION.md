@@ -293,16 +293,23 @@ condition history (`models_audit`, `conditions_audit`) are append-only logs.
 - The audit trail is append-only (a trigger blocks `UPDATE`/`DELETE` outside
   the sanctioned maintenance window). `delete_store(..., p_purge_audit => true)`
   removes a store's audit rows.
-- **Retire stores; don't delete them, where audit history matters.**
-  `delete_store` removes the store and its `types`/`relations` rows, so even when
-  audit rows are *preserved* (`p_purge_audit => false`) their `store_id` /
-  `object_type` / `relation` IDs are no longer name-resolvable — and the public
-  historical API (`audit_check_access`, `audit_list_*`) resolves *current* names
-  first, so it can no longer query that store's preserved history normally. For
-  regulated / audit-critical deployments, **stop using a store** (retire it)
-  rather than deleting it, keep its model/types intact, and reserve
-  `delete_store` for non-audited or test stores. (A first-class soft-delete /
-  retire flag is a planned enhancement — see the project review notes.)
+- **Retire stores; don't delete them, where audit history matters.** Use
+  `authz.retire_store('mystore')` — a soft-delete that drops only the live
+  tuples (reclaiming their partitions) and marks the store retired
+  (`stores.deleted_at`), while **keeping** its dictionary
+  (`types`/`relations`/`models`/`conditions`) and full audit log. The
+  historical API (`audit_check_access`, `audit_list_*`) still resolves a retired
+  store **by name**, so "could user X do Y at time T?" keeps working long after
+  it stops serving live checks; the live APIs reject it, and its name stays
+  reserved (no by-name ambiguity with the preserved history).
+
+  `delete_store` is the *physical* removal (right-to-be-forgotten / erasure)
+  path: it drops the dictionary rows, so even with audit rows preserved
+  (`p_purge_audit => false`) their `store_id` / `object_type` / `relation` IDs
+  become name-unresolvable and the historical API can no longer query that
+  store. Reserve it for non-audited / test stores or deliberate erasure; a
+  retired store can later be purged with `delete_store` when its retention
+  window expires.
 
 See [DEVELOPMENT.md → Audit partition maintenance](DEVELOPMENT.md#audit-partition-maintenance).
 

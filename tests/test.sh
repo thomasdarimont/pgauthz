@@ -130,6 +130,11 @@ echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_model_versioning.sql"
 
 echo ""
+echo "==> Running retire / soft-delete (audit-after-deletion) checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_retire.sql"
+
+echo ""
 echo "==> Running watch / changefeed checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_watch.sql"

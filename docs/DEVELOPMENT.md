@@ -54,7 +54,7 @@ controlled through these application roles:
 | `authz_reader` | `check_access`, `check_access_with_context`, `list_objects`, `list_subjects`, `list_actions`, `validate_condition`, `explain_access` | — |
 | `authz_contextual_reader` | `check_access_with_contextual_tuples`, `check_access_with_contextual_tuples_jsonb` (inject ephemeral tuples — grant only to trusted PDP callers, NOT to roles reachable by untrusted clients) | — |
 | `authz_writer` | `write_tuple`, `delete_tuple`, `write_tuples`, `delete_tuples`, `write_tuples_jsonb`, `delete_tuples_jsonb`, `delete_user_tuples` | `authz_reader` |
-| `authz_admin` | `create_store`, `delete_store`, `model_register_type`, `model_register_relation`, `model_add_rule`, `model_remove_rule`, `model_remove_rules`, `find_redundant_tuples`, manage `namespace_access` table | `authz_writer` |
+| `authz_admin` | `create_store`, `retire_store`, `delete_store`, `model_register_type`, `model_register_relation`, `model_add_rule`, `model_remove_rule`, `model_remove_rules`, `find_redundant_tuples`, manage `namespace_access` table | `authz_writer` |
 
 `authz_auditor` is a peer of `authz_reader`, not part of the linear chain.
 The PostgREST anonymous role (`api_anon`) inherits `authz_reader`.
@@ -397,7 +397,13 @@ The audit table is also structurally **append-only**: a trigger rejects
 `UPDATE` always and `DELETE` outside of sanctioned maintenance (partition
 row migration, and `delete_store(..., p_purge_audit => true)`). Retention
 by detaching/dropping old monthly partitions is DDL and unaffected.
-`delete_store` preserves the store's audit history by default.
+`delete_store` preserves the store's audit history by default — but it drops
+the store's name dictionary, so the preserved rows are no longer
+name-resolvable. Where the history must stay queryable, use
+`retire_store('mystore')` (soft-delete): it keeps the dictionary + audit and
+only drops the live tuples, so `audit_check_access` / `audit_list_*` still
+resolve the store by name. See
+[PRODUCTION.md → Audit retention](PRODUCTION.md#audit-retention).
 
 If a bulk operation (large migration, store re-import) genuinely must skip
 audit generation, a **superuser** can disable ordinary triggers — including

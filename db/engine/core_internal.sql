@@ -26,18 +26,34 @@
 ------------------------------------------------------------------------
 
 -- Resolve a store name (e.g. 'demo') to its integer ID.
-CREATE OR REPLACE FUNCTION authz._s(p_name text) RETURNS integer
+-- Resolve a store name to its integer ID.
+--
+-- By default resolves only LIVE (non-retired) stores, so every live API
+-- (check / write / model / list) automatically rejects a retired store with
+-- a clear error. The audit_* time-travel functions pass p_include_retired =>
+-- true so a retired store's preserved history stays queryable by name.
+-- See retire_store (engine/store.sql) and migration 0002_store_retire.sql.
+CREATE OR REPLACE FUNCTION authz._s(p_name text, p_include_retired boolean) RETURNS integer
 LANGUAGE plpgsql VOLATILE AS $$
 DECLARE
-    v_id integer;
+    v_id      integer;
+    v_deleted timestamptz;
 BEGIN
-    SELECT id INTO v_id FROM authz.stores WHERE name = p_name;
+    SELECT id, deleted_at INTO v_id, v_deleted FROM authz.stores WHERE name = p_name;
     IF v_id IS NULL THEN
         RAISE EXCEPTION 'Unknown store: %', p_name;
+    END IF;
+    IF v_deleted IS NOT NULL AND NOT p_include_retired THEN
+        RAISE EXCEPTION 'Store is retired: % (at %) — use the audit_* functions for its history, or delete_store to purge it',
+            p_name, v_deleted;
     END IF;
     RETURN v_id;
 END;
 $$;
+
+-- Default overload: live stores only (the common case).
+CREATE OR REPLACE FUNCTION authz._s(p_name text) RETURNS integer
+    LANGUAGE sql VOLATILE AS $$ SELECT authz._s(p_name, false) $$;
 
 -- Resolve a type name (e.g. 'document') to its integer ID within a store.
 CREATE OR REPLACE FUNCTION authz._t(p_store_id integer, p_name text) RETURNS integer

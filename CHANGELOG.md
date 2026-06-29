@@ -7,6 +7,37 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **`retire_store(store)` — soft-delete for audit retention.** Drops only a
+  store's live tuples (reclaiming their partitions) and marks it retired
+  (`stores.deleted_at`, migration `0002_store_retire.sql`), while keeping the
+  dictionary (`types`/`relations`/`models`/`conditions`) and full audit log.
+  The `audit_*` time-travel API still resolves a retired store **by name**, so
+  preserved history stays queryable — closing the gap where `delete_store`
+  removed the name dictionary and orphaned its own preserved audit rows (raised
+  in the external project review). Live APIs reject a retired store and its name
+  stays reserved; `delete_store` remains the explicit physical-removal/erasure
+  path and can later purge a retired store.
+
+### Changed
+
+- `authz._s(name)` now resolves **live (non-retired) stores only**, so every
+  live API rejects a retired store with a clear error; the `audit_*` functions
+  opt into resolving retired stores. `delete_store` resolves retired stores too,
+  so a retired store can be purged.
+
+### Performance
+
+- **Memoized the `check_access` evaluator** (and the time-travel
+  `audit_check_access` twin): converging / diamond relationship graphs that
+  re-evaluated a node once per path (`O(2^depth)`) are now collapsed to ~linear
+  with a per-check memo that caches only path-independent (cycle-free)
+  sub-results — identical decisions on every input, proven differentially in
+  `tests/sql/tests_memoization.sql`. A depth-12 diamond DENY dropped from
+  ~732 ms to ~1.9 ms (live) / ~1.6 s to ~6 ms (time-travel). Toggle with
+  `SET authz.memoize = 'off'`.
+
 ## [0.2.0] - 2026-06-29
 
 ### ⚠️ Breaking

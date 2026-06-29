@@ -246,7 +246,7 @@ Three topologies are supported:
 - `watch_cursor` — the store's current high-water cursor
 
 **Administration:**
-- `create_store` / `delete_store` — store lifecycle
+- `create_store` / `retire_store` (soft-delete) / `delete_store` — store lifecycle
 - `model_register_type` / `model_register_relation` — model evolution
 - `model_add_rule` / `model_remove_rule` / `model_remove_rules` — incremental model management
 - `import_openfga_model` / `import_openfga_tuples` — OpenFGA import
