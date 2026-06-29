@@ -33,6 +33,20 @@ jobs:
           go build ./...
           go vet ./...
 
+      # init.sh applies the structural migrations in db/migrations/ via sqlx-cli
+      # (env.sh finds it on PATH or in ~/.cargo/bin). Cache the compiled binary
+      # so only the first run pays the build cost; pin the version to match
+      # deploy/migrations/Dockerfile.
+      - name: Cache sqlx-cli
+        id: cache-sqlx
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/sqlx
+          key: sqlx-cli-0.9.0-${{ runner.os }}
+      - name: Install sqlx-cli
+        if: steps.cache-sqlx.outputs.cache-hit != 'true'
+        run: cargo install sqlx-cli --version 0.9.0 --no-default-features --features rustls,postgres --locked
+
       # init.sh sources env.sh, which brings the full stack up
       # (docker compose up --build --wait) and then loads schema/roles/etc.
       - name: Initialize database and bring up the stack
