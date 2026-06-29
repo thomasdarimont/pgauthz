@@ -181,6 +181,20 @@ Two things to decide:
 
 ### Testing failover (game-day)
 
+**One command:** [`failover-test.sh`](failover-test.sh) drives a handover and
+verifies the RPO-0 guarantee end to end (sync status → probe write → trigger →
+confirm it survived + the new primary is writable → cleanup):
+
+```bash
+./deploy/helm/pgauthz/failover-test.sh                 # graceful switchover (cnpg promote)
+MODE=failover ./deploy/helm/pgauthz/failover-test.sh   # simulate primary loss (pod kill)
+```
+
+`MODE=switchover` (default) is non-destructive and needs the `cnpg` kubectl
+plugin; `MODE=failover` needs no plugin and auto-handles the single-node-k3d
+stuck-`Terminating` case. Knobs: `RELEASE`, `NAMESPACE`, `CLUSTER`, `TARGET`,
+`TIMEOUT`, `KEEP=1`. The manual steps it automates are below.
+
 First confirm synchronous replication is actually engaged (with `HA=1` /
 `values-ha.yaml`) — `synchronous_standby_names` must be non-empty and the standby
 `sync_state` should be `quorum`/`sync`:

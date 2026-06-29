@@ -24,6 +24,12 @@ pre-1.0, minor versions may include breaking changes.
   multi-file `VALUES` layering) to deploy the synchronous overlay. The drill was
   validated live on k3d: auto-promotion, `-rw` repoint, and RPO 0 (a
   pre-failover acked write survived) all confirmed.
+- **`deploy/helm/pgauthz/failover-test.sh`** — one-command game-day helper:
+  `MODE=switchover` (default, graceful `cnpg promote`) or `MODE=failover`
+  (pod-kill, auto-force-deletes a stuck-`Terminating` primary). Discovers the
+  cluster/primary/standby, checks sync status, lays down a probe write, triggers
+  the handover, and asserts RPO 0 (the probe survived) + write-path recovery on
+  the new primary, then cleans up.
 
 ### Changed
 
