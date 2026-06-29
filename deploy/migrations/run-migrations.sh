@@ -47,6 +47,10 @@ echo "==> Applying structural migrations (sqlx)..."
 DBURL="postgresql://${PGUSER}"
 [ -n "${PGPASSWORD:-}" ] && DBURL="${DBURL}:${PGPASSWORD}"
 DBURL="${DBURL}@${PGHOST}:${PGPORT:-5432}/${PGDATABASE}"
+# Pin search_path=public so sqlx's unqualified _sqlx_migrations ledger always
+# resolves to public, never a role-named schema the baseline creates (which
+# would shadow it on re-runs). See env.sh sqlx_url_public / ADR 0001.
+DBURL="${DBURL}?options=-csearch_path%3Dpublic"
 DATABASE_URL="$DBURL" sqlx migrate run --source "$SQL/migrations"
 
 # Build the engine CODE list from the manifest (functions/views/triggers; the

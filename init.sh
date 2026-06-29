@@ -18,8 +18,16 @@ source "$SCRIPT_DIR/db/engine/manifest.sh"
 # structural baseline + migrations and (re)load the idempotent engine code.
 # (Production upgrades use deploy/migrations/run-migrations.sh, which migrates
 # in place without the reset.)
-echo "==> Resetting schema (clean install)..."
-reset_schema
+#
+# SKIP_RESET=1 turns this into a non-destructive in-place upgrade: skip the
+# reset and let `apply_migrations` run only pending migrations on top of the
+# existing schema (preserving stores/tuples/audit). `upgrade.sh` is the wrapper.
+if [ "${SKIP_RESET:-}" = "1" ]; then
+  echo "==> Upgrading in place (SKIP_RESET=1) — preserving existing data..."
+else
+  echo "==> Resetting schema (clean install)..."
+  reset_schema
+fi
 
 echo "==> Applying structural migrations (sqlx)..."
 apply_migrations

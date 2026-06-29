@@ -99,7 +99,26 @@ apply_migrations() {
     echo "  cargo install sqlx-cli --no-default-features --features rustls,postgres" >&2
     return 1
   fi
-  "$SQLX_BIN" migrate run --source "$SCRIPT_DIR/db/migrations"
+  DATABASE_URL="$(sqlx_url_public "$DATABASE_URL")" \
+    "$SQLX_BIN" migrate run --source "$SCRIPT_DIR/db/migrations"
+}
+
+# Pin search_path=public on a sqlx connection URL. sqlx tracks applied
+# migrations in an UNQUALIFIED `_sqlx_migrations` table, so the lookup follows
+# search_path. We connect as role `authz`, whose default search_path is
+# "$user",public = authz,public — and the baseline CREATEs an `authz` schema.
+# On a re-run (existing schema) the unqualified name would resolve to a fresh,
+# empty `authz._sqlx_migrations`, shadowing the real `public._sqlx_migrations`,
+# so sqlx would think the baseline is unapplied and try to re-run it. Forcing
+# search_path=public keeps the ledger unambiguous. (CNPG connects as `postgres`,
+# which has no shadowing schema, but we pin it everywhere for consistency.)
+sqlx_url_public() {
+  local url="$1"
+  case "$url" in
+    *search_path*) printf '%s' "$url" ;;                      # caller already pinned
+    *\?*)          printf '%s&options=-csearch_path%%3Dpublic' "$url" ;;
+    *)             printf '%s?options=-csearch_path%%3Dpublic' "$url" ;;
+  esac
 }
 
 # Wipe the engine for a clean (re)install: drop the authz schema and the sqlx

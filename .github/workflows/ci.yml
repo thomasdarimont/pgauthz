@@ -63,3 +63,78 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose -f compose.yml -f compose-authzen.yml down -v || true
+
+  # Proves the non-destructive upgrade path (ADR 0001): install the most recent
+  # release tag, seed data, then upgrade in place to HEAD and assert the data
+  # survived and the engine still works. Skips cleanly until the first v* tag.
+  upgrade-test:
+    name: Non-destructive upgrade (prev tag → HEAD)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # need history + tags to check out the prior release
+
+      - name: Cache sqlx-cli
+        id: cache-sqlx
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/sqlx
+          key: sqlx-cli-0.9.0-${{ runner.os }}
+      - name: Install sqlx-cli
+        if: steps.cache-sqlx.outputs.cache-hit != 'true'
+        run: cargo install sqlx-cli --version 0.9.0 --no-default-features --features rustls,postgres --locked
+
+      - name: Resolve previous release tag
+        id: prevtag
+        run: |
+          tag=$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null || true)
+          if [ -z "$tag" ]; then
+            echo "No v* release tag found — skipping upgrade test."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Previous release: $tag"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install previous release + seed fixtures
+        if: steps.prevtag.outputs.skip != 'true'
+        run: |
+          set -euxo pipefail
+          echo "HEAD_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          git checkout --quiet --force "${{ steps.prevtag.outputs.tag }}"
+          ./init.sh                                    # fresh install of the prior release
+          source ./env.sh
+          psql_file "$PG_DB" examples/models/demo/model.sql
+          psql_file "$PG_DB" examples/models/demo/seed.sql
+          before=$(psql_exec "$PG_DB" -tA -c "SELECT count(*) FROM authz.tuples WHERE store_id=(SELECT store_id FROM authz.stores WHERE name='demo');")
+          echo "SEED_TUPLES=$before" >> "$GITHUB_ENV"
+          echo "Seeded demo tuples: $before"
+
+      - name: Upgrade in place to HEAD + assert data preserved
+        if: steps.prevtag.outputs.skip != 'true'
+        run: |
+          set -euxo pipefail
+          git checkout --quiet --force "$HEAD_SHA"
+          ./upgrade.sh                                 # apply pending migrations + reload code, NO reset
+          source ./env.sh
+          after=$(psql_exec "$PG_DB" -tA -c "SELECT count(*) FROM authz.tuples WHERE store_id=(SELECT store_id FROM authz.stores WHERE name='demo');")
+          chk=$(psql_exec "$PG_DB" -tA -c "SELECT authz.check_access('demo','internal_user','eva','can_read','document','doc_acc_001');")
+          shadow=$(psql_exec "$PG_DB" -tA -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relname='_sqlx_migrations' AND n.nspname <> 'public';")
+          echo "seeded=$SEED_TUPLES after=$after check=$chk shadow_ledgers=$shadow"
+          test "$after" = "$SEED_TUPLES"              # data survived the upgrade
+          test "$chk" = "t"                           # engine still resolves access
+          test "$shadow" = "0"                        # ledger stayed in public (no search_path shadow)
+
+      - name: Full suite on the upgraded engine
+        if: steps.prevtag.outputs.skip != 'true'
+        run: ./tests/test.sh
+
+      - name: Service logs on failure
+        if: failure()
+        run: docker compose -f compose.yml -f compose-authzen.yml logs --no-color --tail=300
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f compose.yml -f compose-authzen.yml down -v || true

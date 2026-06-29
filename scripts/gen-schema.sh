@@ -32,7 +32,10 @@ for _ in $(seq 1 60); do docker exec "$NAME" pg_isready -U authz >/dev/null 2>&1
 # Structure via migrations, then the idempotent engine code. No
 # ensure_audit_partitions() — the runtime monthly partitions would make the
 # dump non-deterministic.
-DATABASE_URL="postgres://authz:authz@localhost:$PORT/authz" "$SQLX" migrate run --source "$ROOT/db/migrations"
+# search_path=public keeps sqlx's _sqlx_migrations ledger out of the role-named
+# `authz` schema the baseline creates (see env.sh sqlx_url_public / ADR 0001).
+DATABASE_URL="postgres://authz:authz@localhost:$PORT/authz?options=-csearch_path%3Dpublic" \
+  "$SQLX" migrate run --source "$ROOT/db/migrations"
 while IFS= read -r f; do
   docker exec "$NAME" psql -U authz -d authz -q -v ON_ERROR_STOP=1 -f "/repo/db/engine/$f" >/dev/null
 done < <(engine_files_for substrate read write audit)
