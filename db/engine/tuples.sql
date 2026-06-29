@@ -27,12 +27,12 @@ CREATE OR REPLACE FUNCTION authz.write_tuple(
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id      smallint := authz._s(p_store);
-    v_user_type     smallint := authz._t(v_store_id, p_user_type);
-    v_relation      smallint := authz._r(v_store_id, p_relation);
-    v_object_type   smallint := authz._t(v_store_id, p_object_type);
-    v_user_relation smallint;
-    v_condition_id  smallint;
+    v_store_id      integer := authz._s(p_store);
+    v_user_type     integer := authz._t(v_store_id, p_user_type);
+    v_relation      integer := authz._r(v_store_id, p_relation);
+    v_object_type   integer := authz._t(v_store_id, p_object_type);
+    v_user_relation integer;
+    v_condition_id  integer;
 BEGIN
     -- Set application user for the audit trigger (transaction-local)
     -- The true in set_config(..., true) makes the variable transaction-local, so it auto-resets after each call — no risk of leaking between requests.
@@ -147,7 +147,7 @@ CREATE OR REPLACE FUNCTION authz.write_tuples(
 ) RETURNS integer
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id smallint := authz._s(p_store);
+    v_store_id integer := authz._s(p_store);
     v_count    integer;
     v_bad      text;
 BEGIN
@@ -365,11 +365,11 @@ CREATE OR REPLACE FUNCTION authz.delete_tuple(
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id      smallint := authz._s(p_store);
-    v_user_type     smallint := authz._t(v_store_id, p_user_type);
-    v_relation      smallint := authz._r(v_store_id, p_relation);
-    v_object_type   smallint := authz._t(v_store_id, p_object_type);
-    v_user_relation smallint;
+    v_store_id      integer := authz._s(p_store);
+    v_user_type     integer := authz._t(v_store_id, p_user_type);
+    v_relation      integer := authz._r(v_store_id, p_relation);
+    v_object_type   integer := authz._t(v_store_id, p_object_type);
+    v_user_relation integer;
 BEGIN
     -- Set application user for the audit trigger (transaction-local)
     PERFORM set_config('authz.performed_by', COALESCE(p_performed_by, ''), true);
@@ -412,7 +412,7 @@ CREATE OR REPLACE FUNCTION authz.delete_tuples(
 ) RETURNS integer
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id smallint := authz._s(p_store);
+    v_store_id integer := authz._s(p_store);
     v_count    integer;
     v_bad      text;
 BEGIN
@@ -548,8 +548,8 @@ CREATE OR REPLACE FUNCTION authz.delete_user_tuples(
 ) RETURNS integer
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id  smallint := authz._s(p_store);
-    v_user_type smallint := authz._t(v_store_id, p_user_type);
+    v_store_id  integer := authz._s(p_store);
+    v_user_type integer := authz._t(v_store_id, p_user_type);
     v_count     integer;
 BEGIN
     PERFORM set_config('authz.performed_by', COALESCE(p_performed_by, ''), true);
@@ -575,7 +575,7 @@ $$;
 -- {object_type, object_id, relation} (no user) means "any tuple with that
 -- relation on that object". Used by write_tuples_checked.
 ------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION authz._precondition_matches(p_store_id smallint, p_pc jsonb)
+CREATE OR REPLACE FUNCTION authz._precondition_matches(p_store_id integer, p_pc jsonb)
 RETURNS boolean
 LANGUAGE sql STABLE AS $$
     SELECT EXISTS (
@@ -621,7 +621,7 @@ CREATE OR REPLACE FUNCTION authz.write_tuples_checked(
 ) RETURNS jsonb
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id smallint := authz._s(p_store);
+    v_store_id integer := authz._s(p_store);
     v_obj      record;
     v_pc       jsonb;
     v_match    text;

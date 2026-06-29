@@ -50,9 +50,9 @@ CREATE OR REPLACE FUNCTION authz.find_redundant_tuples(
 )
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
-    v_store_id    smallint := authz._s(p_store);
-    v_object_type smallint;
-    v_relation    smallint;
+    v_store_id    integer := authz._s(p_store);
+    v_object_type integer;
+    v_relation    integer;
     tpl           record;
     v_still_ok    boolean;
     v_exclude     authz._tuple_key;

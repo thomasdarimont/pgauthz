@@ -16,10 +16,10 @@
 -- single INSERT adding base and negated rules together passes; adding
 -- rules one by one requires the base rule first.
 CREATE OR REPLACE FUNCTION authz._check_exclusion_group_has_base(
-    p_store_id    smallint,
-    p_object_type smallint,
-    p_relation    smallint,
-    p_group_id    smallint
+    p_store_id    integer,
+    p_object_type integer,
+    p_relation    integer,
+    p_group_id    integer
 ) RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN

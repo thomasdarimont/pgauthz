@@ -13,20 +13,20 @@
 -- the snapshot once and evaluates every relation against it.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._build_audit_snapshot(
-    p_store_id smallint,
+    p_store_id integer,
     p_at       timestamptz
 ) RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
     CREATE TEMP TABLE IF NOT EXISTS _snapshot_tuples (
-        store_id          smallint,
-        user_type         smallint,
+        store_id          integer,
+        user_type         integer,
         user_id           text,
-        user_relation     smallint,
-        relation          smallint,
-        object_type       smallint,
+        user_relation     integer,
+        relation          integer,
+        object_type       integer,
         object_id         text,
-        condition_id      smallint,
+        condition_id      integer,
         condition_context jsonb
     ) ON COMMIT DROP;
 
@@ -64,24 +64,24 @@ $$;
 -- Shared by audit_check_access and audit_list_actions.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._build_model_snapshot(
-    p_store_id smallint,
+    p_store_id integer,
     p_at       timestamptz
 ) RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
     CREATE TEMP TABLE IF NOT EXISTS _snapshot_models (
-        store_id          smallint,
-        object_type       smallint,
-        relation          smallint,
-        rule_type         smallint,
-        computed_relation smallint,
-        tupleset_relation smallint,
-        tupleset_computed smallint,
-        group_id          smallint,
-        group_op          smallint,
+        store_id          integer,
+        object_type       integer,
+        relation          integer,
+        rule_type         integer,
+        computed_relation integer,
+        tupleset_relation integer,
+        tupleset_computed integer,
+        group_id          integer,
+        group_op          integer,
         negated           boolean,
         allow_object_wildcard boolean,
-        model_id          smallint
+        model_id          integer
     ) ON COMMIT DROP;
 
     TRUNCATE _snapshot_models;
@@ -122,13 +122,13 @@ $$;
 -- expression in effect at p_at, not an expression edited in place later.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._build_condition_snapshot(
-    p_store_id smallint,
+    p_store_id integer,
     p_at       timestamptz
 ) RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
     CREATE TEMP TABLE IF NOT EXISTS _snapshot_conditions (
-        id         smallint,
+        id         integer,
         expression text,
         lang       text
     ) ON COMMIT DROP;
@@ -156,7 +156,7 @@ $$;
 -- Dynamic SQL because the temp table is per-session.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._eval_condition_snapshot(
-    p_condition_id      smallint,
+    p_condition_id      integer,
     p_condition_context jsonb,
     p_request_context   jsonb
 ) RETURNS boolean
@@ -195,11 +195,11 @@ $$;
 -- No tracing, no contextual tuples.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._eval_direct_snapshot(
-    p_store_id        smallint,
-    p_user_type       smallint,
+    p_store_id        integer,
+    p_user_type       integer,
     p_user_id         text,
-    p_relation        smallint,
-    p_object_type     smallint,
+    p_relation        integer,
+    p_object_type     integer,
     p_object_id       text,
     p_request_context jsonb,
     p_depth           int,
@@ -314,14 +314,14 @@ $$;
 -- No tracing, no contextual tuples.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._eval_ttu_snapshot(
-    p_store_id          smallint,
-    p_user_type         smallint,
+    p_store_id          integer,
+    p_user_type         integer,
     p_user_id           text,
-    p_relation          smallint,
-    p_object_type       smallint,
+    p_relation          integer,
+    p_object_type       integer,
     p_object_id         text,
-    p_tupleset_relation smallint,
-    p_tupleset_computed smallint,
+    p_tupleset_relation integer,
+    p_tupleset_computed integer,
     p_request_context   jsonb,
     p_depth             int,
     p_path              text[] DEFAULT '{}'
@@ -367,16 +367,16 @@ $$;
 -- _eval_ttu_snapshot.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._eval_rule_snapshot(
-    p_store_id          smallint,
-    p_user_type         smallint,
+    p_store_id          integer,
+    p_user_type         integer,
     p_user_id           text,
-    p_relation          smallint,
-    p_object_type       smallint,
+    p_relation          integer,
+    p_object_type       integer,
     p_object_id         text,
-    p_rule_type         smallint,
-    p_computed_relation smallint,
-    p_tupleset_relation smallint,
-    p_tupleset_computed smallint,
+    p_rule_type         integer,
+    p_computed_relation integer,
+    p_tupleset_relation integer,
+    p_tupleset_computed integer,
     p_request_context   jsonb DEFAULT NULL,
     p_depth             int DEFAULT 0,
     p_path              text[] DEFAULT '{}'
@@ -421,11 +421,11 @@ $$;
 -- Supports grouped rules (intersection / exclusion).
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._check_access_snapshot(
-    p_store_id        smallint,
-    p_user_type       smallint,
+    p_store_id        integer,
+    p_user_type       integer,
     p_user_id         text,
-    p_relation        smallint,
-    p_object_type     smallint,
+    p_relation        integer,
+    p_object_type     integer,
     p_object_id       text,
     p_request_context jsonb DEFAULT NULL,
     p_depth           int DEFAULT 0,
@@ -435,8 +435,8 @@ LANGUAGE plpgsql AS $$
 DECLARE
     rule           record;
     v_group_pass   boolean;
-    v_cur_group    smallint := -1;
-    v_cur_group_op smallint;
+    v_cur_group    integer := -1;
+    v_cur_group_op integer;
     v_key          text;
     v_path         text[];
 BEGIN

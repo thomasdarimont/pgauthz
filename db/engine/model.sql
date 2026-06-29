@@ -16,7 +16,7 @@
 --   p_namespace      — optional namespace for access control
 --   p_description    — optional description
 --
--- Returns the new type's smallint ID.
+-- Returns the new type's integer ID.
 -- Idempotent for the partition (safe to call again), but will raise
 -- a unique violation if the type name already exists in this store.
 --
@@ -31,11 +31,11 @@ CREATE OR REPLACE FUNCTION authz.model_register_type(
     p_hash_modulus int DEFAULT 0,
     p_namespace    text DEFAULT NULL,
     p_description  text DEFAULT NULL
-) RETURNS smallint
+) RETURNS integer
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id smallint := authz._s(p_store);
-    v_type_id  smallint;
+    v_store_id integer := authz._s(p_store);
+    v_type_id  integer;
 BEGIN
     INSERT INTO authz.types (store_id, name, namespace, description)
     VALUES (v_store_id, p_type_name, p_namespace, p_description)
@@ -50,7 +50,7 @@ $$;
 ------------------------------------------------------------------------
 -- model_register_relation: registers a new relation name in a store.
 --
--- Idempotent — returns the relation's smallint ID whether it was
+-- Idempotent — returns the relation's integer ID whether it was
 -- newly created or already existed.
 --
 -- Examples:
@@ -61,11 +61,11 @@ CREATE OR REPLACE FUNCTION authz.model_register_relation(
     p_store       text,
     p_name        text,
     p_description text DEFAULT NULL
-) RETURNS smallint
+) RETURNS integer
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id    smallint := authz._s(p_store);
-    v_relation_id smallint;
+    v_store_id    integer := authz._s(p_store);
+    v_relation_id integer;
 BEGIN
     INSERT INTO authz.relations (store_id, name, description)
     VALUES (v_store_id, p_name, p_description)
@@ -79,7 +79,7 @@ $$;
 ------------------------------------------------------------------------
 -- model_add_rule: adds a single model rule. Idempotent — duplicate
 -- inserts are silently ignored (ON CONFLICT DO NOTHING).
--- Returns the rule's smallint ID (existing or new).
+-- Returns the rule's integer ID (existing or new).
 --
 -- Validates:
 --   - rule_type is one of 'direct', 'computed', 'ttu'
@@ -103,22 +103,22 @@ CREATE OR REPLACE FUNCTION authz.model_add_rule(
     p_computed_relation     text DEFAULT NULL,
     p_tupleset_relation     text DEFAULT NULL,
     p_tupleset_computed     text DEFAULT NULL,
-    p_group_id              smallint DEFAULT 0,
+    p_group_id              integer DEFAULT 0,
     p_group_op              text DEFAULT 'or',    -- 'or', 'intersection', 'exclusion'
     p_negated               boolean DEFAULT false,
     p_allow_object_wildcard boolean DEFAULT false -- direct rules only: permit object_id = '*' tuples
-) RETURNS smallint
+) RETURNS integer
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id     smallint := authz._s(p_store);
-    v_object_type  smallint := authz._t(v_store_id, p_object_type);
-    v_relation     smallint := authz._r(v_store_id, p_relation);
-    v_rule_type    smallint;
-    v_computed_rel smallint;
-    v_tupleset_rel smallint;
-    v_tupleset_cmp smallint;
-    v_group_op     smallint;
-    v_rule_id      smallint;
+    v_store_id     integer := authz._s(p_store);
+    v_object_type  integer := authz._t(v_store_id, p_object_type);
+    v_relation     integer := authz._r(v_store_id, p_relation);
+    v_rule_type    integer;
+    v_computed_rel integer;
+    v_tupleset_rel integer;
+    v_tupleset_cmp integer;
+    v_group_op     integer;
+    v_rule_id      integer;
 BEGIN
     -- Resolve rule_type
     CASE p_rule_type
@@ -208,11 +208,11 @@ $$;
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.model_remove_rule(
     p_store   text,
-    p_rule_id smallint
+    p_rule_id integer
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id smallint := authz._s(p_store);
+    v_store_id integer := authz._s(p_store);
     v_deleted  boolean;
 BEGIN
     DELETE FROM authz.models
@@ -236,9 +236,9 @@ CREATE OR REPLACE FUNCTION authz.model_remove_rules(
 ) RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id    smallint := authz._s(p_store);
-    v_object_type smallint := authz._t(v_store_id, p_object_type);
-    v_relation    smallint := authz._r(v_store_id, p_relation);
+    v_store_id    integer := authz._s(p_store);
+    v_object_type integer := authz._t(v_store_id, p_object_type);
+    v_relation    integer := authz._r(v_store_id, p_relation);
     v_count       int;
 BEGIN
     -- Cascade: remove type restrictions for this (object_type, relation)
@@ -275,7 +275,7 @@ CREATE OR REPLACE FUNCTION authz.grant_namespace_access(
 ) RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id smallint := authz._s(p_store);
+    v_store_id integer := authz._s(p_store);
 BEGIN
     INSERT INTO authz.namespace_access (store_id, namespace, db_role, can_read, can_write)
     VALUES (v_store_id, p_namespace, p_db_role, p_can_read, p_can_write)
@@ -303,7 +303,7 @@ CREATE OR REPLACE FUNCTION authz.revoke_namespace_access(
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id smallint := authz._s(p_store);
+    v_store_id integer := authz._s(p_store);
 BEGIN
     UPDATE authz.namespace_access
        SET can_read  = can_read  AND NOT p_can_read,
@@ -349,15 +349,15 @@ CREATE OR REPLACE FUNCTION authz.model_add_type_restriction(
     p_allowed_user_type     text,
     p_allowed_user_relation text DEFAULT NULL,
     p_allow_wildcard        boolean DEFAULT false
-) RETURNS smallint
+) RETURNS integer
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id         smallint := authz._s(p_store);
-    v_object_type      smallint := authz._t(v_store_id, p_object_type);
-    v_relation         smallint := authz._r(v_store_id, p_relation);
-    v_allowed_user_type smallint := authz._t(v_store_id, p_allowed_user_type);
-    v_allowed_user_rel smallint;
-    v_id               smallint;
+    v_store_id         integer := authz._s(p_store);
+    v_object_type      integer := authz._t(v_store_id, p_object_type);
+    v_relation         integer := authz._r(v_store_id, p_relation);
+    v_allowed_user_type integer := authz._t(v_store_id, p_allowed_user_type);
+    v_allowed_user_rel integer;
+    v_id               integer;
 BEGIN
     -- Wildcard and user_relation are mutually exclusive
     IF p_allow_wildcard AND p_allowed_user_relation IS NOT NULL THEN
@@ -398,11 +398,11 @@ $$;
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.model_remove_type_restriction(
     p_store          text,
-    p_restriction_id smallint
+    p_restriction_id integer
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id smallint := authz._s(p_store);
+    v_store_id integer := authz._s(p_store);
 BEGIN
     DELETE FROM authz.type_restrictions
      WHERE id = p_restriction_id
@@ -423,9 +423,9 @@ CREATE OR REPLACE FUNCTION authz.model_remove_type_restrictions(
 ) RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id    smallint := authz._s(p_store);
-    v_object_type smallint := authz._t(v_store_id, p_object_type);
-    v_relation    smallint := authz._r(v_store_id, p_relation);
+    v_store_id    integer := authz._s(p_store);
+    v_object_type integer := authz._t(v_store_id, p_object_type);
+    v_relation    integer := authz._r(v_store_id, p_relation);
     v_count       int;
 BEGIN
     DELETE FROM authz.type_restrictions
@@ -447,7 +447,7 @@ $$;
 -- rules render their type restrictions as `[user, team#member, user:*]`.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._describe_type_restrictions(
-    p_store_id smallint, p_object_type smallint, p_relation smallint
+    p_store_id integer, p_object_type integer, p_relation integer
 ) RETURNS text LANGUAGE sql STABLE AS $$
     SELECT string_agg(
                aut.name
@@ -462,7 +462,7 @@ CREATE OR REPLACE FUNCTION authz._describe_type_restrictions(
 $$;
 
 CREATE OR REPLACE FUNCTION authz._describe_atom(
-    p_store_id smallint, p_object_type smallint, p_relation smallint, m authz.models
+    p_store_id integer, p_object_type integer, p_relation integer, m authz.models
 ) RETURNS text LANGUAGE plpgsql STABLE AS $$
 BEGIN
     IF m.rule_type = authz._rel_direct() THEN
@@ -480,7 +480,7 @@ $$;
 CREATE OR REPLACE FUNCTION authz.describe_model(p_store text)
 RETURNS text LANGUAGE plpgsql STABLE AS $$
 DECLARE
-    v_store_id smallint := authz._s(p_store);
+    v_store_id integer := authz._s(p_store);
     v_out      text := 'store: ' || p_store || E'\n';
     v_type     record;
     v_rel      record;

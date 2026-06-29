@@ -10,10 +10,10 @@
 -- Not store-scoped — contextual tuples are session-local.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._check_ctx_direct(
-    p_user_type   smallint,
+    p_user_type   integer,
     p_user_id     text,
-    p_relation    smallint,
-    p_object_type smallint,
+    p_relation    integer,
+    p_object_type integer,
     p_object_id   text
 ) RETURNS boolean
 LANGUAGE plpgsql STABLE AS $$
@@ -37,10 +37,10 @@ END;
 $$;
 
 CREATE OR REPLACE FUNCTION authz._check_ctx_usersets(
-    p_relation    smallint,
-    p_object_type smallint,
+    p_relation    integer,
+    p_object_type integer,
     p_object_id   text
-) RETURNS TABLE (user_type smallint, user_id text, user_relation smallint)
+) RETURNS TABLE (user_type integer, user_id text, user_relation integer)
 LANGUAGE plpgsql STABLE AS $$
 BEGIN
     RETURN QUERY EXECUTE '
@@ -55,10 +55,10 @@ END;
 $$;
 
 CREATE OR REPLACE FUNCTION authz._check_ctx_linked(
-    p_tupleset_relation smallint,
-    p_object_type       smallint,
+    p_tupleset_relation integer,
+    p_object_type       integer,
     p_object_id         text
-) RETURNS TABLE (linked_type smallint, linked_id text)
+) RETURNS TABLE (linked_type integer, linked_id text)
 LANGUAGE plpgsql STABLE AS $$
 BEGIN
     RETURN QUERY EXECUTE '
@@ -81,11 +81,11 @@ $$;
 -- dispatcher and passed in to avoid redundant queries.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._eval_direct(
-    p_store_id          smallint,
-    p_user_type         smallint,
+    p_store_id          integer,
+    p_user_type         integer,
     p_user_id           text,
-    p_relation          smallint,
-    p_object_type       smallint,
+    p_relation          integer,
+    p_object_type       integer,
     p_object_id         text,
     p_request_context   jsonb,
     p_has_ctx_tuples    boolean,
@@ -97,9 +97,9 @@ CREATE OR REPLACE FUNCTION authz._eval_direct(
     p_step_start        timestamptz,
     p_exclude           authz._tuple_key DEFAULT NULL,
     p_path              text[] DEFAULT '{}',
-    p_model_rule_id     smallint DEFAULT NULL,
-    p_group_id          smallint DEFAULT NULL,
-    p_group_op          smallint DEFAULT NULL,
+    p_model_rule_id     integer DEFAULT NULL,
+    p_group_id          integer DEFAULT NULL,
+    p_group_op          integer DEFAULT NULL,
     p_negated           boolean  DEFAULT NULL
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
@@ -107,7 +107,7 @@ DECLARE
     tpl     record;
     v_child boolean;
     v_cond_name text;
-    v_cond_id   smallint;
+    v_cond_id   integer;
     v_cond_ctx  jsonb;
     v_skip_direct   boolean := false;
     v_skip_wildcard boolean := false;
@@ -410,14 +410,14 @@ $$;
 -- Writes trace steps when p_trace is true.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._eval_ttu(
-    p_store_id          smallint,
-    p_user_type         smallint,
+    p_store_id          integer,
+    p_user_type         integer,
     p_user_id           text,
-    p_relation          smallint,
-    p_object_type       smallint,
+    p_relation          integer,
+    p_object_type       integer,
     p_object_id         text,
-    p_tupleset_relation smallint,
-    p_tupleset_computed smallint,
+    p_tupleset_relation integer,
+    p_tupleset_computed integer,
     p_request_context   jsonb,
     p_has_ctx_tuples    boolean,
     p_depth             int,
@@ -428,9 +428,9 @@ CREATE OR REPLACE FUNCTION authz._eval_ttu(
     p_step_start        timestamptz,
     p_exclude           authz._tuple_key DEFAULT NULL,
     p_path              text[] DEFAULT '{}',
-    p_model_rule_id     smallint DEFAULT NULL,
-    p_group_id          smallint DEFAULT NULL,
-    p_group_op          smallint DEFAULT NULL,
+    p_model_rule_id     integer DEFAULT NULL,
+    p_group_id          integer DEFAULT NULL,
+    p_group_op          integer DEFAULT NULL,
     p_negated           boolean  DEFAULT NULL
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
@@ -544,25 +544,25 @@ $$;
 -- Writes trace steps when p_trace is true.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._eval_rule(
-    p_store_id          smallint,
-    p_user_type         smallint,
+    p_store_id          integer,
+    p_user_type         integer,
     p_user_id           text,
-    p_relation          smallint,
-    p_object_type       smallint,
+    p_relation          integer,
+    p_object_type       integer,
     p_object_id         text,
-    p_rule_type         smallint,
-    p_computed_relation smallint,
-    p_tupleset_relation smallint,
-    p_tupleset_computed smallint,
+    p_rule_type         integer,
+    p_computed_relation integer,
+    p_tupleset_relation integer,
+    p_tupleset_computed integer,
     p_request_context   jsonb DEFAULT NULL,
     p_has_ctx_tuples    boolean DEFAULT false,
     p_depth             int DEFAULT 0,
     p_trace             boolean DEFAULT false,
     p_exclude           authz._tuple_key DEFAULT NULL,
     p_path              text[] DEFAULT '{}',
-    p_model_rule_id     smallint DEFAULT NULL,
-    p_group_id          smallint DEFAULT NULL,
-    p_group_op          smallint DEFAULT NULL,
+    p_model_rule_id     integer DEFAULT NULL,
+    p_group_id          integer DEFAULT NULL,
+    p_group_op          integer DEFAULT NULL,
     p_negated           boolean  DEFAULT NULL
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
@@ -647,11 +647,11 @@ $$;
 -- For convenience, use authz.explain_access(...) instead.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._check_access(
-    p_store_id        smallint,
-    p_user_type       smallint,
+    p_store_id        integer,
+    p_user_type       integer,
     p_user_id         text,
-    p_relation        smallint,
-    p_object_type     smallint,
+    p_relation        integer,
+    p_object_type     integer,
     p_object_id       text,
     p_request_context jsonb DEFAULT NULL,
     p_has_ctx_tuples  boolean DEFAULT false,
@@ -668,8 +668,8 @@ DECLARE
     v_group_start   timestamptz;
 
     -- Group boundary tracking
-    v_cur_group     smallint := -1;
-    v_cur_group_op  smallint;
+    v_cur_group     integer := -1;
+    v_cur_group_op  integer;
 
     -- Name resolution helpers (only used when tracing)
     v_user_type_name   text;
@@ -706,7 +706,7 @@ BEGIN
             INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
             VALUES (p_depth, 'cycle', v_user_type_name || ':' || p_user_id,
                     v_relation_name, v_object_type_name || ':' || p_object_id,
-                    false, 'cycle detected — path pruned', 0, NULL::smallint, NULL::smallint, NULL::smallint, NULL::boolean);
+                    false, 'cycle detected — path pruned', 0, NULL::integer, NULL::integer, NULL::integer, NULL::boolean);
         END IF;
         RETURN false;
     END IF;
@@ -734,7 +734,7 @@ BEGIN
                             v_relation_name, v_object_type_name || ':' || p_object_id,
                             true,
                             CASE v_cur_group_op WHEN authz._combine_and() THEN 'all rules matched' ELSE 'base matched, not excluded' END,
-                            extract(epoch from clock_timestamp() - v_group_start) * 1000, NULL::smallint, v_cur_group, v_cur_group_op, NULL::boolean);
+                            extract(epoch from clock_timestamp() - v_group_start) * 1000, NULL::integer, v_cur_group, v_cur_group_op, NULL::boolean);
                 END IF;
                 RETURN true;
             END IF;
@@ -747,7 +747,7 @@ BEGIN
                         v_relation_name, v_object_type_name || ':' || p_object_id,
                         false,
                         CASE v_cur_group_op WHEN authz._combine_and() THEN 'not all rules matched' ELSE 'base not matched or excluded' END,
-                        extract(epoch from clock_timestamp() - v_group_start) * 1000, NULL::smallint, v_cur_group, v_cur_group_op, NULL::boolean);
+                        extract(epoch from clock_timestamp() - v_group_start) * 1000, NULL::integer, v_cur_group, v_cur_group_op, NULL::boolean);
             END IF;
 
             -- Start new group.
@@ -842,7 +842,7 @@ BEGIN
                     v_relation_name, v_object_type_name || ':' || p_object_id,
                     true,
                     CASE v_cur_group_op WHEN authz._combine_and() THEN 'all rules matched' ELSE 'base matched, not excluded' END,
-                    extract(epoch from clock_timestamp() - v_group_start) * 1000, NULL::smallint, v_cur_group, v_cur_group_op, NULL::boolean);
+                    extract(epoch from clock_timestamp() - v_group_start) * 1000, NULL::integer, v_cur_group, v_cur_group_op, NULL::boolean);
         END IF;
         RETURN true;
     END IF;
@@ -855,7 +855,7 @@ BEGIN
                 v_relation_name, v_object_type_name || ':' || p_object_id,
                 false,
                 CASE v_cur_group_op WHEN authz._combine_and() THEN 'not all rules matched' ELSE 'base not matched or excluded' END,
-                extract(epoch from clock_timestamp() - v_group_start) * 1000, NULL::smallint, v_cur_group, v_cur_group_op, NULL::boolean);
+                extract(epoch from clock_timestamp() - v_group_start) * 1000, NULL::integer, v_cur_group, v_cur_group_op, NULL::boolean);
     END IF;
 
     RETURN false;

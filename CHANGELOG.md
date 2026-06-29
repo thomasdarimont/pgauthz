@@ -7,6 +7,25 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-29
+
+### ⚠️ Breaking
+
+- **Widened all identifier columns from `smallint` to `integer`** — stores,
+  types, relations, models, conditions, and every FK referencing them, including
+  the `tuples` partition key `object_type` and the `_tuple_key` / `access_check`
+  composite types. This lifts the previous **32,767** cumulative-ID ceiling
+  (IDENTITY never reuses values) to ~**2.1 billion**, removing the practical limit
+  for dynamic / multi-tenant deployments that create and delete many
+  stores/types/relations over time (raised in the external project review).
+- **No in-place upgrade from 0.1.x.** Because `tuples` is partitioned by
+  `object_type`, a partition-key column type cannot be altered in place, so 0.2.0
+  **re-baselines** the schema (`0001_baseline.sql`). Upgrading from a 0.1.x
+  install is a **reinstall**, not a migration. (There are no production 0.1.x
+  deployments; the `upgrade-test` CI job skips the pre-0.2.0 boundary and resumes
+  for 0.2.x onward.) **Performance is unchanged** — verified A/B on one machine:
+  integer ≡ smallint within run-to-run noise.
+
 ## [0.1.4] - 2026-06-29
 
 Release-process tooling and docs (no engine changes).
@@ -134,7 +153,8 @@ PL/pgSQL.
 - PostgreSQL 18.x (developed/tested on 18.4). PostgREST, OPA, the AuthZEN
   services, and `pg_cel` are optional components of the reference deployment.
 
-[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.1...v0.1.2

@@ -7,7 +7,7 @@
 -- _import_register_relations: recursively registers relation names
 -- found in an OpenFGA relation definition node.
 ------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION authz._import_register_relations(p_store_id smallint, p_node jsonb)
+CREATE OR REPLACE FUNCTION authz._import_register_relations(p_store_id integer, p_node jsonb)
 RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -71,12 +71,12 @@ $$;
 -- original model.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._import_rule(
-    p_store_id  smallint,
+    p_store_id  integer,
     p_type_name text,
     p_rel_name  text,
     p_node      jsonb,
-    p_group_id  smallint DEFAULT 0,
-    p_group_op  smallint DEFAULT 0,
+    p_group_id  integer DEFAULT 0,
+    p_group_op  integer DEFAULT 0,
     p_negated   boolean  DEFAULT false
 ) RETURNS void
 LANGUAGE plpgsql AS $$
@@ -122,20 +122,20 @@ $$;
 -- Returns the next free group id.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._import_exclusion(
-    p_store_id    smallint,
+    p_store_id    integer,
     p_type_name   text,
     p_rel_name    text,
     p_base        jsonb,
     p_subtract    jsonb,
-    p_group_start smallint
-) RETURNS smallint
+    p_group_start integer
+) RETURNS integer
 LANGUAGE plpgsql AS $$
 DECLARE
     v_base_children     jsonb[];
     v_subtract_children jsonb[];
     v_base              jsonb;
     v_subtract          jsonb;
-    v_group             smallint := p_group_start;
+    v_group             integer := p_group_start;
 BEGIN
     IF p_base->'union' IS NOT NULL THEN
         SELECT array_agg(c) INTO v_base_children
@@ -188,7 +188,7 @@ CREATE OR REPLACE FUNCTION authz.import_openfga_model(
 ) RETURNS jsonb
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id   smallint;
+    v_store_id   integer;
     v_type_def   jsonb;
     v_type_name  text;
     v_rel_name   text;
@@ -208,7 +208,7 @@ DECLARE
     v_drut_wild  boolean;
     v_type_restrictions_imported int := 0;
     v_sub        jsonb;
-    v_next_group smallint;
+    v_next_group integer;
 BEGIN
     -- Create or get store
     INSERT INTO authz.stores (name) VALUES (p_store)

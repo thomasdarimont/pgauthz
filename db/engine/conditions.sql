@@ -111,7 +111,7 @@ $$;
 -- 'sql' expressions.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._eval_condition(
-    p_condition_id      smallint,
+    p_condition_id      integer,
     p_condition_context jsonb,      -- stored with the tuple
     p_request_context   jsonb       -- passed at check time
 ) RETURNS boolean
@@ -171,7 +171,7 @@ $$;
 -- Used by explain_access to annotate condition_denied trace steps.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._condition_missing_keys(
-    p_condition_id      smallint,
+    p_condition_id      integer,
     p_condition_context jsonb,
     p_request_context   jsonb
 ) RETURNS text[]

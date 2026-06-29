@@ -18,8 +18,8 @@ CREATE OR REPLACE FUNCTION authz.check_access(
 ) RETURNS boolean
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
-    v_store_id    smallint := authz._s(p_store);
-    v_object_type smallint := authz._t(v_store_id, p_object_type);
+    v_store_id    integer := authz._s(p_store);
+    v_object_type integer := authz._t(v_store_id, p_object_type);
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
     RETURN authz._check_access(
@@ -47,8 +47,8 @@ CREATE OR REPLACE FUNCTION authz.check_access_with_context(
 ) RETURNS boolean
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
-    v_store_id    smallint := authz._s(p_store);
-    v_object_type smallint := authz._t(v_store_id, p_object_type);
+    v_store_id    integer := authz._s(p_store);
+    v_object_type integer := authz._t(v_store_id, p_object_type);
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
     RETURN authz._check_access(
@@ -79,12 +79,12 @@ CREATE OR REPLACE FUNCTION authz.check_access_with_contextual_tuples(
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id    smallint := authz._s(p_store);
+    v_store_id    integer := authz._s(p_store);
     v_has_ctx     boolean := false;
     v_result      boolean;
-    v_user_type   smallint;
-    v_relation    smallint;
-    v_object_type smallint;
+    v_user_type   integer;
+    v_relation    integer;
+    v_object_type integer;
 BEGIN
     v_user_type   := authz._t(v_store_id, p_user_type);
     v_relation    := authz._r(v_store_id, p_relation);
@@ -105,11 +105,11 @@ BEGIN
     -- Load contextual tuples into a temp table (if provided)
     IF contextual_tuples IS NOT NULL AND array_length(contextual_tuples, 1) > 0 THEN
         CREATE TEMP TABLE IF NOT EXISTS ctx_tuples (
-            user_type     smallint,
+            user_type     integer,
             user_id       text,
-            user_relation smallint,
-            relation      smallint,
-            object_type   smallint,
+            user_relation integer,
+            relation      integer,
+            object_type   integer,
             object_id     text
         ) ON COMMIT DROP;
 
@@ -258,12 +258,12 @@ CREATE OR REPLACE FUNCTION authz.check_access_batch_typed(
 ) RETURNS SETOF authz.access_check_result
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
-    v_store_id    smallint := authz._s(p_store);
+    v_store_id    integer := authz._s(p_store);
     v_check       authz.access_check;
     v_result      boolean;
-    v_user_type   smallint;
-    v_relation    smallint;
-    v_object_type smallint;
+    v_user_type   integer;
+    v_relation    integer;
+    v_object_type integer;
     v_short       boolean := false;
     i             int := 0;
 BEGIN
@@ -333,13 +333,13 @@ CREATE OR REPLACE FUNCTION authz.check_access_batch(
 ) RETURNS jsonb
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
-    v_store_id    smallint := authz._s(p_store);
+    v_store_id    integer := authz._s(p_store);
     v_results     jsonb := '[]'::jsonb;
     v_check       jsonb;
     v_result      boolean;
-    v_user_type   smallint;
-    v_relation    smallint;
-    v_object_type smallint;
+    v_user_type   integer;
+    v_relation    integer;
+    v_object_type integer;
     v_len         int;
     i             int := 0;
 BEGIN
@@ -494,10 +494,10 @@ CREATE OR REPLACE FUNCTION authz.list_objects(
 ) RETURNS TABLE (object_id text, is_wildcard boolean)
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
-    v_store_id    smallint := authz._s(p_store);
-    v_user_type   smallint := authz._t(v_store_id, p_user_type);
-    v_relation    smallint := authz._r(v_store_id, p_relation);
-    v_object_type smallint := authz._t(v_store_id, p_object_type);
+    v_store_id    integer := authz._s(p_store);
+    v_user_type   integer := authz._t(v_store_id, p_user_type);
+    v_relation    integer := authz._r(v_store_id, p_relation);
+    v_object_type integer := authz._t(v_store_id, p_object_type);
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
     RETURN QUERY
@@ -592,10 +592,10 @@ CREATE OR REPLACE FUNCTION authz.list_subjects(
 ) RETURNS TABLE (subject_id text, is_wildcard boolean)
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
-    v_store_id     smallint := authz._s(p_store);
-    v_subject_type smallint := authz._t(v_store_id, p_subject_type);
-    v_relation     smallint := authz._r(v_store_id, p_relation);
-    v_object_type  smallint := authz._t(v_store_id, p_object_type);
+    v_store_id     integer := authz._s(p_store);
+    v_subject_type integer := authz._t(v_store_id, p_subject_type);
+    v_relation     integer := authz._r(v_store_id, p_relation);
+    v_object_type  integer := authz._t(v_store_id, p_object_type);
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
     -- Reverse expansion (the dual of list_objects): walk UP the grant graph
@@ -687,9 +687,9 @@ CREATE OR REPLACE FUNCTION authz.list_actions(
 ) RETURNS TABLE (action text)
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
-    v_store_id    smallint := authz._s(p_store);
-    v_user_type   smallint := authz._t(v_store_id, p_user_type);
-    v_object_type smallint := authz._t(v_store_id, p_object_type);
+    v_store_id    integer := authz._s(p_store);
+    v_user_type   integer := authz._t(v_store_id, p_user_type);
+    v_object_type integer := authz._t(v_store_id, p_object_type);
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
     RETURN QUERY

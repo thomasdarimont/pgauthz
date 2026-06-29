@@ -45,10 +45,10 @@ CREATE OR REPLACE FUNCTION authz.watch_changes(
 )
 LANGUAGE plpgsql VOLATILE AS $$
 DECLARE
-    v_store_id     smallint := authz._s(p_store);
-    v_object_types smallint[] := CASE WHEN p_object_types IS NOT NULL
+    v_store_id     integer := authz._s(p_store);
+    v_object_types integer[] := CASE WHEN p_object_types IS NOT NULL
         THEN (SELECT array_agg(authz._t(v_store_id, t)) FROM unnest(p_object_types) AS t) END;
-    v_relations    smallint[] := CASE WHEN p_relations IS NOT NULL
+    v_relations    integer[] := CASE WHEN p_relations IS NOT NULL
         THEN (SELECT array_agg(authz._r(v_store_id, r)) FROM unnest(p_relations) AS r) END;
 BEGIN
     RETURN QUERY

@@ -311,18 +311,13 @@ See [DEVELOPMENT.md → Audit partition maintenance](DEVELOPMENT.md#audit-partit
 pgauthz targets **bounded** relationship graphs with a fairly fixed set of
 models. Know these limits before sizing a deployment:
 
-- **Identifier ceiling (`smallint`).** Stores, types, relations, models, and
-  conditions use `smallint GENERATED ALWAYS AS IDENTITY` keys — capped at
-  **32,767**, and IDENTITY **never reuses** a value, so the limit is on the
-  *cumulative number ever created*, not the live count. Type/relation IDs are
-  **global** (one sequence across all stores), so in a many-store deployment they
-  are the tighter constraint (e.g. 1,000 stores × 30 types ≈ 30k types, near the
-  cap). Static models (defined once, rarely changed) never get close; **churny**
-  environments that create-and-delete many stores/types/relations over time can
-  exhaust the space. If you need more, migrating the ID columns to `integer`
-  (≈2.1 B headroom) is a planned, well-scoped structural migration — it rewrites
-  the `tuples` partition key plus dependent FK columns and function signatures,
-  and is not needed for bounded installations.
+- **Identifier space (`integer`).** Stores, types, relations, models, and
+  conditions use `integer GENERATED ALWAYS AS IDENTITY` keys (≈**2.1 billion**).
+  IDENTITY **never reuses** a value, so the bound is on the *cumulative number
+  ever created*, not the live count — but at 2.1 B that is not a practical limit
+  even for churny environments that create-and-delete many stores/types/relations
+  over time. (These IDs were `smallint`, capped at 32,767, before **v0.2.0**;
+  widening to `integer` is a breaking re-baseline — see the CHANGELOG.)
 - **Partition growth.** `authz.tuples` has one LIST partition per object *type*
   (hash sub-partitioned for high-cardinality types); `authz.tuples_audit` has one
   RANGE partition per month. Both grow the partition/catalog count — keep the type

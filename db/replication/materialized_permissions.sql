@@ -45,8 +45,8 @@ CREATE TABLE IF NOT EXISTS authz.materialized_permissions_7 PARTITION OF authz.m
 ------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS authz.permissions_refresh_queue (
     id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    store_id    smallint NOT NULL,
-    object_type smallint NOT NULL,
+    store_id    integer NOT NULL,
+    object_type integer NOT NULL,
     object_id   text     NOT NULL,
     queued_at   timestamptz NOT NULL DEFAULT clock_timestamp()
 );
@@ -57,8 +57,8 @@ CREATE TABLE IF NOT EXISTS authz.permissions_refresh_queue (
 -- then checks each against all defined relations for the object type.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._refresh_permissions_for_object(
-    p_store_id    smallint,
-    p_object_type smallint,
+    p_store_id    integer,
+    p_object_type integer,
     p_object_id   text
 ) RETURNS integer
 LANGUAGE plpgsql AS $$
@@ -171,7 +171,7 @@ CREATE OR REPLACE FUNCTION authz.refresh_all_materialized_permissions(
 ) RETURNS integer
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id smallint := authz._s(p_store);
+    v_store_id integer := authz._s(p_store);
     v_total    integer := 0;
     v_count    integer;
     v_obj      record;

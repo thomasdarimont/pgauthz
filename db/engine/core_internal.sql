@@ -7,7 +7,7 @@
 
 ------------------------------------------------------------------------
 -- ID resolution helpers — used at schema-load time and by public API
--- functions to convert text names to smallint IDs.
+-- functions to convert text names to integer IDs.
 --
 -- Strict by default: unknown names raise instead of returning NULL,
 -- so a typo'd store, type, or relation name surfaces as an error
@@ -25,11 +25,11 @@
 -- VOLATILE functions are never pre-evaluated by the planner.
 ------------------------------------------------------------------------
 
--- Resolve a store name (e.g. 'demo') to its smallint ID.
-CREATE OR REPLACE FUNCTION authz._s(p_name text) RETURNS smallint
+-- Resolve a store name (e.g. 'demo') to its integer ID.
+CREATE OR REPLACE FUNCTION authz._s(p_name text) RETURNS integer
 LANGUAGE plpgsql VOLATILE AS $$
 DECLARE
-    v_id smallint;
+    v_id integer;
 BEGIN
     SELECT id INTO v_id FROM authz.stores WHERE name = p_name;
     IF v_id IS NULL THEN
@@ -39,11 +39,11 @@ BEGIN
 END;
 $$;
 
--- Resolve a type name (e.g. 'document') to its smallint ID within a store.
-CREATE OR REPLACE FUNCTION authz._t(p_store_id smallint, p_name text) RETURNS smallint
+-- Resolve a type name (e.g. 'document') to its integer ID within a store.
+CREATE OR REPLACE FUNCTION authz._t(p_store_id integer, p_name text) RETURNS integer
 LANGUAGE plpgsql VOLATILE AS $$
 DECLARE
-    v_id smallint;
+    v_id integer;
 BEGIN
     SELECT id INTO v_id FROM authz.types WHERE store_id = p_store_id AND name = p_name;
     IF v_id IS NULL THEN
@@ -54,14 +54,14 @@ END;
 $$;
 
 -- Convenience overload: resolve type by store name instead of store ID.
-CREATE OR REPLACE FUNCTION authz._t(p_store text, p_name text) RETURNS smallint
+CREATE OR REPLACE FUNCTION authz._t(p_store text, p_name text) RETURNS integer
     LANGUAGE sql VOLATILE AS $$ SELECT authz._t(authz._s(p_store), p_name) $$;
 
--- Resolve a relation name (e.g. 'can_read') to its smallint ID within a store.
-CREATE OR REPLACE FUNCTION authz._r(p_store_id smallint, p_name text) RETURNS smallint
+-- Resolve a relation name (e.g. 'can_read') to its integer ID within a store.
+CREATE OR REPLACE FUNCTION authz._r(p_store_id integer, p_name text) RETURNS integer
 LANGUAGE plpgsql VOLATILE AS $$
 DECLARE
-    v_id smallint;
+    v_id integer;
 BEGIN
     SELECT id INTO v_id FROM authz.relations WHERE store_id = p_store_id AND name = p_name;
     IF v_id IS NULL THEN
@@ -72,7 +72,7 @@ END;
 $$;
 
 -- Convenience overload: resolve relation by store name instead of store ID.
-CREATE OR REPLACE FUNCTION authz._r(p_store text, p_name text) RETURNS smallint
+CREATE OR REPLACE FUNCTION authz._r(p_store text, p_name text) RETURNS integer
     LANGUAGE sql VOLATILE AS $$ SELECT authz._r(authz._s(p_store), p_name) $$;
 
 ------------------------------------------------------------------------
@@ -177,8 +177,8 @@ $$;
 -- Types with namespace = NULL are unrestricted (always allowed).
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._check_namespace_access(
-    p_store_id    smallint,
-    p_object_type smallint,
+    p_store_id    integer,
+    p_object_type integer,
     p_permission  text DEFAULT 'can_write'
 ) RETURNS void
 LANGUAGE plpgsql STABLE AS $$
@@ -229,17 +229,17 @@ $$;
 ------------------------------------------------------------------------
 
 -- Direct: relation satisfied by a stored tuple linking user to object.
-CREATE OR REPLACE FUNCTION authz._rel_direct() RETURNS smallint
-    LANGUAGE sql IMMUTABLE AS $$ SELECT 1::smallint $$;
+CREATE OR REPLACE FUNCTION authz._rel_direct() RETURNS integer
+    LANGUAGE sql IMMUTABLE AS $$ SELECT 1::integer $$;
 
 -- Computed: relation is an alias for another relation on the same object.
-CREATE OR REPLACE FUNCTION authz._rel_computed() RETURNS smallint
-    LANGUAGE sql IMMUTABLE AS $$ SELECT 2::smallint $$;
+CREATE OR REPLACE FUNCTION authz._rel_computed() RETURNS integer
+    LANGUAGE sql IMMUTABLE AS $$ SELECT 2::integer $$;
 
 -- Tuple-to-userset: follow a tupleset relation to a linked object,
 -- then check a computed relation there.
-CREATE OR REPLACE FUNCTION authz._rel_ttu() RETURNS smallint
-    LANGUAGE sql IMMUTABLE AS $$ SELECT 3::smallint $$;
+CREATE OR REPLACE FUNCTION authz._rel_ttu() RETURNS integer
+    LANGUAGE sql IMMUTABLE AS $$ SELECT 3::integer $$;
 
 -- Maximum recursion depth for access checks. Every recursion step
 -- (computed hop, TTU traversal, userset expansion) consumes one level,
@@ -269,16 +269,16 @@ CREATE OR REPLACE FUNCTION authz._max_context_bytes() RETURNS int
 ------------------------------------------------------------------------
 
 -- OR: any rule in the group matching grants access (default).
-CREATE OR REPLACE FUNCTION authz._combine_or() RETURNS smallint
-    LANGUAGE sql IMMUTABLE AS $$ SELECT 0::smallint $$;
+CREATE OR REPLACE FUNCTION authz._combine_or() RETURNS integer
+    LANGUAGE sql IMMUTABLE AS $$ SELECT 0::integer $$;
 
 -- Intersection: all rules in the group must match.
-CREATE OR REPLACE FUNCTION authz._combine_and() RETURNS smallint
-    LANGUAGE sql IMMUTABLE AS $$ SELECT 1::smallint $$;
+CREATE OR REPLACE FUNCTION authz._combine_and() RETURNS integer
+    LANGUAGE sql IMMUTABLE AS $$ SELECT 1::integer $$;
 
 -- Exclusion: base rules must match AND negated rules must NOT match.
-CREATE OR REPLACE FUNCTION authz._combine_exclusion() RETURNS smallint
-    LANGUAGE sql IMMUTABLE AS $$ SELECT 2::smallint $$;
+CREATE OR REPLACE FUNCTION authz._combine_exclusion() RETURNS integer
+    LANGUAGE sql IMMUTABLE AS $$ SELECT 2::integer $$;
 
 -- (Condition language constants moved to conditions.sql)
 
@@ -289,11 +289,11 @@ CREATE OR REPLACE FUNCTION authz._combine_exclusion() RETURNS smallint
 -- Raises EXCEPTION on violation.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._check_type_restriction(
-    p_store_id      smallint,
-    p_object_type   smallint,
-    p_relation      smallint,
-    p_user_type     smallint,
-    p_user_relation smallint,
+    p_store_id      integer,
+    p_object_type   integer,
+    p_relation      integer,
+    p_user_type     integer,
+    p_user_relation integer,
     p_user_id       text
 ) RETURNS void
 LANGUAGE plpgsql STABLE AS $$
@@ -472,13 +472,13 @@ $$;
 --   SELECT authz._ensure_tuple_partition(authz._s('demo'), 'invoice', 4);
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._ensure_tuple_partition(
-    p_store_id     smallint,
+    p_store_id     integer,
     p_type_name    text,
     p_hash_modulus int DEFAULT 0
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_type_id    smallint;
+    v_type_id    integer;
     v_suffix     text;
     v_table_name text;
     v_store_name text;
@@ -511,7 +511,7 @@ BEGIN
     -- Detach default partition to allow creating a specific one
     EXECUTE 'ALTER TABLE authz.tuples DETACH PARTITION authz.tuples_default';
 
-    -- v_type_id is a smallint; %s is safe for the integer partition value.
+    -- v_type_id is a integer; %s is safe for the integer partition value.
     -- The table name is %I-quoted (defense-in-depth; the suffix is already
     -- regexp-sanitized to [a-zA-Z0-9_]). See SECURITY-AUDIT F3.
     IF COALESCE(p_hash_modulus, 0) > 0 THEN

@@ -14,10 +14,10 @@
 CREATE OR REPLACE FUNCTION authz.create_store(
     p_name        text,
     p_description text DEFAULT NULL
-) RETURNS smallint
+) RETURNS integer
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id smallint;
+    v_store_id integer;
 BEGIN
     INSERT INTO authz.stores (name, description)
     VALUES (p_name, p_description)
@@ -44,7 +44,7 @@ CREATE OR REPLACE FUNCTION authz.delete_store(
 ) RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id   smallint := authz._s(p_store);
+    v_store_id   integer := authz._s(p_store);
     v_store_safe text;
     v_type_safe  text;
     v_part_name  text;

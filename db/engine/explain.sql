@@ -128,10 +128,10 @@ CREATE OR REPLACE FUNCTION authz.explain_access(
 ) RETURNS jsonb
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id    smallint := authz._s(p_store);
-    v_user_type   smallint := authz._t(v_store_id, p_user_type);
-    v_relation    smallint := authz._r(v_store_id, p_relation);
-    v_object_type smallint := authz._t(v_store_id, p_object_type);
+    v_store_id    integer := authz._s(p_store);
+    v_user_type   integer := authz._t(v_store_id, p_user_type);
+    v_relation    integer := authz._r(v_store_id, p_relation);
+    v_object_type integer := authz._t(v_store_id, p_object_type);
     v_result          boolean;
     v_trace           jsonb;
     v_tree            jsonb;
@@ -156,9 +156,9 @@ BEGIN
         detail        text,
         duration_ms   double precision,
         -- model rule references (NULL for cycle/group-verdict steps)
-        model_rule_id smallint,
-        group_id      smallint,
-        group_op      smallint,
+        model_rule_id integer,
+        group_id      integer,
+        group_op      integer,
         negated       boolean,
         -- condition explain (set only on condition_denied steps)
         condition_name        text,

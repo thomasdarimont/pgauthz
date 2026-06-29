@@ -31,18 +31,18 @@ GRANT authz_eval TO authz;
 -- Stores: independent authorization namespaces.
 -- Each store has its own model rules, tuples, and conditions.
 CREATE TABLE authz.stores (
-    id          smallint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    id          integer PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     name        text UNIQUE NOT NULL,
     description text
 );
 
--- Lookup tables: type and relation names -> smallint IDs.
+-- Lookup tables: type and relation names -> integer IDs.
 -- Scoped per store — each store has its own independent set of types/relations.
 -- IDs are globally unique (IDENTITY) so they can be used in the partitioned
 -- tuples table without ambiguity.
 CREATE TABLE authz.types (
-    id          smallint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-    store_id    smallint NOT NULL REFERENCES authz.stores(id),
+    id          integer PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    store_id    integer NOT NULL REFERENCES authz.stores(id),
     name        text NOT NULL,
     namespace   text,              -- NULL = unrestricted, any writer can manage tuples
     description text,
@@ -57,7 +57,7 @@ CREATE TABLE authz.types (
 -- permission) can read or write tuples for it.
 -- Types with namespace = NULL remain unrestricted (backward compatible).
 CREATE TABLE authz.namespace_access (
-    store_id    smallint NOT NULL REFERENCES authz.stores(id),
+    store_id    integer NOT NULL REFERENCES authz.stores(id),
     namespace   text NOT NULL,
     db_role     text NOT NULL,
     can_read    boolean NOT NULL DEFAULT false,
@@ -66,8 +66,8 @@ CREATE TABLE authz.namespace_access (
 );
 
 CREATE TABLE authz.relations (
-    id          smallint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-    store_id    smallint NOT NULL REFERENCES authz.stores(id),
+    id          integer PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    store_id    integer NOT NULL REFERENCES authz.stores(id),
     name        text NOT NULL,
     description text,
     UNIQUE (store_id, name),
@@ -93,8 +93,8 @@ CREATE TABLE authz.relations (
 -- For lang = 'cel' the expression is a CEL boolean expression over two
 --   variables: request.* (request-time context) and stored.* (tuple context).
 CREATE TABLE authz.conditions (
-    id               smallint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-    store_id         smallint NOT NULL REFERENCES authz.stores(id),
+    id               integer PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    store_id         integer NOT NULL REFERENCES authz.stores(id),
     name             text NOT NULL,
     expression       text NOT NULL,
     -- Allowed values mirror authz._cond_lang_sql() / authz._cond_lang_cel()
@@ -112,10 +112,10 @@ CREATE TABLE authz.conditions (
 -- Used by find_redundant_tuples to exclude a tuple from access checks
 -- without requiring write access (replica-safe).
 CREATE TYPE authz._tuple_key AS (
-    user_type   smallint,
+    user_type   integer,
     user_id     text,
-    relation    smallint,
-    object_type smallint,
+    relation    integer,
+    object_type integer,
     object_id   text
 );
 
@@ -153,14 +153,14 @@ CREATE TYPE authz.tuple_input AS (
 -- Relationship tuples: the core data store.
 -- Partitioned by object_type for partition pruning on every check_access call.
 CREATE TABLE authz.tuples (
-    store_id          smallint NOT NULL,
-    user_type         smallint NOT NULL,
+    store_id          integer NOT NULL,
+    user_type         integer NOT NULL,
     user_id           text NOT NULL,
-    user_relation     smallint,          -- NULL for direct users, set for usersets
-    relation          smallint NOT NULL,
-    object_type       smallint NOT NULL,
+    user_relation     integer,          -- NULL for direct users, set for usersets
+    relation          integer NOT NULL,
+    object_type       integer NOT NULL,
     object_id         text NOT NULL,
-    condition_id      smallint,          -- NULL = unconditional, references authz.conditions
+    condition_id      integer,          -- NULL = unconditional, references authz.conditions
     condition_context jsonb,             -- stored context for condition evaluation (e.g. grant_time, grant_duration)
     created_at        timestamptz NOT NULL DEFAULT now()
 ) PARTITION BY LIST (object_type);
@@ -200,16 +200,16 @@ CREATE INDEX idx_tuples_user
 --   2 = BUT NOT       — base rules must match AND negated rules must NOT (exclusion)
 -- Groups themselves are OR'd: if any group grants access, the check passes.
 CREATE TABLE authz.models (
-    id                 smallint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-    store_id           smallint NOT NULL REFERENCES authz.stores(id),
-    object_type        smallint NOT NULL,
-    relation           smallint NOT NULL,
-    rule_type          smallint NOT NULL,  -- 1=direct, 2=computed, 3=tuple_to_userset
-    computed_relation  smallint,
-    tupleset_relation  smallint,
-    tupleset_computed  smallint,
-    group_id           smallint NOT NULL DEFAULT 0,
-    group_op           smallint NOT NULL DEFAULT 0,  -- 0=or, 1=intersection, 2=exclusion
+    id                 integer PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    store_id           integer NOT NULL REFERENCES authz.stores(id),
+    object_type        integer NOT NULL,
+    relation           integer NOT NULL,
+    rule_type          integer NOT NULL,  -- 1=direct, 2=computed, 3=tuple_to_userset
+    computed_relation  integer,
+    tupleset_relation  integer,
+    tupleset_computed  integer,
+    group_id           integer NOT NULL DEFAULT 0,
+    group_op           integer NOT NULL DEFAULT 0,  -- 0=or, 1=intersection, 2=exclusion
     negated            boolean  NOT NULL DEFAULT false,
     -- Privileged grants: when true, this DIRECT rule's relation may
     -- carry object-wildcard tuples (object_id = '*': the subject holds
@@ -248,12 +248,12 @@ CREATE UNIQUE INDEX idx_models_unique ON authz.models (
 -- to a relation. If no restrictions are defined for a (store, object_type, relation),
 -- any type is allowed (backward compatible). Only applies to direct rules.
 CREATE TABLE authz.type_restrictions (
-    id                    smallint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-    store_id              smallint NOT NULL REFERENCES authz.stores(id),
-    object_type           smallint NOT NULL,
-    relation              smallint NOT NULL,
-    allowed_user_type     smallint NOT NULL,
-    allowed_user_relation smallint,          -- NULL = direct user, non-NULL = userset
+    id                    integer PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    store_id              integer NOT NULL REFERENCES authz.stores(id),
+    object_type           integer NOT NULL,
+    relation              integer NOT NULL,
+    allowed_user_type     integer NOT NULL,
+    allowed_user_relation integer,          -- NULL = direct user, non-NULL = userset
     allow_wildcard        boolean NOT NULL DEFAULT false,
     -- Composite FKs: same-store references only (see authz.models).
     FOREIGN KEY (object_type,           store_id) REFERENCES authz.types     (id, store_id),
@@ -292,14 +292,14 @@ CREATE TABLE authz.tuples_audit (
     action            text NOT NULL,  -- 'INSERT' or 'DELETE'
     performed_at      timestamptz NOT NULL DEFAULT now(),
     performed_by      text NOT NULL DEFAULT current_user,
-    store_id          smallint NOT NULL,
-    user_type         smallint NOT NULL,
+    store_id          integer NOT NULL,
+    user_type         integer NOT NULL,
     user_id           text NOT NULL,
-    user_relation     smallint,
-    relation          smallint NOT NULL,
-    object_type       smallint NOT NULL,
+    user_relation     integer,
+    relation          integer NOT NULL,
+    object_type       integer NOT NULL,
     object_id         text NOT NULL,
-    condition_id      smallint,
+    condition_id      integer,
     condition_context jsonb,
     PRIMARY KEY (id, performed_at)
 ) PARTITION BY RANGE (performed_at);
@@ -337,16 +337,16 @@ CREATE TABLE authz.models_audit (
     action            text NOT NULL,  -- 'INSERT' or 'DELETE'
     performed_at      timestamptz NOT NULL DEFAULT now(),
     performed_by      text NOT NULL DEFAULT current_user,
-    model_id          smallint NOT NULL,  -- authz.models.id of the rule
-    store_id          smallint NOT NULL,
-    object_type       smallint NOT NULL,
-    relation          smallint NOT NULL,
-    rule_type         smallint NOT NULL,
-    computed_relation smallint,
-    tupleset_relation smallint,
-    tupleset_computed smallint,
-    group_id          smallint NOT NULL,
-    group_op          smallint NOT NULL,
+    model_id          integer NOT NULL,  -- authz.models.id of the rule
+    store_id          integer NOT NULL,
+    object_type       integer NOT NULL,
+    relation          integer NOT NULL,
+    rule_type         integer NOT NULL,
+    computed_relation integer,
+    tupleset_relation integer,
+    tupleset_computed integer,
+    group_id          integer NOT NULL,
+    group_op          integer NOT NULL,
     negated           boolean  NOT NULL,
     allow_object_wildcard boolean NOT NULL,
     PRIMARY KEY (seq)
@@ -377,8 +377,8 @@ CREATE TABLE authz.conditions_audit (
     action           text NOT NULL,  -- 'INSERT' or 'DELETE'
     performed_at     timestamptz NOT NULL DEFAULT now(),
     performed_by     text NOT NULL DEFAULT current_user,
-    condition_id     smallint NOT NULL,  -- authz.conditions.id
-    store_id         smallint NOT NULL,
+    condition_id     integer NOT NULL,  -- authz.conditions.id
+    store_id         integer NOT NULL,
     name             text NOT NULL,
     expression       text NOT NULL,
     lang             text NOT NULL DEFAULT 'sql',  -- no CHECK: history records whatever was in effect

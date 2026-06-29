@@ -104,11 +104,11 @@ CREATE OR REPLACE FUNCTION authz.create_condition(
     p_expression       text,
     p_lang             text  DEFAULT authz._cond_lang_sql(),
     p_required_context jsonb DEFAULT NULL
-) RETURNS smallint
+) RETURNS integer
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id smallint := authz._s(p_store);
-    v_id       smallint;
+    v_store_id integer := authz._s(p_store);
+    v_id       integer;
 BEGIN
     INSERT INTO authz.conditions (store_id, name, expression, lang, required_context)
     VALUES (v_store_id, p_name, p_expression, p_lang, p_required_context)
@@ -151,7 +151,7 @@ CREATE OR REPLACE FUNCTION authz.create_condition_sql(
     p_name             text,
     p_expression       text,
     p_required_context jsonb DEFAULT NULL
-) RETURNS smallint
+) RETURNS integer
 LANGUAGE sql AS $$
     SELECT authz.create_condition(p_store, p_name, p_expression,
                                   authz._cond_lang_sql(), p_required_context);
@@ -162,7 +162,7 @@ CREATE OR REPLACE FUNCTION authz.create_condition_cel(
     p_name             text,
     p_expression       text,
     p_required_context jsonb DEFAULT NULL
-) RETURNS smallint
+) RETURNS integer
 LANGUAGE sql AS $$
     SELECT authz.create_condition(p_store, p_name, p_expression,
                                   authz._cond_lang_cel(), p_required_context);

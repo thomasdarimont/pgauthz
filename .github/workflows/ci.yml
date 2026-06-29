@@ -89,9 +89,16 @@ jobs:
       - name: Resolve previous release tag
         id: prevtag
         run: |
+          # In-place upgrade is only supported within a baseline era. v0.2.0
+          # re-baselined the schema (smallint -> integer IDs), so upgrading from
+          # a pre-0.2.0 release is a reinstall, not a migration — skip those.
+          floor="v0.2.0"
           tag=$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null || true)
           if [ -z "$tag" ]; then
             echo "No v* release tag found — skipping upgrade test."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif [ "$(printf '%s\n%s\n' "$tag" "$floor" | sort -V | head -1)" != "$floor" ]; then
+            echo "Previous tag $tag predates the $floor baseline (re-baseline boundary) — skipping in-place upgrade test."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "Previous release: $tag"
