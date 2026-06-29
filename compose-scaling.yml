@@ -117,6 +117,10 @@ services:
       JWT_ISSUER: "${JWT_ISSUER:-https://auth.example.com}"
       JWT_AUDIENCE: "${JWT_AUDIENCE:-authz-api}"
       DEFAULT_STORE: "${DEFAULT_STORE:-demo}"
+      # Token-only reads by default (secure). The demo flow (init.sh sources
+      # env.sh) exports REQUIRE_TOKEN_FOR_READS=false for tokenless trusted-PEP
+      # checks; without this mapping OPA would deny the documented curl below.
+      REQUIRE_TOKEN_FOR_READS: "${REQUIRE_TOKEN_FOR_READS:-true}"
       POSTGREST_URL: "${POSTGREST_URL:-http://postgrest:3000}"
       DEFAULT_CACHE_TTL_SECONDS: "${DEFAULT_CACHE_TTL_SECONDS:-1}"
       # CACHE_TTL_SECONDS: '{"demo":{"_default":5,"document":10}}'

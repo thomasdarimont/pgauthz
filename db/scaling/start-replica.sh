@@ -19,8 +19,15 @@ if [ ! -s "$PGDATA/PG_VERSION" ]; then
         --write-recovery-conf \
         --checkpoint=fast
 
-    # Ensure hot_standby is enabled.
-    echo "hot_standby = on" >> "$PGDATA/postgresql.auto.conf"
+    # Ensure hot_standby is enabled, and pin the parameters a standby requires
+    # to be >= the primary. The primary sets these via -c flags (not in the
+    # replicated postgresql.conf), so a standby started with defaults would
+    # FATAL: "max_connections = 100 is a lower setting than on the primary,
+    # where its value was 250". Keep these in sync with compose-scaling.yml.
+    cat >> "$PGDATA/postgresql.auto.conf" <<-CONF
+	hot_standby = on
+	max_connections = 250
+	CONF
 
     chown -R postgres:postgres "$PGDATA"
     chmod 700 "$PGDATA"

@@ -29,22 +29,29 @@ PG_HOST="${PG_HOST:-localhost}"
 PG_PORT="${PG_PORT:-55433}"
 export DATABASE_URL="${DATABASE_URL:-postgres://${PG_USER}:${PG_PASSWORD}@${PG_HOST}:${PG_PORT}/${PG_DB}}"
 
-# Compose files — base stack + optional authzen overlay
-COMPOSE_FILES=(-f "$SCRIPT_DIR/compose.yml")
-if [ -f "$SCRIPT_DIR/compose-authzen.yml" ]; then
-  COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-authzen.yml")
-fi
+# Compose files. COMPOSE_FILE overrides the default stack with a single
+# alternative topology, e.g. the streaming-replication primary:
+#   COMPOSE_FILE=compose-scaling.yml ./init.sh
+# Otherwise: base stack + optional authzen / CEL overlays.
+if [ -n "${COMPOSE_FILE:-}" ]; then
+  COMPOSE_FILES=(-f "$SCRIPT_DIR/$COMPOSE_FILE")
+else
+  COMPOSE_FILES=(-f "$SCRIPT_DIR/compose.yml")
+  if [ -f "$SCRIPT_DIR/compose-authzen.yml" ]; then
+    COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-authzen.yml")
+  fi
 
-# Optional: CEL condition support. When PGAUTHZ_CEL is truthy, overlay
-# compose-cel.yml so the Postgres image is (re)built with the pg_cel extension
-# (extensions/pg-cel). init.sh then runs CREATE EXTENSION pg_cel, enabling
-# lang='cel' conditions. Off by default → stock postgres, sql conditions only.
-# Enable with: PGAUTHZ_CEL=1 ./bootstrap.sh   (or ./start.sh --cel / .env).
-case "${PGAUTHZ_CEL:-}" in
-  1|true|yes|on)
-    COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-cel.yml")
-    ;;
-esac
+  # Optional: CEL condition support. When PGAUTHZ_CEL is truthy, overlay
+  # compose-cel.yml so the Postgres image is (re)built with the pg_cel extension
+  # (extensions/pg-cel). init.sh then runs CREATE EXTENSION pg_cel, enabling
+  # lang='cel' conditions. Off by default → stock postgres, sql conditions only.
+  # Enable with: PGAUTHZ_CEL=1 ./bootstrap.sh   (or ./start.sh --cel / .env).
+  case "${PGAUTHZ_CEL:-}" in
+    1|true|yes|on)
+      COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-cel.yml")
+      ;;
+  esac
+fi
 
 # The demo/test stack runs the AuthZEN services in trusted-PEP mode (the
 # integration tests evaluate access for arbitrary subjects supplied in the
@@ -62,10 +69,20 @@ export REQUIRE_TOKEN_FOR_READS="${REQUIRE_TOKEN_FOR_READS:-false}"
 # Ensure containers are running
 docker compose "${COMPOSE_FILES[@]}" up -d --build --wait
 
-# Resolve the authz-db container
-DB_CONTAINER=$(docker compose "${COMPOSE_FILES[@]}" ps -q authz-db)
+# Resolve the database container. The default stack names it authz-db; the
+# streaming-replication topology (compose-scaling.yml) names the writable
+# primary authz-primary. DB_SERVICE overrides; otherwise try both.
+DB_SERVICE="${DB_SERVICE:-}"
+# ps -q errors ("no such service") for a service absent from the active compose
+# files; tolerate that (|| true) so the fallback can try the other name.
+if [ -n "$DB_SERVICE" ]; then
+  DB_CONTAINER=$(docker compose "${COMPOSE_FILES[@]}" ps -q "$DB_SERVICE" 2>/dev/null || true)
+else
+  DB_CONTAINER=$(docker compose "${COMPOSE_FILES[@]}" ps -q authz-db 2>/dev/null || true)
+  [ -z "$DB_CONTAINER" ] && DB_CONTAINER=$(docker compose "${COMPOSE_FILES[@]}" ps -q authz-primary 2>/dev/null || true)
+fi
 if [ -z "$DB_CONTAINER" ]; then
-  echo "ERROR: authz-db container not running." >&2
+  echo "ERROR: database container not running (looked for authz-db / authz-primary)." >&2
   exit 1
 fi
 
