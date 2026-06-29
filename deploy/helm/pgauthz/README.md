@@ -111,7 +111,7 @@ helm upgrade pgauthz ./deploy/helm/pgauthz -f values-k3d.yaml \
 reader **and** `authzen-direct` send reads; point it at `ro` to offload reads to
 replicas. `check_access` is read-only, so it runs unmodified on a hot standby.
 
-Three things that bite in practice (all handled by the chart, learned the hard way):
+A few things that bite in practice (all handled by the chart, learned the hard way):
 
 - **Role memberships must be declared in `inRoles`.** CloudNativePG owns its
   managed roles and reconciles away any membership it didn't grant — so the
@@ -129,6 +129,19 @@ Three things that bite in practice (all handled by the chart, learned the hard w
   tokens, so a check immediately after a write may be stale on `ro`. Route
   freshness-sensitive checks to `rw`; the staleness window is replication lag
   plus the OPA cache TTL.
+- **Time-travel is primary-only — route it to `-rw`.** `audit_check_access` /
+  `audit_list_actions` rebuild the as-of state into temp tables before
+  resolving, so they need a *writable* transaction and fail on a hot standby
+  (`-ro`) with `cannot execute CREATE TABLE in a read-only transaction`. They
+  fail loudly, never silently wrong. (Live `check_access` is unaffected — its
+  memo falls back to a read-only-safe backend on replicas.) If you want to
+  offload forensic queries off the primary, don't promote a streaming standby
+  (that forks the timeline and needs a re-clone to reattach); instead run a
+  dedicated **writable logical-replication subscriber** — a full primary that
+  pulls the audit data via a subscription, so its temp-table snapshot build
+  works. Staleness is fine there, since time-travel reads the past. See
+  [`db/replication/`](../../../db/replication/) for the logical-replication
+  tooling.
 
 ## Direct SQL access for applications (`extraRoles`)
 

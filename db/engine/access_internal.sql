@@ -909,41 +909,58 @@ CREATE OR REPLACE FUNCTION authz._check_access(
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
-    -- Memoize below a shallow gate, unless disabled via the authz.memoize GUC
-    -- (an ops kill-switch; also lets tests diff memo-on vs memo-off).
-    v_use    boolean := (p_depth >= 2)
-                        AND COALESCE(current_setting('authz.memoize', true), 'on') <> 'off'
-                        AND COALESCE(current_setting('authz._memo_active', true), 'off') = 'on';
+    -- The per-check memo collapses converging/diamond graphs from O(2^depth) to
+    -- ~linear. It has two backends, chosen at the root by transaction read-only
+    -- state (see below) and recorded in authz._memo_mode:
+    --   'temp' — a session temp table (fast, O(1) probes); writable txn / primary
+    --   'guc'  — a jsonb map in a session GUC (O(memo) probes; the only mutable
+    --            scratch a hot standby allows — temp tables can't be created in a
+    --            read-only txn). Slower than 'temp' but still polynomial, so the
+    --            read path stays protected on replicas. set_config is session-
+    --            local, so both backends are concurrency-safe (no cross-session
+    --            sharing; one backend runs one statement at a time).
+    --   'off'  — disabled via the authz.memoize kill-switch (tests diff on/off).
+    v_mode   text := COALESCE(current_setting('authz._memo_mode', true), 'off');
+    v_use    boolean := (p_depth >= 2) AND v_mode <> 'off';
+    v_key    text;
+    v_memo   jsonb;
     v_cached boolean;
     v_p0     bigint;
     v_result boolean;
 BEGIN
-    -- Root: (re)initialize the per-check memo.
+    -- Root: pick the backend and (re)initialize the per-check memo.
     IF p_depth = 0 THEN
-        -- The memo lives in a session temp table, which cannot be created in a
-        -- read-only transaction (a hot standby / read replica, or an explicit
-        -- READ ONLY txn). There the memo is disabled (authz._memo_active = off)
-        -- — checks still resolve correctly, just without the converging-graph
-        -- speedup. The read path must work on replicas, so this gate matters.
-        IF current_setting('transaction_read_only') = 'off' THEN
+        IF COALESCE(current_setting('authz.memoize', true), 'on') = 'off' THEN
+            v_mode := 'off';
+        ELSIF current_setting('transaction_read_only') = 'off' THEN
             CREATE TEMP TABLE IF NOT EXISTS _check_memo
                 (relation integer, object_type integer, object_id text, result boolean,
                  PRIMARY KEY (relation, object_type, object_id));
             TRUNCATE _check_memo;
-            PERFORM set_config('authz._memo_active', 'on', false);
+            v_mode := 'temp';
         ELSE
-            PERFORM set_config('authz._memo_active', 'off', false);
+            PERFORM set_config('authz._memo_data', '{}', false);
+            v_mode := 'guc';
         END IF;
+        PERFORM set_config('authz._memo_mode', v_mode, false);
         PERFORM set_config('authz._memo_prunes', '0', false);
     END IF;
 
     -- Disable the cache while tracing so explain_access sees every step.
     IF v_use AND p_trace IS NOT TRUE
               AND COALESCE(current_setting('authz.trace', true), 'off') <> 'on' THEN
-        SELECT result INTO v_cached FROM _check_memo
-         WHERE relation = p_relation AND object_type = p_object_type AND object_id = p_object_id;
-        IF FOUND THEN
-            RETURN v_cached;
+        IF v_mode = 'temp' THEN
+            SELECT result INTO v_cached FROM _check_memo
+             WHERE relation = p_relation AND object_type = p_object_type AND object_id = p_object_id;
+            IF FOUND THEN
+                RETURN v_cached;
+            END IF;
+        ELSE  -- 'guc'
+            v_key  := p_relation::text || ':' || p_object_type::text || ':' || p_object_id;
+            v_memo := COALESCE(current_setting('authz._memo_data', true), '{}')::jsonb;
+            IF v_memo ? v_key THEN
+                RETURN (v_memo ->> v_key)::boolean;
+            END IF;
         END IF;
     ELSE
         v_use := false;
@@ -957,8 +974,15 @@ BEGIN
 
     -- Cache only a path-independent (cycle-free) sub-result.
     IF v_use AND COALESCE(NULLIF(current_setting('authz._memo_prunes', true), '')::bigint, 0) = v_p0 THEN
-        INSERT INTO _check_memo VALUES (p_relation, p_object_type, p_object_id, v_result)
-        ON CONFLICT (relation, object_type, object_id) DO NOTHING;
+        IF v_mode = 'temp' THEN
+            INSERT INTO _check_memo VALUES (p_relation, p_object_type, p_object_id, v_result)
+            ON CONFLICT (relation, object_type, object_id) DO NOTHING;
+        ELSE  -- 'guc': read-modify-write the jsonb map back into the GUC
+            v_key := COALESCE(v_key, p_relation::text || ':' || p_object_type::text || ':' || p_object_id);
+            PERFORM set_config('authz._memo_data',
+                (COALESCE(current_setting('authz._memo_data', true), '{}')::jsonb
+                 || jsonb_build_object(v_key, v_result))::text, false);
+        END IF;
     END IF;
 
     RETURN v_result;

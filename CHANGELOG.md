@@ -34,11 +34,15 @@ pre-1.0, minor versions may include breaking changes.
 - **Memoization broke `check_access` on read replicas.** The per-check memo
   builds a session temp table, which cannot be created in a read-only
   transaction (a hot standby), so checks on a replica failed with `cannot
-  execute CREATE TABLE in a read-only transaction`. The memo is now
-  automatically disabled when the transaction is read-only — checks resolve
-  correctly on replicas (just without the converging-graph speedup, which only
-  matters for pathological diamond graphs). Regression test:
-  `tests/sql/tests_readonly.sql`.
+  execute CREATE TABLE in a read-only transaction`. On a read-only transaction
+  the memo now switches to a session-GUC `jsonb` backend (the only mutable
+  scratch a standby allows) instead of the temp table — so checks on replicas
+  are both **correct and still protected** against converging/diamond graphs
+  (the GUC backend is slower than the temp table but still polynomial). The
+  fast temp-table backend is unchanged on the primary. Time-travel
+  (`audit_check_access`) is unaffected: it materializes its as-of state into
+  temp tables, so it already requires a writable transaction and is primary-only.
+  Regression test: `tests/sql/tests_readonly.sql`.
 - Logical-replication demo (`db/replication/init-replication.sh`) hardcoded
   applying only `0001_baseline.sql`, so the new `0002_store_retire.sql` column
   (`stores.deleted_at`) was missing and every `authz._s()` call failed with

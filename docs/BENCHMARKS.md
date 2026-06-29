@@ -189,12 +189,20 @@ exponential — depth 14 ≈ 3 s, depth 16 ≈ 12 s, depth 18 exceeds 30 s.
     bounds recursion *depth*, not *path count*, so the memo — not the depth
     limit — is what makes deep lattices tractable; `statement_timeout` remains the
     final backstop.
-  - **Read replicas:** the memo uses a session temp table, which can't be
-    created in a read-only transaction, so it is **auto-disabled on hot
-    standbys** (and any `READ ONLY` txn). Checks still resolve correctly there —
-    they just fall back to the un-memoized traversal, so route checks against
-    pathological converging graphs to the primary if that worst case matters.
-    Normal tree/DAG hierarchies are unaffected on replicas.
+  - **Read replicas:** the memo's session temp table can't be created in a
+    read-only transaction, so on a hot standby (and any `READ ONLY` txn) the memo
+    switches to a session-GUC `jsonb` backend — the only mutable scratch a
+    standby allows. It's slower than the temp table (each probe parses the memo
+    map, so ~O(memo²) vs O(memo)) but still **polynomial**, so replica checks
+    stay protected against converging/diamond graphs; you do **not** need to
+    route the worst case to the primary. `set_config` is session-local, so the
+    backend is concurrency-safe. Normal tree/DAG hierarchies are unaffected.
+    Measured on an 18-deep converging diamond (the DENY/full-traversal case):
+    temp-table memo **4.6 ms**, GUC memo **3.9 ms**, no memo **1322 ms** — the
+    GUC backend is effectively free here and ~340× faster than no memo. No
+    tuning needed: the map lives in normal backend memory (not `work_mem` /
+    `temp_buffers`), it's bounded by the polynomial distinct-node count, and a
+    runaway check hits `statement_timeout` long before memory matters.
   - **Time-travel too:** the point-in-time evaluator (`audit_check_access`,
     `audit_list_actions`) is a separate snapshot resolver but mirrors the same
     structure, so it gets the **same wrapper** (`_check_access_snapshot` in

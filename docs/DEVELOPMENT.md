@@ -393,6 +393,17 @@ silently corrupts historical answers. For maintenance jobs, prefer keeping
 the audit rows and tagging them via `p_performed_by` (e.g.
 `'cleanup_redundant_tuples'`) so they remain filterable.
 
+> **Routing note (replicas):** `audit_check_access` / `audit_list_actions`
+> rebuild the as-of state into temp tables before resolving, so they need a
+> *writable* transaction — run them on the **primary**, not a read-only replica
+> (on a hot standby they fail loudly with `cannot execute CREATE TABLE in a
+> read-only transaction`). Live `check_access` is unaffected (its memo uses a
+> read-only-safe backend on replicas). To offload forensic queries off the
+> primary, use a **writable logical-replication subscriber** (`db/replication/`)
+> — a full primary that pulls the audit data via a subscription — rather than
+> promoting a streaming standby (which forks the timeline). Staleness is fine
+> there, since time-travel reads the past.
+
 The audit table is also structurally **append-only**: a trigger rejects
 `UPDATE` always and `DELETE` outside of sanctioned maintenance (partition
 row migration, and `delete_store(..., p_purge_audit => true)`). Retention
