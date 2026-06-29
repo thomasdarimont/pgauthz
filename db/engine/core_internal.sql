@@ -254,6 +254,15 @@ CREATE OR REPLACE FUNCTION authz._max_depth() RETURNS int
     LANGUAGE sql STABLE AS
     $$ SELECT COALESCE(NULLIF(current_setting('authz.max_depth', true), '')::int, 32) $$;
 
+-- Maximum size (bytes) of a condition's request/stored context JSONB. Bounds
+-- memory pressure from a caller passing an oversized context into condition
+-- evaluation (SECURITY-AUDIT F5). Enforced in _eval_condition. Default 256 KiB.
+-- Override per session or per database via the authz.max_context_bytes GUC:
+--   SET authz.max_context_bytes = '524288';
+CREATE OR REPLACE FUNCTION authz._max_context_bytes() RETURNS int
+    LANGUAGE sql STABLE AS
+    $$ SELECT COALESCE(NULLIF(current_setting('authz.max_context_bytes', true), '')::int, 262144) $$;
+
 ------------------------------------------------------------------------
 -- Group operator constants — used when inserting model rules with
 -- intersection (AND) or exclusion (BUT NOT) semantics.

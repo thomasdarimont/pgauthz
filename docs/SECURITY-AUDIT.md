@@ -111,7 +111,7 @@ they only delegate, so it is Low — recorded here for transparency.)
 | F2 | Low | `create_condition_sql` / `create_condition_cel` were `LANGUAGE sql` wrappers (inlined) over `create_condition` (SECURITY DEFINER). **Fixed:** marked `SECURITY DEFINER` (roles.sql) for API uniformity. | ✅ Fixed |
 | F3 | Low | Partition DDL used `%s` for the (already `regexp_replace`-sanitized) table identifier — not injectable, but `%s` over a name is an anti-pattern. **Fixed:** `_ensure_tuple_partition` / `_ensure_audit_partition` now build the unqualified name and use `authz.%I` (core_internal.sql), matching `store.sql`. | ✅ Fixed |
 | F4 | Info | `statement_timeout` is a **role-level** setting (roles.sql:126-127), so it bounds *all* statements, not just condition evaluation. A per-statement `SET LOCAL statement_timeout` around condition eval would isolate the budget — but adds complexity; the role-level bound is a reasonable default. | Accepted (documented in PRODUCTION.md) |
-| F5 | Info | No explicit size cap on the request/stored **context JSONB**. A huge context could pressure memory before `statement_timeout` / PG limits stop it. An explicit `pg_column_size` cap would harden the edge. | Optional hardening |
+| F5 | Info | No explicit size cap on the request/stored **context JSONB** — a huge context could pressure memory before `statement_timeout` / PG limits stop it. **Fixed:** `_eval_condition` rejects a context over `authz._max_context_bytes()` (default **256 KiB**, GUC `authz.max_context_bytes`) with a clear `program_limit_exceeded` error (re-raised, not a silent deny). | ✅ Fixed |
 | F6 | Info | `required_context` documents a condition's keys but is **not** enforced as an allow-list at eval time, so an expression could read other keys present in context. Matters only if an *admin* is malicious; low value vs. cost. | Won't fix (by design) |
 
 No High/Critical **code** findings. The engine is fail-closed, the privileged
@@ -145,8 +145,8 @@ Deploy-time (most are in [`PRODUCTION.md`](PRODUCTION.md) — this cross-checks 
 - [ ] Audit retention + partition maintenance scheduled; backups before upgrades.
 - [ ] If `pg_cel` is used: pin the extension version; review before upgrading.
 
-Code hardening: F1/F2 (uniform `SECURITY DEFINER`) and F3 (`%I` in partition DDL)
-are **done**; F5 (context size cap) remains optional.
+Code hardening F1/F2 (uniform `SECURITY DEFINER`), F3 (`%I` in partition DDL),
+and F5 (256 KiB context-size cap) are **done**. F4/F6 are accepted as-is.
 
 ## For an external auditor
 

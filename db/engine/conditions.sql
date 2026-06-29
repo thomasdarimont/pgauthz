@@ -125,6 +125,18 @@ BEGIN
         RETURN true;
     END IF;
 
+    -- Bound context size (DoS guard, SECURITY-AUDIT F5): a caller-supplied
+    -- request context (or a stored one) larger than authz.max_context_bytes
+    -- is rejected before it is bound into condition evaluation. Raised with a
+    -- dedicated errcode that is re-raised below (a clear error, not a silent
+    -- deny). NULL contexts have NULL size, so the guard skips them.
+    IF pg_column_size(p_request_context)   > authz._max_context_bytes()
+       OR pg_column_size(p_condition_context) > authz._max_context_bytes() THEN
+        RAISE EXCEPTION 'condition context exceeds the %-byte limit (authz.max_context_bytes)',
+            authz._max_context_bytes()
+            USING ERRCODE = 'program_limit_exceeded';
+    END IF;
+
     SELECT expression, lang INTO v_expr, v_lang
       FROM authz.conditions WHERE id = p_condition_id;
     IF v_expr IS NULL THEN
@@ -142,6 +154,9 @@ EXCEPTION
         RAISE;         -- statement_timeout / cancel must abort the check (fail
                        -- closed as an error), never be swallowed into a silent
                        -- deny — this is what bounds a runaway condition
+    WHEN program_limit_exceeded THEN
+        RAISE;         -- the context-size guard (F5) surfaces as a clear error,
+                       -- not a silent deny — the input is malformed, not denied
     WHEN OTHERS THEN
         RETURN false;  -- genuine condition evaluation error = deny
 END;
