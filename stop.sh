@@ -10,11 +10,20 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Compose files — base stack + optional authzen overlay
+# Compose files — base stack + optional authzen overlay. Mirrors start.sh so
+# the same stack that was brought up is torn down (down removes by project, but
+# matching the overlays keeps it warning-free and consistent).
 COMPOSE_FILES=(-f "$SCRIPT_DIR/compose.yml")
 if [ -f "$SCRIPT_DIR/compose-authzen.yml" ]; then
   COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-authzen.yml")
 fi
+
+# Optional CEL overlay (matches start.sh --cel / PGAUTHZ_CEL).
+case "${PGAUTHZ_CEL:-}" in
+  1|true|yes|on)
+    COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-cel.yml")
+    ;;
+esac
 
 if [ "${1:-}" = "--clean" ]; then
   echo "==> Stopping pgauthz stack and removing volumes..."
