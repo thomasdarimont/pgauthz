@@ -129,17 +129,20 @@ cold vs ~0.5 ms warm.
 
 ### `adversarial` — diamond / converging graphs (~1k tuples)
 
-A `check_access` DENY on a doubled-link diamond chain, by depth (paths = 2^depth):
+A `check_access` DENY on a doubled-link diamond chain, by depth (paths =
+2^depth), **with the memoization wrapper** (the default):
 
-| Operation | ms/op | Bounded by |
-|---|--:|---|
-| diamond DENY — depth 6 (2^6 = 64 paths) | **12** | re-evaluated sub-problems |
-| diamond DENY — depth 9 (2^9 = 512 paths) | **93** | ~×8 per +3 depth |
-| diamond DENY — depth 12 (2^12 = 4,096 paths) | **732** | ~×8 per +3 depth (= **2^depth**) |
-| wide fan-out DENY — 500 parents converging on one leaf | **87** | linear in fan-out (500× one leaf) |
+| Operation | ms/op (memoized) | was, un-memoized |
+|---|--:|--:|
+| diamond DENY — depth 6 (2^6 = 64 paths) | **1.2** | 12 |
+| diamond DENY — depth 9 (2^9 = 512 paths) | **1.5** | 93 |
+| diamond DENY — depth 12 (2^12 = 4,096 paths) | **1.9** | 732 |
+| wide fan-out DENY — 500 parents converging on one leaf | **56** | 87 |
 
-This is a **known worst case, not a representative workload** — see the takeaway
-below. Probed further: depth 14 ≈ 3.0 s, depth 16 ≈ 12 s, depth 18 exceeds 30 s.
+The cross-branch memo (below) collapses the `2^depth` blow-up to ~linear: a
+depth-28 diamond (2^28 ≈ 270 M paths) resolves in ~12 ms and stays flat with
+depth. **Un-memoized** (`SET authz.memoize = 'off'`) the same checks are
+exponential — depth 14 ≈ 3 s, depth 16 ≈ 12 s, depth 18 exceeds 30 s.
 
 ## Takeaways
 
@@ -167,24 +170,26 @@ below. Probed further: depth 14 ≈ 3.0 s, depth 16 ≈ 12 s, depth 18 exceeds 3
   a per-tuple SQL **condition** each resolve in ~0.06–0.10 ms — the AND/BUT-NOT
   combine operators and the zero-privilege condition sandbox are not where time
   goes; reachable-set size still dominates the `list_*` variants.
-- **⚠️ Converging graphs are an exponential worst case — no cross-branch
-  memoization** (`adversarial`). The evaluator prunes *cycles* (a path array
-  stops a node already on the current path) but does **not** cache a completed
-  `(relation, object)` sub-result, so a node reachable via many distinct acyclic
-  paths is re-evaluated once per path. A **diamond** graph (each link doubled)
-  therefore costs `O(2^depth)` — ~×8 per +3 depth, 0.7 s at depth 12, ~12 s at
-  depth 16. **`authz.max_depth` does not protect against this** — it bounds the
-  recursion *depth* (default 32), not the *number of paths* within that depth, so
-  a depth-30 diamond stays under the limit yet explores ~10⁹ paths.
-  `statement_timeout` is the only backstop today.
-  - **Mitigations now:** avoid diamond/lattice-shaped models (multiple
-    relations/parents converging on the same node through many paths); keep
-    `authz.max_depth` modest; rely on `statement_timeout` to fail-close runaway
-    checks. Normal hierarchical models (tree-shaped parents, the `drive`/`github`
-    shapes) do **not** hit this — they stay linear.
-  - **Fix:** a per-call memo (cache each `(relation, object)` sub-result within a
-    single `check_access`) collapses both the diamond and the fan-out to roughly
-    linear. Tracked as future work; this suite is the before/after harness for it.
+- **Converging graphs are memoized — `O(2^depth)` → linear** (`adversarial`).
+  The evaluator prunes *cycles* (a path array stops a node already on the current
+  path); without memoization a node reachable via many distinct acyclic paths is
+  re-evaluated once per path, so a **diamond** graph (each link doubled) costs
+  `O(2^depth)`. `_check_access` therefore wraps the resolver with a **per-check
+  memo** (`access_internal.sql`): each `(relation, object)` sub-result is cached
+  within one root check, collapsing diamonds and converging fan-out to ~linear (a
+  depth-28 diamond went from "minutes / timeout" to ~12 ms).
+  - **Correctness with cycles:** a result is cached **only** when its subtree
+    triggered no cycle prune (a zero-prune subtree is provably path-independent),
+    so the memoized decision is identical to the path-based one on every input —
+    asserted differentially in `tests/sql/tests_memoization.sql` (memo on ≡ off
+    across a cyclic graph). Cyclic subtrees are recomputed, never cached.
+  - **Cost / control:** shallow nodes (`depth < 2`) skip the cache, so typical
+    checks are unaffected (A/B: +~2% on a shallow check). Toggle with
+    `SET authz.memoize = 'off'` (an ops kill-switch). Note `authz.max_depth`
+    bounds recursion *depth*, not *path count*, so the memo — not the depth
+    limit — is what makes deep lattices tractable; `statement_timeout` remains the
+    final backstop. (Time-travel `audit_check_access` uses a separate snapshot
+    evaluator and is not yet memoized.)
 - **Time-travel cost scales with the audit-log size** replayed up to the
   target timestamp (~108 ms at 60 k events here). It is a forensic/compliance
   path, not a hot path — keep it off latency-critical flows, and retain the

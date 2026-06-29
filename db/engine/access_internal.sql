@@ -646,7 +646,7 @@ $$;
 --
 -- For convenience, use authz.explain_access(...) instead.
 ------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION authz._check_access(
+CREATE OR REPLACE FUNCTION authz._check_access_impl(
     p_store_id        integer,
     p_user_type       integer,
     p_user_id         text,
@@ -708,6 +708,12 @@ BEGIN
                     v_relation_name, v_object_type_name || ':' || p_object_id,
                     false, 'cycle detected — path pruned', 0, NULL::integer, NULL::integer, NULL::integer, NULL::boolean);
         END IF;
+        -- Record the cycle prune so the memoizing wrapper (_check_access) will
+        -- NOT cache any node whose subtree depended on this back-edge — only
+        -- path-independent (cycle-free) sub-results are cacheable. See the
+        -- wrapper below / docs/BENCHMARKS.md.
+        PERFORM set_config('authz._memo_prunes',
+            (COALESCE(NULLIF(current_setting('authz._memo_prunes', true), '')::bigint, 0) + 1)::text, false);
         RETURN false;
     END IF;
     v_path := p_path || v_key;
@@ -859,5 +865,91 @@ BEGIN
     END IF;
 
     RETURN false;
+END;
+$$;
+
+------------------------------------------------------------------------
+-- _check_access: memoizing wrapper over _check_access_impl.
+--
+-- All recursion (computed / TTU / userset) re-enters through this function, so
+-- caching here covers the whole resolution tree. It caches each (relation,
+-- object) sub-result WITHIN one root check, so a node reachable via many
+-- distinct paths is evaluated once — collapsing diamond / converging graphs
+-- from O(2^depth) to ~linear (see bench/suites/adversarial.sql).
+--
+-- Correctness with cycles: _check_access_impl prunes cycles using the current
+-- PATH, so a node's result can be path-dependent IFF a cycle in its subtree
+-- pointed back above it. We cache a result ONLY when its subtree triggered NO
+-- cycle prune (the authz._memo_prunes counter, bumped by _impl's cycle check,
+-- is unchanged across the sub-evaluation) — a zero-prune subtree is provably
+-- path-independent. Anything touched by a cycle is recomputed, never cached,
+-- so the exact path-based decision is preserved (verified by the cyclic-graph
+-- tests). On acyclic data (the realistic case, and every diamond) NO prunes
+-- ever fire, so everything caches and the speedup is full.
+--
+-- Scope: the memo is reset at the root (p_depth = 0); within one check the
+-- subject, request context, contextual tuples and exclude are all constant, so
+-- (relation, object) is a complete key. Shallow nodes (p_depth < 2) skip the
+-- cache so trivial checks pay nothing, and tracing disables it so
+-- explain_access still records the fully unfolded tree.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._check_access(
+    p_store_id        integer,
+    p_user_type       integer,
+    p_user_id         text,
+    p_relation        integer,
+    p_object_type     integer,
+    p_object_id       text,
+    p_request_context jsonb DEFAULT NULL,
+    p_has_ctx_tuples  boolean DEFAULT false,
+    p_depth           int DEFAULT 0,
+    p_trace           boolean DEFAULT NULL,
+    p_exclude         authz._tuple_key DEFAULT NULL,
+    p_path            text[] DEFAULT '{}'
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+    -- Memoize below a shallow gate, unless disabled via the authz.memoize GUC
+    -- (an ops kill-switch; also lets tests diff memo-on vs memo-off).
+    v_use    boolean := (p_depth >= 2)
+                        AND COALESCE(current_setting('authz.memoize', true), 'on') <> 'off';
+    v_cached boolean;
+    v_p0     bigint;
+    v_result boolean;
+BEGIN
+    -- Root: (re)initialize the per-check memo.
+    IF p_depth = 0 THEN
+        CREATE TEMP TABLE IF NOT EXISTS _check_memo
+            (relation integer, object_type integer, object_id text, result boolean,
+             PRIMARY KEY (relation, object_type, object_id));
+        TRUNCATE _check_memo;
+        PERFORM set_config('authz._memo_prunes', '0', false);
+    END IF;
+
+    -- Disable the cache while tracing so explain_access sees every step.
+    IF v_use AND p_trace IS NOT TRUE
+              AND COALESCE(current_setting('authz.trace', true), 'off') <> 'on' THEN
+        SELECT result INTO v_cached FROM _check_memo
+         WHERE relation = p_relation AND object_type = p_object_type AND object_id = p_object_id;
+        IF FOUND THEN
+            RETURN v_cached;
+        END IF;
+    ELSE
+        v_use := false;
+    END IF;
+
+    v_p0 := COALESCE(NULLIF(current_setting('authz._memo_prunes', true), '')::bigint, 0);
+
+    v_result := authz._check_access_impl(
+        p_store_id, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
+        p_request_context, p_has_ctx_tuples, p_depth, p_trace, p_exclude, p_path);
+
+    -- Cache only a path-independent (cycle-free) sub-result.
+    IF v_use AND COALESCE(NULLIF(current_setting('authz._memo_prunes', true), '')::bigint, 0) = v_p0 THEN
+        INSERT INTO _check_memo VALUES (p_relation, p_object_type, p_object_id, v_result)
+        ON CONFLICT (relation, object_type, object_id) DO NOTHING;
+    END IF;
+
+    RETURN v_result;
 END;
 $$;
