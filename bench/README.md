@@ -11,6 +11,7 @@ bench/
     drive.sql       # Drive-shaped model (nested folders, groups, 50k users)
     github.sql      # GitHub-shaped model (orgs/teams/repos, role hierarchy, nested teams)
     rules.sql       # Rule-combination model (intersection, exclusion, conditions)
+    adversarial.sql # Diamond/converging graphs — exponential worst case (no memoization)
 ```
 
 ## Running

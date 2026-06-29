@@ -24,6 +24,7 @@ different resolution paths:
 | **`drive`** | Nested folders + groups, 50k users | direct, userset, `*` wildcard, deep TTU folder chain, time-travel |
 | **`github`** | Orgs / teams / repos, role hierarchy | multi-level computed role chain, TTU to the parent org, **nested teams** (userset-of-userset) |
 | **`rules`** | Synthetic rule-combination model | **intersection** (AND), **exclusion** (BUT NOT), **conditions** (ABAC) |
+| **`adversarial`** | Diamond / converging graphs | worst case for an evaluator with **no cross-branch memoization** — exponential `2^depth` re-evaluation |
 
 Adding another — e.g. the demo's tax-advisor chain — is just another file in
 `bench/suites/`.
@@ -55,6 +56,13 @@ via `parent_org` (TTU), and a 10-deep **nested-team** chain feeds one repo
 with 500 subjects. `can_access = assigned AND cleared` (intersection),
 `can_edit = editor BUT NOT banned` (exclusion), and `viewer` grants carry a
 time-window **condition**. ~54 k tuples.
+
+**`adversarial` dataset** — tiny (~1 k tuples) but pathological. A `node` model
+with `can_view = viewer OR parent_a→can_view OR parent_b→can_view`, and **diamond
+chains** where every link is doubled (`node_i` has *both* `parent_a` and
+`parent_b` pointing to `node_{i+1}`), so the root reaches the leaf via **2^depth**
+acyclic paths. Plus a wide-convergence node (one root → 500 intermediates → one
+dead-end leaf). All DENY (no grant), to force full traversal.
 
 **Environment** — these numbers were taken on a developer laptop:
 
@@ -119,6 +127,20 @@ Numbers are steady-state on PostgreSQL 18.4; a cold buffer cache (e.g. the first
 call right after a bulk load) is slower — `drive`'s `list_objects` was ~70 ms
 cold vs ~0.5 ms warm.
 
+### `adversarial` — diamond / converging graphs (~1k tuples)
+
+A `check_access` DENY on a doubled-link diamond chain, by depth (paths = 2^depth):
+
+| Operation | ms/op | Bounded by |
+|---|--:|---|
+| diamond DENY — depth 6 (2^6 = 64 paths) | **12** | re-evaluated sub-problems |
+| diamond DENY — depth 9 (2^9 = 512 paths) | **93** | ~×8 per +3 depth |
+| diamond DENY — depth 12 (2^12 = 4,096 paths) | **732** | ~×8 per +3 depth (= **2^depth**) |
+| wide fan-out DENY — 500 parents converging on one leaf | **87** | linear in fan-out (500× one leaf) |
+
+This is a **known worst case, not a representative workload** — see the takeaway
+below. Probed further: depth 14 ≈ 3.0 s, depth 16 ≈ 12 s, depth 18 exceeds 30 s.
+
 ## Takeaways
 
 - **`check_access` is sub-millisecond** for typical direct/userset/wildcard
@@ -145,6 +167,24 @@ cold vs ~0.5 ms warm.
   a per-tuple SQL **condition** each resolve in ~0.06–0.10 ms — the AND/BUT-NOT
   combine operators and the zero-privilege condition sandbox are not where time
   goes; reachable-set size still dominates the `list_*` variants.
+- **⚠️ Converging graphs are an exponential worst case — no cross-branch
+  memoization** (`adversarial`). The evaluator prunes *cycles* (a path array
+  stops a node already on the current path) but does **not** cache a completed
+  `(relation, object)` sub-result, so a node reachable via many distinct acyclic
+  paths is re-evaluated once per path. A **diamond** graph (each link doubled)
+  therefore costs `O(2^depth)` — ~×8 per +3 depth, 0.7 s at depth 12, ~12 s at
+  depth 16. **`authz.max_depth` does not protect against this** — it bounds the
+  recursion *depth* (default 32), not the *number of paths* within that depth, so
+  a depth-30 diamond stays under the limit yet explores ~10⁹ paths.
+  `statement_timeout` is the only backstop today.
+  - **Mitigations now:** avoid diamond/lattice-shaped models (multiple
+    relations/parents converging on the same node through many paths); keep
+    `authz.max_depth` modest; rely on `statement_timeout` to fail-close runaway
+    checks. Normal hierarchical models (tree-shaped parents, the `drive`/`github`
+    shapes) do **not** hit this — they stay linear.
+  - **Fix:** a per-call memo (cache each `(relation, object)` sub-result within a
+    single `check_access`) collapses both the diamond and the fan-out to roughly
+    linear. Tracked as future work; this suite is the before/after harness for it.
 - **Time-travel cost scales with the audit-log size** replayed up to the
   target timestamp (~108 ms at 60 k events here). It is a forensic/compliance
   path, not a hot path — keep it off latency-critical flows, and retain the
