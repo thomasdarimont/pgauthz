@@ -71,6 +71,40 @@ BEGIN
 
     PERFORM _test_assert('memo_01_memo_equals_nomemo_on_cyclic_graph', mism::text, '0');
 
+    -- Same differential for the TIME-TRAVEL evaluator (audit_check_access),
+    -- which resolves against the replayed audit snapshot through its own
+    -- memoizing wrapper. p_at is set just past these writes so the whole
+    -- graph is in the snapshot. The live and snapshot paths share the
+    -- authz.memoize kill-switch but use independent memo state.
+    mism := 0;
+    FOREACH u IN ARRAY ARRAY['alice','bob','carol'] LOOP
+        FOR n IN SELECT 'n'||g FROM generate_series(1, n_nodes) g LOOP
+            PERFORM set_config('authz.memoize', 'off', true);
+            r_off := authz.audit_check_access('memotest','user',u,'can_view','node',n, now() + interval '1 hour');
+            PERFORM set_config('authz.memoize', 'on', true);
+            r_on  := authz.audit_check_access('memotest','user',u,'can_view','node',n, now() + interval '1 hour');
+            IF r_on IS DISTINCT FROM r_off THEN
+                mism := mism + 1;
+            END IF;
+        END LOOP;
+    END LOOP;
+    PERFORM set_config('authz.memoize', 'on', true);
+
+    PERFORM _test_assert('memo_02_audit_memo_equals_nomemo_on_cyclic_graph', mism::text, '0');
+
+    -- And the time-travel result must equal the live result on this graph
+    -- (no edits between the writes and p_at, so the snapshot == current).
+    mism := 0;
+    FOREACH u IN ARRAY ARRAY['alice','bob','carol'] LOOP
+        FOR n IN SELECT 'n'||g FROM generate_series(1, n_nodes) g LOOP
+            IF authz.audit_check_access('memotest','user',u,'can_view','node',n, now() + interval '1 hour')
+               IS DISTINCT FROM authz.check_access('memotest','user',u,'can_view','node',n) THEN
+                mism := mism + 1;
+            END IF;
+        END LOOP;
+    END LOOP;
+    PERFORM _test_assert('memo_03_audit_equals_live_on_cyclic_graph', mism::text, '0');
+
     PERFORM authz.delete_store('memotest');
 END $$;
 

@@ -24,7 +24,7 @@ different resolution paths:
 | **`drive`** | Nested folders + groups, 50k users | direct, userset, `*` wildcard, deep TTU folder chain, time-travel |
 | **`github`** | Orgs / teams / repos, role hierarchy | multi-level computed role chain, TTU to the parent org, **nested teams** (userset-of-userset) |
 | **`rules`** | Synthetic rule-combination model | **intersection** (AND), **exclusion** (BUT NOT), **conditions** (ABAC) |
-| **`adversarial`** | Diamond / converging graphs | worst case for an evaluator with **no cross-branch memoization** — exponential `2^depth` re-evaluation |
+| **`adversarial`** | Diamond / converging graphs | stress for cross-branch re-evaluation — `2^depth` paths, collapsed to ~linear by the **per-check memo** (toggle with `authz.memoize`) |
 
 Adding another — e.g. the demo's tax-advisor chain — is just another file in
 `bench/suites/`.
@@ -188,8 +188,14 @@ exponential — depth 14 ≈ 3 s, depth 16 ≈ 12 s, depth 18 exceeds 30 s.
     `SET authz.memoize = 'off'` (an ops kill-switch). Note `authz.max_depth`
     bounds recursion *depth*, not *path count*, so the memo — not the depth
     limit — is what makes deep lattices tractable; `statement_timeout` remains the
-    final backstop. (Time-travel `audit_check_access` uses a separate snapshot
-    evaluator and is not yet memoized.)
+    final backstop.
+  - **Time-travel too:** the point-in-time evaluator (`audit_check_access`,
+    `audit_list_actions`) is a separate snapshot resolver but mirrors the same
+    structure, so it gets the **same wrapper** (`_check_access_snapshot` in
+    `audit_internal.sql`, independent `_snap` memo + prune counter, same
+    `authz.memoize` switch). A depth-12 diamond DENY against the replayed
+    snapshot dropped from **1.6 s → 6 ms**; equivalence (memo on ≡ off, and
+    snapshot ≡ live) is asserted by the same differential test.
 - **Time-travel cost scales with the audit-log size** replayed up to the
   target timestamp (~108 ms at 60 k events here). It is a forensic/compliance
   path, not a hot path — keep it off latency-critical flows, and retain the

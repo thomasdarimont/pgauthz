@@ -415,12 +415,13 @@ END;
 $$;
 
 ------------------------------------------------------------------------
--- _check_access_snapshot: like _check_access but reads from the
--- pg_temp._snapshot_tuples temp table instead of authz.tuples.
--- Used by audit_check_access for point-in-time permission checks.
--- Supports grouped rules (intersection / exclusion).
+-- _check_access_snapshot_impl: like _check_access_impl but reads from the
+-- pg_temp._snapshot_tuples / _snapshot_models temp tables instead of
+-- authz.tuples / authz.models. The point-in-time core; the memoizing
+-- wrapper _check_access_snapshot (below) is what all recursion re-enters
+-- through. Supports grouped rules (intersection / exclusion).
 ------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION authz._check_access_snapshot(
+CREATE OR REPLACE FUNCTION authz._check_access_snapshot_impl(
     p_store_id        integer,
     p_user_type       integer,
     p_user_id         text,
@@ -445,10 +446,15 @@ BEGIN
             authz._max_depth();
     END IF;
 
-    -- Cycle detection (mirrors _check_access): prune edges that revisit
+    -- Cycle detection (mirrors _check_access_impl): prune edges that revisit
     -- a node on the current evaluation path.
     v_key := p_relation::text || ':' || p_object_type::text || ':' || p_object_id;
     IF v_key = ANY(p_path) THEN
+        -- Record the cycle prune so the memoizing wrapper
+        -- (_check_access_snapshot) will NOT cache any node whose subtree
+        -- depended on this back-edge (its result would be path-dependent).
+        PERFORM set_config('authz._memo_prunes_snap',
+            (COALESCE(NULLIF(current_setting('authz._memo_prunes_snap', true), '')::bigint, 0) + 1)::text, false);
         RETURN false;
     END IF;
     v_path := p_path || v_key;
@@ -543,5 +549,77 @@ BEGIN
     END IF;
 
     RETURN false;
+END;
+$$;
+
+------------------------------------------------------------------------
+-- _check_access_snapshot: memoizing wrapper over _check_access_snapshot_impl.
+-- The point-in-time twin of _check_access's wrapper (see access_internal.sql
+-- for the full rationale). All snapshot recursion (computed / TTU / userset)
+-- re-enters here, so caching here covers the whole point-in-time resolution
+-- tree, collapsing diamond / converging graphs from O(2^depth) to ~linear.
+--
+-- Within one audit_check_access the subject, request context AND the entire
+-- _snapshot_* state are constant, so (relation, object) is a complete key.
+-- Correctness with cycles is identical to the live path: a result is cached
+-- ONLY when its subtree triggered no cycle prune (the authz._memo_prunes_snap
+-- counter, bumped by _impl's cycle check, is unchanged across the
+-- sub-evaluation) — a zero-prune subtree is provably path-independent, so the
+-- exact path-based decision is preserved. A separate temp table and counter
+-- (suffix _snap) keep this wholly independent of the live memo.
+--
+-- Reset at the root (p_depth = 0); shallow nodes (p_depth < 2) skip the cache;
+-- disablable via SET authz.memoize='off' (shared kill-switch). No tracing path
+-- exists for snapshots, so there is no trace guard.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._check_access_snapshot(
+    p_store_id        integer,
+    p_user_type       integer,
+    p_user_id         text,
+    p_relation        integer,
+    p_object_type     integer,
+    p_object_id       text,
+    p_request_context jsonb DEFAULT NULL,
+    p_depth           int DEFAULT 0,
+    p_path            text[] DEFAULT '{}'
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_use    boolean := (p_depth >= 2)
+                        AND COALESCE(current_setting('authz.memoize', true), 'on') <> 'off';
+    v_cached boolean;
+    v_p0     bigint;
+    v_result boolean;
+BEGIN
+    -- Root: (re)initialize the per-check snapshot memo.
+    IF p_depth = 0 THEN
+        CREATE TEMP TABLE IF NOT EXISTS _check_memo_snap
+            (relation integer, object_type integer, object_id text, result boolean,
+             PRIMARY KEY (relation, object_type, object_id)) ON COMMIT DROP;
+        TRUNCATE _check_memo_snap;
+        PERFORM set_config('authz._memo_prunes_snap', '0', false);
+    END IF;
+
+    IF v_use THEN
+        SELECT result INTO v_cached FROM _check_memo_snap
+         WHERE relation = p_relation AND object_type = p_object_type AND object_id = p_object_id;
+        IF FOUND THEN
+            RETURN v_cached;
+        END IF;
+    END IF;
+
+    v_p0 := COALESCE(NULLIF(current_setting('authz._memo_prunes_snap', true), '')::bigint, 0);
+
+    v_result := authz._check_access_snapshot_impl(
+        p_store_id, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
+        p_request_context, p_depth, p_path);
+
+    -- Cache only a path-independent (cycle-free) sub-result.
+    IF v_use AND COALESCE(NULLIF(current_setting('authz._memo_prunes_snap', true), '')::bigint, 0) = v_p0 THEN
+        INSERT INTO _check_memo_snap VALUES (p_relation, p_object_type, p_object_id, v_result)
+        ON CONFLICT (relation, object_type, object_id) DO NOTHING;
+    END IF;
+
+    RETURN v_result;
 END;
 $$;
