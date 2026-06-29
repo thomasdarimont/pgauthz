@@ -35,6 +35,18 @@ psql_derived() {
         psql -U authz -d authz "$@"
 }
 
+# Apply ALL structural migrations in order via psql (the demo has no sqlx
+# migration ledger — it does not do upgrades — so it replays every
+# db/migrations/NNNN_*.sql, not just the frozen baseline, to stay in sync as
+# new structural deltas land).
+apply_migrations_via() {
+    local psql_fn=$1
+    local m
+    for m in "$PG_DIR"/db/migrations/*.sql; do
+        "$psql_fn" < "$m"
+    done
+}
+
 wait_for_sync() {
     local psql_fn=$1
     local label=$2
@@ -58,11 +70,11 @@ wait_for_sync() {
 # Primary: full schema + model + seed data + materialized permissions
 # ══════════════════════════════════════════════════════════════════════
 
-echo "==> [primary] Applying structural baseline + loading engine (full)..."
-# One-shot demo setup: apply the structural baseline via psql (the connection is
-# already authz, so SET LOCAL ROLE is a harmless no-op), then the idempotent
-# engine code. No sqlx migration ledger here — the demo does not do upgrades.
-psql_primary < "$PG_DIR/db/migrations/0001_baseline.sql"
+echo "==> [primary] Applying structural migrations + loading engine (full)..."
+# One-shot demo setup: apply the structural migrations via psql (the connection
+# is already authz, so SET LOCAL ROLE is a harmless no-op), then the idempotent
+# engine code.
+apply_migrations_via psql_primary
 while IFS= read -r f; do
   psql_primary < "$PG_DIR/db/engine/$f"
 done < <(engine_files_for substrate read write audit)
@@ -91,8 +103,8 @@ psql_primary < "$SCRIPT_DIR/setup-publication.sql"
 # ══════════════════════════════════════════════════════════════════════
 
 echo ""
-echo "==> [accounting-app] Applying structural baseline + loading engine (full)..."
-psql_accounting < "$PG_DIR/db/migrations/0001_baseline.sql"
+echo "==> [accounting-app] Applying structural migrations + loading engine (full)..."
+apply_migrations_via psql_accounting
 while IFS= read -r f; do
   psql_accounting < "$PG_DIR/db/engine/$f"
 done < <(engine_files_for substrate read write audit)

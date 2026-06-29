@@ -29,6 +29,15 @@ pre-1.0, minor versions may include breaking changes.
   opt into resolving retired stores. `delete_store` resolves retired stores too,
   so a retired store can be purged.
 
+### Fixed
+
+- Logical-replication demo (`db/replication/init-replication.sh`) hardcoded
+  applying only `0001_baseline.sql`, so the new `0002_store_retire.sql` column
+  (`stores.deleted_at`) was missing and every `authz._s()` call failed with
+  `column "deleted_at" does not exist`. It now replays **all**
+  `db/migrations/*.sql` in order, staying correct as future structural deltas
+  land.
+
 ### Performance
 
 - **Memoized the `check_access` evaluator** (and the time-travel
