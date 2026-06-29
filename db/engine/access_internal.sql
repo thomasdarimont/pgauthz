@@ -1003,23 +1003,27 @@ BEGIN
             ON CONFLICT (relation, object_type, object_id) DO NOTHING;
         ELSE  -- 'guc': read-modify-write the jsonb map back into the GUC.
             -- The GUC backend re-parses/serializes the whole map per probe, so a
-            -- check with thousands of DISTINCT subproblems is slow on a replica
-            -- regardless (route those to the primary; statement_timeout is the
-            -- final backstop). authz.memo_max_entries is an OPTIONAL hard ceiling
-            -- on map size (0 = unlimited, the default — keeps behavior polynomial
-            -- and predictable). Set it >0 to bound GUC memory, accepting that
-            -- distinct subproblems past the cap are no longer memoized. The
-            -- temp-table backend is O(entries) and uncapped. _memo_count tracks
-            -- the size in a GUC for an O(1) cap check (and for observability).
-            v_cap := COALESCE(NULLIF(current_setting('authz.memo_max_entries', true), '')::int, 0);
+            -- check with thousands of DISTINCT subproblems degrades (~quadratic)
+            -- on a replica. authz.memo_max_entries caps the map size; when a check
+            -- would exceed it we FAIL FAST with a distinct error rather than
+            -- silently continuing un-memoized — silent degradation would
+            -- reintroduce the exact pathological re-work the memo prevents. The
+            -- caller should catch 'memo_limit_exceeded' (SQLSTATE 53400) and
+            -- retry on the PRIMARY (writable → temp-table backend, O(entries),
+            -- uncapped). 0 = unlimited (legacy: no cap, no abort). _memo_count
+            -- tracks the size in a GUC for an O(1) cap check (and observability).
+            v_cap := COALESCE(NULLIF(current_setting('authz.memo_max_entries', true), '')::int, 5000);
             v_cnt := COALESCE(NULLIF(current_setting('authz._memo_count', true), '')::bigint, 0);
-            IF v_cap = 0 OR v_cnt < v_cap THEN
-                v_key := COALESCE(v_key, p_relation::text || ':' || p_object_type::text || ':' || p_object_id);
-                PERFORM set_config('authz._memo_data',
-                    (COALESCE(current_setting('authz._memo_data', true), '{}')::jsonb
-                     || jsonb_build_object(v_key, v_result))::text, false);
-                PERFORM set_config('authz._memo_count', (v_cnt + 1)::text, false);
+            IF v_cap > 0 AND v_cnt >= v_cap THEN
+                RAISE EXCEPTION 'memo_limit_exceeded: this check needs more than % distinct subproblems memoized on a read-only/replica connection', v_cap
+                    USING ERRCODE = '53400',  -- configuration_limit_exceeded
+                          HINT = 'Retry on the primary (a writable connection uses the uncapped temp-table memo), or raise authz.memo_max_entries (0 = unlimited).';
             END IF;
+            v_key := COALESCE(v_key, p_relation::text || ':' || p_object_type::text || ':' || p_object_id);
+            PERFORM set_config('authz._memo_data',
+                (COALESCE(current_setting('authz._memo_data', true), '{}')::jsonb
+                 || jsonb_build_object(v_key, v_result))::text, false);
+            PERFORM set_config('authz._memo_count', (v_cnt + 1)::text, false);
         END IF;
     END IF;
 

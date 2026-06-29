@@ -203,12 +203,18 @@ exponential — depth 14 ≈ 3 s, depth 16 ≈ 12 s, depth 18 exceeds 30 s.
     - *Pathological checks* (thousands of distinct subproblems in a single
       decision): the GUC re-parses/serializes the whole map per probe, so it
       degrades — measured on a fan of K leaves (DENY): K=1 000 → temp 150 ms /
-      GUC 273 ms; K=10 000 → temp 1.5 s / GUC ~13–27 s. Such checks are already
-      ~seconds even on the primary; on a replica, **route them to the primary**
-      (or a writable logical replica). `statement_timeout` is the backstop on
-      both. `authz.memo_max_entries` (default `0` = unlimited) is an optional
-      hard ceiling on the GUC map size if you want to bound its memory, at the
-      cost of not memoizing distinct subproblems past the cap.
+      GUC 273 ms; K=10 000 → temp 1.5 s / GUC ~13–27 s. To bound this on a
+      replica, `authz.memo_max_entries` (**default 5 000**) caps the GUC map and
+      **fails fast** when a check would exceed it: it raises `memo_limit_exceeded`
+      (SQLSTATE `53400`) rather than silently continuing un-memoized (which would
+      reintroduce the pathological re-work). The caller should catch that and
+      **retry on the primary** — a writable connection uses the uncapped
+      temp-table backend, which handles such checks (and the primary is already
+      ~seconds for them). Set `authz.memo_max_entries = 0` to disable the cap
+      (unlimited, no abort). `statement_timeout` is the final backstop on both
+      backends. *(Client-side automatic primary-fallback on `memo_limit_exceeded`
+      is a consumer responsibility — the engine on a replica can't reach the
+      primary itself.)*
 
     The map lives in normal backend memory (not `work_mem` / `temp_buffers`).
     Normal tree/DAG hierarchies are unaffected.

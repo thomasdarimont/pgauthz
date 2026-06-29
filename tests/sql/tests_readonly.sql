@@ -51,6 +51,53 @@ BEGIN
     PERFORM authz.write_tuple('rodiamond','user','alice','viewer','node','n'||n_nodes);
 END $$;
 
+-- ── Fixture 3: a wide fan (root + many leaves) for the memo-cap test ──────────
+-- A DENY check on the root touches 1 + n_leaves DISTINCT can_view subproblems,
+-- so with a small authz.memo_max_entries the GUC backend must FAIL FAST.
+DO $$
+DECLARE s int; n_leaves int := 120;
+BEGIN
+    BEGIN PERFORM authz.delete_store('rofan'); EXCEPTION WHEN OTHERS THEN NULL; END;
+    s := authz.create_store('rofan');
+    INSERT INTO authz.types (store_id,name) VALUES (s,'user'),(s,'node');
+    INSERT INTO authz.relations (store_id,name) VALUES (s,'parent_a'),(s,'viewer'),(s,'can_view');
+    PERFORM authz.model_add_rule('rofan','node','viewer','direct');
+    PERFORM authz.model_add_rule('rofan','node','parent_a','direct');
+    PERFORM authz.model_add_rule('rofan','node','can_view','computed', p_computed_relation=>'viewer');
+    PERFORM authz.model_add_rule('rofan','node','can_view','ttu', p_tupleset_relation=>'parent_a', p_tupleset_computed=>'can_view');
+    PERFORM authz.write_tuple('rofan','node','c'||i,'parent_a','node','root') FROM generate_series(1, n_leaves) i;
+END $$;
+
+-- ── Memo cap: read-only path FAILS FAST past authz.memo_max_entries ───────────
+-- (instead of silently degrading to the un-memoized pathological behavior).
+BEGIN;
+SET TRANSACTION READ ONLY;
+SET LOCAL authz.memo_max_entries = 50;   -- fan has 120 leaves > 50
+DO $$
+BEGIN
+    BEGIN
+        PERFORM authz.check_access('rofan','user','nobody','can_view','node','root');
+        PERFORM set_config('authz._ro_cap', 'no-error', false);
+    EXCEPTION
+        WHEN SQLSTATE '53400' THEN PERFORM set_config('authz._ro_cap', 'memo_limit_exceeded', false);
+        WHEN OTHERS          THEN PERFORM set_config('authz._ro_cap', 'other:' || SQLSTATE, false);
+    END;
+END $$;
+COMMIT;
+
+-- The PRIMARY (writable → temp-table backend) is uncapped: the same check with
+-- the same low cap set must still succeed (no abort).
+SET authz.memo_max_entries = 50;
+DO $$
+BEGIN
+    BEGIN
+        PERFORM authz.check_access('rofan','user','nobody','can_view','node','root');
+        PERFORM set_config('authz._pri_cap', 'ok', false);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('authz._pri_cap', 'raised:' || SQLSTATE, false);
+    END;
+END $$;
+RESET authz.memo_max_entries;
+
 -- ── Resolve inside a read-only transaction (mirrors a standby) ────────────────
 BEGIN;
 SET TRANSACTION READ ONLY;
@@ -93,8 +140,15 @@ BEGIN
     -- The per-check payload must NOT linger in the session GUC after the check.
     PERFORM _test_assert('ro_07_memo_payload_cleared_on_return',
         current_setting('authz._ro_data', true), '{}');
+    -- Memo cap: the read-only/GUC path fails fast with memo_limit_exceeded past
+    -- the cap (no silent degradation), while the primary/temp path is uncapped.
+    PERFORM _test_assert('ro_08_guc_fails_fast_at_memo_cap',
+        current_setting('authz._ro_cap', true), 'memo_limit_exceeded');
+    PERFORM _test_assert('ro_09_primary_uncapped_succeeds',
+        current_setting('authz._pri_cap', true), 'ok');
     PERFORM authz.delete_store('rotest');
     PERFORM authz.delete_store('rodiamond');
+    PERFORM authz.delete_store('rofan');
 END $$;
 
 SELECT _test_report('read-only (replica) check resolution + protection');

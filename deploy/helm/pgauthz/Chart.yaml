@@ -8,7 +8,7 @@ type: application
 version: 0.2.2
 appVersion: "0.2.2"
 keywords: [authorization, zanzibar, openfga, rebac, postgres, cloudnative-pg, opa]
-home: https://github.com/thomasdarimont/authz-dev
+home: https://github.com/thomasdarimont/pgauthz
 maintainers:
   - name: Thomas Darimont
 annotations:

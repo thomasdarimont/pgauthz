@@ -307,6 +307,16 @@ condition history (`models_audit`, `conditions_audit`) are append-only logs.
   audit rows even for a store with millions of tuples; time-travel as of `>=`
   the retirement instant denies everything, and earlier instants resolve from
   the kept history.
+- **Audit timestamps are *effective transaction* timestamps, not commit
+  timestamps.** Every audit event (and the `deleted_at` retirement marker) is
+  stamped with `transaction_timestamp()` — the time the writing transaction
+  *started*, not when it committed and became visible. This is deliberate (every
+  change in one transaction shares one instant, so time-travel sees a
+  transaction's effect atomically), but it means a long-running transaction's
+  recorded "instant" can precede the moment its changes actually became visible.
+  Treat the audit clock as an effective-transaction-time ordering, not an
+  authoritative commit-time one. (A future monotonic per-store revision counter
+  would give a cleaner total order; see the roadmap.)
 
   `delete_store` is the *physical* removal (right-to-be-forgotten / erasure)
   path: it drops the dictionary rows, so even with audit rows preserved

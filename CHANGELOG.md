@@ -7,6 +7,24 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **Read-replica memo now fails fast at its cap instead of silently degrading.**
+  `authz.memo_max_entries` defaults to **5000** (was unlimited), and when a check
+  on the GUC (read-only/replica) backend would exceed it, `check_access` raises
+  `memo_limit_exceeded` (SQLSTATE `53400`) rather than continuing un-memoized —
+  silent degradation past the cap would reintroduce the ~quadratic re-work the
+  memo prevents (raised in the external project review). Callers should catch it
+  and **retry on the primary** (whose temp-table backend is uncapped). Set
+  `authz.memo_max_entries = 0` to restore the old unlimited/no-abort behavior.
+  The primary/temp-table path is unaffected. Test:
+  `tests/sql/tests_readonly.sql` (`ro_08`/`ro_09`).
+
+### Fixed
+
+- Helm `Chart.yaml` `home:` pointed at the wrong repo (`…/authz-dev`); now
+  `https://github.com/thomasdarimont/pgauthz`.
+
 ## [0.2.2] - 2026-06-29
 
 ### Added
