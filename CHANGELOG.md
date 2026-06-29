@@ -7,6 +7,33 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **`STORE_RETIRED` watch/changefeed event.** `retire_store` now records one
+  store-lifecycle event (`action = 'STORE_RETIRED'`) in the audit log and fires
+  the `authz_changes` doorbell, so watch consumers learn a store was retired and
+  can invalidate everything for it. The event is store-wide: it bypasses the
+  per-tuple object-type / namespace / relation filters, and `watch_changes` /
+  `watch_cursor` now resolve retired stores (so a consumer can drain the
+  changefeed's final events). Time-travel ignores it (the snapshot builders
+  filter `action = 'INSERT'`).
+
+### Changed
+
+- **`retire_store` is now O(1), not O(tuples), in audit terms.** It previously
+  ran `DELETE FROM authz.tuples` before dropping the live partitions purely to
+  make the audit trigger record the removal — writing **one `tuples_audit` row
+  per tuple**, a huge-transaction / WAL / replication-lag / partition-lock hazard
+  for stores with millions of tuples (raised in the external project review).
+  The redundant `DELETE` is gone: dropping the partitions (DDL) already removes
+  the data, and a single `STORE_RETIRED` lifecycle event (+ the `deleted_at`
+  marker) records the retirement once, regardless of tuple count. The time-travel
+  evaluator (`_build_audit_snapshot`) treats a retired store as denying
+  everything as of `>= deleted_at`, while the kept INSERT history still answers
+  "could X do Y at time T `<` retirement?". Tradeoff: the audit log no longer
+  holds a per-tuple deletion record at retirement — the lifecycle event replaces
+  it; `audit_list_user`/`audit_list_object` still show the full INSERT history.
+
 ## [0.2.1] - 2026-06-29
 
 ### Added

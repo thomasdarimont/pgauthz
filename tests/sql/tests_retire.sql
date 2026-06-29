@@ -24,14 +24,24 @@ BEGIN
     PERFORM authz.model_add_rule('retiretest','doc','viewer','direct');
     PERFORM authz.model_add_rule('retiretest','doc','can_view','computed', p_computed_relation=>'viewer');
     PERFORM authz.write_tuple('retiretest','user','alice','viewer','doc','doc1');
+    -- A few more tuples, so "retire adds no per-tuple audit rows" is meaningful.
+    PERFORM authz.write_tuple('retiretest','user','alice','viewer','doc','doc'||g)
+       FROM generate_series(2,5) g;
+    PERFORM authz.write_tuple('retiretest','user','bob','viewer','doc','doc1');
 
     -- Sanity: access is granted while the store is live.
     PERFORM _test_assert('retire_00_live_access_granted',
         authz.check_access('retiretest','user','alice','can_view','doc','doc1')::text, 'true');
 END $$;
 
--- Watermark (txn 2): an instant after seeding, before retirement.
-CREATE TEMP TABLE _retire_t AS SELECT clock_timestamp() AS t_before;
+-- Watermark (txn 2): an instant after seeding, before retirement. Also capture
+-- the store id + its audit-row count, so we can assert retire is O(1) in audit
+-- terms (it must NOT write one delete event per tuple).
+CREATE TEMP TABLE _retire_t AS
+SELECT clock_timestamp() AS t_before,
+       (SELECT id FROM authz.stores WHERE name = 'retiretest') AS sid,
+       (SELECT count(*) FROM authz.tuples_audit
+         WHERE store_id = (SELECT id FROM authz.stores WHERE name = 'retiretest')) AS n_before;
 SELECT pg_sleep(0.05);
 
 -- Retire (txn 3): soft-delete. Drops live tuples, keeps dictionary + audit.
@@ -40,10 +50,22 @@ SELECT authz.retire_store('retiretest');
 -- Assertions against the retired store.
 DO $$
 DECLARE
-    v_before timestamptz;
-    v_raised boolean;
+    v_before  timestamptz;
+    v_sid     integer;
+    v_nbefore bigint;
+    v_nafter  bigint;
+    v_raised  boolean;
 BEGIN
-    SELECT t_before INTO v_before FROM _retire_t;
+    SELECT t_before, sid, n_before INTO v_before, v_sid, v_nbefore FROM _retire_t;
+
+    -- retire_store must be O(1) in audit terms, not O(tuples): it writes exactly
+    -- ONE store-lifecycle event (STORE_RETIRED), regardless of how many tuples
+    -- the store held — instead of one DELETE event per tuple (here 6). Dropping
+    -- the live partitions removes the data; the lifecycle event + deleted_at
+    -- marker record the retirement.
+    v_nafter := (SELECT count(*) FROM authz.tuples_audit WHERE store_id = v_sid);
+    PERFORM _test_assert('retire_06_one_lifecycle_event_not_per_tuple',
+        (v_nafter - v_nbefore)::text, '1');
 
     -- Live APIs reject a retired store (authz._s resolves live-only).
     BEGIN
@@ -83,6 +105,17 @@ BEGIN
     END;
     PERFORM _test_assert_true('retire_05_double_retire_rejected', v_raised,
         'retire_store on an already-retired store must raise');
+
+    -- Watch/changefeed: retirement surfaces as exactly ONE store-lifecycle
+    -- event (watch_changes resolves the retired store), and NO per-tuple delete
+    -- events (the old O(tuples) behavior). p_lag => 0 so the just-written event
+    -- is immediately visible in the test.
+    PERFORM _test_assert('retire_08_watch_emits_one_store_retired',
+        (SELECT count(*)::text FROM authz.watch_changes('retiretest', p_lag => '0 seconds'::interval)
+          WHERE action = 'STORE_RETIRED'), '1');
+    PERFORM _test_assert('retire_09_watch_no_delete_events_from_retire',
+        (SELECT count(*)::text FROM authz.watch_changes('retiretest', p_lag => '0 seconds'::interval)
+          WHERE action = 'DELETE'), '0');
 END $$;
 
 -- Hard purge (txn): delete_store resolves the retired store and removes it
@@ -100,7 +133,7 @@ BEGIN
         v_raised := false;
     EXCEPTION WHEN OTHERS THEN v_raised := true;
     END;
-    PERFORM _test_assert_true('retire_06_purged_store_unresolvable', v_raised,
+    PERFORM _test_assert_true('retire_07_purged_store_unresolvable', v_raised,
         'after physical delete_store the store name no longer resolves');
 END $$;
 

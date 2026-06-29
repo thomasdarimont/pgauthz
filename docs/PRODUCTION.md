@@ -301,7 +301,12 @@ condition history (`models_audit`, `conditions_audit`) are append-only logs.
   historical API (`audit_check_access`, `audit_list_*`) still resolves a retired
   store **by name**, so "could user X do Y at time T?" keeps working long after
   it stops serving live checks; the live APIs reject it, and its name stays
-  reserved (no by-name ambiguity with the preserved history).
+  reserved (no by-name ambiguity with the preserved history). Retirement is a
+  **metadata operation** — it drops partitions (DDL) and writes the `deleted_at`
+  marker, so it stays cheap (`O(partitions)`) and generates **no** per-tuple
+  audit rows even for a store with millions of tuples; time-travel as of `>=`
+  the retirement instant denies everything, and earlier instants resolve from
+  the kept history.
 
   `delete_store` is the *physical* removal (right-to-be-forgotten / erasure)
   path: it drops the dictionary rows, so even with audit rows preserved

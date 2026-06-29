@@ -32,6 +32,18 @@ BEGIN
 
     TRUNCATE _snapshot_tuples;
 
+    -- A retired store denies everything as of >= its retirement. retire_store
+    -- drops the live partitions WITHOUT writing per-tuple DELETE events, so the
+    -- audit log alone would still show the tuples as present afterward — the
+    -- store-level deleted_at marker is the source of truth for "it's gone". As
+    -- of < deleted_at the store was live and resolves from the INSERT history
+    -- below. (An empty tuple snapshot makes every relation deny, which also
+    -- empties audit_list_actions for the retired window.)
+    IF EXISTS (SELECT 1 FROM authz.stores
+                WHERE id = p_store_id AND deleted_at IS NOT NULL AND p_at >= deleted_at) THEN
+        RETURN;
+    END IF;
+
     INSERT INTO _snapshot_tuples
     SELECT sub.store_id, sub.user_type, sub.user_id, sub.user_relation,
            sub.relation, sub.object_type, sub.object_id,

@@ -81,10 +81,36 @@ LANGUAGE plpgsql AS $$
 DECLARE
     v_store_id integer := authz._s(p_store);   -- live-only: cannot retire twice
 BEGIN
-    DELETE FROM authz.tuples WHERE store_id = v_store_id;
+    -- Drop the live tuple partitions (DDL: removes the data + reclaims storage
+    -- in O(partitions), not per row). We deliberately do NOT
+    -- `DELETE FROM authz.tuples` first: that fired the per-row audit trigger and
+    -- wrote one tuples_audit DELETE event per tuple — O(tuples), a huge
+    -- transaction / WAL / replication-lag hazard for large stores. Instead the
+    -- store-level `deleted_at` marker below records the retirement once, and the
+    -- time-travel evaluator (_build_audit_snapshot) treats the store as denying
+    -- everything as of >= deleted_at. The audit log keeps the original INSERT
+    -- history, so "could X do Y at time T < deleted_at?" still resolves.
     PERFORM authz._drop_store_tuple_partitions(v_store_id, p_store);
 
     UPDATE authz.stores SET deleted_at = now() WHERE id = v_store_id;
+
+    -- Record ONE store-lifecycle event in the audit log so watch/changefeed
+    -- consumers learn the store was retired and can invalidate everything for
+    -- it — replacing the millions of per-tuple DELETE events the old path
+    -- emitted. action 'STORE_RETIRED' is ignored by time-travel (the snapshot
+    -- builders filter action='INSERT'); the tuple columns are neutral sentinels
+    -- (type/relation id 0 never exists; object_id '*' = whole store). The
+    -- doorbell wakes listeners, like any tuple change.
+    INSERT INTO authz.tuples_audit (
+        action, performed_at, performed_by, store_id,
+        user_type, user_id, user_relation, relation, object_type, object_id,
+        condition_id, condition_context
+    ) VALUES (
+        'STORE_RETIRED', transaction_timestamp(),
+        COALESCE(NULLIF(current_setting('authz.performed_by', true), ''), authz._effective_role()),
+        v_store_id, 0, '*', NULL, 0, 0, '*', NULL, NULL
+    );
+    PERFORM pg_notify('authz_changes', v_store_id::text);
 END;
 $$;
 

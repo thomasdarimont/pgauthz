@@ -1203,6 +1203,14 @@ SELECT * FROM authz.watch_cursor('demo');
 Consumer loop: `LISTEN authz_changes` → on notification call `watch_changes`
 after the last cursor → process → persist the new cursor.
 
+**Store lifecycle.** Most events are tuple changes (`action` `INSERT` / `DELETE`).
+Retiring a store (`retire_store`) emits one **store-wide** `STORE_RETIRED` event
+(with no tuple fields) instead of a delete per tuple — a consumer should treat it
+as "invalidate everything for this store". It bypasses the object-type /
+namespace / relation filters (a narrowly-scoped watcher still sees it), and
+`watch_changes` / `watch_cursor` keep resolving a retired store so the consumer
+can drain the changefeed's final events.
+
 **Safety / lag.** `seq` is assigned at INSERT time, not commit time, so changes
 are cursored by `(performed_at, seq)` and gated by a stability lag (`p_lag`,
 default 1s): only rows older than `now() - p_lag` are returned. Because the

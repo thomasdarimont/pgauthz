@@ -45,7 +45,10 @@ CREATE OR REPLACE FUNCTION authz.watch_changes(
 )
 LANGUAGE plpgsql VOLATILE AS $$
 DECLARE
-    v_store_id     integer := authz._s(p_store);
+    -- Retired-inclusive: a consumer keeps draining a retired store's changefeed
+    -- to receive its final events, including the STORE_RETIRED lifecycle event
+    -- (which, being lag-gated, only becomes visible after the store is retired).
+    v_store_id     integer := authz._s(p_store, true);
     v_object_types integer[] := CASE WHEN p_object_types IS NOT NULL
         THEN (SELECT array_agg(authz._t(v_store_id, t)) FROM unnest(p_object_types) AS t) END;
     v_relations    integer[] := CASE WHEN p_relations IS NOT NULL
@@ -64,17 +67,23 @@ BEGIN
                a.object_id,
                c.name
           FROM authz.tuples_audit a
-          JOIN authz.types     ut ON ut.store_id = a.store_id AND ut.id = a.user_type
-          JOIN authz.relations r  ON r.store_id  = a.store_id AND r.id  = a.relation
-          JOIN authz.types     ot ON ot.store_id = a.store_id AND ot.id = a.object_type
+          -- LEFT joins so the store-level STORE_RETIRED event (sentinel type /
+          -- relation ids that don't resolve) still surfaces; for ordinary tuple
+          -- events the ids always resolve, so this is equivalent to inner joins.
+     LEFT JOIN authz.types     ut ON ut.store_id = a.store_id AND ut.id = a.user_type
+     LEFT JOIN authz.relations r  ON r.store_id  = a.store_id AND r.id  = a.relation
+     LEFT JOIN authz.types     ot ON ot.store_id = a.store_id AND ot.id = a.object_type
      LEFT JOIN authz.relations ur ON ur.store_id = a.store_id AND ur.id = a.user_relation
      LEFT JOIN authz.conditions c ON c.store_id  = a.store_id AND c.id  = a.condition_id
          WHERE a.store_id = v_store_id
            AND (a.performed_at, a.seq) > (p_after_at, p_after_seq)
            AND a.performed_at <= clock_timestamp() - p_lag
-           AND (p_object_types IS NULL OR a.object_type = ANY(v_object_types))
-           AND (p_namespaces   IS NULL OR ot.namespace  = ANY(p_namespaces))
-           AND (p_relations    IS NULL OR a.relation     = ANY(v_relations))
+           -- Store-lifecycle events are store-wide: they bypass the per-tuple
+           -- type / namespace / relation filters so a narrowly-scoped watcher
+           -- still learns the whole store was retired.
+           AND (a.action = 'STORE_RETIRED' OR p_object_types IS NULL OR a.object_type = ANY(v_object_types))
+           AND (a.action = 'STORE_RETIRED' OR p_namespaces   IS NULL OR ot.namespace  = ANY(p_namespaces))
+           AND (a.action = 'STORE_RETIRED' OR p_relations    IS NULL OR a.relation     = ANY(v_relations))
          ORDER BY a.performed_at, a.seq
          LIMIT p_limit;
 END;
@@ -88,5 +97,5 @@ RETURNS TABLE (at timestamptz, seq bigint)
 LANGUAGE sql STABLE AS $$
     SELECT max(performed_at), max(seq)
       FROM authz.tuples_audit
-     WHERE store_id = authz._s(p_store);
+     WHERE store_id = authz._s(p_store, true);   -- retired-inclusive, like watch_changes
 $$;
