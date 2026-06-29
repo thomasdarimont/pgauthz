@@ -31,6 +31,14 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **Memoization broke `check_access` on read replicas.** The per-check memo
+  builds a session temp table, which cannot be created in a read-only
+  transaction (a hot standby), so checks on a replica failed with `cannot
+  execute CREATE TABLE in a read-only transaction`. The memo is now
+  automatically disabled when the transaction is read-only — checks resolve
+  correctly on replicas (just without the converging-graph speedup, which only
+  matters for pathological diamond graphs). Regression test:
+  `tests/sql/tests_readonly.sql`.
 - Logical-replication demo (`db/replication/init-replication.sh`) hardcoded
   applying only `0001_baseline.sql`, so the new `0002_store_retire.sql` column
   (`stores.deleted_at`) was missing and every `authz._s()` call failed with

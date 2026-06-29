@@ -100,6 +100,11 @@ echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_memoization.sql"
 
 echo ""
+echo "==> Running read-only (replica) check resolution checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_readonly.sql"
+
+echo ""
 echo "==> Running type restriction checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_type_restrictions.sql"

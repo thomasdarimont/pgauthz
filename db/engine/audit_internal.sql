@@ -586,17 +586,27 @@ CREATE OR REPLACE FUNCTION authz._check_access_snapshot(
 LANGUAGE plpgsql AS $$
 DECLARE
     v_use    boolean := (p_depth >= 2)
-                        AND COALESCE(current_setting('authz.memoize', true), 'on') <> 'off';
+                        AND COALESCE(current_setting('authz.memoize', true), 'on') <> 'off'
+                        AND COALESCE(current_setting('authz._memo_active_snap', true), 'off') = 'on';
     v_cached boolean;
     v_p0     bigint;
     v_result boolean;
 BEGIN
-    -- Root: (re)initialize the per-check snapshot memo.
+    -- Root: (re)initialize the per-check snapshot memo. As with the live memo,
+    -- the temp table cannot be created in a read-only transaction, so the memo
+    -- is disabled there (the snapshot build itself already needs a writable txn,
+    -- but this keeps the wrapper from being the failure point and stays
+    -- symmetric with _check_access).
     IF p_depth = 0 THEN
-        CREATE TEMP TABLE IF NOT EXISTS _check_memo_snap
-            (relation integer, object_type integer, object_id text, result boolean,
-             PRIMARY KEY (relation, object_type, object_id)) ON COMMIT DROP;
-        TRUNCATE _check_memo_snap;
+        IF current_setting('transaction_read_only') = 'off' THEN
+            CREATE TEMP TABLE IF NOT EXISTS _check_memo_snap
+                (relation integer, object_type integer, object_id text, result boolean,
+                 PRIMARY KEY (relation, object_type, object_id)) ON COMMIT DROP;
+            TRUNCATE _check_memo_snap;
+            PERFORM set_config('authz._memo_active_snap', 'on', false);
+        ELSE
+            PERFORM set_config('authz._memo_active_snap', 'off', false);
+        END IF;
         PERFORM set_config('authz._memo_prunes_snap', '0', false);
     END IF;
 

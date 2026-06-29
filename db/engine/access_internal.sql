@@ -912,17 +912,28 @@ DECLARE
     -- Memoize below a shallow gate, unless disabled via the authz.memoize GUC
     -- (an ops kill-switch; also lets tests diff memo-on vs memo-off).
     v_use    boolean := (p_depth >= 2)
-                        AND COALESCE(current_setting('authz.memoize', true), 'on') <> 'off';
+                        AND COALESCE(current_setting('authz.memoize', true), 'on') <> 'off'
+                        AND COALESCE(current_setting('authz._memo_active', true), 'off') = 'on';
     v_cached boolean;
     v_p0     bigint;
     v_result boolean;
 BEGIN
     -- Root: (re)initialize the per-check memo.
     IF p_depth = 0 THEN
-        CREATE TEMP TABLE IF NOT EXISTS _check_memo
-            (relation integer, object_type integer, object_id text, result boolean,
-             PRIMARY KEY (relation, object_type, object_id));
-        TRUNCATE _check_memo;
+        -- The memo lives in a session temp table, which cannot be created in a
+        -- read-only transaction (a hot standby / read replica, or an explicit
+        -- READ ONLY txn). There the memo is disabled (authz._memo_active = off)
+        -- — checks still resolve correctly, just without the converging-graph
+        -- speedup. The read path must work on replicas, so this gate matters.
+        IF current_setting('transaction_read_only') = 'off' THEN
+            CREATE TEMP TABLE IF NOT EXISTS _check_memo
+                (relation integer, object_type integer, object_id text, result boolean,
+                 PRIMARY KEY (relation, object_type, object_id));
+            TRUNCATE _check_memo;
+            PERFORM set_config('authz._memo_active', 'on', false);
+        ELSE
+            PERFORM set_config('authz._memo_active', 'off', false);
+        END IF;
         PERFORM set_config('authz._memo_prunes', '0', false);
     END IF;
 

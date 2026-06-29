@@ -189,6 +189,12 @@ exponential — depth 14 ≈ 3 s, depth 16 ≈ 12 s, depth 18 exceeds 30 s.
     bounds recursion *depth*, not *path count*, so the memo — not the depth
     limit — is what makes deep lattices tractable; `statement_timeout` remains the
     final backstop.
+  - **Read replicas:** the memo uses a session temp table, which can't be
+    created in a read-only transaction, so it is **auto-disabled on hot
+    standbys** (and any `READ ONLY` txn). Checks still resolve correctly there —
+    they just fall back to the un-memoized traversal, so route checks against
+    pathological converging graphs to the primary if that worst case matters.
+    Normal tree/DAG hierarchies are unaffected on replicas.
   - **Time-travel too:** the point-in-time evaluator (`audit_check_access`,
     `audit_list_actions`) is a separate snapshot resolver but mirrors the same
     structure, so it gets the **same wrapper** (`_check_access_snapshot` in
