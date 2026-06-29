@@ -7,6 +7,28 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-29
+
+### Added
+- **Non-destructive in-place upgrade** — `upgrade.sh` (`SKIP_RESET=1 ./init.sh`)
+  applies pending migrations and reloads the idempotent engine code without
+  `DROP SCHEMA`, preserving stores/tuples/audit. The local analog of the
+  CloudNativePG `deploy/migrations/run-migrations.sh` path.
+- CI `upgrade-test` job: install the previous release tag, seed fixtures,
+  upgrade in place to HEAD, and assert the data survived and access still
+  resolves (ADR 0001 step 6).
+- `scripts/bump-version.sh` — bump every pinned version reference and roll the
+  CHANGELOG; pairs with `scripts/release.sh`.
+
+### Fixed
+- sqlx migration-ledger shadowing on re-runs / in-place upgrades: connecting as
+  role `authz` let the baseline-created `authz` schema shadow the real
+  `public._sqlx_migrations` via `search_path`, so sqlx treated the baseline as
+  unapplied and tried to re-run it. Pin `search_path=public` on every sqlx
+  connection (`env.sh`, `deploy/migrations/run-migrations.sh`,
+  `scripts/gen-schema.sh`). Fresh installs and the CloudNativePG path (which
+  connects as `postgres`) were unaffected.
+
 ## [0.1.0] - 2026-06-29
 
 Initial tagged release: a PostgreSQL-native authorization engine implementing
@@ -50,5 +72,6 @@ PL/pgSQL.
 - PostgreSQL 18.x (developed/tested on 18.4). PostgREST, OPA, the AuthZEN
   services, and `pg_cel` are optional components of the reference deployment.
 
-[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/thomasdarimont/pgauthz/releases/tag/v0.1.0
