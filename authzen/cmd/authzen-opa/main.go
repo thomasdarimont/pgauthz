@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,7 +16,17 @@ import (
 	"thomasdarimont.de/authz/authzen/internal/opabackend"
 )
 
+// version is stamped at build time via -ldflags "-X main.version=...".
+// Defaults to "dev" for un-stamped local builds.
+var version = "dev"
+
 func main() {
+	showVersion := flag.Bool("version", false, "print version and exit")
+	flag.Parse()
+	if *showVersion {
+		fmt.Printf("authzen-opa %s\n", version)
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

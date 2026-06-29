@@ -55,8 +55,8 @@ if [ "${SKIP_BUILD:-}" != "1" ]; then
   need docker; need k3d
   echo "==> Building images (tag $IMAGE_TAG)..."
   docker build -f "$REPO_ROOT/deploy/migrations/Dockerfile" -t "pgauthz-migrations:$IMAGE_TAG" "$REPO_ROOT"
-  docker build -f "$REPO_ROOT/authzen/Dockerfile" --build-arg BINARY=authzen-direct -t "pgauthz-authzen-direct:$IMAGE_TAG" "$REPO_ROOT/authzen"
-  docker build -f "$REPO_ROOT/authzen/Dockerfile" --build-arg BINARY=authzen-opa    -t "pgauthz-authzen-opa:$IMAGE_TAG"    "$REPO_ROOT/authzen"
+  docker build -f "$REPO_ROOT/authzen/Dockerfile" --build-arg BINARY=authzen-direct --build-arg VERSION="$IMAGE_TAG" -t "pgauthz-authzen-direct:$IMAGE_TAG" "$REPO_ROOT/authzen"
+  docker build -f "$REPO_ROOT/authzen/Dockerfile" --build-arg BINARY=authzen-opa    --build-arg VERSION="$IMAGE_TAG" -t "pgauthz-authzen-opa:$IMAGE_TAG"    "$REPO_ROOT/authzen"
 
   echo "==> Importing images into k3d cluster '$K3D_CLUSTER'..."
   k3d image import "pgauthz-migrations:$IMAGE_TAG" "pgauthz-authzen-direct:$IMAGE_TAG" \
