@@ -16,13 +16,24 @@ model and dataset and times each operation in a loop (after warm-up), reporting
 group count, folder depth) are constants at the top of the suite's
 data-generation block.
 
-One suite ships today — **`drive`** (below). The structure makes adding more —
-e.g. a GitHub-style model or the demo's tax-advisor chain — a matter of
-dropping a new file in `bench/suites/`.
+Three suites ship today, each a different model shape so the numbers cover
+different resolution paths:
+
+| Suite | Shape | Exercises |
+|---|---|---|
+| **`drive`** | Nested folders + groups, 50k users | direct, userset, `*` wildcard, deep TTU folder chain, time-travel |
+| **`github`** | Orgs / teams / repos, role hierarchy | multi-level computed role chain, TTU to the parent org, **nested teams** (userset-of-userset) |
+| **`rules`** | Synthetic rule-combination model | **intersection** (AND), **exclusion** (BUT NOT), **conditions** (ABAC) |
+
+Adding another — e.g. the demo's tax-advisor chain — is just another file in
+`bench/suites/`.
 
 ## Methodology
 
-**Dataset** — a `bench` store modelling a document system:
+Each suite builds its own store + dataset (the tunables are constants at the top
+of the suite file) and times each operation in a warm loop.
+
+**`drive` dataset** — a document system:
 
 - 50,000 **users**, each owning/viewing a private document (the "large user
   base" that would make naïve `list_subjects` slow).
@@ -34,6 +45,16 @@ dropping a new file in `bench/suites/`.
   doc, a group-shared doc, and a doc at the bottom of the folder chain.
 - **60,031 tuples** total, loaded in ~1.4 s. Every write also fires the audit
   trigger, so the audit log has ~60 k events for the time-travel test.
+
+**`github` dataset** — 20,000 users, 40 orgs, 600 teams (×25 members), 2,000
+repos. Roles chain `can_read ← can_write ← can_admin`, repos link to their org
+via `parent_org` (TTU), and a 10-deep **nested-team** chain feeds one repo
+(userset-of-userset). ~39 k tuples.
+
+**`rules` dataset** — 20,000 users over 5,000 resources, plus a "hot" resource
+with 500 subjects. `can_access = assigned AND cleared` (intersection),
+`can_edit = editor BUT NOT banned` (exclusion), and `viewer` grants carry a
+time-window **condition**. ~54 k tuples.
 
 **Environment** — these numbers were taken on a developer laptop:
 
@@ -48,7 +69,9 @@ hardware-independent. Re-run on your own box for your own baseline.
 
 ## Results
 
-Steady-state (warm cache); `drive` suite, 60,031 tuples.
+Steady-state (warm cache), PostgreSQL 18.4. Run `./bench/run.sh` to reproduce.
+
+### `drive` — folders + groups + 50k users (60,031 tuples)
 
 | Operation | ms/op | Bounded by |
 |---|--:|---|
@@ -65,9 +88,36 @@ Steady-state (warm cache); `drive` suite, 60,031 tuples.
 | `list_subjects` — group doc (userset of 50) | **15.9** | the object's reachable subjects |
 | `audit_check_access` — time-travel (replay ~60 k events) | **108** | audit-log size up to `p_at` |
 
-Numbers are the median of three warm-up passes on PostgreSQL 18.4; a cold buffer
-cache (e.g. the first call right after a bulk load) is slower — `list_objects`
-here was ~70 ms cold vs ~0.5 ms warm.
+### `github` — orgs / teams / repos, role hierarchy (39,092 tuples)
+
+| Operation | ms/op | Bounded by |
+|---|--:|---|
+| `check_access` — org-admin `can_read` (4-level role chain) | **0.37** | length of the computed-role chain |
+| `check_access` — org-member `can_read` (parent_org TTU) | **0.47** | one TTU hop |
+| `check_access` — nested-team reader (10-deep userset chain) | **0.54** | nesting depth |
+| `check_access` — `can_write` DENY for a plain reader | **0.28** | partial chain, no match |
+| `check_access` — DENY (no path, full traversal) | **1.02** | graph size explored |
+| `list_objects` — org-admin's repos (50 of 2,000) | **41** | the subject's reachable objects |
+| `list_subjects` — repo readers (org members + a team) | **233** | the object's reachable subjects |
+| `list_actions` (admin on a repo) | **1.0** | relations on the type |
+
+### `rules` — intersection / exclusion / conditions (53,596 tuples)
+
+| Operation | ms/op | Bounded by |
+|---|--:|---|
+| `check_access` — intersection ALLOW (`assigned AND cleared`) | **0.06** | one probe per AND term |
+| `check_access` — intersection DENY (one term missing) | **0.10** | one probe per AND term |
+| `check_access` — exclusion ALLOW (`editor BUT NOT banned`) | **0.10** | base + negated probe |
+| `check_access` — exclusion DENY (negated term present) | **0.06** | base + negated probe |
+| `check_access_with_context` — condition ALLOW (within window) | **0.06** | one probe + condition eval |
+| `check_access_with_context` — condition DENY (expired) | **0.09** | one probe + condition eval |
+| `list_objects` — intersection (20 of 5,000 resources) | **1.0** | the subject's reachable objects |
+| `list_subjects` — intersection on hot resource (500) | **20** | the object's reachable subjects |
+| `list_subjects` — exclusion on hot resource (450 of 500) | **39** | the object's reachable subjects |
+
+Numbers are steady-state on PostgreSQL 18.4; a cold buffer cache (e.g. the first
+call right after a bulk load) is slower — `drive`'s `list_objects` was ~70 ms
+cold vs ~0.5 ms warm.
 
 ## Takeaways
 
@@ -85,6 +135,16 @@ here was ~70 ms cold vs ~0.5 ms warm.
   returns a single `('*', is_wildcard)` row regardless of user count — model
   all-access/public relationships as wildcards (see the README "Object
   Wildcards" / "Wildcard Tuples" sections).
+- **Depth is cheap; each hop is an index probe** (`github`). A 4-level computed
+  role chain (`can_read ← can_write ← can_admin`), a TTU hop to the parent org,
+  and a **10-deep nested-team** userset all resolve in ~0.4–0.5 ms — graph depth
+  adds probes, not scans. The widest case, `list_subjects` for a repo readable by
+  a whole org (~233 ms), is bounded by the *answer* size, not the store.
+- **Rule combination and conditions add negligible cost** (`rules`).
+  Intersection (`assigned AND cleared`), exclusion (`editor BUT NOT banned`), and
+  a per-tuple SQL **condition** each resolve in ~0.06–0.10 ms — the AND/BUT-NOT
+  combine operators and the zero-privilege condition sandbox are not where time
+  goes; reachable-set size still dominates the `list_*` variants.
 - **Time-travel cost scales with the audit-log size** replayed up to the
   target timestamp (~108 ms at 60 k events here). It is a forensic/compliance
   path, not a hot path — keep it off latency-critical flows, and retain the
@@ -98,11 +158,11 @@ here was ~70 ms cold vs ~0.5 ms warm.
 
 ## Scaling the benchmark / adding suites
 
-Edit the constants in [`bench/suites/drive.sql`](../bench/suites/drive.sql)
-(`n_users`, `n_groups`, `grp_size`, `depth`) and re-run `./bench/run.sh drive`.
-The search and check numbers should stay roughly flat as `n_users` grows (they
-are bounded by the reachable set, not the store size) — the property worth
-verifying on your own data shapes.
+Edit the tunable constants at the top of a suite's data-generation block (e.g.
+`bench/suites/drive.sql`: `n_users`, `n_groups`, `grp_size`, `depth`) and re-run
+`./bench/run.sh <suite>`. The search and check numbers should stay roughly flat
+as `n_users` grows (they are bounded by the reachable set, not the store size) —
+the property worth verifying on your own data shapes.
 
 To benchmark a **different model**, add `bench/suites/<name>.sql`: build a store
 + data, then time scenarios with the shared helpers (`pg_temp._bench(label,

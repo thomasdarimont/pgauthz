@@ -9,6 +9,8 @@ bench/
   lib/harness.sql   # shared timing helper + output setup
   suites/
     drive.sql       # Drive-shaped model (nested folders, groups, 50k users)
+    github.sql      # GitHub-shaped model (orgs/teams/repos, role hierarchy, nested teams)
+    rules.sql       # Rule-combination model (intersection, exclusion, conditions)
 ```
 
 ## Running
@@ -38,4 +40,4 @@ build the model + data, run `_bench(...)` scenarios, and tidy up at the end.
 Use a store name unique to the suite (e.g. `bench_<name>`). See `suites/drive.sql`
 as the template.
 
-Planned suites: a GitHub-style model and the demo's tax-advisor chain.
+Planned suites: the demo's tax-advisor chain.
