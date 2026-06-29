@@ -9,6 +9,26 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [0.1.3] - 2026-06-29
 
+### Added
+- CI `scaling-test` job + `tests/test-scaling.sh` covering the streaming-
+  replication (read-replica) demo: the standby streams the schema + data,
+  resolves `check_access` on the read-only replica, and serves the
+  OPA → PostgREST → replica read path.
+- `-version` flag on the AuthZEN Go apps (`authzen-direct` / `authzen-opa`),
+  stamped at build time via ldflags (tracks the image tag; `dev` for local
+  builds). No HTTP endpoint.
+
+### Fixed
+- Streaming-replication scaling demo (`compose-scaling.yml`) was broken in four
+  places:
+  - `db/scaling/start-replica.sh`: the standby FATAL'd because
+    `max_connections` (100) was below the primary's 250 — pin it to 250.
+  - `env.sh` ignored the documented `COMPOSE_FILE=compose-scaling.yml ./init.sh`
+    override and aborted under `set -e` on `ps -q authz-db` — honor
+    `COMPOSE_FILE` and resolve `authz-db` or `authz-primary`.
+  - `compose-scaling.yml`: OPA was missing the `REQUIRE_TOKEN_FOR_READS`
+    mapping the base stack has, so it denied the documented tokenless demo read.
+
 ## [0.1.2] - 2026-06-29
 
 ### Added
