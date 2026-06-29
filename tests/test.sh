@@ -90,6 +90,11 @@ echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_condition_lang.sql"
 
 echo ""
+echo "==> Running SQL/CEL condition equivalence checks (skipped without pg_cel)..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_condition_equivalence.sql"
+
+echo ""
 echo "==> Running type restriction checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_type_restrictions.sql"
