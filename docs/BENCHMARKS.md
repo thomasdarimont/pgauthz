@@ -192,17 +192,26 @@ exponential — depth 14 ≈ 3 s, depth 16 ≈ 12 s, depth 18 exceeds 30 s.
   - **Read replicas:** the memo's session temp table can't be created in a
     read-only transaction, so on a hot standby (and any `READ ONLY` txn) the memo
     switches to a session-GUC `jsonb` backend — the only mutable scratch a
-    standby allows. It's slower than the temp table (each probe parses the memo
-    map, so ~O(memo²) vs O(memo)) but still **polynomial**, so replica checks
-    stay protected against converging/diamond graphs; you do **not** need to
-    route the worst case to the primary. `set_config` is session-local, so the
-    backend is concurrency-safe. Normal tree/DAG hierarchies are unaffected.
-    Measured on an 18-deep converging diamond (the DENY/full-traversal case):
-    temp-table memo **4.6 ms**, GUC memo **3.9 ms**, no memo **1322 ms** — the
-    GUC backend is effectively free here and ~340× faster than no memo. No
-    tuning needed: the map lives in normal backend memory (not `work_mem` /
-    `temp_buffers`), it's bounded by the polynomial distinct-node count, and a
-    runaway check hits `statement_timeout` long before memory matters.
+    standby allows. `set_config` is session-local, so the backend is
+    concurrency-safe (no cross-session sharing). The visited (object, decision)
+    payload is **cleared from the GUC before the check returns** (success or
+    error, via a root-level handler), so it doesn't linger in the session.
+    - *Typical checks* (a handful to a few hundred distinct subproblems): the
+      GUC backend is essentially free. On an 18-deep converging diamond
+      (DENY/full traversal): temp-table memo **4.6 ms**, GUC **3.9 ms**, no memo
+      **1322 ms** — protected, ~340× faster than no memo.
+    - *Pathological checks* (thousands of distinct subproblems in a single
+      decision): the GUC re-parses/serializes the whole map per probe, so it
+      degrades — measured on a fan of K leaves (DENY): K=1 000 → temp 150 ms /
+      GUC 273 ms; K=10 000 → temp 1.5 s / GUC ~13–27 s. Such checks are already
+      ~seconds even on the primary; on a replica, **route them to the primary**
+      (or a writable logical replica). `statement_timeout` is the backstop on
+      both. `authz.memo_max_entries` (default `0` = unlimited) is an optional
+      hard ceiling on the GUC map size if you want to bound its memory, at the
+      cost of not memoizing distinct subproblems past the cap.
+
+    The map lives in normal backend memory (not `work_mem` / `temp_buffers`).
+    Normal tree/DAG hierarchies are unaffected.
   - **Time-travel too:** the point-in-time evaluator (`audit_check_access`,
     `audit_list_actions`) is a separate snapshot resolver but mirrors the same
     structure, so it gets the **same wrapper** (`_check_access_snapshot` in

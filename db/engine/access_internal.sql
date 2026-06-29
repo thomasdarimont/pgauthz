@@ -927,8 +927,17 @@ DECLARE
     v_cached boolean;
     v_p0     bigint;
     v_result boolean;
+    v_cap    int;
+    v_cnt    bigint;
 BEGIN
-    -- Root: pick the backend and (re)initialize the per-check memo.
+    -- ── Root frame: pick the backend, run the check, ALWAYS clean up ─────────
+    -- The 'guc' backend holds this check's visited (object, decision) pairs in a
+    -- session GUC; clear it before returning (success OR error) so it never
+    -- lingers in the session — both to release the memory and to avoid leaving a
+    -- readable record of intermediate object ids/decisions behind for a direct
+    -- SQL caller (see docs/BENCHMARKS.md "Read replicas"). The exception block
+    -- is only at the root, so it costs one subtransaction per top-level check,
+    -- not one per recursive call.
     IF p_depth = 0 THEN
         IF COALESCE(current_setting('authz.memoize', true), 'on') = 'off' THEN
             v_mode := 'off';
@@ -940,12 +949,27 @@ BEGIN
             v_mode := 'temp';
         ELSE
             PERFORM set_config('authz._memo_data', '{}', false);
+            PERFORM set_config('authz._memo_count', '0', false);
             v_mode := 'guc';
         END IF;
         PERFORM set_config('authz._memo_mode', v_mode, false);
         PERFORM set_config('authz._memo_prunes', '0', false);
+
+        BEGIN
+            v_result := authz._check_access_impl(
+                p_store_id, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
+                p_request_context, p_has_ctx_tuples, 0, p_trace, p_exclude, p_path);
+        EXCEPTION WHEN OTHERS THEN
+            PERFORM set_config('authz._memo_data', '{}', false);   -- drop the payload on error too
+            RAISE;
+        END;
+        -- Drop the visited (object, decision) payload; keep _memo_mode / _memo_count
+        -- (non-sensitive scalars) for observability. The next root check re-inits them.
+        PERFORM set_config('authz._memo_data', '{}', false);
+        RETURN v_result;
     END IF;
 
+    -- ── Depth > 0: memoized resolution (no exception block / subtransaction) ──
     -- Disable the cache while tracing so explain_access sees every step.
     IF v_use AND p_trace IS NOT TRUE
               AND COALESCE(current_setting('authz.trace', true), 'off') <> 'on' THEN
@@ -977,11 +1001,25 @@ BEGIN
         IF v_mode = 'temp' THEN
             INSERT INTO _check_memo VALUES (p_relation, p_object_type, p_object_id, v_result)
             ON CONFLICT (relation, object_type, object_id) DO NOTHING;
-        ELSE  -- 'guc': read-modify-write the jsonb map back into the GUC
-            v_key := COALESCE(v_key, p_relation::text || ':' || p_object_type::text || ':' || p_object_id);
-            PERFORM set_config('authz._memo_data',
-                (COALESCE(current_setting('authz._memo_data', true), '{}')::jsonb
-                 || jsonb_build_object(v_key, v_result))::text, false);
+        ELSE  -- 'guc': read-modify-write the jsonb map back into the GUC.
+            -- The GUC backend re-parses/serializes the whole map per probe, so a
+            -- check with thousands of DISTINCT subproblems is slow on a replica
+            -- regardless (route those to the primary; statement_timeout is the
+            -- final backstop). authz.memo_max_entries is an OPTIONAL hard ceiling
+            -- on map size (0 = unlimited, the default — keeps behavior polynomial
+            -- and predictable). Set it >0 to bound GUC memory, accepting that
+            -- distinct subproblems past the cap are no longer memoized. The
+            -- temp-table backend is O(entries) and uncapped. _memo_count tracks
+            -- the size in a GUC for an O(1) cap check (and for observability).
+            v_cap := COALESCE(NULLIF(current_setting('authz.memo_max_entries', true), '')::int, 0);
+            v_cnt := COALESCE(NULLIF(current_setting('authz._memo_count', true), '')::bigint, 0);
+            IF v_cap = 0 OR v_cnt < v_cap THEN
+                v_key := COALESCE(v_key, p_relation::text || ':' || p_object_type::text || ':' || p_object_id);
+                PERFORM set_config('authz._memo_data',
+                    (COALESCE(current_setting('authz._memo_data', true), '{}')::jsonb
+                     || jsonb_build_object(v_key, v_result))::text, false);
+                PERFORM set_config('authz._memo_count', (v_cnt + 1)::text, false);
+            END IF;
         END IF;
     END IF;
 

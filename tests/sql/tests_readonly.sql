@@ -63,11 +63,12 @@ SELECT set_config('authz._ro_deny',
 -- Fixture 2: the converging diamond resolves with the memo ON (GUC backend).
 SELECT set_config('authz._ro_diamond',
     authz.check_access('rodiamond','user','alice','can_view','node','n1')::text, false);
--- The GUC backend was selected, and it actually accumulated cached sub-results.
-SELECT set_config('authz._ro_mode', COALESCE(current_setting('authz._memo_mode', true), '?'), false);
-SELECT set_config('authz._ro_memo_keys',
-    (SELECT count(*) FROM jsonb_object_keys(COALESCE(current_setting('authz._memo_data', true), '{}')::jsonb))::text,
-    false);
+-- The GUC backend was selected (_memo_mode) and it accumulated cached
+-- sub-results (_memo_count > 0). The sensitive payload (_memo_data, the visited
+-- object ids + decisions) is cleared on return, so it must read back as '{}'.
+SELECT set_config('authz._ro_mode',  COALESCE(current_setting('authz._memo_mode', true), '?'), false);
+SELECT set_config('authz._ro_count', COALESCE(current_setting('authz._memo_count', true), '?'), false);
+SELECT set_config('authz._ro_data',  COALESCE(current_setting('authz._memo_data', true), '?'), false);
 -- Differential: with the memo OFF the answer is identical (just slower).
 SET LOCAL authz.memoize = 'off';
 SELECT set_config('authz._ro_diamond_off',
@@ -85,10 +86,13 @@ BEGIN
     PERFORM _test_assert('ro_04_guc_backend_selected_when_read_only',
         current_setting('authz._ro_mode', true), 'guc');
     PERFORM _test_assert('ro_05_guc_memo_populated',
-        (current_setting('authz._ro_memo_keys', true)::int > 0)::text, 'true');
+        (current_setting('authz._ro_count', true)::int > 0)::text, 'true');
     PERFORM _test_assert('ro_06_memo_on_equals_memo_off',
         current_setting('authz._ro_diamond_off', true),
         current_setting('authz._ro_diamond', true));
+    -- The per-check payload must NOT linger in the session GUC after the check.
+    PERFORM _test_assert('ro_07_memo_payload_cleared_on_return',
+        current_setting('authz._ro_data', true), '{}');
     PERFORM authz.delete_store('rotest');
     PERFORM authz.delete_store('rodiamond');
 END $$;

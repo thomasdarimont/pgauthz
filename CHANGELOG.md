@@ -39,7 +39,12 @@ pre-1.0, minor versions may include breaking changes.
   scratch a standby allows) instead of the temp table — so checks on replicas
   are both **correct and still protected** against converging/diamond graphs
   (the GUC backend is slower than the temp table but still polynomial). The
-  fast temp-table backend is unchanged on the primary. Time-travel
+  fast temp-table backend is unchanged on the primary. The GUC payload (visited
+  object ids + decisions) is cleared before the check returns (success or error)
+  so it never lingers in the session, and `authz.memo_max_entries` (default
+  `0` = unlimited) can hard-cap the map size; a check with thousands of distinct
+  subproblems is slow on a replica regardless and should be routed to the
+  primary (`statement_timeout` is the backstop). Time-travel
   (`audit_check_access`) is unaffected: it materializes its as-of state into
   temp tables, so it already requires a writable transaction and is primary-only.
   Regression test: `tests/sql/tests_readonly.sql`.
