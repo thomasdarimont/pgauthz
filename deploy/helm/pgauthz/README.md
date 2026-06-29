@@ -160,12 +160,17 @@ Two things to decide:
 - **RPO** — the default is asynchronous replication (fast, but a tiny window of
   acked-but-unreplicated writes can be lost on failover). For an authorization
   store, prefer **synchronous** replication so an acked grant/revoke is never
-  lost. Enable it with the HA overlay:
+  lost. Enable it with the `values-ha.yaml` overlay (a pure sync overlay — it
+  inherits `instances` from the file it's layered on):
 
   ```bash
+  # production base (instances: 3)
   helm upgrade pgauthz ./deploy/helm/pgauthz \
     -f deploy/helm/pgauthz/values.yaml \
-    -f deploy/helm/pgauthz/values-ha.yaml      # instances:3 + sync replication (RPO 0)
+    -f deploy/helm/pgauthz/values-ha.yaml      # + sync replication (RPO 0)
+
+  # on k3d via start.sh (layers values-k3d.yaml + values-ha.yaml → instances: 2)
+  HA=1 ./deploy/helm/pgauthz/start.sh
   ```
 
   Or directly: `--set database.replication.synchronous.enabled=true`
@@ -173,6 +178,63 @@ Two things to decide:
   RPO 0 *strict*, blocking writes rather than acking un-replicated data). Pair
   with `database.backup` — failover survives node loss, backups survive
   corruption.
+
+### Testing failover (game-day)
+
+First confirm synchronous replication is actually engaged (with `HA=1` /
+`values-ha.yaml`) — `synchronous_standby_names` must be non-empty and the standby
+`sync_state` should be `quorum`/`sync`:
+
+```bash
+kubectl exec pgauthz-db-1 -c postgres -- \
+  psql -U postgres -d authz -tAc "SHOW synchronous_standby_names;"        # ANY 1 ("pgauthz-db-2")
+kubectl exec pgauthz-db-1 -c postgres -- \
+  psql -U postgres -d authz -c "SELECT application_name, sync_state FROM pg_stat_replication;"
+```
+
+**Preferred drill — planned switchover** (clean, non-destructive; uses the
+`cnpg` kubectl plugin):
+
+```bash
+kubectl cnpg promote pgauthz-db pgauthz-db-2     # promote the standby; -rw repoints
+kubectl get cluster pgauthz-db -w                # watch PRIMARY flip to pgauthz-db-2
+```
+
+**Unplanned-loss drill — kill the primary pod:**
+
+```bash
+kubectl delete pod pgauthz-db-1                  # CNPG promotes db-2, repoints -rw
+# Verify which pod backs the writable service before/after:
+kubectl get endpoints pgauthz-db-rw -o jsonpath='{.subsets[*].addresses[*].targetRef.name}'
+```
+
+Verify the **RPO 0** guarantee — a write acknowledged *before* the failover must
+exist on the promoted primary, and new writes must succeed:
+
+```bash
+# before: write something through the engine on the old primary
+kubectl exec pgauthz-db-1 -c postgres -- psql -U postgres -d authz -tAc \
+  "SELECT authz.create_store('failover_before');"
+# after promotion: it survived, and the new primary is writable
+kubectl exec pgauthz-db-2 -c postgres -- psql -U postgres -d authz -tAc "SELECT pg_is_in_recovery();"  # f
+kubectl exec pgauthz-db-2 -c postgres -- psql -U postgres -d authz -c "SELECT name FROM authz.stores;"  # failover_before present
+kubectl exec pgauthz-db-2 -c postgres -- psql -U postgres -d authz -tAc \
+  "SELECT authz.create_store('failover_after');"   # write path recovered
+```
+
+> **Single-node k3d gotcha.** Deleting the primary pod can leave it stuck
+> `Terminating`, and CNPG **will not promote the standby until the old primary is
+> confirmed gone** (split-brain protection) — so the cluster sits in
+> `Failing over` and the standby logs
+> `failed to connect to user=streaming_replica …` (a *symptom* of the wait, not a
+> fault). Unblock it with `kubectl delete pod pgauthz-db-1 --grace-period=0
+> --force`. On a real multi-node cluster a genuine node failure is detected
+> without this; the `cnpg promote` switchover avoids the stuck-`Terminating` path
+> entirely, so prefer it for routine drills.
+
+After the drill, CNPG re-clones the old primary as a standby and the cluster
+returns to a healthy `2/2` with the **roles swapped** (the old standby stays
+primary) and synchronous replication re-established.
 
 ## Direct SQL access for applications (`extraRoles`)
 

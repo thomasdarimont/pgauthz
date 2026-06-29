@@ -18,7 +18,12 @@ pre-1.0, minor versions may include breaking changes.
   [`values-ha.yaml`](deploy/helm/pgauthz/values-ha.yaml) overlay. A render-time
   guard fails the install if `maxSyncReplicas >= instances`. Documented in
   [`docs/PRODUCTION.md` → High availability & failover](docs/PRODUCTION.md) and
-  the chart README.
+  the chart README, with a copy-paste **failover game-day runbook** (planned
+  `cnpg promote` switchover + unplanned pod-kill + the single-node-k3d
+  stuck-`Terminating` gotcha). `start.sh` gained an `HA=1` toggle (and
+  multi-file `VALUES` layering) to deploy the synchronous overlay. The drill was
+  validated live on k3d: auto-promotion, `-rw` repoint, and RPO 0 (a
+  pre-failover acked write survived) all confirmed.
 
 ### Changed
 

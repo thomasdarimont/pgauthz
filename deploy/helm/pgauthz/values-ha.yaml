@@ -1,5 +1,7 @@
 # High-availability overlay: zero-RPO failover for the write path.
-#   helm install pgauthz ./deploy/helm/pgauthz -f values.yaml -f values-ha.yaml
+#   helm install pgauthz ./deploy/helm/pgauthz -f values.yaml     -f values-ha.yaml   # prod (instances 3)
+#   helm install pgauthz ./deploy/helm/pgauthz -f values-k3d.yaml -f values-ha.yaml   # k3d  (instances 2)
+#   HA=1 ./deploy/helm/pgauthz/start.sh                                               # k3d, via start.sh
 #
 # CloudNativePG already fails over automatically (promotes a standby, repoints
 # the -rw Service) whenever instances >= 2 — this overlay adds SYNCHRONOUS
@@ -7,16 +9,22 @@
 # dies (RPO 0), which is the conservative default for an authorization store.
 # The price is some write latency: each commit waits for a standby to confirm.
 #
+# This is a PURE sync overlay — it does NOT set database.instances, so it
+# inherits the count from the base/overlay it's layered on (values.yaml → 3,
+# values-k3d.yaml → 2). It only requires instances >= 2 (a standby to ack).
+# maxSyncReplicas: 1 works for both (1 < 2 and 1 < 3) → RPO 0 with one standby.
+#
 # Pair this with continuous backups (database.backup) — failover protects
 # against node loss, backups against corruption / operator error.
 
 database:
-  instances: 3                  # 1 primary + 2 standbys (need >= 2 for failover)
   replication:
     synchronous:
       enabled: true
-      # ANY 1 of the 2 standbys must ack each commit → RPO 0, and a single node
-      # loss still leaves a sync candidate so writes keep flowing.
+      # ANY 1 standby must ack each commit → RPO 0. With instances: 3 (two
+      # standbys) a single node loss still leaves a sync candidate so writes
+      # keep flowing; with instances: 2 (one standby) a standby outage falls
+      # back to async if minSyncReplicas is 0 (below).
       maxSyncReplicas: 1
       # 0 = stay available (async fallback) if ALL standbys are down.
       # Set to 1 for STRICT RPO 0 (writes block rather than ack un-replicated

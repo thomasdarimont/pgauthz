@@ -338,6 +338,12 @@ hand-rolled cluster: `synchronous_commit = remote_apply` /
 > against the new primary and rebuild session state; audit partitions stream
 > across with the rest of the data.
 
+**Run a failover game-day** before you rely on it — verify auto-promotion, the
+`-rw` repoint, and that an acked write survives (RPO 0). The chart README has a
+copy-paste drill (planned `cnpg promote` switchover and an unplanned
+pod-kill, plus the single-node-k3d stuck-`Terminating` gotcha): see
+[deploy/helm/pgauthz/README.md → Testing failover](../deploy/helm/pgauthz/README.md#testing-failover-game-day).
+
 ## Audit retention
 
 The audit trail (`tuples_audit`) is monthly `RANGE`-partitioned; model and

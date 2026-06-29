@@ -8,7 +8,9 @@
 #   ./start.sh                  # build images, install operator + chart
 #   K3D_CLUSTER=mycluster ./start.sh
 #   SKIP_BUILD=1 ./start.sh     # skip docker build (images already imported)
-#   VALUES=path/to/values.yaml ./start.sh
+#   VALUES=path/to/values.yaml ./start.sh           # one values file
+#   VALUES="values-k3d.yaml extra.yaml" ./start.sh  # layered, later wins
+#   HA=1 ./start.sh             # append values-ha.yaml (synchronous, zero-RPO)
 #
 # Env knobs (with defaults):
 #   K3D_CLUSTER   k3d cluster name to import images into       (pgauthz-demo)
@@ -16,7 +18,8 @@
 #   NAMESPACE     kubernetes namespace                          (default)
 #   IMAGE_TAG     tag for the locally built images             (0.2.2)
 #   CNPG_VERSION  CloudNativePG version ("" = latest release)  (auto)
-#   VALUES        extra helm values file                       (values-k3d.yaml)
+#   VALUES        space-separated helm values file(s)          (values-k3d.yaml)
+#   HA            set to 1 to append values-ha.yaml (sync replication, RPO 0)
 #   SKIP_BUILD    set to 1 to skip docker build + k3d import
 set -euo pipefail
 
@@ -28,6 +31,12 @@ RELEASE="${RELEASE:-pgauthz}"
 NAMESPACE="${NAMESPACE:-default}"
 IMAGE_TAG="${IMAGE_TAG:-0.2.2}"
 VALUES="${VALUES:-$CHART_DIR/values-k3d.yaml}"
+# HA=1 appends the synchronous-replication overlay (zero-RPO failover). Layered
+# last so its sync settings win; it carries no instance count, inheriting it
+# from the earlier file(s) (values-k3d.yaml → 2, values.yaml → 3).
+[ "${HA:-}" = "1" ] && VALUES="$VALUES $CHART_DIR/values-ha.yaml"
+# Expand the (possibly space-separated) list into repeated `-f <file>` args.
+VALUE_ARGS=(); for _vf in $VALUES; do VALUE_ARGS+=(-f "$_vf"); done
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "!! '$1' not found in PATH" >&2; exit 1; }; }
 need kubectl; need helm
@@ -75,9 +84,10 @@ echo "==> helm upgrade --install $RELEASE ..."
 # ready until that runs. --wait would block on those not-ready pods *before*
 # running the hook → deadlock. Helm still waits for the hook Job itself, so the
 # schema is loaded before this returns; we then wait for the apps to settle.
+echo "==> Values: $VALUES"
 helm upgrade --install "$RELEASE" "$CHART_DIR" \
   --namespace "$NAMESPACE" --create-namespace \
-  -f "$VALUES" \
+  "${VALUE_ARGS[@]}" \
   --set images.migrations.tag="$IMAGE_TAG" \
   --set images.authzenDirect.tag="$IMAGE_TAG" \
   --set images.authzenOpa.tag="$IMAGE_TAG" \
