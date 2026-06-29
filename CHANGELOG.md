@@ -7,6 +7,29 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-06-29
+
+### Added
+- CI `replication-test` job + `tests/test-replication.sh` covering the logical-
+  replication demo end to end: subscribers reach `ready`, the full replica
+  resolves `check_access` on replicated data, the derived replica receives the
+  flat `materialized_permissions` table, and a live write on the primary
+  propagates.
+
+### Fixed
+- Logical-replication demo (`db/replication/`) was silently broken
+  (`init-replication.sh` lacked `ON_ERROR_STOP`, so SQL errors left a broken
+  setup but the script still exited 0). Four fixes:
+  - `init-replication.sh` resolved `PG_DIR` to `db/db/...` after the script
+    moved under `db/replication/` — point it at the repo root.
+  - `setup-publication.sql`: `ALTER DEFAULT PRIVILEGES … GRANT SELECT` was
+    missing `ON TABLES` (syntax error).
+  - `setup-subscription.sql`: the metadata subscription copied data into tables
+    the subscriber already populates by loading the model, causing duplicate-key
+    crash-loops — use `copy_data = false` (stream changes only).
+  - `materialized_permissions.sql` `_queue_permissions_refresh()`: an `INSERT`
+    had three target columns but two expressions — add the missing `store_id`.
+
 ## [0.1.1] - 2026-06-29
 
 ### Added
@@ -72,6 +95,7 @@ PL/pgSQL.
 - PostgreSQL 18.x (developed/tested on 18.4). PostgREST, OPA, the AuthZEN
   services, and `pg_cel` are optional components of the reference deployment.
 
-[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/thomasdarimont/pgauthz/releases/tag/v0.1.0
