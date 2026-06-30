@@ -66,5 +66,22 @@ BEGIN
     PERFORM authz.write_tuple('demo', 'client_data_space', 'eng_42_client', 'in_client_space',  'upload_request', 'req_2026_001');
     PERFORM authz.write_tuple('demo', 'client_org',        'acme',          'requested_from',   'upload_request', 'req_2026_001', 'member');
     PERFORM authz.write_tuple('demo', 'internal_user',     'bob',           'created_by',       'upload_request', 'req_2026_001');
+
+    -- Conditional grant (ABAC): a time-boxed share. Bob may view this document
+    -- only while the grant window is open — the check must supply a request
+    -- context with `current_time`, and without it the condition fails closed.
+    PERFORM authz.create_condition_sql('demo',
+        'non_expired_grant',
+        $cond$
+            ($1->>'current_time')::timestamptz
+            < ($2->>'grant_time')::timestamptz + ($2->>'grant_duration')::interval
+        $cond$,
+        '{"request": ["current_time"], "stored": ["grant_time", "grant_duration"]}'::jsonb
+    );
+    PERFORM authz.write_tuple('demo',
+        'internal_user', 'bob', 'viewer', 'document', 'doc_timeboxed_001',
+        p_condition => 'non_expired_grant',
+        p_condition_context => '{"grant_time": "2026-03-11T09:00:00Z", "grant_duration": "2 hours"}'::jsonb
+    );
 END;
 $$;
