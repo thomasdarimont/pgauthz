@@ -43,3 +43,10 @@ variable "app_dms_client_secret" {
   default     = "app-dms-demo-secret"
   sensitive   = true
 }
+
+variable "playground_bff_client_secret" {
+  description = "Client secret for the playground BFF client (must match the BFF's CLIENT_SECRET env). Override for anything real."
+  type        = string
+  default     = "playground-bff-demo-secret"
+  sensitive   = true
+}

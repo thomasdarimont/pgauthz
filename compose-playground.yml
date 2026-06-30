@@ -1,0 +1,74 @@
+# Optional overlay: the pgauthz playground (Lit SPA + Go BFF). Requires the
+# keycloak overlay (proxy, realm, OPA) — `--playground` implies `--keycloak`.
+#
+#   ./start.sh --playground
+#   (cd keycloak/terraform && terraform apply)   # provision the playground-bff client
+#   open https://app.pgauthz.test
+#
+# /etc/hosts: 127.0.0.1 app.pgauthz.test  (the mkcert *.pgauthz.test cert covers it)
+name: pgauthz
+
+services:
+  # Dedicated DB for BFF sessions, kept SEPARATE from the pgauthz engine DB.
+  playground-db:
+    image: postgres:18.4
+    environment:
+      POSTGRES_DB: pgauthz_playground
+      POSTGRES_USER: playground
+      POSTGRES_PASSWORD: ${PLAYGROUND_DB_PASSWORD:-playground}
+    volumes:
+      - playground-db-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U playground -d pgauthz_playground"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  playground-bff:
+    build:
+      # Context spans backend + frontend so the image bundles the SPA (self-contained).
+      context: ./playground
+      dockerfile: backend/Dockerfile
+    image: pgauthz-playground-bff:dev
+    depends_on:
+      playground-db:
+        condition: service_healthy
+    environment:
+      PG_DSN: postgres://playground:${PLAYGROUND_DB_PASSWORD:-playground}@playground-db:5432/pgauthz_playground
+      CLIENT_ID: playground-bff
+      CLIENT_SECRET: ${PLAYGROUND_BFF_CLIENT_SECRET:-playground-bff-demo-secret}
+      # OIDC issuer for discovery (.well-known/openid-configuration) — the canonical
+      # public issuer, reached through the proxy:443 via the extra_hosts mapping
+      # below. Same value works for a standalone `docker run` (with --add-host).
+      ISSUER: https://id.pgauthz.test/realms/pgauthz
+      # Trust the mkcert dev root so the BFF can call the issuer over TLS. Unset in
+      # production (real certificate); see the volume mount below.
+      TLS_CA_FILE: /etc/pgauthz/rootCA.pem
+      REDIRECT_URI: https://app.pgauthz.test/playground/auth/callback
+      OPA_URL: http://opa:8181
+      BASE_URL: https://app.pgauthz.test
+      # Path prefix the app is served under (one of several apps on this host).
+      BASE_PATH: /playground
+      COOKIE_SECURE: "true"
+      # Read-only access to the ENGINE DB, only for store/type/relation
+      # autocomplete in the UI. The demo reuses the engine superuser; in
+      # production use a dedicated role with SELECT on authz.stores/types/relations.
+      ENGINE_DSN: postgres://authz:${PG_PASSWORD:-authz}@authz-db:5432/authz
+    volumes:
+      # SPA mounted for live editing; the binary serves it from /web.
+      - ./playground/frontend:/web:ro
+      # mkcert dev root, so the BFF trusts the proxy's TLS for the issuer (see TLS_CA_FILE).
+      - ./keycloak/config/certs/rootCA.pem:/etc/pgauthz/rootCA.pem:ro
+    extra_hosts:
+      # Resolve the issuer's public hostname to the docker host (proxy :443),
+      # mirroring how Keycloak reaches itself via the frontend URL.
+      - "id.pgauthz.test:host-gateway"
+    # Reached only through the proxy at app.pgauthz.test — no host port.
+
+  # Add the app.pgauthz.test route to the keycloak overlay's nginx proxy.
+  proxy:
+    volumes:
+      - ./playground/proxy.conf:/etc/nginx/conf.d/playground.conf:ro
+
+volumes:
+  playground-db-data:

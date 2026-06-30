@@ -1,0 +1,271 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   Design tokens. Primitive tokens (palette, scale) → semantic tokens (roles).
+   Components reference the *semantic* tokens; custom properties inherit into
+   shadow DOM, so web components (pg-explain-tree) read the same tokens.
+   ───────────────────────────────────────────────────────────────────────── */
+:root {
+  color-scheme: light dark;
+
+  /* Palette — primitive */
+  --pg-bg:           #ffffff;
+  --pg-surface:      #f6f8fa;
+  --pg-fg:           #1f2328;
+  --pg-muted:        #6e7781;
+  --pg-border:       #d0d7de;
+  --pg-primary:      #0969da;
+  --pg-green:        #1a7f37;
+  --pg-green-bg:     #dafbe1;
+  --pg-red:          #cf222e;
+  --pg-red-bg:       #ffebe9;
+  --pg-accent:       #6639ba;
+
+  /* Spacing scale */
+  --pg-space-1: .25rem;
+  --pg-space-2: .5rem;
+  --pg-space-3: .75rem;
+  --pg-space-4: 1rem;
+  --pg-space-5: 1.5rem;
+
+  /* Radii */
+  --pg-radius-sm: 4px;
+  --pg-radius-md: 6px;
+
+  /* Typography */
+  --pg-font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --pg-font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --pg-text-sm:   .8rem;
+  --pg-text-base: 15px;
+  --pg-text-code: 13px;
+
+  /* Semantic — roles built from the palette */
+  --pg-content-max:        820px;
+  --pg-allow-fg:           var(--pg-green);
+  --pg-allow-bg:           var(--pg-green-bg);
+  --pg-deny-fg:            var(--pg-red);
+  --pg-deny-bg:            var(--pg-red-bg);
+  --pg-reason-fg:          var(--pg-accent);
+  --pg-link-fg:            var(--pg-primary);
+  --pg-tree-guide:         var(--pg-border);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --pg-bg:       #0d1117;
+    --pg-surface:  #161b22;
+    --pg-fg:       #e6edf3;
+    --pg-muted:    #8b949e;
+    --pg-border:   #30363d;
+    --pg-primary:  #4493f8;
+    --pg-green:    #3fb950;
+    --pg-green-bg: #12261e;
+    --pg-red:      #f85149;
+    --pg-red-bg:   #25171c;
+    --pg-accent:   #bc8cff;
+  }
+}
+
+/* ── Base ── */
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--pg-bg); color: var(--pg-fg);
+  font: var(--pg-text-base)/1.5 var(--pg-font-sans);
+  /* Fixed-viewport app shell: the page itself never scrolls — internal panes do. */
+  height: 100vh; overflow: hidden; display: flex; flex-direction: column;
+}
+pg-app { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.muted { color: var(--pg-muted); }
+
+/* ── Layout ── */
+header {
+  flex: 0 0 auto;
+  display: flex; justify-content: space-between; align-items: center;
+  padding: var(--pg-space-3) var(--pg-space-5);
+  border-bottom: 1px solid var(--pg-border);
+}
+header h1 { font-size: 1.1rem; margin: 0; }
+.who { display: flex; align-items: center; gap: var(--pg-space-2); }
+main { max-width: var(--pg-content-max); margin: 0 auto; padding: var(--pg-space-5); }
+main.login { text-align: center; padding-top: 12vh; }
+
+/* ── Controls ── */
+button {
+  padding: var(--pg-space-2) var(--pg-space-3);
+  border: 1px solid var(--pg-border); border-radius: var(--pg-radius-md);
+  background: var(--pg-surface); color: var(--pg-fg); cursor: pointer; font: inherit;
+}
+button:hover { border-color: var(--pg-muted); }
+button:disabled { opacity: .5; cursor: default; }
+button.link {
+  border: none; background: none; color: var(--pg-link-fg);
+  text-decoration: underline; padding: 0;
+}
+
+.form { display: grid; grid-template-columns: 1fr 1fr; gap: var(--pg-space-2) var(--pg-space-4); margin-bottom: var(--pg-space-4); }
+.form label { display: flex; flex-direction: column; font-size: var(--pg-text-sm); color: var(--pg-muted); gap: var(--pg-space-1); }
+.form input {
+  padding: var(--pg-space-2); border: 1px solid var(--pg-border);
+  border-radius: var(--pg-radius-md); background: var(--pg-bg); color: var(--pg-fg); font: inherit;
+}
+.form .actions { grid-column: 1 / -1; display: flex; gap: var(--pg-space-2); flex-wrap: wrap; }
+
+/* ── Decision + sections ── */
+.decision { display: inline-block; padding: 2px 12px; border-radius: 999px; font-weight: 700;
+  font-size: var(--pg-text-sm); letter-spacing: .03em; margin: var(--pg-space-2) 0; }
+.decision.allow { background: var(--pg-allow-bg); color: var(--pg-allow-fg); }
+.decision.deny  { background: var(--pg-deny-bg);  color: var(--pg-deny-fg); }
+.error { color: var(--pg-deny-fg); }
+section h2 { font-size: .95rem; border-bottom: 1px solid var(--pg-border); padding-bottom: var(--pg-space-1); }
+ul { margin: var(--pg-space-1) 0; }
+code { font-family: var(--pg-font-mono); }
+
+/* ── Playground two-pane layout ── */
+header .brand { display: flex; align-items: center; gap: var(--pg-space-3); }
+header .brand label { flex-direction: row; align-items: center; gap: var(--pg-space-2); font-size: var(--pg-text-sm); color: var(--pg-muted); }
+.mode { display: inline-flex; }
+.mode button { border-radius: 0; }
+.mode button:first-child { border-radius: var(--pg-radius-md) 0 0 var(--pg-radius-md); }
+.mode button:last-child { border-radius: 0 var(--pg-radius-md) var(--pg-radius-md) 0; border-left: none; }
+.mode button.active { background: var(--pg-primary); color: #fff; border-color: var(--pg-primary); }
+/* Full page width: left pane (model+tuples) sized to content, right pane (graph)
+   takes the rest. */
+.panes { flex: 1 1 auto; min-height: 0; overflow: hidden;
+  display: grid; grid-template-columns: minmax(340px, 34rem) 18px 1fr;
+  grid-template-rows: minmax(0, 1fr); gap: 0;
+  align-items: stretch; padding: var(--pg-space-4); }
+.left, .right { min-width: 0; min-height: 0; }
+/* The right pane is a flex column that scrolls internally so the whole page
+   never gets a scrollbar; the access graph fills the leftover height. */
+.right { padding-left: var(--pg-space-3); overflow-y: auto; overflow-x: hidden;
+  display: flex; flex-direction: column; min-height: 0; }
+/* The Query container fills the right pane when open; the access graph (grouped
+   inside it) fills the space below the query inputs. */
+.right > .evaluate[open] { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.evaluate[open]::details-content { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: clip; }
+.evaluate .access-section { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.access-section::details-content { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: clip; }
+.access-section pg-access-graph { flex: 1 1 auto; min-height: 0; }
+/* Left pane: a full-height flex column so the Data section (and its tuple grid)
+   grows to fill whatever height the Model section leaves. */
+.left { padding-right: var(--pg-space-3);
+  display: flex; flex-direction: column; gap: var(--pg-space-2); }
+.left > .graph-section { flex: 0 0 auto; margin-bottom: 0; min-height: 0; }
+/* Model section: resizable height (set inline), pg-model fills it */
+.left > .model-section { display: flex; flex-direction: column; overflow: hidden; }
+.model-section::details-content { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: clip; }
+.model-section pg-model { flex: 1 1 auto; min-height: 0; }
+/* Horizontal splitter between Model and Data */
+.hdivider { flex: 0 0 auto; height: 10px; position: relative; cursor: row-resize; }
+.hdivider::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 3px;
+  transform: translateY(-50%); border-radius: 3px; background: var(--pg-border); }
+.hdivider:hover::before { background: var(--pg-primary); }
+.left > .data-section { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+/* Modern Chrome wraps <details> content in ::details-content; make that a flex
+   column too so the height cascades down to the tuple grid (older browsers fall
+   back to the direct-child .data-body rule below). */
+.data-section::details-content { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: clip; }
+.data-section .data-body { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+.data-section .data-body > pg-tuples,
+.data-section .data-body > pg-conditions { flex: 1 1 auto; min-height: 0; }
+
+/* Draggable vertical divider with a vertically-centered collapse toggle */
+.divider { position: relative; cursor: col-resize; }
+.divider::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 4px;
+  transform: translateX(-50%); border-radius: 4px; background: var(--pg-border); }
+.divider:hover::before { background: var(--pg-primary); width: 5px; }
+.div-toggle { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: 22px; height: 36px; padding: 0; line-height: 1; cursor: pointer; z-index: 3;
+  border: 1px solid var(--pg-border); border-radius: var(--pg-radius-sm);
+  background: var(--pg-bg); color: var(--pg-muted); }
+.div-toggle:hover { color: var(--pg-fg); border-color: var(--pg-muted); }
+
+/* Collapsible graph sections (type graph + access graph) */
+.graph-section { margin-bottom: var(--pg-space-4); }
+/* Bound the collapse trigger to just the heading + chevron (not the full-width
+   line) and highlight it on hover, so clicks near the filters don't toggle. */
+.graph-section > summary { cursor: pointer; list-style: none; user-select: none;
+  display: inline-flex; align-items: center; width: fit-content;
+  padding: 2px 8px; margin: 0 0 var(--pg-space-2) -8px;
+  border-radius: var(--pg-radius-sm); transition: background .12s; }
+.graph-section > summary:hover { background: var(--pg-surface); }
+.graph-section > summary::-webkit-details-marker { display: none; }
+.graph-section > summary h2 { display: inline-block; }
+/* Expand/collapse chevron indicator (before and after the heading) */
+.graph-section > summary .chev { display: inline-block; margin: 0 .4rem; font-size: 1.15rem;
+  line-height: 1; color: var(--pg-muted); transition: transform .15s ease; }
+.graph-section > summary .chev::before { content: "\25B8"; } /* ▸ */
+.graph-section[open] > summary .chev { transform: rotate(90deg); }
+/* No underline beneath the Model / Type graph / Access graph headings */
+.left > h2, .graph-section > summary h2 { border-bottom: none; padding-bottom: 0; }
+
+/* Type-graph filters (toggle chips for types / relations) */
+.type-filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--pg-space-2) var(--pg-space-3);
+  margin-bottom: var(--pg-space-2); font-size: var(--pg-text-sm); }
+.type-filters .filter { position: relative; }
+.type-filters .clusters { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; color: var(--pg-muted); }
+.type-filters .filter > summary { cursor: pointer; color: var(--pg-muted); user-select: none; }
+.type-filters .fcount { color: var(--pg-accent); }
+.type-filters .chips { position: absolute; z-index: 5; margin-top: var(--pg-space-1); max-width: 30rem;
+  max-height: 40vh; overflow: auto; display: flex; flex-wrap: wrap; gap: 4px; padding: var(--pg-space-2);
+  background: var(--pg-bg); border: 1px solid var(--pg-border); border-radius: var(--pg-radius-md);
+  box-shadow: 0 4px 16px rgba(0,0,0,.12); }
+.chip { padding: 1px 8px; font-size: var(--pg-text-sm); font-family: var(--pg-font-mono);
+  border: 1px solid var(--pg-border); border-radius: 999px; background: var(--pg-primary); color: #fff; cursor: pointer; }
+.chip.off { background: var(--pg-bg); color: var(--pg-muted); text-decoration: line-through; }
+.type-filters .reset { font-size: var(--pg-text-sm); }
+.type-filters .hint { font-size: var(--pg-text-sm); }
+
+/* Evaluate panel + collapsible JSON context editor */
+.evaluate { margin-bottom: var(--pg-space-4); }
+.evaluate .actions { display: flex; gap: var(--pg-space-2); margin-top: var(--pg-space-3); flex-wrap: wrap; }
+.context-row { margin-top: var(--pg-space-2); }
+.context-row > summary { cursor: pointer; font-size: var(--pg-text-sm); }
+.context-row pg-json-editor { display: block; margin-top: var(--pg-space-2); }
+.ctx-hint { font-size: var(--pg-text-sm); margin: var(--pg-space-1) 0 0; }
+.data-tabs { margin-top: var(--pg-space-3); }
+.nl-row { grid-column: 1 / -1; }
+.nl { width: 100%; }
+/* Inline editable structured query: "is <type>:<id> related to <type>:<id> as <rel>?" */
+.sentence { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center;
+  gap: var(--pg-space-2); padding: var(--pg-space-2) 0; }
+.sentence > span { color: var(--pg-muted); }
+.sentence .colon { margin: 0 -.3rem; color: var(--pg-muted); font-weight: 600; }
+.sentence .run { margin-left: var(--pg-space-2); }
+.tok { display: inline-flex; }
+.tok-input {
+  padding: .25rem .45rem; border: 1px solid var(--pg-border); border-radius: var(--pg-radius-sm);
+  background: var(--pg-bg); color: var(--pg-accent); font: var(--pg-text-code, 13px)/1.4 var(--pg-font-mono);
+}
+.tok-input:focus { outline: 2px solid var(--pg-primary); outline-offset: -1px; border-color: var(--pg-primary); }
+.as-me { grid-column: 1 / -1; }
+.tabs { display: flex; gap: 2px; margin-bottom: var(--pg-space-3); }
+.tabs button { border-radius: var(--pg-radius-sm) var(--pg-radius-sm) 0 0; }
+.tabs button.active { background: var(--pg-bg); border-bottom-color: var(--pg-bg); font-weight: 600; }
+.graph-toolbar { display: flex; align-items: center; gap: var(--pg-space-4); flex-wrap: wrap;
+  margin: var(--pg-space-3) 0 var(--pg-space-2); font-size: var(--pg-text-sm); color: var(--pg-muted); }
+.graph-toolbar label { display: flex; align-items: center; gap: .3rem; }
+/* Segmented "ACL resolution path" / "Full tree" toggle */
+.seg { display: inline-flex; }
+.seg button { border-radius: 0; font-size: var(--pg-text-sm); padding: var(--pg-space-1) var(--pg-space-3); }
+.seg button:first-child { border-radius: var(--pg-radius-md) 0 0 var(--pg-radius-md); }
+.seg button:last-child { border-radius: 0 var(--pg-radius-md) var(--pg-radius-md) 0; border-left: none; }
+.seg button.active { background: var(--pg-primary); color: #fff; border-color: var(--pg-primary); }
+/* Graph legend swatches */
+.legend { display: inline-flex; gap: var(--pg-space-3); align-items: center; }
+.legend .lg { display: inline-flex; align-items: center; gap: .35rem; }
+.legend .lg::before { content: ""; width: .7rem; height: .7rem; border-radius: 2px; }
+.legend .query::before { background: #0969da; border: 2px solid #0969da; }
+.legend .grant::before { background: var(--pg-allow-fg); border: 2px solid #d4a72c; border-radius: 50%; }
+.legend .allow::before { background: var(--pg-allow-fg); }
+.legend .deny::before { background: var(--pg-deny-fg); }
+.legend .cond::before { background: transparent; border: 2px dashed #8250df; }
+/* Relocated panels below the access graph (edge key + text resolution) */
+.aux { margin-top: var(--pg-space-3); }
+.aux > summary { cursor: pointer; }
+/* Edge rule-type key under the access graph */
+.rule-legend { margin-top: var(--pg-space-2); }
+.rule-legend dl { display: grid; grid-template-columns: max-content 1fr;
+  gap: var(--pg-space-1) var(--pg-space-3); margin: var(--pg-space-2) 0 0; font-size: var(--pg-text-sm); }
+.rule-legend dt { font-family: var(--pg-font-mono); color: var(--pg-accent); white-space: nowrap; }
+.rule-legend dd { margin: 0; color: var(--pg-muted); }
+.rule-legend code { color: var(--pg-accent); }
+@media (max-width: 900px) { .panes { grid-template-columns: 1fr; } }

@@ -25,6 +25,7 @@ that resolve relationship tuples recursively.
 - **Namespace-based write access control** — restrict which applications can manage tuples for which object types within a shared store
 - **PostgREST + OPA integration** — OPA is the single front door for reads *and* writes (JWT verification, policy-as-code, response caching); PostgREST bridges SQL functions to HTTP
 - **AuthZEN 1.0 API** — standard [AuthZEN](https://openid.net/specs/authorization-api-1_0.html) Go API layer with two backends: direct PostgreSQL (`authzen-direct`) and OPA (`authzen-opa`)
+- **Playground (web UI)** — an OpenFGA-playground-style app to browse stores, run access queries, and **visualize the `explain_access` resolution path**, through the real OIDC → OPA → PostgREST path ([`playground/`](playground/README.md))
 - **Performance** — integer IDs, LIST partitioning by object type, covering partial indexes, store-scoped index pruning
 
 ## Why PostgreSQL?
@@ -1511,6 +1512,34 @@ GRANT authz_writer TO my_backend_user;
 GRANT authz_admin TO my_admin_user;
 ```
 
+## Playground (Web UI)
+
+The [`playground/`](playground/README.md) directory contains an
+OpenFGA-playground-style web app for exploring an engine instance: pick a store,
+browse its model / tuples / conditions, and run access queries — then
+**visualize the resolution path** that `explain_access` returns, as a tree and an
+access graph. Queries run through the **real production path end to end** (OIDC
+login → OPA → PostgREST → engine), so what you see in the UI is what the engine
+decides.
+
+![pgauthz playground](playground/playground-frontend.png)
+
+It is a small **backend-for-frontend** (Go) plus a no-build **Lit SPA**, packaged
+as one self-contained container image. The browser authenticates via OIDC
+authorization-code + PKCE against Keycloak; the BFF holds the tokens server-side
+and forwards each query as the logged-in user. Bring it up with the playground
+compose overlay:
+
+```bash
+docker compose -f compose.yml -f compose-keycloak.yml -f compose-playground.yml up -d
+# then open https://app.pgauthz.test/playground
+```
+
+The playground is a trusted **admin/dev tool** (engine-direct explore mode can
+check arbitrary subjects, read-only) — keep it access-restricted. See
+[`playground/README.md`](playground/README.md) for configuration (the single
+`ISSUER` OIDC discovery setting, base-path serving, and the container layout).
+
 ## Example Models
 
 The [`examples/models/`](examples/models/) directory contains ready-to-load
@@ -1562,10 +1591,12 @@ default store is `demo`).
 | `examples/models/` | Example authorization models (demo, gdrive, github) — **not** part of the deployable engine; see [Example Models](#example-models) |
 | `examples/watch/` | Runnable setup example for the watch/changefeed feature (compose overlay + Python consumer) |
 | `authzen/` | Go AuthZEN 1.0 HTTP API layer ([see authzen/README.md](authzen/README.md)) |
+| `playground/` | Web UI: Go BFF + Lit SPA for exploring stores and visualizing `explain_access` ([see playground/README.md](playground/README.md)) |
 | `opa/` | Rego policies for JWT authn + Zanzibar authz via PostgREST |
 | `docs/` | Design documents, development guide, model design, OPA integration |
 | `compose.yml` | PostgreSQL + PostgREST + OPA |
 | `compose-authzen.yml` | AuthZEN services (authzen-direct + authzen-opa) |
+| `compose-playground.yml` | Playground web UI (BFF + bundled SPA) + its session DB |
 | `bootstrap.sh` | Full init + test run |
 
 ## Comparison with OpenFGA

@@ -1,0 +1,5 @@
+# Go build output — the binary is built into the container image, never committed.
+/playground
+*.exe
+*.test
+*.out

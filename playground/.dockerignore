@@ -1,0 +1,4 @@
+# Keep the build context lean (context is ./playground).
+backend/playground-bff
+**/.DS_Store
+**/*.test

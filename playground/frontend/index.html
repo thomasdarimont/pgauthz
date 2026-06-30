@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- The app is served under a path prefix (e.g. /playground); this base makes
+       every relative URL (assets, module imports, fetches) resolve under it.
+       To serve at a different prefix, change only this href (+ BASE_PATH on the BFF). -->
+  <base href="/playground/">
+  <title>pgauthz Playground</title>
+  <link rel="stylesheet" href="styles.css">
+  <!-- All third-party libraries are pinned here in one place; components import
+       bare names ('lit', 'cytoscape', …). To upgrade a library, change only this map. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "lit": "https://esm.sh/lit@3.2.1",
+      "cytoscape": "https://esm.sh/cytoscape@3.30.2",
+      "cytoscape-dagre": "https://esm.sh/cytoscape-dagre@2.5.0",
+      "cytoscape-elk": "https://esm.sh/cytoscape-elk@2.3.0"
+    }
+  }
+  </script>
+</head>
+<body>
+  <pg-app></pg-app>
+  <script type="module" src="src/components/pg-app.js"></script>
+</body>
+</html>

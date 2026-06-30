@@ -6,6 +6,7 @@
 #   ./stop.sh                      # stop containers (data preserved)
 #   ./stop.sh --clean              # stop containers and remove volumes
 #   ./stop.sh --keycloak           # also stop the Keycloak overlay (match start.sh)
+#   ./stop.sh --playground         # also stop the playground (implies --keycloak)
 #   ./stop.sh --keycloak --clean   # ...and remove its volumes too
 #
 # Pass the same overlay flags you used with start.sh (--cel / --keycloak) so the
@@ -18,15 +19,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 CLEAN=0
 KEYCLOAK=0
+PLAYGROUND=0
 for arg in "$@"; do
   case "$arg" in
-    --clean)    CLEAN=1 ;;
-    --cel)      export PGAUTHZ_CEL=1 ;;
-    --keycloak) KEYCLOAK=1 ;;
-    -h|--help)  sed -n '2,14p' "$0"; exit 0 ;;
+    --clean)      CLEAN=1 ;;
+    --cel)        export PGAUTHZ_CEL=1 ;;
+    --keycloak)   KEYCLOAK=1 ;;
+    --playground) PLAYGROUND=1 ;;
+    -h|--help)    sed -n '2,15p' "$0"; exit 0 ;;
     *) echo "Unknown option: $arg" >&2; exit 2 ;;
   esac
 done
+if [ "$PLAYGROUND" = 1 ]; then KEYCLOAK=1; fi
 
 # Compose files — base stack + optional overlays, mirroring start.sh.
 COMPOSE_FILES=(-f "$SCRIPT_DIR/compose.yml")
@@ -44,6 +48,10 @@ esac
 # Optional Keycloak demo overlay (matches start.sh --keycloak).
 if [ "$KEYCLOAK" = 1 ]; then
   COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-keycloak.yml")
+fi
+
+if [ "$PLAYGROUND" = 1 ]; then
+  COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-playground.yml")
 fi
 
 if [ "$CLEAN" = 1 ]; then
