@@ -15,6 +15,8 @@
 --                      (0 = simple partition, 8 = recommended for high-volume types)
 --   p_namespace      — optional namespace for access control
 --   p_description    — optional description
+--   p_labels         — optional logical-grouping labels (key:value, e.g.
+--                      ARRAY['group:accounting','group:sharing']); advisory only
 --
 -- Returns the new type's integer ID.
 -- Idempotent for the partition (safe to call again), but will raise
@@ -24,26 +26,105 @@
 --   SELECT authz.model_register_type('demo', 'invoice');
 --   SELECT authz.model_register_type('demo', 'invoice', 8);
 --   SELECT authz.model_register_type('demo', 'invoice', 8, 'accounting');
+--   SELECT authz.model_register_type('demo', 'invoice', 8, 'accounting', NULL,
+--                                    ARRAY['group:accounting','group:finance']);
 ------------------------------------------------------------------------
+-- Drop the pre-labels signature so adding the trailing param doesn't leave a
+-- second (5-arg) overload behind on upgraded installs.
+DROP FUNCTION IF EXISTS authz.model_register_type(text, text, int, text, text);
+
 CREATE OR REPLACE FUNCTION authz.model_register_type(
     p_store        text,
     p_type_name    text,
     p_hash_modulus int DEFAULT 0,
     p_namespace    text DEFAULT NULL,
-    p_description  text DEFAULT NULL
+    p_description  text DEFAULT NULL,
+    p_labels       text[] DEFAULT NULL
 ) RETURNS integer
 LANGUAGE plpgsql AS $$
 DECLARE
     v_store_id integer := authz._s(p_store);
     v_type_id  integer;
 BEGIN
-    INSERT INTO authz.types (store_id, name, namespace, description)
-    VALUES (v_store_id, p_type_name, p_namespace, p_description)
+    INSERT INTO authz.types (store_id, name, namespace, description, labels)
+    VALUES (v_store_id, p_type_name, p_namespace, p_description, COALESCE(p_labels, '{}'))
     RETURNING id INTO v_type_id;
 
     PERFORM authz._ensure_tuple_partition(v_store_id, p_type_name, p_hash_modulus);
 
     RETURN v_type_id;
+END;
+$$;
+
+------------------------------------------------------------------------
+-- model_set_type_labels: replace the logical-grouping labels on an existing
+-- type. Labels are advisory key:value metadata (see migration 0003); they have
+-- no access-control effect. Passing NULL/'{}' clears them.
+--
+-- Examples:
+--   SELECT authz.model_set_type_labels('demo', 'engagement',
+--              ARRAY['group:accounting','group:sharing']);
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.model_set_type_labels(
+    p_store     text,
+    p_type_name text,
+    p_labels    text[]
+) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store);
+BEGIN
+    UPDATE authz.types
+       SET labels = COALESCE(p_labels, '{}')
+     WHERE store_id = v_store_id AND name = p_type_name;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'type % not found in store %', p_type_name, p_store;
+    END IF;
+END;
+$$;
+
+------------------------------------------------------------------------
+-- model_add_type_labels / model_remove_type_labels: incremental label edits
+-- that union/subtract instead of replacing the whole set. Both are idempotent
+-- (adding an existing label or removing an absent one is a no-op on the set).
+--
+-- Examples:
+--   SELECT authz.model_add_type_labels('demo', 'engagement', ARRAY['area:reporting']);
+--   SELECT authz.model_remove_type_labels('demo', 'engagement', ARRAY['area:sharing']);
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.model_add_type_labels(
+    p_store     text,
+    p_type_name text,
+    p_labels    text[]
+) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store);
+BEGIN
+    UPDATE authz.types
+       SET labels = ARRAY(SELECT DISTINCT e FROM unnest(labels || COALESCE(p_labels, '{}')) AS e)
+     WHERE store_id = v_store_id AND name = p_type_name;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'type % not found in store %', p_type_name, p_store;
+    END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION authz.model_remove_type_labels(
+    p_store     text,
+    p_type_name text,
+    p_labels    text[]
+) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store);
+BEGIN
+    UPDATE authz.types
+       SET labels = ARRAY(SELECT e FROM unnest(labels) AS e WHERE e <> ALL(COALESCE(p_labels, '{}')))
+     WHERE store_id = v_store_id AND name = p_type_name;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'type % not found in store %', p_type_name, p_store;
+    END IF;
 END;
 $$;
 

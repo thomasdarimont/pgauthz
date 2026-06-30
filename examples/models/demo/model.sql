@@ -73,20 +73,41 @@ BEGIN
     ----------------------------------------------------------------------
     -- Types (explicit IDs for partition definitions)
     ----------------------------------------------------------------------
-    INSERT INTO authz.types (id, store_id, name) OVERRIDING SYSTEM VALUE VALUES
-        (1,  s, 'internal_user'),
-        (2,  s, 'client_user'),
-        (3,  s, 'team'),
-        (4,  s, 'client_org'),
-        (5,  s, 'engagement'),
-        (6,  s, 'assignment'),
-        (7,  s, 'internal_data_space'),
-        (8,  s, 'client_data_space'),
-        (9,  s, 'document'),
-        (10, s, 'upload_request'),
-        (11, s, 'service_account');  -- app-as-a-service subjects (e.g. the app-dms client)
+    INSERT INTO authz.types (id, store_id, name, description) OVERRIDING SYSTEM VALUE VALUES
+        (1,  s, 'internal_user',       'An internal staff member (accountant, clerk, advisor) working in the back office.'),
+        (2,  s, 'client_user',         'An external customer user who collaborates via the front office.'),
+        (3,  s, 'team',                'A group of internal users (payroll, tax, accounting) used to grant roles in bulk.'),
+        (4,  s, 'client_org',          'A customer organization whose members are the client users on an engagement.'),
+        (5,  s, 'engagement',          'A client engagement — the top-level unit of work linking an internal team to a customer org.'),
+        (6,  s, 'assignment',          'A work assignment within an engagement (e.g. payroll, tax) that scopes internal roles.'),
+        (7,  s, 'internal_data_space', 'An internal workspace holding the documents a team works on for an assignment.'),
+        (8,  s, 'client_data_space',   'A shared space where documents are exchanged with the customer (front office).'),
+        (9,  s, 'document',            'A file under access control; read/edit/share is governed by its spaces and engagement.'),
+        (10, s, 'upload_request',      'A request asking a customer to upload a document into a client data space.'),
+        (11, s, 'service_account',     'A non-human application identity (e.g. the app-dms client) acting via client_credentials.');
 
     PERFORM setval(pg_get_serial_sequence('authz.types', 'id'), max(id)) FROM authz.types;
+
+    ----------------------------------------------------------------------
+    -- Logical-grouping labels (advisory key:value; a type may carry several,
+    -- including multiple values for one key). Used by tooling (e.g. the
+    -- playground) to cluster/hide types by domain. No access-control meaning.
+    --
+    -- The demo models two use-cases of one domain: sharing data with an
+    -- external customer (frontoffice) and working on the customer's documents
+    -- internally (backoffice). Types that bridge both carry both scopes.
+    ----------------------------------------------------------------------
+    PERFORM authz.model_set_type_labels('demo', 'internal_user',       ARRAY['area:backoffice']);
+    PERFORM authz.model_set_type_labels('demo', 'client_user',         ARRAY['area:frontoffice']);
+    PERFORM authz.model_set_type_labels('demo', 'team',                ARRAY['area:backoffice']);
+    PERFORM authz.model_set_type_labels('demo', 'client_org',          ARRAY['area:frontoffice','area:backoffice']);
+    PERFORM authz.model_set_type_labels('demo', 'engagement',          ARRAY['area:frontoffice','area:backoffice']);
+    PERFORM authz.model_set_type_labels('demo', 'assignment',          ARRAY['area:backoffice']);
+    PERFORM authz.model_set_type_labels('demo', 'internal_data_space', ARRAY['area:backoffice']);
+    PERFORM authz.model_set_type_labels('demo', 'client_data_space',   ARRAY['area:frontoffice']);
+    PERFORM authz.model_set_type_labels('demo', 'document',            ARRAY['area:frontoffice','area:backoffice']);
+    PERFORM authz.model_set_type_labels('demo', 'upload_request',      ARRAY['area:frontoffice','area:backoffice']);
+    PERFORM authz.model_set_type_labels('demo', 'service_account',     ARRAY['area:backoffice']);
 
     ----------------------------------------------------------------------
     -- Namespace assignments (optional).
