@@ -83,7 +83,8 @@ BEGIN
         (7,  s, 'internal_data_space'),
         (8,  s, 'client_data_space'),
         (9,  s, 'document'),
-        (10, s, 'upload_request');
+        (10, s, 'upload_request'),
+        (11, s, 'service_account');  -- app-as-a-service subjects (e.g. the app-dms client)
 
     PERFORM setval(pg_get_serial_sequence('authz.types', 'id'), max(id)) FROM authz.types;
 

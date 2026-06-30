@@ -1327,6 +1327,16 @@ with the `authz_writer` role.
 > it directly; anyone who can reach it can enumerate your authorization
 > data via `list_objects` / `list_subjects`.
 
+**Authentication / OIDC.** OPA is the front door: it verifies the caller's JWT
+(issuer, audience, signature via JWKS) and derives the subject from the token
+claims, so pgauthz runs behind **any** OAuth2 AS / OIDC provider — just point
+OPA's `JWT_ISSUER` / `JWKS_URL` at yours. An **optional bundled Keycloak** demo
+(Terraform-provisioned, TLS) lives in [`keycloak/`](keycloak/) for a runnable
+end-to-end example — start it with `./start.sh --keycloak`, and see
+[`examples/keycloak/query-demo.sh`](examples/keycloak/) for real tokens (human
+users via password grant, plus an app-as-a-service via client_credentials)
+driving `check_access`.
+
 ### AuthZEN 1.0 API
 
 The `authzen/` directory contains a Go API layer implementing the

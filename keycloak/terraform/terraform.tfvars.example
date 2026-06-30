@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars and adjust. The defaults target the compose demo, so
+# `terraform apply` with no tfvars works out of the box once Keycloak is up.
+# kc_url             = "https://id.pgauthz.test"
+# kc_admin_username  = "admin"
+# kc_admin_password  = "admin"
+# realm_name         = "pgauthz"
+# demo_user_password = "password"

@@ -1,0 +1,110 @@
+# Optional demo overlay: a real OIDC issuer (Keycloak 26.6.4) in front of pgauthz,
+# provisioned by Terraform (keycloak/terraform) and fronted by an nginx proxy that
+# terminates TLS for *.pgauthz.test (mkcert). Mirrors the keycloak-dev-training
+# dev layout. Real deployments bring their own OAuth2 AS / OIDC OP — just point
+# OPA's JWT_ISSUER / JWKS_URL at it. The fast self-minted test tokens
+# (tests/test-authzen.sh) are unaffected; this overlay is opt-in.
+#
+# Quick start:
+#   ./keycloak/config/generate-mkcerts.sh                        # once: mkcert *.pgauthz.test
+#   docker compose -f compose.yml -f compose-keycloak.yml up -d
+#   (cd keycloak/terraform && terraform init && terraform apply) # provision the realm
+#   eval "$(./keycloak/get-token.sh alice)"
+#   curl -s https://api.pgauthz.test/v1/evaluation -H "Authorization: Bearer $TOKEN" ...
+#
+# /etc/hosts (if these don't already resolve to loopback):
+#   127.0.0.1 pgauthz.test id.pgauthz.test admin.pgauthz.test api.pgauthz.test
+
+name: pgauthz
+
+services:
+  keycloak-db:
+    image: postgres:18.4
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${KC_DB_PASSWORD:-keycloak}
+    volumes:
+      # PG18 images store data in a major-version subdir; mount the PARENT
+      # (/var/lib/postgresql), matching authz-db. Mounting .../data fails on 18+.
+      - keycloak-db-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  keycloak:
+    image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak}:${KEYCLOAK_VERSION:-26.6.4}
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    command: ["start-dev"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:-admin}
+      KC_DB: postgres
+      KC_DB_URL_HOST: keycloak-db
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KC_DB_PASSWORD:-keycloak}
+      # Public issuer (served through the nginx proxy). Backchannel-dynamic lets
+      # OPA reach the token/JWKS endpoints over the internal http URL instead.
+      KC_HOSTNAME: https://id.pgauthz.test
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_LOG_LEVEL: ${KC_LOG_LEVEL:-INFO}
+    volumes:
+      - ./keycloak/config/keycloak.conf:/opt/keycloak/conf/keycloak.conf:ro
+      # Live-reloadable custom themes and SPI provider JARs.
+      - ./keycloak/themes:/opt/keycloak/themes
+      - ./keycloak/extensions:/opt/keycloak/providers
+      # Trust the mkcert CA so Keycloak can reach itself via the frontend URL.
+      - ./keycloak/config/certs/rootCA.pem:/opt/keycloak/conf/truststores/rootCA.pem:ro
+      - keycloak-data:/opt/keycloak/data
+    extra_hosts:
+      # Resolve the frontend hostnames to the docker host (where the proxy :443 is).
+      - "id.pgauthz.test:host-gateway"
+      - "admin.pgauthz.test:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000; echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  proxy:
+    # nginx (non-perl variant) pinned by multi-arch manifest-list digest. The
+    # proxy uses no ngx_http_perl_module, so dropping the perl flavour removes
+    # the perl-modules/libperl packages (and their CVE) we never execute.
+    # (Debian's perl-base stays in the base image but nginx never invokes it.)
+    image: nginx:1.31.2-trixie@sha256:ec4ed8b5299e5e90694af7750eb6dffd2627317d30544d056b0371f8082f7bce
+    depends_on:
+      - keycloak
+    volumes:
+      - ./keycloak/config/proxy/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./keycloak/config/proxy/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./keycloak/config/certs/cert.pem:/etc/tls/cert.pem:ro
+      - ./keycloak/config/certs/key.pem:/etc/tls/key.pem:ro
+    ports:
+      - "443:443"
+
+  # Point OPA at Keycloak: verify its issuer, fetch JWKS live over the internal
+  # backchannel (no mkcert-CA trust needed in-container). Role/claim mapping
+  # matches the realm Terraform provisions (keycloak/terraform).
+  opa:
+    environment:
+      JWT_ISSUER: https://id.pgauthz.test/realms/pgauthz
+      JWT_AUDIENCE: authz-api
+      JWKS_URL: http://keycloak:8080/realms/pgauthz/protocol/openid-connect/certs
+      JWT_ROLES_CLAIM: "realm_access.roles,resource_access.authz-api.roles"
+      WRITER_ROLE: authz_writer
+      # Per-app namespace isolation: pgauthz reads a per-app DB role from this
+      # claim, sourced from a HARDCODED claim mapper on the CLIENT (the app) — not
+      # a user attribute (a tenancy concern, not user identity). Off in the demo
+      # (the store isn't namespaced); see keycloak/README.md "Per-app DB role" and
+      # the commented mapper in terraform/client.authz-api.tf, then uncomment this.
+      # WRITER_DB_ROLE_CLAIM: db_role
+
+volumes:
+  keycloak-db-data:
+  keycloak-data:

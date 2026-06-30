@@ -1,0 +1,6 @@
+# Terraform local state + working dirs + real tfvars (keep terraform.tfvars.example).
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+terraform.tfvars

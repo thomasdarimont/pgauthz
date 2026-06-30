@@ -56,6 +56,12 @@ BEGIN
     -- created later. Requires allow_object_wildcard on the viewer rule.
     PERFORM authz.write_tuple('demo', 'internal_user', 'nadia_auditor', 'viewer', 'document', '*');
 
+    -- App-as-a-service: the document service (Keycloak client "app-dms", accessed
+    -- via client_credentials) reads every document. Its subject is the service
+    -- account; subject_type=service_account and db_role=app_dms are hardcoded on
+    -- the client (see keycloak/terraform/client.app-dms.tf).
+    PERFORM authz.write_tuple('demo', 'service_account', 'service-account-app-dms', 'viewer', 'document', '*');
+
     -- Upload request
     PERFORM authz.write_tuple('demo', 'client_data_space', 'eng_42_client', 'in_client_space',  'upload_request', 'req_2026_001');
     PERFORM authz.write_tuple('demo', 'client_org',        'acme',          'requested_from',   'upload_request', 'req_2026_001', 'member');
