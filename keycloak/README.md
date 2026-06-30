@@ -71,6 +71,22 @@ needs no mkcert-CA trust, while tokens still carry the public
 `https://id.pgauthz.test` issuer. Unset `JWKS_URL` → OPA falls back to the
 static `opa/data/jwks.json` (the default for tests and the no-Keycloak demo).
 
+**Troubleshooting "everything denies".** A token whose `iss`/`aud` doesn't match
+OPA's `JWT_ISSUER`/`JWT_AUDIENCE` is rejected silently (fail-closed) — a common,
+hard-to-spot misconfiguration. With `TOKEN_DEBUG=true` (set in the demo overlay),
+`data.authz.token_debug` explains why:
+
+```bash
+eval "$(./keycloak/get-token.sh alice)"
+curl -s --cacert keycloak/config/certs/rootCA.pem \
+  https://api.pgauthz.test/v1/data/authz/token_debug \
+  -H 'Content-Type: application/json' -d "{\"input\":{\"token\":\"$TOKEN\"}}" | jq .result
+# → per-claim issuer/audience/expiry/signature checks + a likely_cause string.
+```
+
+It decodes claims **unverified** purely to diagnose config and grants nothing —
+keep it **off** (unset `TOKEN_DEBUG`) in production.
+
 ## Demo subjects
 
 | User | subject_type | Writer role | Notes |

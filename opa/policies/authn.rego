@@ -93,3 +93,72 @@ roles := {r |
 } if {
 	token_is_valid
 }
+
+# ── Token diagnostics (opt-in: TOKEN_DEBUG=true) ──────────────────────────────
+# Explains WHY a token is rejected — most often an issuer/audience mismatch
+# between the token and OPA's JWT_ISSUER / JWT_AUDIENCE (the classic "everything
+# denies and I can't tell why"). Claims are decoded WITHOUT verifying the
+# signature, purely to diagnose configuration — this grants nothing. Exposed as
+# data.authz.token_debug; returns undefined when disabled or no token.
+
+_unverified := io.jwt.decode(input.token)[1]
+
+_diag_aud := object.get(_unverified, "aud", "")
+
+_aud_set := {a | some a in _diag_aud} if is_array(_diag_aud)
+
+_aud_set := {_diag_aud} if not is_array(_diag_aud)
+
+diag_issuer_ok := object.get(_unverified, "iss", "") == authn_config.required_issuer
+
+diag_audience_ok := authn_config.required_audience in _aud_set
+
+diag_expired := object.get(_unverified, "exp", 0) < (time.now_ns() / 1000000000)
+
+# Complete boolean: token_is_valid is a PARTIAL rule (undefined, not false, for an
+# invalid token), so it can't be embedded directly in the object below.
+diag_token_accepted if token_is_valid
+
+diag_token_accepted := false if not token_is_valid
+
+diagnostics := d if {
+	authn_config.token_debug_enabled
+	input.token
+	d := {
+		"token_accepted": diag_token_accepted,
+		"issuer": {
+			"in_token": object.get(_unverified, "iss", null),
+			"opa_expects": authn_config.required_issuer,
+			"ok": diag_issuer_ok,
+		},
+		"audience": {
+			"in_token": object.get(_unverified, "aud", null),
+			"opa_expects": authn_config.required_audience,
+			"ok": diag_audience_ok,
+		},
+		"expired": diag_expired,
+		"likely_cause": diag_cause,
+	}
+}
+
+diag_cause := "issuer mismatch — set OPA's JWT_ISSUER to the token's iss" if not diag_issuer_ok
+
+diag_cause := "audience mismatch — set OPA's JWT_AUDIENCE to one of the token's aud" if {
+	diag_issuer_ok
+	not diag_audience_ok
+}
+
+diag_cause := "token expired" if {
+	diag_issuer_ok
+	diag_audience_ok
+	diag_expired
+}
+
+diag_cause := "signature invalid / JWKS does not match the issuer's keys" if {
+	diag_issuer_ok
+	diag_audience_ok
+	not diag_expired
+	not token_is_valid
+}
+
+diag_cause := "token is valid" if token_is_valid

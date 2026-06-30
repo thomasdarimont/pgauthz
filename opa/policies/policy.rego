@@ -118,6 +118,27 @@ allow if {
 }
 
 # -----------------------------------------------------------------------
+# explain — the resolution trace ("why allowed/denied") for a single check, for
+# the playground / debugging. Same subject/store rules as `allow`; returns the
+# JSON trace tree from authz.explain_access (decision + nested children).
+# -----------------------------------------------------------------------
+explain := pgauthz.explain_access(
+	store,
+	subject_type,
+	subject_id,
+	input.action,
+	input.resource.type,
+	input.resource.id,
+) if {
+	_subject_valid
+}
+
+# token_debug — opt-in (TOKEN_DEBUG=true) diagnostics explaining why a token is
+# rejected (issuer/audience/expiry/signature). Returns undefined when disabled or
+# no token. Grants nothing — purely a configuration aid.
+token_debug := authn.diagnostics
+
+# -----------------------------------------------------------------------
 # Subject validation: a valid token, or — only when explicitly allowed for
 # trusted-PEP deployments (config.require_token_for_reads = false) — an
 # explicit input.subject with no token.

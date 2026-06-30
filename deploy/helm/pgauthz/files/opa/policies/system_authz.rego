@@ -52,6 +52,8 @@ _public_eval_paths := {
 	["v1", "data", "authz", "accessible_subjects"],
 	["v1", "data", "authz", "accessible_subjects_page"],
 	["v1", "data", "authz", "permitted_actions"],
+	["v1", "data", "authz", "explain"],
+	["v1", "data", "authz", "token_debug"],
 	["v1", "data", "authz", "identity"],
 	["v1", "data", "authz", "write"],
 }

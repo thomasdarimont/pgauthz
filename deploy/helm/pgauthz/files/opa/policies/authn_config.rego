@@ -35,6 +35,12 @@ default_subject_type := _env.DEFAULT_SUBJECT_TYPE if _env.DEFAULT_SUBJECT_TYPE
 
 default_subject_type := "" if not _env.DEFAULT_SUBJECT_TYPE
 
+# Opt-in token diagnostics (data.authz.token_debug). When TOKEN_DEBUG=true, OPA
+# explains WHY a token is rejected (issuer/audience/expiry/signature) — the common
+# "everything silently denies" misconfiguration. Off by default so the expected
+# issuer/audience are not exposed to arbitrary callers in production.
+token_debug_enabled := object.get(_env, "TOKEN_DEBUG", "") == "true"
+
 # Paths to the roles claim(s) inside the JWT, as a comma-separated list of
 # dot-separated paths. Roles are aggregated (set-union) across ALL of them, so a
 # token's required role may live in any one — useful for issuers that split

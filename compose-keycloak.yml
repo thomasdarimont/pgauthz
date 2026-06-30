@@ -96,6 +96,9 @@ services:
       JWT_ISSUER: https://id.pgauthz.test/realms/pgauthz
       JWT_AUDIENCE: authz-api
       JWKS_URL: http://keycloak:8080/realms/pgauthz/protocol/openid-connect/certs
+      # Demo-only: expose data.authz.token_debug to explain token rejections
+      # (issuer/audience/expiry mismatch). Leave OFF in production.
+      TOKEN_DEBUG: "true"
       JWT_ROLES_CLAIM: "realm_access.roles,resource_access.authz-api.roles"
       WRITER_ROLE: authz_writer
       # Per-app namespace isolation: pgauthz reads a per-app DB role from this

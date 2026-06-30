@@ -38,6 +38,26 @@ check_access(store, subject_type, subject_id, relation, object_type, object_id) 
 	response.status_code == 200
 }
 
+# explain_access returns the nested resolution trace tree ("why allowed/denied")
+# for a single check — used by the playground / debugging, not for decisions.
+explain_access(store, subject_type, subject_id, relation, object_type, object_id) := response.body if {
+	response := http.send({
+		"method": "POST",
+		"url": concat("", [config.postgrest_url, "/rpc/explain_access"]),
+		"headers": {"Content-Type": "application/json"},
+		"body": {
+			"p_store": store,
+			"p_user_type": subject_type,
+			"p_user_id": subject_id,
+			"p_relation": relation,
+			"p_object_type": object_type,
+			"p_object_id": object_id,
+		},
+		"raise_error": false,
+	})
+	response.status_code == 200
+}
+
 # check_access_with_context: with request context for condition evaluation.
 check_access_with_context(store, subject_type, subject_id, relation, object_type, object_id, ctx) := response.body if {
 	response := http.send({
@@ -384,35 +404,47 @@ delete_tuple(store, t, performed_by, headers) := _send_write("/rpc/delete_tuple"
 
 # write_tuples / delete_tuples: batch write/delete. The tuples array is passed
 # through as-is (same element shape as a single tuple). body = count affected.
-write_tuples(store, tuples, performed_by, headers) := _send_write("/rpc/write_tuples_jsonb", {
-	"p_store": store,
-	"p_tuples": tuples,
-	"p_performed_by": performed_by,
-}, headers)
+write_tuples(store, tuples, performed_by, headers) := _send_write(
+	"/rpc/write_tuples_jsonb", {
+		"p_store": store,
+		"p_tuples": tuples,
+		"p_performed_by": performed_by,
+	},
+	headers,
+)
 
-delete_tuples(store, tuples, performed_by, headers) := _send_write("/rpc/delete_tuples_jsonb", {
-	"p_store": store,
-	"p_tuples": tuples,
-	"p_performed_by": performed_by,
-}, headers)
+delete_tuples(store, tuples, performed_by, headers) := _send_write(
+	"/rpc/delete_tuples_jsonb", {
+		"p_store": store,
+		"p_tuples": tuples,
+		"p_performed_by": performed_by,
+	},
+	headers,
+)
 
 # delete_user_tuples: offboarding — remove every tuple for a subject.
-delete_user_tuples(store, user, performed_by, headers) := _send_write("/rpc/delete_user_tuples", {
-	"p_store": store,
-	"p_user_type": user.user_type,
-	"p_user_id": user.user_id,
-	"p_performed_by": performed_by,
-}, headers)
+delete_user_tuples(store, user, performed_by, headers) := _send_write(
+	"/rpc/delete_user_tuples", {
+		"p_store": store,
+		"p_user_type": user.user_type,
+		"p_user_id": user.user_id,
+		"p_performed_by": performed_by,
+	},
+	headers,
+)
 
 # write_tuples_checked: conditional/atomic write — preconditions, then deletes
 # and writes, in one transaction (optimistic concurrency).
-write_tuples_checked(store, preconditions, deletes, writes, performed_by, headers) := _send_write("/rpc/write_tuples_checked", {
-	"p_store": store,
-	"p_preconditions": preconditions,
-	"p_deletes": deletes,
-	"p_writes": writes,
-	"p_performed_by": performed_by,
-}, headers)
+write_tuples_checked(store, preconditions, deletes, writes, performed_by, headers) := _send_write(
+	"/rpc/write_tuples_checked", {
+		"p_store": store,
+		"p_preconditions": preconditions,
+		"p_deletes": deletes,
+		"p_writes": writes,
+		"p_performed_by": performed_by,
+	},
+	headers,
+)
 
 # headers carries Content-Type and, when namespace isolation is configured, the
 # caller's X-Authz-Role (consumed by authz._pre_request on the writer).
