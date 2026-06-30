@@ -44,13 +44,17 @@ assert "primary has a streaming standby" "1" \
   "$(qp "$PRIMARY" "SELECT count(*) FROM pg_stat_replication WHERE state='streaming';")"
 
 echo "==> Asserting the standby received the schema + data (poll for WAL replay)..."
+demo_tuples() { qp "$1" "SELECT count(*) FROM authz.tuples WHERE store_id=(SELECT store_id FROM authz.stores WHERE name='demo');" 2>/dev/null || true; }
+# Compare the replica to the PRIMARY rather than a hardcoded count, so this stays
+# correct when the demo seed changes.
+want=$(demo_tuples "$PRIMARY")
 got=""
 for _ in $(seq 1 20); do
-  got=$(qp "$REPLICA" "SELECT count(*) FROM authz.tuples WHERE store_id=(SELECT store_id FROM authz.stores WHERE name='demo');" 2>/dev/null || true)
-  [ "$got" = "33" ] && break
+  got=$(demo_tuples "$REPLICA")
+  [ "$got" = "$want" ] && break
   sleep 1
 done
-assert "replica has the 33 replicated demo tuples" "33" "$got"
+assert "replica replicated all $want demo tuples (matches primary)" "$want" "$got"
 
 echo "==> Asserting read checks resolve on the read-only replica..."
 assert "replica: eva can_read accounting doc" "t" \
