@@ -30,6 +30,13 @@ echo ""
 psql_file "$PG_DB" "$PG_DIR/examples/models/demo/tests.sql"
 
 echo ""
+echo "==> Loading todo model (AuthZEN interop) + checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/examples/models/todo/model.sql"
+psql_file "$PG_DB" "$PG_DIR/examples/models/todo/seed.sql"
+psql_file "$PG_DB" "$PG_DIR/examples/models/todo/tests.sql"
+
+echo ""
 echo "==> Running contextual / condition checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_contextual.sql"

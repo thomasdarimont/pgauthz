@@ -1555,10 +1555,11 @@ the watch/changefeed consumer live alongside under
 | `examples/models/demo/` | Professional-services engagements: internal/client users, teams, data spaces, documents, conditions, audit | `model.sql`, `seed.sql`, `tests.sql`, `demo.sql` |
 | `examples/models/gdrive/` | Google-Drive-style hierarchical folders and documents (deep TTU nesting) | `model.sql`, `seed.sql`, `demo.sql` |
 | `examples/models/github/` | GitHub repo roles (`admin → maintainer → writer → triager → reader`), imported from an OpenFGA JSON model | `model.sql`, `seed.sql`, `demo.sql` |
+| `examples/models/todo/` | AuthZEN interop "todo" model: list/item roles, ownership, and an **intersection** (delete needs manage-on-parent *and* ownership; admin/evil_genius bypass) — ported from [openfga/authzen-interop](https://github.com/openfga/authzen-interop/tree/main/todo) with tests from its assertions | `model.sql`, `seed.sql`, `tests.sql`, `demo.sql` |
 
 In each: `model.sql` defines the types/relations/rules (creates the store),
 `seed.sql` loads sample tuples, `demo.sql` runs a showcase of example
-queries, and `tests.sql` (demo only) asserts expected decisions.
+queries, and `tests.sql` (demo and todo) asserts expected decisions.
 
 ### Loading an example
 

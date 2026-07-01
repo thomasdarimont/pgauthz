@@ -7,6 +7,17 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **`todo` example model (AuthZEN interop).** A pgauthz port of the OpenFGA
+  [authzen-interop todo model](https://github.com/openfga/authzen-interop/tree/main/todo):
+  list/item roles, ownership, subject wildcards (`can_read_user: [user:*]`), TTU,
+  and an **intersection** — deleting/updating an item needs management rights on
+  the parent list *and* ownership (so a viewer who owns an item still can't delete
+  it), while `admin`/`evil_genius` on the parent bypass ownership. Ships with
+  `model.sql`, `seed.sql`, `demo.sql`, and a `tests.sql` derived from the interop
+  `.fga.yaml` assertions (wired into `tests/test.sh`).
+
 ## [0.3.0] - 2026-07-01
 
 ### Added
