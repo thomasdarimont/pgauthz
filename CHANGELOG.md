@@ -7,9 +7,7 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
-<!-- Next release is targeted at 0.3.0 (minor from 0.2.2): additive schema change
-     (migration 0003) + new features, nothing breaking. Cut with
-     `scripts/bump-version.sh 0.3.0`, which rolls this section and sweeps versions. -->
+## [0.3.0] - 2026-07-01
 
 ### Added
 
@@ -333,7 +331,8 @@ PL/pgSQL.
 - PostgreSQL 18.x (developed/tested on 18.4). PostgREST, OPA, the AuthZEN
   services, and `pg_cel` are optional components of the reference deployment.
 
-[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/thomasdarimont/pgauthz/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/thomasdarimont/pgauthz/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.1.4...v0.2.0
