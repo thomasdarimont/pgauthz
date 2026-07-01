@@ -7,8 +7,37 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+<!-- Next release is targeted at 0.3.0 (minor from 0.2.2): additive schema change
+     (migration 0003) + new features, nothing breaking. Cut with
+     `scripts/bump-version.sh 0.3.0`, which rolls this section and sweeps versions. -->
+
 ### Added
 
+- **Playground web UI ([`playground/`](playground/README.md)).** An
+  OpenFGA-playground-style app to browse a store's model, tuples, and conditions
+  and run access queries, then **visualize the `explain_access` resolution path**
+  as a tree and an access graph — through the real OIDC → OPA → PostgREST → engine
+  path, so the UI shows exactly what the engine decides. A Go backend-for-frontend
+  (OIDC authorization-code + PKCE against Keycloak; tokens held server-side, single
+  `ISSUER` discovery) plus a no-build Lit SPA, packaged as one self-contained
+  container image served under `/playground`. Brought up with the
+  `compose-playground.yml` overlay (or `start.sh --playground`). A trusted
+  **admin/dev tool** — keep it access-restricted.
+- **Advisory type labels.** Migration `0003_type_labels.sql` adds a
+  `labels text[]` column (free-form `key:value`, GIN-indexed) to `authz.types` — a
+  many-to-many logical grouping orthogonal to `namespace`, for tooling to cluster,
+  filter, or hide types by domain. `model_register_type` gains an optional
+  `p_labels`; new `model_{set,add,remove}_type_labels` manage them; the playground
+  renders them as type-graph clusters.
+- **Keycloak demo OIDC issuer ([`keycloak/`](keycloak/)).** Opt-in, realistic
+  OIDC/OPA demo (Terraform-provisioned realm and clients, nginx TLS proxy) used by
+  the playground and the OPA front-door examples.
+- **OPA `explain` endpoint + `token_debug` diagnostics.** OPA now exposes the
+  engine's `explain_access`, plus optional token diagnostics (keep off in
+  production).
+- **Time-boxed conditional grant in the demo seed.** A `non_expired_grant` SQL
+  condition + a grant gated by it — a runnable ABAC example that fails closed
+  without a request context.
 - **Synchronous-replication / zero-RPO failover knob in the Helm chart.**
   CloudNativePG already does automatic write failover when
   `database.instances >= 2` (promotes a standby, repoints the `-rw` Service); the
@@ -48,6 +77,27 @@ pre-1.0, minor versions may include breaking changes.
 
 - Helm `Chart.yaml` `home:` pointed at the wrong repo (`…/authz-dev`); now
   `https://github.com/thomasdarimont/pgauthz`.
+- **Fresh-install / CI init.** `db/security/roles.sql` still referenced the old
+  five-argument `model_register_type`; realigned to the new six-argument signature
+  (with `p_labels`) and granted the new label functions, so `init.sh` (and every CI
+  job that runs it) no longer fails with `function … does not exist`.
+- **Playground.** Backend HTTP errors now propagate to the UI instead of rendering
+  empty/stale state; conditional **userset** grants receive the correct condition
+  annotation (the lookup now includes `user_relation`); the decision and the
+  resolution graph are derived from a **single `explain_access` result**, so they
+  can no longer disagree (and it halves the work); access-graph nodes that differ by
+  rule / condition / wildcard stay distinct instead of collapsing into one.
+- **CI.** Fixed a flaky `test-scaling` streaming-replication test.
+
+### Security
+
+- **Playground hardening.** Explore mode (engine-direct, arbitrary-subject checks)
+  is now gated behind `PLAYGROUND_EXPLORE_ENABLED` (off by default) plus an optional
+  `PLAYGROUND_EXPLORE_ROLE` (a Keycloak realm/client role); the BFF's engine
+  connection uses a dedicated least-privilege `authz_metadata` role (read-only
+  metadata `SELECT` + `check`/`explain`/`describe_model`) instead of the engine
+  superuser; the `write` OPA rule was removed from the BFF's allow-list (read-only);
+  and the HTTP server now sets read/write/idle timeouts.
 
 ## [0.2.2] - 2026-06-29
 

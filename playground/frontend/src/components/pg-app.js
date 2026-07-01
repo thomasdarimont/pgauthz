@@ -119,20 +119,23 @@ export class PgApp extends LitElement {
     return this._run(async () => {
       this.decision = null; this.tree = null;
       const ctx = this._contextObj();
-      let raw = null;
+      // Single source of truth: derive BOTH the decision and the tree from one
+      // explain_access result. A separate check call could observe a different
+      // snapshot after a concurrent write (ALLOW with a DENY graph, or vice versa)
+      // and doubles the evaluation work.
+      let ex = null;
       if (this.mode === 'explore') {
         const body = { store: this.store, subject: { type: this.subjectType, id: this.subjectId }, action: this.action, resource: { type: this.objType, id: this.objId } };
         if (ctx !== undefined) body.context = ctx;
-        this.decision = (await api.exploreCheck(body)).body?.allowed;
-        const e = await api.exploreExplain(body);
-        raw = e.body?.tree ?? e.body ?? null;
+        ex = (await api.exploreExplain(body)).body;
       } else {
         const input = { store: this.store, action: this.action, resource: { type: this.objType, id: this.objId } };
         if (ctx !== undefined) input.context = ctx;
-        this.decision = (await api.q('allow', input)).body?.result;
-        raw = (await api.q('explain', input)).body?.result?.tree ?? null;
+        ex = (await api.q('explain', input)).body?.result;
       }
-      this.tree = this._annotateTree(raw);
+      this.tree = this._annotateTree(ex?.tree ?? null);
+      // Decision from the same result: top-level decision/result, else the tree root.
+      this.decision = ex?.decision?.allowed ?? ex?.result ?? this.tree?.allowed ?? this.tree?.result ?? null;
     });
   }
 
@@ -327,14 +330,18 @@ export class PgApp extends LitElement {
   }
 
   _accessGraph() {
-    return html`<details class="graph-section access-section" data-testid="section-access-graph" open>
-      <summary><h2>Access graph</h2><span class="chev"></span></summary>
+    return html`<details class="graph-section access-section" data-testid="section-result" open>
+      <summary><h2>Result</h2>
+        ${this.decision != null ? html`<span class="decision ${this.decision ? 'allow' : 'deny'}"
+          data-testid="decision" data-result=${this.decision ? 'allow' : 'deny'}>${this.decision ? 'ALLOW' : 'DENY'}</span>` : ''}
+        <span class="chev"></span></summary>
+      ${this.tree ? html`
       <div class="graph-toolbar">
         <span class="seg">
-          <button data-testid="mode-access-path" class=${this.allowedOnly ? 'active' : ''} @click=${() => (this.allowedOnly = true)}
-            title="only the relations that grant access">Access path</button>
-          <button data-testid="mode-full-tree" class=${!this.allowedOnly ? 'active' : ''} @click=${() => (this.allowedOnly = false)}
-            title="every relation explored, including those that did not grant access">Full tree</button>
+          <button data-testid="mode-access-graph" class=${this.allowedOnly ? 'active' : ''} @click=${() => (this.allowedOnly = true)}
+            title="only the relations that grant access">Access graph</button>
+          <button data-testid="mode-resolution-tree" class=${!this.allowedOnly ? 'active' : ''} @click=${() => (this.allowedOnly = false)}
+            title="every relation explored, including those that did not grant access">Resolution tree</button>
         </span>
         <span class="legend">
           <span class="lg query">requested</span>
@@ -345,6 +352,7 @@ export class PgApp extends LitElement {
         </span>
       </div>
       <pg-access-graph data-testid="access-graph" .node=${this.tree} .allowedOnly=${this.allowedOnly}></pg-access-graph>
+      ` : ''}
     </details>
     <details class="aux rule-legend"><summary class="muted">what the edge labels mean</summary>
       <dl>
@@ -385,8 +393,6 @@ export class PgApp extends LitElement {
             <span>as</span>
             ${this._tok('action', this.meta?.relations, 'relation')}<span class="colon">?</span>
             <button class="run" data-testid="query-run" ?disabled=${this.busy} @click=${() => this._runStructured()}>Run</button>
-            ${this.decision != null ? html`<span class="decision ${this.decision ? 'allow' : 'deny'}"
-              data-testid="decision" data-result=${this.decision ? 'allow' : 'deny'}>${this.decision ? 'ALLOW' : 'DENY'}</span>` : ''}
           </div>
       <details class="context-row" ?open=${this.contextOpen} @toggle=${(e) => (this.contextOpen = e.target.open)}>
         <summary class="muted">request context (JSON) — evaluates conditional tuples</summary>
@@ -395,7 +401,7 @@ export class PgApp extends LitElement {
         <p class="muted ctx-hint">e.g. the time-boxed share needs <code>{"current_time": "…"}</code>. Empty context → conditions fail closed (deny).</p>
       </details>
       ${this.error ? html`<p class="error">${this.error}</p>` : ''}
-      ${this.tree ? this._accessGraph() : ''}
+      ${this.tree || this.decision != null ? this._accessGraph() : ''}
     </details>`;
   }
 

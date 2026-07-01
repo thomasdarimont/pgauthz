@@ -1,6 +1,7 @@
 import { LitElement, html, css } from 'lit';
 import cytoscape from 'cytoscape';
 import elk from 'cytoscape-elk';
+import { cyToDot } from '../dot.js';
 
 cytoscape.use(elk);
 
@@ -15,7 +16,7 @@ export class PgTypesGraph extends LitElement {
   static properties = {
     tuples: { attribute: false }, types: { attribute: false },
     hiddenTypes: { attribute: false }, hiddenRelations: { attribute: false },
-    zoomLevel: { state: true },
+    zoomLevel: { state: true }, copied: { state: true },
   };
   static styles = css`
     :host { display: block; position: relative; height: 42vh; min-height: 280px;
@@ -35,6 +36,18 @@ export class PgTypesGraph extends LitElement {
   constructor() {
     super();
     this.zoomLevel = 90;
+    this.copied = false;
+  }
+
+  // Copy the current (visible) graph as Graphviz DOT to the clipboard.
+  async #copyDot() {
+    const dot = cyToDot(this.#cy, { name: 'types' });
+    if (!dot) return;
+    try {
+      await navigator.clipboard.writeText(dot);
+      this.copied = true;
+      setTimeout(() => (this.copied = false), 1200);
+    } catch { /* clipboard unavailable (insecure context) */ }
   }
 
   #cy;
@@ -181,6 +194,7 @@ export class PgTypesGraph extends LitElement {
         <button title="zoom in (+10%)" @click=${() => this.#zoom(10)}>+</button>
         <button title="zoom out (−10%)" @click=${() => this.#zoom(-10)}>−</button>
         <button title="center & fit" @click=${() => this.#fitReadable()}>⊙</button>
+        <button title="copy as Graphviz DOT" data-testid="copy-dot" @click=${() => this.#copyDot()}>${this.copied ? '✓' : '⧉'}</button>
       </div>
       <div id="graph"></div>`;
   }

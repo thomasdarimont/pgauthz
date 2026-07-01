@@ -1,6 +1,7 @@
 import { LitElement, html, css } from 'lit';
 import cytoscape from 'cytoscape';
 import dagre from 'cytoscape-dagre';
+import { cyToDot } from '../dot.js';
 
 cytoscape.use(dagre);
 
@@ -16,7 +17,7 @@ const GRANT = '#d4a72c';   // the direct tuple that ultimately grants — gold o
 const COND = '#8250df';    // a condition gates this step — purple dashed outline
 
 export class PgAccessGraph extends LitElement {
-  static properties = { node: { attribute: false }, allowedOnly: { type: Boolean }, zoomLevel: { state: true } };
+  static properties = { node: { attribute: false }, allowedOnly: { type: Boolean }, zoomLevel: { state: true }, copied: { state: true } };
   static styles = css`
     :host { display: block; position: relative; min-height: 320px;
       border: 1px solid var(--pg-border, #d0d7de); border-radius: var(--pg-radius-md, 6px); }
@@ -36,6 +37,18 @@ export class PgAccessGraph extends LitElement {
     super();
     this.allowedOnly = true;
     this.zoomLevel = 90;
+    this.copied = false;
+  }
+
+  // Copy the current graph as Graphviz DOT to the clipboard.
+  async #copyDot() {
+    const dot = cyToDot(this.#cy, { name: 'access' });
+    if (!dot) return;
+    try {
+      await navigator.clipboard.writeText(dot);
+      this.copied = true;
+      setTimeout(() => (this.copied = false), 1200);
+    } catch { /* clipboard unavailable (insecure context) */ }
   }
 
   #cy;
@@ -68,14 +81,21 @@ export class PgAccessGraph extends LitElement {
       return n.reason || '';
     };
     const els = [];
-    const seen = new Map();    // subject|relation|object → node id (dedupe repeated sub-goals)
+    // Identity of a trace step: the sub-goal (subject|relation|object), how it was
+    // evaluated (rule_type|reason|condition), AND its outcome. The outcome matters
+    // because a union (e.g. `accountant OR payroll_clerk`) emits the same sub-goal
+    // twice as siblings — one denied, one granting; without the outcome the denied
+    // one would claim the key and hide the granting subtree in the full tree. Only
+    // truly identical converging steps merge (keeping the DAG for diamond graphs).
+    const stepKey = (n) => `${n.subject}|${n.relation}|${n.object}|${n.rule_type || ''}|${n.reason || ''}|${n.condition_name || ''}|${n.allowed === true || n.result === true}`;
+    const seen = new Map();    // stepKey → node id (dedupe only identical steps)
     const edgeSeen = new Set(); // source|target|label (dedupe repeated edges)
     const edgeEls = [];         // collected separately to spread parallel labels
     let i = 0, e = 0;
     const walk = (n, parentId, isRoot) => {
       const ok = n.allowed === true || n.result === true;
       if (prune && !ok) return;
-      const key = `${n.subject}|${n.relation}|${n.object}`;
+      const key = stepKey(n);
       const seenId = isRoot ? undefined : seen.get(key);
       const id = seenId ?? ('n' + i++);
       // Edge from the parent — drawn even for a repeated sub-goal, so the graph
@@ -244,6 +264,7 @@ export class PgAccessGraph extends LitElement {
         <button title="zoom in (+10%)" @click=${() => this.#zoom(10)}>+</button>
         <button title="zoom out (−10%)" @click=${() => this.#zoom(-10)}>−</button>
         <button title="center & fit" @click=${() => this.#fitReadable()}>⊙</button>
+        <button title="copy as Graphviz DOT" data-testid="copy-dot" @click=${() => this.#copyDot()}>${this.copied ? '✓' : '⧉'}</button>
       </div>
       <div id="graph"></div>`;
   }
