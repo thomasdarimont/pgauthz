@@ -79,8 +79,17 @@ func (s *Server) handleExploreExplain(w http.ResponseWriter, r *http.Request) {
 
 // exploreGate requires a session and a configured engine connection.
 func (s *Server) exploreGate(w http.ResponseWriter, r *http.Request) bool {
-	if s.sessionFromReq(r) == nil {
+	if !s.cfg.ExploreEnabled {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "explore mode is disabled"})
+		return false
+	}
+	se := s.sessionFromReq(r)
+	if se == nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "not authenticated"})
+		return false
+	}
+	if s.cfg.ExploreRole != "" && !tokenHasRole(se.accessToken, s.cfg.ExploreRole) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "explore mode requires role: " + s.cfg.ExploreRole})
 		return false
 	}
 	if s.engineDB == nil {

@@ -107,6 +107,22 @@ END
 $$;
 GRANT authz_reader TO authzen_direct;
 
+-- Playground BFF metadata/explore role: a dedicated read-only LOGIN role for the
+-- web playground's ENGINE_DSN. It INHERITs authz_reader (check/explain/describe_model)
+-- AND gets direct SELECT on the metadata tables, because the playground browses
+-- stores/types/relations/conditions/tuples directly (not only via functions). Never
+-- point ENGINE_DSN at a superuser outside the demo — use this role.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authz_metadata') THEN
+        -- Dev password — override in production deployments.
+        CREATE ROLE authz_metadata LOGIN PASSWORD 'authz';
+    END IF;
+END
+$$;
+GRANT authz_reader TO authz_metadata;
+GRANT SELECT ON authz.stores, authz.types, authz.relations, authz.conditions, authz.tuples TO authz_metadata;
+
 -- ── Condition-evaluation hardening ──────────────────────────────────
 -- Condition expressions are arbitrary SQL evaluated in a sandbox
 -- (_exec_condition runs as the zero-privilege authz_eval role). That role
@@ -125,6 +141,7 @@ GRANT authz_reader TO authzen_direct;
 --    listings prefer pagination (p_limit) and object/user wildcards (O(1)).
 ALTER ROLE authz_authenticator SET statement_timeout = '60s';
 ALTER ROLE authzen_direct      SET statement_timeout = '60s';
+ALTER ROLE authz_metadata      SET statement_timeout = '60s';
 
 -- 2. Capability — pg_sleep is a PUBLIC builtin and the one obvious
 --    hang-via-DoS primitive reachable from the sandbox; revoke it (and its

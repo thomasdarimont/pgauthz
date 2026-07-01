@@ -78,6 +78,14 @@ func main() {
 	}
 	srv := server.New(cfg, pool, engineDB, httpClient, oidcClient, disco)
 
+	httpSrv := &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           srv.Routes(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	log.Printf("playground BFF listening on %s (opa=%s, app=%s)", cfg.Addr, cfg.OpaURL, cfg.BaseURL)
-	log.Fatal(http.ListenAndServe(cfg.Addr, srv.Routes()))
+	log.Fatal(httpSrv.ListenAndServe())
 }

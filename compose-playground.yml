@@ -50,10 +50,14 @@ services:
       # Path prefix the app is served under (one of several apps on this host).
       BASE_PATH: /playground
       COOKIE_SECURE: "true"
-      # Read-only access to the ENGINE DB, only for store/type/relation
-      # autocomplete in the UI. The demo reuses the engine superuser; in
-      # production use a dedicated role with SELECT on authz.stores/types/relations.
-      ENGINE_DSN: postgres://authz:${PG_PASSWORD:-authz}@authz-db:5432/authz
+      # Explore mode (engine-direct, arbitrary-subject checks + model/tuple browsing).
+      # Off by default in the BFF; the demo opts in. To restrict it to holders of a
+      # Keycloak role, set PLAYGROUND_EXPLORE_ROLE (realm or client role).
+      PLAYGROUND_EXPLORE_ENABLED: "true"
+      # PLAYGROUND_EXPLORE_ROLE: pgauthz-explorer
+      # Dedicated read-only metadata/explore role (SELECT on the metadata tables +
+      # EXECUTE on describe_model/check/explain) — NOT the engine superuser.
+      ENGINE_DSN: postgres://authz_metadata:${PLAYGROUND_ENGINE_PASSWORD:-authz}@authz-db:5432/authz
     volumes:
       # SPA mounted for live editing; the binary serves it from /web.
       - ./playground/frontend:/web:ro

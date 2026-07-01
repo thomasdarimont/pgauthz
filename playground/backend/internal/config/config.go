@@ -22,6 +22,10 @@ type Config struct {
 	WebDir       string
 	Scopes       string
 	TLSCAFile    string // optional extra CA (e.g. mkcert dev root) to trust for outbound TLS
+	// Explore mode (engine-direct, arbitrary-subject checks + model/tuple browsing) is
+	// a privileged capability. Off by default; opt in and optionally require a role.
+	ExploreEnabled bool   // PLAYGROUND_EXPLORE_ENABLED
+	ExploreRole    string // PLAYGROUND_EXPLORE_ROLE — Keycloak role required (empty = any authenticated user)
 }
 
 func env(k, def string) string {
@@ -34,19 +38,21 @@ func env(k, def string) string {
 // Load reads the configuration from the environment, applying defaults.
 func Load() Config {
 	return Config{
-		Addr:         env("ADDR", ":8080"),
-		PgDSN:        env("PG_DSN", "postgres://playground:playground@playground-db:5432/pgauthz_playground"),
-		ClientID:     env("CLIENT_ID", "playground-bff"),
-		ClientSecret: env("CLIENT_SECRET", "playground-bff-demo-secret"),
-		Issuer:       env("ISSUER", "http://keycloak:8080/realms/pgauthz"),
-		RedirectURI:  env("REDIRECT_URI", "https://app.pgauthz.test/auth/callback"),
-		OpaURL:       env("OPA_URL", "http://opa:8181"),
-		EngineDSN:    env("ENGINE_DSN", ""),
-		BaseURL:      env("BASE_URL", "https://app.pgauthz.test"),
-		BasePath:     strings.TrimRight(env("BASE_PATH", "/playground"), "/"),
-		CookieSecure: env("COOKIE_SECURE", "true") == "true",
-		WebDir:       env("WEB_DIR", "/web"),
-		Scopes:       env("SCOPES", "openid profile"),
-		TLSCAFile:    env("TLS_CA_FILE", ""),
+		Addr:           env("ADDR", ":8080"),
+		PgDSN:          env("PG_DSN", "postgres://playground:playground@playground-db:5432/pgauthz_playground"),
+		ClientID:       env("CLIENT_ID", "playground-bff"),
+		ClientSecret:   env("CLIENT_SECRET", "playground-bff-demo-secret"),
+		Issuer:         env("ISSUER", "http://keycloak:8080/realms/pgauthz"),
+		RedirectURI:    env("REDIRECT_URI", "https://app.pgauthz.test/auth/callback"),
+		OpaURL:         env("OPA_URL", "http://opa:8181"),
+		EngineDSN:      env("ENGINE_DSN", ""),
+		BaseURL:        env("BASE_URL", "https://app.pgauthz.test"),
+		BasePath:       strings.TrimRight(env("BASE_PATH", "/playground"), "/"),
+		CookieSecure:   env("COOKIE_SECURE", "true") == "true",
+		WebDir:         env("WEB_DIR", "/web"),
+		Scopes:         env("SCOPES", "openid profile"),
+		TLSCAFile:      env("TLS_CA_FILE", ""),
+		ExploreEnabled: env("PLAYGROUND_EXPLORE_ENABLED", "false") == "true",
+		ExploreRole:    env("PLAYGROUND_EXPLORE_ROLE", ""),
 	}
 }
