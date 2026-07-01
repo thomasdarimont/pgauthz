@@ -736,7 +736,13 @@ BEGIN
          WHERE store_id    = p_store_id
            AND object_type = p_object_type
            AND relation    = p_relation
-         ORDER BY group_id, negated  -- false < true: base rules first
+         -- group_id keeps a group's rules contiguous; negated puts exclusion base
+         -- rules before their negations; rule_type then tries the CHEAPEST rules
+         -- first (direct=1 O(1) probe < computed=2 recurses same object < ttu=3
+         -- follows a tupleset then recurses). Order never changes the result (union
+         -- / intersection are order-independent) — it only lets ALLOWs short-circuit
+         -- and intersections fail-fast sooner, skipping expensive recursion.
+         ORDER BY group_id, negated, rule_type
     LOOP
         -- Detect group boundary.
         IF rule.group_id <> v_cur_group THEN
