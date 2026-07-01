@@ -9,7 +9,10 @@
 --   summer  = editor,               owns item_summer              (interop fd2…)
 --   jerry   = viewer,               owns item_jerry               (interop fd3…)
 --   beth    = viewer,               owns item_beth                (interop fd4…)
---   peter   = evil_genius only,     owns nothing                  (interop user:peter)
+--
+-- (The interop's "pure evil_genius" user `peter` is intentionally NOT seeded — the
+--  interop supplies him as a per-test CONTEXTUAL tuple, not stored data; tests.sql
+--  does the same with check_access_with_contextual_tuples.)
 --
 -- todo-1 is the list; item_* are its children (linked by `parent`).
 --
@@ -26,7 +29,6 @@ BEGIN
     PERFORM authz.write_tuple('todo', 'user', 'summer', 'editor',      'todo', 'todo-1');
     PERFORM authz.write_tuple('todo', 'user', 'jerry',  'viewer',      'todo', 'todo-1');
     PERFORM authz.write_tuple('todo', 'user', 'beth',   'viewer',      'todo', 'todo-1');
-    PERFORM authz.write_tuple('todo', 'user', 'peter',  'evil_genius', 'todo', 'todo-1');
 
     ------------------------------------------------------------------
     -- Child items: each has the list as `parent` (subject = todo:todo-1)
@@ -48,12 +50,10 @@ BEGIN
     PERFORM authz.write_tuple('todo', 'user', 'beth',   'owner',  'todo', 'item_beth');
 
     ------------------------------------------------------------------
-    -- Profiles are world-readable: subject user:* has can_read_user on user:<x>
+    -- Profiles are world-readable: EVERY user (subject user:*) can read EVERY user
+    -- (object user:*). This one tuple uses both a subject and an OBJECT wildcard —
+    -- the latter enabled by allow_object_wildcard on the can_read_user rule (model.sql).
+    -- OpenFGA has no object wildcards, so the interop lists each user separately.
     ------------------------------------------------------------------
-    PERFORM authz.write_tuple('todo', 'user', '*', 'can_read_user', 'user', 'rick');
-    PERFORM authz.write_tuple('todo', 'user', '*', 'can_read_user', 'user', 'morty');
-    PERFORM authz.write_tuple('todo', 'user', '*', 'can_read_user', 'user', 'summer');
-    PERFORM authz.write_tuple('todo', 'user', '*', 'can_read_user', 'user', 'jerry');
-    PERFORM authz.write_tuple('todo', 'user', '*', 'can_read_user', 'user', 'beth');
-    PERFORM authz.write_tuple('todo', 'user', '*', 'can_read_user', 'user', 'peter');
+    PERFORM authz.write_tuple('todo', 'user', '*', 'can_read_user', 'user', '*');
 END $$;

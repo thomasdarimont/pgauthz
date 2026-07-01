@@ -38,7 +38,8 @@ SELECT authz.check_access('todo','user','peter','can_update_todo','todo','item_b
        authz.check_access('todo','user','peter','can_delete_todo','todo','item_beth') AS peter_can_delete;
 
 \echo
-\echo '== Subject wildcard: every user profile is world-readable (user:*) =='
+\echo '== Object wildcard: EVERY profile is world-readable via one (user:* → user:*) tuple =='
+-- pgauthz-only: OpenFGA has no object wildcards, so the interop lists each user.
 SELECT authz.explain_access('todo','user','anyone_at_all','can_read_user','user','rick') ->> 'summary';
 
 \echo

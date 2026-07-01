@@ -9,13 +9,20 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **`explain_access` now reports the exact granting tuple.** Each granting-tuple
+  step gains a `matched_tuple` field — the stored tuple that satisfied it, as
+  `subject → relation → object` with `*` wildcards resolved (so an object-wildcard
+  grant shows `user:* → can_read_user → user:*`, not the queried ids). Redacted in
+  safety mode. The playground's resolution tree renders it. No API break (additive).
 - **`todo` example model (AuthZEN interop).** A pgauthz port of the OpenFGA
   [authzen-interop todo model](https://github.com/openfga/authzen-interop/tree/main/todo):
-  list/item roles, ownership, subject wildcards (`can_read_user: [user:*]`), TTU,
-  and an **intersection** — deleting/updating an item needs management rights on
-  the parent list *and* ownership (so a viewer who owns an item still can't delete
-  it), while `admin`/`evil_genius` on the parent bypass ownership. Ships with
-  `model.sql`, `seed.sql`, `demo.sql`, and a `tests.sql` derived from the interop
+  list/item roles, ownership, TTU, wildcards (incl. a pgauthz **object wildcard**
+  making every profile world-readable in one tuple), and an **intersection** —
+  deleting/updating an item needs management rights on the parent list *and*
+  ownership (so a viewer who owns an item still can't delete it), while
+  `admin`/`evil_genius` on the parent bypass ownership. The interop's test-only
+  "evil_genius" user is modeled with a **contextual tuple**, as the suite does.
+  Ships with `model.sql`, `seed.sql`, `demo.sql`, and a `tests.sql` derived from the interop
   `.fga.yaml` assertions (wired into `tests/test.sh`).
 
 ## [0.3.0] - 2026-07-01

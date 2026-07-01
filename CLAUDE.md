@@ -33,8 +33,16 @@ Application → OPA (optional policy layer) → PostgREST (REST bridge) → Post
 ./init.sh            # Install the full engine (substrate + read + write + audit) + roles
 ./init-readonly.sh   # Install only the read-only excerpt (substrate + read) for an app
                      # DB fed by replication — no write API, no audit tables
+./reload-engine.sh   # Fast dev reload of engine CODE + roles.sql into a running DB
+                     # (no migrations/data/examples). Re-runs roles.sql so
+                     # SECURITY DEFINER is restored — CREATE OR REPLACE resets it.
 ./bootstrap.sh       # Full init + run all tests
 ```
+
+> Reloading engine code with plain `CREATE OR REPLACE` resets a function's
+> `SECURITY DEFINER` to INVOKER, breaking non-owner callers with
+> `permission denied for function _s`. Always follow an engine reload with
+> `roles.sql` — `./init.sh` and `./reload-engine.sh` both do this in order.
 
 ### Run Tests
 ```bash

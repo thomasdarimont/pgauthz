@@ -1,6 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { api } from '../api.js';
-import './pg-explain-tree.js';
+import { PgExplainTree } from './pg-explain-tree.js';
 import './pg-access-graph.js';
 import './pg-types-graph.js';
 import './pg-model.js';
@@ -23,7 +23,7 @@ export class PgApp extends LitElement {
     typesOpen: { state: true }, contextOpen: { state: true },
     typeHidden: { state: true }, relHidden: { state: true },
     modelOpen: { state: true }, modelH: { state: true }, queryOpen: { state: true }, typesH: { state: true },
-    queryCopied: { state: true },
+    copiedWhat: { state: true }, explainJson: { state: true },
   };
 
   constructor() {
@@ -42,22 +42,32 @@ export class PgApp extends LitElement {
     this.leftOpen = true; this.leftWidth = 520; this.typesOpen = false; this.contextOpen = false;
     this.typeHidden = []; this.relHidden = [];
     this.modelOpen = true; this.modelH = 300; this.queryOpen = true; this.typesH = 340;
-    this.queryCopied = false;
+    this.copiedWhat = null; this.explainJson = null;
   }
 
-  // Copy the current query as a runnable engine call (reproducible in psql / shareable).
-  async _copyQuery() {
+  // Write text to the clipboard and flash a per-button "copied" tick (keyed by `what`).
+  async _copy(text, what) {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      this.copiedWhat = what;
+      setTimeout(() => { if (this.copiedWhat === what) this.copiedWhat = null; }, 1200);
+    } catch { /* clipboard unavailable */ }
+  }
+
+  // The query as a natural-language sentence.
+  _sentenceText() {
+    return `is ${this.subjectType}:${this.subjectId} related to ${this.objType}:${this.objId} as ${this.action}?`;
+  }
+
+  // The query as a runnable engine call (reproducible in psql / shareable).
+  _sqlText() {
     const esc = (x) => String(x ?? '').replace(/'/g, "''");
     const args = [this.store, this.subjectType, this.subjectId, this.action, this.objType, this.objId]
       .map((x) => `'${esc(x)}'`);
     const ctx = (this.context || '').trim();
     if (ctx) args.push(`'${esc(ctx)}'::jsonb`);
-    const sql = `SELECT authz.explain_access(${args.join(', ')});`;
-    try {
-      await navigator.clipboard.writeText(sql);
-      this.queryCopied = true;
-      setTimeout(() => (this.queryCopied = false), 1200);
-    } catch { /* clipboard unavailable */ }
+    return `SELECT authz.explain_access(${args.join(', ')});`;
   }
 
   // Declared type names parsed from the model DSL ("type <name>" lines), so the
@@ -142,7 +152,7 @@ export class PgApp extends LitElement {
 
   _check() {
     return this._run(async () => {
-      this.decision = null; this.tree = null;
+      this.decision = null; this.tree = null; this.explainJson = null;
       const ctx = this._contextObj();
       // Single source of truth: derive BOTH the decision and the tree from one
       // explain_access result. A separate check call could observe a different
@@ -158,6 +168,8 @@ export class PgApp extends LitElement {
         if (ctx !== undefined) input.context = ctx;
         ex = (await api.q('explain', input)).body?.result;
       }
+      // Keep the raw explain result (pre-annotation) for the "copy JSON" action.
+      this.explainJson = ex ? structuredClone(ex) : null;
       this.tree = this._annotateTree(ex?.tree ?? null);
       // Decision from the same result: top-level decision/result, else the tree root.
       this.decision = ex?.decision?.allowed ?? ex?.result ?? this.tree?.allowed ?? this.tree?.result ?? null;
@@ -259,9 +271,18 @@ export class PgApp extends LitElement {
   // Completion candidates derived from the loaded tuples (+ model relations).
   _uniq(a) { return [...new Set(a.filter(Boolean))].sort(); }
   _subjectTypes() { return this._uniq((this.tuples || []).map((t) => t.user_type)); }
-  _subjectIds(type) { return this._uniq((this.tuples || []).filter((t) => !type || t.user_type === type).map((t) => t.user_id)); }
   _objectTypes() { return this._uniq([...(this.meta?.objects ?? []), ...(this.tuples || []).map((t) => t.object_type)]); }
-  _objectIds(type) { return this._uniq((this.tuples || []).filter((t) => !type || t.object_type === type).map((t) => t.object_id)); }
+  // All known ids of a type. An entity can be a subject in one tuple and an object
+  // in another (e.g. a user:* object-wildcard grant leaves user ids only in the
+  // subject position), so union both positions — every id is valid in either slot.
+  _idsForType(type) {
+    return this._uniq((this.tuples || []).flatMap((t) => [
+      (!type || t.user_type === type) ? t.user_id : null,
+      (!type || t.object_type === type) ? t.object_id : null,
+    ]).filter(Boolean));
+  }
+  _subjectIds(type) { return this._idsForType(type); }
+  _objectIds(type) { return this._idsForType(type); }
 
   // One editable token of the sentence: a content-sized combobox (pg-combo).
   _tok(prop, suggestions, placeholder) {
@@ -388,8 +409,13 @@ export class PgApp extends LitElement {
         <dt>userset</dt><dd>granted to a group/userset — resolution continues into its members</dd>
         <dt>intersection / exclusion</dt><dd>AND / BUT&nbsp;NOT rule groups</dd>
       </dl></details>
-    <details class="aux"><summary class="muted">resolution path (text)</summary>
-      <pg-explain-tree .node=${this.tree}></pg-explain-tree></details>`;
+    <details class="aux"><summary class="muted">resolution path
+      <button class="copy-query" data-testid="path-copy-text" title="copy the resolution path as text"
+        @click=${(e) => { e.preventDefault(); this._copy(PgExplainTree.toText(this.tree), 'p-text'); }}>${this.copiedWhat === 'p-text' ? '✓' : '⧉ text'}</button>
+      <button class="copy-query" data-testid="path-copy-json" title="copy the original explain_access JSON"
+        @click=${(e) => { e.preventDefault(); this._copy(JSON.stringify(this.explainJson, null, 2), 'p-json'); }}>${this.copiedWhat === 'p-json' ? '✓' : '⧉ json'}</button>
+    </summary>
+      <pg-explain-tree .node=${this.tree} root></pg-explain-tree></details>`;
   }
 
   _header() {
@@ -428,8 +454,10 @@ export class PgApp extends LitElement {
             <span>as</span>
             ${this._tok('action', this.meta?.relations, 'relation')}<span class="colon">?</span>
             <button class="run" data-testid="query-run" ?disabled=${this.busy} @click=${() => this._runStructured()}>Run</button>
-            <button class="copy-query" data-testid="query-copy" title="copy as SQL (explain_access)"
-              @click=${() => this._copyQuery()}>${this.queryCopied ? '✓ copied' : '⧉ copy'}</button>
+            <button class="copy-query" data-testid="query-copy-text" title="copy as a sentence"
+              @click=${() => this._copy(this._sentenceText(), 'q-text')}>${this.copiedWhat === 'q-text' ? '✓' : '⧉ text'}</button>
+            <button class="copy-query" data-testid="query-copy-sql" title="copy as SQL (explain_access)"
+              @click=${() => this._copy(this._sqlText(), 'q-sql')}>${this.copiedWhat === 'q-sql' ? '✓' : '⧉ sql'}</button>
           </div>
       <details class="context-row" ?open=${this.contextOpen} @toggle=${(e) => (this.contextOpen = e.target.open)}>
         <summary class="muted">request context (JSON) — evaluates conditional tuples</summary>

@@ -172,5 +172,12 @@ BEGIN
     (s, t_todo, r_can_update_todo, authz._rel_computed(), r_owner, NULL,     NULL,                    1, authz._combine_and()),
     (s, t_todo, r_can_update_todo, authz._rel_ttu(),      NULL,    r_parent, r_evil_genius,           0, authz._combine_or());
 
+    -- Profiles are world-readable. OpenFGA can only express this per-object with a
+    -- subject wildcard (user:* on each user). pgauthz also supports OBJECT wildcards
+    -- (object_id = '*'), which are default-deny — opt the direct rule in here so a
+    -- single `(user:*, can_read_user, user:*)` tuple covers every user. (This is a
+    -- pgauthz enhancement beyond the OpenFGA interop model.)
+    PERFORM authz.model_add_rule('todo', 'user', 'can_read_user', 'direct', p_allow_object_wildcard => true);
+
 END;
 $$;

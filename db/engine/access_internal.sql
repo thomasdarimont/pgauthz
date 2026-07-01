@@ -151,11 +151,12 @@ BEGIN
            AND authz._eval_condition(condition_id, condition_context, p_request_context)
     ) THEN
         IF p_trace THEN
-            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
+            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated, matched_tuple)
             VALUES (p_depth, 'direct', p_user_type_name || ':' || p_user_id,
                     p_relation_name, p_object_type_name || ':' || p_object_id,
                     true, 'tuple found',
-                    extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated);
+                    extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated,
+                    p_user_type_name || ':' || p_user_id || ' → ' || p_relation_name || ' → ' || p_object_type_name || ':' || p_object_id);
         END IF;
         RETURN true;
     END IF;
@@ -186,11 +187,12 @@ BEGIN
            AND authz._eval_condition(condition_id, condition_context, p_request_context)
     ) THEN
         IF p_trace THEN
-            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
+            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated, matched_tuple)
             VALUES (p_depth, 'direct', p_user_type_name || ':' || p_user_id,
                     p_relation_name, p_object_type_name || ':' || p_object_id,
                     true, 'wildcard tuple (*)',
-                    extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated);
+                    extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated,
+                    p_user_type_name || ':* → ' || p_relation_name || ' → ' || p_object_type_name || ':' || p_object_id);
         END IF;
         RETURN true;
     END IF;
@@ -225,11 +227,19 @@ BEGIN
            AND authz._eval_condition(condition_id, condition_context, p_request_context)
     ) THEN
         IF p_trace THEN
-            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated)
+            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated, matched_tuple)
             VALUES (p_depth, 'direct', p_user_type_name || ':' || p_user_id,
                     p_relation_name, p_object_type_name || ':' || p_object_id,
                     true, 'object wildcard tuple (*)',
-                    extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated);
+                    extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated,
+                    -- the stored object-wildcard tuple: subject may be exact or '*'
+                    p_user_type_name || ':' ||
+                      (SELECT t2.user_id FROM authz.tuples t2
+                        WHERE t2.store_id = p_store_id AND t2.object_type = p_object_type AND t2.object_id = '*'
+                          AND t2.relation = p_relation AND t2.user_type = p_user_type
+                          AND t2.user_id IN (p_user_id, '*') AND t2.user_relation IS NULL
+                        ORDER BY (t2.user_id = p_user_id) DESC LIMIT 1)
+                      || ' → ' || p_relation_name || ' → ' || p_object_type_name || ':*');
         END IF;
         RETURN true;
     END IF;

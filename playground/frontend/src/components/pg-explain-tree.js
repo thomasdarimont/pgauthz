@@ -3,8 +3,8 @@ import { LitElement, html, css } from 'lit';
 // Renders one node of the explain_access resolution tree, recursively. Green =
 // the step contributed an allow, red = denied. Collapsible.
 export class PgExplainTree extends LitElement {
-  static properties = { node: { type: Object }, open: { state: true } };
-  constructor() { super(); this.open = true; }
+  static properties = { node: { type: Object }, open: { state: true }, root: { type: Boolean } };
+  constructor() { super(); this.open = true; this.root = false; }
 
   // Reads the shared design tokens (inherited from :root into shadow DOM);
   // each var() has a fallback so the component still renders standalone.
@@ -22,11 +22,35 @@ export class PgExplainTree extends LitElement {
 
   _allowed(n) { return n.allowed === true || n.result === true; }
 
+  // The step's main label text — matched tuple (exact granting tuple, wildcards
+  // resolved), else detail, else the sub-goal "<rel> on <obj>". Shared by the
+  // rendered tree and the text export.
+  static labelText(n) {
+    return n.matched_tuple
+      || n.detail
+      || [n.relation, n.object && `on ${n.object}`].filter(Boolean).join(' ')
+      || [n.subject, n.relation, n.object].filter(Boolean).join(' ')
+      || JSON.stringify(n);
+  }
+
+  // Render the whole tree to indented text (mirrors the on-screen tree), for the
+  // playground's "copy resolution path as text" action.
+  static toText(node) {
+    const walk = (n, depth, isRoot) => {
+      if (!n) return '';
+      const ok = n.allowed === true || n.result === true;
+      const reason = n.reason && !isRoot ? ` [${n.reason}]` : '';
+      const line = '  '.repeat(depth) + (ok ? '✔' : '✘') + ' ' + PgExplainTree.labelText(n) + reason;
+      return line + '\n' + (n.children || []).map((c) => walk(c, depth + 1, false)).join('');
+    };
+    return walk(node, 0, true);
+  }
+
   _label(n) {
-    const main = n.detail || [n.relation, n.object && `on ${n.object}`].filter(Boolean).join(' ') ||
-      [n.subject, n.relation, n.object].filter(Boolean).join(' ');
-    return html`<span class="label">${main || JSON.stringify(n)}
-      ${n.reason ? html`<span class="reason">[${n.reason}]</span>` : ''}</span>`;
+    // The synthetic root is the decision/query node; its reason just repeats the
+    // granting leaf's, so don't tag it (matches the access graph's query node).
+    return html`<span class="label">${PgExplainTree.labelText(n)}
+      ${n.reason && !this.root ? html`<span class="reason">[${n.reason}]</span>` : ''}</span>`;
   }
 
   render() {

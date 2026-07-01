@@ -286,7 +286,8 @@ BEGIN
         group_op      smallint,
         negated       boolean,
         condition_name         text,
-        condition_missing_keys text[]
+        condition_missing_keys text[],
+        matched_tuple text
     ) ON COMMIT DROP;
 
     v := authz._eval_direct(

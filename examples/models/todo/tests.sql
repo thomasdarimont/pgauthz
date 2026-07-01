@@ -10,6 +10,9 @@ DECLARE
     total      int := 0;
     result     boolean;
     rec        record;
+    -- Peter is a test-only "pure evil_genius" — his role is supplied as a
+    -- contextual tuple (as the interop suite does), never stored.
+    peter_evil jsonb := '[{"user_type":"user","user_id":"peter","relation":"evil_genius","object_type":"todo","object_id":"todo-1"}]';
 BEGIN
     CREATE TEMP TABLE test_checks (
         id          serial,
@@ -56,12 +59,6 @@ BEGIN
     ('Beth (viewer) can read the list',              'user','beth','can_read_todos', 'todo','todo-1',   true),
     ('Beth cannot delete her own item',              'user','beth','can_delete_todo','todo','item_beth',false),
 
-    -- Peter: evil_genius only → can UPDATE any item (evil from parent) but cannot
-    -- DELETE any (delete needs admin from parent; evil_genius does not grant it).
-    ('Peter can create todos (evil→manager)',        'user','peter','can_create_todo','todo','todo-1',    true),
-    ('Peter can update any item (evil from parent)', 'user','peter','can_update_todo','todo','item_morty',true),
-    ('Peter cannot delete any item (needs admin)',   'user','peter','can_delete_todo','todo','item_morty',false),
-
     -- Profiles are world-readable (user:* wildcard) — even an unknown user.
     ('Anyone can read a user profile',               'user','somebody_new','can_read_user','user','rick', true),
     ('Rick can read Beth''s profile',                'user','rick','can_read_user','user','beth',          true);
@@ -77,6 +74,28 @@ BEGIN
             RAISE NOTICE '    FAIL  %  (expected=%, got=%)', rec.description, rec.expected, result;
         END IF;
     END LOOP;
+
+    -- Peter (pure evil_genius) via a CONTEXTUAL tuple — as the interop suite does.
+    -- He can update any item (evil_genius from parent) but delete none (delete needs
+    -- admin from parent). Not a stored user; the role lives only in `peter_evil`.
+    CREATE TEMP TABLE peter_checks (description text, relation text, object_id text, expected boolean);
+    INSERT INTO peter_checks VALUES
+        ('Peter (contextual evil_genius) can create todos',       'can_create_todo', 'todo-1',     true),
+        ('Peter (contextual evil_genius) can update any item',    'can_update_todo', 'item_morty', true),
+        ('Peter (contextual evil_genius) cannot delete any item', 'can_delete_todo', 'item_morty', false);
+    FOR rec IN SELECT * FROM peter_checks ORDER BY description LOOP
+        total := total + 1;
+        result := authz.check_access_with_contextual_tuples_jsonb(
+            'todo', 'user', 'peter', rec.relation, 'todo', rec.object_id, NULL, peter_evil);
+        IF result = rec.expected THEN
+            pass_count := pass_count + 1;
+            RAISE NOTICE '    PASS  %', rec.description;
+        ELSE
+            fail_count := fail_count + 1;
+            RAISE NOTICE '    FAIL  %  (expected=%, got=%)', rec.description, rec.expected, result;
+        END IF;
+    END LOOP;
+    DROP TABLE peter_checks;
 
     RAISE NOTICE '';
     RAISE NOTICE '==> % passed, % failed (of % todo checks)', pass_count, fail_count, total;

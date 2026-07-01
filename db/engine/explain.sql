@@ -162,7 +162,10 @@ BEGIN
         negated       boolean,
         -- condition explain (set only on condition_denied steps)
         condition_name        text,
-        condition_missing_keys text[]
+        condition_missing_keys text[],
+        -- the exact stored tuple that granted this step, in `subject → relation →
+        -- object` form with * wildcards (NULL for non-tuple / denied steps).
+        matched_tuple text
     ) ON COMMIT DROP;
     TRUNCATE _access_trace RESTART IDENTITY;
     PERFORM set_config('authz.trace', 'on', true);
@@ -222,6 +225,9 @@ BEGIN
             -- required context keys were missing (null on non-condition steps)
             'condition_name',         s.condition_name,
             'condition_missing_keys', to_jsonb(s.condition_missing_keys),
+            -- exact stored tuple that granted this step (null on non-tuple steps);
+            -- redacted along with other identifiers.
+            'matched_tuple', CASE WHEN p_redact THEN NULL ELSE s.matched_tuple END,
             'duration_ms', round(s.duration_ms::numeric, 3)
         ) ORDER BY s.step
     ), '[]'::jsonb)
