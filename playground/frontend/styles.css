@@ -230,6 +230,8 @@ header .brand label { flex-direction: row; align-items: center; gap: var(--pg-sp
 .sentence > span { color: var(--pg-muted); }
 .sentence .colon { margin: 0 -.3rem; color: var(--pg-muted); font-weight: 600; }
 .sentence .run { margin-left: var(--pg-space-2); }
+.sentence .copy-query { margin-left: var(--pg-space-1); font-size: var(--pg-text-sm);
+  color: var(--pg-muted); white-space: nowrap; }
 .tok { display: inline-flex; }
 .tok-input {
   padding: .25rem .45rem; border: 1px solid var(--pg-border); border-radius: var(--pg-radius-sm);

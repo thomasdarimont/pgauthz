@@ -23,6 +23,7 @@ export class PgApp extends LitElement {
     typesOpen: { state: true }, contextOpen: { state: true },
     typeHidden: { state: true }, relHidden: { state: true },
     modelOpen: { state: true }, modelH: { state: true }, queryOpen: { state: true }, typesH: { state: true },
+    queryCopied: { state: true },
   };
 
   constructor() {
@@ -31,13 +32,32 @@ export class PgApp extends LitElement {
     this.me = null; this.meta = null; this.mode = 'explore';
     this.store = url.searchParams.get('store') || 'demo';
     this.model = ''; this.tuples = []; this.conditions = []; this.typeLabels = []; this.clusterHidden = [];
-    this.subjectType = 'internal_user'; this.subjectId = 'alice';
-    this.action = 'can_read'; this.objType = 'document'; this.objId = 'doc_payroll_001';
+    // Seed the query with a runnable example only for the demo store; any other
+    // store (e.g. via ?store=todo) starts blank so no demo values carry over.
+    const demo = this.store === 'demo';
+    this.subjectType = demo ? 'internal_user' : ''; this.subjectId = demo ? 'alice' : '';
+    this.action = demo ? 'can_read' : ''; this.objType = demo ? 'document' : ''; this.objId = demo ? 'doc_payroll_001' : '';
     this.context = ''; this.decision = null; this.tree = null; this.error = ''; this.busy = false;
     this.queryTab = 'structured'; this.dataTab = 'tuples'; this.allowedOnly = true;
     this.leftOpen = true; this.leftWidth = 520; this.typesOpen = false; this.contextOpen = false;
     this.typeHidden = []; this.relHidden = [];
     this.modelOpen = true; this.modelH = 300; this.queryOpen = true; this.typesH = 340;
+    this.queryCopied = false;
+  }
+
+  // Copy the current query as a runnable engine call (reproducible in psql / shareable).
+  async _copyQuery() {
+    const esc = (x) => String(x ?? '').replace(/'/g, "''");
+    const args = [this.store, this.subjectType, this.subjectId, this.action, this.objType, this.objId]
+      .map((x) => `'${esc(x)}'`);
+    const ctx = (this.context || '').trim();
+    if (ctx) args.push(`'${esc(ctx)}'::jsonb`);
+    const sql = `SELECT authz.explain_access(${args.join(', ')});`;
+    try {
+      await navigator.clipboard.writeText(sql);
+      this.queryCopied = true;
+      setTimeout(() => (this.queryCopied = false), 1200);
+    } catch { /* clipboard unavailable */ }
   }
 
   // Declared type names parsed from the model DSL ("type <name>" lines), so the
@@ -103,6 +123,11 @@ export class PgApp extends LitElement {
   _setStore(v) {
     this.store = v;
     const u = new URL(location.href); u.searchParams.set('store', v); history.replaceState(null, '', u);
+    // The old subject/action/object belong to the previous store — reset the
+    // query and clear the stale result so nothing carries over.
+    this.subjectType = ''; this.subjectId = '';
+    this.action = ''; this.objType = ''; this.objId = '';
+    this.decision = null; this.tree = null; this.error = '';
     this._run(() => Promise.all([this._loadMeta(), this._loadStore()]));
   }
 
@@ -238,7 +263,7 @@ export class PgApp extends LitElement {
   _objectTypes() { return this._uniq([...(this.meta?.objects ?? []), ...(this.tuples || []).map((t) => t.object_type)]); }
   _objectIds(type) { return this._uniq((this.tuples || []).filter((t) => !type || t.object_type === type).map((t) => t.object_id)); }
 
-  // One editable token of the sentence: a content-sized input with a datalist.
+  // One editable token of the sentence: a content-sized combobox (pg-combo).
   _tok(prop, suggestions, placeholder) {
     return html`<pg-combo class="tok" data-testid="query-${prop}" .value=${this[prop] || ''} .options=${suggestions ?? []}
       placeholder=${placeholder ?? prop}
@@ -370,7 +395,17 @@ export class PgApp extends LitElement {
   _header() {
     return html`<header>
       <div class="brand"><strong>pgauthz Playground</strong>
-        ${this._field('Store', 'store', this.meta?.stores, (v) => this._setStore(v))}</div>
+        <label class="store-select">Store
+          <pg-combo data-testid="store-select" .value=${this.store || ''} .options=${this.meta?.stores ?? []}
+            placeholder="store"
+            @value-changed=${(e) => {
+              const v = e.detail.value;
+              // Switch (reload + reset) only when a real store is picked; partial
+              // typing just tracks the field so it doesn't thrash-reload.
+              if ((this.meta?.stores ?? []).includes(v)) this._setStore(v);
+              else this.store = v;
+            }}></pg-combo>
+        </label></div>
       <div class="who">
         <span class="mode">
           <button data-testid="mode-explore" class=${this.mode === 'explore' ? 'active' : ''} @click=${() => (this.mode = 'explore')}>Explore</button>
@@ -393,6 +428,8 @@ export class PgApp extends LitElement {
             <span>as</span>
             ${this._tok('action', this.meta?.relations, 'relation')}<span class="colon">?</span>
             <button class="run" data-testid="query-run" ?disabled=${this.busy} @click=${() => this._runStructured()}>Run</button>
+            <button class="copy-query" data-testid="query-copy" title="copy as SQL (explain_access)"
+              @click=${() => this._copyQuery()}>${this.queryCopied ? '✓ copied' : '⧉ copy'}</button>
           </div>
       <details class="context-row" ?open=${this.contextOpen} @toggle=${(e) => (this.contextOpen = e.target.open)}>
         <summary class="muted">request context (JSON) — evaluates conditional tuples</summary>
@@ -405,16 +442,5 @@ export class PgApp extends LitElement {
     </details>`;
   }
 
-  _field(label, prop, suggestions, onChange) {
-    const listId = suggestions ? `dl-${prop}` : undefined;
-    return html`<label>${label}
-      <input list=${listId ?? ''} .value=${this[prop]} @input=${(e) => {
-        this[prop] = e.target.value;
-        if (onChange) onChange(e.target.value);
-      }}>
-      ${suggestions ? html`<datalist id=${listId}>
-        ${suggestions.map((v) => html`<option value=${v}></option>`)}</datalist>` : ''}
-    </label>`;
-  }
 }
 customElements.define('pg-app', PgApp);
