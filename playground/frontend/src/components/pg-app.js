@@ -65,12 +65,13 @@ export class PgApp extends LitElement {
   }
 
   createRenderRoot() { return this; } // light DOM so /styles.css applies
-  connectedCallback() { super.connectedCallback(); this._loadMe(); }
+  connectedCallback() { super.connectedCallback(); this._run(() => this._loadMe()); }
 
   async _loadMe() {
     const { body } = await api.me();
     this.me = body;
-    if (body?.authenticated) { this._loadMeta(); this._loadStore(); }
+    // Await so a metadata/store load failure propagates to the wrapping _run.
+    if (body?.authenticated) { await Promise.all([this._loadMeta(), this._loadStore()]); }
   }
   async _loadMeta() {
     const [s, r, o] = await Promise.all([api.metaStores(), api.metaRelations(this.store), api.metaObjects(this.store)]);
@@ -102,7 +103,7 @@ export class PgApp extends LitElement {
   _setStore(v) {
     this.store = v;
     const u = new URL(location.href); u.searchParams.set('store', v); history.replaceState(null, '', u);
-    this._loadMeta(); this._loadStore();
+    this._run(() => Promise.all([this._loadMeta(), this._loadStore()]));
   }
 
   async _run(fn) { this.busy = true; this.error = ''; try { await fn(); } catch (e) { this.error = String(e.message || e); } finally { this.busy = false; } }
@@ -144,7 +145,11 @@ export class PgApp extends LitElement {
     if (!tree) return tree;
     const byKey = new Map();
     for (const t of this.tuples || []) {
-      if (t.condition_name) byKey.set(`${t.user_type}:${t.user_id}|${t.relation}|${t.object_type}:${t.object_id}`, t.condition_name);
+      if (!t.condition_name) continue;
+      // Userset subjects are `type:id#relation`; include user_relation so a userset
+      // tuple matches the right node and doesn't collide with the plain-subject one.
+      const subj = t.user_relation ? `${t.user_type}:${t.user_id}#${t.user_relation}` : `${t.user_type}:${t.user_id}`;
+      byKey.set(`${subj}|${t.relation}|${t.object_type}:${t.object_id}`, t.condition_name);
     }
     const walk = (n) => {
       if (!n.condition_name && n.subject && n.relation && n.object) {

@@ -1,7 +1,7 @@
 // Thin client for the BFF. The session cookie is http-only, so we just rely on
 // the browser sending it (credentials: 'include'); the access token never reaches
 // the SPA — the BFF injects it server-side.
-async function call(path, body) {
+async function call(path, body, allow = []) {
   const r = await fetch(path, {
     method: body ? 'POST' : 'GET',
     headers: body ? { 'Content-Type': 'application/json' } : {},
@@ -10,11 +10,17 @@ async function call(path, body) {
   });
   let json = null;
   try { json = await r.json(); } catch { /* non-JSON */ }
+  // Surface backend failures as thrown errors so callers (via _run) show them
+  // instead of silently rendering empty/undefined/stale state. `allow` lists
+  // non-2xx statuses that are a valid response (e.g. /api/me → 401 when logged out).
+  if (!r.ok && !allow.includes(r.status)) {
+    throw new Error(json?.error ?? `HTTP ${r.status}`);
+  }
   return { status: r.status, body: json };
 }
 
 export const api = {
-  me: () => call('api/me'),
+  me: () => call('api/me', undefined, [401]), // 401 = logged out, a normal response
   // Names for autocomplete (read-only engine metadata).
   metaStores: () => call('api/meta/stores'),
   metaRelations: (store) => call('api/meta/relations?store=' + encodeURIComponent(store)),

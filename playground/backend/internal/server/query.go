@@ -8,13 +8,13 @@ import (
 )
 
 // allowedRules are the OPA rules the SPA may invoke (prevents arbitrary data.* access).
+// Read-only by design — no mutation rules (e.g. `write`) are exposed.
 var allowedRules = map[string]bool{
 	"allow":               true,
 	"explain":             true,
 	"accessible_objects":  true,
 	"accessible_subjects": true,
 	"permitted_actions":   true,
-	"write":               true,
 }
 
 type queryReq struct {
