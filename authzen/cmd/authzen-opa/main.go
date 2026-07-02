@@ -45,7 +45,7 @@ func run() error {
 		return fmt.Errorf("OPA_URL is required for authzen-opa")
 	}
 
-	backend := opabackend.New(cfg.OPAURL, cfg.OPAPackage)
+	backend := opabackend.New(cfg.OPAURL, cfg.OPAPackage, cfg.ForwardTokenToOPA)
 
 	// Verify OPA is reachable
 	if err := backend.Healthz(context.Background()); err != nil {

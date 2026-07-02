@@ -92,6 +92,13 @@ services:
       # authzen_auditor (see keycloak/terraform); other users get 403 on search.
       SEARCH_REQUIRED_ROLE: authzen_auditor
       JWT_ROLES_CLAIM: realm_access.roles,resource_access.authz-api.roles
+      # Forward the verified token to OPA (input.token) so OPA re-validates it,
+      # instead of forwarding only the resolved subject. Lets OPA run in the secure
+      # REQUIRE_TOKEN_FOR_READS=true mode (see compose-keycloak.yml). Safe here
+      # because the playground checks a user's own access (ALLOW_SUBJECT_OVERRIDE
+      # unset → subject == token). Leave off for PEP setups that check arbitrary
+      # subjects on behalf of others (those genuinely need tokenless subject-trust).
+      FORWARD_TOKEN_TO_OPA: "true"
 
   # Add the app.pgauthz.test route to the keycloak overlay's nginx proxy.
   proxy:

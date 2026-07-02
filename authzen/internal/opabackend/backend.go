@@ -15,16 +15,18 @@ import (
 
 // Backend implements authz.Backend by calling OPA HTTP endpoints.
 type Backend struct {
-	baseURL string
-	pkg     string // e.g. "authz"
-	client  *http.Client
+	baseURL      string
+	pkg          string // e.g. "authz"
+	client       *http.Client
+	forwardToken bool // add the verified bearer token to OPA input as input.token
 }
 
-func New(baseURL, pkg string) *Backend {
+func New(baseURL, pkg string, forwardToken bool) *Backend {
 	return &Backend{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		pkg:     pkg,
-		client:  &http.Client{},
+		baseURL:      strings.TrimRight(baseURL, "/"),
+		pkg:          pkg,
+		client:       &http.Client{},
+		forwardToken: forwardToken,
 	}
 }
 
@@ -234,6 +236,16 @@ func (b *Backend) Healthz(ctx context.Context) error {
 
 // query calls OPA's /v1/data/{pkg}/{rule} and unwraps the result.
 func (b *Backend) query(ctx context.Context, rule string, input any, dest any) error {
+	// Forward the verified token so OPA can re-validate it (input.token path),
+	// rather than trusting the forwarded subject. Applied at this single chokepoint
+	// so every rule (allow, evaluations, accessible_*, permitted_actions) benefits.
+	if b.forwardToken {
+		if m, ok := input.(map[string]any); ok {
+			if tok := api.TokenFromContext(ctx); tok != "" {
+				m["token"] = tok
+			}
+		}
+	}
 	body, err := json.Marshal(map[string]any{"input": input})
 	if err != nil {
 		return fmt.Errorf("marshaling OPA input: %w", err)

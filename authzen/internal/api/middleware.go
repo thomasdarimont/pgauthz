@@ -28,7 +28,18 @@ const (
 	ctxSubjectType
 	ctxRequestID
 	ctxRoles
+	ctxRawToken
 )
+
+// TokenFromContext returns the raw (verified) bearer token string, if present.
+// Used by backends that re-forward the token to a downstream PDP (e.g. OPA) so it
+// can re-validate rather than trust a forwarded subject.
+func TokenFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(ctxRawToken).(string); ok {
+		return v
+	}
+	return ""
+}
 
 // SubjectFromContext extracts JWT-derived subject info from context.
 func SubjectFromContext(ctx context.Context) (subjectType, subjectID string) {
@@ -171,6 +182,9 @@ func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 		if m.cfg.RolesClaims != "" {
 			ctx = context.WithValue(ctx, ctxRoles, extractRoles(claims, m.cfg.RolesClaims))
 		}
+
+		// Stash the verified token so a backend can re-forward it to the PDP.
+		ctx = context.WithValue(ctx, ctxRawToken, tokenStr)
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

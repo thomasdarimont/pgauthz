@@ -60,6 +60,12 @@ type Config struct {
 	// opabackend only
 	OPAURL     string
 	OPAPackage string
+	// ForwardTokenToOPA: forward the verified bearer token to OPA as input.token so
+	// OPA re-validates it (secure token path), instead of forwarding only the
+	// resolved subject (which needs OPA's REQUIRE_TOKEN_FOR_READS=false). Enable in
+	// trusted-single-subject deployments (e.g. the playground); leave off for
+	// trusted-PEP setups that check arbitrary subjects on behalf of others.
+	ForwardTokenToOPA bool
 
 	LogLevel string
 }
@@ -86,6 +92,7 @@ func Load() (*Config, error) {
 		DBPoolMax:            envInt("DB_POOL_MAX", 25),
 		OPAURL:               env("OPA_URL", ""),
 		OPAPackage:           env("OPA_PACKAGE", "authz"),
+		ForwardTokenToOPA:    envBool("FORWARD_TOKEN_TO_OPA", false),
 		LogLevel:             env("LOG_LEVEL", "info"),
 	}
 

@@ -101,6 +101,11 @@ services:
       TOKEN_DEBUG: "true"
       JWT_ROLES_CLAIM: "realm_access.roles,resource_access.authz-api.roles"
       WRITER_ROLE: authz_writer
+      # Secure token-only reads. The AuthZEN console stays in this mode because
+      # authzen-opa forwards the verified bearer token (FORWARD_TOKEN_TO_OPA, see
+      # compose-playground.yml) so OPA re-validates it via the input.token path — no
+      # tokenless subject-trust needed. The "As me (OPA)" path already sends a token.
+      REQUIRE_TOKEN_FOR_READS: "true"
       # Per-app namespace isolation: pgauthz reads a per-app DB role from this
       # claim, sourced from a HARDCODED claim mapper on the CLIENT (the app) — not
       # a user attribute (a tenancy concern, not user identity). Off in the demo
