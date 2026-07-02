@@ -283,16 +283,18 @@ run_tests() {
     echo "  --- Resource search ---"
     echo ""
 
-    check_json "Bob can read 3 documents" \
+    # 5 = 3 engagement docs (advisor → internal_collaborator) + 2 folder docs
+    # (bob owns folder:workpapers).
+    check_json "Bob can read 5 documents" \
         "$base_url/access/v1/search/resource" "$AUTH_BOB" \
         '{"subject":{"type":"internal_user","id":"bob"},"action":{"name":"can_read"},"resource":{"type":"document"}}' \
         '.results | length' \
-        "3"
+        "5"
 
-    check_keyset_paging "Keyset paging covers all 3 of Bob's documents (size 1)" \
+    check_keyset_paging "Keyset paging covers all 5 of Bob's documents (size 1)" \
         "$base_url" "$AUTH_BOB" \
         '{"subject":{"type":"internal_user","id":"bob"},"action":{"name":"can_read"},"resource":{"type":"document"}}' \
-        "3"
+        "5"
 
     # --- Action search ---
     echo ""

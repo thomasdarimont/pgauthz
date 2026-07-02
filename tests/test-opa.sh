@@ -246,12 +246,14 @@ result=$(curl -sf -X POST "$OPA_URL/v1/data/authz/accessible_objects" \
 
 total=$((total + 1))
 count=$(echo "$result" | jq '.result | length')
-if [ "$count" = "3" ]; then
+# 5 = 3 engagement docs (bob is advisor → internal_collaborator) + 2 folder docs
+# (bob owns folder:workpapers, which contains them).
+if [ "$count" = "5" ]; then
     pass_count=$((pass_count + 1))
-    echo "    PASS  Bob can read 3 documents"
+    echo "    PASS  Bob can read 5 documents"
 else
     fail_count=$((fail_count + 1))
-    echo "    FAIL  Bob can read 3 documents  (got $count: $result)"
+    echo "    FAIL  Bob can read 5 documents  (got $count: $result)"
 fi
 
 # --- Action search (permitted_actions) ---
