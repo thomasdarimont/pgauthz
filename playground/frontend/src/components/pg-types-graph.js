@@ -5,18 +5,21 @@ import { cyToDot } from '../dot.js';
 
 cytoscape.use(elk);
 
-// Model overview: a type-level graph of the whole store. The demo's type
-// restrictions are all `[any]`, so the model text alone has no type→type edges;
-// instead we aggregate the tuples into distinct `objectType ──relation──▶ userType`
-// edges, which is the structural skeleton the store actually uses. Declared types
-// with no tuples still appear as isolated nodes.
+// Model overview: a type-level graph of the whole store, in one of two modes:
+//   • declared (default): edges are the model's type restrictions — every direct
+//     relation `object ──relation──▶ allowed_type`, parsed from the DSL. This is
+//     the full declared schema (matches the DSL / OpenFGA), including relations no
+//     tuple uses. Relations declared as `[any]` (no restriction) have no edge.
+//   • observed: edges aggregated from the tuples — the type→type relationships that
+//     actually occur in the data. Declared-but-unused relations don't appear.
+// Declared types with no edges still appear as isolated nodes.
 const TYPE_FILL = '#3d5a73';
 
 export class PgTypesGraph extends LitElement {
   static properties = {
-    tuples: { attribute: false }, types: { attribute: false },
+    tuples: { attribute: false }, types: { attribute: false }, model: { attribute: false },
     hiddenTypes: { attribute: false }, hiddenRelations: { attribute: false },
-    zoomLevel: { state: true }, copied: { state: true },
+    mode: { state: true }, zoomLevel: { state: true }, copied: { state: true },
   };
   static styles = css`
     :host { display: block; position: relative; height: 42vh; min-height: 280px;
@@ -31,12 +34,52 @@ export class PgTypesGraph extends LitElement {
     .controls .zoomlvl { display: inline-flex; align-items: center; height: 30px; padding: 0 7px;
       font-size: 12px; color: var(--pg-muted, #6e7781); background: var(--pg-bg, #fff); white-space: nowrap;
       border: 1px solid var(--pg-border, #d0d7de); border-radius: var(--pg-radius-sm, 4px); }
+    .controls .modebtn { width: auto; padding: 0 9px; font-size: 12px; font-weight: 600; }
+    .legend { position: absolute; left: var(--pg-space-2, .5rem); bottom: var(--pg-space-2, .5rem);
+      z-index: 2; display: flex; flex-direction: column; gap: 3px; padding: 6px 9px;
+      font-size: 11px; color: var(--pg-muted, #57606a);
+      background: color-mix(in srgb, var(--pg-bg, #fff) 88%, transparent);
+      border: 1px solid var(--pg-border, #d0d7de); border-radius: var(--pg-radius-sm, 4px); }
+    .legend .key { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+    .legend code { font-size: 10px; }
+    .legend .line { width: 22px; height: 0; flex: 0 0 auto; }
+    .legend .line.solid  { border-top: 2px solid #b1b8c0; }
+    .legend .line.dashed { border-top: 2px dashed #9aa4b0; }
   `;
 
   constructor() {
     super();
+    this.mode = 'declared';
     this.zoomLevel = 90;
     this.copied = false;
+  }
+
+  // Parse the DSL's type restrictions into type→type edges. Each direct relation
+  // renders as `define <rel>: [<type>, <type>#<rel>, …]`; computed/TTU relations
+  // have no `[...]` and are skipped. A `type#relation` (userset) or `type:*`
+  // (wildcard) still targets the base type node.
+  #declaredElements() {
+    const types = new Set();
+    const edges = new Map();
+    let cur = null;
+    for (const raw of (this.model || '').split('\n')) {
+      const th = raw.match(/^type\s+(\S+)/);
+      if (th) { cur = th[1]; types.add(cur); continue; }
+      if (!cur) continue;
+      const dm = raw.match(/^\s*define\s+(\S+):\s*\[([^\]]*)\]/);
+      if (!dm) continue;
+      const rel = dm[1];
+      for (const item of dm[2].split(',')) {
+        const s = item.trim();
+        if (!s) continue;
+        const userset = s.includes('#') ? s.split('#')[1] : null;
+        const target = s.split('#')[0].replace(/:\*$/, '');
+        types.add(target);
+        const label = userset ? `${rel} #${userset}` : rel;
+        edges.set(`${cur} ${label} ${target}`, { source: cur, target, label, userset: !!userset });
+      }
+    }
+    return { types, edges: [...edges.values()] };
   }
 
   // Copy the current (visible) graph as Graphviz DOT to the clipboard.
@@ -54,18 +97,28 @@ export class PgTypesGraph extends LitElement {
   #ro;
   #fit100; // the fitted zoom that counts as 100%
 
-  // Nodes = distinct types (declared ∪ referenced); edges = distinct
-  // (object_type, relation, user_type) triples drawn from the tuples.
+  // Nodes = distinct types (declared ∪ referenced). Edges come from the model's
+  // type restrictions (declared mode) or from the tuples (observed mode).
   #elements() {
     const types = new Set((this.types || []).filter(Boolean));
-    const edges = new Map();
-    for (const t of this.tuples || []) {
-      types.add(t.object_type); types.add(t.user_type);
-      const key = `${t.object_type} ${t.relation} ${t.user_type}`;
-      if (!edges.has(key)) edges.set(key, { source: t.object_type, target: t.user_type, label: t.relation });
+    let edgeList;
+    if (this.mode === 'observed') {
+      const edges = new Map();
+      for (const t of this.tuples || []) {
+        types.add(t.object_type); types.add(t.user_type);
+        const userset = t.user_relation || null; // e.g. team:x#member → userset "member"
+        const label = userset ? `${t.relation} #${userset}` : t.relation;
+        const key = `${t.object_type} ${label} ${t.user_type}`;
+        if (!edges.has(key)) edges.set(key, { source: t.object_type, target: t.user_type, label, userset: !!userset });
+      }
+      edgeList = [...edges.values()];
+    } else {
+      const d = this.#declaredElements();
+      d.types.forEach((t) => types.add(t));
+      edgeList = d.edges;
     }
     const nodes = [...types].filter(Boolean).map((id) => ({ data: { id, label: id } }));
-    const edgeEls = [...edges.values()].map((e, i) => ({ data: { id: 'te' + i, ...e } }));
+    const edgeEls = edgeList.map((e, i) => ({ data: { id: 'te' + i, ...e } }));
     return [...nodes, ...edgeEls];
   }
 
@@ -155,6 +208,9 @@ export class PgTypesGraph extends LitElement {
           color: '#57606a', 'text-background-color': '#ffffff', 'text-background-opacity': 0.9,
           'text-background-shape': 'round-rectangle', 'text-background-padding': '2px',
         } },
+        // Userset restrictions (e.g. team#member) drawn dashed to distinguish them
+        // from a direct assignment of the same type.
+        { selector: 'edge[?userset]', style: { 'line-style': 'dashed', 'line-color': '#9aa4b0', 'target-arrow-color': '#9aa4b0' } },
       ],
     });
     this.#cy.on('zoom', () => this.#updateZoom());
@@ -169,7 +225,7 @@ export class PgTypesGraph extends LitElement {
 
   updated(changed) {
     if (!this.#cy) return;
-    if (changed.has('tuples') || changed.has('types')) {
+    if (changed.has('tuples') || changed.has('types') || changed.has('model') || changed.has('mode')) {
       this.#cy.elements().remove();
       this.#cy.add(this.#elements());
       this.#runLayout();
@@ -189,12 +245,21 @@ export class PgTypesGraph extends LitElement {
   render() {
     return html`
       <div class="controls">
+        <button class="modebtn" data-testid="types-mode"
+          title=${this.mode === 'declared'
+            ? 'edges: declared (model type restrictions) — click for observed (from tuples)'
+            : 'edges: observed (from tuples) — click for declared (model)'}
+          @click=${() => (this.mode = this.mode === 'declared' ? 'observed' : 'declared')}>${this.mode === 'declared' ? 'model' : 'data'}</button>
         <span class="zoomlvl" title="zoom level (100% = fit)">${this.zoomLevel}%</span>
         <button title="re-arrange nodes" @click=${() => this.#runLayout()}>↻</button>
         <button title="zoom in (+10%)" @click=${() => this.#zoom(10)}>+</button>
         <button title="zoom out (−10%)" @click=${() => this.#zoom(-10)}>−</button>
         <button title="center & fit" @click=${() => this.#fitReadable()}>⊙</button>
         <button title="copy as Graphviz DOT" data-testid="copy-dot" @click=${() => this.#copyDot()}>${this.copied ? '✓' : '⧉'}</button>
+      </div>
+      <div class="legend" data-testid="types-legend">
+        <span class="key"><span class="line solid"></span>direct type</span>
+        <span class="key"><span class="line dashed"></span>userset (<code>type#relation</code>)</span>
       </div>
       <div id="graph"></div>`;
   }

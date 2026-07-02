@@ -348,6 +348,7 @@ export class PgApp extends LitElement {
                 ${this.typesOpen ? html`
                   ${this._typeFilters()}
                   <pg-types-graph data-testid="types-graph" style="height:${this.typesH}px" .tuples=${this.tuples} .types=${this._typeNames()}
+                    .model=${this.model}
                     .hiddenTypes=${this._effectiveHidden()} .hiddenRelations=${this.relHidden}
                     @node-hidden=${(e) => this._toggle('typeHidden', e.detail)}></pg-types-graph>
                 ` : ''}
