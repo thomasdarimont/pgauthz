@@ -167,8 +167,14 @@ nav.perspective button.active { color: var(--pg-primary); border-color: var(--pg
 .left { padding-right: var(--pg-space-3);
   display: flex; flex-direction: column; gap: var(--pg-space-2); }
 .left > .graph-section { flex: 0 0 auto; margin-bottom: 0; min-height: 0; }
-/* Model section: resizable height (set inline), pg-model fills it */
-.left > .model-section { display: flex; flex-direction: column; overflow: hidden; }
+/* Model section: sole occupant of the Model Explorer left pane — fills it. */
+.left > .model-section { flex: 1 1 auto; display: flex; flex-direction: column; overflow: hidden; }
+/* Types graph fills the Model Explorer right pane (mirrors the .evaluate rules). */
+.right > .types-pane[open] { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.types-pane::details-content { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: clip; }
+.types-pane pg-types-graph { flex: 1 1 auto; min-height: 0; height: auto; }
+/* AuthZEN perspective: a single full-width column (no left pane). */
+.panes.single { grid-template-columns: 1fr; }
 .model-section::details-content { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: clip; }
 .model-section pg-model { flex: 1 1 auto; min-height: 0; }
 /* Horizontal splitter between Model and Data */

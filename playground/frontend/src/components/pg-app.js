@@ -45,7 +45,7 @@ export class PgApp extends LitElement {
     this.typeHidden = []; this.relHidden = [];
     this.modelOpen = true; this.modelH = 300; this.queryOpen = true; this.typesH = 340;
     this.copiedWhat = null; this.explainJson = null;
-    this.perspective = 'explorer'; // 'explorer' (engine-direct) | 'authzen' (AuthZEN 1.0 API)
+    this.perspective = 'model'; // 'model' (schema) | 'explorer' (access checks) | 'authzen' (AuthZEN 1.0 API)
   }
 
   // Write text to the clipboard and flash a per-button "copied" tick (keyed by `what`).
@@ -319,72 +319,82 @@ export class PgApp extends LitElement {
         <p>Sign in to explore the authorization model.</p>
         <button @click=${() => api.login()}>Sign in with Keycloak</button></main>`;
     }
+    // AuthZEN: a full-width console (its own query fields; no left pane).
+    if (this.perspective === 'authzen') {
+      return html`
+        ${this._header()}
+        ${this._perspectiveNav()}
+        <div class="panes single">
+          <section class="right">
+            ${this._authzenFields()}
+            <pg-authzen data-testid="authzen" class="authzen-pane"
+              .subjectType=${this.subjectType} .subjectId=${this.subjectId} .action=${this.action}
+              .objType=${this.objType} .objId=${this.objId} .context=${this.context}
+              .searchEnabled=${this.me?.search_enabled !== false}></pg-authzen>
+          </section>
+        </div>`;
+    }
+    // Model Explorer (schema: Model + Types) and Access Explorer (runtime: Data +
+    // Query) share the resizable two-pane layout; only the pane contents differ.
+    const model = this.perspective === 'model';
     const cols = `${this.leftOpen ? this.leftWidth : 0}px 18px minmax(0, 1fr)`;
     return html`
       ${this._header()}
-      <nav class="perspective" data-testid="perspective">
-        <button data-testid="persp-explorer" class=${this.perspective === 'explorer' ? 'active' : ''}
-          @click=${() => (this.perspective = 'explorer')}>Access Explorer</button>
-        <button data-testid="persp-authzen" class=${this.perspective === 'authzen' ? 'active' : ''}
-          @click=${() => (this.perspective = 'authzen')}>AuthZEN</button>
-      </nav>
+      ${this._perspectiveNav()}
       <div class="panes" style="grid-template-columns:${cols}">
-        ${this.leftOpen ? this._leftPane() : html`<div></div>`}
+        ${this.leftOpen
+          ? html`<section class="left">${model ? this._modelPane() : this._dataPane()}</section>`
+          : html`<div></div>`}
         <div class="divider" @mousedown=${(e) => this._startResize(e)} title="drag to resize">
           <button class="div-toggle" @mousedown=${(e) => e.stopPropagation()} @click=${() => this._toggleLeft()}
             title=${this.leftOpen ? 'collapse panel' : 'expand panel'}>${this.leftOpen ? '‹' : '›'}</button>
         </div>
         <section class="right">
-          ${this.perspective === 'authzen'
-            ? html`
-              ${this._authzenFields()}
-              <pg-authzen data-testid="authzen" class="authzen-pane"
-                .subjectType=${this.subjectType} .subjectId=${this.subjectId} .action=${this.action}
-                .objType=${this.objType} .objId=${this.objId} .context=${this.context}
-                .searchEnabled=${this.me?.search_enabled !== false}></pg-authzen>`
-            : html`
-              <details class="graph-section" data-testid="section-types" @toggle=${(e) => (this.typesOpen = e.target.open)}>
-                <summary><h2>Types</h2><span class="chev"></span></summary>
-                ${this.typesOpen ? html`
-                  ${this._typeFilters()}
-                  <pg-types-graph data-testid="types-graph" style="height:${this.typesH}px" .tuples=${this.tuples} .types=${this._typeNames()}
-                    .model=${this.model}
-                    .hiddenTypes=${this._effectiveHidden()} .hiddenRelations=${this.relHidden}
-                    @node-hidden=${(e) => this._toggle('typeHidden', e.detail)}></pg-types-graph>
-                ` : ''}
-              </details>
-              ${this.typesOpen
-                ? html`<div class="hdivider" title="drag to resize" @mousedown=${(e) => this._startVResize(e, 'typesH', 160, 800)}></div>`
-                : ''}
-              ${this._evaluate()}`}
+          ${model ? this._typesPane() : this._evaluate()}
         </section>
       </div>`;
   }
 
-  _leftPane() {
-    return html`<section class="left">
-      <details class="graph-section model-section" data-testid="section-model" open
-        style=${this.modelOpen ? `height:${this.modelH}px` : ''}
+  _perspectiveNav() {
+    const tab = (key, label) => html`<button data-testid="persp-${key}" class=${this.perspective === key ? 'active' : ''}
+      @click=${() => (this.perspective = key)}>${label}</button>`;
+    return html`<nav class="perspective" data-testid="perspective">
+      ${tab('model', 'Model Explorer')}${tab('explorer', 'Access Explorer')}${tab('authzen', 'AuthZEN')}
+    </nav>`;
+  }
+
+  _modelPane() {
+    return html`<details class="graph-section model-section" data-testid="section-model" open
         @toggle=${(e) => (this.modelOpen = e.target.open)}>
-        <summary><h2>Model</h2><span class="chev"></span></summary>
-        <pg-model data-testid="model" .dsl=${this.model} .types=${this.typeLabels}></pg-model>
-      </details>
-      ${this.modelOpen
-        ? html`<div class="hdivider" title="drag to resize" @mousedown=${(e) => this._startVResize(e)}></div>`
-        : ''}
-      <details class="graph-section data-section" data-testid="section-data" open>
-        <summary><h2>Data</h2><span class="chev"></span></summary>
-        <div class="data-body">
-          <div class="tabs data-tabs">
-            <button data-testid="tab-tuples" class=${this.dataTab === 'tuples' ? 'active' : ''} @click=${() => (this.dataTab = 'tuples')}>Tuples (${this.tuples.length})</button>
-            <button data-testid="tab-conditions" class=${this.dataTab === 'conditions' ? 'active' : ''} @click=${() => (this.dataTab = 'conditions')}>Conditions (${this.conditions.length})</button>
-          </div>
-          ${this.dataTab === 'tuples'
-            ? html`<pg-tuples data-testid="tuples" .tuples=${this.tuples} @pick=${(e) => this._pick(e.detail)}></pg-tuples>`
-            : html`<pg-conditions data-testid="conditions" .conditions=${this.conditions}></pg-conditions>`}
+      <summary><h2>Model</h2><span class="chev"></span></summary>
+      <pg-model data-testid="model" .dsl=${this.model} .types=${this.typeLabels}></pg-model>
+    </details>`;
+  }
+
+  _dataPane() {
+    return html`<details class="graph-section data-section" data-testid="section-data" open>
+      <summary><h2>Data</h2><span class="chev"></span></summary>
+      <div class="data-body">
+        <div class="tabs data-tabs">
+          <button data-testid="tab-tuples" class=${this.dataTab === 'tuples' ? 'active' : ''} @click=${() => (this.dataTab = 'tuples')}>Tuples (${this.tuples.length})</button>
+          <button data-testid="tab-conditions" class=${this.dataTab === 'conditions' ? 'active' : ''} @click=${() => (this.dataTab = 'conditions')}>Conditions (${this.conditions.length})</button>
         </div>
-      </details>
-    </section>`;
+        ${this.dataTab === 'tuples'
+          ? html`<pg-tuples data-testid="tuples" .tuples=${this.tuples} @pick=${(e) => this._pick(e.detail)}></pg-tuples>`
+          : html`<pg-conditions data-testid="conditions" .conditions=${this.conditions}></pg-conditions>`}
+      </div>
+    </details>`;
+  }
+
+  _typesPane() {
+    return html`<details class="graph-section types-pane" data-testid="section-types" open
+        @toggle=${(e) => (this.typesOpen = e.target.open)}>
+      <summary><h2>Types</h2><span class="chev"></span></summary>
+      ${this._typeFilters()}
+      <pg-types-graph data-testid="types-graph" .tuples=${this.tuples} .types=${this._typeNames()}
+        .model=${this.model} .hiddenTypes=${this._effectiveHidden()} .hiddenRelations=${this.relHidden}
+        @node-hidden=${(e) => this._toggle('typeHidden', e.detail)}></pg-types-graph>
+    </details>`;
   }
 
   _typeFilters() {
