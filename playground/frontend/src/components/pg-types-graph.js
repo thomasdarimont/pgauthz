@@ -34,7 +34,12 @@ export class PgTypesGraph extends LitElement {
     .controls .zoomlvl { display: inline-flex; align-items: center; height: 30px; padding: 0 7px;
       font-size: 12px; color: var(--pg-muted, #6e7781); background: var(--pg-bg, #fff); white-space: nowrap;
       border: 1px solid var(--pg-border, #d0d7de); border-radius: var(--pg-radius-sm, 4px); }
-    .controls .modebtn { width: auto; padding: 0 9px; font-size: 12px; font-weight: 600; }
+    /* Segmented model/data view selector. */
+    .controls .modeseg { display: inline-flex; }
+    .controls .modeseg button { width: auto; padding: 0 9px; font-size: 12px; font-weight: 600; border-radius: 0; }
+    .controls .modeseg button:first-child { border-radius: var(--pg-radius-sm, 4px) 0 0 var(--pg-radius-sm, 4px); }
+    .controls .modeseg button:last-child { border-radius: 0 var(--pg-radius-sm, 4px) var(--pg-radius-sm, 4px) 0; border-left: none; }
+    .controls .modeseg button.active { background: var(--pg-primary, #0969da); color: #fff; border-color: var(--pg-primary, #0969da); }
     .legend { position: absolute; left: var(--pg-space-2, .5rem); bottom: var(--pg-space-2, .5rem);
       z-index: 2; display: flex; flex-direction: column; gap: 3px; padding: 6px 9px;
       font-size: 11px; color: var(--pg-muted, #57606a);
@@ -245,11 +250,14 @@ export class PgTypesGraph extends LitElement {
   render() {
     return html`
       <div class="controls">
-        <button class="modebtn" data-testid="types-mode"
-          title=${this.mode === 'declared'
-            ? 'edges: declared (model type restrictions) — click for observed (from tuples)'
-            : 'edges: observed (from tuples) — click for declared (model)'}
-          @click=${() => (this.mode = this.mode === 'declared' ? 'observed' : 'declared')}>${this.mode === 'declared' ? 'model' : 'data'}</button>
+        <span class="modeseg" data-testid="types-mode">
+          <button class=${this.mode === 'declared' ? 'active' : ''} data-testid="types-mode-model"
+            title="edges from the model's type restrictions (the declared schema)"
+            @click=${() => (this.mode = 'declared')}>model</button>
+          <button class=${this.mode === 'observed' ? 'active' : ''} data-testid="types-mode-data"
+            title="edges from the tuples (relationships observed in the data)"
+            @click=${() => (this.mode = 'observed')}>data</button>
+        </span>
         <span class="zoomlvl" title="zoom level (100% = fit)">${this.zoomLevel}%</span>
         <button title="re-arrange nodes" @click=${() => this.#runLayout()}>↻</button>
         <button title="zoom in (+10%)" @click=${() => this.#zoom(10)}>+</button>
