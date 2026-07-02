@@ -24,6 +24,33 @@ pre-1.0, minor versions may include breaking changes.
   "evil_genius" user is modeled with a **contextual tuple**, as the suite does.
   Ships with `model.sql`, `seed.sql`, `demo.sql`, and a `tests.sql` derived from the interop
   `.fga.yaml` assertions (wired into `tests/test.sh`).
+- **AuthZEN console in the playground.** A second perspective — global
+  `Access Explorer` | `AuthZEN` tabs — that drives the real `authzen-opa` service
+  through the BFF (the session token is injected server-side; the SPA never sees
+  it). An endpoint picker (evaluation, evaluations, subject/resource/action search,
+  discovery), a **templated request** built from the shared subject/action/resource
+  fields, and a response pane. The JSON editors gained a **Format** button, a
+  read-only highlighted mode (used for responses), and now fill their pane.
+- **Multi-issuer AuthZEN service.** `authzen-opa` can trust several JWT issuers at
+  once via `JWT_ISSUERS` (a JSON list of `{issuer, audience, jwks_url|jwks_file}`);
+  the token's `iss` selects that issuer's JWKS validator. The legacy single-issuer
+  env vars still work (as one issuer). Lets one instance serve demo-issuer tokens
+  (tests) and Keycloak tokens (playground) side by side.
+- **Role-gated reverse search.** The AuthZEN search endpoints
+  (`search/subject|resource|action`) enumerate the access graph, so they can now
+  require a role: `SEARCH_REQUIRED_ROLE` (+ `JWT_ROLES_CLAIM` for the claim paths,
+  aggregated like OPA's). A new Keycloak `authzen_auditor` realm role (granted to
+  alice) gates them in the playground, which disables the search tabs for users
+  without it (`/api/me` → `search_enabled`). Off by default (search stays open).
+
+### Fixed
+
+- **Subject search over the OPA path returned no results in trusted-PEP mode.**
+  `data.authz.accessible_subjects` reused the `_subject_valid` guard, which in
+  no-token mode requires an `input.subject` that subject search doesn't carry — its
+  subject is the *result*, not the caller. A dedicated `_subject_search_valid` guard
+  authorizes the caller instead (valid token, or trusted PEP), so `authzen-opa`
+  subject search now works. Token-mode callers were unaffected.
 
 ## [0.3.0] - 2026-07-01
 
