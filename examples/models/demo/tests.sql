@@ -41,7 +41,22 @@ BEGIN
     ('Nadia (auditor, doc:*) can read payroll doc',            'internal_user', 'nadia_auditor', 'can_read',     'document',          'doc_payroll_001',         true),
     ('Nadia (auditor, doc:*) can read private client doc',     'internal_user', 'nadia_auditor', 'can_read',     'document',          'doc_client_private_001',  true),
     ('Nadia (auditor) cannot edit documents',                  'internal_user', 'nadia_auditor', 'can_edit',     'document',          'doc_payroll_001',         false),
-    ('Carol can read private doc via viewer',         'client_user',   'carol', 'can_read',             'document',          'doc_client_private_001',  true);
+    ('Carol can read private doc via viewer',         'client_user',   'carol', 'can_read',             'document',          'doc_client_private_001',  true),
+
+    -- Folders: inheritance down the tree (workpapers → wp_payroll → wp_payroll_q1 → doc)
+    ('Bob (folder owner) reads a doc 3 levels deep',            'internal_user', 'bob',   'can_read',          'document', 'doc_folder_payroll_q1_001', true),
+    ('Bob (folder owner) edits a doc 3 levels deep',            'internal_user', 'bob',   'can_edit',          'document', 'doc_folder_payroll_q1_001', true),
+    ('Bob (root owner) reads a doc in the tax subtree',         'internal_user', 'bob',   'can_read',          'document', 'doc_folder_tax_001',        true),
+    ('Bob can share the root folder',                           'internal_user', 'bob',   'can_share',         'folder',   'workpapers',                true),
+    ('Bob (owner) can manage access on a nested folder',        'internal_user', 'bob',   'can_manage_access', 'folder',   'wp_payroll_q1',             true),
+    ('Alice (team viewer) reads the folder doc via inheritance','internal_user', 'alice', 'can_read',          'document', 'doc_folder_payroll_q1_001', true),
+    ('Alice (folder viewer) cannot edit the folder doc',        'internal_user', 'alice', 'can_edit',          'document', 'doc_folder_payroll_q1_001', false),
+    ('Alice (viewer) cannot share the folder',                  'internal_user', 'alice', 'can_share',         'folder',   'wp_payroll',                false),
+    ('Alice cannot read a doc in the tax subtree',              'internal_user', 'alice', 'can_read',          'document', 'doc_folder_tax_001',        false),
+    ('Frank (folder editor) edits the tax folder doc',          'internal_user', 'frank', 'can_edit',          'document', 'doc_folder_tax_001',        true),
+    ('Frank (folder editor) can share the tax folder',          'internal_user', 'frank', 'can_share',         'folder',   'wp_tax',                    true),
+    ('Frank (editor, not owner) cannot manage access',          'internal_user', 'frank', 'can_manage_access', 'folder',   'wp_tax',                    false),
+    ('Eva (no folder grant) cannot read the folder doc',        'internal_user', 'eva',   'can_read',          'document', 'doc_folder_payroll_q1_001', false);
 
     FOR rec IN SELECT * FROM test_checks ORDER BY id LOOP
         total := total + 1;

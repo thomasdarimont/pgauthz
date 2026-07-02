@@ -34,6 +34,7 @@ DECLARE
     t_cli_ds            smallint;  -- client_data_space
     t_document          smallint;
     t_upload_req        smallint;  -- upload_request
+    t_folder            smallint;
 
     -- Relation shortcuts
     r_member                      smallint;
@@ -68,6 +69,10 @@ DECLARE
     r_created_by                  smallint;
     r_can_submit                  smallint;
     r_can_manage                  smallint;
+    r_parent                      smallint;
+    r_owner                       smallint;
+    r_parent_folder               smallint;
+    r_can_share                   smallint;
 BEGIN
 
     ----------------------------------------------------------------------
@@ -84,7 +89,8 @@ BEGIN
         (8,  s, 'client_data_space',   'A shared space where documents are exchanged with the customer (front office).'),
         (9,  s, 'document',            'A file under access control; read/edit/share is governed by its spaces and engagement.'),
         (10, s, 'upload_request',      'A request asking a customer to upload a document into a client data space.'),
-        (11, s, 'service_account',     'A non-human application identity (e.g. the app-dms client) acting via client_credentials.');
+        (11, s, 'service_account',     'A non-human application identity (e.g. the app-dms client) acting via client_credentials.'),
+        (12, s, 'folder',              'A nestable container for documents; permissions granted on a folder inherit to its subfolders and their documents.');
 
     PERFORM setval(pg_get_serial_sequence('authz.types', 'id'), max(id)) FROM authz.types;
 
@@ -108,6 +114,7 @@ BEGIN
     PERFORM authz.model_set_type_labels('demo', 'document',            ARRAY['area:frontoffice','area:backoffice']);
     PERFORM authz.model_set_type_labels('demo', 'upload_request',      ARRAY['area:frontoffice','area:backoffice']);
     PERFORM authz.model_set_type_labels('demo', 'service_account',     ARRAY['area:backoffice']);
+    PERFORM authz.model_set_type_labels('demo', 'folder',              ARRAY['area:backoffice']);
 
     ----------------------------------------------------------------------
     -- Namespace assignments (optional).
@@ -136,6 +143,7 @@ BEGIN
     PERFORM authz._ensure_tuple_partition(s, 'internal_data_space');
     PERFORM authz._ensure_tuple_partition(s, 'client_data_space');
     PERFORM authz._ensure_tuple_partition(s, 'upload_request');
+    PERFORM authz._ensure_tuple_partition(s, 'folder');
 
     -- High-volume types get hash sub-partitioning on object_id.
     -- This splits the partition into smaller physical tables, reducing
@@ -178,7 +186,11 @@ BEGIN
         (29, s, 'requested_from'),
         (30, s, 'created_by'),
         (31, s, 'can_submit'),
-        (32, s, 'can_manage');
+        (32, s, 'can_manage'),
+        (33, s, 'parent'),          -- folder nesting (folder → folder)
+        (34, s, 'owner'),           -- folder owner (full control)
+        (35, s, 'parent_folder'),   -- document → containing folder
+        (36, s, 'can_share');       -- may grant others access to a folder
 
     PERFORM setval(pg_get_serial_sequence('authz.relations', 'id'), max(id)) FROM authz.relations;
 
@@ -191,6 +203,7 @@ BEGIN
     t_cli_ds     := authz._t(s, 'client_data_space');
     t_document   := authz._t(s, 'document');
     t_upload_req := authz._t(s, 'upload_request');
+    t_folder     := authz._t(s, 'folder');
 
     r_member                   := authz._r(s, 'member');
     r_advisor                  := authz._r(s, 'advisor');
@@ -224,6 +237,10 @@ BEGIN
     r_created_by               := authz._r(s, 'created_by');
     r_can_submit               := authz._r(s, 'can_submit');
     r_can_manage               := authz._r(s, 'can_manage');
+    r_parent                   := authz._r(s, 'parent');
+    r_owner                    := authz._r(s, 'owner');
+    r_parent_folder            := authz._r(s, 'parent_folder');
+    r_can_share                := authz._r(s, 'can_share');
 
     ----------------------------------------------------------------------
     -- Model rules
@@ -307,6 +324,37 @@ BEGIN
     (s, t_document, r_can_edit,  authz._rel_ttu(),      NULL, r_in_internal_space, r_can_edit),
     (s, t_document, r_can_share_with_client, authz._rel_ttu(), NULL, r_in_client_space, r_can_manage_sharing),
     (s, t_document, r_can_delete, authz._rel_ttu(), NULL, r_in_internal_space, r_can_manage_access),
+    -- Folder containment (additive): a document may also live in a folder and
+    -- inherit view/edit/delete from it (and, recursively, its parent folders).
+    (s, t_document, r_parent_folder, authz._rel_direct(), NULL, NULL, NULL),
+    (s, t_document, r_can_read,   authz._rel_ttu(), NULL, r_parent_folder, r_can_view),
+    (s, t_document, r_can_edit,   authz._rel_ttu(), NULL, r_parent_folder, r_can_edit),
+    (s, t_document, r_can_delete, authz._rel_ttu(), NULL, r_parent_folder, r_can_manage_access),
+
+    -- type folder
+    -- Nestable document container. Permissions granted on a folder inherit DOWN to
+    -- its subfolders (via `parent`) and to the documents inside them (via a
+    -- document's `parent_folder`). Recursive: can_* pulls from the parent's can_*.
+    (s, t_folder, r_parent, authz._rel_direct(), NULL, NULL, NULL),
+    (s, t_folder, r_owner,  authz._rel_direct(), NULL, NULL, NULL),
+    (s, t_folder, r_editor, authz._rel_direct(), NULL, NULL, NULL),
+    (s, t_folder, r_viewer, authz._rel_direct(), NULL, NULL, NULL),
+    -- can_view: viewer or editor or owner or can_view from parent
+    (s, t_folder, r_can_view, authz._rel_computed(), r_viewer, NULL, NULL),
+    (s, t_folder, r_can_view, authz._rel_computed(), r_editor, NULL, NULL),
+    (s, t_folder, r_can_view, authz._rel_computed(), r_owner,  NULL, NULL),
+    (s, t_folder, r_can_view, authz._rel_ttu(),      NULL, r_parent, r_can_view),
+    -- can_edit: editor or owner or can_edit from parent
+    (s, t_folder, r_can_edit, authz._rel_computed(), r_editor, NULL, NULL),
+    (s, t_folder, r_can_edit, authz._rel_computed(), r_owner,  NULL, NULL),
+    (s, t_folder, r_can_edit, authz._rel_ttu(),      NULL, r_parent, r_can_edit),
+    -- can_manage_access: owner or can_manage_access from parent
+    (s, t_folder, r_can_manage_access, authz._rel_computed(), r_owner, NULL, NULL),
+    (s, t_folder, r_can_manage_access, authz._rel_ttu(),      NULL, r_parent, r_can_manage_access),
+    -- can_share: owner or editor or can_share from parent (invite collaborators)
+    (s, t_folder, r_can_share, authz._rel_computed(), r_owner,  NULL, NULL),
+    (s, t_folder, r_can_share, authz._rel_computed(), r_editor, NULL, NULL),
+    (s, t_folder, r_can_share, authz._rel_ttu(),      NULL, r_parent, r_can_share),
 
     -- type upload_request
     (s, t_upload_req, r_in_client_space, authz._rel_direct(), NULL, NULL, NULL),
@@ -376,6 +424,16 @@ BEGIN
     PERFORM authz.model_add_type_restriction('demo', 'document', 'viewer', 'client_user');
     PERFORM authz.model_add_type_restriction('demo', 'document', 'viewer', 'service_account');
     PERFORM authz.model_add_type_restriction('demo', 'document', 'editor', 'internal_user');
+    PERFORM authz.model_add_type_restriction('demo', 'document', 'parent_folder', 'folder');
+
+    -- folder: nests into another folder; owner/editor/viewer granted to a user or team
+    PERFORM authz.model_add_type_restriction('demo', 'folder', 'parent', 'folder');
+    PERFORM authz.model_add_type_restriction('demo', 'folder', 'owner',  'internal_user');
+    PERFORM authz.model_add_type_restriction('demo', 'folder', 'owner',  'team', 'member');
+    PERFORM authz.model_add_type_restriction('demo', 'folder', 'editor', 'internal_user');
+    PERFORM authz.model_add_type_restriction('demo', 'folder', 'editor', 'team', 'member');
+    PERFORM authz.model_add_type_restriction('demo', 'folder', 'viewer', 'internal_user');
+    PERFORM authz.model_add_type_restriction('demo', 'folder', 'viewer', 'team', 'member');
 
     -- upload_request: linked to a client space; requested from a customer, created by staff
     PERFORM authz.model_add_type_restriction('demo', 'upload_request', 'in_client_space', 'client_data_space');

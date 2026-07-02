@@ -67,6 +67,25 @@ BEGIN
     PERFORM authz.write_tuple('demo', 'client_org',        'acme',          'requested_from',   'upload_request', 'req_2026_001', 'member');
     PERFORM authz.write_tuple('demo', 'internal_user',     'bob',           'created_by',       'upload_request', 'req_2026_001');
 
+    -- Folders (nested containers). A grant on a folder inherits DOWN through its
+    -- subfolders and to the documents inside them. Structure:
+    --   workpapers (bob = owner)
+    --     ├─ wp_payroll        (team:payroll_team#member = viewer)
+    --     │    └─ wp_payroll_q1
+    --     │         └─ doc_folder_payroll_q1_001
+    --     └─ wp_tax            (frank = editor)
+    --          └─ doc_folder_tax_001
+    PERFORM authz.write_tuple('demo', 'folder', 'workpapers',    'parent', 'folder', 'wp_payroll');
+    PERFORM authz.write_tuple('demo', 'folder', 'wp_payroll',    'parent', 'folder', 'wp_payroll_q1');
+    PERFORM authz.write_tuple('demo', 'folder', 'workpapers',    'parent', 'folder', 'wp_tax');
+    PERFORM authz.write_tuple('demo', 'folder', 'wp_payroll_q1', 'parent_folder', 'document', 'doc_folder_payroll_q1_001');
+    PERFORM authz.write_tuple('demo', 'folder', 'wp_tax',        'parent_folder', 'document', 'doc_folder_tax_001');
+
+    -- Folder grants (inherit down the tree)
+    PERFORM authz.write_tuple('demo', 'internal_user', 'bob',   'owner',  'folder', 'workpapers');                    -- owns the whole tree
+    PERFORM authz.write_tuple('demo', 'team',          'payroll_team', 'viewer', 'folder', 'wp_payroll', 'member');  -- payroll team views the payroll subtree
+    PERFORM authz.write_tuple('demo', 'internal_user', 'frank', 'editor', 'folder', 'wp_tax');                       -- frank edits (and may share) the tax subtree
+
     -- Conditional grant (ABAC): a time-boxed share. Bob may view this document
     -- only while the grant window is open — the check must supply a request
     -- context with `current_time`, and without it the condition fails closed.
