@@ -1345,7 +1345,140 @@ group per base alternative as shown in
 
 ---
 
-## 14. Decision Guide -- Which Relationship Type?
+## 14. Recursive Hierarchies — Folders & Filesystems
+
+A very common need is a nested container hierarchy — folders that contain
+subfolders and documents, where a permission granted on a folder flows **down**
+to everything inside it. The demo `folder` type models exactly this:
+
+```
+type folder
+  relations
+    define parent: [folder]                                   # nesting
+    define owner:  [internal_user, team#member]
+    define editor: [internal_user, team#member]
+    define viewer: [internal_user, team#member]
+    define can_view: viewer or editor or owner or can_view from parent
+    define can_edit: editor or owner or can_edit from parent
+
+type document                                                 # (additions)
+    define parent_folder: [folder]
+    define can_read: … or can_view from parent_folder
+    define can_edit: … or can_edit from parent_folder
+```
+
+`can_view from parent` is a [TTU](#tuple-to-userset-ttu) that the engine follows
+**recursively** up the `parent` chain, so a grant anywhere on the path is inherited
+by every descendant.
+
+### Identity vs. structure — use stable IDs
+
+Model an object as `folder:<stable-id>` (the app's internal folder UUID), **never**
+its name or path (`folder:/foo/bar`). Names and paths are application metadata the
+engine neither stores nor needs. The payoff:
+
+- **Rename** a folder → **zero** pgauthz writes (the id is unchanged).
+- **Move** a folder → **one** tuple update (its `parent`; see below).
+- **Create / delete** → one tuple.
+
+### Do you need every intermediate folder?
+
+Not necessarily — it depends on where you keep the hierarchy. The `folder` **type**
+is declared once; an individual folder exists *only* as tuples, so "representing a
+folder" means writing its `parent` link (and `parent_folder` links for its docs).
+There are three approaches:
+
+| Approach | Stored in pgauthz | Structure sync | Reverse queries¹ |
+|---|---|---|---|
+| **A. Mirror the tree** | grants **+** the `parent` / `parent_folder` chain | create / move / delete (rename-free with stable IDs) | ✅ yes |
+| **B. Contextual tuples** | **only grants** | none | ❌ no |
+| **C. App resolves ancestors** | **only grants** (no `parent` relation) | none | ❌ no |
+
+¹ Whether `list_objects` ("everything alice can read") and `list_subjects` ("who
+can read this doc") traverse the hierarchy.
+
+**A — mirror the tree.** Write the containment chain from each protected resource
+up to (and including) any folder where a grant may live — *including grant-less
+intermediate folders*, which are the pass-through links the upward walk needs. You
+do **not** need sibling folders or unrelated subtrees, and a folder that holds
+nothing protected and grants nothing needn't exist. Sync lazily (write the `parent`
+tuple on folder-create, `parent_folder` on doc create/move) — don't bulk-import the
+filesystem. Only approach A supports reverse/list queries over the hierarchy.
+
+**B — contextual tuples.** Store *only the grants*; keep the tree entirely in your
+app. At check time, supply the ancestor chain as
+[contextual (ephemeral) tuples](#9-contextual-tuples):
+
+```
+check(alice, can_read, document:mydoc,
+  contextual: [ mydoc#parent_folder=baz, baz#parent=bar, bar#parent=foo ])
+```
+
+The engine runs the same recursive walk over the ephemeral edges + stored grants.
+Renames/moves never touch pgauthz. The cost: point checks only — the tree isn't
+stored, so reverse/list queries can't traverse it.
+
+**C — app resolves ancestors.** Drop `folder.parent` entirely; have the app
+enumerate the path's ancestor folders and `check_access_batch` `can_view` on each.
+Simplest model; all hierarchy logic lives in the app.
+
+**Choosing:** need reverse/list queries over the hierarchy → **A**. Only point
+checks and want zero structure to sync → **B**. Want the simplest engine model →
+**C**.
+
+### The check recurses for you
+
+Regardless of nesting depth, the application sends **one** check on the document id
+— it does *not* resolve the path, pass ancestors, or walk the tree (the engine does
+that via the tuples/contextual tuples):
+
+```
+document.can_read ← can_view from parent_folder → folder:baz.can_view
+folder.can_view   ← viewer/editor/owner  OR  can_view from parent → …bar → …foo
+                                          → foo.can_view ← viewer(alice) ✓
+```
+
+A document stores only its **immediate** `parent_folder`; ancestry is the folder
+`parent` chain (like a filesystem where each node knows its parent). Depth is
+bounded by the engine's resolution limit (32 hops; ~15–25 nested folders) and is
+memoized within a check. For pathologically deep or very hot paths, denormalize
+(materialize effective grants) — trading write amplification for shallow reads.
+
+### Moving a subtree is one edge repoint
+
+Because each node points at its *immediate* parent by stable id, moving
+`/foo/bar/baz` → `/foo/baz` changes only **baz's own `parent`** — every descendant
+(and their `parent_folder` links) is untouched and moves implicitly. Do it
+atomically with an optimistic-concurrency precondition via
+[`write_tuples_checked`](#batch-operations):
+
+```sql
+authz.write_tuples_checked('store',
+  p_preconditions := '[{"match":"exists","user_type":"folder","user_id":"bar",
+                        "relation":"parent","object_type":"folder","object_id":"baz"}]',
+  p_deletes       := '[{"user_type":"folder","user_id":"bar",
+                        "relation":"parent","object_type":"folder","object_id":"baz"}]',
+  p_writes        := '[{"user_type":"folder","user_id":"foo",
+                        "relation":"parent","object_type":"folder","object_id":"baz"}]');
+```
+
+Notes:
+
+- **No stale-grant cleanup** — inheritance recomputes on read; baz instantly
+  inherits from `foo` and stops inheriting from `bar`.
+- **No `child` bookkeeping** — "child" is the implicit reverse of `parent`, derived
+  by query; there's no second tuple to keep in sync.
+- **No special "move" primitive is needed.** `write_tuples_checked` *is* the
+  atomic multi-tuple update. A folder-aware move op would bake filesystem semantics
+  into a deliberately model-agnostic relationship engine — `folder` is just a
+  modeling convention. Orchestrate the move in the application.
+- The only move that touches many tuples is under a **denormalized** ancestor-list
+  model — and `write_tuples_checked` still applies that batch atomically; the write
+  amplification is the cost of the denormalization you opted into.
+
+---
+
+## 15. Decision Guide -- Which Relationship Type?
 
 ```
 Is the relation explicitly assigned by writing a tuple?
@@ -1390,7 +1523,10 @@ Each level is a computed rule pointing to the level above.
 ```
 folder.viewer from parent  →  folder.viewer from parent  →  ...
 ```
-The engine follows `parent` links recursively up the folder tree.
+The engine follows `parent` links recursively up the folder tree. See
+[Recursive Hierarchies — Folders & Filesystems](#14-recursive-hierarchies--folders--filesystems)
+for the full pattern (which folders to store, moves/renames, contextual-tuple
+alternative).
 
 **Organization delegation** (TTU through owner):
 ```
