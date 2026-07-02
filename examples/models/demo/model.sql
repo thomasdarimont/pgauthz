@@ -320,6 +320,69 @@ BEGIN
     (s, t_upload_req, r_can_manage, authz._rel_ttu(),      NULL, r_in_client_space, r_can_manage_sharing)
     ;
 
+    ----------------------------------------------------------------------
+    -- Type restrictions: the subject types each DIRECT relation accepts.
+    -- Without these, a direct relation accepts ANY subject type (describe_model
+    -- renders it as `[any]`). Declaring them explicitly mirrors OpenFGA, where
+    -- every directly-assignable relation must list its allowed types — e.g.
+    -- `define payroll_clerk: [internal_user, team#member]`.
+    --
+    --   * object-reference relations (parent_*, in_*, *_space, client/client_org)
+    --     point at exactly one object type;
+    --   * role relations accept a concrete user type and/or a userset
+    --     (team#member, client_org#member) — the latter is how the seed grants
+    --     assignment roles and upload requests in bulk.
+    ----------------------------------------------------------------------
+    -- team / client_org membership
+    PERFORM authz.model_add_type_restriction('demo', 'team',       'member', 'internal_user');
+    PERFORM authz.model_add_type_restriction('demo', 'client_org', 'member', 'client_user');
+
+    -- engagement: internal staff, plus the customer org as the "client"
+    PERFORM authz.model_add_type_restriction('demo', 'engagement', 'advisor',   'internal_user');
+    PERFORM authz.model_add_type_restriction('demo', 'engagement', 'assistant', 'internal_user');
+    PERFORM authz.model_add_type_restriction('demo', 'engagement', 'client',    'client_org');
+
+    -- assignment: linked to its engagement; roles granted to a user or a team
+    PERFORM authz.model_add_type_restriction('demo', 'assignment', 'parent_engagement', 'engagement');
+    PERFORM authz.model_add_type_restriction('demo', 'assignment', 'accountant',    'internal_user');
+    PERFORM authz.model_add_type_restriction('demo', 'assignment', 'accountant',    'team', 'member');
+    PERFORM authz.model_add_type_restriction('demo', 'assignment', 'payroll_clerk', 'internal_user');
+    PERFORM authz.model_add_type_restriction('demo', 'assignment', 'payroll_clerk', 'team', 'member');
+    PERFORM authz.model_add_type_restriction('demo', 'assignment', 'tax_clerk',     'internal_user');
+    PERFORM authz.model_add_type_restriction('demo', 'assignment', 'tax_clerk',     'team', 'member');
+    PERFORM authz.model_add_type_restriction('demo', 'assignment', 'assistant',     'internal_user');
+    PERFORM authz.model_add_type_restriction('demo', 'assignment', 'assistant',     'team', 'member');
+
+    -- internal_data_space: linked to assignment + engagement; viewer/editor are internal
+    PERFORM authz.model_add_type_restriction('demo', 'internal_data_space', 'parent_engagement', 'engagement');
+    PERFORM authz.model_add_type_restriction('demo', 'internal_data_space', 'parent_assignment', 'assignment');
+    PERFORM authz.model_add_type_restriction('demo', 'internal_data_space', 'viewer', 'internal_user');
+    PERFORM authz.model_add_type_restriction('demo', 'internal_data_space', 'viewer', 'team', 'member');
+    PERFORM authz.model_add_type_restriction('demo', 'internal_data_space', 'editor', 'internal_user');
+    PERFORM authz.model_add_type_restriction('demo', 'internal_data_space', 'editor', 'team', 'member');
+
+    -- client_data_space: linked to engagement; client org/users + an internal manager
+    PERFORM authz.model_add_type_restriction('demo', 'client_data_space', 'parent_engagement',       'engagement');
+    PERFORM authz.model_add_type_restriction('demo', 'client_data_space', 'client_org',              'client_org');
+    PERFORM authz.model_add_type_restriction('demo', 'client_data_space', 'direct_client_user',      'client_user');
+    PERFORM authz.model_add_type_restriction('demo', 'client_data_space', 'direct_internal_manager', 'internal_user');
+
+    -- document: spaces point at data spaces; viewer also accepts a customer user
+    -- and the document service account (the object wildcard document:* is enabled
+    -- separately on the viewer rule below).
+    PERFORM authz.model_add_type_restriction('demo', 'document', 'in_internal_space', 'internal_data_space');
+    PERFORM authz.model_add_type_restriction('demo', 'document', 'in_client_space',   'client_data_space');
+    PERFORM authz.model_add_type_restriction('demo', 'document', 'viewer', 'internal_user');
+    PERFORM authz.model_add_type_restriction('demo', 'document', 'viewer', 'client_user');
+    PERFORM authz.model_add_type_restriction('demo', 'document', 'viewer', 'service_account');
+    PERFORM authz.model_add_type_restriction('demo', 'document', 'editor', 'internal_user');
+
+    -- upload_request: linked to a client space; requested from a customer, created by staff
+    PERFORM authz.model_add_type_restriction('demo', 'upload_request', 'in_client_space', 'client_data_space');
+    PERFORM authz.model_add_type_restriction('demo', 'upload_request', 'requested_from',  'client_user');
+    PERFORM authz.model_add_type_restriction('demo', 'upload_request', 'requested_from',  'client_org', 'member');
+    PERFORM authz.model_add_type_restriction('demo', 'upload_request', 'created_by',      'internal_user');
+
     -- Privileged grants (object wildcards): mark the document viewer
     -- direct rule so a single tuple like
     --   write_tuple('demo', 'internal_user', '<auditor>', 'viewer', 'document', '*')
