@@ -7,6 +7,8 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-02
+
 ### Added
 
 - **`explain_access` now reports the exact granting tuple.** Each granting-tuple
@@ -42,6 +44,37 @@ pre-1.0, minor versions may include breaking changes.
   aggregated like OPA's). A new Keycloak `authzen_auditor` realm role (granted to
   alice) gates them in the playground, which disables the search tabs for users
   without it (`/api/me` → `search_enabled`). Off by default (search stays open).
+- **Folder support in the demo model.** A nestable `folder` type: `parent` for
+  nesting, `viewer`/`editor`/`owner` grants, `can_share` (owner *or* editor), and
+  recursive `can_view`/`can_edit`/`can_manage_access from parent`; documents gain an
+  additive `parent_folder`, so a grant on a folder inherits **down** through
+  subfolders to the documents inside. A new [`docs/MODEL_DESIGN.md` §14 — Recursive
+  Hierarchies](docs/MODEL_DESIGN.md) covers the pattern in depth: stable IDs, which
+  folders to store (mirror the tree vs. contextual tuples vs. app-resolved
+  ancestors), single-check recursion, and cheap subtree moves via
+  `write_tuples_checked`.
+- **AuthZEN token-forwarding to OPA.** `authzen-opa` can forward the verified bearer
+  token to OPA (`FORWARD_TOKEN_TO_OPA`) so OPA re-validates it via `input.token`
+  instead of trusting a forwarded subject — letting OPA run in the secure
+  `REQUIRE_TOKEN_FOR_READS=true` mode (no tokenless subject-trust), enabled for the
+  playground. Off by default; trusted-PEP deployments that check arbitrary subjects
+  on behalf of others keep subject-forwarding.
+- **Playground: Model Explorer perspective + model-driven type graph.** The UI now
+  groups into three perspectives — **Model Explorer** (model DSL + type graph),
+  **Access Explorer** (query + resolution path), and **AuthZEN**. The type graph can
+  render the model's **declared type restrictions** (all direct relations, matching
+  the DSL) or the **tuple-observed** edges, via a model/data toggle, with a legend
+  distinguishing direct (`[type]`) from userset (`[type#relation]`, dashed) edges.
+  Zoom gained Ctrl/⌘-scroll and trackpad-pinch (about the cursor); hidden nodes are
+  now excluded from the layout.
+
+### Changed
+
+- **The demo model declares explicit type restrictions.** Every direct relation now
+  lists its assignable subject types (e.g. `define payroll_clerk: [internal_user,
+  team#member]`) instead of accepting any type (`[any]`), matching how OpenFGA models
+  must declare them. Write-enforced, so `describe_model` and the playground type
+  graph now show the real schema. (Example-model change only; no engine change.)
 
 ### Fixed
 
@@ -376,7 +409,8 @@ PL/pgSQL.
 - PostgreSQL 18.x (developed/tested on 18.4). PostgREST, OPA, the AuthZEN
   services, and `pg_cel` are optional components of the reference deployment.
 
-[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/thomasdarimont/pgauthz/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/thomasdarimont/pgauthz/compare/v0.2.0...v0.2.1
