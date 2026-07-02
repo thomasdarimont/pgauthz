@@ -46,6 +46,9 @@ services:
       TLS_CA_FILE: /etc/pgauthz/rootCA.pem
       REDIRECT_URI: https://app.pgauthz.test/playground/auth/callback
       OPA_URL: http://opa:8181
+      # AuthZEN console proxies to the authzen-opa service (requires compose-authzen.yml
+      # to be up). Set empty to hide the AuthZEN tab.
+      AUTHZEN_URL: http://authzen-opa:8080
       BASE_URL: https://app.pgauthz.test
       # Path prefix the app is served under (one of several apps on this host).
       BASE_PATH: /playground
@@ -55,6 +58,9 @@ services:
       # Keycloak role, set PLAYGROUND_EXPLORE_ROLE (realm or client role).
       PLAYGROUND_EXPLORE_ENABLED: "true"
       # PLAYGROUND_EXPLORE_ROLE: pgauthz-explorer
+      # UI hint mirroring authzen-opa's SEARCH_REQUIRED_ROLE: the AuthZEN search
+      # tabs are disabled for users without this role (the real gate is server-side).
+      PLAYGROUND_SEARCH_ROLE: authzen_auditor
       # Dedicated read-only metadata/explore role (SELECT on the metadata tables +
       # EXECUTE on describe_model/check/explain) — NOT the engine superuser.
       ENGINE_DSN: postgres://authz_metadata:${PLAYGROUND_ENGINE_PASSWORD:-authz}@authz-db:5432/authz
@@ -68,6 +74,24 @@ services:
       # mirroring how Keycloak reaches itself via the frontend URL.
       - "id.pgauthz.test:host-gateway"
     # Reached only through the proxy at app.pgauthz.test — no host port.
+
+  # The AuthZEN console forwards the playground user's Keycloak token to authzen-opa.
+  # The demo authzen-opa (compose-authzen.yml) trusts only the static demo issuer
+  # (auth.example.com), so add Keycloak as a SECOND trusted issuer here — its Go
+  # middleware is now multi-issuer (selects the validator by the token's `iss`).
+  # The demo JWKS_FILE issuer stays intact, so test-authzen.sh keeps working.
+  # JWKS is fetched over the internal network (keys are the same regardless of host);
+  # the `iss` still validated is the public Keycloak URL.
+  authzen-opa:
+    environment:
+      JWT_ISSUERS: >-
+        [{"issuer":"https://id.pgauthz.test/realms/pgauthz","jwks_url":"http://keycloak:8080/realms/pgauthz/protocol/openid-connect/certs"}]
+      # Reverse-search endpoints (search/subject|resource|action) enumerate the
+      # access graph, so gate them behind an auditor role. Roles are read from the
+      # Keycloak realm + authz-api client claims (aggregated). Alice holds
+      # authzen_auditor (see keycloak/terraform); other users get 403 on search.
+      SEARCH_REQUIRED_ROLE: authzen_auditor
+      JWT_ROLES_CLAIM: realm_access.roles,resource_access.authz-api.roles
 
   # Add the app.pgauthz.test route to the keycloak overlay's nginx proxy.
   proxy:

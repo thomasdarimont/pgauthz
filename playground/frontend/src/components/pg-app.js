@@ -8,6 +8,7 @@ import './pg-tuples.js';
 import './pg-conditions.js';
 import './pg-json-editor.js';
 import './pg-combo.js';
+import './pg-authzen.js';
 
 export class PgApp extends LitElement {
   static properties = {
@@ -24,6 +25,7 @@ export class PgApp extends LitElement {
     typeHidden: { state: true }, relHidden: { state: true },
     modelOpen: { state: true }, modelH: { state: true }, queryOpen: { state: true }, typesH: { state: true },
     copiedWhat: { state: true }, explainJson: { state: true },
+    perspective: { state: true },
   };
 
   constructor() {
@@ -43,6 +45,7 @@ export class PgApp extends LitElement {
     this.typeHidden = []; this.relHidden = [];
     this.modelOpen = true; this.modelH = 300; this.queryOpen = true; this.typesH = 340;
     this.copiedWhat = null; this.explainJson = null;
+    this.perspective = 'explorer'; // 'explorer' (engine-direct) | 'authzen' (AuthZEN 1.0 API)
   }
 
   // Write text to the clipboard and flash a per-button "copied" tick (keyed by `what`).
@@ -285,11 +288,28 @@ export class PgApp extends LitElement {
   _objectIds(type) { return this._idsForType(type); }
 
   // One editable token of the sentence: a content-sized combobox (pg-combo).
-  _tok(prop, suggestions, placeholder) {
+  // onSubmit defaults to running the Explorer query (Enter = Run); callers in other
+  // perspectives (AuthZEN) pass a no-op so Enter doesn't trigger an Explorer check.
+  _tok(prop, suggestions, placeholder, onSubmit) {
     return html`<pg-combo class="tok" data-testid="query-${prop}" .value=${this[prop] || ''} .options=${suggestions ?? []}
       placeholder=${placeholder ?? prop}
       @value-changed=${(e) => (this[prop] = e.detail.value)}
-      @submit=${() => this._runStructured()}></pg-combo>`;
+      @submit=${onSubmit ?? (() => this._runStructured())}></pg-combo>`;
+  }
+
+  // The shared subject/action/resource fields, reused in the AuthZEN pane so the
+  // request can be populated with the same autocomplete as the Access query. They
+  // write the same pg-app state, so values persist across both perspectives.
+  _authzenFields() {
+    const noop = () => {};
+    return html`<div class="sentence authzen-fields" data-testid="authzen-fields">
+      <span>subject</span>
+      ${this._tok('subjectType', this._subjectTypes(), 'subject type', noop)}<span class="colon">:</span>${this._tok('subjectId', this._subjectIds(this.subjectType), 'id', noop)}
+      <span>action</span>
+      ${this._tok('action', this.meta?.relations, 'action', noop)}
+      <span>resource</span>
+      ${this._tok('objType', this._objectTypes(), 'resource type', noop)}<span class="colon">:</span>${this._tok('objId', this._objectIds(this.objType), 'id', noop)}
+    </div>`;
   }
 
   render() {
@@ -302,6 +322,12 @@ export class PgApp extends LitElement {
     const cols = `${this.leftOpen ? this.leftWidth : 0}px 18px minmax(0, 1fr)`;
     return html`
       ${this._header()}
+      <nav class="perspective" data-testid="perspective">
+        <button data-testid="persp-explorer" class=${this.perspective === 'explorer' ? 'active' : ''}
+          @click=${() => (this.perspective = 'explorer')}>Access Explorer</button>
+        <button data-testid="persp-authzen" class=${this.perspective === 'authzen' ? 'active' : ''}
+          @click=${() => (this.perspective = 'authzen')}>AuthZEN</button>
+      </nav>
       <div class="panes" style="grid-template-columns:${cols}">
         ${this.leftOpen ? this._leftPane() : html`<div></div>`}
         <div class="divider" @mousedown=${(e) => this._startResize(e)} title="drag to resize">
@@ -309,19 +335,27 @@ export class PgApp extends LitElement {
             title=${this.leftOpen ? 'collapse panel' : 'expand panel'}>${this.leftOpen ? '‹' : '›'}</button>
         </div>
         <section class="right">
-          <details class="graph-section" data-testid="section-types" @toggle=${(e) => (this.typesOpen = e.target.open)}>
-            <summary><h2>Types</h2><span class="chev"></span></summary>
-            ${this.typesOpen ? html`
-              ${this._typeFilters()}
-              <pg-types-graph data-testid="types-graph" style="height:${this.typesH}px" .tuples=${this.tuples} .types=${this._typeNames()}
-                .hiddenTypes=${this._effectiveHidden()} .hiddenRelations=${this.relHidden}
-                @node-hidden=${(e) => this._toggle('typeHidden', e.detail)}></pg-types-graph>
-            ` : ''}
-          </details>
-          ${this.typesOpen
-            ? html`<div class="hdivider" title="drag to resize" @mousedown=${(e) => this._startVResize(e, 'typesH', 160, 800)}></div>`
-            : ''}
-          ${this._evaluate()}
+          ${this.perspective === 'authzen'
+            ? html`
+              ${this._authzenFields()}
+              <pg-authzen data-testid="authzen" class="authzen-pane"
+                .subjectType=${this.subjectType} .subjectId=${this.subjectId} .action=${this.action}
+                .objType=${this.objType} .objId=${this.objId} .context=${this.context}
+                .searchEnabled=${this.me?.search_enabled !== false}></pg-authzen>`
+            : html`
+              <details class="graph-section" data-testid="section-types" @toggle=${(e) => (this.typesOpen = e.target.open)}>
+                <summary><h2>Types</h2><span class="chev"></span></summary>
+                ${this.typesOpen ? html`
+                  ${this._typeFilters()}
+                  <pg-types-graph data-testid="types-graph" style="height:${this.typesH}px" .tuples=${this.tuples} .types=${this._typeNames()}
+                    .hiddenTypes=${this._effectiveHidden()} .hiddenRelations=${this.relHidden}
+                    @node-hidden=${(e) => this._toggle('typeHidden', e.detail)}></pg-types-graph>
+                ` : ''}
+              </details>
+              ${this.typesOpen
+                ? html`<div class="hdivider" title="drag to resize" @mousedown=${(e) => this._startVResize(e, 'typesH', 160, 800)}></div>`
+                : ''}
+              ${this._evaluate()}`}
         </section>
       </div>`;
   }
@@ -433,10 +467,6 @@ export class PgApp extends LitElement {
             }}></pg-combo>
         </label></div>
       <div class="who">
-        <span class="mode">
-          <button data-testid="mode-explore" class=${this.mode === 'explore' ? 'active' : ''} @click=${() => (this.mode = 'explore')}>Explore</button>
-          <button data-testid="mode-opa" class=${this.mode === 'opa' ? 'active' : ''} @click=${() => (this.mode = 'opa')}>As me (OPA)</button>
-        </span>
         <span class="muted" data-testid="username">${this.me.username}</span>
         <button class="link" data-testid="logout" @click=${() => api.logout()}>logout</button>
       </div>
@@ -445,7 +475,12 @@ export class PgApp extends LitElement {
 
   _evaluate() {
     return html`<details class="graph-section evaluate" data-testid="section-query" ?open=${this.queryOpen} @toggle=${(e) => (this.queryOpen = e.target.open)}>
-      <summary><h2>Query</h2><span class="chev"></span></summary>
+      <summary><h2>Query</h2>
+        <span class="mode query-mode" @click=${(e) => e.stopPropagation()}>
+          <button data-testid="mode-explore" class=${this.mode === 'explore' ? 'active' : ''} @click=${() => (this.mode = 'explore')}>Explore</button>
+          <button data-testid="mode-opa" class=${this.mode === 'opa' ? 'active' : ''} @click=${() => (this.mode = 'opa')}>As me (OPA)</button>
+        </span>
+        <span class="chev"></span></summary>
       <div class="sentence">
             <span>is</span>
             ${this._tok('subjectType', this._subjectTypes(), 'subject type')}<span class="colon">:</span>${this._tok('subjectId', this._subjectIds(this.subjectType), 'id')}

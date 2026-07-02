@@ -15,6 +15,7 @@ type Config struct {
 	Issuer       string // OIDC issuer base; endpoints are resolved from its discovery doc
 	RedirectURI  string
 	OpaURL       string // internal OPA base, e.g. http://opa:8181
+	AuthzenURL   string // internal authzen-opa base for the AuthZEN console (empty = disabled)
 	EngineDSN    string // read-only DSN to the pgauthz engine DB (metadata for autocomplete)
 	BaseURL      string // public app base, e.g. https://app.pgauthz.test
 	BasePath     string // public path prefix this app is served under, e.g. /playground
@@ -26,6 +27,10 @@ type Config struct {
 	// a privileged capability. Off by default; opt in and optionally require a role.
 	ExploreEnabled bool   // PLAYGROUND_EXPLORE_ENABLED
 	ExploreRole    string // PLAYGROUND_EXPLORE_ROLE — Keycloak role required (empty = any authenticated user)
+	// SearchRole mirrors authzen-opa's SEARCH_REQUIRED_ROLE so the UI can reflect
+	// whether the current user may use the AuthZEN reverse-search endpoints. Purely
+	// cosmetic (the real gate is in authzen-opa); empty = show search for everyone.
+	SearchRole string // PLAYGROUND_SEARCH_ROLE
 }
 
 func env(k, def string) string {
@@ -45,6 +50,7 @@ func Load() Config {
 		Issuer:         env("ISSUER", "http://keycloak:8080/realms/pgauthz"),
 		RedirectURI:    env("REDIRECT_URI", "https://app.pgauthz.test/auth/callback"),
 		OpaURL:         env("OPA_URL", "http://opa:8181"),
+		AuthzenURL:     env("AUTHZEN_URL", "http://authzen-opa:8080"),
 		EngineDSN:      env("ENGINE_DSN", ""),
 		BaseURL:        env("BASE_URL", "https://app.pgauthz.test"),
 		BasePath:       strings.TrimRight(env("BASE_PATH", "/playground"), "/"),
@@ -54,5 +60,6 @@ func Load() Config {
 		TLSCAFile:      env("TLS_CA_FILE", ""),
 		ExploreEnabled: env("PLAYGROUND_EXPLORE_ENABLED", "false") == "true",
 		ExploreRole:    env("PLAYGROUND_EXPLORE_ROLE", ""),
+		SearchRole:     env("PLAYGROUND_SEARCH_ROLE", ""),
 	}
 }

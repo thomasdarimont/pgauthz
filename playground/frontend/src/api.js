@@ -35,6 +35,9 @@ export const api = {
   exploreExplain: (body) => call('api/explore/explain', body),
   // "As me" mode: q(rule, input) → OPA's result for data.authz.<rule> with the user's token.
   q: (rule, input) => call('api/q', { rule, input }),
+  // AuthZEN console: proxied to the authzen-opa service with the user's token.
+  authzenConfig: () => call('api/authzen/config', undefined, [401, 502, 503]),
+  authzen: (endpoint, body) => call('api/authzen/' + endpoint, body, [400, 401, 403, 502, 503]),
   login: () => { location.href = 'auth/login'; },
   logout: () => { location.href = 'auth/logout'; },
 };

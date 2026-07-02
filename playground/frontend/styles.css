@@ -122,10 +122,28 @@ code { font-family: var(--pg-font-mono); }
 header .brand { display: flex; align-items: center; gap: var(--pg-space-3); }
 header .brand label { flex-direction: row; align-items: center; gap: var(--pg-space-2); font-size: var(--pg-text-sm); color: var(--pg-muted); }
 .mode { display: inline-flex; }
+/* Explore / As-me toggle lives in the Query section summary (it only affects how
+   the check is evaluated, not the model/tuples/graphs). */
+.query-mode { margin-left: var(--pg-space-3); }
+.query-mode button { padding: 1px var(--pg-space-2); font-size: var(--pg-text-sm); }
 .mode button { border-radius: 0; }
 .mode button:first-child { border-radius: var(--pg-radius-md) 0 0 var(--pg-radius-md); }
 .mode button:last-child { border-radius: 0 var(--pg-radius-md) var(--pg-radius-md) 0; border-left: none; }
 .mode button.active { background: var(--pg-primary); color: #fff; border-color: var(--pg-primary); }
+
+/* Global perspective tabs (Access Explorer | AuthZEN) — the top-level view switch,
+   a full-width strip below the header so it reads as primary navigation (not a
+   peer of the Explore / As-me sub-mode toggle that lives in the header). */
+nav.perspective { flex: 0 0 auto; display: flex; gap: var(--pg-space-4);
+  padding: 0 var(--pg-space-5); border-bottom: 1px solid var(--pg-border); }
+nav.perspective button { border: none; background: none; border-radius: 0; color: var(--pg-muted);
+  font-weight: 600; padding: var(--pg-space-2) var(--pg-space-1);
+  border-bottom: 2px solid transparent; margin-bottom: -1px; }
+nav.perspective button:hover { color: var(--pg-fg); border-color: var(--pg-border); }
+nav.perspective button.active { color: var(--pg-primary); border-color: var(--pg-primary); }
+
+/* The AuthZEN console fills the right pane. */
+.right pg-authzen.authzen-pane { display: flex; flex: 1 1 auto; min-height: 60vh; }
 /* Full page width: left pane (model+tuples) sized to content, right pane (graph)
    takes the rest. */
 .panes { flex: 1 1 auto; min-height: 0; overflow: hidden;

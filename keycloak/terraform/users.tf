@@ -2,7 +2,8 @@
 # to the token claim authn.rego reads; the writer role and db_role attribute
 # exercise the OPA write path (role aggregation + per-app namespace isolation).
 
-# alice — internal_user, read-only.
+# alice — internal_user, read-only, plus the authzen_auditor role so she can use
+# the AuthZEN reverse-search endpoints (and the playground's search UI).
 resource "keycloak_user" "alice" {
   realm_id   = keycloak_realm.pgauthz.id
   username   = "alice"
@@ -15,6 +16,12 @@ resource "keycloak_user" "alice" {
     value     = var.demo_user_password
     temporary = false
   }
+}
+
+resource "keycloak_user_roles" "alice" {
+  realm_id = keycloak_realm.pgauthz.id
+  user_id  = keycloak_user.alice.id
+  role_ids = [keycloak_role.authzen_auditor_realm.id]
 }
 
 # bob — internal_user, writer via the REALM role (realm_access.roles).

@@ -154,6 +154,22 @@ _subject_valid if {
 	input.subject
 }
 
+# Subject search ("who can do X on resource Z?") is special: the subject is the
+# RESULT of the search, not the caller, so there is no input.subject to validate
+# here (input.subject_type only names the type to enumerate). Authorize the CALLER
+# instead: a valid token, or — in trusted-PEP mode (require_token_for_reads=false) —
+# an authenticated PEP that forwarded no token (e.g. authzen-opa, which validates
+# the JWT itself and forwards only the resolved subject).
+_subject_search_valid if {
+	input.token
+	authn.token_is_valid
+}
+
+_subject_search_valid if {
+	not input.token
+	not config.require_token_for_reads
+}
+
 # -----------------------------------------------------------------------
 # Batch access checks: evaluate multiple checks in a single round-trip.
 # Maps to AuthZEN POST /access/v1/evaluations.
@@ -344,7 +360,7 @@ accessible_subjects := pgauthz.list_subjects(
 	input.resource.type,
 	input.resource.id,
 ) if {
-	_subject_valid
+	_subject_search_valid
 }
 
 # -----------------------------------------------------------------------
@@ -360,7 +376,7 @@ accessible_subjects_page := pgauthz.list_subjects_page(
 	input.page.limit,
 	input.page.offset,
 ) if {
-	_subject_valid
+	_subject_search_valid
 	input.page
 	not input.page.after
 }
@@ -374,7 +390,7 @@ accessible_subjects_page := pgauthz.list_subjects_page_after(
 	input.page.limit,
 	input.page.after,
 ) if {
-	_subject_valid
+	_subject_search_valid
 	input.page
 	input.page.after
 }

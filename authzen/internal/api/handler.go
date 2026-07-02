@@ -104,6 +104,23 @@ func (h *Handler) resolveSubject(r *http.Request, body Subject) (subjectType, su
 	return h.resolveSubjectPair(body.Type, body.ID, jwtType, jwtID)
 }
 
+// requireSearchRole gates the reverse-search endpoints: if SearchRequiredRole is
+// configured, the caller must hold it (these queries enumerate the access graph).
+// Returns false and writes 403 when the caller lacks it; true when allowed or when
+// no role is required.
+func (h *Handler) requireSearchRole(w http.ResponseWriter, r *http.Request) bool {
+	if h.cfg.SearchRequiredRole == "" {
+		return true
+	}
+	for _, role := range RolesFromContext(r.Context()) {
+		if role == h.cfg.SearchRequiredRole {
+			return true
+		}
+	}
+	writeForbidden(w, "search requires the '"+h.cfg.SearchRequiredRole+"' role")
+	return false
+}
+
 // writeSubjectError maps a subject-resolution error to the right HTTP status:
 // 403 for a rejected override attempt, 400 for a missing subject.
 func writeSubjectError(w http.ResponseWriter, err error) {
@@ -253,6 +270,9 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 
 // SearchSubject handles POST /access/v1/search/subject
 func (h *Handler) SearchSubject(w http.ResponseWriter, r *http.Request) {
+	if !h.requireSearchRole(w, r) {
+		return
+	}
 	var req SearchSubjectRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeBadRequest(w, "invalid JSON: "+err.Error())
@@ -297,6 +317,9 @@ func (h *Handler) SearchSubject(w http.ResponseWriter, r *http.Request) {
 
 // SearchResource handles POST /access/v1/search/resource
 func (h *Handler) SearchResource(w http.ResponseWriter, r *http.Request) {
+	if !h.requireSearchRole(w, r) {
+		return
+	}
 	var req SearchResourceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeBadRequest(w, "invalid JSON: "+err.Error())
@@ -342,6 +365,9 @@ func (h *Handler) SearchResource(w http.ResponseWriter, r *http.Request) {
 
 // SearchAction handles POST /access/v1/search/action
 func (h *Handler) SearchAction(w http.ResponseWriter, r *http.Request) {
+	if !h.requireSearchRole(w, r) {
+		return
+	}
 	var req SearchActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeBadRequest(w, "invalid JSON: "+err.Error())

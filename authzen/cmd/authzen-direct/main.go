@@ -74,6 +74,7 @@ func run() error {
 		Issuer:             cfg.JWTIssuer,
 		Audience:           cfg.JWTAudience,
 		RequiredScope:      cfg.RequiredScope,
+		RolesClaims:        cfg.RolesClaims,
 		SubjectIDClaim:     cfg.SubjectIDClaim,
 		SubjectIDFallback:  cfg.SubjectIDFallback,
 		SubjectTypeClaim:   cfg.SubjectTypeClaim,

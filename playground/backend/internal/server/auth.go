@@ -94,5 +94,8 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"authenticated": true,
 		"username":      se.username,
 		"subject_type":  claimString(se.accessToken, "subject_type"),
+		// Whether this user may use the AuthZEN reverse-search endpoints (UI hint;
+		// authzen-opa is the real gate). No SearchRole configured → available to all.
+		"search_enabled": s.cfg.SearchRole == "" || tokenHasRole(se.accessToken, s.cfg.SearchRole),
 	})
 }

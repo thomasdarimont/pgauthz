@@ -60,6 +60,13 @@ func (s *Server) Routes() http.Handler {
 	h("POST /api/explore/check", s.handleExploreCheck)
 	h("POST /api/explore/explain", s.handleExploreExplain)
 	h("POST /api/q", s.handleQuery)
+	// AuthZEN console: proxy to the authzen-opa service with the session token.
+	h("GET /api/authzen/config", s.authzenProxy("GET", "/.well-known/authzen-configuration"))
+	h("POST /api/authzen/evaluation", s.authzenProxy("POST", "/access/v1/evaluation"))
+	h("POST /api/authzen/evaluations", s.authzenProxy("POST", "/access/v1/evaluations"))
+	h("POST /api/authzen/search/subject", s.authzenProxy("POST", "/access/v1/search/subject"))
+	h("POST /api/authzen/search/resource", s.authzenProxy("POST", "/access/v1/search/resource"))
+	h("POST /api/authzen/search/action", s.authzenProxy("POST", "/access/v1/search/action"))
 	mux.HandleFunc(bp+"/", s.handleStatic)
 	if bp != "" { // bare root → the app's base path
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
