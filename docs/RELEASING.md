@@ -57,6 +57,12 @@ Chart version matches), so a misconfigured release fails *before* the CI wait.
 Copy this into the release PR/notes and tick every box.
 
 ### Before bumping
+- [ ] **`./scripts/pre-release.sh` passes locally** — Go build+vet, diagram
+      renders fresh (regenerates and fails on drift), and the full local test
+      run (`init.sh` + `test-all.sh`) — i.e. CI's main job *before* you push
+      and wait on CI. `--skip-stack` runs just the fast checks. (The stack
+      step resets the keycloak/playground opa overrides; the script prints
+      the re-apply command.)
 - [ ] All intended changes are **committed and pushed** to `main`.
 - [ ] **CI is green** on the commit you're about to release — *all* jobs:
       `test`, `upgrade-test`, `replication-test`, `scaling-test`
