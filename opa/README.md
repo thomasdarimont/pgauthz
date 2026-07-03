@@ -95,7 +95,7 @@ services:
         condition: service_healthy
 
   opa:
-    image: openpolicyagent/opa:1.4.2
+    image: openpolicyagent/opa:1.18.2
     command: run --server --watch --addr :8181 --authentication=token --authorization=basic /policies /data
     ports:
       - "8181:8181"         # The only externally exposed port
@@ -963,7 +963,7 @@ callers. No secrets are stored in files.
 ```yaml
 # compose-production.yml (excerpt)
 opa:
-  image: openpolicyagent/opa:1.4.2
+  image: openpolicyagent/opa:1.18.2
   command:
     - run
     - --server
@@ -1072,7 +1072,7 @@ segmentation) to restrict which hosts can reach which port:
 ```yaml
 # compose-production.yml (excerpt)
 opa:
-  image: openpolicyagent/opa:1.4.2
+  image: openpolicyagent/opa:1.18.2
   command:
     - run
     - --server
@@ -1117,7 +1117,7 @@ reloads explicitly after validation:
 ```yaml
 # compose-production.yml (excerpt)
 opa:
-  image: openpolicyagent/opa:1.4.2
+  image: openpolicyagent/opa:1.18.2
   command: run --server --addr :8181 --authentication=token --authorization=basic /policies /data
   environment:
     OPA_ADMIN_TOKEN: "${OPA_ADMIN_TOKEN}"
@@ -1232,7 +1232,7 @@ Replace the file-based policy loading with bundle polling:
 ```yaml
 # compose-production.yml
 opa:
-  image: openpolicyagent/opa:1.4.2
+  image: openpolicyagent/opa:1.18.2
   command:
     - run
     - --server

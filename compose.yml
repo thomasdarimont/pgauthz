@@ -93,7 +93,7 @@ services:
         condition: service_healthy
 
   opa:
-    image: openpolicyagent/opa:1.17.1
+    image: openpolicyagent/opa:1.18.2
     command: run --server --watch --addr :8181 --authentication=token --authorization=basic /policies /data
     environment:
       OPA_ADMIN_TOKEN: "${OPA_ADMIN_TOKEN:-change-me-in-production}"

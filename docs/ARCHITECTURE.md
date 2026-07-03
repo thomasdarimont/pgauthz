@@ -494,7 +494,7 @@ rule then returns `writes_disabled`).
 |---|---|---|---|
 | `authz-db` | `postgres:18.4` | 55433:5432 | `max_connections=250`, tuned `shared_buffers`, `work_mem` |
 | `postgrest` | `postgrest/postgrest:v14.14` | 3000 (internal) | Read-only, `api_anon` role, pool=100 |
-| `opa` | `openpolicyagent/opa:1.17.1` | 8181:8181 | Single front door (reads + writes). Token auth + basic authorization. Env: `JWT_ISSUER`, `JWT_AUDIENCE`, `DEFAULT_STORE`, `POSTGREST_URL`, `POSTGREST_WRITER_URL`, `JWT_ROLES_CLAIM`, `WRITER_ROLE`, `REQUIRE_TOKEN_FOR_READS` (tokenless `input.subject` reads only when `false` — trusted-PEP mode; the keycloak overlay pins `true`), `DEFAULT_CACHE_TTL_SECONDS`. |
+| `opa` | `openpolicyagent/opa:1.18.2` | 8181:8181 | Single front door (reads + writes). Token auth + basic authorization. Env: `JWT_ISSUER`, `JWT_AUDIENCE`, `DEFAULT_STORE`, `POSTGREST_URL`, `POSTGREST_WRITER_URL`, `JWT_ROLES_CLAIM`, `WRITER_ROLE`, `REQUIRE_TOKEN_FOR_READS` (tokenless `input.subject` reads only when `false` — trusted-PEP mode; the keycloak overlay pins `true`), `DEFAULT_CACHE_TTL_SECONDS`. |
 | `postgrest-writer` | `postgrest/postgrest:v14.14` | internal only | Fixed `authz_writer` role, **no JWT** (OPA-fronted), pool=20; reachable only by OPA |
 | `authzen-direct` | `authzen` (multi-stage) | 8090:8080 | AuthZEN 1.0 API, Go→PostgreSQL direct (via `compose-authzen.yml`) |
 | `authzen-opa` | `authzen` (multi-stage) | 8091:8080 | AuthZEN 1.0 API, Go→OPA (via `compose-authzen.yml`). Extra env: `JWT_ISSUERS` (multi-issuer), `SEARCH_REQUIRED_ROLE` + `JWT_ROLES_CLAIM` (role-gated search), `FORWARD_TOKEN_TO_OPA` (OPA re-validates the token) |

@@ -146,7 +146,7 @@ rest are the components of the reference deployment.
 |---|---|---|---|
 | **PostgreSQL** | 18.4 | **required** | The engine. Uses partitioning, generated identity, and JSONB; developed and tested on 18.x. |
 | PostgREST | v14.14 | optional | REST bridge (read on 3000, write on 3001). |
-| OPA | 1.17.1 | optional | Policy/JWT front door for reads and writes. |
+| OPA | 1.18.2 | optional | Policy/JWT front door for reads and writes. |
 | Go (AuthZEN services) | 1.26 | optional | `authzen-direct` / `authzen-opa`. |
 | `sqlx-cli` | 0.9.0 | install/upgrade | Applies the structural migrations in [`db/migrations/`](db/migrations/) (tracked in `public._sqlx_migrations`). Slim Postgres-only build — `cargo install sqlx-cli --no-default-features --features rustls,postgres`. Baked into the [migration image](deploy/migrations/Dockerfile); `init*.sh` use a local install. Not needed at query time. |
 | `pg_cel` extension | pgrx 0.19.1, `cel` 0.13 | optional | Only for `lang='cel'` conditions; built per PostgreSQL major (see [`extensions/pg-cel`](extensions/pg-cel/)). |

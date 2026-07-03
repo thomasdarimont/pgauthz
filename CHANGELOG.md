@@ -12,6 +12,11 @@ pre-1.0, minor versions may include breaking changes.
 - **PostgREST v14.13 → v14.14.** Maintenance release (admin server now logs
   the cause of failures); no breaking changes. Verified against the full OPA
   (52) and AuthZEN (42) integration suites.
+- **OPA 1.17.1 → 1.18.2.** The only 1.18 breaking change (outbound
+  `User-Agent` header format, RFC 9110) doesn't affect this stack; no changes
+  to `http.send` caching, the data API, or Rego evaluation we rely on.
+  Policies parse clean under 1.18.2 (`opa check`); verified against the full
+  OPA (52) and AuthZEN (42) integration suites.
 
 ## [0.4.0] - 2026-07-02
 
