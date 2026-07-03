@@ -158,6 +158,84 @@ sources next to this file (regenerate with
    ![Full architecture](architecture-full.svg)
    ([source](architecture-full.puml))
 
+### Reference: Enterprise IAM Integration
+
+How pgauthz slots into a typical enterprise IAM landscape, layer by layer:
+
+![Enterprise IAM integration](architecture-enterprise-iam.svg)
+([source](architecture-enterprise-iam.puml))
+
+**Clients.** Two consumer types obtain tokens from Keycloak: interactive
+**web/mobile apps** via the OIDC authorization-code flow (user access
+token), and headless **service clients** (daemons, batch jobs, S2S) via
+the client-credentials grant (service-account token). Both are ordinary
+subjects to the engine — just different **subject types** in the ReBAC
+model (`internal_user` vs `service_account`, as in the demo).
+
+**API gateway (HA).** The only path *into* the platform and *between*
+bounded contexts. It publishes each bounded context's API twice:
+**external routes** (`/ext-a/…`, `/ext-b/…`) expose the public API to
+outside consumers; **internal routes** (`/int-a/…`, `/int-b/…` —
+typically more numerous) carry service-to-service and BC↔BC traffic.
+Every route carries an attachable **access policy**, enforced by the
+gateway's embedded **authorizer (PEP)** against a **co-located OPA** that
+holds only the route policies — a local check with no network hop on the
+hot path, fed by the same control-plane bundles as the central
+(Authorization) OPA. The token model: **Keycloak maps granted
+bounded-context scopes to audience values** (granted scopes `bc-a bc-b` → access-token audiences `["bc-a", "bc-b"]`). 
+The gateway **verifies** that the caller's token
+contains the audience required by the selected route, and may
+additionally **exchange it for a token downscoped to the single target
+audience** — downscoping strengthens least-privilege but never adds
+trust the caller didn't already hold. Correctly configured resource
+servers reject tokens whose audience does not match their bounded
+context (within an accepted audience, a bearer token remains
+replayable — sender-constraining is a separate concern). Per-request
+order: **validate token → route authorization → (downscope) → forward**.
+Note that gateway HA alone doesn't make the path highly available —
+Keycloak, the central PDP, and PostgreSQL remain availability
+dependencies of their respective flows.
+
+**Bounded contexts.** The logical applications; each owns one or more
+services. Calls **within** a BC go direct (the token is simply
+forwarded); calls **between** BCs must pass the gateway's internal
+routes — re-authorized and, where configured, downscoped before forwarding. The audience
+makes the **bounded context the resource-server trust boundary**:
+services inside one BC are deliberately not isolated from each other by
+audience values. Each service's **authorizer sidecar (PEP — one per
+service)** performs the fine-grained check, speaking
+either OPA's data API (`/v1/data/authz/*`) or the standards-based
+**AuthZEN 1.0 API** (`/access/v1/*` via `authzen-opa`, which forwards the
+verified token to OPA — `FORWARD_TOKEN_TO_OPA`).
+
+**PDP data plane — PBAC + ReBAC split.** OPA evaluates
+**policy-as-code** (Rego): route access policies, structural rules, JWT
+re-validation. The **relationship question** ("is alice an editor of doc
+X — via team, folder, or engagement?") is delegated through PostgREST to
+**pgauthz — the ReBAC decision engine and relationship store** that all
+fine-grained *service* authorization checks ultimately resolve against
+(the gateway's route policies deliberately do not query it). Tokens are 
+validated at every PEP and re-validated by OPA. Self-subject requests 
+bind the evaluated subject to the forwarded token; trusted-PEP requests 
+instead rely on an authenticated workload identity and explicit delegation 
+policy. Two caller modes: **self-subject** (the forwarded end-user token's 
+subject must match the evaluated subject — `ALLOW_SUBJECT_OVERRIDE=false`) 
+and **trusted-PEP** (a PEP with its own workload identity may evaluate subjects permitted by its delegation policy). 
+OPA's decision cache is **bounded-TTL and fail-closed**; freshness-sensitive checks (e.g.
+after a revoke) must bypass it or key entries by model revision.
+
+**PDP control plane.** Three administration channels, deliberately
+separate: **policies** are git-versioned Rego distributed as bundles (to
+the Authorization OPA *and* the gateway-co-located OPA alike); **tuples**
+change through the OPA-fronted writer or by invoking the protected SQL API functions 
+under an authz_writer role, but never through direct table writes; 
+**models, namespaces, and conditions** change only
+through the dedicated `authz_admin` channel — never raw table writes.
+Every grant/revoke and model change lands in the **append-only,
+privilege-protected audit trail** (a database superuser can still alter
+it — export the audit stream to tamper-evident/WORM storage where that
+matters).
+
 ---
 
 ## 4. Solution Strategy

@@ -1,0 +1,234 @@
+@startuml architecture-enterprise-iam
+
+!theme plain
+skinparam backgroundColor white
+skinparam componentStyle rectangle
+skinparam defaultFontName monospaced
+skinparam nodesep 40
+skinparam ranksep 40
+skinparam padding 6
+
+title Enterprise IAM integration — pgauthz as the ReBAC decision engine behind OPA
+
+actor "User" as user
+
+component "Web / mobile app\n<OIDC RP>" as app #LightBlue
+component "Service client\n<OAuth client>\n(daemon / batch / S2S)" as svcclient #LightBlue
+
+component "Keycloak (OIDC)\n/auth · /token" as oidc #Thistle
+
+' Flat gateway: no sub-frames — dot cannot order sibling clusters (it drops
+' cross-cluster constraints), but components in ONE cluster obey ordering
+' chains strictly. Grouping is conveyed by label prefix + color instead.
+node "API Gateway — HA cluster" as gwnode {
+    component "External BC A API\n/ext-a/route1\n/ext-a/route2" as extA #Plum
+    component "External BC B API\n/ext-b/route3" as extB #Plum
+    component "Internal BC A API\n/int-a/route1\n/int-a/route2\n..." as intA #Violet
+    component "Internal BC B API\n/int-b/route3\n/int-b/route4\n..." as intB #Violet
+    component "Authorizer <PEP>\n(access policies\nattached per route)" as pepgw #LightSalmon
+    component "Gateway OPA\n(co-located)\nroute access policies" as opagw #LightBlue
+}
+
+node "Bounded Context A" as bca {
+    component "Service A1" as a1
+    component "Service A2" as a2
+    component "Authorizer\n<PEP sidecar>\n(one per service)" as pepa #LightSalmon
+}
+
+node "Bounded Context B" as bcb {
+    component "Service B1" as b1
+    component "Service B2" as b2
+    component "Authorizer\n<PEP sidecar>\n(one per service)" as pepb #LightSalmon
+}
+
+frame "PDP Data Plane" as dataplane {
+    component "OPA PDP\n(policy decision)" as opapdp #LightBlue
+    component "AuthZEN API\n(authzen-opa)" as azapi #PaleGreen
+    component "PostgREST\n(REST → SQL)" as pgrst #LightGreen
+    database "PostgreSQL\npgauthz\n**ReBAC decision engine\n& relationship store**\n(tuples, recursive resolution,\nconditions, search)" as pgauthzdb #Orange
+}
+
+frame "PDP Control Plane" as controlplane {
+    component "Policy administration\n(git-versioned Rego\n→ bundles / -watch)" as poladmin #Khaki
+    component "Tuple\nadministration\n(OPA-fronted writer)" as tupadmin #Khaki
+    component "Model / namespace /\ncondition administration\n(dedicated authz_admin\nchannel — never raw\ntable writes)" as modadmin #Khaki
+}
+
+' ── Identity flow ────────────────────────────────────────────────────
+' Keycloak sits BETWEEN the clients: the app (left) points right at it, the
+' service client (right) points LEFT at it — both pulls converge on the middle.
+app -[hidden]right-> oidc
+oidc -[hidden]right-> svcclient
+user -down-> app : "login"
+app -right-> oidc : "auth code flow\nscope: bc-a bc-b →\nAT (aud: [bc-a, bc-b])\n+ RT / IDT"
+svcclient -left-> oidc : "client credentials\nscope: bc-b →\nAT (aud: [bc-b],\nservice account)"
+
+' three logical rows inside the gateway (single-cluster components honor
+' hidden rank/order chains, unlike sub-clusters):
+'   row 1: External BC A API | External BC B API
+'   row 2: Authorizer <PEP>  | OPA (co-located)
+'   row 3: Internal BC A API | Internal BC B API
+extA -[hidden]right-> extB
+extB -[hidden]right-> pepgw
+intA -[hidden]right-> intB
+intB -[hidden]right-> opagw
+' counter the leftward pull of the poladmin bundles edge on opagw with a
+' fixed top-RIGHT landmark (Keycloak)
+svcclient -[hidden]down-> opagw
+extA -[hidden]down-> intA
+extB -[hidden]down-> intB
+pepgw -[hidden]down-> opagw
+
+' ── External request flow ────────────────────────────────────────────
+app -down-> extA : "GET /ext-a/route1\nBearer AT (user)"
+svcclient -down-> extB : "POST /ext-b/route3\nBearer AT\n(service account)"
+extB -up-> oidc : "optional token exchange:\naudience DOWNSCOPING\naud [bc-a, bc-b] → [bc-b]\n(never adds new trust)"
+extA -down-> a1 : "public API of BC A\nAT (aud: bc-a)"
+extB -down-> b2 : "public API of BC B\nAT (aud: bc-b)"
+
+' ── Intra- vs inter-bounded-context calls ────────────────────────────
+' rank both BCs strictly BELOW the gateway's lowest content (the co-located
+' OPA at the bottom of the route-authorization frame). Target each BC's
+' RIGHTMOST inner component (the PEP) so the rank constraint doesn't drag
+' the services out of their natural left-to-right order (A1 → A2).
+' rank the BCs below the gateway — anchored column-consistently: the LEFT
+' authz component (pepgw) over BC A, the RIGHT one (opagw) over BC B, so
+' the rank edges don't drag a BC across columns
+intA -[hidden]down-> pepa
+opagw -[hidden]down-> pepb
+' two logical rows inside each Bounded Context:
+'   row 1: the services   row 2: the Authorizer sidecar (centered below)
+a1 -[hidden]down-> pepa
+a2 -[hidden]down-> pepa
+b1 -[hidden]right-> b2
+b1 -[hidden]down-> pepb
+b2 -[hidden]down-> pepb
+a1 -right-> a2 : "intra-BC:direct call\n(token forwarding)"
+' inter-BC example: Service A2 calls BC B's internal API through the gateway
+a2 -up-> intB : "inter-BC:\nGET /int-b/route3\nvia gateway"
+intB -down-> b1 : "AT (aud: bc-b)"
+
+' ── Authorization (data plane) ───────────────────────────────────────
+pepgw -down-> opagw : "per-route access policy:\nmay this client use\nthis route / API?\n(in-cluster, low latency)"
+' order the PDP pair (single cluster → chain honored): OPA left, AuthZEN
+' right — matching BC A (→ opa) left and BC B (→ az) right above them
+'opa -[hidden]right-> az
+pepa -down-> opapdp : "fine-grained authorize:\ninput.token +\naction/resource"
+pepb -down-> azapi : "AuthZEN 1.0\n/access/v1/evaluation\n(standards-based PEP)"
+azapi -down-> opapdp : "input.token\n(FORWARD_TOKEN_TO_OPA)"
+opapdp -down-> pgrst : "http.send /rpc/check_access\n(cached: bounded TTL,\nbypass freshness-critical,\nfail closed)"
+pgrst -down-> pgauthzdb : "SQL\n(SECURITY DEFINER API)"
+
+' ── Control plane ────────────────────────────────────────────────────
+poladmin -up-> opapdp : "fetch policy"
+poladmin .up.> opagw : "route policy\nbundles (same\ncontrol plane)"
+tupadmin -up-> pgauthzdb : "write_tuple\n(append-only,\nprivilege-protected\naudit trail)"
+modadmin -up-> pgauthzdb : "model / condition\nchanges (audited,\nauthz_admin)"
+
+note as pbacnote
+  **PBAC — policy as code:**
+  OPA evaluates Rego policies —
+  incl. the per-route access
+  policies the gateway attaches.
+  JWTs are validated at each PEP
+  **and** re-validated by OPA
+  (token-forwarding).
+  **Self-subject mode:** the evaluated
+  subject must match the forwarded
+  token (ALLOW_SUBJECT_OVERRIDE=false).
+  **Trusted-PEP mode:** a PEP with its
+  own workload identity / mTLS may
+  evaluate arbitrary subjects.
+end note
+
+note as rebacnote
+  **ReBAC — relationships as data:**
+  the relationship question ("is alice
+  an editor of doc X, via team / folder /
+  engagement?") is answered by the
+  pgauthz engine, which all fine-grained
+  **service** authorization checks
+  ultimately resolve against (gateway
+  route policies deliberately do NOT
+  query it).
+  Users and service accounts are both
+  just **subject types** in the model
+  (internal_user, service_account).
+end note
+
+note as bcnote
+  **Bounded contexts** are the
+  logical apps: each owns one or
+  more services. Calls **within**
+  a BC go direct (the token is
+  forwarded); calls **between**
+  BCs must pass the gateway's
+  internal routes. The audience
+  (aud: bc-a) makes the **BC the
+  resource-server trust boundary** —
+  services inside one BC are not
+  isolated from each other by aud.
+end note
+note as gwnote
+  **HA gateway** (n replicas) —
+  the only path between bounded
+  contexts. **External routes**
+  publish a BC's public API;
+  **internal routes** carry
+  S2S / BC ↔ BC traffic. Every
+  route carries an attachable
+  **access policy**, enforced by
+  the gateway PEP against a
+  **co-located OPA** (route
+  policies only, fed by the same
+  control-plane bundles) — no
+  network hop on the hot path.
+  Keycloak maps granted BC scopes
+  to audience values; the gateway
+  **verifies** the token's aud matches
+  the route's target BC and may
+  exchange it for a token DOWNSCOPED
+  to that single audience.
+  Request order: validate token →
+  route authorization → (downscope)
+  → forward. Correctly configured
+  resource servers reject tokens
+  whose aud doesn't match their BC.
+end note
+
+' LEFT-side note column: gateway note → BC note → PBAC note, each ranked
+' beside the element it describes and visibly attached to it. (No vertical
+' anchor to Keycloak — kc sits on the RIGHT, pulled by the client edges.)
+gwnote -[hidden]right-> gwnode
+' gwnote . gwnode
+gwnote -[hidden]down-> bcnote
+' target a COMPONENT (a1), not the cluster — pulls BC A (and a1) leftward
+bcnote -[hidden]right-> a1
+' connector declared FROM the box TOWARD the note (leftward), so the spline
+' exits/attaches on the box's LEFT side rather than a corner of dot's choosing
+' bca .left. bcnote
+' PBAC note continues the left column at the data-plane rank
+bcnote -[hidden]down-> pbacnote
+pbacnote -[hidden]right-> opapdp
+' direction semantics: "A -[hidden]right-> B" puts B to the RIGHT of A —
+' so the DB right of the note = the note on the LEFT. Continue the left rail
+' below the PBAC note, and attach visibly from the box (left-side connector).
+pbacnote -[hidden]down-> rebacnote
+rebacnote -[hidden]right-> pgauthzdb
+pgauthzdb .left. rebacnote
+opapdp .left. pbacnote
+
+legend bottom left
+  |= Color |= Component |
+  | <#Thistle> | Keycloak — OIDC issuer (AT/RT/IDT, audience-scoped) |
+  | <#Plum> | Gateway external routes — public BC APIs |
+  | <#Violet> | Gateway internal routes — S2S / BC ↔ BC |
+  | <#LightSalmon> | Authorizer — the PEP (gateway-embedded or sidecar; JWT validation + authz call) |
+  | <#LightBlue> | OPA — Gateway OPA (route PBAC) / Authorization OPA (central PDP; JWT re-validation) |
+  | <#PaleGreen> | AuthZEN 1.0 API — standards-based PEP interface |
+  | <#LightGreen> | PostgREST — internal REST→SQL bridge |
+  | <#Orange> | pgauthz — ReBAC decision engine + relationship store |
+  | <#Khaki> | Control plane — versioned policies; audited tuple + model/admin channels |
+end legend
+
+@enduml
