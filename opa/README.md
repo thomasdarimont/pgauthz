@@ -83,7 +83,7 @@ services:
       - authz-db-data:/var/lib/postgresql:z
 
   postgrest:
-    image: postgrest/postgrest:v12.2.12
+    image: postgrest/postgrest:v14.14
     environment:
       PGRST_DB_URI: postgres://authz:authz@authz-db:5432/authz
       PGRST_DB_ANON_ROLE: api_anon

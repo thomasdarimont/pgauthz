@@ -7,6 +7,12 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **PostgREST v14.13 → v14.14.** Maintenance release (admin server now logs
+  the cause of failures); no breaking changes. Verified against the full OPA
+  (52) and AuthZEN (42) integration suites.
+
 ## [0.4.0] - 2026-07-02
 
 ### Added

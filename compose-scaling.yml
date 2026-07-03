@@ -75,7 +75,7 @@ services:
 
   # ── PostgREST on replica (read-only access checks) ──────────────
   postgrest:
-    image: postgrest/postgrest:v14.13
+    image: postgrest/postgrest:v14.14
     environment:
       PGRST_DB_URI: postgres://authz:authz@authz-replica:5432/authz
       PGRST_DB_ANON_ROLE: api_anon
@@ -94,7 +94,7 @@ services:
   # The writer runs as a FIXED authz_writer role and does no JWT verification —
   # OPA verifies the token + writer role and forwards. Writes go to the primary.
   # postgrest-writer:
-  #   image: postgrest/postgrest:v14.13
+  #   image: postgrest/postgrest:v14.14
   #   environment:
   #     PGRST_DB_URI: postgres://authz_authenticator:${AUTHZ_AUTHENTICATOR_PASSWORD:-authz}@authz-primary:5432/authz
   #     PGRST_DB_ANON_ROLE: authz_writer   # fixed role; no JWT verification

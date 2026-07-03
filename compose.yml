@@ -39,7 +39,7 @@ services:
       - ./db/security/initdb:/docker-entrypoint-initdb.d:ro
 
   postgrest:
-    image: postgrest/postgrest:v14.13
+    image: postgrest/postgrest:v14.14
     environment:
       # Dedicated non-superuser authenticator (created by db/security/roles.sql).
       # Connecting as a superuser would bypass namespace access control.
@@ -68,7 +68,7 @@ services:
   # author. Reachable only by OPA over the Docker network — never host-exposed,
   # so there is no nginx method-gate to maintain.
   postgrest-writer:
-    image: postgrest/postgrest:v14.13
+    image: postgrest/postgrest:v14.14
     environment:
       PGRST_DB_URI: postgres://authz_authenticator:${AUTHZ_AUTHENTICATOR_PASSWORD:-authz}@authz-db:5432/authz
       # Fixed role: every request OPA forwards runs as authz_writer (tuple

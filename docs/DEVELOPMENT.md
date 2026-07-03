@@ -900,7 +900,7 @@ The writer + OPA wiring ships **enabled** in `compose.yml`:
 
 ```yaml
 postgrest-writer:
-  image: postgrest/postgrest:v14.13
+  image: postgrest/postgrest:v14.14
   environment:
     PGRST_DB_URI: postgres://authz_authenticator:${AUTHZ_AUTHENTICATOR_PASSWORD:-authz}@authz-db:5432/authz
     PGRST_DB_ANON_ROLE: authz_writer   # fixed role; NO JWT verification
