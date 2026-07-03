@@ -133,16 +133,19 @@ SELECT * FROM authz.check_access_batch_typed('demo', ARRAY[
 -- ============================================================================
 
 -- Which documents can Bob read?
--- (advisor → all three internal docs, but not client docs)
+-- (advisor → the three internal docs; owner of folder:workpapers → the two
+--  folder docs; but not client docs)
 SELECT * FROM authz.list_objects('demo',
     'internal_user', 'bob', 'can_read', 'document');
--- => doc_payroll_001, doc_acc_001, doc_tax_001
+-- => doc_acc_001, doc_folder_payroll_q1_001, doc_folder_tax_001,
+--    doc_payroll_001, doc_tax_001
 
 -- Which documents can Alice read?
--- (payroll team only → just the payroll doc)
+-- (payroll team → the payroll doc, plus the doc in the payroll folder
+--  subtree via team viewer on folder:wp_payroll)
 SELECT * FROM authz.list_objects('demo',
     'internal_user', 'alice', 'can_read', 'document');
--- => doc_payroll_001
+-- => doc_folder_payroll_q1_001, doc_payroll_001
 
 -- Which documents can Carol read?
 -- (acme member → client docs + viewer on private doc)

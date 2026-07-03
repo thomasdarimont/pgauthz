@@ -1,0 +1,67 @@
+@startuml architecture-token-flow
+
+!theme plain
+skinparam backgroundColor white
+skinparam defaultFontName monospaced
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 260
+
+title Where tokens are validated — the three request paths
+
+actor "Client" as app
+participant "authzen-opa\n(Go)" as az
+participant "OPA\n:8181" as opa
+participant "PostgREST\nreader (api_anon)" as pgrst
+participant "PostgREST\nwriter (authz_writer)" as pgw
+database "PostgreSQL\nengine (SECURITY DEFINER)" as pg
+
+group Read — OPA front door (token mode)
+  app -> opa : POST /v1/data/authz/allow\n{ input.token, action, resource }
+  note right of opa
+    **OPA validates the JWT**
+    (issuer + audience + JWKS,
+    subject & roles from claims).
+    Tokenless input.subject only if
+    REQUIRE_TOKEN_FOR_READS=false
+    (trusted-PEP mode).
+  end note
+  opa -> pgrst : /rpc/check_access (cached)
+  pgrst -> pg : check_access(...)
+end
+
+group AuthZEN — token-forwarding (defense in depth)
+  app -> az : POST /access/v1/evaluation\nAuthorization: Bearer <jwt>
+  note right of az
+    **Go middleware validates** —
+    multi-issuer (JWT_ISSUERS,
+    iss selects the validator);
+    search/* endpoints require
+    SEARCH_REQUIRED_ROLE.
+  end note
+  az -> opa : input.token = <jwt>\n(FORWARD_TOKEN_TO_OPA=true)
+  note right of opa
+    **OPA re-validates** the same
+    token — no tokenless
+    subject-trust anywhere.
+  end note
+  opa -> pgrst : /rpc/check_access
+  pgrst -> pg : check_access(...)
+end
+
+group Write — OPA-fronted writer
+  app -> opa : POST /v1/data/authz/write\n{ input.token, tuple }
+  note right of opa
+    **OPA validates the JWT and
+    requires the writer role**
+    (WRITER_ROLE in JWT_ROLES_CLAIM).
+  end note
+  opa -> pgw : forward authorized write\n(subject injected as audit author)
+  note right of pgw
+    Writer does **no JWT** of its own
+    (fixed authz_writer role,
+    reachable only by OPA).
+  end note
+  pgw -> pg : write_tuple(...)
+end
+
+@enduml

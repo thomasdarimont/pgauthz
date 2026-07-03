@@ -1,0 +1,44 @@
+@startuml architecture-colocated
+
+!theme plain
+skinparam backgroundColor white
+skinparam componentStyle rectangle
+skinparam defaultFontName monospaced
+skinparam nodesep 50
+skinparam ranksep 40
+skinparam padding 6
+
+title Co-located — authorization as a JOIN (single database)
+
+component "Application backend" as app #LightBlue
+
+node "PostgreSQL" as pg {
+    frame "app schema" as appschema #LightGreen {
+        component "documents\norders, ..." as tables
+    }
+    frame "authz schema (engine)" as authz #Orange {
+        component "check_access()\nlist_objects()\nwrite_tuple()" as fns
+    }
+}
+
+app -down-> tables : one SQL statement:\nSELECT d.* FROM documents d\nJOIN authz.list_objects('store',\n  'user', :uid, 'can_read', 'document') a\n  ON a.object_id = d.id
+tables -right-> fns : JOIN / RLS policy
+
+app -down-> fns : business write + write_tuple()\nin ONE transaction\n(atomic grant with the data)
+
+note bottom of pg
+  No network hop: data filtering **and** the
+  authorization decision run in the same query plan.
+  Wildcard grants come back as a typed row
+  (is_wildcard) instead of enumerating the store.
+  App roles get EXECUTE on the function API only
+  (SECURITY DEFINER) — never table grants.
+end note
+
+legend bottom left
+  |= Color |= Component |
+  | <#LightGreen> | Application schema — the app's own tables |
+  | <#Orange> | authz schema — the pgauthz engine (functions + tuples) |
+end legend
+
+@enduml

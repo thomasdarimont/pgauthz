@@ -1,4 +1,4 @@
-@startuml architecture-scaled
+@startuml architecture-read-scaled
 
 !theme plain
 skinparam backgroundColor white
@@ -32,14 +32,14 @@ database "PG Primary" as pgp3 #Orange
 
 ' Read path
 app3 -down-> lb : "authz checks"
-lb -down-> opa3a
+lb -down-> opa3a : "OPA data API\n/v1/data/authz/*"
 lb -down-> opa3b
-lb -down-> az3a
+lb -down-> az3a : "AuthZEN 1.0 API\n/access/v1/*"
 lb -down-> az3b
 opa3a -down-> pgrst3a
 opa3b -down-> pgrst3b
-az3a -down-> opa3a
-az3a -down-> pgr3a
+az3a -down-> opa3a : "authzen-opa\n(policy-enriched)"
+az3a -down-> pgr3a : "authzen-direct\n(SQL, lowest latency)"
 az3b -down-> opa3b
 az3b -down-> pgr3b
 pgrst3a -down-> pgr3a
@@ -54,7 +54,7 @@ pgp3 -right-> pgr3b : "  WAL  "
 
 legend bottom left
   |= Color |= Component |
-  | <#PaleGreen> | AuthZEN API — standard AuthZEN 1.0 (Go) |
+  | <#PaleGreen> | AuthZEN API — AuthZEN 1.0 (Go); authzen-direct → PG, authzen-opa → OPA |
   | <#LightBlue> | OPA — policy evaluation |
   | <#LightGreen> | PostgREST — internal read API |
   | <#Orange> | PostgreSQL primary — read-write |

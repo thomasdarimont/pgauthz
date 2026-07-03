@@ -5,7 +5,8 @@
 ### SECURITY DEFINER as the access control boundary
 
 All public API functions (`check_access`, `write_tuple`, `list_objects`, etc.)
-are marked `SECURITY DEFINER` and owned by the `authz` superuser role.
+are marked `SECURITY DEFINER` and owned by the dedicated **non-superuser**
+`authz_owner` role (NOLOGIN), limiting the blast radius of any function flaw.
 Application roles never receive direct `SELECT`, `INSERT`, or `DELETE`
 grants on any authz table — they can only interact through the function API.
 

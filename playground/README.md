@@ -32,25 +32,38 @@ Sign in as any demo user (`alice` / `bob` / `carol` / `eva`, password `password`
 
 ## What you can do
 
-A two-pane, OpenFGA-style layout. The store is selected via **`?store=`** in the
-URL (e.g. `https://app.pgauthz.test/?store=demo`):
+Three **perspectives** (tab strip below the header); the store is selected via
+the header combobox or **`?store=`** in the URL
+(e.g. `https://app.pgauthz.test/?store=demo`):
 
-- **Left** — the **model** (`describe_model` DSL) and the store's **tuples**.
-- **Right** — query the graph:
+- **Model Explorer** — the schema view. Left: the **model**
+  (`describe_model` DSL, with type labels). Right: the **type graph**, with a
+  **model / data** toggle — `model` renders the declared type restrictions
+  (every direct relation, matching the DSL; userset restrictions like
+  `team#member` are dashed, see the legend), `data` renders the type→type
+  edges actually observed in the tuples.
+- **Access Explorer** — the runtime view. Left: the store's **tuples** and
+  **conditions**. Right: query the graph:
   - **Structured english**: `is internal_user:alice related to document:doc_payroll_001 as can_read?`
-  - or the explicit fields (subject / action / object), with autocomplete.
+    with autocomplete on every field.
   - → **ALLOW/DENY** + a **Cytoscape access graph** of the resolution path
-    (green = allowed step, red = denied), with the text tree as a detail.
-
-Two modes (toggle, top-right):
-
-- **Explore** (default) — **engine-direct**, read-only, **any subject** (the
-  OpenFGA-playground style — `is user:erik related to …?`).
-- **As me (OPA)** — query as the logged-in user **through OPA** (the real PEP
-  path; subject comes from your token).
+    (green = allowed step, red = denied), with the text tree as a detail —
+    including the exact granting tuple (`matched_tuple`).
+  - Two evaluation modes (toggle in the Query header):
+    **Explore** (default) — **engine-direct**, read-only, **any subject** (the
+    OpenFGA-playground style); **As me (OPA)** — query as the logged-in user
+    **through OPA** (the real PEP path; subject comes from your token).
+- **AuthZEN** — an [AuthZEN 1.0](https://openid.net/specs/authorization-api-1_0.html)
+  API console driving the real `authzen-opa` service through the BFF (your
+  session token is injected server-side). Endpoint picker (evaluation,
+  evaluations, subject/resource/action search, discovery), a templated request
+  built from the shared query fields (left), and the response (right). The
+  search endpoints are disabled without the `authzen_auditor` role (they
+  enumerate the access graph; see `SEARCH_REQUIRED_ROLE`).
 
 Inputs autocomplete from the engine (`/api/meta/{stores,relations,objects,subjects}`,
-a read-only metadata connection).
+a read-only metadata connection). Graphs zoom with **Ctrl/⌘ + scroll** (or
+trackpad pinch) about the cursor and export as **Graphviz DOT** (⧉).
 
 ## Structure
 
@@ -67,11 +80,18 @@ playground/
     src/
       api.js                 # thin BFF client
       components/            # custom Lit web components
-        pg-app.js            #   root: panes, store, modes, query
+        pg-app.js            #   root: perspectives (model/explorer/authzen), store, query
         pg-model.js          #   model (describe_model) view
-        pg-tuples.js         #   tuples list
-        pg-access-graph.js   #   Cytoscape access graph (cytoscape from a CDN)
+        pg-grid.js           #   generic data grid (used by tuples + conditions)
+        pg-tuples.js         #   tuples grid
+        pg-conditions.js     #   conditions grid
+        pg-graph.js          #   shared Cytoscape base (zoom, fit, DOT export)
+        pg-types-graph.js    #   type graph (model/data modes, legend)
+        pg-access-graph.js   #   access graph (resolution path)
         pg-explain-tree.js   #   resolution-tree text view
+        pg-authzen.js        #   AuthZEN API console
+        pg-json-editor.js    #   JSON editor (highlighting, Format, read-only mode)
+        pg-combo.js          #   combobox with autocomplete
   proxy.conf                 # app.pgauthz.test → BFF (added to the nginx proxy)
 compose-playground.yml       # playground-db (sessions) + playground-bff
 keycloak/terraform/client.playground.tf   # the confidential auth-code+PKCE client
@@ -90,7 +110,11 @@ tokens, and dark mode is a token override.
 
 ## Security notes (demo)
 
-Demo-grade: dev client secret (`playground-bff-demo-secret`), the metadata
-connection reuses the engine superuser (use a read-only role in production), and
-the BFF session cookie is http-only + `Secure` (served via the TLS proxy). The
-SPA never receives a token. Not for production as-is.
+Demo-grade: dev client secret (`playground-bff-demo-secret`); the BFF session
+cookie is http-only + `Secure` (served via the TLS proxy); the SPA never
+receives a token. The metadata/explore connection uses the dedicated read-only
+`authz_metadata` role (`ENGINE_DSN`), not the engine superuser. The AuthZEN
+console proxies to `authzen-opa` (`AUTHZEN_URL`; empty hides the tab) with the
+session token injected server-side; its reverse-search endpoints are role-gated
+(`SEARCH_REQUIRED_ROLE` on authzen-opa, mirrored in the UI via
+`PLAYGROUND_SEARCH_ROLE` → `/api/me.search_enabled`). Not for production as-is.

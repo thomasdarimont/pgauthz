@@ -36,14 +36,14 @@ node "VM 0 (primary)" as vm0 {
 
 ' Read path
 app -down-> lb : "authz checks\n(read path)"
-lb -down-> opa_a
+lb -down-> opa_a : "OPA data API\n/v1/data/authz/*"
 lb -down-> opa_b
-lb -down-> az_a
+lb -down-> az_a : "AuthZEN 1.0 API\n/access/v1/*"
 lb -down-> az_b
 opa_a -down-> pgrst_a
 opa_b -down-> pgrst_b
-az_a -down-> opa_a
-az_a -down-> pgr_a
+az_a -down-> opa_a : "authzen-opa\n(policy-enriched)"
+az_a -down-> pgr_a : "authzen-direct\n(SQL, lowest latency)"
 az_b -down-> opa_b
 az_b -down-> pgr_b
 pgrst_a -down-> pgr_a
@@ -60,7 +60,7 @@ pgp -right-> pgr_b : "  WAL  "
 
 legend bottom left
   |= Color |= Component |
-  | <#PaleGreen> | AuthZEN API — standard AuthZEN 1.0 (Go) |
+  | <#PaleGreen> | AuthZEN API — AuthZEN 1.0 (Go); authzen-direct → PG, authzen-opa → OPA |
   | <#LightBlue> | OPA — policy evaluation + JWT authn (reads and writes) |
   | <#LightGreen> | PostgREST — internal read API |
   | <#Salmon> | PostgREST Writer — fixed authz_writer role, no JWT |

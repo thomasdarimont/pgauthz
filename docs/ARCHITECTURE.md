@@ -110,22 +110,53 @@ identity provider.
 
 ### Deployment Topologies
 
-Three topologies are supported:
+Four topologies are supported. Diagrams are rendered from the `.puml`
+sources next to this file (regenerate with
+[`scripts/gen-diagrams.sh`](../scripts/gen-diagrams.sh)).
 
-1. **Minimal** — single Docker host with OPA + PostgREST + PostgreSQL.
+1. **Co-located** — the engine lives in the *application's* PostgreSQL
+   database: authorization is a JOIN (or RLS policy) in the same query plan
+   as the data, and a grant commits atomically with the business write.
+   pgauthz's headline pattern for apps that already run Postgres.
+
+   ![Co-located architecture](architecture-colocated.svg)
+   ([source](architecture-colocated.puml))
+
+2. **Minimal** — single Docker host with OPA + PostgREST + PostgreSQL.
    Writes go directly to PostgreSQL via SQL.
-   (see [`architecture-minimal.puml`](architecture-minimal.puml))
 
-2. **With Write API** — adds an OPA-fronted PostgREST writer for
-   HTTP-based tuple management (OPA verifies the JWT + writer role and
-   forwards), plus the AuthZEN Go API layer.
-   (see [`architecture-write-api.puml`](architecture-write-api.puml))
+   ![Minimal architecture](architecture-minimal.svg)
+   ([source](architecture-minimal.puml))
 
-3. **Scaled** — load balancer distributes reads across multiple
-   OPA + PostgREST + replica nodes. Writes go to the primary — either
-   directly via SQL (see [`architecture-read-scaled.puml`](architecture-read-scaled.puml))
-   or through the primary's OPA-fronted writer (see
-   [`architecture-full.puml`](architecture-full.puml)).
+3. **With Write API** — adds an OPA-fronted PostgREST writer for
+   HTTP-based tuple management, plus the AuthZEN Go API layer (reads).
+   The diagram shows all three ways writes reach the primary:
+   **A** — through OPA (verifies the JWT + writer role, injects the audit
+   author, forwards to the fixed-role writer; per-app namespace isolation
+   via a `WRITER_DB_ROLE_CLAIM` → `X-Authz-Role` role switch);
+   **B** — direct SQL (`write_tuple` / `write_tuples_checked` under an
+   `authz_writer`-granted role); **C** — co-located, where the business
+   write and the tuple write commit in one transaction. All three land in
+   the same `SECURITY DEFINER` function API and audit trail.
+
+   ![Write paths](architecture-write-api.svg)
+   ([source](architecture-write-api.puml))
+
+4. **Scaled** — load balancer distributes reads across multiple
+   OPA + PostgREST + replica nodes. The LB exposes **two API surfaces**:
+   the OPA data API (`/v1/data/authz/*`) for policy-native callers, and
+   the standard AuthZEN 1.0 API (`/access/v1/*`) for interoperable PEPs —
+   the AuthZEN service reaching PostgreSQL either directly
+   (`authzen-direct`, lowest latency) or through OPA (`authzen-opa`,
+   policy-enriched). Writes go to the primary — either directly via SQL:
+
+   ![Read-scaled architecture](architecture-read-scaled.svg)
+   ([source](architecture-read-scaled.puml))
+
+   or through the primary's OPA-fronted writer:
+
+   ![Full architecture](architecture-full.svg)
+   ([source](architecture-full.puml))
 
 ---
 
@@ -186,7 +217,7 @@ Three topologies are supported:
 
 | Component | Responsibility |
 |---|---|
-| **AuthZEN API** | Standard AuthZEN 1.0 HTTP endpoints (Go). Two variants: `authzen-direct` (Go→PG) and `authzen-opa` (Go→OPA). JWT verification, routing, pagination. |
+| **AuthZEN API** | Standard AuthZEN 1.0 HTTP endpoints (Go). Two variants: `authzen-direct` (Go→PG) and `authzen-opa` (Go→OPA). JWT verification — **multi-issuer** via `JWT_ISSUERS` (the token's `iss` selects the validator; legacy single-issuer envs still work). Reverse-search endpoints optionally role-gated (`SEARCH_REQUIRED_ROLE` + `JWT_ROLES_CLAIM`). `authzen-opa` can forward the verified token to OPA (`FORWARD_TOKEN_TO_OPA`) so OPA re-validates it instead of trusting a forwarded subject. |
 | **OPA** | Single front door (reads + writes). Policy evaluation, JWT verification, response caching, endpoint security. Forwards authorized writes to the writer. |
 | **PostgREST (read)** | Maps SQL functions to REST. Runs as `api_anon` (inherits `authz_reader`). Internal only — no host port. |
 | **PostgREST (writer)** | Receives OPA-forwarded tuple writes. Runs as a fixed `authz_writer` role; does **no** JWT verification of its own. Internal only — no host port. |
@@ -238,7 +269,8 @@ Three topologies are supported:
 **Audit and debugging:**
 - `audit_list_user` / `audit_list_object` — change history
 - `audit_check_access` / `audit_list_actions` — time-travel
-- `explain_access` — full resolution trace with timing
+- `explain_access` — full resolution trace with timing, incl. the exact
+  granting tuple per step (`matched_tuple`, redacted in safety mode)
 - `validate_condition` — test condition expressions
 
 **Watch / changefeed:**
@@ -301,7 +333,7 @@ Deployment View).
 |---|---|---|
 | `pgauthz.rego` | `authz.pgauthz` | Client library — wraps the PostgREST read calls (cached) and the writer's `write_tuple` / `delete_tuple` forwarders |
 | `pgauthz_config.rego` | `authz.pgauthz.config` | PostgREST reader + writer URLs, cache TTL, default store (from env vars) |
-| `policy.rego` | `authz` | Read policy (`allow`, `evaluations`, `accessible_objects`, `permitted_actions`) |
+| `policy.rego` | `authz` | Read policy (`allow`, `evaluations`, `accessible_objects`, `accessible_subjects`, `permitted_actions`). Subject search has its own guard (`_subject_search_valid`): it authorizes the **caller** (valid token, or trusted-PEP mode) — the subject is the search *result*, not an input |
 | `write.rego` | `authz` | Write policy (`write`) — verifies the JWT + writer role, then forwards `write`/`delete` to the writer (injecting the subject as audit author) |
 | `authn.rego` | `authn` | JWT verification + claim extraction (subject, roles via the configurable claim path) |
 | `authn_config.rego` | `authn.config` | Issuer / audience, roles-claim path (`JWT_ROLES_CLAIM`), writer role (`WRITER_ROLE`) — from env vars |
@@ -310,6 +342,13 @@ Deployment View).
 ---
 
 ## 6. Runtime View
+
+The trust model across the three request paths — **where the JWT is
+validated on each hop** (OPA front door, AuthZEN with token-forwarding,
+and the OPA-fronted writer):
+
+![Token validation flow](architecture-token-flow.svg)
+([source](architecture-token-flow.puml))
 
 ### Scenario 1: Access Check (Read Path)
 
@@ -455,10 +494,10 @@ rule then returns `writes_disabled`).
 |---|---|---|---|
 | `authz-db` | `postgres:18.4` | 55433:5432 | `max_connections=250`, tuned `shared_buffers`, `work_mem` |
 | `postgrest` | `postgrest/postgrest:v14.13` | 3000 (internal) | Read-only, `api_anon` role, pool=100 |
-| `opa` | `openpolicyagent/opa:1.17.1` | 8181:8181 | Single front door (reads + writes). Token auth + basic authorization. Env: `JWT_ISSUER`, `JWT_AUDIENCE`, `DEFAULT_STORE`, `POSTGREST_URL`, `POSTGREST_WRITER_URL`, `JWT_ROLES_CLAIM`, `WRITER_ROLE`, `DEFAULT_CACHE_TTL_SECONDS`. |
+| `opa` | `openpolicyagent/opa:1.17.1` | 8181:8181 | Single front door (reads + writes). Token auth + basic authorization. Env: `JWT_ISSUER`, `JWT_AUDIENCE`, `DEFAULT_STORE`, `POSTGREST_URL`, `POSTGREST_WRITER_URL`, `JWT_ROLES_CLAIM`, `WRITER_ROLE`, `REQUIRE_TOKEN_FOR_READS` (tokenless `input.subject` reads only when `false` — trusted-PEP mode; the keycloak overlay pins `true`), `DEFAULT_CACHE_TTL_SECONDS`. |
 | `postgrest-writer` | `postgrest/postgrest:v14.13` | internal only | Fixed `authz_writer` role, **no JWT** (OPA-fronted), pool=20; reachable only by OPA |
 | `authzen-direct` | `authzen` (multi-stage) | 8090:8080 | AuthZEN 1.0 API, Go→PostgreSQL direct (via `compose-authzen.yml`) |
-| `authzen-opa` | `authzen` (multi-stage) | 8091:8080 | AuthZEN 1.0 API, Go→OPA (via `compose-authzen.yml`) |
+| `authzen-opa` | `authzen` (multi-stage) | 8091:8080 | AuthZEN 1.0 API, Go→OPA (via `compose-authzen.yml`). Extra env: `JWT_ISSUERS` (multi-issuer), `SEARCH_REQUIRED_ROLE` + `JWT_ROLES_CLAIM` (role-gated search), `FORWARD_TOKEN_TO_OPA` (OPA re-validates the token) |
 
 ### Scaled Deployment
 

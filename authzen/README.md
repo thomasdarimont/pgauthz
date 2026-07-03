@@ -141,6 +141,25 @@ All endpoints (except `/healthz` and `/.well-known/*`) require a Bearer JWT.
 - Optional validation of `iss`, `aud`, and `scope` claims
 - Subject identity is extracted from configurable claims and merged with request body
 
+**Multiple issuers.** The service can trust several issuers at once via
+`JWT_ISSUERS` — a JSON array of `{issuer, audience, jwks_url, jwks_file}`
+objects, each with its own JWKS cache; the token's `iss` claim selects the
+validator (an untrusted `iss` is rejected). The legacy single-issuer variables
+(`JWKS_URL`/`JWKS_FILE`/`JWT_ISSUER`/`JWT_AUDIENCE`) still work and form one
+issuer; both can be combined. Example (adds Keycloak next to the demo issuer):
+
+```
+JWT_ISSUERS=[{"issuer":"https://id.pgauthz.test/realms/pgauthz","jwks_url":"http://keycloak:8080/realms/pgauthz/protocol/openid-connect/certs"}]
+```
+
+**Role-gated reverse search.** The search endpoints
+(`search/subject|resource|action`) enumerate the access graph, so they can be
+restricted: set `SEARCH_REQUIRED_ROLE` to a role the caller's token must carry
+(otherwise `403`). Roles are aggregated across the claim paths in
+`JWT_ROLES_CLAIM` (comma-separated dotted paths, e.g.
+`realm_access.roles,resource_access.authz-api.roles` for Keycloak realm +
+client roles). Unset (default), search is open to any authenticated caller.
+
 | JWT claim | Maps to | Default claim name |
 |---|---|---|
 | Subject ID | `subject.id` | `preferred_username` (fallback: `sub`) |
@@ -180,6 +199,9 @@ All configuration is via environment variables.
 | `JWKS_FILE` | | Path to local JWKS file (required if `JWKS_URL` not set) |
 | `JWT_ISSUER` | | Expected `iss` claim (optional) |
 | `JWT_AUDIENCE` | | Expected `aud` claim (optional) |
+| `JWT_ISSUERS` | | Additional trusted issuers: JSON array of `{issuer, audience, jwks_url, jwks_file}`; the token's `iss` selects the validator (see [Authentication](#authentication)) |
+| `JWT_ROLES_CLAIM` | | Comma-separated dotted claim paths aggregated into the caller's roles (e.g. `realm_access.roles,resource_access.authz-api.roles`) |
+| `SEARCH_REQUIRED_ROLE` | | If set, the `search/*` endpoints require this role (`403` otherwise); empty = search open to any authenticated caller |
 | `REQUIRED_SCOPE` | | Required scope in `scope` claim (optional) |
 | `SUBJECT_ID_CLAIM` | `preferred_username` | JWT claim for subject ID |
 | `SUBJECT_ID_FALLBACK_CLAIM` | `sub` | Fallback JWT claim for subject ID |
@@ -203,6 +225,7 @@ All configuration is via environment variables.
 |---|---|---|
 | `OPA_URL` | *required* | OPA server base URL (e.g. `http://opa:8181`) |
 | `OPA_PACKAGE` | `authz` | OPA Rego package name |
+| `FORWARD_TOKEN_TO_OPA` | `false` | Forward the verified bearer token to OPA as `input.token` so OPA re-validates it — lets OPA run token-only (`REQUIRE_TOKEN_FOR_READS=true`) instead of trusting the forwarded subject. Leave off for trusted-PEP setups that check arbitrary subjects |
 
 ## Architecture
 

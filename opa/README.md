@@ -373,6 +373,14 @@ required_audience := "authz-api"
 
 All requests are POST to OPA's Data API at `http://localhost:8181/v1/data/`.
 
+> **Read mode.** The tokenless `input.subject` examples below require
+> `REQUIRE_TOKEN_FOR_READS=false` (the base/test stack — `env.sh` exports it;
+> safe **only** behind a trusted PEP). The keycloak/playground overlay pins the
+> secure token-only mode (`REQUIRE_TOKEN_FOR_READS=true`), where these return
+> `{"result": false}` — use the `input.token` variants there (the playground's
+> AuthZEN path works because `authzen-opa` forwards the verified token,
+> `FORWARD_TOKEN_TO_OPA=true`). See §7.
+
 ### Access Check (`allow`)
 
 **Endpoint:** `POST /v1/data/authz/allow`
@@ -444,8 +452,13 @@ object type. Note: `resource.id` is omitted since we're searching for it.
 **Response:**
 
 ```json
-{ "result": ["doc_payroll_001", "doc_acc_001", "doc_tax_001"] }
+{ "result": ["doc_acc_001", "doc_folder_payroll_q1_001", "doc_folder_tax_001",
+             "doc_payroll_001", "doc_tax_001"] }
 ```
+
+(Bob's 3 engagement documents as advisor, plus the 2 documents in the
+`workpapers` folder tree he owns — folder grants inherit down to contained
+documents.)
 
 ### Resource Search with Pagination (`accessible_objects_page`)
 
@@ -473,10 +486,10 @@ modes via `page`:
 }
 ```
 
-**Response:**
+**Response** (only the ids sorting after the `doc_payroll_001` cursor):
 
 ```json
-{ "result": ["doc_acc_001", "doc_payroll_001", "doc_tax_001"] }
+{ "result": ["doc_tax_001"] }
 ```
 
 When the result array is shorter than `limit`, you've reached the last page.

@@ -233,7 +233,9 @@ SELECT authz.check_access('demo',
 -- Use this to populate a user's document list or search results.
 SELECT * FROM authz.list_objects('demo',
     'internal_user', 'bob', 'can_read', 'document');
--- => doc_payroll_001, doc_acc_001, doc_tax_001
+-- => doc_acc_001, doc_folder_payroll_q1_001, doc_folder_tax_001,
+--    doc_payroll_001, doc_tax_001
+--    (3 engagement docs as advisor + 2 docs in the workpapers folder bob owns)
 ```
 
 `list_objects` finds these by **reverse expansion**: it starts from Bob's
@@ -310,6 +312,9 @@ Returns JSON:
     { "step": 1, "depth": 4, "rule_type": "direct", "reason": "direct_tuple",
       "subject": "internal_user:alice", "relation": "member",
       "object": "team:payroll_team", "result": true, "detail": "tuple found",
+      "matched_tuple": "internal_user:alice → member → team:payroll_team",
+      //               ^ the exact stored tuple that granted this step
+      //                 (wildcards resolved; null when redacted)
       "model_rule_id": 1889, "group_id": 0, "group_op": "or", "negated": false,
       "duration_ms": 0.07 }
     // ... one object per evaluation step
@@ -657,7 +662,9 @@ SELECT authz.check_access('demo',
 -- they are authorized to see
 SELECT * FROM authz.list_objects('demo',
     'internal_user', 'bob', 'can_read', 'document');
--- => doc_payroll_001, doc_acc_001, doc_tax_001
+-- => doc_acc_001, doc_folder_payroll_q1_001, doc_folder_tax_001,
+--    doc_payroll_001, doc_tax_001
+--    (3 engagement docs as advisor + 2 docs in the workpapers folder bob owns)
 
 -- Sharing overview: show all users who currently have read access to a document,
 -- useful for a "shared with" panel or access review reports

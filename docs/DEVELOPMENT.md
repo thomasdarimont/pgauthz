@@ -274,6 +274,13 @@ INSERT INTO authz.relations (id, store_id, name) OVERRIDING SYSTEM VALUE VALUES
 ./init.sh
 ```
 
+> When you're iterating on **engine code** (functions/views/triggers under
+> `db/engine/`) rather than a model, use `./reload-engine.sh` instead — it
+> reloads the engine files **and re-runs `roles.sql`**, which is required
+> because `CREATE OR REPLACE FUNCTION` resets `SECURITY DEFINER` back to
+> INVOKER (a raw psql reload breaks non-owner callers with
+> `permission denied for function _s`).
+
 4. **Add tests** in `tests/sql/tests.sql` or `tests/sql/tests_search.sql`, then run:
 
 ```bash
@@ -557,15 +564,28 @@ client_data_space (parent_engagement -> engagement, client_org -> client_org)
  +-- can_view / can_upload = client_member
  +-- can_manage_sharing = direct_internal_manager or can_manage_client_collaboration from engagement
 
-document (in_internal_space -> internal_data_space, in_client_space -> client_data_space)
- +-- can_read = viewer or can_view from space
- +-- can_edit = editor or can_edit from internal_space
- +-- can_delete = can_manage_access from internal_space
+folder (parent -> folder, recursive)
+ +-- owner, editor, viewer
+ +-- can_view = viewer or editor or owner or can_view from parent
+ +-- can_edit = editor or owner or can_edit from parent
+ +-- can_share = owner or editor or can_share from parent
+ +-- can_manage_access = owner or can_manage_access from parent
+
+document (in_internal_space -> internal_data_space, in_client_space -> client_data_space,
+          parent_folder -> folder)
+ +-- can_read = viewer or can_view from space or can_view from parent_folder
+ +-- can_edit = editor or can_edit from internal_space or can_edit from parent_folder
+ +-- can_delete = can_manage_access from internal_space or from parent_folder
 
 upload_request (in_client_space -> client_data_space)
  +-- can_submit = requested_from
  +-- can_manage = created_by or can_manage_sharing from client_space
 ```
+
+All direct relations carry explicit **type restrictions** (e.g.
+`payroll_clerk: [internal_user, team#member]`) — see the full rendering via
+`describe_model('demo')`. For the folder-hierarchy pattern in depth, see
+[MODEL_DESIGN.md — Recursive Hierarchies](MODEL_DESIGN.md#14-recursive-hierarchies--folders--filesystems).
 
 ## Application Integration
 
@@ -1254,9 +1274,11 @@ type document
 
 Each relation's expression is reconstructed from the rule groups (`or` / `and` /
 `but not`); direct rules show their type restrictions (`[user, team#member,
-user:*]`, or `[any]` when none are declared). It's a one-way rendering for
-humans — a round-trippable **OpenFGA JSON export** (`export_openfga_model`,
-convertible to `.fga` via `fga model transform`) is on the roadmap.
+user:*]`, or `[any]` when none are declared — the demo model declares them
+explicitly for every direct relation, OpenFGA-style, so its rendering never
+shows `[any]`). It's a one-way rendering for humans — a round-trippable
+**OpenFGA JSON export** (`export_openfga_model`, convertible to `.fga` via
+`fga model transform`) is on the roadmap.
 
 ### List all model rules for a type
 

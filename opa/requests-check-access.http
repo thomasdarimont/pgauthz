@@ -1,6 +1,18 @@
 ### OPA + Zanzibar authorization examples against the demo model.
 ### Requires: docker compose up (bootstrap.sh)
 ### Select the "dev" environment to use the variables below.
+###
+### READ MODE — tokenless `input.subject` requests below only work when OPA
+### runs with REQUIRE_TOKEN_FOR_READS=false (the base/test stack: env.sh
+### exports it). The keycloak/playground overlay pins the SECURE token-only
+### mode (REQUIRE_TOKEN_FOR_READS=true), where tokenless subject reads are
+### rejected (`allow` → false). On that stack either:
+###   * use the `input.token` variants (mint one: keycloak/get-token.sh, or
+###     grant_type=password against the pgauthz realm), or
+###   * recreate opa tokenless for cookbook use:
+###     REQUIRE_TOKEN_FOR_READS=false docker compose -f compose.yml \
+###       -f compose-authzen.yml -f compose-keycloak.yml -f compose-playground.yml \
+###       up -d --no-deps opa
 
 ### =====================================================================
 ### ACCESS CHECKS (allow)
@@ -314,7 +326,8 @@ Content-Type: application/json
     "resource": { "type": "document" }
   }
 }
-### Expected: { "result": ["doc_payroll_001", "doc_acc_001", "doc_tax_001"] }
+### Expected: { "result": ["doc_acc_001", "doc_folder_payroll_q1_001", "doc_folder_tax_001", "doc_payroll_001", "doc_tax_001"] }
+### (3 engagement docs as advisor + 2 docs in the workpapers folder bob owns)
 
 ###
 
@@ -349,7 +362,7 @@ Content-Type: application/json
     "page":     { "limit": 2, "offset": 0 }
   }
 }
-### Expected: { "result": ["doc_acc_001", "doc_payroll_001"] }
+### Expected: { "result": ["doc_acc_001", "doc_folder_payroll_q1_001"] }
 
 ###
 
@@ -365,7 +378,7 @@ Content-Type: application/json
     "page":     { "limit": 2, "offset": 2 }
   }
 }
-### Expected: { "result": ["doc_tax_001"] }
+### Expected: { "result": ["doc_folder_tax_001", "doc_payroll_001"] }
 
 ###
 

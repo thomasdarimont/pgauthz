@@ -8,17 +8,26 @@ skinparam nodesep 50
 skinparam ranksep 40
 skinparam padding 6
 
-title Architecture with Write Paths
+title Write paths to the primary
 
-actor "Application" as app
+actor "App without\nDB access" as appA
+actor "App with\nDB access" as appB
+actor "Co-located app\n(same database)" as appC
 
 note as N1
-  **Option A: Write API (OPA-fronted)**
-  For applications without direct
-  database access. OPA verifies the
-  JWT and the writer role, then
-  forwards the write to the fixed-role
-  writer (which does no JWT of its own).
+  **A: OPA-fronted write API**
+  OPA verifies the JWT and the writer
+  role (WRITER_ROLE in JWT_ROLES_CLAIM),
+  injects the subject as audit author,
+  then forwards to the fixed-role writer
+  (which does no JWT of its own).
+
+  Multi-app: a per-app DB role from a
+  JWT claim (WRITER_DB_ROLE_CLAIM) is
+  forwarded as X-Authz-Role; the writer's
+  _pre_request() SET LOCAL ROLEs to it,
+  so **namespace isolation** applies
+  per app.
 end note
 
 node "HTTP Write API" as optA {
@@ -26,27 +35,33 @@ node "HTTP Write API" as optA {
     component "PostgREST Writer\n(internal, authz_writer)" as pgrst #Salmon
 }
 
-database "PostgreSQL\n:5432" as pg #Orange
+database "PostgreSQL\nprimary" as pg #Orange
 
 N1 -right-> opa
 
-app -down-> opa : "POST /v1/data/authz/write\n(JWT: writer role)"
-opa -down-> pgrst : "forward write/delete\n(authorized only)"
-pgrst -down-> pg : "SQL (authz_writer)"
+appA -down-> opa : "A: POST /v1/data/authz/write\n(JWT: writer role)"
+opa -down-> pgrst : "forward write/delete\n(authorized only,\n+ X-Authz-Role)"
+pgrst -down-> pg : "SQL (authz_writer\nor per-app role)"
 
-app -right-> pg : "direct SQL\n(authz_writer role)"
+appB -down-> pg : "B: direct SQL\nwrite_tuple() /\nwrite_tuples_checked()\n(authz_writer role)"
 
-note right of pg
-  **Option B: Direct SQL**
-  For applications with
-  direct PostgreSQL connectivity
-  (lowest latency, no HTTP overhead)
+appC -down-> pg : "C: co-located\nbusiness write + write_tuple()\nin ONE transaction"
+
+note bottom of pg
+  All three paths land in the same function API
+  (SECURITY DEFINER; app roles never get table
+  grants) and the same immutable audit trail.
+  C additionally makes the grant **atomic** with
+  the business change — see the co-located
+  topology. Apps whose tuples derive from their
+  own DB rows typically feed A or B via a
+  **transactional outbox** (MODEL_DESIGN §10).
 end note
 
 legend bottom left
   |= Color |= Component |
   | <#LightBlue> | OPA — verifies JWT + writer role, forwards the write |
-  | <#Salmon> | PostgREST Writer — fixed authz_writer role, no JWT |
+  | <#Salmon> | PostgREST Writer — fixed authz_writer (or per-app) role, no JWT |
   | <#Orange> | PostgreSQL — authz schema |
 end legend
 

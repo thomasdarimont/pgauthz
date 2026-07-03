@@ -54,7 +54,16 @@ by `init.sh` on every run.
       caller inject ephemeral tuples into a decision). It is granted to no one
       by default. See [Role recipes](#role-recipes).
 - [ ] **Set a real JWKS / JWT issuer / audience** (`JWKS_URL`, `JWT_ISSUER`,
-      `JWT_AUDIENCE`) for OPA and the AuthZEN services.
+      `JWT_AUDIENCE`) for OPA and the AuthZEN services. The AuthZEN services can
+      trust several issuers at once via `JWT_ISSUERS` (JSON array of
+      `{issuer, audience, jwks_url|jwks_file}`; the token's `iss` selects the
+      validator — legacy single-issuer envs still work).
+- [ ] **Gate the AuthZEN reverse-search endpoints.**
+      `search/subject|resource|action` enumerate the access graph ("who can
+      access X?"), which is strictly more than "can *I* access X?". Set
+      `SEARCH_REQUIRED_ROLE` (with `JWT_ROLES_CLAIM` for the claim paths) so only
+      auditor-grade callers may use them; left unset, search is open to any
+      authenticated caller.
 - [ ] **Schedule audit-partition maintenance and retention.** See
       [Audit retention](#audit-retention).
 - [ ] **Tune the condition `statement_timeout`** for your slowest legitimate
@@ -229,6 +238,15 @@ can derive the subject from an explicit `input.subject` when no JWT is present.
 
 Like `ALLOW_SUBJECT_OVERRIDE`, `compose.yml` defaults to the safe value (`true`)
 and the demo opts into `false` via `env.sh`.
+
+**Avoiding `false` altogether with token-forwarding.** When the PEP in front of
+OPA is `authzen-opa`, prefer `FORWARD_TOKEN_TO_OPA=true` on it: the service then
+forwards the verified bearer token to OPA as `input.token`, OPA re-validates it,
+and `REQUIRE_TOKEN_FOR_READS` can stay **`true`** — no tokenless subject-trust
+anywhere (defense in depth; the playground stack runs this way). The tokenless
+`false` mode remains necessary only for trusted PEPs that evaluate access for
+**arbitrary subjects** on behalf of others (there is no token for "can *bob*
+read this?" when *alice's* service asks).
 
 ## Condition (ABAC) policy
 
