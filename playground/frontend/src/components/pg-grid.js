@@ -87,6 +87,14 @@ export class PgGrid extends LitElement {
     .rowcopy { font: inherit; line-height: 1.5; padding: 0 5px; cursor: pointer; color: var(--pg-muted, #888);
       background: var(--pg-bg, #fff); border: 1px solid var(--pg-border, #d0d7de); border-radius: var(--pg-radius-sm, 4px); }
     .rowcopy:hover { border-color: var(--pg-primary, #0969da); color: var(--pg-primary, #0969da); }
+    /* Trailing "more rows" indicator: an in-flow row after the last visible
+       row, so a page that happens to fit the viewport doesn't read as "that's
+       all" (the 1–25 of 42 pager info is easy to overlook). */
+    tr.more td { text-align: center; cursor: pointer; font-style: italic;
+      color: var(--pg-muted, #6e7781); background: var(--pg-surface, #f6f8fa);
+      border-top: 1px dashed var(--pg-border, #d0d7de); }
+    tr.more:hover td { color: var(--pg-fg, #1f2328); background: var(--pg-hover, #eaeef2); }
+
     /* Pager */
     .pager { display: flex; align-items: center; gap: var(--pg-space-3, .75rem); flex-wrap: wrap;
       margin-top: var(--pg-space-2, .5rem); font-size: var(--pg-text-sm, .8rem); color: var(--pg-muted, #888); }
@@ -172,7 +180,12 @@ export class PgGrid extends LitElement {
                 ${this.columns.map((col) => this.#cell(col, r))}
                 ${this.rowText ? html`<td class="copycell"><button class="rowcopy" title="copy row (tab-separated)"
                   @click=${() => this.#copyRow(r)}>${this.copiedRow === r ? '✓' : '⧉'}</button></td>` : ''}
-              </tr>`)}</tbody></table>`
+              </tr>`)}
+              ${end < total ? html`<tr class="more" data-testid="grid-more"
+                @click=${() => (this.page = page + 1)}>
+                <td colspan=${this.columns.length + (this.rowText ? 1 : 0)}
+                  title="show the next page">⋯ ${total - end} more row${total - end === 1 ? '' : 's'} — click for the next page ›</td>
+              </tr>` : ''}</tbody></table>`
           : html`<p class="muted">(no matching rows)</p>`}
       </div>
       <div class="pager">
