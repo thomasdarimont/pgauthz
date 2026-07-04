@@ -30,15 +30,6 @@ pre-1.0, minor versions may include breaking changes.
   (unchanged). E2E-tested in test-opa.sh (namespaced type: denied without
   role / allowed with grant / admin rejected) + 7 SQL hook tests.
 
-### Changed
-
-- **`WRITER_DB_ROLE_CLAIM` renamed to `DB_ROLE_CLAIM`** (OPA service env,
-  Helm value `opa.dbRoleClaim`): the same claim now drives the role switch
-  on both the write and the read path.
-- `scripts/pre-release.sh` now fails if the Helm chart's OPA policy copy
-  (`deploy/helm/pgauthz/files/opa/policies`) drifts from `opa/policies`
-  (it had drifted silently); the copy is re-synced in this change.
-
 - **Model registry: named, versioned models shared across stores** (migration
   `0004` + `db/engine/model_registry.sql`). Multi-tenant pattern: one store
   per tenant (tuples isolated by construction), one common model rolled out
@@ -70,11 +61,17 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- **`WRITER_DB_ROLE_CLAIM` renamed to `DB_ROLE_CLAIM`** (OPA service env,
+  Helm value `opa.dbRoleClaim`): the same claim now drives the role switch
+  on both the write and the read path.
 - **AuthZEN (direct): per-app DB role validation results are now cached with a
   TTL** (`DB_ROLE_CACHE_TTL_SECONDS`, default 60; `0` = re-validate every
   request) instead of indefinitely — dropping a role or revoking its
   `authz_reader` membership takes effect within the window, not at the next
   service restart.
+- `scripts/pre-release.sh` now fails if the Helm chart's OPA policy copy
+  (`deploy/helm/pgauthz/files/opa/policies`) drifts from `opa/policies`
+  (it had drifted silently); the copy is re-synced in this change.
 
 ### Documentation
 
@@ -86,12 +83,12 @@ pre-1.0, minor versions may include breaking changes.
   No High/Critical code findings; four new Info/Low findings (F7–F10) accepted
   with operational controls, plus expanded operational-risk and hardening
   checklists.
-- **AuthZEN isolation asymmetry stated explicitly** (authzen/README.md +
-  PRODUCTION.md checklist): `authzen-opa` does not provide the same
-  database-enforced per-application namespace isolation as `authzen-direct` —
-  the OPA→PostgREST read path has no role-switch hook; multi-tenant
-  deployments relying on read-side namespace isolation must use
-  `authzen-direct`.
+- **AuthZEN isolation parity documented** (authzen/README.md + PRODUCTION.md
+  checklist): the interim callout that `authzen-opa` lacked database-enforced
+  per-application namespace isolation was superseded *within this release* by
+  slice B (see Added) — the docs now describe the symmetric setup: both
+  services enforce read-side isolation, with `DB_ROLE_CLAIM` configured on the
+  OPA service for the token-mode role source.
 
 ## [0.5.0] - 2026-07-04
 
