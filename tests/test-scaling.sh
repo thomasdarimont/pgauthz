@@ -86,6 +86,51 @@ assert "OPA: eva allowed" '{"result":true}' "$eva_opa"
 assert "OPA: unknown subject denied" '{"result":false}' \
   "$(opa '{"input":{"subject":{"type":"internal_user","id":"ghost_xyz"},"action":"can_read","resource":{"type":"document","id":"doc_acc_001"}}}')"
 
+# ── Layer B: strict revocation (new-enemy) ──────────────────────────────────
+# A revoke acknowledged under synchronous_commit=remote_apply must be DENIED on
+# the replica immediately after the ack — no stale-allow window.
+
+# Connection that mimics the OPA-fronted writer (remote_apply, see compose.yml).
+qsync() { docker exec -e PGPASSWORD=authz "$1" psql   "postgres://authz:authz@localhost:5432/authz?options=-csynchronous_commit%3Dremote_apply"   -tA -c "$2"; }
+
+echo "==> Demonstrating the stale-allow window WITHOUT synchronous apply..."
+# (must run BEFORE sync is enabled: with sync on + replay paused, the revoke
+# would block — that blocking is the feature, but it would hang the test)
+qp "$PRIMARY" "SELECT authz.write_tuple('demo','internal_user','newenemy','viewer','document','doc_newenemy');" >/dev/null
+sleep 1  # let the grant replicate
+assert "async: replica sees the grant" "t"   "$(qp "$REPLICA" "SELECT authz.check_access('demo','internal_user','newenemy','can_read','document','doc_newenemy');")"
+qp "$REPLICA" "SELECT pg_wal_replay_pause();" >/dev/null
+qp "$PRIMARY" "SELECT authz.delete_tuple('demo','internal_user','newenemy','viewer','document','doc_newenemy');" >/dev/null
+assert "async + paused replay: replica still ALLOWS after the revoke (the bug Layer B closes)" "t"   "$(qp "$REPLICA" "SELECT authz.check_access('demo','internal_user','newenemy','can_read','document','doc_newenemy');")"
+qp "$REPLICA" "SELECT pg_wal_replay_resume();" >/dev/null
+for _ in $(seq 1 20); do
+  [ "$(qp "$REPLICA" "SELECT authz.check_access('demo','internal_user','newenemy','can_read','document','doc_newenemy');")" = "f" ] && break
+  sleep 1
+done
+assert "replica converges to deny after replay resumes" "f"   "$(qp "$REPLICA" "SELECT authz.check_access('demo','internal_user','newenemy','can_read','document','doc_newenemy');")"
+
+echo "==> Enabling synchronous replication (remote_apply guarantee active)..."
+qp "$PRIMARY" "ALTER SYSTEM SET synchronous_standby_names = '*'; SELECT pg_reload_conf();" >/dev/null
+for _ in $(seq 1 20); do
+  [ "$(qp "$PRIMARY" "SELECT count(*) FROM pg_stat_replication WHERE sync_state='sync';")" = "1" ] && break
+  sleep 1
+done
+assert "replica is in the synchronous set" "1"   "$(qp "$PRIMARY" "SELECT count(*) FROM pg_stat_replication WHERE sync_state='sync';")"
+
+echo "==> New-enemy loop: revoke ack (remote_apply) → immediate replica check must DENY..."
+ne_fail=0
+for i in $(seq 1 10); do
+  qsync "$PRIMARY" "SELECT authz.write_tuple('demo','internal_user','newenemy','viewer','document','doc_newenemy');" >/dev/null
+  [ "$(qp "$REPLICA" "SELECT authz.check_access('demo','internal_user','newenemy','can_read','document','doc_newenemy');")" = "t" ] || ne_fail=$((ne_fail+1))
+  qsync "$PRIMARY" "SELECT authz.delete_tuple('demo','internal_user','newenemy','viewer','document','doc_newenemy');" >/dev/null
+  # NO sleep: the ack itself is the guarantee — the replica must already deny
+  [ "$(qp "$REPLICA" "SELECT authz.check_access('demo','internal_user','newenemy','can_read','document','doc_newenemy');")" = "f" ] || ne_fail=$((ne_fail+1))
+done
+assert "10× grant/revoke cycles: replica state matched the ack every time (0 violations)" "0" "$ne_fail"
+
+echo "==> Resetting synchronous replication config..."
+qp "$PRIMARY" "ALTER SYSTEM RESET synchronous_standby_names; SELECT pg_reload_conf();" >/dev/null
+
 echo ""
 if [ "$fail" -ne 0 ]; then
   echo "==> SCALING TESTS FAILED"

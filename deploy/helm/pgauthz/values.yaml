@@ -20,6 +20,13 @@ images:
 
 # ── Database: CloudNativePG cluster ──────────────────────────────────────────
 database:
+  # Pod scheduling for the DB instances (CNPG .spec.affinity passthrough).
+  # For multi-AZ: spread instances across zones so an AZ loss takes at most
+  # one instance:
+  # affinity:
+  #   enablePodAntiAffinity: true
+  #   topologyKey: topology.kubernetes.io/zone
+  #   podAntiAffinityType: required
   instances: 3                 # 1 primary + 2 replicas → -rw and -ro services
   # ── High availability / failover ──────────────────────────────────────────
   # CloudNativePG ALREADY does automatic failover when instances >= 2: it
@@ -167,6 +174,13 @@ postgrestReader:
 postgrestWriter:
   replicas: 2
   dbPool: 10
+  # synchronous_commit for the writer's connections. "remote_apply" (default)
+  # means a grant/revoke only acks once every synchronous standby has APPLIED
+  # it — combined with database.replication.synchronous, no replica in the
+  # sync set can serve a stale allow after a revoke ack. No-op when
+  # synchronous replication is off. Set "local" to opt out (e.g. bulk loads
+  # go through a separate channel anyway).
+  synchronousCommit: remote_apply
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits:   { memory: 256Mi }

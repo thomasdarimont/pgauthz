@@ -37,6 +37,13 @@ services:
       - max_wal_senders=5
       - -c
       - hot_standby=on
+      # Strict revocation (Layer B): make the replica synchronous so the
+      # writer's remote_apply (see the postgrest-writer example below) blocks
+      # a revoke's ack until the replica has APPLIED it. INVARIANT: every
+      # replica that serves reads must be in this list — a lagging replica
+      # outside it can still serve a stale allow.
+      # - -c
+      # - synchronous_standby_names=*
     environment:
       POSTGRES_USER: authz
       POSTGRES_PASSWORD: authz
@@ -96,7 +103,7 @@ services:
   # postgrest-writer:
   #   image: postgrest/postgrest:v14.14
   #   environment:
-  #     PGRST_DB_URI: postgres://authz_authenticator:${AUTHZ_AUTHENTICATOR_PASSWORD:-authz}@authz-primary:5432/authz
+  #     PGRST_DB_URI: postgres://authz_authenticator:${AUTHZ_AUTHENTICATOR_PASSWORD:-authz}@authz-primary:5432/authz?options=-csynchronous_commit%3Dremote_apply
   #     PGRST_DB_ANON_ROLE: authz_writer   # fixed role; no JWT verification
   #     PGRST_DB_SCHEMAS: authz
   #     PGRST_DB_POOL: "20"

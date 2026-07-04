@@ -35,6 +35,33 @@ pre-1.0, minor versions may include breaking changes.
   tenant's IdP is bound to its stores. Issuers without a list stay
   unrestricted.
 
+- **Multi-AZ reference configuration.** PRODUCTION.md gains a concrete
+  single-region/3-AZ Helm setup (all-serving synchronous standbys — the
+  serving ⊆ sync-set invariant holds by construction, lagging replicas
+  block visibly instead of serving stale allows — zone anti-affinity,
+  per-write modes, failure drill); the chart gains a `database.affinity`
+  passthrough (CNPG `.spec.affinity`) for zone spreading. Plus a
+  **two-node datacenter variant** with an operator-driven promotion
+  runbook (fence-first, clear the sync requirement, rejoin via
+  pg_rewind/basebackup) and the monitoring signals that map to it.
+- **Strict revocation: the write path commits with `remote_apply`.** The
+  OPA-fronted writer's connection now sets `synchronous_commit = remote_apply`
+  (compose + Helm `postgrestWriter.synchronousCommit`): with synchronous
+  standbys configured, a grant/revoke is only acknowledged once every
+  synchronous replica has **applied** it — after the ack no replica in the
+  set can serve a stale allow (the "new-enemy" window). A no-op without
+  synchronous standbys, so all existing deployments are unaffected. The
+  serving(-ro) ⊆ synchronous-set invariant, blocking semantics, and the
+  client-cancel caveat are documented in PRODUCTION.md → Strict revocation;
+  regression-tested in the scaling suite (revoke ack → immediate replica
+  check must deny, 10× cycles). **Per-write consistency modes:** the write
+  API accepts `consistency: applied | durable | eventual` (forwarded as
+  `X-Authz-Consistency`; the writer's `_pre_request()` maps it to a
+  transaction-local `synchronous_commit`, failing closed on unknown values) —
+  the connection default is the policy, individual writes opt up or down;
+  direct-SQL callers use `SET LOCAL synchronous_commit` in their own
+  transaction.
+
 ### Changed
 
 - **PostgREST v14.13 → v14.14.** Maintenance release (admin server now logs

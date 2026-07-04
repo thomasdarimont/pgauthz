@@ -62,6 +62,11 @@ echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_preconditions.sql"
 
 echo ""
+echo "==> Running write-consistency (per-write synchronous_commit) checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_write_consistency.sql"
+
+echo ""
 echo "==> Running describe_model (readable rendering) checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_describe.sql"

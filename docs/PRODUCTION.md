@@ -282,7 +282,7 @@ consistent (sub-second lag). The risk is a **stale allow after a revoke**.
   a **revoke** — to the **primary**.
 - Accept bounded staleness for the high-volume common case.
 - `synchronous_commit = remote_apply` makes replicas strongly consistent at a
-  write-latency cost.
+  write-latency cost — see the next section for the shipped setup.
 
 A practical way to operationalise this is to classify each decision and pin its
 read path:
@@ -300,6 +300,52 @@ control plane (`db/security/roles.sql`).
 There is no revision-token (zookie) API; see
 [ARCHITECTURE.md → Consistency tokens](ARCHITECTURE.md#consistency-tokens-zookies-why-not-yet)
 and the README "Consistency model" section.
+
+### Strict revocation: synchronous apply on the write path
+
+The OPA-fronted writer connects with **`synchronous_commit = remote_apply`**
+(connection-scoped in its `PGRST_DB_URI`; Helm:
+`postgrestWriter.synchronousCommit`). With `synchronous_standby_names`
+configured, a grant/revoke is only **acknowledged once every synchronous
+standby has applied it** — after the ack, no replica in the set can serve a
+stale allow. Without synchronous standbys it is a no-op. In one sentence:
+*"revoked" is only reported once it is true everywhere reads are served — and
+only replicas where that is guaranteed may serve reads.*
+
+Operational contract (decide these explicitly, don't discover them in an
+incident):
+
+- **The invariant:** every replica serving reads must be in the synchronous
+  set. Platform readiness ("is it up") does NOT imply caught-up — a replica
+  evicted from the sync set must simultaneously stop receiving read traffic
+  (lag-gated `-ro` membership), or choose `required` durability so writes
+  block instead.
+- **When a sync standby doesn't answer, the commit BLOCKS** (indefinitely —
+  that blocking is the fail-closed behavior). The dangerous paths are the
+  silent ones: a **client cancel** leaves the transaction *committed locally*
+  ("canceling wait … transaction has already committed locally") and
+  replicating asynchronously — surface it as "revocation pending", never as
+  success or failure; and a **quorum shrink without read eviction** reopens
+  the stale-allow hole.
+- **Per-write consistency modes.** The connection default is the *policy*;
+  individual writes override it via the `consistency` field on the OPA write
+  input (forwarded as `X-Authz-Consistency` → `_pre_request()` →
+  `SET LOCAL synchronous_commit`):
+  `applied` (remote_apply — strict revocation) · `durable` (flushed on sync
+  standbys) · `eventual` (primary-only; the opt-down for bulk/latency-tolerant
+  grants). Unknown values fail closed. Direct-SQL callers do the same with
+  `SET LOCAL synchronous_commit = …` in their own transaction. Keeping the
+  default at `remote_apply` means a *forgotten* mode yields a slow write, not
+  a silent stale-allow window — secure by default, fast by explicit opt-down.
+- **Bulk loads / imports** should bypass the wait: run them on a separate
+  channel (direct SQL) with `synchronous_commit = local`, or send
+  `consistency: "eventual"` through the write API.
+- **Caches:** `remote_apply` does not invalidate the OPA decision cache —
+  revocation-sensitive checks must bypass it or key it by revision.
+
+The scaling suite carries the regression test: a revoke acknowledged under
+`remote_apply` is denied on the replica immediately, over repeated
+grant/revoke cycles (`tests/test-scaling.sh`).
 
 ## High availability & failover (the write path)
 
@@ -361,6 +407,136 @@ hand-rolled cluster: `synchronous_commit = remote_apply` /
 copy-paste drill (planned `cnpg promote` switchover and an unplanned
 pod-kill, plus the single-node-k3d stuck-`Terminating` gotcha): see
 [deploy/helm/pgauthz/README.md → Testing failover](../deploy/helm/pgauthz/README.md#testing-failover-game-day).
+
+## Reference configuration: single region, multi-AZ (SaaS)
+
+The validated sweet spot — one region, instances spread across 3
+availability zones, strict revocation, zero-RPO failover. Concrete Helm
+setup:
+
+```yaml
+# values-prod-multiaz.yaml (layer on values.yaml + values-ha.yaml)
+database:
+  instances: 3                       # 1 primary + 2 standbys, one per AZ
+  affinity:                          # spread across zones (AZ loss ⇒ 1 instance)
+    enablePodAntiAffinity: true
+    topologyKey: topology.kubernetes.io/zone
+    podAntiAffinityType: required
+  replication:
+    synchronous:
+      enabled: true
+      maxSyncReplicas: 2             # BOTH standbys ack ⇒ every serving
+                                     # replica is guaranteed (all-serving sync)
+      minSyncReplicas: 1             # keep RPO 0 even with one standby down
+  # backup: ...                      # always pair HA with backups
+
+postgrestWriter:
+  synchronousCommit: remote_apply    # (default) strict revocation on ack
+```
+
+Why these choices, and what they give you:
+
+- **`maxSyncReplicas: 2` (= all standbys) rather than 1.** With `ANY 1`
+  quorum, the acking standby varies per commit — neither replica is
+  individually guaranteed, so strict reads would have to hit the primary.
+  With **both** standbys synchronous, every `-ro` member is covered: the
+  `serving(-ro) ⊆ sync set` invariant holds **by construction**. In-region
+  AZ round-trips are ~1 ms, so the write-latency cost is negligible —
+  this trade only gets hard across regions.
+- **Self-enforcing invariant.** With all standbys sync + `remote_apply`,
+  an alive-but-lagging replica **blocks revokes** (visible, pageable)
+  instead of silently serving stale allows; a *dead* replica drops out of
+  both the sync set and `-ro` via readiness. The dangerous
+  quorum-shrink-while-still-serving gap doesn't exist in this shape.
+- **`minSyncReplicas: 1`** keeps writes flowing (still RPO 0) when one
+  standby is down; set `2` if you prefer revokes to block until full
+  redundancy is restored.
+- **Stateless tier per AZ.** Run ≥ 2 replicas of OPA / PostgREST /
+  AuthZEN spread across zones (standard deployment spread). Reads via the
+  `-ro` Service cross AZs freely (~1 ms); if you want AZ-local reads, set
+  the Service's `trafficDistribution: PreferClose` (K8s ≥ 1.31).
+- **Write path** stays on the global `-rw` name — CNPG repoints it on
+  failover (validated ~5 s switchover); clients retry per the
+  [HA section](#high-availability--failover-the-write-path).
+- **Per-write modes** ride on top: `consistency: eventual` for bulk
+  imports/latency-tolerant grants, the `applied` default for everything
+  else. OPA's decision cache stays at a small TTL
+  (`DEFAULT_CACHE_TTL_SECONDS`); revocation-sensitive checks bypass it.
+
+Failure drill this configuration survives (test it, don't trust it):
+kill any single instance or a whole AZ → automatic promotion / continued
+service, RPO 0, and no window in which a serving replica returns a
+revoked permission.
+
+### Variant: on-prem datacenter
+
+**With three (or more) nodes — prefer this.** Three nodes give you quorum
+locally: run k3s (3 control-plane nodes) + CNPG, and the
+[multi-AZ reference configuration](#reference-configuration-single-region-multi-az-saas)
+applies verbatim with `topologyKey: kubernetes.io/hostname` instead of the
+zone key — `instances: 3`, both standbys synchronous, **safe automatic
+failover** (the third node is the tiebreaker; no split-brain, no human in
+the loop), validated ~seconds switchover semantics. If you can rack a third
+node — even a modest one — this is strictly better than the two-node
+variant below.
+
+**With exactly two nodes:** primary + full stateless tier on node 1, synchronous standby +
+stateless tier on node 2; a VIP (keepalived) or LB in front of OPA/AuthZEN.
+Reads are node-local; writes cross to the primary. The consistency story
+*simplifies* here: with one standby, `maxSyncReplicas: 1` makes it the entire
+sync set (the serving ⊆ sync-set invariant holds by construction), an
+alive-but-lagging standby **blocks revokes visibly**, and a *dead* standby
+serves nothing — so `minSyncReplicas: 0` (async fallback) has no stale-allow
+hole on this shape.
+
+**Failover is operator-driven — deliberately.** Two nodes cannot distinguish
+"peer died" from "link died"; automatic promotion without a third-party
+witness eventually split-brains, and two primaries accepting authz writes is
+the worst failure an authorization store can have. Monitoring alerts, a human
+decides. (Want automatic? Add a small witness node — even a VM elsewhere —
+and run k3s + CNPG or Patroni + etcd with three control-plane members; then
+the multi-AZ reference config applies with
+`topologyKey: kubernetes.io/hostname`.)
+
+**Promotion runbook** (the three easy-to-miss steps are marked ⚠):
+
+1. **Verify, don't guess:** confirm the primary is actually dead
+   (`pg_isready` from *both* the standby and a third vantage point if you
+   have one), not just unreachable from one side.
+2. ⚠ **Fence the old primary first** — stop the service / power it off /
+   drop it from the VIP — *before* promoting. If it comes back writable
+   later, you have two primaries.
+3. **Promote:** `SELECT pg_promote();` on the standby.
+4. ⚠ **Clear the sync requirement on the new primary:**
+   `ALTER SYSTEM RESET synchronous_standby_names; SELECT pg_reload_conf();`
+   — the new primary has no standby yet, and with sync names set + the
+   writer's `remote_apply`, **every write would block** until the peer
+   rejoins. (Window is safe: the only replica is down, nothing can serve
+   stale reads.)
+5. **Repoint writes:** flip the VIP / the `authz-primary` DNS or network
+   alias so the writer's `PGRST_DB_URI` resolves to the new primary.
+   PostgREST reconnects on its own; clients retry per the
+   [HA section](#high-availability--failover-the-write-path).
+6. ⚠ **Rejoin the old node as the new standby — never restart it as-is:**
+   its timeline has diverged (it may hold *unacked* local commits — losing
+   those is correct, they were never acknowledged). Fast path
+   `pg_rewind --target-pgdata=... --source-server=...`; the always-works
+   path is a fresh `pg_basebackup` clone. Then restore
+   `synchronous_standby_names` on the new primary and confirm
+   `pg_stat_replication.sync_state = 'sync'` — the strict-revocation
+   guarantee is back.
+
+**What monitoring must alert on** (each maps to a runbook step):
+primary down (`pg_isready`), standby down or `pg_stat_replication` empty on
+the primary, replication lag above threshold, and **commits blocked in sync
+wait** (`pg_stat_activity.wait_event = 'SyncRep'`) — that last one is the
+lagging-standby-blocks-revokes signal, which is the guarantee working as
+designed, but an operator needs to know.
+
+**RPO note:** with `remote_apply`, no *acknowledged* grant/revoke is ever
+lost in this flow — the standby had applied everything acked before it could
+be promoted. In-flight writes that were never acked may be lost; that is the
+contract.
 
 ## Audit retention
 

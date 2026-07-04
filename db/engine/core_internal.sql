@@ -165,9 +165,33 @@ CREATE OR REPLACE FUNCTION authz._effective_role() RETURNS text
 CREATE OR REPLACE FUNCTION authz._pre_request() RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_headers json := nullif(current_setting('request.headers', true), '')::json;
-    v_role    text := v_headers ->> 'x-authz-role';
+    v_headers     json := nullif(current_setting('request.headers', true), '')::json;
+    v_role        text := v_headers ->> 'x-authz-role';
+    v_consistency text := v_headers ->> 'x-authz-consistency';
 BEGIN
+    -- Per-write consistency mode (X-Authz-Consistency). Maps a caller-facing
+    -- vocabulary onto synchronous_commit for THIS transaction only, so a
+    -- deployment can default the writer connection to remote_apply while
+    -- individual writes opt up or down:
+    --   applied  → remote_apply  (ack only after every synchronous standby has
+    --                             APPLIED it — strict-revocation / "t0" mode)
+    --   durable  → on            (flushed on sync standbys: survives failover,
+    --                             but NOT yet read-visible there)
+    --   eventual → local         (primary-only durability; replicas catch up)
+    -- Absent header → the connection default applies. Unknown values FAIL
+    -- CLOSED — a misspelled consistency request must never be silently
+    -- reinterpreted as a weaker guarantee.
+    IF v_consistency IS NOT NULL AND v_consistency <> '' THEN
+        CASE v_consistency
+            WHEN 'applied'  THEN SET LOCAL synchronous_commit = remote_apply;
+            WHEN 'durable'  THEN SET LOCAL synchronous_commit = on;
+            WHEN 'eventual' THEN SET LOCAL synchronous_commit = local;
+            ELSE RAISE EXCEPTION
+                'Unknown consistency mode "%" (expected applied | durable | eventual)',
+                v_consistency USING ERRCODE = 'invalid_parameter_value';
+        END CASE;
+    END IF;
+
     -- No requested role → keep the default writer role (no namespace scoping).
     IF v_role IS NULL OR v_role = '' THEN
         RETURN;

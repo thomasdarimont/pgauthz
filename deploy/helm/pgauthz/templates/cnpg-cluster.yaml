@@ -5,6 +5,14 @@ metadata:
   labels: {{- include "pgauthz.labels" . | nindent 4 }}
 spec:
   instances: {{ .Values.database.instances }}
+  {{- with .Values.database.affinity }}
+  # Pod scheduling for the DB instances — e.g. spread across availability
+  # zones: { topologyKey: topology.kubernetes.io/zone }. Passed through to
+  # CNPG's .spec.affinity (enablePodAntiAffinity, topologyKey,
+  # podAntiAffinityType, nodeSelector, tolerations, ...).
+  affinity:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   imageName: {{ include "pgauthz.image" .Values.images.postgres }}
 
   {{- if .Values.database.replication.synchronous.enabled }}

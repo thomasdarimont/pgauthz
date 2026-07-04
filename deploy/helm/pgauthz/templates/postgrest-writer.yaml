@@ -28,7 +28,10 @@ spec:
               valueFrom:
                 secretKeyRef: { name: {{ include "pgauthz.fullname" . }}-authenticator, key: password }
             - name: PGRST_DB_URI
-              value: postgres://authz_authenticator:$(PGAUTHZ_PW)@{{ include "pgauthz.dbRW" . }}:5432/authz
+              # remote_apply: with database.replication.synchronous enabled, a
+              # grant/revoke only acks once the synchronous standbys APPLIED it
+              # (no stale allow after a revoke ack). No-op without sync standbys.
+              value: postgres://authz_authenticator:$(PGAUTHZ_PW)@{{ include "pgauthz.dbRW" . }}:5432/authz?options=-csynchronous_commit%3D{{ .Values.postgrestWriter.synchronousCommit | default "remote_apply" }}
             - { name: PGRST_DB_ANON_ROLE, value: authz_writer }
             - { name: PGRST_DB_SCHEMAS,   value: authz }
             - { name: PGRST_DB_POOL,      value: {{ .Values.postgrestWriter.dbPool | quote }} }

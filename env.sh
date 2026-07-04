@@ -33,6 +33,15 @@ export DATABASE_URL="${DATABASE_URL:-postgres://${PG_USER}:${PG_PASSWORD}@${PG_H
 # alternative topology, e.g. the streaming-replication primary:
 #   COMPOSE_FILE=compose-scaling.yml ./init.sh
 # Otherwise: base stack + optional authzen / CEL overlays.
+# Overlay state persisted by start.sh (--cel/--keycloak/--playground): source
+# it so init.sh / test.sh / reload-engine.sh keep the running stack's overlays
+# instead of resetting opa/authzen-opa to the base config. Explicit PGAUTHZ_*
+# env vars take precedence (the file self-guards with :- defaults).
+if [ -f "$SCRIPT_DIR/.pgauthz-overlays" ]; then
+  # shellcheck source=/dev/null
+  source "$SCRIPT_DIR/.pgauthz-overlays"
+fi
+
 if [ -n "${COMPOSE_FILE:-}" ]; then
   COMPOSE_FILES=(-f "$SCRIPT_DIR/$COMPOSE_FILE")
 else
@@ -49,6 +58,24 @@ else
   case "${PGAUTHZ_CEL:-}" in
     1|true|yes|on)
       COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-cel.yml")
+      ;;
+  esac
+
+  # Keycloak / playground overlays (persisted by start.sh, see above). The
+  # playground implies keycloak. NOTE: with these active, OPA runs token-only
+  # (REQUIRE_TOKEN_FOR_READS=true) — the OPA/AuthZEN integration suites need
+  # demo mode: run them as
+  #   PGAUTHZ_KEYCLOAK=0 PGAUTHZ_PLAYGROUND=0 ./init.sh && ./tests/test-all.sh
+  # and re-run ./start.sh --keycloak --playground afterwards.
+  case "${PGAUTHZ_PLAYGROUND:-}" in 1|true|yes|on) PGAUTHZ_KEYCLOAK=1 ;; esac
+  case "${PGAUTHZ_KEYCLOAK:-}" in
+    1|true|yes|on)
+      COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-keycloak.yml")
+      ;;
+  esac
+  case "${PGAUTHZ_PLAYGROUND:-}" in
+    1|true|yes|on)
+      COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-playground.yml")
       ;;
   esac
 fi

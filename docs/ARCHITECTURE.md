@@ -675,6 +675,103 @@ fits one write RPC):
 Zanzibar's contract: *evaluate against a snapshot at least as fresh as
 revision R*.)
 
+### Deployment Scenarios: SaaS Platform Fit
+
+pgauthz as a platform-engineering component for a SaaS provider, by
+deployment tier:
+
+**Single region, multi-AZ — the validated sweet spot.** One CNPG primary
+with streaming replicas spread across availability zones; the stateless
+tier (OPA, PostgREST, AuthZEN) co-locates with each replica so an AZ
+answers checks locally. Automatic failover is validated (switchover ~5s,
+`-rw` repoint), and the Helm chart's `database.replication.synchronous`
+knob gives **RPO 0** — an acknowledged grant/revoke survives failover.
+Multi-tenancy maps onto stores + per-issuer store/role binding +
+namespaces.
+
+**Multi-region, read-heavy — works, with known limiting factors:**
+
+| Factor | Status |
+|---|---|
+| Regional read latency | ✅ regional replicas (streaming, or the logical read-only excerpt) serve checks locally |
+| Write latency | Writes cross the WAN to the single primary. Acceptable for authz volumes (writes ≪ reads); there is **no active-active / multi-primary mode** — deliberately (single source of truth, as in Zanzibar) |
+| Revocation propagation | Bounded by WAN replication lag (seconds) unless hardened — see below |
+| Cross-region failover | A DR event (operator-driven promotion), not automatic |
+| Data residency | Replication is whole-DB; stores cannot be geo-pinned within one cluster. For per-country residency run **one pgauthz instance per jurisdiction** with disjoint stores — per-issuer store binding keeps each region's IdPs scoped to its stores |
+| OPA decision caches | Add staleness *independent of* replica freshness; revocation-sensitive checks must bypass or revision-key the cache |
+
+**Accepting writes near the caller.** Writes need not terminate on a
+regional replica: the OPA-fronted writer (or AuthZEN service) is a
+stateless front that deploys **in every region**, pointed at the global
+`-rw` service — a client writes to its local endpoint and the service
+carries it to the primary. Forwarding *inside* PostgreSQL (replica →
+primary via FDW) is deliberately avoided: it hides a cross-region hop
+behind a local-looking call and complicates the security model for no
+gain over the HTTP front. Co-located direct-SQL apps do standard
+rw-splitting (`-rw` for writes, local `-ro` for reads).
+
+**Strict revocation ("revoked at t0 must deny everywhere after t0").**
+Three mechanisms, in order of strength:
+
+1. **Route freshness-sensitive checks to the primary** — available
+   today; the default recommendation.
+2. **Synchronous apply for authz writes.** Normally a write is "done"
+   when the *primary* has it; replicas catch up later — that gap is the
+   stale-allow window. `synchronous_commit = remote_apply` (set only on
+   the authz write path) redefines "done": the revoke is not
+   acknowledged until every replica in the synchronous set has
+   **applied** it, i.e. reads there already see the deny. In one
+   sentence: *"revoked" is only reported once it is true everywhere
+   reads are served — and only replicas where it is guaranteed true may
+   serve reads.* That second half is the invariant to enforce:
+   **serving(-ro) ⊆ synchronous set** (CNPG readiness-checks "is it
+   up", not "is it caught up" — a lagging replica must be gated out of
+   `-ro`, or `required` durability chosen so a dead replica blocks
+   revokes instead). Cost: revoke latency = the slowest synchronous
+   replica; all other traffic is unaffected. Designed; see the risk
+   register and the consistency-tokens section.
+3. **Revision tokens** (`at_least_as_fresh`) — deferred to the PG19
+   `WAIT FOR LSN` era; see above.
+
+In all three, the **OPA cache contract** applies: a fresh replica behind
+a stale cached decision is no improvement — revocation-sensitive checks
+bypass the cache or key it by revision.
+
+**Quorum and the guarantee.** `synchronous_standby_names` supports quorum
+(`ANY 3 (r1..r5)`) and priority (`FIRST 2 (r1, r2, r3)`) sets — CNPG:
+`postgresql.synchronous: {method, number}`. Quorum buys **write
+availability** (n−k replica failures don't block revokes) but dissolves
+the *per-replica* guarantee: a revoke is applied on *some* k members at
+ack time and you cannot know which — so no individual replica is safe to
+serve strict reads. The workable designs:
+
+| Design | Writes survive failures | Strict-revocation reads |
+|---|---|---|
+| All-serving sync (`FIRST n`) | ✗ (unless evict + shrink `-ro` together) | ✅ every serving replica |
+| `ANY k of n`, all serve | ✅ | ✗ — strict checks go to the primary |
+| **Tiered**: `FIRST k` sync tier serves strict reads; async replicas serve eventual reads | ✅ | ✅ on the sync tier |
+
+The tiered model composes with the per-write consistency modes:
+`applied` writes + sync-tier reads for security-critical flows,
+`eventual` + async tier for the volume.
+
+**Primary failover.** There is exactly **one primary at any instant,
+globally**. In-region, CNPG auto-promotes the least-lagged healthy
+standby and repoints `-rw` (validated: ~5s switchover). **Across
+regions**, automatic promotion is dangerous without arbitration — a
+partitioned region is indistinguishable from a dead one, and two
+primaries accepting authz writes is split-brain. The honest ladder:
+(1) operator-declared promotion of an async replica cluster (RTO
+minutes, RPO = lag); (2) cross-region **RPO 0** by forcing a remote
+standby into the sync set (`FIRST 2 (regionB, localA1, …)` — every
+`applied` write pays the WAN RTT); (3) automatic failover only with an
+external **witness/quorum** in a third location (e.g. Patroni + etcd
+across 3 regions) providing the fencing. After promotion the global
+`-rw` name repoints; the regional write fronts reconnect. (For
+calibration: Zanzibar gets consensus-per-write from Spanner/Paxos —
+quorum sync + witness-arbitrated failover is the Postgres
+approximation, with strict reads pinned to the guaranteed tier.)
+
 ### PostgreSQL Tuning
 
 | Parameter | Value | Rationale |

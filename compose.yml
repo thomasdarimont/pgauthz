@@ -70,7 +70,13 @@ services:
   postgrest-writer:
     image: postgrest/postgrest:v14.14
     environment:
-      PGRST_DB_URI: postgres://authz_authenticator:${AUTHZ_AUTHENTICATOR_PASSWORD:-authz}@authz-db:5432/authz
+      # synchronous_commit=remote_apply (connection-scoped): a grant/revoke is
+      # only acknowledged once every replica in synchronous_standby_names has
+      # APPLIED it — no replica in the sync set can serve a stale allow after
+      # the ack (Layer B revocation hardening). With no synchronous standbys
+      # configured (this base compose) it is a no-op. See
+      # docs/ARCHITECTURE.md → Deployment Scenarios / consistency tokens.
+      PGRST_DB_URI: postgres://authz_authenticator:${AUTHZ_AUTHENTICATOR_PASSWORD:-authz}@authz-db:5432/authz?options=-csynchronous_commit%3Dremote_apply
       # Fixed role: every request OPA forwards runs as authz_writer (tuple
       # writes). authz_authenticator is a member of authz_writer (roles.sql).
       # No PGRST_JWT_SECRET — authentication/authorization happens in OPA.

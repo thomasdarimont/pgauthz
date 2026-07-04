@@ -52,3 +52,4 @@ build/
 .DS_Store
 /authz/pg/authzen/authzen-direct
 /authz/pg/authzen/authzen-opa
+.pgauthz-overlays
