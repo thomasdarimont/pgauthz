@@ -295,7 +295,11 @@ read path:
 
 Application roles should get only runtime reader/writer roles; model
 administration, condition management, and namespace grants belong to a separate
-control plane (`db/security/roles.sql`).
+control plane (`db/security/roles.sql`). Product teams adding their own OPA
+policies on top of the platform stack: see
+[opa/README.md → Product-team policies](../opa/README.md#product-team-policies-platform-engineering-model)
+(per-team packages + the `system_authz.rego` allowlist as the review
+choke-point, or team-owned sidecar OPAs against the decision API).
 
 There is no revision-token (zookie) API; see
 [ARCHITECTURE.md → Consistency tokens](ARCHITECTURE.md#consistency-tokens-zookies-why-not-yet)

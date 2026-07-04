@@ -828,23 +828,79 @@ allow if {
 2. Set `default_store` in `pgauthz_config.rego`, or pass `input.store` per request
 3. No changes needed to `pgauthz.rego` — it accepts any store name
 
-### Using OPA for multi-service authorization
+### Product-team policies (platform-engineering model)
 
-Multiple applications can share the same OPA instance. Create separate
-policy packages per application:
+When a platform team operates pgauthz and product teams need
+application-specific checks, first route each check to the right layer:
+
+| Check type | Belongs in | Why |
+|---|---|---|
+| "Is X related to Y?" (roles, ownership, hierarchy) | **Model + tuples** (engine) | Queryable, auditable, reverse-searchable — Rego rules are none of those |
+| Per-grant attributes ("this share expires at T") | **Engine conditions** (sql/cel) | Evaluated with the tuple, versioned in the audit log |
+| Request-time business rules composed with checks | **Rego** — options A/B below | |
+| Coarse API/route gating | Gateway-side OPA (per-route policies) | See ARCHITECTURE.md → Enterprise IAM |
+
+The anti-pattern to reject in review: relationships hard-coded in Rego
+(`input.subject == "alice"`) — that data belongs in tuples.
+
+**Option A — team packages in the shared OPA (start here).** Each team owns
+a package under its own directory and composes its logic with the ReBAC
+engine via the shared client library:
 
 ```
 opa/policies/
-├── pgauthz.rego         # Shared pgauthz client library
-├── pgauthz_config.rego  # PostgREST URL, cache TTLs, default store
-├── app_portal/          # Portal-specific policies
-│   └── policy.rego      # package portal.authz
-└── app_backend/         # Backend-specific policies
-    └── policy.rego      # package backend.authz
+├── pgauthz.rego          # platform: shared client library
+├── policy.rego           # platform: data.authz.* (teams never touch)
+├── system_authz.rego     # platform: endpoint allowlist (the choke-point)
+├── app_dms/policy.rego   # team DMS:    package app.dms
+└── app_portal/policy.rego# team Portal: package app.portal
 ```
 
-Each policy package imports the shared pgauthz client and adds its own
-business rules.
+```rego
+package app.dms
+
+import data.authn
+import data.authz.pgauthz
+
+allow_download if {
+    "dms-user" in authn.roles                       # team token rule
+    time.clock(time.now_ns())[0] >= 9               # team business rule
+    pgauthz.check_access("dms", "internal_user",    # the relationship question
+        authn.subject_id, "can_read", "document", input.doc)
+}
+```
+
+The rule is evaluated at `POST /v1/data/app/dms/allow_download` — **and that
+path must be added to `system_authz.rego`'s `_public_eval_paths`** or OPA's
+endpoint security rejects it. The allowlist is deliberately exact-path (not
+prefix — prefix matching once leaked the admin token; see the comment in
+that file), which makes exposing a team rule an explicit, reviewable,
+one-line change: exactly the governance choke-point a platform team wants.
+
+Governance for the shared instance:
+
+- **Ownership:** CODEOWNERS — teams own `app/<team>/`; the platform team
+  owns `policy.rego`, `authn*.rego`, `pgauthz*.rego`, and above all
+  `system_authz.rego`.
+- **CI gate (mandatory — shared blast radius):** `opa check` + `opa test`
+  on every policy PR; distribute via git-versioned bundles (or the mounted
+  `/policies` dir with `--watch` in dev).
+- **Store scoping:** team packages pin their own store(s) in their calls
+  (as `"dms"` above) — review rejects cross-store reads.
+
+**Option B — team-owned sidecar OPA (graduate to this).** A team runs its
+own OPA next to its service with its policies; for the relationship
+question it calls the platform's decision API — `data.authz.*` on the
+central OPA, or the **AuthZEN endpoint** (the cleaner contract: standard
+vocabulary, per-issuer store binding already scopes each team to its
+stores). Full autonomy and isolated blast radius, at the cost of one extra
+hop for the ReBAC call (softened by the decision cache). Note AuthZEN's
+fixed surface means team-specific *rules* are not exposed through it — they
+live in the sidecar.
+
+**The invariant in both options:** nothing calls PostgREST/PostgreSQL
+directly. Team policies compose *on top of* the front door (inside the
+shared PDP, or in front of it) — never around it.
 
 ---
 
