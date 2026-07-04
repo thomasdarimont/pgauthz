@@ -1547,3 +1547,83 @@ user:* → viewer → folder:public_docs
 ```
 Write a tuple with `user_id = '*'`. Any user of that type gets the relation
 without an individual tuple. Propagates through computed relations and TTU.
+
+## 15. Sharing One Model Across Stores (Model Registry)
+
+Multi-tenant deployments typically run **one store per tenant**: tuples are
+isolated by construction (a check in tenant A's store can never traverse
+tenant B's tuples), while all tenants share the same *authorization model*.
+The model registry turns that shared model into a first-class, versioned
+artifact instead of N hand-maintained copies.
+
+The workflow is author → publish → apply:
+
+```sql
+-- 1. Author the model in one store (the "authoring" store), using the
+--    normal model API from the sections above.
+SELECT authz.create_store('model_dev');
+-- ... model_register_type / model_register_relation / model_add_rule ...
+
+-- 2. Publish it as the next immutable version of a named model.
+SELECT authz.publish_model('saas_core', 'model_dev', 'adds can_export');
+-- => 3   (the new version; republishing an UNCHANGED model returns the
+--         existing version instead of minting a new one)
+
+-- 3. Roll it out: canary one tenant store first, then the fleet.
+SELECT authz.apply_model('tenant_acme', 'saas_core');        -- latest
+SELECT * FROM authz.apply_model(                              -- fleet
+    ARRAY['tenant_beta', 'tenant_gamma'], 'saas_core', 3);
+```
+
+`apply_model` works on a brand-new store (it creates all types with their
+tuple partitions) and on a store already running an older version — it
+performs an exact diff through the regular model API, so model validation
+stays engaged and every change lands in `models_audit` for time-travel.
+After syncing it re-exports the store and verifies the checksum against the
+registry version: an apply either converges exactly or aborts (single
+transaction — a failed apply changes nothing).
+
+What a definition contains: types (with namespace, description, labels),
+relations, rules, type restrictions, and conditions. What it deliberately
+does NOT contain: tuples (per-tenant data) and `namespace_access` role
+grants (deployment-specific). Hash-partition sizing (`hash_modulus`) is
+recorded for creating new stores but excluded from checksums — a big tenant
+with more sub-partitions is not "drifted".
+
+Two guard rails to know about:
+
+- **Types are never removed automatically.** A store with a type that the
+  definition lacks fails the apply — a type owns a tuple partition, so its
+  removal stays a manual, deliberate act.
+- **Stale relations are only removed when unreferenced.** If tuples still
+  reference a relation that the new version dropped, the apply aborts and
+  names the relation — delete those tuples first. (Rules being removed is
+  fine: the affected tuples simply stop granting, which is normal model
+  semantics.)
+
+Detecting state across the fleet:
+
+```sql
+SELECT * FROM authz.model_status('tenant_acme');
+-- => model_name, model_version, applied_at/by, in_sync, checksums.
+--    in_sync = false means the store's live model no longer matches the
+--    version it applied (someone hand-edited it) — re-apply to repair.
+
+SELECT * FROM authz.model_rollout_status('saas_core');
+-- => one row per store bound to the model: its version, the registry's
+--    latest version, and whether it is still in sync.
+
+SELECT * FROM authz.list_model_versions('saas_core');
+```
+
+`publish_model` / `apply_model` require `authz_admin`; the status/export
+functions are available to `authz_reader` (like `describe_model`). Stores
+never touched by `apply_model` are "unmanaged" — nothing changes for them,
+and `model_status` reports NULL model fields plus their live checksum so
+tooling can still fingerprint hand-rolled models.
+
+**Zero-downtime note:** within one `apply_model`, stale rules are deleted
+and new ones added in the *same transaction*, so concurrent checks never
+observe the intermediate state — the "add new rules before removing old
+ones" dance from [§11](#11-revoking-access-and-maintenance) is only needed
+when editing a model by hand.

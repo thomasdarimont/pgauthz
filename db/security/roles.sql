@@ -196,6 +196,10 @@ GRANT EXECUTE ON FUNCTION authz.list_actions(text, text, text, text, text, jsonb
 GRANT EXECUTE ON FUNCTION authz.validate_condition(text, text, jsonb, jsonb) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.explain_access(text, text, text, text, text, text, jsonb, boolean, boolean) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.describe_model(text) TO authz_reader;
+GRANT EXECUTE ON FUNCTION authz.export_model(text) TO authz_reader;
+GRANT EXECUTE ON FUNCTION authz.model_status(text) TO authz_reader;
+GRANT EXECUTE ON FUNCTION authz.model_rollout_status(text) TO authz_reader;
+GRANT EXECUTE ON FUNCTION authz.list_model_versions(text) TO authz_reader;
 
 ------------------------------------------------------------------------
 -- authz_writer: tuple management (inherits reader grants above)
@@ -242,6 +246,9 @@ GRANT EXECUTE ON FUNCTION authz.create_condition(text, text, text, text, jsonb) 
 GRANT EXECUTE ON FUNCTION authz.create_condition_sql(text, text, text, jsonb) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.create_condition_cel(text, text, text, jsonb) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.delete_condition(text, text) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.publish_model(text, text, text) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.apply_model(text, text, integer) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.apply_model(text[], text, integer) TO authz_admin;
 
 ------------------------------------------------------------------------
 -- SECURITY DEFINER: all public functions run as the owning role
@@ -306,6 +313,13 @@ ALTER FUNCTION authz.create_condition(text, text, text, text, jsonb) SECURITY DE
 ALTER FUNCTION authz.create_condition_sql(text, text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.create_condition_cel(text, text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_condition(text, text) SECURITY DEFINER;
+ALTER FUNCTION authz.export_model(text) SECURITY DEFINER;
+ALTER FUNCTION authz.model_status(text) SECURITY DEFINER;
+ALTER FUNCTION authz.model_rollout_status(text) SECURITY DEFINER;
+ALTER FUNCTION authz.list_model_versions(text) SECURITY DEFINER;
+ALTER FUNCTION authz.publish_model(text, text, text) SECURITY DEFINER;
+ALTER FUNCTION authz.apply_model(text, text, integer) SECURITY DEFINER;
+ALTER FUNCTION authz.apply_model(text[], text, integer) SECURITY DEFINER;
 
 ------------------------------------------------------------------------
 -- Pin search_path on every SECURITY DEFINER function so a caller's

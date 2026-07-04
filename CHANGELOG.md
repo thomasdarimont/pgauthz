@@ -9,6 +9,27 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Model registry: named, versioned models shared across stores** (migration
+  `0004` + `db/engine/model_registry.sql`). Multi-tenant pattern: one store
+  per tenant (tuples isolated by construction), one common model rolled out
+  per store. `authz.export_model` renders a store's live model as a
+  canonical, name-based JSONB definition (types incl. namespace/labels,
+  relations, rules, type restrictions, conditions — not tuples, not
+  namespace role grants); `authz.publish_model` snapshots it into the
+  registry as the next immutable version of a named model (republishing an
+  unchanged model is a no-op); `authz.apply_model` makes a target store's
+  live model match a registry version — exact diff via the existing model
+  API (validation + `models_audit` time-travel stay engaged), self-verified
+  by checksum after apply, with strict guards: types are never removed
+  automatically, and a stale relation still referenced by tuples aborts the
+  apply instead of silently orphaning them. A fleet variant applies one
+  resolved version to a list of stores. Drift detection: `authz.model_status`
+  (per store) and `authz.model_rollout_status` (per model) compare the live
+  model's checksum against the applied registry version — hash-partition
+  layout (`hash_modulus`) is excluded from checksums, so per-tenant partition
+  sizing does not read as drift. `authz.list_model_versions` lists the
+  registry.
+
 - **AuthZEN: issuer binding enforcement flags.** `REQUIRE_STORE_BINDING=true`
   refuses startup unless every trusted issuer carries a `stores` binding;
   `REQUIRE_DB_ROLE_BINDING=true` does the same for `db_roles`/`client_db_roles`

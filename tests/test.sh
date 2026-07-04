@@ -152,6 +152,11 @@ echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_model_versioning.sql"
 
 echo ""
+echo "==> Running model registry (publish/apply/drift) checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_model_registry.sql"
+
+echo ""
 echo "==> Running retire / soft-delete (audit-after-deletion) checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_retire.sql"

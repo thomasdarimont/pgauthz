@@ -34,6 +34,7 @@ ENGINE_MANIFEST=(
   "maintenance.sql:write"
   "model.sql:write"
   "conditions_admin.sql:write"
+  "model_registry.sql:write"
   "audit_triggers.sql:audit"
   "audit_internal.sql:audit"
   "audit.sql:audit"
