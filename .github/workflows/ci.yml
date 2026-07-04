@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Host Go is used by tests/test-go.sh (AuthZEN unit tests); the AuthZEN
       # service images themselves build inside Docker via docker compose.
@@ -39,7 +39,7 @@ jobs:
       # deploy/migrations/Dockerfile.
       - name: Cache sqlx-cli
         id: cache-sqlx
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/sqlx
           key: sqlx-cli-0.9.0-${{ runner.os }}
@@ -72,13 +72,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0          # need history + tags to check out the prior release
 
       - name: Cache sqlx-cli
         id: cache-sqlx
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/sqlx
           key: sqlx-cli-0.9.0-${{ runner.os }}
@@ -156,7 +156,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Run replication integration test
         run: ./tests/test-replication.sh
@@ -179,11 +179,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Cache sqlx-cli
         id: cache-sqlx
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/sqlx
           key: sqlx-cli-0.9.0-${{ runner.os }}
@@ -213,7 +213,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -233,7 +233,7 @@ jobs:
 
       - name: Cache sqlx-cli
         id: cache-sqlx
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/sqlx
           key: sqlx-cli-0.9.0-${{ runner.os }}
