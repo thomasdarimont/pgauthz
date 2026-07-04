@@ -205,8 +205,11 @@ JWT_ISSUERS=[{"issuer":"https://tenant-a.idp","jwks_url":"…","stores":["tenant
 ```
 
 A token from that issuer selecting any other store is rejected with `403`.
-Issuers without a `stores` list are unrestricted. Note that
-`SEARCH_REQUIRED_ROLE` gates search globally, not per store.
+Issuers without a `stores` list are **unrestricted** — with several issuers
+configured the service logs a startup warning for each unbound one, and
+`REQUIRE_STORE_BINDING=true` turns the gap into a startup **error** (set it in
+any multi-tenant deployment). Note that `SEARCH_REQUIRED_ROLE` gates search
+globally, not per store.
 
 ## Per-App Namespace Enforcement (authzen-direct)
 
@@ -241,16 +244,27 @@ JWT_ISSUERS=[{"issuer":"https://tenant-a.idp","jwks_url":"…",
 
 A token yielding a non-matching role is rejected with `403` — never silently
 downgraded to the fixed connection role (which could widen access). Issuers
-without `db_roles` are unrestricted. Before
+without `db_roles` (or `client_db_roles`) are unrestricted — when role
+derivation is configured, the service logs a startup warning per unbound
+issuer in multi-issuer setups, and `REQUIRE_DB_ROLE_BINDING=true` makes the
+gap a startup **error**. Before
 assuming a role the backend validates it (member of `authz_reader`, **not**
 admin-capable — mirroring the writer's `_pre_request()` policy) and fails
-closed on unknown roles. The role must also be `GRANT`ed to the service's
+closed on unknown roles; validation results are cached for
+`DB_ROLE_CACHE_TTL_SECONDS` (default 60, `0` = re-validate every request), so
+dropping a role or revoking its membership takes effect within that window.
+The role must also be `GRANT`ed to the service's
 `DATABASE_URL` user. With neither variable set, behavior is unchanged (the
 fixed connection role applies).
 
-> `authzen-opa` does **not** support this yet — the OPA→PostgREST *read* path
-> has no role-switch hook (only the writer does). See the roadmap note in the
-> repo's `scratch/notes/todos.md`.
+> **Isolation asymmetry:** `authzen-opa` does **not** provide the same
+> database-enforced per-application namespace isolation as `authzen-direct`.
+> The OPA→PostgREST *read* path has no role-switch hook (only the writer
+> does), so all reads through `authzen-opa` run as the fixed PostgREST reader
+> role and namespace restrictions are not applied per calling application.
+> Multi-tenant deployments that rely on namespace isolation on reads should
+> use `authzen-direct` until the read-path role hook lands (see the roadmap
+> note in the repo's `scratch/notes/todos.md`).
 
 ## Configuration
 
@@ -279,6 +293,8 @@ All configuration is via environment variables.
 | `ALLOW_SUBJECT_OVERRIDE` | `false` | Allow a request-body subject to override the JWT subject (trusted PEP/PDP mode). Default false = token-only; a mismatched body subject is rejected with `403` |
 | `DEFAULT_STORE` | `demo` | Default authorization store |
 | `STORE_HEADER` | `X-AuthZ-Store` | HTTP header for store selection |
+| `REQUIRE_STORE_BINDING` | `false` | Refuse to start unless **every** trusted issuer has a `stores` binding (recommended `true` for multi-tenant deployments); off = unbound issuers are unrestricted, with a startup warning when several issuers are configured |
+| `REQUIRE_DB_ROLE_BINDING` | `false` | When role derivation is configured (`DB_ROLE_CLAIM` / `CLIENT_DB_ROLES`): refuse to start unless every issuer has a `db_roles` or `client_db_roles` binding (recommended `true` for multi-tenant deployments) |
 | `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
 
 ### authzen-direct only
@@ -287,6 +303,7 @@ All configuration is via environment variables.
 |---|---|---|
 | `DATABASE_URL` | *required* | PostgreSQL connection string |
 | `DB_POOL_MAX` | `25` | Connection pool size |
+| `DB_ROLE_CACHE_TTL_SECONDS` | `60` | How long a per-app DB role validation result (allowed *or* denied) is cached before re-checking `pg_has_role`; `0` disables caching (re-validate every request) |
 
 ### authzen-opa only
 

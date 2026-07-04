@@ -67,7 +67,7 @@ func run() error {
 	}
 	slog.Info("connected to PostgreSQL")
 
-	backend := pgbackend.New(pool)
+	backend := pgbackend.New(pool, time.Duration(cfg.DBRoleCacheTTLSeconds)*time.Second)
 	var issuers []api.IssuerConfig
 	for _, i := range cfg.Issuers {
 		issuers = append(issuers, api.IssuerConfig{

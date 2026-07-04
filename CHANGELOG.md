@@ -7,6 +7,33 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **AuthZEN: issuer binding enforcement flags.** `REQUIRE_STORE_BINDING=true`
+  refuses startup unless every trusted issuer carries a `stores` binding;
+  `REQUIRE_DB_ROLE_BINDING=true` does the same for `db_roles`/`client_db_roles`
+  when per-app role derivation is configured — an unbound issuer means
+  unrestricted store/role access, so multi-tenant deployments should set both.
+  With the flags off (default, legacy-compatible), the services now log a
+  startup **warning** per unbound issuer whenever several issuers are trusted.
+
+### Changed
+
+- **AuthZEN (direct): per-app DB role validation results are now cached with a
+  TTL** (`DB_ROLE_CACHE_TTL_SECONDS`, default 60; `0` = re-validate every
+  request) instead of indefinitely — dropping a role or revoking its
+  `authz_reader` membership takes effect within the window, not at the next
+  service restart.
+
+### Documentation
+
+- **AuthZEN isolation asymmetry stated explicitly** (authzen/README.md +
+  PRODUCTION.md checklist): `authzen-opa` does not provide the same
+  database-enforced per-application namespace isolation as `authzen-direct` —
+  the OPA→PostgREST read path has no role-switch hook; multi-tenant
+  deployments relying on read-side namespace isolation must use
+  `authzen-direct`.
+
 ## [0.5.0] - 2026-07-04
 
 ### Added

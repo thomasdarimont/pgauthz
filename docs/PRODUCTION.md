@@ -58,6 +58,20 @@ by `init.sh` on every run.
       trust several issuers at once via `JWT_ISSUERS` (JSON array of
       `{issuer, audience, jwks_url|jwks_file}`; the token's `iss` selects the
       validator — legacy single-issuer envs still work).
+- [ ] **Bind every issuer to its stores and roles** (multi-tenant AuthZEN).
+      An issuer without a `stores` binding can reach **every** store; without a
+      `db_roles`/`client_db_roles` binding it can claim any reader role. Set
+      the bindings per issuer in `JWT_ISSUERS` and enforce completeness with
+      `REQUIRE_STORE_BINDING=true` and `REQUIRE_DB_ROLE_BINDING=true` — the
+      service then refuses to start with an unbound issuer instead of running
+      unrestricted. See [authzen/README.md → Multi-Store](../authzen/README.md).
+- [ ] **Know the isolation asymmetry between the AuthZEN services.**
+      `authzen-opa` does **not** provide the same database-enforced
+      per-application namespace isolation as `authzen-direct`: only the direct
+      backend switches to a per-app DB role on reads (`DB_ROLE_CLAIM` /
+      `CLIENT_DB_ROLES`); the OPA→PostgREST read path runs as the fixed reader
+      role. Multi-tenant deployments relying on read-side namespace isolation
+      must use `authzen-direct`.
 - [ ] **Gate the AuthZEN reverse-search endpoints.**
       `search/subject|resource|action` enumerate the access graph ("who can
       access X?"), which is strictly more than "can *I* access X?". Set

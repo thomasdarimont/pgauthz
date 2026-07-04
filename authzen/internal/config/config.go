@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"regexp"
 	"strconv"
@@ -73,6 +74,17 @@ type Config struct {
 	DefaultStore string
 	StoreHeader  string
 
+	// RequireStoreBinding (REQUIRE_STORE_BINDING): refuse to start unless every
+	// trusted issuer carries an explicit `stores` binding — an issuer without
+	// one can reach EVERY store. Off by default (the legacy single-issuer env
+	// form has no stores field); set true in any multi-tenant deployment.
+	RequireStoreBinding bool
+	// RequireDBRoleBinding (REQUIRE_DB_ROLE_BINDING): when per-app DB role
+	// derivation is configured (DB_ROLE_CLAIM / CLIENT_DB_ROLES), refuse to
+	// start unless every issuer carries a `db_roles` or `client_db_roles`
+	// binding — otherwise any trusted issuer can claim any reader role.
+	RequireDBRoleBinding bool
+
 	// AllowSubjectOverride lets a request-body subject override the
 	// JWT-derived subject. Default false (token-only): a body subject that
 	// differs from the authenticated subject is rejected. Enable for trusted
@@ -82,6 +94,11 @@ type Config struct {
 	// pgbackend only
 	DatabaseURL string
 	DBPoolMax   int
+	// DBRoleCacheTTLSeconds bounds how long a per-app role validation result
+	// is cached (DB_ROLE_CACHE_TTL_SECONDS, default 60; 0 = no caching,
+	// re-validate every request). Security-sensitive: a dropped role /
+	// revoked membership takes effect within this window.
+	DBRoleCacheTTLSeconds int
 
 	// opabackend only
 	OPAURL     string
@@ -98,29 +115,32 @@ type Config struct {
 
 func Load() (*Config, error) {
 	c := &Config{
-		ListenAddr:           env("LISTEN_ADDR", ":8080"),
-		BaseURL:              env("BASE_URL", ""),
-		JWKSURL:              env("JWKS_URL", ""),
-		JWKSFile:             env("JWKS_FILE", ""),
-		JWTIssuer:            env("JWT_ISSUER", ""),
-		JWTAudience:          env("JWT_AUDIENCE", ""),
-		RequiredScope:        env("REQUIRED_SCOPE", ""),
-		RolesClaims:          env("JWT_ROLES_CLAIM", ""),
-		SearchRequiredRole:   env("SEARCH_REQUIRED_ROLE", ""),
-		DBRoleClaim:          env("DB_ROLE_CLAIM", ""),
-		SubjectTypeClaim:     env("SUBJECT_TYPE_CLAIM", "subject_type"),
-		SubjectTypeDefault:   env("SUBJECT_TYPE_DEFAULT", "internal_user"),
-		SubjectIDClaim:       env("SUBJECT_ID_CLAIM", "preferred_username"),
-		SubjectIDFallback:    env("SUBJECT_ID_FALLBACK_CLAIM", "sub"),
-		DefaultStore:         env("DEFAULT_STORE", "demo"),
-		StoreHeader:          env("STORE_HEADER", "X-AuthZ-Store"),
-		AllowSubjectOverride: envBool("ALLOW_SUBJECT_OVERRIDE", false),
-		DatabaseURL:          env("DATABASE_URL", ""),
-		DBPoolMax:            envInt("DB_POOL_MAX", 25),
-		OPAURL:               env("OPA_URL", ""),
-		OPAPackage:           env("OPA_PACKAGE", "authz"),
-		ForwardTokenToOPA:    envBool("FORWARD_TOKEN_TO_OPA", false),
-		LogLevel:             env("LOG_LEVEL", "info"),
+		ListenAddr:            env("LISTEN_ADDR", ":8080"),
+		BaseURL:               env("BASE_URL", ""),
+		JWKSURL:               env("JWKS_URL", ""),
+		JWKSFile:              env("JWKS_FILE", ""),
+		JWTIssuer:             env("JWT_ISSUER", ""),
+		JWTAudience:           env("JWT_AUDIENCE", ""),
+		RequiredScope:         env("REQUIRED_SCOPE", ""),
+		RolesClaims:           env("JWT_ROLES_CLAIM", ""),
+		SearchRequiredRole:    env("SEARCH_REQUIRED_ROLE", ""),
+		DBRoleClaim:           env("DB_ROLE_CLAIM", ""),
+		SubjectTypeClaim:      env("SUBJECT_TYPE_CLAIM", "subject_type"),
+		SubjectTypeDefault:    env("SUBJECT_TYPE_DEFAULT", "internal_user"),
+		SubjectIDClaim:        env("SUBJECT_ID_CLAIM", "preferred_username"),
+		SubjectIDFallback:     env("SUBJECT_ID_FALLBACK_CLAIM", "sub"),
+		DefaultStore:          env("DEFAULT_STORE", "demo"),
+		StoreHeader:           env("STORE_HEADER", "X-AuthZ-Store"),
+		RequireStoreBinding:   envBool("REQUIRE_STORE_BINDING", false),
+		RequireDBRoleBinding:  envBool("REQUIRE_DB_ROLE_BINDING", false),
+		AllowSubjectOverride:  envBool("ALLOW_SUBJECT_OVERRIDE", false),
+		DatabaseURL:           env("DATABASE_URL", ""),
+		DBPoolMax:             envInt("DB_POOL_MAX", 25),
+		DBRoleCacheTTLSeconds: envInt("DB_ROLE_CACHE_TTL_SECONDS", 60),
+		OPAURL:                env("OPA_URL", ""),
+		OPAPackage:            env("OPA_PACKAGE", "authz"),
+		ForwardTokenToOPA:     envBool("FORWARD_TOKEN_TO_OPA", false),
+		LogLevel:              env("LOG_LEVEL", "info"),
 	}
 
 	// Build the trusted-issuer list. The legacy single JWKS_URL/JWKS_FILE/
@@ -162,6 +182,35 @@ func Load() (*Config, error) {
 	}
 	if len(c.Issuers) == 0 {
 		return nil, fmt.Errorf("JWKS_URL or JWKS_FILE (or JWT_ISSUERS) is required")
+	}
+
+	// Binding requirements: an issuer without a stores binding can reach every
+	// store; without a role binding it can claim any reader role. Enforce when
+	// the REQUIRE_* flags are set; otherwise warn loudly in the configurations
+	// where the gap is a real cross-tenant risk (more than one trusted issuer).
+	roleDerivation := c.DBRoleClaim != "" || len(c.ClientDBRoles) > 0
+	for _, iss := range c.Issuers {
+		if !roleDerivation && len(iss.ClientDBRoles) > 0 {
+			roleDerivation = true
+		}
+	}
+	for _, iss := range c.Issuers {
+		if len(iss.Stores) == 0 {
+			if c.RequireStoreBinding {
+				return nil, fmt.Errorf("REQUIRE_STORE_BINDING: issuer %q has no stores binding", iss.Issuer)
+			}
+			if len(c.Issuers) > 1 {
+				log.Printf("WARNING: issuer %q has no stores binding — its tokens can access EVERY store; set stores patterns in JWT_ISSUERS (and REQUIRE_STORE_BINDING=true) for multi-tenant deployments", iss.Issuer)
+			}
+		}
+		if roleDerivation && len(iss.DBRoles) == 0 && len(iss.ClientDBRoles) == 0 {
+			if c.RequireDBRoleBinding {
+				return nil, fmt.Errorf("REQUIRE_DB_ROLE_BINDING: issuer %q has no db_roles or client_db_roles binding", iss.Issuer)
+			}
+			if len(c.Issuers) > 1 {
+				log.Printf("WARNING: issuer %q has no db_roles/client_db_roles binding — its tokens can claim ANY reader role; set db_roles patterns in JWT_ISSUERS (and REQUIRE_DB_ROLE_BINDING=true) for multi-tenant deployments", iss.Issuer)
+			}
+		}
 	}
 
 	return c, nil

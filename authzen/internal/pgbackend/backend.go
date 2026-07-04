@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -17,13 +18,23 @@ import (
 type Backend struct {
 	pool *pgxpool.Pool
 	// roleOK caches per-role validation results (member of authz_reader and
-	// not admin-capable). Populated lazily; definitive answers only — a
-	// dropped/regranted role needs a service restart to be re-evaluated.
-	roleOK sync.Map // role string -> bool
+	// not admin-capable) with a bounded TTL: a dropped role or revoked
+	// membership takes effect within roleCacheTTL, not at the next restart.
+	// Security-sensitive caches must not live forever.
+	roleOK       sync.Map // role string -> roleCacheEntry
+	roleCacheTTL time.Duration
 }
 
-func New(pool *pgxpool.Pool) *Backend {
-	return &Backend{pool: pool}
+type roleCacheEntry struct {
+	allowed bool
+	checked time.Time
+}
+
+// New creates a Backend. roleCacheTTL bounds how long a role-validation
+// result (allowed OR denied) may be reused; 0 disables caching entirely
+// (every request re-validates against pg_has_role).
+func New(pool *pgxpool.Pool, roleCacheTTL time.Duration) *Backend {
+	return &Backend{pool: pool, roleCacheTTL: roleCacheTTL}
 }
 
 // querier is the subset of pgx query methods shared by the pool and a
@@ -68,11 +79,17 @@ func (b *Backend) withRole(ctx context.Context, fn func(q querier) error) error 
 // writer-side _pre_request() policy: the role must be a member of
 // authz_reader and must NOT be admin-capable. Unknown roles error → fail closed.
 func (b *Backend) checkRole(ctx context.Context, role string) error {
-	if v, ok := b.roleOK.Load(role); ok {
-		if v.(bool) {
-			return nil
+	if b.roleCacheTTL > 0 {
+		if v, ok := b.roleOK.Load(role); ok {
+			e := v.(roleCacheEntry)
+			if time.Since(e.checked) < b.roleCacheTTL {
+				if e.allowed {
+					return nil
+				}
+				return fmt.Errorf("db role %q is not an allowed reader role", role)
+			}
+			// expired — fall through and re-validate
 		}
-		return fmt.Errorf("db role %q is not an allowed reader role", role)
 	}
 	var allowed bool
 	err := b.pool.QueryRow(ctx,
@@ -82,7 +99,9 @@ func (b *Backend) checkRole(ctx context.Context, role string) error {
 		// unknown role / lookup failure: fail closed, do not cache
 		return fmt.Errorf("validating db role %q: %w", role, err)
 	}
-	b.roleOK.Store(role, allowed)
+	if b.roleCacheTTL > 0 {
+		b.roleOK.Store(role, roleCacheEntry{allowed: allowed, checked: time.Now()})
+	}
 	if !allowed {
 		return fmt.Errorf("db role %q is not an allowed reader role", role)
 	}
