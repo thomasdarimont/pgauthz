@@ -110,7 +110,10 @@ done
 assert "replica converges to deny after replay resumes" "f"   "$(qp "$REPLICA" "SELECT authz.check_access('demo','internal_user','newenemy','can_read','document','doc_newenemy');")"
 
 echo "==> Enabling synchronous replication (remote_apply guarantee active)..."
-qp "$PRIMARY" "ALTER SYSTEM SET synchronous_standby_names = '*'; SELECT pg_reload_conf();" >/dev/null
+# ALTER SYSTEM refuses to run inside a transaction block — psql -c sends a
+# multi-statement string as ONE implicit transaction, so issue them separately.
+qp "$PRIMARY" "ALTER SYSTEM SET synchronous_standby_names = '*';" >/dev/null
+qp "$PRIMARY" "SELECT pg_reload_conf();" >/dev/null
 for _ in $(seq 1 20); do
   [ "$(qp "$PRIMARY" "SELECT count(*) FROM pg_stat_replication WHERE sync_state='sync';")" = "1" ] && break
   sleep 1
@@ -129,7 +132,8 @@ done
 assert "10× grant/revoke cycles: replica state matched the ack every time (0 violations)" "0" "$ne_fail"
 
 echo "==> Resetting synchronous replication config..."
-qp "$PRIMARY" "ALTER SYSTEM RESET synchronous_standby_names; SELECT pg_reload_conf();" >/dev/null
+qp "$PRIMARY" "ALTER SYSTEM RESET synchronous_standby_names;" >/dev/null
+qp "$PRIMARY" "SELECT pg_reload_conf();" >/dev/null
 
 echo ""
 if [ "$fail" -ne 0 ]; then
