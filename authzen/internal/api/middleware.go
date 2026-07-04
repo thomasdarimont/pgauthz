@@ -122,7 +122,7 @@ type JWTConfig struct {
 	RolesClaims string
 	// DBRoleClaim: dot-separated claim path carrying the caller's per-app DB
 	// role for pgauthz namespace enforcement (mirrors the write path's
-	// WRITER_DB_ROLE_CLAIM). E.g. "db_role".
+	// DB_ROLE_CLAIM). E.g. "db_role".
 	DBRoleClaim string
 	// ClientDBRoles maps a client id (the verified token's `azp` claim) to a
 	// per-app DB role — the fallback when DBRoleClaim is unset or absent from

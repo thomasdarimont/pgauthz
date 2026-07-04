@@ -56,8 +56,8 @@ spec:
             {{- with .Values.opa.jwtRolesClaim }}
             - { name: JWT_ROLES_CLAIM, value: {{ . | quote }} }
             {{- end }}
-            {{- with .Values.opa.writerDbRoleClaim }}
-            - { name: WRITER_DB_ROLE_CLAIM, value: {{ . | quote }} }
+            {{- with .Values.opa.dbRoleClaim }}
+            - { name: DB_ROLE_CLAIM, value: {{ . | quote }} }
             {{- end }}
           ports:
             - { name: http, containerPort: 8181 }

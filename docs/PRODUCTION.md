@@ -65,13 +65,15 @@ by `init.sh` on every run.
       `REQUIRE_STORE_BINDING=true` and `REQUIRE_DB_ROLE_BINDING=true` — the
       service then refuses to start with an unbound issuer instead of running
       unrestricted. See [authzen/README.md → Multi-Store](../authzen/README.md).
-- [ ] **Know the isolation asymmetry between the AuthZEN services.**
-      `authzen-opa` does **not** provide the same database-enforced
-      per-application namespace isolation as `authzen-direct`: only the direct
-      backend switches to a per-app DB role on reads (`DB_ROLE_CLAIM` /
-      `CLIENT_DB_ROLES`); the OPA→PostgREST read path runs as the fixed reader
-      role. Multi-tenant deployments relying on read-side namespace isolation
-      must use `authzen-direct`.
+- [ ] **Configure per-app DB roles on both AuthZEN services** (multi-tenant).
+      Both services enforce database-level per-application namespace isolation
+      on reads: `authzen-direct` assumes the derived role itself
+      (`DB_ROLE_CLAIM` / `CLIENT_DB_ROLES` → `SET LOCAL ROLE`), and
+      `authzen-opa` forwards it to OPA (`input.db_role`), which passes it to
+      the PostgREST reader as `X-Authz-Role` for `_pre_request_reader` to
+      assume. For the OPA path, also set `DB_ROLE_CLAIM` on the **OPA**
+      service so token-mode requests derive the role from verified claims.
+      With no role configured, reads run as the fixed full-reader role.
 - [ ] **Gate the AuthZEN reverse-search endpoints.**
       `search/subject|resource|action` enumerate the access graph ("who can
       access X?"), which is strictly more than "can *I* access X?". Set
@@ -91,7 +93,7 @@ by `init.sh` on every run.
 - [ ] **Review namespace grants.** If you use namespaces, grant
       `namespace_access` per type so reads/writes are scoped. For per-app
       isolation over the OPA write path, issue per-app DB roles and set
-      `WRITER_DB_ROLE_CLAIM` (the writer's `_pre_request` hook assumes the role
+      `DB_ROLE_CLAIM` (the writer's `_pre_request` hook assumes the role
       from the JWT) — see [DEVELOPMENT.md → Per-app namespace isolation](DEVELOPMENT.md#per-app-namespace-isolation-over-the-opa-write-path).
 
 ## Role recipes

@@ -246,6 +246,18 @@ func (b *Backend) query(ctx context.Context, rule string, input any, dest any) e
 			}
 		}
 	}
+	// Forward the derived per-app DB role (DB_ROLE_CLAIM / CLIENT_DB_ROLES,
+	// already validated against the issuer's db_roles binding by the
+	// middleware) as input.db_role. OPA forwards it to the PostgREST reader
+	// as X-Authz-Role so _pre_request_reader() applies per-app namespace
+	// isolation. In token mode OPA re-derives the role from the verified
+	// claims and ignores this field; it is honored only in trusted-PEP mode
+	// (require_token_for_reads=false).
+	if m, ok := input.(map[string]any); ok {
+		if role := api.DBRoleFromContext(ctx); role != "" {
+			m["db_role"] = role
+		}
+	}
 	body, err := json.Marshal(map[string]any{"input": input})
 	if err != nil {
 		return fmt.Errorf("marshaling OPA input: %w", err)

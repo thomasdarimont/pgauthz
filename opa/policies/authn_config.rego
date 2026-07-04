@@ -58,9 +58,11 @@ writer_role := _env.WRITER_ROLE if _env.WRITER_ROLE
 
 writer_role := "authz_writer" if not _env.WRITER_ROLE
 
-# Optional: JWT claim (dot-separated path) carrying the caller's per-app DB role
-# for namespace isolation. When set, the write path forwards that role to the
-# writer as the X-Authz-Role header, and authz._pre_request() SET LOCAL ROLEs to
-# it so namespace enforcement applies per app. Unset → no header (writer stays
-# the fixed authz_writer). Set via WRITER_DB_ROLE_CLAIM, e.g. "db_role".
-writer_db_role_claim_path := split(_env.WRITER_DB_ROLE_CLAIM, ".") if _env.WRITER_DB_ROLE_CLAIM
+# Optional: JWT claim (dot-separated path) carrying the caller's per-app DB
+# role for namespace isolation, used by BOTH the write path and the read path.
+# When set, OPA forwards that role to PostgREST as the X-Authz-Role header;
+# the writer's _pre_request() / the reader's _pre_request_reader() validate it
+# and SET LOCAL ROLE to it, so namespace enforcement applies per application.
+# Unset → no header (fixed authz_writer / api_anon apply).
+# Set via DB_ROLE_CLAIM, e.g. "db_role".
+db_role_claim_path := split(_env.DB_ROLE_CLAIM, ".") if _env.DB_ROLE_CLAIM

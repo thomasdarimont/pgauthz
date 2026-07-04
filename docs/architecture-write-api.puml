@@ -23,7 +23,7 @@ note as N1
   (which does no JWT of its own).
 
   Multi-app: a per-app DB role from a
-  JWT claim (WRITER_DB_ROLE_CLAIM) is
+  JWT claim (DB_ROLE_CLAIM) is
   forwarded as X-Authz-Role; the writer's
   _pre_request() SET LOCAL ROLEs to it,
   so **namespace isolation** applies

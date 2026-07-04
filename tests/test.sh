@@ -67,6 +67,11 @@ echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_write_consistency.sql"
 
 echo ""
+echo "==> Running reader pre-request hook checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_pre_request_reader.sql"
+
+echo ""
 echo "==> Running describe_model (readable rendering) checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_describe.sql"

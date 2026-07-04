@@ -210,6 +210,53 @@ END;
 $$;
 
 ------------------------------------------------------------------------
+-- _pre_request_reader: PostgREST db-pre-request hook for the OPA-fronted
+-- READER — the read-side counterpart of _pre_request.
+--
+-- The reader connects as authz_authenticator and runs as the fixed api_anon
+-- (a full reader). With per-app namespace isolation, OPA forwards the
+-- caller's app role in X-Authz-Role on read calls too; this hook validates
+-- it and SET LOCAL ROLEs to it, so the read-side namespace checks
+-- (_check_namespace_access(..., 'can_read') in check/list/explain) key on
+-- the per-app role instead of the fixed one.
+--
+-- Security (mirrors _pre_request, with the reader membership test):
+--   * Only a role that is a MEMBER of authz_reader and NOT a member of
+--     authz_admin may be assumed. Writer roles pass (authz_writer inherits
+--     authz_reader) — a role allowed to write tuples may read them.
+--   * The header is trustworthy because the reader is reachable only by OPA,
+--     which sets it from the verified JWT (or, in trusted-PEP mode, from the
+--     PEP's asserted db_role — the same trust already extended to subjects).
+--   * SET LOCAL ROLE is transaction-scoped — no leak across pooled
+--     connections. No consistency handling here: that is a write concern.
+--
+-- Wire it on the reader via PGRST_DB_PRE_REQUEST=authz._pre_request_reader.
+-- The authenticator must be able to SET ROLE to the app roles (same grant
+-- the writer path already requires).
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._pre_request_reader() RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_headers json := nullif(current_setting('request.headers', true), '')::json;
+    v_role    text := v_headers ->> 'x-authz-role';
+BEGIN
+    -- No requested role → keep the default reader role (no namespace scoping).
+    IF v_role IS NULL OR v_role = '' THEN
+        RETURN;
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_role)
+       OR NOT pg_has_role(v_role, 'authz_reader', 'MEMBER')
+       OR pg_has_role(v_role, 'authz_admin', 'MEMBER') THEN
+        RAISE EXCEPTION 'Role "%" is not an allowed reader role', v_role
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
+    EXECUTE format('SET LOCAL ROLE %I', v_role);
+END;
+$$;
+
+------------------------------------------------------------------------
 -- _check_namespace_access: enforces namespace-based access restrictions.
 -- Raises an exception if the effective role is not authorized to perform
 -- the requested operation on tuples for the given object type's namespace.

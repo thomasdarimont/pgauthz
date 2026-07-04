@@ -570,6 +570,67 @@ check_http "DELETE /v1/data/keys blocked even with admin token" \
     -H "Authorization: Bearer $ADMIN_TOKEN"
 
 echo ""
+echo "==> Running per-app read namespace isolation checks..."
+echo ""
+
+# End-to-end slice-B proof: a namespaced type is readable only when the
+# caller's per-app DB role is forwarded (input.db_role → OPA X-Authz-Role →
+# reader _pre_request_reader → SET LOCAL ROLE → _check_namespace_access).
+# Uses the trusted-PEP role source (input.db_role, honored because the demo
+# runs REQUIRE_TOKEN_FOR_READS=false); the token-claim source
+# (DB_ROLE_CLAIM) shares the same forwarding + hook path.
+DB_CONTAINER=$(docker ps --format '{{.Names}}' | grep -E 'authz-db|authz-primary' | head -1)
+docker exec -i "$DB_CONTAINER" psql -q -v ON_ERROR_STOP=1 -U authz -d authz <<'SQL'
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'test_opa_ns_app') THEN
+        CREATE ROLE test_opa_ns_app NOLOGIN;
+    END IF;
+    GRANT authz_reader TO test_opa_ns_app;
+    GRANT test_opa_ns_app TO authz_authenticator;  -- reader must SET ROLE to it
+    BEGIN
+        PERFORM authz.model_register_type('demo', 'ns_secret', 0, 'opa_ns_test');
+    EXCEPTION WHEN unique_violation THEN NULL;  -- fixture already present
+    END;
+    PERFORM authz.model_register_relation('demo', 'ns_viewer');
+    PERFORM authz.model_add_rule('demo', 'ns_secret', 'ns_viewer', 'direct');
+    -- can_write too: the fixture's own write_tuple below must pass the
+    -- namespace write check (the superuser is a member of every role, so
+    -- this grant covers it); reads via api_anon stay ungranted.
+    PERFORM authz.grant_namespace_access('demo', 'opa_ns_test', 'test_opa_ns_app',
+                                         p_can_read := true, p_can_write := true);
+    PERFORM authz.write_tuple('demo', 'internal_user', 'alice', 'ns_viewer',
+                              'ns_secret', 's1');
+END;
+$$;
+SQL
+
+# Without a role: the reader stays api_anon, which has no grant on the
+# namespace — the engine denies the read, so the decision is false.
+check "namespaced read denied without db_role" \
+    "authz/allow" \
+    '{"input": {"subject": {"type": "internal_user", "id": "alice"}, "action": "ns_viewer", "resource": {"type": "ns_secret", "id": "s1"}}}' \
+    "false"
+
+# With the granted app role forwarded, the same read is allowed.
+check "namespaced read allowed with granted db_role" \
+    "authz/allow" \
+    '{"input": {"subject": {"type": "internal_user", "id": "alice"}, "action": "ns_viewer", "resource": {"type": "ns_secret", "id": "s1"}, "db_role": "test_opa_ns_app"}}' \
+    "true"
+
+# Admin-capable roles are rejected by the hook (fail closed) → denied.
+check "namespaced read denied for admin-capable db_role" \
+    "authz/allow" \
+    '{"input": {"subject": {"type": "internal_user", "id": "alice"}, "action": "ns_viewer", "resource": {"type": "ns_secret", "id": "s1"}, "db_role": "authz_admin"}}' \
+    "false"
+
+# A forwarded role must not disturb unrestricted reads (regression guard).
+check "unrestricted read still allowed with db_role" \
+    "authz/allow" \
+    '{"input": {"subject": {"type": "internal_user", "id": "alice"}, "action": "can_read", "resource": {"type": "document", "id": "doc_payroll_001"}, "db_role": "test_opa_ns_app"}}' \
+    "true"
+
+echo ""
 echo "==> $pass_count passed, $fail_count failed (of $total checks)"
 
 if [ "$fail_count" -gt 0 ]; then

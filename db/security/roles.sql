@@ -214,6 +214,9 @@ GRANT EXECUTE ON FUNCTION authz.delete_user_tuples(text, text, text, text) TO au
 GRANT EXECUTE ON FUNCTION authz.write_tuples_checked(text, jsonb, jsonb, jsonb, text) TO authz_writer;
 -- PostgREST db-pre-request hook (runs as the anon->authz_writer role).
 GRANT EXECUTE ON FUNCTION authz._pre_request() TO authz_writer;
+-- Reader-side hook (runs as api_anon → per-app reader role; see slice B of
+-- per-app namespace isolation). Granted to authz_reader so api_anon inherits.
+GRANT EXECUTE ON FUNCTION authz._pre_request_reader() TO authz_reader;
 
 ------------------------------------------------------------------------
 -- authz_admin: store lifecycle and namespace management

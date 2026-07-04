@@ -60,7 +60,7 @@ type Config struct {
 
 	// DBRoleClaim: dot-separated claim path carrying the caller's per-app DB
 	// role for pgauthz namespace enforcement on the direct backend (mirrors
-	// the OPA write path's WRITER_DB_ROLE_CLAIM). Empty = no role scoping.
+	// the OPA front door's DB_ROLE_CLAIM). Empty = no role scoping.
 	DBRoleClaim string
 	// ClientDBRoles maps client ids (`azp` claim) to per-app DB roles — the
 	// fallback when DBRoleClaim is unset/absent. JSON map via CLIENT_DB_ROLES.

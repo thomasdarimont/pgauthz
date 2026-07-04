@@ -147,7 +147,8 @@ opa:
   # JWT → writer-role mapping (see opa/policies/write.rego). Match your issuer.
   writerRole: ""               # e.g. "authz_writer"
   jwtRolesClaim: ""            # e.g. "realm_access.roles,resource_access.authz-api.roles"
-  writerDbRoleClaim: ""        # e.g. "db_role" — per-app namespace isolation
+  dbRoleClaim: ""              # e.g. "db_role" — per-app namespace isolation
+                               # (X-Authz-Role on writer AND reader calls)
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits:   { memory: 256Mi }

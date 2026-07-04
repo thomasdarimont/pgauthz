@@ -120,7 +120,7 @@ client also has its own service account (`get-token.sh --service`), but it has n
 ## Per-app DB role (namespace isolation)
 
 pgauthz can scope writes to a per-app namespace via a Postgres role that OPA
-forwards from a token claim (`WRITER_DB_ROLE_CLAIM`). That per-app role is a
+forwards from a token claim (`DB_ROLE_CLAIM`). That per-app role is a
 property of the **OIDC client (the app)**, not the user — so it's modelled as a
 **hardcoded claim mapper on the client**, which stamps `db_role` onto *every*
 token the client issues: interactive user logins **and** the client's service
@@ -132,7 +132,7 @@ To enable it for a client:
    [`terraform/client.authz-api.tf`](terraform/client.authz-api.tf) and set its
    `claim_value` to the app's namespace,
 2. create a matching Postgres role with the appropriate `namespace_access`, and
-3. set `WRITER_DB_ROLE_CLAIM=db_role` on OPA (`compose-keycloak.yml`).
+3. set `DB_ROLE_CLAIM=db_role` on OPA (`compose-keycloak.yml`).
 
 It's off in the demo because the demo store isn't namespaced (a `SET LOCAL ROLE`
 to a non-existent role would fail writes). Different apps = different clients,

@@ -37,6 +37,10 @@ spec:
             - { name: PGRST_DB_POOL_ACQUISITION_TIMEOUT, value: "10" }
             - { name: PGRST_SERVER_PORT,  value: "3000" }
             - { name: PGRST_ADMIN_SERVER_PORT, value: "3010" }   # /live /ready
+            # Per-app namespace isolation on reads: validates OPA's
+            # X-Authz-Role header and SET LOCAL ROLEs to it (see
+            # authz._pre_request_reader; no header -> api_anon, unchanged).
+            - { name: PGRST_DB_PRE_REQUEST, value: authz._pre_request_reader }
             {{- if ne .Values.postgrestReader.target "rw" }}
             # Reads go to a replica/pooler. LISTEN/NOTIFY is rejected on a hot
             # standby ("cannot execute LISTEN during recovery"), so disable the

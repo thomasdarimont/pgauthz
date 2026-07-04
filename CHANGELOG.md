@@ -9,6 +9,34 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Per-app namespace isolation on READS over OPA (slice B).** The OPA read
+  path now gets the same database-enforced per-application isolation the
+  write path has had: OPA forwards the caller's per-app DB role as
+  `X-Authz-Role` on every PostgREST read call, and the reader's new
+  `PGRST_DB_PRE_REQUEST` hook (`authz._pre_request_reader`) validates it —
+  member of `authz_reader`, **not** admin-capable, fail closed — and
+  `SET LOCAL ROLE`s to it, so the engine's read-side namespace checks key on
+  the calling application instead of the fixed `api_anon`. Role source
+  mirrors subject trust: verified token claim (`authn.db_role`) in token
+  mode, `input.db_role` only in trusted-PEP mode
+  (`REQUIRE_TOKEN_FOR_READS=false`). `authzen-opa` derives the role like
+  `authzen-direct` (claim → issuer map → global map, validated against the
+  issuer's `db_roles` binding) and forwards it as `input.db_role` — both
+  AuthZEN services now provide equivalent read-side isolation. The role
+  header is part of OPA's `http.send` cache key, so cached read decisions
+  are partitioned per role. No role configured → reads stay `api_anon`
+  (unchanged). E2E-tested in test-opa.sh (namespaced type: denied without
+  role / allowed with grant / admin rejected) + 7 SQL hook tests.
+
+### Changed
+
+- **`WRITER_DB_ROLE_CLAIM` renamed to `DB_ROLE_CLAIM`** (OPA service env,
+  Helm value `opa.dbRoleClaim`): the same claim now drives the role switch
+  on both the write and the read path.
+- `scripts/pre-release.sh` now fails if the Helm chart's OPA policy copy
+  (`deploy/helm/pgauthz/files/opa/policies`) drifts from `opa/policies`
+  (it had drifted silently); the copy is re-synced in this change.
+
 - **Model registry: named, versioned models shared across stores** (migration
   `0004` + `db/engine/model_registry.sql`). Multi-tenant pattern: one store
   per tenant (tuples isolated by construction), one common model rolled out

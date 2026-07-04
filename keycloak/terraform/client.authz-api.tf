@@ -57,7 +57,7 @@ resource "keycloak_openid_user_attribute_protocol_mapper" "subject_type" {
 #   1. uncomment this mapper and set claim_value to the app's namespace,
 #   2. create a matching Postgres role (the claim_value) with the right
 #      namespace_access grants, and
-#   3. set WRITER_DB_ROLE_CLAIM=db_role on OPA (compose-keycloak.yml).
+#   3. set DB_ROLE_CLAIM=db_role on OPA (compose-keycloak.yml).
 # Off by default: the demo store isn't namespaced, so a SET LOCAL ROLE to a
 # non-existent role would fail writes. See keycloak/README.md "Per-app DB role".
 #

@@ -63,6 +63,20 @@ if [ "$SKIP_DIAGRAMS" = 0 ]; then
     fi
 fi
 
+# ── 2b. Helm policy-copy freshness ───────────────────────────────────────────
+# The chart ships a COPY of the OPA policies (deploy/helm/pgauthz/files/opa/
+# policies). It has drifted silently before — fail the release if it differs
+# from the source of truth.
+step "Helm OPA policy copy in sync"
+if ! diff -rq opa/policies deploy/helm/pgauthz/files/opa/policies >/dev/null; then
+    echo "!! Helm policy copy is STALE — sync it:"
+    echo "     cp opa/policies/*.rego deploy/helm/pgauthz/files/opa/policies/"
+    diff -rq opa/policies deploy/helm/pgauthz/files/opa/policies | sed 's/^/     /' || true
+    FAILED=1
+else
+    echo "    policies in sync"
+fi
+
 # ── 3. Full stack tests (CI main job) ────────────────────────────────────────
 if [ "$SKIP_STACK" = 0 ]; then
     step "Full stack: ./init.sh + ./tests/test-all.sh"

@@ -162,3 +162,17 @@ diag_cause := "signature invalid / JWKS does not match the issuer's keys" if {
 }
 
 diag_cause := "token is valid" if token_is_valid
+
+# Per-app DB role from the verified token (authn_config.db_role_claim_path —
+# the DB_ROLE_CLAIM env var). Consumed by the write
+# path (X-Authz-Role → writer _pre_request) and the read path (X-Authz-Role →
+# reader _pre_request_reader) for per-application namespace isolation. Derived
+# from CLAIMS only — never from raw input — so a caller cannot pick another
+# app's role; the engine hooks additionally validate membership and reject
+# admin-capable roles (fail closed).
+db_role := role if {
+	token_is_valid
+	authn_config.db_role_claim_path
+	role := object.get(claims, authn_config.db_role_claim_path, "")
+	role != ""
+}

@@ -111,7 +111,7 @@ services:
       # a user attribute (a tenancy concern, not user identity). Off in the demo
       # (the store isn't namespaced); see keycloak/README.md "Per-app DB role" and
       # the commented mapper in terraform/client.authz-api.tf, then uncomment this.
-      # WRITER_DB_ROLE_CLAIM: db_role
+      # DB_ROLE_CLAIM: db_role
 
 volumes:
   keycloak-db-data:

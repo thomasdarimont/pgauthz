@@ -16,13 +16,39 @@ _cache_ttl(store, object_type) := config.default_cache_ttl_seconds if {
 	not config.cache_ttl_seconds[store]
 }
 
+# Per-app DB role forwarded on READ calls as X-Authz-Role, consumed by the
+# reader's _pre_request_reader() hook (SET LOCAL ROLE) so the engine's
+# read-side namespace checks key on the calling application, not the fixed
+# api_anon. Trust ladder mirrors subject resolution:
+#   - token present  → data.authn.db_role (verified claim; raw input ignored)
+#   - trusted-PEP mode (require_token_for_reads=false) → input.db_role — the
+#     PEP is already trusted to assert subjects, asserting the role is the
+#     same trust; the engine hook still validates it (member of authz_reader,
+#     not admin-capable, fail closed).
+# The header is part of the http.send request, so the force_cache entries
+# below are automatically partitioned per role — a cached decision for app A
+# can never be served to app B.
+_read_db_role := data.authn.db_role
+
+_read_db_role := input.db_role if {
+	not data.authn.db_role
+	not config.require_token_for_reads
+	input.db_role != ""
+}
+
+_read_role_header := {"X-Authz-Role": _read_db_role} if _read_db_role
+
+_read_role_header := {} if not _read_db_role
+
+_read_headers := object.union({"Content-Type": "application/json"}, _read_role_header)
+
 # check_access delegates to the Zanzibar model in PostgreSQL.
 # Returns true if the subject has the given relation on the object.
 check_access(store, subject_type, subject_id, relation, object_type, object_id) := response.body if {
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/check_access"]),
-		"headers": {"Content-Type": "application/json"},
+		"headers": _read_headers,
 		"body": {
 			"p_store": store,
 			"p_user_type": subject_type,
@@ -44,7 +70,7 @@ explain_access(store, subject_type, subject_id, relation, object_type, object_id
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/explain_access"]),
-		"headers": {"Content-Type": "application/json"},
+		"headers": _read_headers,
 		"body": {
 			"p_store": store,
 			"p_user_type": subject_type,
@@ -63,7 +89,7 @@ check_access_with_context(store, subject_type, subject_id, relation, object_type
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/check_access_with_context"]),
-		"headers": {"Content-Type": "application/json"},
+		"headers": _read_headers,
 		"body": {
 			"p_store": store,
 			"p_user_type": subject_type,
@@ -88,7 +114,7 @@ check_access_batch(store, checks) := response.body if {
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/check_access_batch"]),
-		"headers": {"Content-Type": "application/json"},
+		"headers": _read_headers,
 		"body": {
 			"p_store": store,
 			"p_checks": checks,
@@ -102,7 +128,7 @@ check_access_batch_with_options(store, checks, ctx, semantic) := response.body i
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/check_access_batch"]),
-		"headers": {"Content-Type": "application/json"},
+		"headers": _read_headers,
 		"body": {
 			"p_store": store,
 			"p_checks": checks,
@@ -119,7 +145,7 @@ list_objects(store, subject_type, subject_id, relation, object_type) := objects 
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_objects"]),
-		"headers": {"Content-Type": "application/json"},
+		"headers": _read_headers,
 		"body": {
 			"p_store": store,
 			"p_user_type": subject_type,
@@ -140,7 +166,7 @@ list_objects_with_context(store, subject_type, subject_id, relation, object_type
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_objects"]),
-		"headers": {"Content-Type": "application/json"},
+		"headers": _read_headers,
 		"body": {
 			"p_store": store,
 			"p_user_type": subject_type,
@@ -162,7 +188,7 @@ list_objects_page(store, subject_type, subject_id, relation, object_type, limit,
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_objects"]),
-		"headers": {"Content-Type": "application/json"},
+		"headers": _read_headers,
 		"body": {
 			"p_store": store,
 			"p_user_type": subject_type,
@@ -185,7 +211,7 @@ list_objects_page_with_context(store, subject_type, subject_id, relation, object
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_objects"]),
-		"headers": {"Content-Type": "application/json"},
+		"headers": _read_headers,
 		"body": {
 			"p_store": store,
 			"p_user_type": subject_type,
@@ -211,7 +237,7 @@ list_objects_page_after(store, subject_type, subject_id, relation, object_type, 
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_objects"]),
-		"headers": {"Content-Type": "application/json"},
+		"headers": _read_headers,
 		"body": {
 			"p_store": store,
 			"p_user_type": subject_type,
@@ -234,7 +260,7 @@ list_objects_page_after_with_context(store, subject_type, subject_id, relation, 
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_objects"]),
-		"headers": {"Content-Type": "application/json"},
+		"headers": _read_headers,
 		"body": {
 			"p_store": store,
 			"p_user_type": subject_type,
@@ -258,7 +284,7 @@ list_subjects(store, subject_type, relation, object_type, object_id) := subjects
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_subjects"]),
-		"headers": {"Content-Type": "application/json"},
+		"headers": _read_headers,
 		"body": {
 			"p_store": store,
 			"p_subject_type": subject_type,
@@ -279,7 +305,7 @@ list_subjects_page(store, subject_type, relation, object_type, object_id, limit,
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_subjects"]),
-		"headers": {"Content-Type": "application/json"},
+		"headers": _read_headers,
 		"body": {
 			"p_store": store,
 			"p_subject_type": subject_type,
@@ -303,7 +329,7 @@ list_subjects_page_after(store, subject_type, relation, object_type, object_id, 
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_subjects"]),
-		"headers": {"Content-Type": "application/json"},
+		"headers": _read_headers,
 		"body": {
 			"p_store": store,
 			"p_subject_type": subject_type,
@@ -328,7 +354,7 @@ check_access_with_contextual_tuples(store, subject_type, subject_id, relation, o
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/check_access_with_contextual_tuples"]),
-		"headers": {"Content-Type": "application/json"},
+		"headers": _read_headers,
 		"body": {
 			"p_store": store,
 			"p_user_type": subject_type,
@@ -350,7 +376,7 @@ check_access_with_contextual_tuples_ctx(store, subject_type, subject_id, relatio
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/check_access_with_contextual_tuples"]),
-		"headers": {"Content-Type": "application/json"},
+		"headers": _read_headers,
 		"body": {
 			"p_store": store,
 			"p_user_type": subject_type,
@@ -373,7 +399,7 @@ list_actions(store, subject_type, subject_id, object_type, object_id) := actions
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_actions"]),
-		"headers": {"Content-Type": "application/json"},
+		"headers": _read_headers,
 		"body": {
 			"p_store": store,
 			"p_user_type": subject_type,
@@ -490,7 +516,7 @@ list_actions_with_context(store, subject_type, subject_id, object_type, object_i
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_actions"]),
-		"headers": {"Content-Type": "application/json"},
+		"headers": _read_headers,
 		"body": {
 			"p_store": store,
 			"p_user_type": subject_type,

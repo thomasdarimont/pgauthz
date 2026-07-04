@@ -133,7 +133,7 @@ sources next to this file (regenerate with
    The diagram shows all three ways writes reach the primary:
    **A** — through OPA (verifies the JWT + writer role, injects the audit
    author, forwards to the fixed-role writer; per-app namespace isolation
-   via a `WRITER_DB_ROLE_CLAIM` → `X-Authz-Role` role switch);
+   via a `DB_ROLE_CLAIM` → `X-Authz-Role` role switch);
    **B** — direct SQL (`write_tuple` / `write_tuples_checked` under an
    `authz_writer`-granted role); **C** — co-located, where the business
    write and the tuple write commit in one transaction. All three land in

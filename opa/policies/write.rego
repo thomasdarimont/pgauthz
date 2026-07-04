@@ -108,11 +108,9 @@ _consistency_header := {"X-Authz-Consistency": input.consistency} if input.consi
 
 _consistency_header := {} if not input.consistency
 
-_db_role := role if {
-	authn_config.writer_db_role_claim_path
-	role := object.get(authn.claims, authn_config.writer_db_role_claim_path, "")
-	role != ""
-}
+# Single source: authn.db_role (DB_ROLE_CLAIM) — the same verified-claim role
+# the read path forwards.
+_db_role := authn.db_role
 
 # Authorized iff a valid token carries the configured writer role.
 _write_authorized if {

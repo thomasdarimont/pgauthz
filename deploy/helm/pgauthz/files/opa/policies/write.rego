@@ -85,17 +85,32 @@ _forward := pgauthz.write_tuples_checked(
 # DB role as X-Authz-Role when a db-role claim is configured and present in the
 # token. authz._pre_request() on the writer SET LOCAL ROLEs to it for namespace
 # isolation. Absent claim → no header → the writer stays the fixed authz_writer.
-_headers := object.union({"Content-Type": "application/json"}, _role_header)
+_headers := object.union(
+	object.union({"Content-Type": "application/json"}, _role_header),
+	_consistency_header,
+)
 
 _role_header := {"X-Authz-Role": _db_role} if _db_role
 
 _role_header := {} if not _db_role
 
-_db_role := role if {
-	authn_config.writer_db_role_claim_path
-	role := object.get(authn.claims, authn_config.writer_db_role_claim_path, "")
-	role != ""
-}
+# Per-write consistency mode, forwarded to the writer's _pre_request() hook
+# (X-Authz-Consistency → SET LOCAL synchronous_commit). Vocabulary:
+#   applied  — ack only after every synchronous standby APPLIED the write
+#              (strict revocation); durable — flushed on sync standbys;
+#   eventual — primary-only durability. Absent → the writer connection's
+# default (remote_apply in the shipped compose/Helm). The engine fails closed
+# on unknown values.
+# Forwarded verbatim — the engine's _pre_request() is the single validator and
+# FAILS CLOSED with a clear error on unknown values (a silently dropped mode
+# here would downgrade the guarantee instead).
+_consistency_header := {"X-Authz-Consistency": input.consistency} if input.consistency
+
+_consistency_header := {} if not input.consistency
+
+# Single source: authn.db_role (DB_ROLE_CLAIM) — the same verified-claim role
+# the read path forwards.
+_db_role := authn.db_role
 
 # Authorized iff a valid token carries the configured writer role.
 _write_authorized if {

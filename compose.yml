@@ -49,6 +49,11 @@ services:
       PGRST_DB_POOL: "100"
       PGRST_DB_POOL_ACQUISITION_TIMEOUT: "10"
       PGRST_SERVER_PORT: "3000"
+      # Per-app namespace isolation on READS: validates the X-Authz-Role header
+      # that OPA forwards (from the DB_ROLE_CLAIM JWT claim) and SET LOCAL
+      # ROLEs to it, so read-side namespace checks key on the calling app
+      # instead of the fixed api_anon. No header -> api_anon (unchanged).
+      PGRST_DB_PRE_REQUEST: authz._pre_request_reader
     # PostgREST exits on unrecoverable startup errors (e.g. the authenticator
     # role not existing yet on a pre-initdb volume) — keep restarting.
     restart: unless-stopped
@@ -86,7 +91,7 @@ services:
       PGRST_DB_POOL_ACQUISITION_TIMEOUT: "10"
       PGRST_SERVER_PORT: "3001"
       # Per-app namespace isolation: this hook reads the X-Authz-Role header
-      # that OPA forwards (from the WRITER_DB_ROLE_CLAIM JWT claim) and SET LOCAL
+      # that OPA forwards (from the DB_ROLE_CLAIM JWT claim) and SET LOCAL
       # ROLEs to that app role, so namespace_access enforcement is per-app. A
       # no-op when no header is present (writer stays authz_writer).
       PGRST_DB_PRE_REQUEST: authz._pre_request
@@ -121,8 +126,9 @@ services:
       #   JWT_ROLES_CLAIM: "realm_access.roles,resource_access.authz-api.roles"
       #   WRITER_ROLE:     "authz_writer"         # required role value (in any path)
       # Per-app namespace isolation (optional): JWT claim carrying the caller's
-      # app DB role, forwarded to the writer as X-Authz-Role (see _pre_request).
-      #   WRITER_DB_ROLE_CLAIM: "db_role"
+      # app DB role, forwarded to BOTH PostgREST instances as X-Authz-Role
+      # (writer _pre_request / reader _pre_request_reader).
+      #   DB_ROLE_CLAIM: "db_role"
     ports:
       - "8181:8181"
     volumes:

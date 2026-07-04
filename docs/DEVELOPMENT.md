@@ -133,7 +133,7 @@ writer assumes it for the request:
    ```
 
 2. **Put the app role in a JWT claim** (e.g. `db_role: "app_hr"`) and point OPA at
-   it with `WRITER_DB_ROLE_CLAIM=db_role`.
+   it with `DB_ROLE_CLAIM=db_role`.
 
 3. OPA forwards it to the writer as the `X-Authz-Role` header;
    `authz._pre_request()` (the writer's `PGRST_DB_PRE_REQUEST` hook) validates it
@@ -143,12 +143,20 @@ writer assumes it for the request:
 
 The header is trustworthy because the writer is reachable only by OPA, which sets
 it from the verified JWT. `SET LOCAL ROLE` is transaction-scoped, so the role
-never leaks across pooled connections. With `WRITER_DB_ROLE_CLAIM` unset (the
+never leaks across pooled connections. With `DB_ROLE_CLAIM` unset (the
 default) no header is sent and the writer stays `authz_writer`.
 
-> **Reads:** the read PostgREST always runs as `api_anon`, so per-app namespace
-> *read* isolation over HTTP would need the same treatment on the read path
-> (not built — reads are isolated per-user by the ReBAC `check_access` instead).
+> **Reads:** the read path gets the same treatment. OPA forwards
+> `X-Authz-Role` on read calls too (from the same `DB_ROLE_CLAIM`), and the
+> reader's `PGRST_DB_PRE_REQUEST` hook (`authz._pre_request_reader`) validates
+> it — member of `authz_reader`, **not** admin-capable, fail closed — and
+> `SET LOCAL ROLE`s to it, so the read-side namespace checks
+> (`_check_namespace_access(..., 'can_read')`) key on the calling app instead
+> of the fixed `api_anon`. Wire the app role for reads with
+> `GRANT authz_reader TO app_hr` (implied when it's already a writer) and
+> `grant_namespace_access(..., p_can_read := true)`. The role header is part
+> of OPA's `http.send` cache key, so cached read decisions are partitioned per
+> role. With no role forwarded, reads stay `api_anon` (unchanged).
 
 ### Condition Expression Security
 

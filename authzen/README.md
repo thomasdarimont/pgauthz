@@ -211,7 +211,7 @@ configured the service logs a startup warning for each unbound one, and
 any multi-tenant deployment). Note that `SEARCH_REQUIRED_ROLE` gates search
 globally, not per store.
 
-## Per-App Namespace Enforcement (authzen-direct)
+## Per-App Namespace Enforcement
 
 pgauthz [namespace restrictions](../docs/DEVELOPMENT.md#namespace-based-write-access-control)
 key on the **effective DB role**. `authzen-direct` can derive a per-app role
@@ -219,7 +219,7 @@ from the verified token and assume it per request (`SET LOCAL ROLE` inside a
 transaction), so namespaced types are enforced per calling application:
 
 1. **`DB_ROLE_CLAIM`** — dot-separated claim path carrying the role (mirrors
-   the OPA write path's `WRITER_DB_ROLE_CLAIM`). Prefer configuring the claim
+   the OPA front door's `DB_ROLE_CLAIM`). Prefer configuring the claim
    per client at the IdP (e.g. a hardcoded `db_role` claim on each Keycloak
    client — the `app-dms` pattern): declarative and auditable.
 2. **Per-issuer `client_db_roles`** — a client-id (`azp`) → role map inside a
@@ -257,14 +257,16 @@ The role must also be `GRANT`ed to the service's
 `DATABASE_URL` user. With neither variable set, behavior is unchanged (the
 fixed connection role applies).
 
-> **Isolation asymmetry:** `authzen-opa` does **not** provide the same
-> database-enforced per-application namespace isolation as `authzen-direct`.
-> The OPA→PostgREST *read* path has no role-switch hook (only the writer
-> does), so all reads through `authzen-opa` run as the fixed PostgREST reader
-> role and namespace restrictions are not applied per calling application.
-> Multi-tenant deployments that rely on namespace isolation on reads should
-> use `authzen-direct` until the read-path role hook lands (see the roadmap
-> note in the repo's `scratch/notes/todos.md`).
+> **authzen-opa:** the same isolation applies on the OPA path. The service
+> derives the role identically (claim → issuer map → global map, validated
+> against the issuer's `db_roles` binding) and forwards it to OPA as
+> `input.db_role`; OPA passes it to the PostgREST reader as `X-Authz-Role`,
+> where `authz._pre_request_reader()` validates it (member of `authz_reader`,
+> not admin-capable, fail closed) and `SET LOCAL ROLE`s to it. In token-mode
+> OPA deployments (`FORWARD_TOKEN_TO_OPA=true` + OPA `DB_ROLE_CLAIM`), OPA
+> re-derives the role from the verified claims and ignores `input.db_role`;
+> the input field is honored only in trusted-PEP mode
+> (`REQUIRE_TOKEN_FOR_READS=false`).
 
 ## Configuration
 
@@ -283,8 +285,8 @@ All configuration is via environment variables.
 | `JWT_ISSUERS` | | Additional trusted issuers: JSON array of `{issuer, audience, jwks_url, jwks_file, stores, db_roles, client_db_roles}`; `iss` selects the validator; `stores` / `db_roles` (anchored regex lists) bind the issuer to specific stores / per-app DB roles; `client_db_roles` maps this issuer's client ids to roles |
 | `JWT_ROLES_CLAIM` | | Comma-separated dotted claim paths aggregated into the caller's roles (e.g. `realm_access.roles,resource_access.authz-api.roles`) |
 | `SEARCH_REQUIRED_ROLE` | | If set, the `search/*` endpoints require this role (`403` otherwise); empty = search open to any authenticated caller |
-| `DB_ROLE_CLAIM` | | (direct) Dot-separated claim path with the caller's per-app DB role for namespace enforcement (see [Per-App Namespace Enforcement](#per-app-namespace-enforcement-authzen-direct)) |
-| `CLIENT_DB_ROLES` | | (direct) JSON map client id (`azp`) → per-app DB role; fallback when `DB_ROLE_CLAIM` is unset/absent |
+| `DB_ROLE_CLAIM` | | Dot-separated claim path with the caller's per-app DB role for namespace enforcement (see [Per-App Namespace Enforcement](#per-app-namespace-enforcement)) |
+| `CLIENT_DB_ROLES` | | JSON map client id (`azp`) → per-app DB role; fallback when `DB_ROLE_CLAIM` is unset/absent |
 | `REQUIRED_SCOPE` | | Required scope in `scope` claim (optional) |
 | `SUBJECT_ID_CLAIM` | `preferred_username` | JWT claim for subject ID |
 | `SUBJECT_ID_FALLBACK_CLAIM` | `sub` | Fallback JWT claim for subject ID |

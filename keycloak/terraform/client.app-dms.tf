@@ -49,7 +49,7 @@ resource "keycloak_openid_hardcoded_claim_protocol_mapper" "app_dms_subject_type
 }
 
 # Per-app DB role (namespace isolation), determined by the client (the app). OPA
-# only acts on it when WRITER_DB_ROLE_CLAIM is enabled + a matching Postgres role
+# only acts on it when DB_ROLE_CLAIM is enabled + a matching Postgres role
 # exists — see keycloak/README.md "Per-app DB role". Harmless for reads.
 resource "keycloak_openid_hardcoded_claim_protocol_mapper" "app_dms_db_role" {
   realm_id            = keycloak_realm.pgauthz.id
