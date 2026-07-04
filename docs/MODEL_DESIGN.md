@@ -1627,3 +1627,30 @@ and new ones added in the *same transaction*, so concurrent checks never
 observe the intermediate state — the "add new rules before removing old
 ones" dance from [§11](#11-revoking-access-and-maintenance) is only needed
 when editing a model by hand.
+
+**Fleet-apply scope and scale.** The array variant runs all stores in **one
+transaction**: a failure on any store rolls back the whole call, and nothing
+is left half-rolled-out. That atomicity is exactly right for small fleets
+(tens of stores) — and exactly wrong for large ones, where a single call
+means a long-running transaction, broad locks, and an all-or-nothing failure
+domain across hundreds of tenants. For large fleets, drive the rollout from
+an **external orchestrator**: canary with a single-store `apply_model`, then
+apply in bounded batches (pinning the version number so a concurrent publish
+can't split the fleet), using `model_rollout_status` as the persisted
+progress/retry view — any store that failed or was skipped simply shows the
+old version and is retried individually.
+
+**Rolling back is a forward operation.** Versions are immutable, and
+`apply_model('store', 'name', <older version>)` re-applies an older
+definition — but that is a *new rollout*, not an undo, and it inherits the
+same guard rails: types added by the newer version block the apply (no
+automated type removal), and relations that tenant tuples have referenced in
+the meantime block their own removal. Data written under the newer model can
+make the older model unreachable without cleanup. Plan model evolution the
+way you plan schema migrations — **expand → migrate → contract**: ship
+additive versions first (new relations/rules alongside the old), migrate
+tuples, and only then publish the version that removes the old shape. Before
+applying, compare a canary store's `export_model` against the target
+version's definition to see the exact diff; a first-class `plan_model_apply`
+dry-run (additions, removals, blocking tuples, rollback feasibility) is on
+the roadmap.

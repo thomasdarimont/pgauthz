@@ -7,6 +7,33 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Per-request decision-cache bypass.** Read requests may set
+  `"no_cache": true` on the OPA input to force a 0-second cache TTL for that
+  decision — the escape hatch for revocation-sensitive checks that must see a
+  just-committed change inside the normal TTL window. AuthZEN callers request
+  the same with the standard **`Cache-Control: no-cache`** header, which
+  `authzen-opa` maps to `input.no_cache` (headers cannot reach OPA policy
+  input, so the body field is the mechanism at the OPA hop; `authzen-direct`
+  has no decision cache and is fresh by construction). Applies to every
+  cached read call (check, batch, list, explain); e2e-tested on both hops (a
+  revoke is visible through the bypass immediately after a cached allow).
+  Not a DoS vector: unauthenticated callers never reach PostgreSQL, and
+  cache-busting by varying the object id was already free. PRODUCTION.md now
+  states the end-to-end staleness bound explicitly: replication staleness
+  (zero on the synchronous set with `remote_apply`) + the decision-cache TTL.
+
+### Documentation
+
+- **Model rollout guidance** (MODEL_DESIGN §15 + `apply_model` fleet-variant
+  comment): the fleet apply is one atomic transaction — right for small
+  fleets, wrong for hundreds of stores (use an external orchestrator with
+  bounded batches, a pinned version, and `model_rollout_status` as the
+  progress/retry view); and "rolling back is a forward operation" — immutable
+  versions re-apply under the same guard rails, so plan model evolution as
+  expand → migrate → contract.
+
 ## [0.6.0] - 2026-07-05
 
 ### Added

@@ -429,6 +429,12 @@ $$;
 -- apply_model (fleet variant): apply one registry version to several
 -- stores. The version is resolved ONCE up front (latest at call time), so
 -- a concurrent publish cannot split the fleet across versions mid-rollout.
+--
+-- Scope: ONE transaction for the whole list — a failure on any store rolls
+-- back every store (atomic, nothing half-rolled-out). Right for small
+-- fleets; for hundreds of stores drive the rollout externally in bounded
+-- batches (pin p_version!) with model_rollout_status as the progress/retry
+-- view — see MODEL_DESIGN.md §15.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.apply_model(
     p_stores  text[],
