@@ -7,6 +7,8 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-04
+
 ### Added
 
 - **AuthZEN: store selection via URL path.** Every `access/v1` endpoint (and
@@ -475,7 +477,8 @@ PL/pgSQL.
 - PostgreSQL 18.x (developed/tested on 18.4). PostgREST, OPA, the AuthZEN
   services, and `pg_cel` are optional components of the reference deployment.
 
-[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/thomasdarimont/pgauthz/compare/v0.2.1...v0.2.2
