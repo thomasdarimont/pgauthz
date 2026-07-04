@@ -16,6 +16,15 @@ _cache_ttl(store, object_type) := config.default_cache_ttl_seconds if {
 	not config.cache_ttl_seconds[store]
 }
 
+# Per-request cache bypass: input.no_cache=true forces a TTL of 0 for THIS
+# decision, so it always hits PostgreSQL — the critical-decision escape hatch
+# (e.g. re-checking immediately after a revoke) at the cost of one round-trip.
+# Composes with strict revocation: remote_apply bounds DB staleness to zero on
+# the sync set, and no_cache removes the last cached layer above it.
+_effective_cache_ttl(store, object_type) := 0 if input.no_cache
+
+_effective_cache_ttl(store, object_type) := _cache_ttl(store, object_type) if not input.no_cache
+
 # Per-app DB role forwarded on READ calls as X-Authz-Role, consumed by the
 # reader's _pre_request_reader() hook (SET LOCAL ROLE) so the engine's
 # read-side namespace checks key on the calling application, not the fixed
@@ -59,7 +68,7 @@ check_access(store, subject_type, subject_id, relation, object_type, object_id) 
 		},
 		"raise_error": false,
 		"force_cache": true,
-		"force_cache_duration_seconds": _cache_ttl(store, object_type),
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
 	})
 	response.status_code == 200
 }
@@ -101,7 +110,7 @@ check_access_with_context(store, subject_type, subject_id, relation, object_type
 		},
 		"raise_error": false,
 		"force_cache": true,
-		"force_cache_duration_seconds": _cache_ttl(store, object_type),
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
 	})
 	response.status_code == 200
 }
@@ -155,7 +164,7 @@ list_objects(store, subject_type, subject_id, relation, object_type) := objects 
 		},
 		"raise_error": false,
 		"force_cache": true,
-		"force_cache_duration_seconds": _cache_ttl(store, object_type),
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
 	})
 	response.status_code == 200
 	objects := {obj.object_id | some obj in response.body}
@@ -177,7 +186,7 @@ list_objects_with_context(store, subject_type, subject_id, relation, object_type
 		},
 		"raise_error": false,
 		"force_cache": true,
-		"force_cache_duration_seconds": _cache_ttl(store, object_type),
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
 	})
 	response.status_code == 200
 	objects := {obj.object_id | some obj in response.body}
@@ -200,7 +209,7 @@ list_objects_page(store, subject_type, subject_id, relation, object_type, limit,
 		},
 		"raise_error": false,
 		"force_cache": true,
-		"force_cache_duration_seconds": _cache_ttl(store, object_type),
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
 	})
 	response.status_code == 200
 	objects := [obj.object_id | some obj in response.body]
@@ -224,7 +233,7 @@ list_objects_page_with_context(store, subject_type, subject_id, relation, object
 		},
 		"raise_error": false,
 		"force_cache": true,
-		"force_cache_duration_seconds": _cache_ttl(store, object_type),
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
 	})
 	response.status_code == 200
 	objects := [obj.object_id | some obj in response.body]
@@ -249,7 +258,7 @@ list_objects_page_after(store, subject_type, subject_id, relation, object_type, 
 		},
 		"raise_error": false,
 		"force_cache": true,
-		"force_cache_duration_seconds": _cache_ttl(store, object_type),
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
 	})
 	response.status_code == 200
 	objects := [obj.object_id | some obj in response.body]
@@ -273,7 +282,7 @@ list_objects_page_after_with_context(store, subject_type, subject_id, relation, 
 		},
 		"raise_error": false,
 		"force_cache": true,
-		"force_cache_duration_seconds": _cache_ttl(store, object_type),
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
 	})
 	response.status_code == 200
 	objects := [obj.object_id | some obj in response.body]
@@ -294,7 +303,7 @@ list_subjects(store, subject_type, relation, object_type, object_id) := subjects
 		},
 		"raise_error": false,
 		"force_cache": true,
-		"force_cache_duration_seconds": _cache_ttl(store, object_type),
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
 	})
 	response.status_code == 200
 	subjects := {subj.subject_id | some subj in response.body}
@@ -317,7 +326,7 @@ list_subjects_page(store, subject_type, relation, object_type, object_id, limit,
 		},
 		"raise_error": false,
 		"force_cache": true,
-		"force_cache_duration_seconds": _cache_ttl(store, object_type),
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
 	})
 	response.status_code == 200
 	subjects := [subj.subject_id | some subj in response.body]
@@ -341,7 +350,7 @@ list_subjects_page_after(store, subject_type, relation, object_type, object_id, 
 		},
 		"raise_error": false,
 		"force_cache": true,
-		"force_cache_duration_seconds": _cache_ttl(store, object_type),
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
 	})
 	response.status_code == 200
 	subjects := [subj.subject_id | some subj in response.body]
@@ -366,7 +375,7 @@ check_access_with_contextual_tuples(store, subject_type, subject_id, relation, o
 		},
 		"raise_error": false,
 		"force_cache": true,
-		"force_cache_duration_seconds": _cache_ttl(store, object_type),
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
 	})
 	response.status_code == 200
 }
@@ -389,7 +398,7 @@ check_access_with_contextual_tuples_ctx(store, subject_type, subject_id, relatio
 		},
 		"raise_error": false,
 		"force_cache": true,
-		"force_cache_duration_seconds": _cache_ttl(store, object_type),
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
 	})
 	response.status_code == 200
 }
@@ -409,7 +418,7 @@ list_actions(store, subject_type, subject_id, object_type, object_id) := actions
 		},
 		"raise_error": false,
 		"force_cache": true,
-		"force_cache_duration_seconds": _cache_ttl(store, object_type),
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
 	})
 	response.status_code == 200
 	actions := {act.action | some act in response.body}
@@ -527,7 +536,7 @@ list_actions_with_context(store, subject_type, subject_id, object_type, object_i
 		},
 		"raise_error": false,
 		"force_cache": true,
-		"force_cache_duration_seconds": _cache_ttl(store, object_type),
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
 	})
 	response.status_code == 200
 	actions := {act.action | some act in response.body}

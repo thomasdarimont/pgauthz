@@ -631,6 +631,31 @@ check "unrestricted read still allowed with db_role" \
     "true"
 
 echo ""
+echo "==> Running decision-cache bypass (no_cache) checks..."
+echo ""
+
+# input.no_cache=true forces a 0-second cache TTL for that decision. Proof:
+# cache an allow, revoke the tuple in the DB, then re-check WITH no_cache
+# immediately (inside the normal TTL window) — the revoke must be visible.
+docker exec -i "$DB_CONTAINER" psql -q -v ON_ERROR_STOP=1 -U authz -d authz \
+    -c "SELECT authz.write_tuple('demo','internal_user','cache_probe','viewer','document','doc_cache_1');" >/dev/null
+
+# Prime the cache with an allow (default cached path).
+check "cache-bypass setup: grant visible (cached)" \
+    "authz/allow" \
+    '{"input": {"subject": {"type": "internal_user", "id": "cache_probe"}, "action": "viewer", "resource": {"type": "document", "id": "doc_cache_1"}}}' \
+    "true"
+
+docker exec -i "$DB_CONTAINER" psql -q -v ON_ERROR_STOP=1 -U authz -d authz \
+    -c "SELECT authz.delete_tuple('demo','internal_user','cache_probe','viewer','document','doc_cache_1');" >/dev/null
+
+# Within the TTL a cached allow may linger — but no_cache must see the revoke.
+check "no_cache sees the revoke immediately" \
+    "authz/allow" \
+    '{"input": {"no_cache": true, "subject": {"type": "internal_user", "id": "cache_probe"}, "action": "viewer", "resource": {"type": "document", "id": "doc_cache_1"}}}' \
+    "false"
+
+echo ""
 echo "==> $pass_count passed, $fail_count failed (of $total checks)"
 
 if [ "$fail_count" -gt 0 ]; then

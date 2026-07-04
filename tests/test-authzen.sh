@@ -389,6 +389,47 @@ run_tests() {
 run_tests "$DIRECT_URL" "authzen-direct"
 run_tests "$OPA_URL" "authzen-opa"
 
+# --- Cache-Control: no-cache → fresh decision (authzen-opa) ---
+# The standard freshness header maps to OPA's input.no_cache (0-second
+# decision-cache TTL). Proof: prime the OPA cache with an allow, revoke the
+# tuple in the DB, then re-evaluate WITH the header inside the TTL window —
+# the revoke must be visible. (authzen-direct has no decision cache, so the
+# header is trivially satisfied there.)
+echo ""
+echo "==> Cache-Control: no-cache freshness (authzen-opa)..."
+echo ""
+
+DB_CONTAINER=$(docker ps --format '{{.Names}}' | grep -E 'authz-db|authz-primary' | head -1)
+TOKEN_CACHE=$(make_token "cache_probe" "internal_user")
+EVAL_BODY='{"subject":{"type":"internal_user","id":"cache_probe"},"action":{"name":"viewer"},"resource":{"type":"document","id":"doc_cache_az1"}}'
+
+docker exec -i "$DB_CONTAINER" psql -q -v ON_ERROR_STOP=1 -U authz -d authz \
+    -c "SELECT authz.write_tuple('demo','internal_user','cache_probe','viewer','document','doc_cache_az1');" >/dev/null
+
+check_json "no-cache setup: grant visible (cached)" \
+    "$OPA_URL/access/v1/evaluation" \
+    "Authorization: Bearer $TOKEN_CACHE" \
+    "$EVAL_BODY" \
+    '.decision' \
+    "true"
+
+docker exec -i "$DB_CONTAINER" psql -q -v ON_ERROR_STOP=1 -U authz -d authz \
+    -c "SELECT authz.delete_tuple('demo','internal_user','cache_probe','viewer','document','doc_cache_az1');" >/dev/null
+
+total=$((total + 1))
+result=$(curl -sf -X POST "$OPA_URL/access/v1/evaluation" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $TOKEN_CACHE" \
+    -H "Cache-Control: no-cache" \
+    -d "$EVAL_BODY" 2>/dev/null | jq -rc '.decision')
+if [ "$result" = "false" ]; then
+    pass_count=$((pass_count + 1))
+    echo "    PASS  Cache-Control: no-cache sees the revoke immediately"
+else
+    fail_count=$((fail_count + 1))
+    echo "    FAIL  Cache-Control: no-cache sees the revoke immediately  (expected=false, got=$result)"
+fi
+
 echo ""
 echo "==> $pass_count passed, $fail_count failed (of $total checks)"
 

@@ -360,8 +360,19 @@ incident):
 - **Bulk loads / imports** should bypass the wait: run them on a separate
   channel (direct SQL) with `synchronous_commit = local`, or send
   `consistency: "eventual"` through the write API.
-- **Caches:** `remote_apply` does not invalidate the OPA decision cache —
-  revocation-sensitive checks must bypass it or key it by revision.
+- **Caches — the end-to-end staleness bound.** `remote_apply` bounds *database*
+  staleness, not the OPA decision cache above it. After an acknowledged revoke,
+  the worst-case window in which a stale allow can still be served is:
+  `replication staleness (0 on the synchronous set with remote_apply) + the
+  decision-cache TTL for that (store, object type)`. Choose TTLs per object
+  type with that formula in mind (`CACHE_TTL_SECONDS` — sensitive types can run
+  at `0`), and for individual revocation-sensitive checks bypass the
+  cache for that one decision: `"no_cache": true` on the OPA read input, or
+  the standard `Cache-Control: no-cache` header on the AuthZEN API. Cache entries are keyed on the full request (store, subject,
+  per-app role header included), so the TTL bounds only *temporal* staleness —
+  never cross-tenant or cross-role reuse. Revision-keyed cache entries (a
+  store watermark in the key, invalidated via the watch changefeed) are the
+  roadmap refinement for high-TTL deployments.
 
 The scaling suite carries the regression test: a revoke acknowledged under
 `remote_apply` is denied on the replica immediately, over repeated

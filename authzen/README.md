@@ -169,6 +169,15 @@ client roles). Unset (default), search is open to any authenticated caller.
 | Subject ID | `subject.id` | `preferred_username` (fallback: `sub`) |
 | Subject type | `subject.type` | `subject_type` (fallback: config default) |
 
+**Freshness (`Cache-Control: no-cache`).** A caller that must observe a
+just-committed change — e.g. re-checking immediately after a revoke — sends
+the standard `Cache-Control: no-cache` request header. `authzen-opa` maps it
+to OPA's `input.no_cache`, bypassing the decision cache for that one request
+(one extra PostgreSQL round-trip); `authzen-direct` has no decision cache, so
+every decision is fresh by construction. See
+[`opa/README.md`](../opa/README.md) for the cache model and the end-to-end
+staleness bound.
+
 **Subject override.** By default (`ALLOW_SUBJECT_OVERRIDE=false`) the
 JWT-derived subject is authoritative: a request-body `subject` is accepted
 only if it matches the token, and a *differing* one is rejected with `403`

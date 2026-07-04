@@ -258,6 +258,13 @@ func (b *Backend) query(ctx context.Context, rule string, input any, dest any) e
 			m["db_role"] = role
 		}
 	}
+	// Caller sent Cache-Control: no-cache -> ask OPA to bypass its decision
+	// cache for this request (input.no_cache -> 0-second http.send TTL).
+	if m, ok := input.(map[string]any); ok {
+		if api.NoCacheFromContext(ctx) {
+			m["no_cache"] = true
+		}
+	}
 	body, err := json.Marshal(map[string]any{"input": input})
 	if err != nil {
 		return fmt.Errorf("marshaling OPA input: %w", err)

@@ -32,6 +32,7 @@ const (
 	ctxRawToken
 	ctxIssuer
 	ctxDBRole
+	ctxNoCache
 )
 
 // IssuerFromContext returns the verified token's issuer (`iss` claim, matched
@@ -51,6 +52,16 @@ func DBRoleFromContext(ctx context.Context) string {
 		return v
 	}
 	return ""
+}
+
+// NoCacheFromContext reports whether the caller sent `Cache-Control: no-cache`
+// — the standard request header for "do not serve me a cached answer". The
+// OPA backend maps it to input.no_cache so the decision bypasses OPA's
+// http.send cache for this request (the direct backend has no decision cache,
+// so the semantics hold there trivially).
+func NoCacheFromContext(ctx context.Context) bool {
+	v, ok := ctx.Value(ctxNoCache).(bool)
+	return ok && v
 }
 
 // TokenFromContext returns the raw (verified) bearer token string, if present.
@@ -244,6 +255,12 @@ func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 		// and its (verified) issuer for per-issuer authorization (store binding).
 		ctx = context.WithValue(ctx, ctxRawToken, tokenStr)
 		ctx = context.WithValue(ctx, ctxIssuer, claimString(claims, "iss"))
+
+		// Standard freshness request: Cache-Control: no-cache asks the PDP not
+		// to serve a cached decision (forwarded as input.no_cache to OPA).
+		if strings.Contains(strings.ToLower(r.Header.Get("Cache-Control")), "no-cache") {
+			ctx = context.WithValue(ctx, ctxNoCache, true)
+		}
 
 		iss := claimString(claims, "iss")
 		dbRole := m.deriveDBRole(claims)

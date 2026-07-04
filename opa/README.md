@@ -242,6 +242,32 @@ Cache TTL resolution order:
 2. `cache_ttl_seconds[store]["_default"]` — store-level fallback
 3. `default_cache_ttl_seconds` — global fallback
 
+**Per-request bypass:** any read request may set `"no_cache": true` in the
+input to force a TTL of 0 for that decision — it always hits PostgreSQL, at
+the cost of one round-trip. This is the escape hatch for critical decisions
+that must observe a just-committed revoke *inside* the normal TTL window; it
+composes with strict revocation (`remote_apply` bounds database staleness on
+the synchronous set, `no_cache` removes the cached layer above it). Cache
+entries are keyed on the full request — including the per-app role header —
+so cached decisions never cross store, subject, or application-role
+boundaries; the TTL only bounds *temporal* staleness.
+
+Callers of the **AuthZEN services** request the same thing with the standard
+HTTP header `Cache-Control: no-cache` — `authzen-opa` maps it to
+`input.no_cache` (a header can't work at the OPA hop: OPA's REST API does not
+expose request headers to policy input, so the body field is the mechanism
+there). `authzen-direct` has no decision cache, so every decision is fresh by
+construction.
+
+*DoS note:* the bypass is not a meaningful denial-of-service vector.
+Unauthenticated callers never reach PostgreSQL (an unresolved subject leaves
+the `http.send` arguments undefined, so no backend call is made), and an
+authenticated attacker gains nothing over ordinary cache-busting — cache
+entries are keyed per (store, subject, action, object), so varying the object
+id already produces a cold key per request. Per-query cost stays bounded by
+the role-level `statement_timeout`; request-rate limits belong at the edge,
+as they already did.
+
 ### Policy Layer (`policy.rego`)
 
 `package authz` — the application-facing policy that defines the
