@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -29,7 +30,28 @@ const (
 	ctxRequestID
 	ctxRoles
 	ctxRawToken
+	ctxIssuer
+	ctxDBRole
 )
+
+// IssuerFromContext returns the verified token's issuer (`iss` claim, matched
+// against a trusted issuer during verification). Empty if unauthenticated.
+func IssuerFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(ctxIssuer).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// DBRoleFromContext returns the per-app DB role derived from the verified
+// token (DB_ROLE_CLAIM, or the azp → role map) for namespace enforcement.
+// Empty when no role applies.
+func DBRoleFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(ctxDBRole).(string); ok {
+		return v
+	}
+	return ""
+}
 
 // TokenFromContext returns the raw (verified) bearer token string, if present.
 // Used by backends that re-forward the token to a downstream PDP (e.g. OPA) so it
@@ -69,6 +91,14 @@ type IssuerConfig struct {
 	Audience string // optional; if set, the token's "aud" must contain it
 	JWKSURL  string
 	JWKSFile string // alternative to JWKSURL: load JWKS from a local file
+	// DBRoles: anchored regex patterns of the per-app DB roles this issuer's
+	// tokens may yield (empty = unrestricted). Validated upstream in
+	// config.Load; a violating token is rejected with 403.
+	DBRoles []string
+	// ClientDBRoles: issuer-scoped client-id (azp) → DB role map. Preferred
+	// over the global JWTConfig.ClientDBRoles in multi-issuer setups (azp is
+	// only unique within an issuer).
+	ClientDBRoles map[string]string
 }
 
 // JWTConfig holds JWT verification configuration.
@@ -90,6 +120,14 @@ type JWTConfig struct {
 	// (string-array) values are aggregated into the caller's role set — mirrors
 	// OPA's JWT_ROLES_CLAIM. E.g. "realm_access.roles,resource_access.authz-api.roles".
 	RolesClaims string
+	// DBRoleClaim: dot-separated claim path carrying the caller's per-app DB
+	// role for pgauthz namespace enforcement (mirrors the write path's
+	// WRITER_DB_ROLE_CLAIM). E.g. "db_role".
+	DBRoleClaim string
+	// ClientDBRoles maps a client id (the verified token's `azp` claim) to a
+	// per-app DB role — the fallback when DBRoleClaim is unset or absent from
+	// the token, for IdPs where per-client claims can't be configured.
+	ClientDBRoles map[string]string
 }
 
 // issuerValidator holds the per-issuer JWKS cache used to verify that issuer's
@@ -103,9 +141,11 @@ type issuerValidator struct {
 
 // JWTMiddleware verifies JWT tokens and injects claims into context.
 type JWTMiddleware struct {
-	cfg        JWTConfig
-	validators []*issuerValidator
-	byIssuer   map[string]*issuerValidator // exact "iss" match -> validator
+	cfg               JWTConfig
+	validators        []*issuerValidator
+	byIssuer          map[string]*issuerValidator  // exact "iss" match -> validator
+	issuerDBRoles     map[string][]*regexp.Regexp  // issuer -> allowed db-role patterns (absent = unrestricted)
+	issuerClientRoles map[string]map[string]string // issuer -> (azp -> db role)
 }
 
 func NewJWTMiddleware(cfg JWTConfig) *JWTMiddleware {
@@ -116,12 +156,28 @@ func NewJWTMiddleware(cfg JWTConfig) *JWTMiddleware {
 			JWKSURL: cfg.JWKSURL, JWKSFile: cfg.JWKSFile,
 		}}
 	}
-	m := &JWTMiddleware{cfg: cfg, byIssuer: make(map[string]*issuerValidator)}
+	m := &JWTMiddleware{
+		cfg:               cfg,
+		byIssuer:          make(map[string]*issuerValidator),
+		issuerDBRoles:     make(map[string][]*regexp.Regexp),
+		issuerClientRoles: make(map[string]map[string]string),
+	}
 	for _, ic := range issuers {
 		v := &issuerValidator{cfg: ic}
 		m.validators = append(m.validators, v)
 		if ic.Issuer != "" {
 			m.byIssuer[ic.Issuer] = v
+			if len(ic.DBRoles) > 0 {
+				pats := make([]*regexp.Regexp, len(ic.DBRoles))
+				for i, p := range ic.DBRoles {
+					// validated in config.Load — anchored, plain names match exactly
+					pats[i] = regexp.MustCompile("^(?:" + p + ")$")
+				}
+				m.issuerDBRoles[ic.Issuer] = pats
+			}
+			if len(ic.ClientDBRoles) > 0 {
+				m.issuerClientRoles[ic.Issuer] = ic.ClientDBRoles
+			}
 		}
 	}
 	return m
@@ -129,8 +185,9 @@ func NewJWTMiddleware(cfg JWTConfig) *JWTMiddleware {
 
 func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Exempt routes
-		if r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/.well-known/") {
+		// Exempt routes (incl. the store-scoped discovery variant)
+		if r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/.well-known/") ||
+			(strings.HasPrefix(r.URL.Path, "/stores/") && strings.HasSuffix(r.URL.Path, "/.well-known/authzen-configuration")) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -183,8 +240,25 @@ func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 			ctx = context.WithValue(ctx, ctxRoles, extractRoles(claims, m.cfg.RolesClaims))
 		}
 
-		// Stash the verified token so a backend can re-forward it to the PDP.
+		// Stash the verified token so a backend can re-forward it to the PDP,
+		// and its (verified) issuer for per-issuer authorization (store binding).
 		ctx = context.WithValue(ctx, ctxRawToken, tokenStr)
+		ctx = context.WithValue(ctx, ctxIssuer, claimString(claims, "iss"))
+
+		iss := claimString(claims, "iss")
+		dbRole := m.deriveDBRole(claims)
+		if dbRole != "" {
+			// Per-issuer db-role binding: a trusted issuer may only yield the
+			// roles it is entitled to — otherwise any tenant's IdP could claim
+			// another tenant's role. Violations are REJECTED (never silently
+			// downgraded to the fixed connection role, which could widen access).
+			if !m.dbRoleAllowed(iss, dbRole) {
+				slog.Debug("issuer not allowed to yield db role", "role", dbRole)
+				writeForbidden(w, "issuer is not allowed to yield db role '"+dbRole+"'")
+				return
+			}
+			ctx = context.WithValue(ctx, ctxDBRole, dbRole)
+		}
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -396,6 +470,43 @@ func hasScope(claims jwt.MapClaims, required string) bool {
 	return false
 }
 
+// deriveDBRole resolves the per-app DB role for namespace enforcement from the
+// verified claims. Derivation order:
+//  1. the configured claim (DB_ROLE_CLAIM)
+//  2. the ISSUER-scoped client map (azp is only unique within an issuer)
+//  3. the global CLIENT_DB_ROLES map (single-issuer convenience)
+func (m *JWTMiddleware) deriveDBRole(claims jwt.MapClaims) string {
+	if m.cfg.DBRoleClaim != "" {
+		if r := claimStringPath(claims, m.cfg.DBRoleClaim); r != "" {
+			return r
+		}
+	}
+	if cm := m.issuerClientRoles[claimString(claims, "iss")]; cm != nil {
+		if r := cm[claimString(claims, "azp")]; r != "" {
+			return r
+		}
+	}
+	if len(m.cfg.ClientDBRoles) > 0 {
+		return m.cfg.ClientDBRoles[claimString(claims, "azp")]
+	}
+	return ""
+}
+
+// dbRoleAllowed reports whether the issuer may yield the given per-app DB role.
+// Issuers without a configured db_roles list are unrestricted.
+func (m *JWTMiddleware) dbRoleAllowed(issuer, role string) bool {
+	pats, restricted := m.issuerDBRoles[issuer]
+	if !restricted {
+		return true
+	}
+	for _, p := range pats {
+		if p.MatchString(role) {
+			return true
+		}
+	}
+	return false
+}
+
 // extractRoles aggregates string-array role claims across a comma-separated list
 // of dot-separated claim paths (e.g. "realm_access.roles,resource_access.x.roles"),
 // deduplicated. Missing/ill-typed paths are skipped. Mirrors OPA's JWT_ROLES_CLAIM.
@@ -428,6 +539,21 @@ func extractRoles(claims jwt.MapClaims, paths string) []string {
 		}
 	}
 	return out
+}
+
+// claimStringPath resolves a dot-separated claim path to a string value
+// (e.g. "resource_access.app.db_role"). Missing/ill-typed segments yield "".
+func claimStringPath(claims jwt.MapClaims, path string) string {
+	var node any = map[string]any(claims)
+	for _, seg := range strings.Split(path, ".") {
+		m, ok := node.(map[string]any)
+		if !ok {
+			return ""
+		}
+		node = m[seg]
+	}
+	s, _ := node.(string)
+	return s
 }
 
 func claimString(claims jwt.MapClaims, key string) string {

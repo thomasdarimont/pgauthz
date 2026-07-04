@@ -7,6 +7,34 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **AuthZEN: store selection via URL path.** Every `access/v1` endpoint (and
+  the discovery document) is also served store-scoped under
+  `/stores/{store}/…` (OpenFGA-style), so each pgauthz store presents as its
+  own AuthZEN PDP. Resolution order: path → `X-AuthZ-Store` header →
+  `DEFAULT_STORE`.
+- **AuthZEN: per-app namespace enforcement (authzen-direct).** The direct
+  backend can derive a per-app DB role from the verified token —
+  `DB_ROLE_CLAIM` (dot-path, mirrors the writer's `WRITER_DB_ROLE_CLAIM`) or
+  the `CLIENT_DB_ROLES` map keyed by client id (`azp`) — and assume it per
+  request (`SET LOCAL ROLE` in a transaction, validated: member of
+  `authz_reader`, not admin-capable, fail closed). pgauthz namespace
+  restrictions then apply per calling application on the read path.
+  authzen-opa (OPA→PostgREST reads) is documented follow-up work.
+  **Per-issuer role binding:** `JWT_ISSUERS` entries gain `db_roles`
+  (anchored regex patterns) restricting which roles that issuer's tokens may
+  yield — without it, any trusted issuer could claim another tenant's role;
+  violations are rejected (403), never downgraded. Plus issuer-scoped
+  `client_db_roles` maps (azp is only unique within an issuer, so the global
+  `CLIENT_DB_ROLES` map is unsafe across tenants).
+- **AuthZEN: per-issuer store binding.** `JWT_ISSUERS` entries gain a `stores`
+  list of **anchored regex patterns** (plain names match exactly,
+  `tenant-a-.*` covers families): tokens from that issuer may only access
+  matching stores (403 otherwise) — multi-tenant isolation where each
+  tenant's IdP is bound to its stores. Issuers without a list stay
+  unrestricted.
+
 ### Changed
 
 - **PostgREST v14.13 → v14.14.** Maintenance release (admin server now logs

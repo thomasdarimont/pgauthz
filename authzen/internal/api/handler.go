@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 
 	"thomasdarimont.de/authz/authzen/internal/authz"
 	"thomasdarimont.de/authz/authzen/internal/config"
@@ -20,12 +21,28 @@ const defaultPageSize = 100
 
 // Handler wires all AuthZEN endpoints to a backend.
 type Handler struct {
-	backend authz.Backend
-	cfg     *config.Config
+	// issuerStores maps a verified issuer to the store patterns (anchored
+	// regexes) its tokens may access. Only issuers with a non-empty `stores`
+	// list appear here; absent = unrestricted.
+	issuerStores map[string][]*regexp.Regexp
+	backend      authz.Backend
+	cfg          *config.Config
 }
 
 func NewHandler(backend authz.Backend, cfg *config.Config) *Handler {
-	return &Handler{backend: backend, cfg: cfg}
+	h := &Handler{backend: backend, cfg: cfg, issuerStores: map[string][]*regexp.Regexp{}}
+	for _, iss := range cfg.Issuers {
+		if iss.Issuer == "" || len(iss.Stores) == 0 {
+			continue
+		}
+		pats := make([]*regexp.Regexp, len(iss.Stores))
+		for i, p := range iss.Stores {
+			// validated in config.Load — anchored so plain names match exactly
+			pats[i] = regexp.MustCompile("^(?:" + p + ")$")
+		}
+		h.issuerStores[iss.Issuer] = pats
+	}
+	return h
 }
 
 // NewRouter returns a fully configured HTTP handler with middleware.
@@ -41,6 +58,17 @@ func NewRouter(backend authz.Backend, cfg *config.Config, jwtMW *JWTMiddleware) 
 	mux.HandleFunc("GET /.well-known/authzen-configuration", h.WellKnown)
 	mux.HandleFunc("GET /healthz", h.Healthz)
 
+	// Store-scoped variants (OpenFGA-style): the path segment selects the
+	// pgauthz store, so each store presents as its own AuthZEN PDP with its
+	// own discovery document. Path beats the store header, which beats
+	// DEFAULT_STORE — see store().
+	mux.HandleFunc("POST /stores/{store}/access/v1/evaluation", h.Evaluation)
+	mux.HandleFunc("POST /stores/{store}/access/v1/evaluations", h.Evaluations)
+	mux.HandleFunc("POST /stores/{store}/access/v1/search/subject", h.SearchSubject)
+	mux.HandleFunc("POST /stores/{store}/access/v1/search/resource", h.SearchResource)
+	mux.HandleFunc("POST /stores/{store}/access/v1/search/action", h.SearchAction)
+	mux.HandleFunc("GET /stores/{store}/.well-known/authzen-configuration", h.WellKnown)
+
 	var handler http.Handler = mux
 	handler = jwtMW.Middleware(handler)
 	handler = RequestID(handler)
@@ -50,7 +78,35 @@ func NewRouter(backend authz.Backend, cfg *config.Config, jwtMW *JWTMiddleware) 
 	return handler
 }
 
+// store resolves the pgauthz store for a request: the /stores/{store} path
+// segment wins, then the store header (X-AuthZ-Store), then DEFAULT_STORE.
+// NOTE: store selection is caller-controlled — per-store access control (who
+// may query which store) is a policy concern; SEARCH_REQUIRED_ROLE gates the
+// search endpoints globally, not per store.
+// storeChecked resolves the request's store AND enforces the per-issuer store
+// binding (Issuer.Stores): tokens from an issuer with a configured store list
+// may only access those stores (multi-tenant isolation). Issuers without a
+// list — and the legacy unpinned validator — are unrestricted. Writes a 403
+// and returns ok=false on a violation.
+func (h *Handler) storeChecked(w http.ResponseWriter, r *http.Request) (string, bool) {
+	store := h.store(r)
+	allowed, restricted := h.issuerStores[IssuerFromContext(r.Context())]
+	if !restricted {
+		return store, true
+	}
+	for _, p := range allowed {
+		if p.MatchString(store) {
+			return store, true
+		}
+	}
+	writeForbidden(w, "issuer is not allowed to access store '"+store+"'")
+	return "", false
+}
+
 func (h *Handler) store(r *http.Request) string {
+	if s := r.PathValue("store"); s != "" {
+		return s
+	}
 	if s := r.Header.Get(h.cfg.StoreHeader); s != "" {
 		return s
 	}
@@ -153,8 +209,12 @@ func (h *Handler) Evaluation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	store, ok := h.storeChecked(w, r)
+	if !ok {
+		return
+	}
 	decision, err := h.backend.CheckAccess(r.Context(), authz.EvalRequest{
-		Store:       h.store(r),
+		Store:       store,
 		SubjectType: subjectType,
 		SubjectID:   subjectID,
 		Action:      req.Action.Name,
@@ -194,7 +254,10 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	store := h.store(r)
+	store, ok := h.storeChecked(w, r)
+	if !ok {
+		return
+	}
 	jwtType, jwtID := SubjectFromContext(r.Context())
 
 	// Build individual eval requests, merging shared subject/action/resource
@@ -294,7 +357,11 @@ func (h *Handler) SearchSubject(w http.ResponseWriter, r *http.Request) {
 
 	page := decodePage(req.Page)
 
-	subjects, pageResp, err := h.backend.ListSubjects(r.Context(), h.store(r),
+	store, ok := h.storeChecked(w, r)
+	if !ok {
+		return
+	}
+	subjects, pageResp, err := h.backend.ListSubjects(r.Context(), store,
 		req.Subject.Type, req.Action.Name, req.Resource.Type, req.Resource.ID,
 		req.Context, page)
 	if err != nil {
@@ -342,7 +409,11 @@ func (h *Handler) SearchResource(w http.ResponseWriter, r *http.Request) {
 
 	page := decodePage(req.Page)
 
-	resources, pageResp, err := h.backend.ListResources(r.Context(), h.store(r),
+	store, ok := h.storeChecked(w, r)
+	if !ok {
+		return
+	}
+	resources, pageResp, err := h.backend.ListResources(r.Context(), store,
 		subjectType, subjectID, req.Action.Name, req.Resource.Type,
 		req.Context, page)
 	if err != nil {
@@ -384,7 +455,11 @@ func (h *Handler) SearchAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actions, err := h.backend.ListActions(r.Context(), h.store(r),
+	store, ok := h.storeChecked(w, r)
+	if !ok {
+		return
+	}
+	actions, err := h.backend.ListActions(r.Context(), store,
 		subjectType, subjectID, req.Resource.Type, req.Resource.ID,
 		req.Context)
 	if err != nil {
@@ -411,6 +486,12 @@ func (h *Handler) WellKnown(w http.ResponseWriter, r *http.Request) {
 			scheme = "https"
 		}
 		base = scheme + "://" + r.Host
+	}
+
+	// Store-scoped discovery advertises store-scoped endpoints, so each
+	// store presents as a self-contained AuthZEN PDP.
+	if s := r.PathValue("store"); s != "" {
+		base += "/stores/" + s
 	}
 
 	writeJSON(w, http.StatusOK, WellKnownResponse{

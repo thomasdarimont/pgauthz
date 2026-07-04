@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,34 +16,99 @@ import (
 // Backend implements authz.Backend using direct PostgreSQL calls.
 type Backend struct {
 	pool *pgxpool.Pool
+	// roleOK caches per-role validation results (member of authz_reader and
+	// not admin-capable). Populated lazily; definitive answers only — a
+	// dropped/regranted role needs a service restart to be re-evaluated.
+	roleOK sync.Map // role string -> bool
 }
 
 func New(pool *pgxpool.Pool) *Backend {
 	return &Backend{pool: pool}
 }
 
+// querier is the subset of pgx query methods shared by the pool and a
+// transaction, so request handlers can run either directly on the pool or
+// inside a role-scoped transaction.
+type querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// withRole runs fn against the database. When the request context carries a
+// per-app DB role (derived from the verified token — see the middleware's
+// DB_ROLE_CLAIM / CLIENT_DB_ROLES), the queries run inside a transaction with
+// `SET LOCAL ROLE <role>` applied, so pgauthz's namespace enforcement keys on
+// the caller's app role instead of the service's connection role. Fail closed:
+// an unknown, non-reader, or admin-capable role is rejected.
+func (b *Backend) withRole(ctx context.Context, fn func(q querier) error) error {
+	role := api.DBRoleFromContext(ctx)
+	if role == "" {
+		return fn(b.pool)
+	}
+	if err := b.checkRole(ctx, role); err != nil {
+		return err
+	}
+	tx, err := b.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin role-scoped tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
+	// SET LOCAL is transaction-scoped, so the role never leaks back into the
+	// pooled connection. Identifier-quoted — role names are caller-derived.
+	if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+pgx.Identifier{role}.Sanitize()); err != nil {
+		return fmt.Errorf("assuming db role %q: %w", role, err)
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// checkRole validates a per-app DB role before assuming it, mirroring the
+// writer-side _pre_request() policy: the role must be a member of
+// authz_reader and must NOT be admin-capable. Unknown roles error → fail closed.
+func (b *Backend) checkRole(ctx context.Context, role string) error {
+	if v, ok := b.roleOK.Load(role); ok {
+		if v.(bool) {
+			return nil
+		}
+		return fmt.Errorf("db role %q is not an allowed reader role", role)
+	}
+	var allowed bool
+	err := b.pool.QueryRow(ctx,
+		`SELECT pg_has_role($1, 'authz_reader', 'member')
+		    AND NOT pg_has_role($1, 'authz_admin', 'member')`, role).Scan(&allowed)
+	if err != nil {
+		// unknown role / lookup failure: fail closed, do not cache
+		return fmt.Errorf("validating db role %q: %w", role, err)
+	}
+	b.roleOK.Store(role, allowed)
+	if !allowed {
+		return fmt.Errorf("db role %q is not an allowed reader role", role)
+	}
+	return nil
+}
+
 func (b *Backend) CheckAccess(ctx context.Context, req authz.EvalRequest) (bool, error) {
 	var decision bool
-	var err error
-
-	if req.Context != nil {
-		ctxJSON, jerr := json.Marshal(req.Context)
-		if jerr != nil {
-			return false, fmt.Errorf("marshaling context: %w", jerr)
+	err := b.withRole(ctx, func(q querier) error {
+		if req.Context != nil {
+			ctxJSON, jerr := json.Marshal(req.Context)
+			if jerr != nil {
+				return fmt.Errorf("marshaling context: %w", jerr)
+			}
+			return q.QueryRow(ctx,
+				"SELECT authz.check_access_with_context($1, $2, $3, $4, $5, $6, $7)",
+				req.Store, req.SubjectType, req.SubjectID, req.Action,
+				req.ObjectType, req.ObjectID, ctxJSON,
+			).Scan(&decision)
 		}
-		err = b.pool.QueryRow(ctx,
-			"SELECT authz.check_access_with_context($1, $2, $3, $4, $5, $6, $7)",
-			req.Store, req.SubjectType, req.SubjectID, req.Action,
-			req.ObjectType, req.ObjectID, ctxJSON,
-		).Scan(&decision)
-	} else {
-		err = b.pool.QueryRow(ctx,
+		return q.QueryRow(ctx,
 			"SELECT authz.check_access($1, $2, $3, $4, $5, $6)",
 			req.Store, req.SubjectType, req.SubjectID, req.Action,
 			req.ObjectType, req.ObjectID,
 		).Scan(&decision)
-	}
-
+	})
 	if err != nil {
 		return false, fmt.Errorf("check_access: %w", err)
 	}
@@ -78,10 +144,12 @@ func (b *Backend) CheckAccessBatch(ctx context.Context, store string, reqs []aut
 	}
 
 	var resultJSON []byte
-	err = b.pool.QueryRow(ctx,
-		"SELECT authz.check_access_batch($1, $2, $3, $4)",
-		store, checksJSON, ctxJSON, semantic,
-	).Scan(&resultJSON)
+	err = b.withRole(ctx, func(q querier) error {
+		return q.QueryRow(ctx,
+			"SELECT authz.check_access_batch($1, $2, $3, $4)",
+			store, checksJSON, ctxJSON, semantic,
+		).Scan(&resultJSON)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("check_access_batch: %w", err)
 	}
@@ -120,16 +188,19 @@ func (b *Backend) ListResources(ctx context.Context, store string,
 	// Request limit+1 to detect if more pages exist
 	queryLimit := limit + 1
 
-	rows, err := b.pool.Query(ctx,
-		"SELECT object_id FROM authz.list_objects($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-		store, subjectType, subjectID, action, objectType, ctxJSON, queryLimit, offset, textOrNil(after),
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("list_objects: %w", err)
-	}
-	defer rows.Close()
-
-	ids, err := collectStrings(rows, queryLimit)
+	var ids []string
+	err := b.withRole(ctx, func(q querier) error {
+		rows, err := q.Query(ctx,
+			"SELECT object_id FROM authz.list_objects($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+			store, subjectType, subjectID, action, objectType, ctxJSON, queryLimit, offset, textOrNil(after),
+		)
+		if err != nil {
+			return fmt.Errorf("list_objects: %w", err)
+		}
+		defer rows.Close()
+		ids, err = collectStrings(rows, queryLimit)
+		return err
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -154,16 +225,19 @@ func (b *Backend) ListSubjects(ctx context.Context, store string,
 
 	queryLimit := limit + 1
 
-	rows, err := b.pool.Query(ctx,
-		"SELECT subject_id FROM authz.list_subjects($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-		store, subjectType, action, objectType, objectID, ctxJSON, queryLimit, offset, textOrNil(after),
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("list_subjects: %w", err)
-	}
-	defer rows.Close()
-
-	ids, err := collectStrings(rows, queryLimit)
+	var ids []string
+	err := b.withRole(ctx, func(q querier) error {
+		rows, err := q.Query(ctx,
+			"SELECT subject_id FROM authz.list_subjects($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+			store, subjectType, action, objectType, objectID, ctxJSON, queryLimit, offset, textOrNil(after),
+		)
+		if err != nil {
+			return fmt.Errorf("list_subjects: %w", err)
+		}
+		defer rows.Close()
+		ids, err = collectStrings(rows, queryLimit)
+		return err
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -184,16 +258,23 @@ func (b *Backend) ListActions(ctx context.Context, store string,
 		}
 	}
 
-	rows, err := b.pool.Query(ctx,
-		"SELECT action FROM authz.list_actions($1, $2, $3, $4, $5, $6)",
-		store, subjectType, subjectID, objectType, objectID, ctxJSON,
-	)
+	var actions []string
+	err := b.withRole(ctx, func(q querier) error {
+		rows, err := q.Query(ctx,
+			"SELECT action FROM authz.list_actions($1, $2, $3, $4, $5, $6)",
+			store, subjectType, subjectID, objectType, objectID, ctxJSON,
+		)
+		if err != nil {
+			return fmt.Errorf("list_actions: %w", err)
+		}
+		defer rows.Close()
+		actions, err = collectStrings(rows, 0)
+		return err
+	})
 	if err != nil {
-		return nil, fmt.Errorf("list_actions: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
-
-	return collectStrings(rows, 0)
+	return actions, nil
 }
 
 func (b *Backend) Healthz(ctx context.Context) error {

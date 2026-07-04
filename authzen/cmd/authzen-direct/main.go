@@ -68,13 +68,19 @@ func run() error {
 	slog.Info("connected to PostgreSQL")
 
 	backend := pgbackend.New(pool)
+	var issuers []api.IssuerConfig
+	for _, i := range cfg.Issuers {
+		issuers = append(issuers, api.IssuerConfig{
+			Issuer: i.Issuer, Audience: i.Audience, JWKSURL: i.JWKSURL, JWKSFile: i.JWKSFile,
+			DBRoles: i.DBRoles, ClientDBRoles: i.ClientDBRoles,
+		})
+	}
 	jwtMW := api.NewJWTMiddleware(api.JWTConfig{
-		JWKSURL:            cfg.JWKSURL,
-		JWKSFile:           cfg.JWKSFile,
-		Issuer:             cfg.JWTIssuer,
-		Audience:           cfg.JWTAudience,
+		Issuers:            issuers,
 		RequiredScope:      cfg.RequiredScope,
 		RolesClaims:        cfg.RolesClaims,
+		DBRoleClaim:        cfg.DBRoleClaim,
+		ClientDBRoles:      cfg.ClientDBRoles,
 		SubjectIDClaim:     cfg.SubjectIDClaim,
 		SubjectIDFallback:  cfg.SubjectIDFallback,
 		SubjectTypeClaim:   cfg.SubjectTypeClaim,

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 )
 
@@ -14,6 +15,23 @@ type Issuer struct {
 	Audience string `json:"audience"`
 	JWKSURL  string `json:"jwks_url"`
 	JWKSFile string `json:"jwks_file"`
+	// Stores restricts which pgauthz stores this issuer's tokens may access
+	// (store binding for multi-tenant setups: tenant A's IdP → tenant A's
+	// stores). Each entry is an ANCHORED regular expression (^(?:entry)$), so
+	// plain store names match exactly and patterns like "tenant-a-.*" cover
+	// store families. Empty = no restriction (all stores).
+	Stores []string `json:"stores"`
+	// DBRoles restricts which per-app DB roles tokens from this issuer may
+	// yield (via DB_ROLE_CLAIM or CLIENT_DB_ROLES) — without it, any trusted
+	// issuer could claim another tenant's role. Anchored regexes like Stores.
+	// Empty = no restriction. A violation is rejected (403), never silently
+	// downgraded to the fixed connection role.
+	DBRoles []string `json:"db_roles"`
+	// ClientDBRoles maps client ids (`azp`) to per-app DB roles, scoped to
+	// THIS issuer — azp values are only meaningful within an issuer, so the
+	// per-issuer map avoids cross-tenant azp collisions that the global
+	// CLIENT_DB_ROLES map (kept for single-issuer setups) cannot.
+	ClientDBRoles map[string]string `json:"client_db_roles"`
 }
 
 type Config struct {
@@ -38,6 +56,14 @@ type Config struct {
 	// (default) leaves search open. These are graph-enumeration queries, so gate
 	// them to an auditor-style role in multi-tenant/end-user deployments.
 	SearchRequiredRole string
+
+	// DBRoleClaim: dot-separated claim path carrying the caller's per-app DB
+	// role for pgauthz namespace enforcement on the direct backend (mirrors
+	// the OPA write path's WRITER_DB_ROLE_CLAIM). Empty = no role scoping.
+	DBRoleClaim string
+	// ClientDBRoles maps client ids (`azp` claim) to per-app DB roles — the
+	// fallback when DBRoleClaim is unset/absent. JSON map via CLIENT_DB_ROLES.
+	ClientDBRoles map[string]string
 
 	SubjectTypeClaim   string
 	SubjectTypeDefault string
@@ -81,6 +107,7 @@ func Load() (*Config, error) {
 		RequiredScope:        env("REQUIRED_SCOPE", ""),
 		RolesClaims:          env("JWT_ROLES_CLAIM", ""),
 		SearchRequiredRole:   env("SEARCH_REQUIRED_ROLE", ""),
+		DBRoleClaim:          env("DB_ROLE_CLAIM", ""),
 		SubjectTypeClaim:     env("SUBJECT_TYPE_CLAIM", "subject_type"),
 		SubjectTypeDefault:   env("SUBJECT_TYPE_DEFAULT", "internal_user"),
 		SubjectIDClaim:       env("SUBJECT_ID_CLAIM", "preferred_username"),
@@ -106,6 +133,11 @@ func Load() (*Config, error) {
 			JWKSURL: c.JWKSURL, JWKSFile: c.JWKSFile,
 		})
 	}
+	if raw := os.Getenv("CLIENT_DB_ROLES"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &c.ClientDBRoles); err != nil {
+			return nil, fmt.Errorf("parsing CLIENT_DB_ROLES: %w", err)
+		}
+	}
 	if raw := os.Getenv("JWT_ISSUERS"); raw != "" {
 		var extra []Issuer
 		if err := json.Unmarshal([]byte(raw), &extra); err != nil {
@@ -116,6 +148,16 @@ func Load() (*Config, error) {
 	for i, iss := range c.Issuers {
 		if iss.JWKSURL == "" && iss.JWKSFile == "" {
 			return nil, fmt.Errorf("issuer %d (%q) has no jwks_url or jwks_file", i, iss.Issuer)
+		}
+		for _, p := range iss.Stores {
+			if _, err := regexp.Compile("^(?:" + p + ")$"); err != nil {
+				return nil, fmt.Errorf("issuer %q: invalid store pattern %q: %w", iss.Issuer, p, err)
+			}
+		}
+		for _, p := range iss.DBRoles {
+			if _, err := regexp.Compile("^(?:" + p + ")$"); err != nil {
+				return nil, fmt.Errorf("issuer %q: invalid db_roles pattern %q: %w", iss.Issuer, p, err)
+			}
 		}
 	}
 	if len(c.Issuers) == 0 {

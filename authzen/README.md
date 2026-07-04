@@ -20,6 +20,10 @@ Both expose identical endpoints and require a valid JWT (ES256/RS256).
 | GET | `/.well-known/authzen-configuration` | PDP discovery (no auth) |
 | GET | `/healthz` | Health check (no auth) |
 
+Every `access/v1` endpoint (and the discovery document) is also available
+**store-scoped** under `/stores/{store}/…` — see
+[Multi-Store Support](#multi-store-support).
+
 ## Quick Start
 
 ```bash
@@ -180,10 +184,73 @@ subject is used regardless of the flag.
 
 ## Multi-Store Support
 
-Requests are scoped to an authorization store. The store is selected via:
+Requests are scoped to an authorization store. The store is selected via
+(first match wins):
 
-1. The `X-AuthZ-Store` HTTP header (configurable name)
-2. The `DEFAULT_STORE` environment variable (default: `demo`)
+1. **The URL path** — every endpoint is also available store-scoped, e.g.
+   `POST /stores/{store}/access/v1/evaluation`. Each store presents as its
+   own AuthZEN PDP, including a store-scoped discovery document at
+   `GET /stores/{store}/.well-known/authzen-configuration` (whose endpoint
+   URLs carry the store prefix).
+2. The `X-AuthZ-Store` HTTP header (configurable name)
+3. The `DEFAULT_STORE` environment variable (default: `demo`)
+
+**Per-issuer store binding.** In multi-tenant setups, bind each trusted
+issuer to the stores its tokens may access via the `stores` field in
+`JWT_ISSUERS` — a list of **anchored regular expressions** (plain names
+match exactly; `tenant-a-.*` covers a store family):
+
+```
+JWT_ISSUERS=[{"issuer":"https://tenant-a.idp","jwks_url":"…","stores":["tenant-a","tenant-a-.*"]}]
+```
+
+A token from that issuer selecting any other store is rejected with `403`.
+Issuers without a `stores` list are unrestricted. Note that
+`SEARCH_REQUIRED_ROLE` gates search globally, not per store.
+
+## Per-App Namespace Enforcement (authzen-direct)
+
+pgauthz [namespace restrictions](../docs/DEVELOPMENT.md#namespace-based-write-access-control)
+key on the **effective DB role**. `authzen-direct` can derive a per-app role
+from the verified token and assume it per request (`SET LOCAL ROLE` inside a
+transaction), so namespaced types are enforced per calling application:
+
+1. **`DB_ROLE_CLAIM`** — dot-separated claim path carrying the role (mirrors
+   the OPA write path's `WRITER_DB_ROLE_CLAIM`). Prefer configuring the claim
+   per client at the IdP (e.g. a hardcoded `db_role` claim on each Keycloak
+   client — the `app-dms` pattern): declarative and auditable.
+2. **Per-issuer `client_db_roles`** — a client-id (`azp`) → role map inside a
+   `JWT_ISSUERS` entry. Preferred in multi-issuer setups: `azp` is only
+   unique *within* an issuer, so issuer-scoped maps avoid cross-tenant azp
+   collisions.
+3. **`CLIENT_DB_ROLES`** — the global fallback map, for single-issuer setups
+   or IdPs where neither claims nor per-issuer config apply:
+   `{"app-hr":"app_hr","app-dms":"app_dms"}`.
+
+The claim wins, then the issuer-scoped map, then the global map. **Per-issuer
+`db_roles` binding:** without it, any trusted issuer could mint a token
+claiming another tenant's role — list the roles (anchored regex patterns)
+each issuer may yield:
+
+```
+JWT_ISSUERS=[{"issuer":"https://tenant-a.idp","jwks_url":"…",
+              "stores":["tenant-a-.*"],
+              "db_roles":["app_hr","app_hr_.*"],
+              "client_db_roles":{"app-hr":"app_hr"}}]
+```
+
+A token yielding a non-matching role is rejected with `403` — never silently
+downgraded to the fixed connection role (which could widen access). Issuers
+without `db_roles` are unrestricted. Before
+assuming a role the backend validates it (member of `authz_reader`, **not**
+admin-capable — mirroring the writer's `_pre_request()` policy) and fails
+closed on unknown roles. The role must also be `GRANT`ed to the service's
+`DATABASE_URL` user. With neither variable set, behavior is unchanged (the
+fixed connection role applies).
+
+> `authzen-opa` does **not** support this yet — the OPA→PostgREST *read* path
+> has no role-switch hook (only the writer does). See the roadmap note in the
+> repo's `scratch/notes/todos.md`.
 
 ## Configuration
 
@@ -199,9 +266,11 @@ All configuration is via environment variables.
 | `JWKS_FILE` | | Path to local JWKS file (required if `JWKS_URL` not set) |
 | `JWT_ISSUER` | | Expected `iss` claim (optional) |
 | `JWT_AUDIENCE` | | Expected `aud` claim (optional) |
-| `JWT_ISSUERS` | | Additional trusted issuers: JSON array of `{issuer, audience, jwks_url, jwks_file}`; the token's `iss` selects the validator (see [Authentication](#authentication)) |
+| `JWT_ISSUERS` | | Additional trusted issuers: JSON array of `{issuer, audience, jwks_url, jwks_file, stores, db_roles, client_db_roles}`; `iss` selects the validator; `stores` / `db_roles` (anchored regex lists) bind the issuer to specific stores / per-app DB roles; `client_db_roles` maps this issuer's client ids to roles |
 | `JWT_ROLES_CLAIM` | | Comma-separated dotted claim paths aggregated into the caller's roles (e.g. `realm_access.roles,resource_access.authz-api.roles`) |
 | `SEARCH_REQUIRED_ROLE` | | If set, the `search/*` endpoints require this role (`403` otherwise); empty = search open to any authenticated caller |
+| `DB_ROLE_CLAIM` | | (direct) Dot-separated claim path with the caller's per-app DB role for namespace enforcement (see [Per-App Namespace Enforcement](#per-app-namespace-enforcement-authzen-direct)) |
+| `CLIENT_DB_ROLES` | | (direct) JSON map client id (`azp`) → per-app DB role; fallback when `DB_ROLE_CLAIM` is unset/absent |
 | `REQUIRED_SCOPE` | | Required scope in `scope` claim (optional) |
 | `SUBJECT_ID_CLAIM` | `preferred_username` | JWT claim for subject ID |
 | `SUBJECT_ID_FALLBACK_CLAIM` | `sub` | Fallback JWT claim for subject ID |

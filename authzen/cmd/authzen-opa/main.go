@@ -58,6 +58,7 @@ func run() error {
 	for _, i := range cfg.Issuers {
 		issuers = append(issuers, api.IssuerConfig{
 			Issuer: i.Issuer, Audience: i.Audience, JWKSURL: i.JWKSURL, JWKSFile: i.JWKSFile,
+			DBRoles: i.DBRoles, ClientDBRoles: i.ClientDBRoles,
 		})
 	}
 	jwtMW := api.NewJWTMiddleware(api.JWTConfig{
