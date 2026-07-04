@@ -76,6 +76,14 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Documentation
 
+- **Security self-audit refreshed** (`docs/SECURITY-AUDIT.md`) for the v0.6
+  surface: AuthZEN multi-issuer routing + store/role bindings, the two new
+  role-switch hooks (writer + reader), token forwarding and the trusted-PEP
+  `input.db_role` path, per-role OPA cache partitioning, and the model registry
+  as a cross-store propagation path; playground reviewed as a dev-only tool.
+  No High/Critical code findings; four new Info/Low findings (F7–F10) accepted
+  with operational controls, plus expanded operational-risk and hardening
+  checklists.
 - **AuthZEN isolation asymmetry stated explicitly** (authzen/README.md +
   PRODUCTION.md checklist): `authzen-opa` does not provide the same
   database-enforced per-application namespace isolation as `authzen-direct` —
