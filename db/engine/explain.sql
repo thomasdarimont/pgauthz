@@ -309,6 +309,18 @@ $$;
 -- ONLY for lack of required context. Errors raise (unchanged); the HTTP
 -- tiers map them to their own error envelope. Cost: this runs the full
 -- explain machinery — per-decision opt-in, not a hot-path default.
+--
+-- ADVISORY, NOT COMPOSITIONAL (known limitation — see SECURITY-AUDIT / review
+-- 2026-07-05). `state` is derived by aggregating missing-context keys across
+-- the whole trace, not by propagating allow|deny|conditional through the
+-- intersection/exclusion structure. So in a rule like `A AND B` where A is a
+-- hard DENY and B is conditional-on-missing-context, this may report
+-- `conditional` even though supplying the context cannot change the DENY.
+-- **It never over-reports `allow`** — `allow` fires only on the real boolean
+-- decision (v_allowed) — so no authorization is ever wrong; the cost of a
+-- false `conditional` is at most one wasted "supply the keys and re-check"
+-- (which then returns deny). Treat `conditional` as a hint to retry, never as
+-- a promise. A future compositional tri-state propagation will make it exact.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.check_access_detailed(
     p_store       text,

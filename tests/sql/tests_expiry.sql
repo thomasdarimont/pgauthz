@@ -130,6 +130,22 @@ BEGIN
 END;
 $$;
 
+-- Per-statement freshness (migration 0007): expiry is judged at
+-- statement_timestamp(), not the frozen transaction now(). The two checks
+-- below are SEPARATE top-level statements inside ONE explicit transaction
+-- (each advances statement_timestamp), with the grant expiring between them.
+-- With the old now() the second check would wrongly stay true. (Front-door
+-- traffic is one statement per request, so this is exactly the real pattern.)
+SELECT authz.write_tuple('test_exp', 'user', 'fresh_probe', 'viewer', 'doc', 'd1',
+                         p_expires_at := statement_timestamp() + interval '1 second');
+BEGIN;
+SELECT _test_assert('exp_16_fresh_before_expiry',
+    authz.check_access('test_exp', 'user', 'fresh_probe', 'can_read', 'doc', 'd1')::text, 'true');
+SELECT pg_sleep(1.3);
+SELECT _test_assert('exp_17_fresh_after_expiry_same_tx',
+    authz.check_access('test_exp', 'user', 'fresh_probe', 'can_read', 'doc', 'd1')::text, 'false');
+COMMIT;
+
 -- Cleanup function: garbage-collects expired rows (audited), leaves live ones.
 DO $$
 DECLARE

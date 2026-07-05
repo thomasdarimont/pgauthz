@@ -772,12 +772,28 @@ flexibility you actually need:
 | **Application-side revocation** (delete the tuple at T, e.g. via a scheduler/outbox) | You want an explicit, auditable *revocation event* at T, or downstream consumers (watch/changefeed) must see the removal | Requires external machinery and is only as timely as it runs; between T and the delete, the grant still holds. |
 | **Contextual tuples** ([§9](#9-contextual-tuples)) | The grant should live no longer than a single request | Nothing stored at all — the extreme end of "expiring". |
 
+> ⚠ **Re-granting without `expires_at` makes a grant permanent.** `write_tuple`
+> and the batch writers treat an omitted `expires_at` as "no expiry" and
+> **clear** any existing expiry on the row (the upsert overwrites it). Generic
+> synchronization / upsert code that doesn't carry the expiry forward will
+> silently turn an expiring grant into a permanent one. If you re-grant, either
+> pass the intended `expires_at` explicitly, or read the current value first
+> (read-modify-write). Explicit per-write mutation semantics
+> (preserve / set / clear) are a roadmap item.
+
 Rule of thumb: reach for **`expires_at`** first; move to a **condition** only
 when the window is more complex than "until T"; add **scheduled deletion** on
 top of either when consumers need an explicit revocation event in the
 changefeed. The demo walks the contrast in
 [`examples/models/demo/demo.sql`](../examples/models/demo/demo.sql)
 (sections 4 and 4z).
+
+**Live expiry is judged per statement.** A live check/search compares
+`expires_at` against `statement_timestamp()` (migration 0007), so expiry takes
+effect at the start of each authorization statement — fresh per request (the
+front door runs one statement per request) and consistent within a single
+`list_*`. It is NOT frozen at transaction start, so a long-lived direct-SQL
+transaction still sees a grant expire between its statements.
 
 **Migration note — expiry and time travel.** The audit trail records
 *transaction time*: `performed_at` is when **this system** learned a fact,

@@ -7,6 +7,31 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Live expiry now judged per statement, not per transaction** (migration
+  0007; review 2026-07-05). The expiry RLS policy compared `expires_at`
+  against `now()`, which in PostgreSQL is transaction-start time — so a
+  long-lived direct-SQL transaction could keep seeing a tuple after its
+  wall-clock expiry (the request-per-transaction front door was unaffected).
+  It now uses `statement_timestamp()`, so every check/search re-evaluates
+  expiry at its own start, matching the documented "stops granting the moment
+  expiry passes". Regression-tested.
+
+### Documentation
+
+- **`check_access_detailed` `conditional` state is advisory, not
+  compositional** (known limitation): it aggregates missing condition-context
+  keys across the trace rather than propagating allow/deny/conditional through
+  intersection/exclusion, so `A AND B` with A conditional and B a hard deny
+  may report `conditional`. It **never over-reports `allow`** (no wrong
+  authorization) — treat it as a retry hint. A compositional fix is on the
+  roadmap.
+- **Re-granting a tuple without `expires_at` clears its expiry** (makes it
+  permanent) — documented as a footgun for generic sync/upsert code, which
+  should pass `expires_at` explicitly or read-modify-write.
+
+
 ## [0.7.1] - 2026-07-05
 
 ### Security
