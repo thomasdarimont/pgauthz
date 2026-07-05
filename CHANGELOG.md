@@ -11,6 +11,16 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **`check_access_detailed` `conditional` is now compositional** (review #4
+  P0). Previously `state` aggregated missing condition-context keys across the
+  whole trace, so an intersection/exclusion with a structural deny the context
+  could not repair (e.g. `A AND B` with A conditional-on-missing and B a hard
+  deny) was mis-reported as `conditional`. It now confirms `conditional` with
+  a second **optimistic** evaluation (conditions failing solely for missing
+  context treated as passing): a decision is `conditional` only when supplying
+  the missing context could actually flip DENY→ALLOW, else `deny`. `allow`
+  still fires only on the real boolean, so no authorization was ever wrong.
+  8 truth-table tests across OR/AND/EXCLUSION.
 - **Live expiry now judged per statement, not per transaction** (migration
   0007; review 2026-07-05). The expiry RLS policy compared `expires_at`
   against `now()`, which in PostgreSQL is transaction-start time — so a
@@ -22,13 +32,7 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Documentation
 
-- **`check_access_detailed` `conditional` state is advisory, not
-  compositional** (known limitation): it aggregates missing condition-context
-  keys across the trace rather than propagating allow/deny/conditional through
-  intersection/exclusion, so `A AND B` with A conditional and B a hard deny
-  may report `conditional`. It **never over-reports `allow`** (no wrong
-  authorization) — treat it as a retry hint. A compositional fix is on the
-  roadmap.
+
 - **Re-granting a tuple without `expires_at` clears its expiry** (makes it
   permanent) — documented as a footgun for generic sync/upsert code, which
   should pass `expires_at` explicitly or read-modify-write.

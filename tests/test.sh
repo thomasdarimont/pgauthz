@@ -162,6 +162,11 @@ echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_expiry.sql"
 
 echo ""
+echo "==> Running compositional tri-state decision checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_decision_tristate.sql"
+
+echo ""
 echo "==> Running decision detail (rich results) checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_decision_detail.sql"

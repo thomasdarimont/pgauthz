@@ -125,6 +125,20 @@ BEGIN
         RETURN true;
     END IF;
 
+    -- Optimistic pass (compositional tri-state, set only by
+    -- check_access_detailed's second evaluation): a condition that would fail
+    -- ONLY because its required context is missing is treated as PASSING, so
+    -- the surrounding graph reveals whether supplying that context could flip
+    -- the decision. A condition that evaluates to false with COMPLETE context
+    -- still denies. Never set on a normal check — contained to the detailed
+    -- classifier's transaction-local GUC.
+    IF current_setting('authz._assume_missing_ctx', true) = 'on'
+       AND array_length(
+             authz._condition_missing_keys(p_condition_id, p_condition_context, p_request_context),
+             1) > 0 THEN
+        RETURN true;
+    END IF;
+
     -- Bound context size (DoS guard, SECURITY-AUDIT F5): a caller-supplied
     -- request context (or a stored one) larger than authz.max_context_bytes
     -- is rejected before it is bound into condition evaluation. Raised with a

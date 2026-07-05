@@ -310,17 +310,14 @@ $$;
 -- tiers map them to their own error envelope. Cost: this runs the full
 -- explain machinery — per-decision opt-in, not a hot-path default.
 --
--- ADVISORY, NOT COMPOSITIONAL (known limitation — see SECURITY-AUDIT / review
--- 2026-07-05). `state` is derived by aggregating missing-context keys across
--- the whole trace, not by propagating allow|deny|conditional through the
--- intersection/exclusion structure. So in a rule like `A AND B` where A is a
--- hard DENY and B is conditional-on-missing-context, this may report
--- `conditional` even though supplying the context cannot change the DENY.
--- **It never over-reports `allow`** — `allow` fires only on the real boolean
--- decision (v_allowed) — so no authorization is ever wrong; the cost of a
--- false `conditional` is at most one wasted "supply the keys and re-check"
--- (which then returns deny). Treat `conditional` as a hint to retry, never as
--- a promise. A future compositional tri-state propagation will make it exact.
+-- `state` is COMPOSITIONAL. A denied decision is `conditional` only when
+-- supplying the missing context could actually flip it — proven by a second,
+-- OPTIMISTIC evaluation (authz._assume_missing_ctx) that treats conditions
+-- failing solely for missing context as passing. If that optimistic pass still
+-- denies, a structural deny remains (e.g. `A AND B` with A conditional and B a
+-- hard deny) → `deny`. `allow` fires only on the real boolean decision, so no
+-- authorization is ever wrong. Cost: two evaluations on the opt-in detailed
+-- path (only when the first denies AND missing keys exist).
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.check_access_detailed(
     p_store       text,
@@ -364,11 +361,28 @@ BEGIN
       FROM authz.store_model_state s
      WHERE s.store_id = authz._s(p_store);
 
-    v_state := CASE
-        WHEN v_allowed THEN 'allow'
-        WHEN jsonb_array_length(v_missing) > 0 THEN 'conditional'
-        ELSE 'deny'
-    END;
+    -- Compositional classification. A denied decision is `conditional` only
+    -- if supplying the missing context COULD flip it — verified by a second,
+    -- OPTIMISTIC evaluation that treats conditions failing solely for missing
+    -- context as passing (authz._assume_missing_ctx). If that optimistic check
+    -- ALSO denies, there is a structural deny the context cannot repair (e.g.
+    -- `A AND B` with A conditional-on-missing and B a hard deny) → `deny`, not
+    -- `conditional`. This never over-reports `allow` (that stays the real
+    -- boolean) and no longer over-reports `conditional`.
+    IF v_allowed THEN
+        v_state := 'allow';
+    ELSIF jsonb_array_length(v_missing) > 0 THEN
+        PERFORM set_config('authz._assume_missing_ctx', 'on', true);
+        IF authz.check_access_with_context(p_store, p_user_type, p_user_id,
+                                           p_relation, p_object_type, p_object_id, context) THEN
+            v_state := 'conditional';
+        ELSE
+            v_state := 'deny';
+        END IF;
+        PERFORM set_config('authz._assume_missing_ctx', '', true);
+    ELSE
+        v_state := 'deny';
+    END IF;
 
     RETURN jsonb_build_object(
         'decision',        v_allowed,
