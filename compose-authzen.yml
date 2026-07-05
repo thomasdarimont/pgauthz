@@ -87,6 +87,9 @@ services:
       # Internal listener for the policy-FREE native raw endpoints the OPA
       # sidecar calls back into (replaces OPA→PostgREST). Read-only role.
       INTERNAL_LISTEN_ADDR: ":8081"
+      # Shared service credential the internal listener requires — must match
+      # the OPA service's NATIVE_SERVICE_TOKEN. Override in production.
+      INTERNAL_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
       DATABASE_URL: "postgres://authzen_direct:${AUTHZEN_DIRECT_PASSWORD:-authz}@authz-db:5432/authz"
       DB_POOL_MAX: "10"
       OPA_URL: "http://opa:8181"

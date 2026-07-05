@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rsa"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -21,6 +22,40 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 )
+
+// InternalRoleHeader is the header OPA forwards the caller's per-app DB role in
+// when calling the native callback surface (matches the Rego's X-Authz-Role).
+const InternalRoleHeader = "X-Authz-Role"
+
+// ServiceAuthMiddleware guards the internal native-callback listener with a
+// shared SERVICE credential — NOT the end-user JWT. It verifies
+// Authorization: Bearer <token> (constant-time) proving the call came from the
+// trusted OPA sidecar, then trusts OPA's asserted per-app DB role
+// (X-Authz-Role header) and subject (request body) — the trusted-backend role
+// PostgREST plays today. /healthz is exempt so liveness probes need no
+// credential. app.Run refuses to start the internal listener without a token,
+// so this never runs open.
+func ServiceAuthMiddleware(token string) func(http.Handler) http.Handler {
+	want := []byte(token)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/healthz" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			got := []byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+			if len(want) == 0 || subtle.ConstantTimeCompare(got, want) != 1 {
+				writeUnauthorized(w)
+				return
+			}
+			ctx := r.Context()
+			if role := r.Header.Get(InternalRoleHeader); role != "" {
+				ctx = context.WithValue(ctx, ctxDBRole, role)
+			}
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
 
 type contextKey int
 

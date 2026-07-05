@@ -12,6 +12,21 @@ default_store := _env.DEFAULT_STORE
 # Set via POSTGREST_URL env var on the OPA service.
 postgrest_url := _env.POSTGREST_URL
 
+# pgauthzd native callback base URL — the internal (policy-free) listener the
+# read/decision data client calls back into instead of PostgREST. Set via
+# NATIVE_URL on the OPA service (e.g. http://authzen-opa:8081). When unset the
+# data client falls back to PostgREST (legacy).
+native_url := _env.NATIVE_URL
+
+# Shared SERVICE credential presented to the native callback listener
+# (Authorization: Bearer). Proves the call came from this OPA. Set via
+# NATIVE_SERVICE_TOKEN, matching pgauthzd's INTERNAL_SERVICE_TOKEN.
+native_service_token := _env.NATIVE_SERVICE_TOKEN
+
+# use_native is true when a native callback URL is configured — the data client
+# targets pgauthzd's native API; otherwise it uses PostgREST (legacy).
+use_native if native_url
+
 # PostgREST WRITER base URL — the fixed-role (authz_writer) write instance.
 # OPA forwards authorized writes here; it is not reachable from the host.
 # Set via POSTGREST_WRITER_URL env var on the OPA service.

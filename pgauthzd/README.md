@@ -342,6 +342,7 @@ All configuration is via environment variables.
 | `FORWARD_TOKEN_TO_OPA` | `false` | Forward the verified bearer token to OPA as `input.token` so OPA re-validates it — lets OPA run token-only (`REQUIRE_TOKEN_FOR_READS=true`) instead of trusting the forwarded subject. Leave off for trusted-PEP setups that check arbitrary subjects |
 | `DATABASE_URL` | *empty* | Optional. A **read-only** DSN enables the native raw callback surface (`/pgauthz/v1/check`, `list-*`) an OPA sidecar calls back into instead of PostgREST. Asserted read-only at startup |
 | `INTERNAL_LISTEN_ADDR` | *empty* | Address for the internal listener serving that native raw surface (e.g. `:8081`). **Do not publish it** — bind to the OPA sidecar network. Empty = raw surface not served |
+| `INTERNAL_SERVICE_TOKEN` | *empty* | Shared service credential the internal listener requires (`Authorization: Bearer`), proving the call came from the OPA sidecar. Must match OPA's `NATIVE_SERVICE_TOKEN`. **Required** when `INTERNAL_LISTEN_ADDR` is set — startup fails closed without it. The listener then trusts OPA's asserted subject (body) + role (`X-Authz-Role`), not the end-user JWT |
 
 ## Architecture
 

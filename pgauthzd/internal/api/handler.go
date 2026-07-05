@@ -78,12 +78,19 @@ func NewExternalRouter(h *Handler, jwtMW *JWTMiddleware) http.Handler {
 
 // NewInternalRouter is the compat-opa INTERNAL listener: the policy-FREE native
 // raw read surface only (served by the direct pgx `raw` backend). This is what
-// the OPA sidecar calls back into. Must not be exposed to untrusted callers.
-func NewInternalRouter(h *Handler, jwtMW *JWTMiddleware) http.Handler {
+// the OPA sidecar calls back into. It is guarded by a shared SERVICE credential
+// (not the end-user JWT) — OPA already authenticated the caller and asserts the
+// subject + per-app role. Must not be exposed to untrusted callers.
+func NewInternalRouter(h *Handler, serviceToken string) http.Handler {
 	mux := http.NewServeMux()
 	registerNativeRead(mux, h)
 	mux.HandleFunc("GET /healthz", h.Healthz)
-	return withMiddleware(mux, jwtMW)
+	var handler http.Handler = mux
+	handler = ServiceAuthMiddleware(serviceToken)(handler)
+	handler = RequestID(handler)
+	handler = Logging(handler)
+	handler = Recovery(handler)
+	return handler
 }
 
 func withMiddleware(mux *http.ServeMux, jwtMW *JWTMiddleware) http.Handler {

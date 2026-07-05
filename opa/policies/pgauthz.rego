@@ -51,9 +51,46 @@ _read_role_header := {} if not _read_db_role
 
 _read_headers := object.union({"Content-Type": "application/json"}, _read_role_header)
 
-# check_access delegates to the Zanzibar model in PostgreSQL.
-# Returns true if the subject has the given relation on the object.
+# Native callback headers: the shared SERVICE credential (proves this is our
+# OPA) plus the per-app role (X-Authz-Role) the internal listener trusts, plus
+# Content-Type. The internal listener does NOT verify the end-user JWT — OPA
+# already authenticated the caller and asserts the subject (in the body).
+_native_auth := {"Authorization": concat(" ", ["Bearer", config.native_service_token])} if config.native_service_token
+
+_native_auth := {} if not config.native_service_token
+
+_native_headers := object.union(object.union({"Content-Type": "application/json"}, _native_auth), _read_role_header)
+
+# _native_path builds a store-scoped native URL: the {store} path segment
+# selects the pgauthz store on the internal listener.
+_native_path(store, suffix) := concat("", [config.native_url, "/stores/", store, "/pgauthz/v1/", suffix])
+
+# check_access delegates to the Zanzibar model in PostgreSQL. Returns true if
+# the subject has the given relation on the object.
+#
+# Native path (config.use_native): call pgauthzd's raw /pgauthz/v1/check on the
+# internal listener; the answer is {"allowed": bool}.
+check_access(store, subject_type, subject_id, relation, object_type, object_id) := response.body.allowed if {
+	config.use_native
+	response := http.send({
+		"method": "POST",
+		"url": _native_path(store, "check"),
+		"headers": _native_headers,
+		"body": {
+			"subject": {"type": subject_type, "id": subject_id},
+			"action": {"name": relation},
+			"resource": {"type": object_type, "id": object_id},
+		},
+		"raise_error": false,
+		"force_cache": true,
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
+	})
+	response.status_code == 200
+}
+
+# PostgREST fallback (no native_url configured): the legacy /rpc/check_access.
 check_access(store, subject_type, subject_id, relation, object_type, object_id) := response.body if {
+	not config.use_native
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/check_access"]),
@@ -76,6 +113,23 @@ check_access(store, subject_type, subject_id, relation, object_type, object_id) 
 # explain_access returns the nested resolution trace tree ("why allowed/denied")
 # for a single check — used by the playground / debugging, not for decisions.
 explain_access(store, subject_type, subject_id, relation, object_type, object_id) := response.body if {
+	config.use_native
+	response := http.send({
+		"method": "POST",
+		"url": _native_path(store, "explain"),
+		"headers": _native_headers,
+		"body": {
+			"subject": {"type": subject_type, "id": subject_id},
+			"action": {"name": relation},
+			"resource": {"type": object_type, "id": object_id},
+		},
+		"raise_error": false,
+	})
+	response.status_code == 200
+}
+
+explain_access(store, subject_type, subject_id, relation, object_type, object_id) := response.body if {
+	not config.use_native
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/explain_access"]),
@@ -117,7 +171,27 @@ check_access_detailed(store, subject_type, subject_id, relation, object_type, ob
 }
 
 # check_access_with_context: with request context for condition evaluation.
+check_access_with_context(store, subject_type, subject_id, relation, object_type, object_id, ctx) := response.body.allowed if {
+	config.use_native
+	response := http.send({
+		"method": "POST",
+		"url": _native_path(store, "check"),
+		"headers": _native_headers,
+		"body": {
+			"subject": {"type": subject_type, "id": subject_id},
+			"action": {"name": relation},
+			"resource": {"type": object_type, "id": object_id},
+			"context": ctx,
+		},
+		"raise_error": false,
+		"force_cache": true,
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
+	})
+	response.status_code == 200
+}
+
 check_access_with_context(store, subject_type, subject_id, relation, object_type, object_id, ctx) := response.body if {
+	not config.use_native
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/check_access_with_context"]),
@@ -142,7 +216,32 @@ check_access_with_context(store, subject_type, subject_id, relation, object_type
 # p_checks is an array of {user_type, user_id, relation, object_type, object_id} objects.
 # p_semantic is one of: "execute_all" (default), "deny_on_first_deny", "permit_on_first_permit".
 # Returns an array of {decision: bool} objects (same order as input).
+# _native_check_elem maps an engine-shaped batch check
+# ({user_type,user_id,relation,object_type,object_id}) to the native
+# subject/action/resource shape.
+_native_check_elem(c) := {
+	"subject": {"type": c.user_type, "id": c.user_id},
+	"action": {"name": c.relation},
+	"resource": {"type": c.object_type, "id": c.object_id},
+}
+
+# Native batch returns {"results":[bool]} in input order; the contract here is
+# an ordered array of {decision: bool}, so re-wrap. Array comprehensions
+# preserve index order on both sides.
+check_access_batch(store, checks) := [{"decision": d} | some d in response.body.results] if {
+	config.use_native
+	response := http.send({
+		"method": "POST",
+		"url": _native_path(store, "check-batch"),
+		"headers": _native_headers,
+		"body": {"checks": [_native_check_elem(c) | some c in checks]},
+		"raise_error": false,
+	})
+	response.status_code == 200
+}
+
 check_access_batch(store, checks) := response.body if {
+	not config.use_native
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/check_access_batch"]),
@@ -156,7 +255,24 @@ check_access_batch(store, checks) := response.body if {
 	response.status_code == 200
 }
 
+check_access_batch_with_options(store, checks, ctx, semantic) := [{"decision": d} | some d in response.body.results] if {
+	config.use_native
+	response := http.send({
+		"method": "POST",
+		"url": _native_path(store, "check-batch"),
+		"headers": _native_headers,
+		"body": {
+			"checks": [_native_check_elem(c) | some c in checks],
+			"context": ctx,
+			"semantic": semantic,
+		},
+		"raise_error": false,
+	})
+	response.status_code == 200
+}
+
 check_access_batch_with_options(store, checks, ctx, semantic) := response.body if {
+	not config.use_native
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/check_access_batch"]),
@@ -172,8 +288,28 @@ check_access_batch_with_options(store, checks, ctx, semantic) := response.body i
 	response.status_code == 200
 }
 
-# list_objects returns which objects a subject can access.
+# list_objects returns which objects a subject can access (a set of ids).
 list_objects(store, subject_type, subject_id, relation, object_type) := objects if {
+	config.use_native
+	response := http.send({
+		"method": "POST",
+		"url": _native_path(store, "list-objects"),
+		"headers": _native_headers,
+		"body": {
+			"subject": {"type": subject_type, "id": subject_id},
+			"action": {"name": relation},
+			"resource": {"type": object_type},
+		},
+		"raise_error": false,
+		"force_cache": true,
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
+	})
+	response.status_code == 200
+	objects := {o | some o in response.body.objects}
+}
+
+list_objects(store, subject_type, subject_id, relation, object_type) := objects if {
+	not config.use_native
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_objects"]),
@@ -195,6 +331,27 @@ list_objects(store, subject_type, subject_id, relation, object_type) := objects 
 
 # list_objects with request context.
 list_objects_with_context(store, subject_type, subject_id, relation, object_type, ctx) := objects if {
+	config.use_native
+	response := http.send({
+		"method": "POST",
+		"url": _native_path(store, "list-objects"),
+		"headers": _native_headers,
+		"body": {
+			"subject": {"type": subject_type, "id": subject_id},
+			"action": {"name": relation},
+			"resource": {"type": object_type},
+			"context": ctx,
+		},
+		"raise_error": false,
+		"force_cache": true,
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
+	})
+	response.status_code == 200
+	objects := {o | some o in response.body.objects}
+}
+
+list_objects_with_context(store, subject_type, subject_id, relation, object_type, ctx) := objects if {
+	not config.use_native
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_objects"]),
@@ -311,8 +468,28 @@ list_objects_page_after_with_context(store, subject_type, subject_id, relation, 
 	objects := [obj.object_id | some obj in response.body]
 }
 
-# list_subjects returns which subjects have access to an object.
+# list_subjects returns which subjects have access to an object (a set of ids).
 list_subjects(store, subject_type, relation, object_type, object_id) := subjects if {
+	config.use_native
+	response := http.send({
+		"method": "POST",
+		"url": _native_path(store, "list-subjects"),
+		"headers": _native_headers,
+		"body": {
+			"subject": {"type": subject_type},
+			"action": {"name": relation},
+			"resource": {"type": object_type, "id": object_id},
+		},
+		"raise_error": false,
+		"force_cache": true,
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
+	})
+	response.status_code == 200
+	subjects := {s | some s in response.body.subjects}
+}
+
+list_subjects(store, subject_type, relation, object_type, object_id) := subjects if {
+	not config.use_native
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_subjects"]),
@@ -426,8 +603,27 @@ check_access_with_contextual_tuples_ctx(store, subject_type, subject_id, relatio
 	response.status_code == 200
 }
 
-# list_actions returns what a subject can do on an object.
+# list_actions returns what a subject can do on an object (a set of relations).
 list_actions(store, subject_type, subject_id, object_type, object_id) := actions if {
+	config.use_native
+	response := http.send({
+		"method": "POST",
+		"url": _native_path(store, "list-actions"),
+		"headers": _native_headers,
+		"body": {
+			"subject": {"type": subject_type, "id": subject_id},
+			"resource": {"type": object_type, "id": object_id},
+		},
+		"raise_error": false,
+		"force_cache": true,
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
+	})
+	response.status_code == 200
+	actions := {a | some a in response.body.actions}
+}
+
+list_actions(store, subject_type, subject_id, object_type, object_id) := actions if {
+	not config.use_native
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_actions"]),
@@ -546,6 +742,26 @@ _optional_fields(t, mapping) := {pname: t[sname] |
 
 # list_actions with request context.
 list_actions_with_context(store, subject_type, subject_id, object_type, object_id, ctx) := actions if {
+	config.use_native
+	response := http.send({
+		"method": "POST",
+		"url": _native_path(store, "list-actions"),
+		"headers": _native_headers,
+		"body": {
+			"subject": {"type": subject_type, "id": subject_id},
+			"resource": {"type": object_type, "id": object_id},
+			"context": ctx,
+		},
+		"raise_error": false,
+		"force_cache": true,
+		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
+	})
+	response.status_code == 200
+	actions := {a | some a in response.body.actions}
+}
+
+list_actions_with_context(store, subject_type, subject_id, object_type, object_id, ctx) := actions if {
+	not config.use_native
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_actions"]),

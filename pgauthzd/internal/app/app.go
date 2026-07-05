@@ -132,7 +132,12 @@ func Run(name string, force config.Profile) error {
 		h := api.NewHandler(backend, raw, cfg)
 		servers = append(servers, &http.Server{Addr: cfg.ListenAddr, Handler: api.NewExternalRouter(h, jwtMW)})
 		if raw != nil && cfg.InternalListenAddr != "" {
-			servers = append(servers, &http.Server{Addr: cfg.InternalListenAddr, Handler: api.NewInternalRouter(h, jwtMW)})
+			// Fail closed: the internal listener bypasses the policy layer, so it
+			// must never run without the shared service credential.
+			if cfg.InternalServiceToken == "" {
+				return fmt.Errorf("INTERNAL_LISTEN_ADDR is set but INTERNAL_SERVICE_TOKEN is empty; refusing to expose the native callback surface without a service credential")
+			}
+			servers = append(servers, &http.Server{Addr: cfg.InternalListenAddr, Handler: api.NewInternalRouter(h, cfg.InternalServiceToken)})
 			slog.Info("compat-opa internal (native raw) listener", "addr", cfg.InternalListenAddr)
 		} else if raw != nil {
 			slog.Warn("compat-opa native callback backend configured but INTERNAL_LISTEN_ADDR is empty; native raw surface will not be served")

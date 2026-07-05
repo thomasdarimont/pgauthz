@@ -66,11 +66,18 @@ type Config struct {
 	// must NOT be exposed to untrusted callers (it bypasses the policy layer) —
 	// bind it to the sidecar/localhost network. Empty = disabled.
 	InternalListenAddr string
-	BaseURL            string
-	JWKSURL            string
-	JWKSFile           string
-	JWTIssuer          string
-	JWTAudience        string
+	// InternalServiceToken is the shared SERVICE credential the internal
+	// listener requires (Authorization: Bearer <token>) — it proves the call
+	// came from the trusted OPA sidecar. The listener then trusts OPA's asserted
+	// subject (body) + per-app role (X-Authz-Role), the trusted-backend role
+	// PostgREST plays today. REQUIRED when InternalListenAddr is set (fail
+	// closed: no unauthenticated internal listener). Env INTERNAL_SERVICE_TOKEN.
+	InternalServiceToken string
+	BaseURL              string
+	JWKSURL              string
+	JWKSFile             string
+	JWTIssuer            string
+	JWTAudience          string
 
 	// Issuers is the resolved set of trusted issuers (the legacy single-issuer
 	// env vars plus any from JWT_ISSUERS).
@@ -147,6 +154,7 @@ func Load() (*Config, error) {
 		Profile:               Profile(env("PGAUTHORIZER_PROFILE", "")),
 		ListenAddr:            env("LISTEN_ADDR", ":8080"),
 		InternalListenAddr:    env("INTERNAL_LISTEN_ADDR", ""),
+		InternalServiceToken:  env("INTERNAL_SERVICE_TOKEN", ""),
 		BaseURL:               env("BASE_URL", ""),
 		JWKSURL:               env("JWKS_URL", ""),
 		JWKSFile:              env("JWKS_FILE", ""),
