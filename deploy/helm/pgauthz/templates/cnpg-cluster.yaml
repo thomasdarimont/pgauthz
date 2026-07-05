@@ -49,8 +49,8 @@ spec:
       owner: authz_owner          # non-superuser schema owner (roles.sql expects it)
       # Create the NOLOGIN privilege roles that the managed-role `inRoles` below
       # reference, AT BOOTSTRAP — before CloudNativePG reconciles the managed
-      # roles. Without this, CNPG cannot create authz_authenticator/authzen_direct
-      # ("role api_anon does not exist") because their inRoles targets are
+      # roles. Without this, CNPG cannot create authzen_direct/pgauthzd_rw
+      # ("role authz_reader does not exist") because their inRoles targets are
       # otherwise only created later by the migration Job — a fresh-install
       # deadlock. roles.sql re-creates these idempotently and adds the full grant
       # model. (postInit runs once, as superuser, only on first bootstrap.)
@@ -66,26 +66,26 @@ spec:
   # model (GRANTs) — its IF NOT EXISTS guards skip re-creating these.
   managed:
     roles:
-      - name: authz_authenticator
+      - name: authzen_direct
         ensure: present
-        comment: "PostgREST connects, SET ROLE per request"
+        comment: "read-only role: AuthZEN direct service + pgauthzd reader (decision-only)"
         login: true
-        inherit: false            # NOINHERIT — core to the per-request SET ROLE model
+        inherit: true             # inherits authz_reader (+ auditor per roles.sql)
         # CloudNativePG OWNS managed-role memberships and reconciles away any it
         # didn't grant — so the GRANTs roles.sql issues to this role get stripped
         # on the next reconcile. Declare them here as desired state instead. The
         # targets are created by the migration Job; CNPG retries until they exist.
-        inRoles: [api_anon, authz_reader, authz_auditor, authz_writer, authz_admin]
-        passwordSecret:
-          name: {{ include "pgauthz.fullname" . }}-authenticator
-      - name: authzen_direct
-        ensure: present
-        comment: "AuthZEN direct Go service (read-only)"
-        login: true
-        inherit: true             # inherits authz_reader
-        inRoles: [authz_reader]   # see note above — CNPG maintains this membership
+        inRoles: [authz_reader]
         passwordSecret:
           name: {{ include "pgauthz.fullname" . }}-authzen-direct
+      - name: pgauthzd_rw
+        ensure: present
+        comment: "writer role: pgauthzd writer (full profile) native write path"
+        login: true
+        inherit: true             # inherits authz_writer (+ auditor per roles.sql)
+        inRoles: [authz_writer, authz_auditor]  # see note above — CNPG maintains these
+        passwordSecret:
+          name: {{ include "pgauthz.fullname" . }}-pgauthzd-rw
       {{- range .Values.extraRoles }}
       # App role for direct SQL access (bypasses OPA — a TRUSTED service that
       # does its own authn/authz). Inherits the function-API privileges of its

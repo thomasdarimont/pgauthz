@@ -60,9 +60,10 @@ writer_role := "authz_writer" if not _env.WRITER_ROLE
 
 # Optional: JWT claim (dot-separated path) carrying the caller's per-app DB
 # role for namespace isolation, used by BOTH the write path and the read path.
-# When set, OPA forwards that role to PostgREST as the X-Authz-Role header;
-# the writer's _pre_request() / the reader's _pre_request_reader() validate it
-# and SET LOCAL ROLE to it, so namespace enforcement applies per application.
+# When set, OPA forwards that role to pgauthzd's native callback as the
+# X-Authz-Role header; pgauthzd validates it (reader for reads, writer for
+# writes; never admin) and SET LOCAL ROLEs to it, so namespace enforcement
+# applies per application.
 # Unset → no header (fixed authz_writer / api_anon apply).
 # Set via DB_ROLE_CLAIM, e.g. "db_role".
 db_role_claim_path := split(_env.DB_ROLE_CLAIM, ".") if _env.DB_ROLE_CLAIM

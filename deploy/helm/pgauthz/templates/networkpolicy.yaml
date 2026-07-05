@@ -2,8 +2,9 @@
 {{- $name := include "pgauthz.name" . }}
 {{- $full := include "pgauthz.fullname" . }}
 # Default-deny ingress for all chart pods; the rules below re-open only the
-# required paths. This is a core part of the security model: PostgREST is
-# unauthenticated behind OPA, so nothing but OPA may reach it.
+# required paths. This is a core part of the security model: the pgauthzd
+# reader/writer callback listeners bypass OPA's policy layer, so nothing but
+# OPA may reach them.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -14,7 +15,9 @@ spec:
     matchLabels: { app.kubernetes.io/name: {{ $name }} }
   policyTypes: [Ingress]
 ---
-# Reader: only OPA may connect.
+# pgauthzd reader callback (:8081): only OPA may connect. Egress to CNPG is
+# unrestricted (this default-deny governs Ingress only), so the reader still
+# reaches the read endpoint on 5432.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -22,14 +25,14 @@ metadata:
   labels: {{- include "pgauthz.labels" . | nindent 4 }}
 spec:
   podSelector:
-    matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: postgrest-reader }
+    matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: pgauthzd-reader }
   policyTypes: [Ingress]
   ingress:
     - from:
         - podSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: opa } }
-      ports: [{ port: 3000 }]
+      ports: [{ port: 8081 }]
 ---
-# Writer: only OPA may connect.
+# pgauthzd writer callback (:8081): only OPA may connect.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -37,12 +40,12 @@ metadata:
   labels: {{- include "pgauthz.labels" . | nindent 4 }}
 spec:
   podSelector:
-    matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: postgrest-writer }
+    matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: pgauthzd-writer }
   policyTypes: [Ingress]
   ingress:
     - from:
         - podSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: opa } }
-      ports: [{ port: 3001 }]
+      ports: [{ port: 8081 }]
 ---
 # OPA: from the ingress controller and from authzen-opa.
 apiVersion: networking.k8s.io/v1

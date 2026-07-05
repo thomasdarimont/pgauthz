@@ -34,74 +34,17 @@ services:
       # Named volume — no :z (that SELinux relabel flag is for bind mounts;
       # Docker manages a named volume's SELinux context itself).
       - authz-db-data:/var/lib/postgresql
-      # Creates the authz_authenticator login role on first init, before
-      # PostgREST connects (it exits if its login role is missing).
+      # Creates the service LOGIN roles (authz_authenticator, authzen_direct) on
+      # first init, before the services connect (they exit if their login role
+      # is missing; roles.sql — run later by init.sh — adds the grants).
       - ./db/security/initdb:/docker-entrypoint-initdb.d:ro
 
-  postgrest:
-    image: postgrest/postgrest:v14.14
-    environment:
-      # Dedicated non-superuser authenticator (created by db/security/roles.sql).
-      # Connecting as a superuser would bypass namespace access control.
-      PGRST_DB_URI: postgres://authz_authenticator:${AUTHZ_AUTHENTICATOR_PASSWORD:-authz}@authz-db:5432/authz
-      PGRST_DB_ANON_ROLE: api_anon
-      PGRST_DB_SCHEMAS: authz
-      PGRST_DB_POOL: "100"
-      PGRST_DB_POOL_ACQUISITION_TIMEOUT: "10"
-      PGRST_SERVER_PORT: "3000"
-      # Per-app namespace isolation on READS: validates the X-Authz-Role header
-      # that OPA forwards (from the DB_ROLE_CLAIM JWT claim) and SET LOCAL
-      # ROLEs to it, so read-side namespace checks key on the calling app
-      # instead of the fixed api_anon. No header -> api_anon (unchanged).
-      PGRST_DB_PRE_REQUEST: authz._pre_request_reader
-    # PostgREST exits on unrecoverable startup errors (e.g. the authenticator
-    # role not existing yet on a pre-initdb volume) — keep restarting.
-    restart: unless-stopped
-    # No host port — only reachable by OPA via the Docker network.
-    # SECURITY: this endpoint is unauthenticated (api_anon = full reader).
-    # OPA is the mandatory front door; never publish this port.
-    expose:
-      - "3000"
-    depends_on:
-      authz-db:
-        condition: service_healthy
-
-  # Write API — fronted by OPA (see opa/policies/write.rego). The writer runs as
-  # a FIXED authz_writer role and does NO JWT verification of its own: OPA is the
-  # front door — it verifies the token, requires the configured writer role, and
-  # forwards write/delete here, injecting the authenticated subject as the audit
-  # author. Reachable only by OPA over the Docker network — never host-exposed,
-  # so there is no nginx method-gate to maintain.
-  postgrest-writer:
-    image: postgrest/postgrest:v14.14
-    environment:
-      # synchronous_commit=remote_apply (connection-scoped): a grant/revoke is
-      # only acknowledged once every replica in synchronous_standby_names has
-      # APPLIED it — no replica in the sync set can serve a stale allow after
-      # the ack (Layer B revocation hardening). With no synchronous standbys
-      # configured (this base compose) it is a no-op. See
-      # docs/ARCHITECTURE.md → Deployment Scenarios / consistency tokens.
-      PGRST_DB_URI: postgres://authz_authenticator:${AUTHZ_AUTHENTICATOR_PASSWORD:-authz}@authz-db:5432/authz?options=-csynchronous_commit%3Dremote_apply
-      # Fixed role: every request OPA forwards runs as authz_writer (tuple
-      # writes). authz_authenticator is a member of authz_writer (roles.sql).
-      # No PGRST_JWT_SECRET — authentication/authorization happens in OPA.
-      PGRST_DB_ANON_ROLE: authz_writer
-      PGRST_DB_SCHEMAS: authz
-      PGRST_DB_POOL: "20"
-      PGRST_DB_POOL_ACQUISITION_TIMEOUT: "10"
-      PGRST_SERVER_PORT: "3001"
-      # Per-app namespace isolation: this hook reads the X-Authz-Role header
-      # that OPA forwards (from the DB_ROLE_CLAIM JWT claim) and SET LOCAL
-      # ROLEs to that app role, so namespace_access enforcement is per-app. A
-      # no-op when no header is present (writer stays authz_writer).
-      PGRST_DB_PRE_REQUEST: authz._pre_request
-    restart: unless-stopped
-    # No host port — only OPA reaches this over the Docker network.
-    expose:
-      - "3001"
-    depends_on:
-      authz-db:
-        condition: service_healthy
+  # NOTE: PostgREST (reader + writer) has been removed. OPA calls back into
+  # pgauthzd's native API for both reads and writes (NATIVE_URL /
+  # NATIVE_WRITE_URL below): the read callback is the decision-only instance
+  # (authzen-opa's internal listener) and the write callback is the full
+  # instance (pgauthzd-full). Both live in compose-authzen.yml, which
+  # start.sh always includes.
 
   opa:
     image: openpolicyagent/opa:1.18.2
@@ -115,15 +58,14 @@ services:
       # (input.subject with no JWT) are rejected unless this is set false, which
       # is ONLY safe behind a trusted PEP. The demo opts into false via env.sh.
       REQUIRE_TOKEN_FOR_READS: "${REQUIRE_TOKEN_FOR_READS:-true}"
-      POSTGREST_URL: "${POSTGREST_URL:-http://postgrest:3000}"
       # pgauthzd native callback: OPA's read/decision data client calls back into
-      # authzen-opa's INTERNAL listener (:8081) instead of PostgREST. The shared
-      # service token must match authzen-opa's INTERNAL_SERVICE_TOKEN.
+      # the decision-only instance's INTERNAL listener (authzen-opa:8081); the
+      # shared service token must match its INTERNAL_SERVICE_TOKEN.
       NATIVE_URL: "${NATIVE_URL:-http://authzen-opa:8081}"
       NATIVE_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
-      # Authorized writes go to a WRITER instance's callback (full profile).
-      # Separate from NATIVE_URL so reads (read-only instance) and writes (full
-      # instance) target different deployments — the reader/writer separation.
+      # Authorized writes go to a WRITER instance's callback (full profile),
+      # separate from NATIVE_URL so reads and writes target different (read-only
+      # vs full) deployments — the reader/writer separation.
       NATIVE_WRITE_URL: "${NATIVE_WRITE_URL:-http://pgauthzd-full:8081}"
       # Optional mTLS to the native listener (transport-layer caller auth, under
       # the service token). Point NATIVE_URL at https://... and mount the certs.
@@ -131,8 +73,6 @@ services:
       # NATIVE_TLS_CLIENT_CERT: "/tls/opa-client.crt"
       # NATIVE_TLS_CLIENT_KEY:  "/tls/opa-client.key"
       # NATIVE_TLS_CA_CERT:     "/tls/ca.crt"
-      # Writer instance OPA forwards authorized tuple writes to (write.rego).
-      POSTGREST_WRITER_URL: "${POSTGREST_WRITER_URL:-http://postgrest-writer:3001}"
       DEFAULT_CACHE_TTL_SECONDS: "${DEFAULT_CACHE_TTL_SECONDS:-1}"
       # CACHE_TTL_SECONDS: '{"demo":{"_default":5,"document":10}}'
       # JWT role mapping for writes — match your issuer's claim shape.
@@ -141,8 +81,7 @@ services:
       #   JWT_ROLES_CLAIM: "realm_access.roles,resource_access.authz-api.roles"
       #   WRITER_ROLE:     "authz_writer"         # required role value (in any path)
       # Per-app namespace isolation (optional): JWT claim carrying the caller's
-      # app DB role, forwarded to BOTH PostgREST instances as X-Authz-Role
-      # (writer _pre_request / reader _pre_request_reader).
+      # app DB role, forwarded to the native callback as X-Authz-Role.
       #   DB_ROLE_CLAIM: "db_role"
     ports:
       - "8181:8181"
@@ -150,8 +89,8 @@ services:
       - ./opa/policies:/policies:ro
       - ./opa/data:/data:ro
     depends_on:
-      - postgrest
-      - postgrest-writer
+      authz-db:
+        condition: service_healthy
 
 volumes:
   authz-db-data:

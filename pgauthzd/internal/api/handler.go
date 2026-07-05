@@ -618,9 +618,20 @@ func (h *Handler) WellKnown(w http.ResponseWriter, r *http.Request) {
 
 // Healthz handles GET /healthz
 func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
-	if err := h.backend.Healthz(r.Context()); err != nil {
-		writeError(w, http.StatusServiceUnavailable, "unhealthy: "+err.Error())
-		return
+	// The callback listener's handler has a nil AuthZEN backend (it only serves
+	// the native surface), so fall back to whichever backend is present.
+	b := h.backend
+	if b == nil {
+		b = h.raw
+	}
+	if b == nil {
+		b = h.rawWrite
+	}
+	if b != nil {
+		if err := b.Healthz(r.Context()); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "unhealthy: "+err.Error())
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

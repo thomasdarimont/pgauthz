@@ -11,11 +11,12 @@ import data.authz.pgauthz.config
 # -----------------------------------------------------------------------
 # OPA-fronted tuple writes.
 #
-# The writer PostgREST instance runs as a fixed authz_writer role and does NOT
-# verify JWTs. OPA is the front door: it verifies the ES256 token, requires the
+# The writer instance runs as a fixed authz_writer role and does NOT verify
+# JWTs. OPA is the front door: it verifies the ES256 token, requires the
 # configured writer role (authn_config.writer_role) in the configured roles
 # claim (authn_config.roles_claim_path), and only then forwards the write/delete
-# to the writer — recording the authenticated subject as the audit author.
+# to pgauthzd's native write callback — recording the authenticated subject as
+# the audit author.
 #
 # Operations:
 #   "write"  / "delete"        → single tuple (input.tuple)
@@ -43,20 +44,23 @@ import data.authz.pgauthz.config
 
 default write := {"allowed": false, "error": "not_authorized"}
 
-# Read-only deployment: no writer instance configured (POSTGREST_WRITER_URL
-# unset) → writes are cleanly disabled. OPA can still reach the read path.
-write := {"allowed": false, "error": "writes_disabled"} if not config.postgrest_writer_url
+# Writes are enabled when a write target is configured — pgauthzd's native write
+# callback (NATIVE_WRITE_URL). Unset → writes cleanly disabled (read-only
+# deployment); OPA can still reach the read path.
+_writes_enabled if config.native_write_url
+
+write := {"allowed": false, "error": "writes_disabled"} if not _writes_enabled
 
 # Authorized but malformed — distinguish from an auth failure.
 write := {"allowed": false, "error": "invalid_request"} if {
-	config.postgrest_writer_url
+	_writes_enabled
 	_write_authorized
 	not _valid_write_request
 }
 
 # Authorized + well-formed → dispatch to the matching writer call.
 write := {"allowed": true, "result": _forward} if {
-	config.postgrest_writer_url
+	_writes_enabled
 	_write_authorized
 	_valid_write_request
 }

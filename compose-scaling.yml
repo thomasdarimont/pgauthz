@@ -1,13 +1,15 @@
 # Demonstrates horizontal scaling with PostgreSQL streaming replication.
 #
 # Topology:
-#   authz-primary  — read-write PostgreSQL (receives all writes)
-#   authz-replica  — read-only PostgreSQL (streams WAL from primary)
-#   postgrest      — connects to the replica (read-only access checks)
-#   opa            — policy engine calling PostgREST for access checks
+#   authz-primary    — read-write PostgreSQL (receives all writes)
+#   authz-replica    — read-only PostgreSQL (streams WAL from primary)
+#   pgauthzd-reader  — decision-only pgauthzd on the replica (read-only role);
+#                      exposes the native OPA callback listener for reads
+#   opa              — policy engine calling pgauthzd's native API for checks
 #
-# Writes (tuple management, model imports) go directly to the primary
-# via application backends — not through OPA/PostgREST.
+# Writes (tuple management, model imports) go directly to the primary via
+# application backends — or enable the commented pgauthzd-writer (full profile)
+# for the OPA-fronted native write path.
 #
 # Usage:
 #   docker compose -f compose-scaling.yml up -d --wait
@@ -38,7 +40,7 @@ services:
       - -c
       - hot_standby=on
       # Strict revocation (Layer B): make the replica synchronous so the
-      # writer's remote_apply (see the postgrest-writer example below) blocks
+      # writer's remote_apply (see the pgauthzd-writer example below) blocks
       # a revoke's ack until the replica has APPLIED it. INVARIANT: every
       # replica that serves reads must be in this list — a lagging replica
       # outside it can still serve a stale allow.
@@ -58,6 +60,11 @@ services:
     volumes:
       - authz-primary-data:/var/lib/postgresql:z
       - ./db/scaling/init-replication-user.sh:/docker-entrypoint-initdb.d/01-replication-user.sh:ro
+      # Create the service LOGIN roles (authz_authenticator, authzen_direct) at
+      # initdb — before pgauthzd-reader first connects — so the read instance
+      # doesn't crash-loop waiting for roles.sql (which init.sh runs only after
+      # `up --wait`). The replica streams these roles from the primary.
+      - ./db/security/initdb/01_authenticator.sh:/docker-entrypoint-initdb.d/02-authenticator.sh:ro
 
   # ── Read-only replica ────────────────────────────────────────────
   authz-replica:
@@ -80,40 +87,64 @@ services:
       - ./db/scaling/start-replica.sh:/start-replica.sh:ro
     entrypoint: /start-replica.sh
 
-  # ── PostgREST on replica (read-only access checks) ──────────────
-  postgrest:
-    image: postgrest/postgrest:v14.14
+  # ── pgauthzd on the replica (read-only native access checks) ────
+  # decision-only profile: connects to the REPLICA with a read-only role and
+  # asserts at startup that it cannot write. Exposes the OPA CALLBACK listener
+  # (:8081, service token) that OPA calls back into for reads — replacing the
+  # PostgREST reader. Scale this out horizontally near the read replicas.
+  pgauthzd-reader:
+    build:
+      context: ./pgauthzd
+      args:
+        BINARY: pgauthzd
     environment:
-      PGRST_DB_URI: postgres://authz:authz@authz-replica:5432/authz
-      PGRST_DB_ANON_ROLE: api_anon
-      PGRST_DB_SCHEMAS: authz
-      PGRST_DB_POOL: "100"
-      PGRST_DB_POOL_ACQUISITION_TIMEOUT: "10"
-      PGRST_SERVER_PORT: "3000"
+      PGAUTHORIZER_PROFILE: "decision-only"
+      LISTEN_ADDR: ":8080"
+      INTERNAL_LISTEN_ADDR: ":8081"
+      INTERNAL_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
+      DATABASE_URL: "postgres://authzen_direct:${AUTHZEN_DIRECT_PASSWORD:-authz}@authz-replica:5432/authz"
+      DEFAULT_DB_ROLE: "authz_reader"
+      JWKS_FILE: "/jwks/jwks.json"
+      JWT_ISSUER: "${JWT_ISSUER:-https://auth.example.com}"
+      JWT_AUDIENCE: "${JWT_AUDIENCE:-authz-api}"
+      DEFAULT_STORE: "${DEFAULT_STORE:-demo}"
+      ALLOW_SUBJECT_OVERRIDE: "${ALLOW_SUBJECT_OVERRIDE:-false}"
+    volumes:
+      - ./opa/data:/jwks:ro
     expose:
-      - "3000"
+      - "8081"
+    restart: unless-stopped
     depends_on:
       authz-replica:
         condition: service_healthy
 
-  # ── PostgREST on primary (write API, see OPA.md §13) ─────────────
-  # Uncomment to enable the OPA-fronted write API (see docs/DEVELOPMENT.md).
-  # The writer runs as a FIXED authz_writer role and does no JWT verification —
-  # OPA verifies the token + writer role and forwards. Writes go to the primary.
-  # postgrest-writer:
-  #   image: postgrest/postgrest:v14.14
+  # ── pgauthzd on the primary (native write API) ──────────────────
+  # Uncomment to enable the OPA-fronted write path (writes go to the primary).
+  # full profile: writer-capable role; exposes the callback listener OPA
+  # forwards authorized writes to (NATIVE_WRITE_URL below). remote_apply on the
+  # DSN gives strict revocation when the replica is in synchronous_standby_names.
+  # pgauthzd-writer:
+  #   build:
+  #     context: ./pgauthzd
+  #     args:
+  #       BINARY: pgauthzd
   #   environment:
-  #     PGRST_DB_URI: postgres://authz_authenticator:${AUTHZ_AUTHENTICATOR_PASSWORD:-authz}@authz-primary:5432/authz?options=-csynchronous_commit%3Dremote_apply
-  #     PGRST_DB_ANON_ROLE: authz_writer   # fixed role; no JWT verification
-  #     PGRST_DB_SCHEMAS: authz
-  #     PGRST_DB_POOL: "20"
-  #     PGRST_SERVER_PORT: "3001"
+  #     PGAUTHORIZER_PROFILE: "full"
+  #     LISTEN_ADDR: ":8080"
+  #     INTERNAL_LISTEN_ADDR: ":8081"
+  #     INTERNAL_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
+  #     DATABASE_URL: "postgres://pgauthzd_rw:${PGAUTHZD_RW_PASSWORD:-authz}@authz-primary:5432/authz?options=-csynchronous_commit%3Dremote_apply"
+  #     JWKS_FILE: "/jwks/jwks.json"
+  #     JWT_ISSUER: "${JWT_ISSUER:-https://auth.example.com}"
+  #     DEFAULT_STORE: "${DEFAULT_STORE:-demo}"
+  #   volumes:
+  #     - ./opa/data:/jwks:ro
   #   expose:
-  #     - "3001"            # internal only — reachable solely by OPA
+  #     - "8081"
   #   depends_on:
   #     authz-primary:
   #       condition: service_healthy
-  # Then set on the opa service:  POSTGREST_WRITER_URL: "http://postgrest-writer:3001"
+  # Then set on the opa service:  NATIVE_WRITE_URL: "http://pgauthzd-writer:8081"
 
   # ── OPA (read-only access checks via replica) ───────────────────
   opa:
@@ -128,7 +159,10 @@ services:
       # env.sh) exports REQUIRE_TOKEN_FOR_READS=false for tokenless trusted-PEP
       # checks; without this mapping OPA would deny the documented curl below.
       REQUIRE_TOKEN_FOR_READS: "${REQUIRE_TOKEN_FOR_READS:-true}"
-      POSTGREST_URL: "${POSTGREST_URL:-http://postgrest:3000}"
+      # OPA reads via the native callback on the replica-backed pgauthzd.
+      NATIVE_URL: "${NATIVE_URL:-http://pgauthzd-reader:8081}"
+      NATIVE_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
+      # NATIVE_WRITE_URL: "http://pgauthzd-writer:8081"   # enable with pgauthzd-writer above
       DEFAULT_CACHE_TTL_SECONDS: "${DEFAULT_CACHE_TTL_SECONDS:-1}"
       # CACHE_TTL_SECONDS: '{"demo":{"_default":5,"document":10}}'
     ports:
@@ -137,7 +171,7 @@ services:
       - ./opa/policies:/policies:ro
       - ./opa/data:/data:ro
     depends_on:
-      - postgrest
+      - pgauthzd-reader
 
 volumes:
   authz-primary-data:

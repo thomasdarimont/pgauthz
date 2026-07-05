@@ -8,14 +8,34 @@ _env := opa.runtime().env
 # Set via DEFAULT_STORE env var on the OPA service.
 default_store := _env.DEFAULT_STORE
 
-# PostgREST base URL — resolves via Docker network.
-# Set via POSTGREST_URL env var on the OPA service.
-postgrest_url := _env.POSTGREST_URL
+# pgauthzd native callback base URL — the internal (policy-free) listener the
+# read/decision data client calls back into. Set via NATIVE_URL on the OPA
+# service (e.g. http://authzen-opa:8081).
+native_url := _env.NATIVE_URL
 
-# PostgREST WRITER base URL — the fixed-role (authz_writer) write instance.
-# OPA forwards authorized writes here; it is not reachable from the host.
-# Set via POSTGREST_WRITER_URL env var on the OPA service.
-postgrest_writer_url := _env.POSTGREST_WRITER_URL
+# Shared SERVICE credential presented to the native callback listener
+# (Authorization: Bearer). Proves the call came from this OPA. Set via
+# NATIVE_SERVICE_TOKEN, matching pgauthzd's INTERNAL_SERVICE_TOKEN.
+native_service_token := _env.NATIVE_SERVICE_TOKEN
+
+# pgauthzd native WRITE callback base URL — the writer instance's callback
+# listener OPA forwards authorized writes to. Separate from native_url so reads
+# and writes can target different (read-only vs writer) pgauthzd instances. Set
+# via NATIVE_WRITE_URL.
+native_write_url := _env.NATIVE_WRITE_URL
+
+# Optional mTLS to the native callback listener. When a client cert file is
+# configured, http.send presents it (and trusts the server via the CA file), so
+# the internal listener's RequireAndVerifyClientCert accepts the call. File
+# paths are mounted into the OPA container. Set via NATIVE_TLS_CLIENT_CERT /
+# NATIVE_TLS_CLIENT_KEY / NATIVE_TLS_CA_CERT.
+native_tls_client_cert_file := _env.NATIVE_TLS_CLIENT_CERT
+
+native_tls_client_key_file := _env.NATIVE_TLS_CLIENT_KEY
+
+native_tls_ca_cert_file := _env.NATIVE_TLS_CA_CERT
+
+native_tls_enabled if _env.NATIVE_TLS_CLIENT_CERT
 
 # Default cache TTL for http.send responses (seconds).
 # 0 = no caching.

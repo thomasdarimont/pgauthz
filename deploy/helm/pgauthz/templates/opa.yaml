@@ -46,10 +46,17 @@ spec:
             - { name: DEFAULT_STORE, value: {{ .Values.opa.defaultStore | quote }} }
             - { name: REQUIRE_TOKEN_FOR_READS, value: {{ .Values.opa.requireTokenForReads | quote }} }
             - { name: DEFAULT_CACHE_TTL_SECONDS, value: {{ .Values.opa.defaultCacheTtlSeconds | quote }} }
-            - name: POSTGREST_URL
-              value: http://{{ include "pgauthz.fullname" . }}-postgrest:3000
-            - name: POSTGREST_WRITER_URL
-              value: http://{{ include "pgauthz.fullname" . }}-postgrest-writer:3001
+            # Native pgauthzd callbacks: reads → the decision-only reader's
+            # callback listener, writes → the full writer's. The shared service
+            # token proves the call came from this OPA (matches the instances'
+            # INTERNAL_SERVICE_TOKEN).
+            - name: NATIVE_URL
+              value: http://{{ include "pgauthz.fullname" . }}-reader:8081
+            - name: NATIVE_WRITE_URL
+              value: http://{{ include "pgauthz.fullname" . }}-writer:8081
+            - name: NATIVE_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef: { name: {{ include "pgauthz.secretName" . }}, key: native-service-token }
             {{- with .Values.opa.writerRole }}
             - { name: WRITER_ROLE, value: {{ . | quote }} }
             {{- end }}

@@ -28,9 +28,9 @@ that resolve relationship tuples recursively.
 - **AuthZen Search API** — `list_objects`, `list_subjects`, `list_actions` for discovery queries
 - **OpenFGA import** — import existing OpenFGA JSON models and tuples directly
 - **Namespace-based access control** — restrict which applications can read and manage tuples for which object types within a shared store; per-application isolation is **database-enforced end to end** (OPA forwards the caller's app role, validated role switches on both the read and write path)
-- **PostgREST + OPA integration** — OPA is the single front door for reads *and* writes (JWT verification, policy-as-code, response caching); PostgREST bridges SQL functions to HTTP
+- **OPA + pgauthzd integration** — OPA is the single front door for reads *and* writes (JWT verification, policy-as-code, response caching); OPA's Rego calls back into pgauthzd's native `/pgauthz/v1` API (over a shared service token, optionally mTLS) for both reads and writes
 - **AuthZEN 1.0 API** — standard [AuthZEN](https://openid.net/specs/authorization-api-1_0.html) Go API layer with two backends: direct PostgreSQL (`authzen-direct`) and OPA (`authzen-opa`); multi-tenant ready — store-scoped routes (`/stores/{store}/…`), multiple trusted issuers, and per-issuer **store / DB-role bindings** (anchored patterns, enforceable at startup)
-- **Playground (web UI)** — an OpenFGA-playground-style app to browse stores, run access queries, and **visualize the `explain_access` resolution path**, through the real OIDC → OPA → PostgREST path ([`playground/`](playground/README.md))
+- **Playground (web UI)** — an OpenFGA-playground-style app to browse stores, run access queries, and **visualize the `explain_access` resolution path**, through the real OIDC → OPA → pgauthzd (native callback) path ([`playground/`](playground/README.md))
 - **Performance** — integer IDs, LIST partitioning by object type, covering partial indexes, store-scoped index pruning
 
 ## Why PostgreSQL?
@@ -89,8 +89,9 @@ as a separate service in front of it, has concrete advantages:
   native replication, no custom sharding layer.
 
 - **SQL-native integration** — query and join authorization data with the rest
-  of your schema, expose it over HTTP with PostgREST, or front it with OPA — all
-  without inventing a new transport or data format.
+  of your schema, expose it over HTTP with pgauthzd's HTTP API (native
+  `/pgauthz/v1` + AuthZEN), or front it with OPA — all without inventing a new
+  transport or data format.
 
 This is not the right tradeoff for everyone — if you need official polyglot SDKs,
 native gRPC streaming, or a fully managed hosted service, see
@@ -126,7 +127,7 @@ cd authz/pgauthz
 ./bootstrap.sh
 ```
 
-`bootstrap.sh` starts PostgreSQL, PostgREST, and OPA via docker compose,
+`bootstrap.sh` starts PostgreSQL, pgauthzd, and OPA via docker compose,
 installs the engine, loads the **demo** example model, and runs all tests.
 
 To install **only the engine** — schema, functions, OpenFGA import, audit
@@ -150,7 +151,7 @@ rest are the components of the reference deployment.
 | Component | Version | Required? | Notes |
 |---|---|---|---|
 | **PostgreSQL** | 18.4 | **required** | The engine. Uses partitioning, generated identity, and JSONB; developed and tested on 18.x. |
-| PostgREST | v14.14 | optional | REST bridge (read on 3000, write on 3001). |
+| pgauthzd | — | optional | Single Go daemon exposing the engine over HTTP (native `/pgauthz/v1` + AuthZEN 1.0 API); capability profiles `decision-only` (read-only DB role) / `full` (read+write) / `compat-opa` (fronts OPA). OPA's Rego calls back into it for reads and writes. |
 | OPA | 1.18.2 | optional | Policy/JWT front door for reads and writes. |
 | Go (AuthZEN services) | 1.26 | optional | `authzen-direct` / `authzen-opa`. |
 | `sqlx-cli` | 0.9.0 | install/upgrade | Applies the structural migrations in [`db/migrations/`](db/migrations/) (tracked in `public._sqlx_migrations`). Slim Postgres-only build — `cargo install sqlx-cli --no-default-features --features rustls,postgres`. Baked into the [migration image](deploy/migrations/Dockerfile); `init*.sh` use a local install. Not needed at query time. |
@@ -437,11 +438,11 @@ SELECT authz.write_tuples('demo', ARRAY[
 ```
 
 All batch functions also accept a **JSONB array** instead of a PostgreSQL composite array.
-This is easier to use from HTTP clients (PostgREST) and languages without native composite-type support:
+This is easier to use from HTTP clients (e.g. pgauthzd's HTTP API) and languages without native composite-type support:
 
 ```sql
 -- JSONB variant: same as above, but with a JSON array of objects.
--- Use the _jsonb suffix functions from HTTP clients (PostgREST) or
+-- Use the _jsonb suffix functions from HTTP clients (pgauthzd's HTTP API) or
 -- languages without native PostgreSQL composite-type support.
 SELECT authz.write_tuples_jsonb('demo', '[
     {"user_type":"internal_user","user_id":"grace","relation":"member","object_type":"team","object_id":"payroll_team"},
@@ -551,8 +552,8 @@ only authorized rows.
 **When does this apply?** Only in the **co-located** (or replicated-permissions)
 [deployment topology](#deployment-topologies) — when your application data shares
 a database with the engine. This is the *minority* setup. Most applications use
-pgauthz as a **central authorization service** over REST (OPA → PostgREST) or
-AuthZEN, where the authz data and your business tables live in **different
+pgauthz as a **central authorization service** over HTTP (OPA → pgauthzd native
+callback) or AuthZEN, where the authz data and your business tables live in **different
 databases** — there you do **not** JOIN. Instead `list_objects` returns the
 authorized id set over the wire and your app filters by it (`WHERE id =
 ANY(:ids)`, honoring the wildcard flag), exactly as an OpenFGA-style engine hands
@@ -1100,8 +1101,8 @@ one application from accidentally modifying or querying another's authorization 
 
 - Types with `namespace = NULL` are **unrestricted** — any role can read and write them.
 - Types with a non-NULL namespace require the **effective request role** to be a member of a
-  granted role. The effective role is the `SET ROLE` identity (what PostgREST switches to
-  per request), falling back to the session user for direct connections.
+  granted role. The effective role is the `SET ROLE` identity (what pgauthzd switches to
+  per request, from the forwarded `X-Authz-Role`), falling back to the session user for direct connections.
 - **Read and write access** is controlled via `authz.namespace_access` using `can_read` and `can_write` flags.
 
 ```sql
@@ -1268,13 +1269,13 @@ pattern:
 
 | Topology | Where authz data lives | How an app reads it | Data filtering |
 |---|---|---|---|
-| **Central authz service** (common) | its own database / cluster | over the wire — REST (OPA → PostgREST) or AuthZEN | `list_objects` returns the id set; the app filters its own query by it (`WHERE id = ANY(:ids)` + wildcard flag), like an OpenFGA-style engine |
+| **Central authz service** (common) | its own database / cluster | over the wire — HTTP (OPA → pgauthzd native callback) or AuthZEN | `list_objects` returns the id set; the app filters its own query by it (`WHERE id = ANY(:ids)` + wildcard flag), like an OpenFGA-style engine |
 | **Embedded read-only engine** | central, with raw tuples + model replicated into the app DB | the **read-only engine excerpt** runs locally (`init-readonly.sh`) — full `check_access` / `list_*` / `explain` | JOIN `list_objects(...)` locally |
 | **Replicated permissions (derived)** | central, with a *flattened* permissions table replicated into the app DB | local lookups on the derived table ([`db/replication/`](db/replication/)) | JOIN the derived table |
 | **Co-located** (minority) | inside the app's own database | local SQL | JOIN `list_objects(...)` directly ([Authorization as a JOIN](#authorization-as-a-join-data-filtering)) |
 
 Most deployments are the **central** one: a single authorization database
-populated by many applications, each calling it over REST or AuthZEN for checks
+populated by many applications, each calling it over HTTP or AuthZEN for checks
 and `list_*` queries and writing tuples through the OPA-fronted writer. The other
 three put authorization data *inside* an application's database, only when it
 genuinely needs that — e.g. to filter large result sets in a single query.
@@ -1295,10 +1296,10 @@ runs in the app's own Postgres you also get [Authorization as a
 JOIN](#authorization-as-a-join-data-filtering). It is eventually consistent
 (replication lag); route freshness-sensitive checks to the central primary.
 
-The subsections below detail the central stack (PostgREST + OPA, AuthZEN) and
+The subsections below detail the central stack (OPA + pgauthzd, AuthZEN) and
 read-replica scaling.
 
-### Deployment with PostgREST and OPA
+### Deployment with OPA and pgauthzd
 
 The authorization engine is designed to run as part of a three-tier stack:
 
@@ -1310,18 +1311,19 @@ The authorization engine is designed to run as part of a three-tier stack:
                     ┌──────────────▼──────────────┐
                     │     OPA (Policy Agent)      │
                     │  - Rego policies            │
-                    │  - Calls PostgREST to check │
-                    │    authorization decisions  │
+                    │  - Calls back into pgauthzd │
+                    │    to check authz decisions │
                     └──────────────┬──────────────┘
-                                   │ HTTP (internal)
+                                   │ HTTP (internal, service token / mTLS)
                     ┌──────────────▼──────────────┐
-                    │     PostgREST               │
-                    │  - Exposes authz functions  │
-                    │    as REST endpoints        │
-                    │  - Runs as api_anon role    │
-                    │    (inherits authz_reader)  │
+                    │     pgauthzd                │
+                    │  - Native /pgauthz/v1 API   │
+                    │  - decision-only (read) or  │
+                    │    full (read+write) profile│
+                    │  - connects with the        │
+                    │    profile's DB role        │
                     └──────────────┬──────────────┘
-                                   │ SQL
+                                   │ SQL (pgx)
                     ┌──────────────▼──────────────┐
                     │     PostgreSQL              │
                     │  - authz schema             │
@@ -1331,26 +1333,32 @@ The authorization engine is designed to run as part of a three-tier stack:
 
 - **PostgreSQL** stores all authorization data and executes the recursive
   access checks. All logic lives in SQL functions — no application code needed.
-- **PostgREST** exposes the `authz` schema functions as a REST API.
-  It runs as `api_anon` (which inherits `authz_reader`), so it can only
-  perform read operations (check, list) by default.
+- **pgauthzd** is a single Go daemon that exposes the `authz` schema over its
+  native `/pgauthz/v1` HTTP API (plus AuthZEN). Its capability follows the
+  instance's **profile** and DB role: a `decision-only` instance connects with a
+  read-only role (checks/lists/explain), a `full` instance connects with
+  `authz_writer` (reads + writes). Reader/writer separation is achieved by
+  running **separate pgauthzd instances**, not separate services.
 - **OPA** (Open Policy Agent) acts as the policy decision point. Rego policies
-  call PostgREST endpoints to evaluate authorization and can combine the
+  call back into pgauthzd's native `/pgauthz/v1` API — the read callback for
+  checks/lists, the write callback for tuple writes — and can combine the
   result with additional policy logic (environment checks, rate limits, etc.).
 
-Applications call OPA for authorization decisions. OPA calls PostgREST,
-which calls PostgreSQL. Write operations (`write_tuple`, `delete_tuple`)
-are performed directly by the application backend using a database user
-with the `authz_writer` role.
+Applications call OPA for authorization decisions. OPA calls back into pgauthzd,
+which calls PostgreSQL. Reads route to a **decision-only** pgauthzd instance
+(read-only DB role); writes (`write_tuple`, `delete_tuple`, …) route to a
+**full** pgauthzd instance (`authz_writer` role). The callback path is
+`<native_url>/stores/{store}/pgauthz/v1/{endpoint}`, configured on the OPA side
+via `NATIVE_URL` (reads), `NATIVE_WRITE_URL` (writes), and `NATIVE_SERVICE_TOKEN`.
 
-> **Trust boundary:** the read PostgREST accepts **unauthenticated**
-> requests — `api_anon` can run every check/list/explain function across
-> all stores (subject only to namespace read grants). This is by design:
-> OPA (or your own authenticating layer) is the mandatory front door, and
-> the compose stack therefore gives the read PostgREST **no host port** —
-> it is reachable only by OPA on the internal Docker network. Never expose
-> it directly; anyone who can reach it can enumerate your authorization
-> data via `list_objects` / `list_subjects`.
+> **Trust boundary:** the callback listener trusts OPA's asserted subject and the
+> per-app role header `X-Authz-Role`; it does **not** re-verify the end-user JWT —
+> OPA is the mandatory front door (the same trust model PostgREST had). The
+> listener is authenticated with a shared service token (pgauthzd
+> `INTERNAL_SERVICE_TOKEN` / OPA `NATIVE_SERVICE_TOKEN`) and optionally mTLS, and
+> the compose stack gives pgauthzd **no host port** — it is reachable only by OPA
+> on the internal Docker network. Never expose it directly; anyone who can reach
+> it can enumerate your authorization data via `list_objects` / `list_subjects`.
 
 **Authentication / OIDC.** OPA is the front door: it verifies the caller's JWT
 (issuer, audience, signature via JWKS) and derives the subject from the token
@@ -1368,8 +1376,8 @@ The `authzen/` directory contains a Go API layer implementing the
 [AuthZEN 1.0](https://openid.net/specs/authorization-api-1_0.html) standard.
 Two services share a common HTTP handler layer:
 
-- **`authzen-direct`** (port 8090) — Go → PostgreSQL (lowest latency, pure Zanzibar)
-- **`authzen-opa`** (port 8091) — Go → OPA → PostgREST → PostgreSQL (app-specific Rego policies)
+- **`authzen-direct`** (port 8090) — the `decision-only` pgauthzd alias: Go → PostgreSQL (lowest latency, pure Zanzibar)
+- **`authzen-opa`** (port 8091) — the `compat-opa` pgauthzd alias: Go → OPA → pgauthzd native callback → PostgreSQL (app-specific Rego policies)
 
 Both expose identical endpoints:
 
@@ -1416,8 +1424,9 @@ authorization engine scales horizontally by adding PostgreSQL read replicas:
            │ Replica 1   │  │ Replica 2        │
            │ (read-only) │  │ (read-only)      │
            │             │  │                  │
-           │ PostgREST   │  │ PostgREST        │
-           │ + OPA       │  │ + OPA            │
+           │ pgauthzd    │  │ pgauthzd         │
+           │ (decision-  │  │ (decision-       │
+           │  only)+OPA  │  │  only)+OPA       │
            └─────────────┘  └──────────────────┘
 ```
 
@@ -1426,7 +1435,7 @@ authorization engine scales horizontally by adding PostgreSQL read replicas:
   Writes are typically low-volume (user onboarding, permission changes).
 - **Read replicas** handle the high-volume read traffic: `check_access`,
   `list_objects`, `list_subjects`, `list_actions`. Each replica runs its own
-  PostgREST and OPA instance.
+  `decision-only` pgauthzd and OPA instance.
 - Streaming replication keeps replicas in sync. Authorization data changes
   infrequently (compared to read volume), so replication lag is negligible.
 - A load balancer distributes read requests across replicas. Since
@@ -1511,11 +1520,11 @@ for typical checks, and `list_objects` / `list_subjects` are bounded by the
 | `authz_admin` | `create_store`, `delete_store`, `model_register_type`, `model_register_relation`, manage `namespace_access` table | `authz_writer` |
 
 `authz_auditor` inherits `authz_reader` (can query both live and historical permissions) but cannot write.
-The PostgREST anonymous role (`api_anon`) inherits `authz_reader`.
+A `decision-only` pgauthzd instance connects with a read-only role that inherits `authz_reader`.
 All public functions are `SECURITY DEFINER` — application roles need no
 direct table access.
 
-> For which role each component should connect as / be granted (OPA→PostgREST,
+> For which role each component should connect as / be granted (OPA→pgauthzd,
 > AuthZEN-direct, backend writers, admins, and when to grant
 > `authz_contextual_reader`), see the **[Production Hardening guide → Role
 > recipes](docs/PRODUCTION.md#role-recipes)**.
@@ -1543,8 +1552,8 @@ OpenFGA-playground-style web app for exploring an engine instance: pick a store,
 browse its model / tuples / conditions, and run access queries — then
 **visualize the resolution path** that `explain_access` returns, as a tree and an
 access graph. Queries run through the **real production path end to end** (OIDC
-login → OPA → PostgREST → engine), so what you see in the UI is what the engine
-decides.
+login → OPA → pgauthzd native callback → engine), so what you see in the UI is
+what the engine decides.
 
 ![pgauthz playground](playground/playground-frontend.png)
 
@@ -1617,9 +1626,9 @@ default store is `demo`).
 | `examples/watch/` | Runnable setup example for the watch/changefeed feature (compose overlay + Python consumer) |
 | `authzen/` | Go AuthZEN 1.0 HTTP API layer ([see authzen/README.md](authzen/README.md)) |
 | `playground/` | Web UI: Go BFF + Lit SPA for exploring stores and visualizing `explain_access` ([see playground/README.md](playground/README.md)) |
-| `opa/` | Rego policies for JWT authn + Zanzibar authz via PostgREST |
+| `opa/` | Rego policies for JWT authn + Zanzibar authz via the pgauthzd native callback |
 | `docs/` | Design documents, development guide, model design, OPA integration |
-| `compose.yml` | PostgreSQL + PostgREST + OPA |
+| `compose.yml` | PostgreSQL + pgauthzd + OPA |
 | `compose-authzen.yml` | AuthZEN services (authzen-direct + authzen-opa) |
 | `compose-playground.yml` | Playground web UI (BFF + bundled SPA) + its session DB |
 | `bootstrap.sh` | Full init + test run |
@@ -1687,8 +1696,8 @@ the caller requested.
 |---|---|---|
 | **Consistency tokens** | Low–Medium | Zanzibar-style tokens for read-after-write consistency in distributed setups. This solution uses PostgreSQL MVCC — strong consistency on a single instance, eventual consistency with read replicas (negligible lag for authorization data). |
 | **Watch API** | Low | OpenFGA can stream tuple changes. This solution provides `authz.watch_changes` (a cursored, lag-gated changefeed over the audit log) plus a `NOTIFY authz_changes` doorbell; a WebSocket/SSE transport bridge is left to the deployment. |
-| **gRPC API** | Low | OpenFGA has native gRPC. This solution uses SQL directly or PostgREST for HTTP REST. |
-| **SDK ecosystem** | Medium | OpenFGA has official SDKs for Go, JS, Python, Java, .NET. This solution requires direct SQL or HTTP calls via PostgREST — simpler for teams already on PostgreSQL, but lacks the plug-and-play SDK experience. |
+| **gRPC API** | Low | OpenFGA has native gRPC. This solution uses SQL directly or pgauthzd's HTTP API for HTTP access. |
+| **SDK ecosystem** | Medium | OpenFGA has official SDKs for Go, JS, Python, Java, .NET. This solution requires direct SQL or HTTP calls via pgauthzd's HTTP API — simpler for teams already on PostgreSQL, but lacks the plug-and-play SDK experience. |
 | **Modular models** | Low | OpenFGA 1.2 supports splitting models into modules. Less relevant here since the model is SQL rows that can be organized however you like. |
 
 ### When to choose this solution over OpenFGA

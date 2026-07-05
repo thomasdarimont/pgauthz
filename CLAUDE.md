@@ -10,14 +10,14 @@ pgauthz is a **PostgreSQL-native authorization engine** implementing Google Zanz
 
 Three-tier deployment:
 ```
-Application → OPA (optional policy layer) → PostgREST (REST bridge) → PostgreSQL (engine)
+Application → OPA (optional policy layer) → pgauthzd native callback (service-token / optional mTLS) → PostgreSQL (engine)
 ```
 
 - **PostgreSQL 18.4** — Core engine: ~4200 lines of PL/pgSQL implementing recursive relationship resolution, conditions/ABAC, audit trail, time-travel queries
-- **PostgREST v14.14** — Exposes SQL functions as REST API (read on port 3000, write on port 3001 behind Nginx)
-- **OPA 1.18.2** — Rego policies for JWT authn and policy-as-code authz
-- **Go AuthZEN API** — Two services implementing AuthZEN 1.0 standard: `authzen-direct` (Go→PostgreSQL, port 8090) and `authzen-opa` (Go→OPA→PostgREST→PostgreSQL, port 8091)
-- **Nginx gateway** — Restricts write API to POST `/rpc/*` only
+- **pgauthzd** — Single Go daemon exposing the engine over HTTP (native `/pgauthz/v1` API + AuthZEN 1.0), capability-scoped by **profile**: `decision-only` (read-only DB role), `full` (read+write, writer role), `compat-opa` (fronts OPA). Replaces PostgREST as the read/write bridge. OPA's Rego calls **back** into pgauthzd's native `/pgauthz/v1` API for both reads and writes — reads to a `decision-only` instance, writes to a `full` instance (reader/writer separation follows the instance's profile/DB role). The callback listener is authenticated by a shared service token (`INTERNAL_SERVICE_TOKEN` on pgauthzd / `NATIVE_SERVICE_TOKEN` on OPA) and optional mTLS; it trusts OPA's asserted subject + per-app role (`X-Authz-Role`) and does **not** re-verify the end-user JWT (OPA is the front door). PostgREST has been removed entirely — the OPA policy and every deployment (compose, scaling, Helm) use the native callback
+- **OPA 1.18.2** — Rego policies for JWT authn and policy-as-code authz; forwards authorized reads and writes to pgauthzd's native callback
+- **Go AuthZEN API** — AuthZEN 1.0 services, now profiles of `pgauthzd`: `authzen-direct` (Go→PostgreSQL, `decision-only`, port 8090) and `authzen-opa` (Go→OPA→pgauthzd native callback→PostgreSQL, `compat-opa`, port 8091)
+- **Nginx gateway** (`gateway/`) — Optional OPA edge proxy (TLS termination / optional mTLS / endpoint allowlist); not wired into the default compose
 
 ## Common Commands
 
@@ -95,7 +95,7 @@ cd authzen && go build ./cmd/authzen-opa
 
 ## Docker Compose Configurations
 
-- `compose.yml` — Base stack (PostgreSQL, PostgREST reader/writer, OPA)
+- `compose.yml` — Base stack (PostgreSQL, pgauthzd reader/writer instances, OPA)
 - `compose-authzen.yml` — Adds AuthZEN Go services
 - `compose-replication.yml` — Logical replication demo (primary + subscriber databases)
 - `compose-scaling.yml` — Streaming replication with read replicas

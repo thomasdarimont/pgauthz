@@ -19,20 +19,21 @@ note as N1
   OPA verifies the JWT and the writer
   role (WRITER_ROLE in JWT_ROLES_CLAIM),
   injects the subject as audit author,
-  then forwards to the fixed-role writer
-  (which does no JWT of its own).
+  then forwards to pgauthzd's native
+  write callback (a full-profile instance
+  that does no JWT of its own).
 
   Multi-app: a per-app DB role from a
   JWT claim (DB_ROLE_CLAIM) is
-  forwarded as X-Authz-Role; the writer's
-  _pre_request() SET LOCAL ROLEs to it,
+  forwarded as X-Authz-Role; pgauthzd
+  SET LOCAL ROLEs to it,
   so **namespace isolation** applies
   per app.
 end note
 
 node "HTTP Write API" as optA {
     component "OPA\n:8181" as opa #LightBlue
-    component "PostgREST Writer\n(internal, authz_writer)" as pgrst #Salmon
+    component "pgauthzd (writer)\n(internal, authz_writer)" as pgd #Salmon
 }
 
 database "PostgreSQL\nprimary" as pg #Orange
@@ -40,8 +41,8 @@ database "PostgreSQL\nprimary" as pg #Orange
 N1 -right-> opa
 
 appA -down-> opa : "A: POST /v1/data/authz/write\n(JWT: writer role)"
-opa -down-> pgrst : "forward write/delete\n(authorized only,\n+ X-Authz-Role)"
-pgrst -down-> pg : "SQL (authz_writer\nor per-app role)"
+opa -down-> pgd : "native write callback\n(authorized only,\n+ X-Authz-Role)"
+pgd -down-> pg : "SQL (pgx; authz_writer\nor per-app role)"
 
 appB -down-> pg : "B: direct SQL\nwrite_tuple() /\nwrite_tuples_checked()\n(authz_writer role)"
 
@@ -61,7 +62,7 @@ end note
 legend bottom left
   |= Color |= Component |
   | <#LightBlue> | OPA — verifies JWT + writer role, forwards the write |
-  | <#Salmon> | PostgREST Writer — fixed authz_writer (or per-app) role, no JWT |
+  | <#Salmon> | pgauthzd (writer) — full profile; fixed authz_writer (or per-app) role, no JWT |
   | <#Orange> | PostgreSQL — authz schema |
 end legend
 

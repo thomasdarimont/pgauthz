@@ -5,9 +5,9 @@ up with CloudNativePG: it **writes a tuple to the primary** (`-rw`) and **reads
 it back from a replica** (`-ro`), printing how long the change takes to stream
 over.
 
-It uses the same identity pattern PostgREST uses — connect as
-`authz_authenticator` and `SET ROLE` to the least-privileged role for each leg
-(`authz_writer` for the write, `authz_reader` for the read).
+It uses the same dedicated DB roles the pgauthzd writer/reader use — connect as
+`pgauthzd_rw` for the write (inherits `authz_writer`) and `authzen_direct` for
+the read (inherits `authz_reader`), each least-privileged for its leg.
 
 ## Prerequisites
 
@@ -15,8 +15,9 @@ It uses the same identity pattern PostgREST uses — connect as
   the `values-k3d.yaml` default is 2). With a single instance there is no
   replica and `-ro` has no endpoints.
 - Default release name `pgauthz` (the Job references `pgauthz-db-rw`,
-  `pgauthz-db-ro`, and the `pgauthz-authenticator` secret). Adjust the names in
-  `job.yaml` if you installed under a different release.
+  `pgauthz-db-ro`, and the `pgauthz-pgauthzd-rw` / `pgauthz-authzen-direct`
+  secrets). Adjust the names in `job.yaml` if you installed under a different
+  release.
 
 ## Run
 

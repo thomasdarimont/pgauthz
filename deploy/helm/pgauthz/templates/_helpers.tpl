@@ -30,10 +30,10 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 {{- if .Values.secrets.existingSecret -}}{{ .Values.secrets.existingSecret }}{{- else -}}{{ include "pgauthz.fullname" . }}-secrets{{- end -}}
 {{- end -}}
 
-{{/* Resolve the reader's target Service host from postgrestReader.target. */}}
+{{/* Resolve the reader's target Service host from reader.target. */}}
 {{- define "pgauthz.readerHost" -}}
-{{- if eq .Values.postgrestReader.target "rw" -}}{{ include "pgauthz.dbRW" . }}
-{{- else if eq .Values.postgrestReader.target "ro" -}}{{ include "pgauthz.dbRO" . }}
+{{- if eq .Values.reader.target "rw" -}}{{ include "pgauthz.dbRW" . }}
+{{- else if eq .Values.reader.target "ro" -}}{{ include "pgauthz.dbRO" . }}
 {{- else -}}{{ include "pgauthz.dbPoolerRO" . }}
 {{- end -}}
 {{- end -}}

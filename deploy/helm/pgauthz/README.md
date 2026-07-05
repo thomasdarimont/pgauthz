@@ -1,13 +1,14 @@
 # pgauthz Helm chart
 
 Deploys pgauthz on Kubernetes with [CloudNativePG](https://cloudnative-pg.io/)
-as the database layer. OPA is the single front door for reads **and** writes;
-PostgREST (reader + writer) and PostgreSQL are internal-only and locked down
-with NetworkPolicies.
+as the database layer. OPA is the single front door for reads **and** writes; it
+calls back into pgauthzd's native `/pgauthz/v1` API (over a service-token-guarded
+callback listener). The pgauthzd reader/writer and PostgreSQL are internal-only
+and locked down with NetworkPolicies.
 
 ```
-            Ingress ──▶ OPA ──┬─reads──▶ postgrest  ─▶ CNPG -ro / pooler
-                              └─writes─▶ postgrest-writer ─▶ CNPG -rw
+            Ingress ──▶ OPA ──┬─reads──▶ pgauthzd-reader (decision-only) ─▶ CNPG -ro / pooler
+                              └─writes─▶ pgauthzd-writer (full)          ─▶ CNPG -rw
    (optional) Ingress ──▶ authzen-direct ─▶ CNPG -ro     authzen-opa ─▶ OPA
 ```
 
@@ -18,10 +19,16 @@ with NetworkPolicies.
 | `…-db` | CloudNativePG `Cluster` | internal | primary `-rw`, replicas `-ro`; PITR-capable |
 | `…-db-pooler-ro` | CloudNativePG `Pooler` | internal | PgBouncer over the replicas |
 | `…-opa` | Deployment + HPA | **Ingress** | the only front door; JWT authn + policy |
-| `…-postgrest` | Deployment + HPA | internal | reader; `api_anon`; NetworkPolicy: OPA only |
-| `…-postgrest-writer` | Deployment | internal | fixed `authz_writer`; NetworkPolicy: OPA only |
+| `…-reader` | Deployment + HPA | internal | pgauthzd `decision-only`; `authzen_direct` (read-only); native READ callback (`:8081`); NetworkPolicy: OPA only |
+| `…-writer` | Deployment | internal | pgauthzd `full`; `pgauthzd_rw` (writer); native WRITE callback (`:8081`); NetworkPolicy: OPA only |
 | `…-authzen-direct` / `-opa` | Deployment | optional Ingress | AuthZEN 1.0 API |
 | `…-migrate-N` | Job (Helm hook) | — | installs/upgrades the engine SQL |
+
+OPA reaches the callbacks via `NATIVE_URL` (reader) and `NATIVE_WRITE_URL`
+(writer), authenticating with the shared `NATIVE_SERVICE_TOKEN` (matching each
+instance's `INTERNAL_SERVICE_TOKEN`). The callback listener bypasses OPA's policy
+layer — it trusts OPA's asserted subject (body) + per-app role (`X-Authz-Role`)
+— so it is service-token guarded and reachable only by OPA.
 
 ## Prerequisites
 
@@ -31,15 +38,18 @@ with NetworkPolicies.
      https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.27/releases/cnpg-1.27.0.yaml
    kubectl -n cnpg-system rollout status deploy/cnpg-controller-manager
    ```
-2. **Images** — the migrations + AuthZEN images are built from this repo:
+2. **Images** — the migrations + pgauthzd images are built from this repo:
    ```bash
    # from the repo root
    docker build -f deploy/migrations/Dockerfile -t pgauthz-migrations:0.1.0 .
+   docker build -f pgauthzd/Dockerfile --build-arg BINARY=pgauthzd       -t pgauthz-pgauthzd:0.1.0       ./pgauthzd
    docker build -f pgauthzd/Dockerfile --build-arg BINARY=authzen-direct -t pgauthz-authzen-direct:0.1.0 ./pgauthzd
    docker build -f pgauthzd/Dockerfile --build-arg BINARY=authzen-opa    -t pgauthz-authzen-opa:0.1.0    ./pgauthzd
    ```
-   Push them to a registry your cluster can pull from, or import into a local
-   cluster (k3d shown below).
+   `pgauthz-pgauthzd` runs the reader (decision-only) and writer (full)
+   callbacks; the `authzen-*` images are only needed for the optional AuthZEN
+   1.0 API. Push them to a registry your cluster can pull from, or import into a
+   local cluster (k3d shown below).
 
 ## Quick start on k3d
 
@@ -47,8 +57,8 @@ with NetworkPolicies.
 # 1. operator (see above), then build the three images (see above)
 
 # 2. import the locally-built images into the k3d cluster
-k3d image import pgauthz-migrations:0.1.0 pgauthz-authzen-direct:0.1.0 \
-                 pgauthz-authzen-opa:0.1.0 -c <your-k3d-cluster>
+k3d image import pgauthz-migrations:0.1.0 pgauthz-pgauthzd:0.1.0 \
+                 pgauthz-authzen-direct:0.1.0 pgauthz-authzen-opa:0.1.0 -c <your-k3d-cluster>
 
 # 3. install (small-footprint local profile)
 ./deploy/helm/pgauthz/sync-files.sh        # embed OPA policies into the chart
@@ -82,13 +92,16 @@ connects to the primary as the CloudNativePG superuser (the only role that can
 `bootstrap.initdb.postInitApplicationSQLRefs` instead if your policy forbids a
 superuser secret.
 
-Service-login roles (`authz_authenticator`, `authzen_direct`) are declared as
-CloudNativePG **managed roles**, so their passwords come from Secrets and are
-rotated by the operator; `roles.sql` still owns the privilege model (GRANTs).
+Service-login roles (`authzen_direct` read-only, `pgauthzd_rw` writer) are
+declared as CloudNativePG **managed roles**, so their passwords come from Secrets
+and are rotated by the operator; `roles.sql` still owns the privilege model
+(GRANTs). The security boundary is the DB role: the reader connects as
+`authzen_direct` (which physically cannot write and asserts so at startup), the
+writer as `pgauthzd_rw`.
 
 ## Read freshness
 
-`postgrestReader.target` chooses where reads go: `pooler-ro` / `ro` (scale-out
+`reader.target` chooses where reads go: `pooler-ro` / `ro` (scale-out
 on replicas, accepting bounded lag) or `rw` (read-your-writes off the primary).
 pgauthz deliberately has no consistency tokens — replica lag plus the OPA cache
 TTL (`opa.defaultCacheTtlSeconds`) is the staleness window. Route
@@ -102,12 +115,12 @@ operator clones a hot standby and publishes a replicas-only Service:
 ```bash
 helm upgrade pgauthz ./deploy/helm/pgauthz -f values-k3d.yaml \
   --set database.instances=2 \          # 1 primary + 1 replica
-  --set postgrestReader.target=ro       # AuthZEN-direct + the reader read the replica
+  --set reader.target=ro                # AuthZEN-direct + the reader read the replica
 ```
 
 `database.instances=N` → CNPG runs 1 primary + (N-1) replicas and exposes
 `<cluster>-rw` (primary), `<cluster>-ro` (replicas only), `<cluster>-r` (any).
-`postgrestReader.target` (`rw` / `ro` / `pooler-ro`) selects where both the OPA
+`reader.target` (`rw` / `ro` / `pooler-ro`) selects where both the pgauthzd
 reader **and** `authzen-direct` send reads; point it at `ro` to offload reads to
 replicas. `check_access` is read-only, so it runs unmodified on a hot standby.
 
@@ -119,12 +132,11 @@ A few things that bite in practice (all handled by the chart, learned the hard w
   the next reconcile, and the service starts returning 500s. The chart declares
   the memberships in `spec.managed.roles[].inRoles` so the operator maintains
   them.
-- **PgBouncer + prepared statements.** Both PostgREST and the AuthZEN Go service
-  (pgx) use prepared statements, which the pooler's default **transaction**
-  pooling mode rejects. Either send AuthZEN straight to `-ro` (no pooler — the
-  default when `target: ro`), use `poolMode: session`, or disable client-side
-  prepared statements. The pooler is most useful for the high-connection
-  PostgREST reader fleet, not the low-pool AuthZEN service.
+- **PgBouncer + prepared statements.** The pgauthzd services (pgx) use prepared
+  statements, which the pooler's default **transaction** pooling mode rejects.
+  Either send reads straight to `-ro` (no pooler — the default when
+  `target: ro`), use `poolMode: session`, or disable client-side prepared
+  statements. The pooler is most useful for the high-connection reader fleet.
 - **Read freshness.** Replicas lag the primary; pgauthz has no consistency
   tokens, so a check immediately after a write may be stale on `ro`. Route
   freshness-sensitive checks to `rw`; the staleness window is replication lag
@@ -147,9 +159,8 @@ A few things that bite in practice (all handled by the chart, learned the hard w
 
 The same `instances >= 2` topology that gives you read replicas also gives you
 **automatic write failover** — CloudNativePG promotes a healthy standby to
-primary on failure and **repoints the `-rw` Service**, so the migrations Job,
-`postgrest-writer`, and the OPA write front door (all use `-rw`) reconnect to the
-new primary transparently. PostgreSQL is single-primary: a standby is read-only
+primary on failure and **repoints the `-rw` Service**, so the migrations Job and
+the pgauthzd writer (both use `-rw`) reconnect to the new primary transparently. PostgreSQL is single-primary: a standby is read-only
 **until promoted**, so this is failover, not active-active.
 
 Two things to decide:
@@ -342,8 +353,8 @@ allow-list, which is why it's off by default.
 
 ## Security defaults (keep these)
 
-- Only OPA (and optionally AuthZEN) is exposed; PostgREST + Postgres are
-  ClusterIP + default-deny NetworkPolicy.
+- Only OPA (and optionally AuthZEN) is exposed; the pgauthzd reader/writer
+  callbacks + Postgres are ClusterIP + default-deny NetworkPolicy.
 - `opa.requireTokenForReads=true`, AuthZEN `ALLOW_SUBJECT_OVERRIDE=false`.
 - Override `secrets.*` (dev defaults) and `opa.jwks` before real use; prefer
   `secrets.existingSecret` backed by a secret store.
@@ -351,6 +362,6 @@ allow-list, which is why it's off by default.
 ## Notable values
 
 See [`values.yaml`](values.yaml). Most-used: `database.instances`,
-`database.backup.*`, `pooler.enabled`, `postgrestReader.target`,
-`opa.{jwtIssuer,jwtAudience,writerRole,jwtRolesClaim,writerDbRoleClaim}`,
+`database.backup.*`, `pooler.enabled`, `reader.target`,
+`opa.{jwtIssuer,jwtAudience,writerRole,jwtRolesClaim,dbRoleClaim}`,
 `authzen.*.enabled`, `ingress.*`.

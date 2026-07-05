@@ -17,20 +17,20 @@ component "Load Balancer" as lb #Plum
 node "VM 1 (read)" as vm1 {
     component "OPA" as opa_a #LightBlue
     component "AuthZEN" as az_a #PaleGreen
-    component "PostgREST" as pgrst_a #LightGreen
+    component "pgauthzd\n(reader)" as pgd_a #LightGreen
     database "PG Replica" as pgr_a #LightYellow
 }
 
 node "VM 2 (read)" as vm2 {
     component "OPA" as opa_b #LightBlue
     component "AuthZEN" as az_b #PaleGreen
-    component "PostgREST" as pgrst_b #LightGreen
+    component "pgauthzd\n(reader)" as pgd_b #LightGreen
     database "PG Replica" as pgr_b #LightYellow
 }
 
 node "VM 0 (primary)" as vm0 {
     component "OPA\n(write front)" as opa_w #LightBlue
-    component "PostgREST\nWriter" as pgrst_w #Salmon
+    component "pgauthzd\n(writer)" as pgd_w #Salmon
     database "PG Primary" as pgp #Orange
 }
 
@@ -40,19 +40,19 @@ lb -down-> opa_a : "OPA data API\n/v1/data/authz/*"
 lb -down-> opa_b
 lb -down-> az_a : "AuthZEN 1.0 API\n/access/v1/*"
 lb -down-> az_b
-opa_a -down-> pgrst_a
-opa_b -down-> pgrst_b
-az_a -down-> opa_a : "authzen-opa\n(policy-enriched)"
-az_a -down-> pgr_a : "authzen-direct\n(SQL, lowest latency)"
+opa_a -down-> pgd_a : "native callback"
+opa_b -down-> pgd_b
+az_a -down-> opa_a : "compat-opa\n(policy-enriched)"
+az_a -down-> pgr_a : "decision-only\n(SQL, lowest latency)"
 az_b -down-> opa_b
 az_b -down-> pgr_b
-pgrst_a -down-> pgr_a
-pgrst_b -down-> pgr_b
+pgd_a -down-> pgr_a
+pgd_b -down-> pgr_b
 
 ' Write path — OPA fronts the writer (verifies JWT + writer role, forwards)
 app -down-> opa_w : "writes\n(JWT: writer role)"
-opa_w -down-> pgrst_w : "forward write\n(authorized)"
-pgrst_w -down-> pgp : "SQL (authz_writer)"
+opa_w -down-> pgd_w : "native write callback\n(authorized)"
+pgd_w -down-> pgp : "SQL (pgx, authz_writer)"
 
 ' Replication
 pgp -right-> pgr_a : "  WAL  "
@@ -60,10 +60,10 @@ pgp -right-> pgr_b : "  WAL  "
 
 legend bottom left
   |= Color |= Component |
-  | <#PaleGreen> | AuthZEN API — AuthZEN 1.0 (Go); authzen-direct → PG, authzen-opa → OPA |
+  | <#PaleGreen> | AuthZEN API — AuthZEN 1.0 (pgauthzd); decision-only → PG, compat-opa → OPA |
   | <#LightBlue> | OPA — policy evaluation + JWT authn (reads and writes) |
-  | <#LightGreen> | PostgREST — internal read API |
-  | <#Salmon> | PostgREST Writer — fixed authz_writer role, no JWT |
+  | <#LightGreen> | pgauthzd (reader) — decision-only; OPA read callback (native) |
+  | <#Salmon> | pgauthzd (writer) — full profile; OPA write callback (authz_writer) |
   | <#Orange> | PostgreSQL primary — read-write |
   | <#LightYellow> | PostgreSQL replica — read-only (WAL) |
   | <#Plum> | Load Balancer — distributes reads |

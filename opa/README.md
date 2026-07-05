@@ -1,8 +1,12 @@
-# OPA + PostgREST Integration
+# OPA + pgauthzd Integration
 
-This document explains how Open Policy Agent (OPA) integrates with PostgREST
-to provide a stateless HTTP authorization API backed by the PostgreSQL
-Zanzibar engine.
+This document explains how Open Policy Agent (OPA) integrates with pgauthzd
+(via its native `/pgauthz/v1` callback API) to provide a stateless HTTP
+authorization API backed by the PostgreSQL Zanzibar engine.
+
+> **Note.** OPA formerly bridged to PostgreSQL through PostgREST
+> (`POST /rpc/<function>`). PostgREST has since been removed entirely — the
+> sole transport is now pgauthzd's native `/pgauthz/v1` callback surface.
 
 ---
 
@@ -15,13 +19,15 @@ The system has three components connected via a Docker network:
   Application ──────▶│   OPA  (:8181)      │
   (HTTP)             │   Rego policies     │
                      └────────┬────────────┘
-                              │ http.send (internal)
+                              │ http.send (internal, native callback
+                              │ over service token / optional mTLS)
                               ▼
                      ┌─────────────────────┐
-                     │ PostgREST (:3000)   │
-                     │ REST → SQL bridge   │
+                     │ pgauthzd            │
+                     │ native /pgauthz/v1  │
+                     │ pgx → SQL           │
                      └────────┬────────────┘
-                              │ SQL
+                              │ SQL (pgx pool)
                               ▼
                      ┌─────────────────────┐
                      │ PostgreSQL (:5432)  │
@@ -32,12 +38,17 @@ The system has three components connected via a Docker network:
 
 - **OPA** is the only externally exposed service (port 8181). It receives
   authorization queries as JSON, evaluates Rego policies, and returns decisions.
-- **PostgREST** is internal only (no host port). It exposes the `authz` schema's
-  SQL functions as a REST API. OPA calls it via the Docker network.
+- **pgauthzd** is internal only (no host port). Its `compat-opa` capability
+  profile serves OPA the native `/pgauthz/v1` callback surface on an internal
+  listener; OPA calls it via the Docker network. Reads are served by a
+  **decision-only** pgauthzd instance (read-only DB role); writes by a **full**
+  instance (writer role). Reader/writer separation follows the instance's
+  profile and DB role, not separate REST services.
 - **PostgreSQL** stores all authorization data and runs the Zanzibar engine.
-  The recursive access resolution happens entirely in SQL.
+  The recursive access resolution happens entirely in SQL; pgauthzd runs the
+  SQL functions through its pgx connection pool.
 
-Applications never call PostgREST or PostgreSQL directly — OPA is the single
+Applications never call pgauthzd or PostgreSQL directly — OPA is the single
 entry point. This gives you a clean separation between:
 
 - **Policy logic** (Rego) — who can do what, under what conditions
@@ -53,21 +64,36 @@ entry point. This gives you a clean separation between:
 2. OPA evaluates the Rego policy, which extracts the subject, action, and
    resource from the input
 3. The policy calls the Zanzibar client library, which makes an HTTP request
-   to PostgREST (e.g., `POST /rpc/check_access`)
-4. PostgREST translates the REST call into a SQL function call
+   to pgauthzd's native callback API (e.g., store-scoped
+   `POST /stores/<store>/pgauthz/v1/check`)
+4. pgauthzd runs the corresponding SQL function through its pgx backend
    (`SELECT authz.check_access(...)`)
 5. PostgreSQL evaluates the Zanzibar model — resolving direct tuples, computed
    relations, TTU chains, conditions, and wildcards
-6. The boolean result flows back: PostgreSQL → PostgREST → OPA → application
+6. The boolean result flows back: PostgreSQL → pgauthzd → OPA → application
 
 For search queries (`list_objects`, `list_actions`), the flow is the same but
-returns arrays instead of booleans.
+hits the corresponding native endpoint (`/pgauthz/v1/list-objects`,
+`/pgauthz/v1/list-actions`) and returns arrays instead of booleans.
 
 ---
 
 ## 3. Docker Compose Setup
 
-The `compose.yml` defines all three services:
+The compose stack wires up PostgreSQL, OPA, and the pgauthzd middle tier.
+The exact service names, ports, and environment for the pgauthzd instances
+are defined by the compose workstream and may differ from any snippet here —
+the important shape is:
+
+- **PostgreSQL** (`authz-db`) — the engine, exposed only for direct SQL
+  access / debugging (`55433:5432` locally).
+- **pgauthzd (middle tier)** — replaces the former PostgREST bridge. OPA calls
+  back into it over the Docker network on an internal listener (no host port).
+  Reads are served by a **decision-only** pgauthzd instance connecting with a
+  read-only DB role; writes by a **full** pgauthzd instance connecting with the
+  writer role. Both expose OPA the native `/pgauthz/v1` callback surface
+  (`compat-opa` profile) and are unreachable from outside the Docker network.
+- **OPA** — the only externally exposed service (`8181:8181`).
 
 ```yaml
 services:
@@ -82,17 +108,9 @@ services:
     volumes:
       - authz-db-data:/var/lib/postgresql:z
 
-  postgrest:
-    image: postgrest/postgrest:v14.14
-    environment:
-      PGRST_DB_URI: postgres://authz:authz@authz-db:5432/authz
-      PGRST_DB_ANON_ROLE: api_anon
-      PGRST_DB_SCHEMAS: authz
-    expose:
-      - "3000"              # Internal only — no host port
-    depends_on:
-      authz-db:
-        condition: service_healthy
+  # pgauthzd (decision-only for reads, full for writes) is the middle tier —
+  # internal only, no host port. See the compose files for the concrete
+  # service definitions. OPA reaches it over the Docker network.
 
   opa:
     image: openpolicyagent/opa:1.18.2
@@ -102,15 +120,12 @@ services:
     volumes:
       - ./opa/policies:/policies:ro
       - ./opa/data:/data:ro
-    depends_on:
-      - postgrest
 ```
 
 Key design decisions:
 
-- **PostgREST has no host port** — it is only reachable by OPA via the Docker
-  network (`http://postgrest:3000`). This prevents clients from bypassing
-  OPA's policy layer.
+- **pgauthzd has no host port** — it is only reachable by OPA via the Docker
+  network. This prevents clients from bypassing OPA's policy layer.
 - **OPA watches for policy changes** (`--watch`) — edit a `.rego` file and
   OPA reloads it automatically, no restart needed.
 - **OPA mounts two directories**: `/policies` for Rego files and `/data` for
@@ -130,22 +145,31 @@ docker compose up -d
 
 ---
 
-## 4. PostgREST Configuration
+## 4. pgauthzd Callback Listener
 
-PostgREST connects as the `authz` superuser and impersonates `api_anon` for
-anonymous requests. The role grants are:
+pgauthzd's internal listener is the callback surface OPA talks to. It is
+authenticated with a shared service token — pgauthzd reads it from
+`INTERNAL_SERVICE_TOKEN`, OPA sends it as `Authorization: Bearer <token>` from
+its `NATIVE_SERVICE_TOKEN` — and can optionally require mTLS on top. It trusts
+OPA's asserted subject (in the request body) plus the per-app role header
+`X-Authz-Role`; it does **not** re-verify the end-user JWT. OPA is the front
+door and the security boundary — the same trust model PostgREST had.
 
-| Role | Capabilities |
-|---|---|
-| `api_anon` | Inherits `authz_reader` — can call `check_access`, `list_objects`, `list_actions`, `explain_access`, etc. |
-| `authz_reader` | Access checks, search queries, condition validation |
+Each instance connects to PostgreSQL with a fixed DB role selected by its
+capability profile:
 
-All functions are `SECURITY DEFINER` (run as `authz`), so `api_anon` needs
-no direct table access — it can only interact through the function API.
+| pgauthzd profile | DB role | Capabilities |
+|---|---|---|
+| `decision-only` (reads) | read-only (inherits `authz_reader`) | Access checks, search queries, condition validation |
+| `full` (reads + writes) | `authz_writer` | The above plus tuple/model writes |
 
-PostgREST exposes every function in the `authz` schema that the anonymous
-role has `EXECUTE` on. OPA calls these as `POST /rpc/<function_name>` with
-JSON bodies mapping parameter names to values.
+All functions are `SECURITY DEFINER` (run as `authz`), so the connecting role
+needs no direct table access — it can only interact through the function API.
+
+pgauthzd exposes the `authz` schema's functions as native `/pgauthz/v1`
+endpoints (also available store-scoped under
+`/stores/{store}/pgauthz/v1/…`). OPA calls these with JSON bodies mapping to
+the underlying function parameters.
 
 ---
 
@@ -155,8 +179,8 @@ The policy files are organized under `opa/policies/`:
 
 ```
 opa/policies/
-├── pgauthz_config.rego  # PostgREST URL, cache TTLs, default store
-├── pgauthz.rego         # Client library: calls PostgREST functions
+├── pgauthz_config.rego  # native callback URLs + service token, cache TTLs, default store
+├── pgauthz.rego         # Client library: calls pgauthzd native endpoints
 ├── policy.rego          # Application policy: allow, accessible_objects, permitted_actions
 ├── authn.rego           # JWT verification and subject extraction
 ├── authn_config.rego    # Required issuer and audience for JWT validation
@@ -166,50 +190,55 @@ opa/policies/
 ### pgauthz Client Library (`pgauthz.rego`)
 
 `package authz.pgauthz` — a reusable library that wraps every authorization
-function as an OPA rule calling PostgREST via `http.send`.
+function as an OPA rule calling pgauthzd's native callback via `http.send`.
 
-Available functions:
+Available functions (the native endpoint is store-scoped under
+`<native_url>/stores/{store}/pgauthz/v1/…`):
 
-| Rego Function | PostgREST Endpoint | Returns |
+| Rego Function | Native Endpoint | Returns |
 |---|---|---|
-| `check_access(store, subject_type, subject_id, relation, object_type, object_id)` | `/rpc/check_access` | `true` / `false` |
-| `check_access_with_context(... , ctx)` | `/rpc/check_access_with_context` | `true` / `false` |
-| `check_access_with_contextual_tuples(... , ctx_tuples)` | `/rpc/check_access_with_contextual_tuples` | `true` / `false` |
-| `check_access_with_contextual_tuples_ctx(... , ctx, ctx_tuples)` | `/rpc/check_access_with_contextual_tuples` | `true` / `false` |
-| `list_objects(store, subject_type, subject_id, relation, object_type)` | `/rpc/list_objects` | `set{object_id}` |
-| `list_objects_with_context(... , ctx)` | `/rpc/list_objects` | `set{object_id}` |
-| `list_objects_page(... , limit, offset)` | `/rpc/list_objects` | `[object_id]` (ordered, offset) |
-| `list_objects_page_with_context(... , ctx, limit, offset)` | `/rpc/list_objects` | `[object_id]` (ordered, offset) |
-| `list_objects_page_after(... , limit, after)` | `/rpc/list_objects` | `[object_id]` (ordered, keyset) |
-| `list_objects_page_after_with_context(... , ctx, limit, after)` | `/rpc/list_objects` | `[object_id]` (ordered, keyset) |
-| `list_subjects(store, subject_type, relation, object_type, object_id)` | `/rpc/list_subjects` | `set{subject_id}` |
-| `list_subjects_page(... , limit, offset)` | `/rpc/list_subjects` | `[subject_id]` (ordered, offset) |
-| `list_subjects_page_after(... , limit, after)` | `/rpc/list_subjects` | `[subject_id]` (ordered, keyset) |
-| `list_actions(store, subject_type, subject_id, object_type, object_id)` | `/rpc/list_actions` | `set{action}` |
-| `list_actions_with_context(... , ctx)` | `/rpc/list_actions` | `set{action}` |
+| `check_access(store, subject_type, subject_id, relation, object_type, object_id)` | `/pgauthz/v1/check` | `true` / `false` |
+| `check_access_with_context(... , ctx)` | `/pgauthz/v1/check` | `true` / `false` |
+| `check_access_with_contextual_tuples(... , ctx_tuples)` | `/pgauthz/v1/check` | `true` / `false` |
+| `check_access_with_contextual_tuples_ctx(... , ctx, ctx_tuples)` | `/pgauthz/v1/check` | `true` / `false` |
+| `list_objects(store, subject_type, subject_id, relation, object_type)` | `/pgauthz/v1/list-objects` | `set{object_id}` |
+| `list_objects_with_context(... , ctx)` | `/pgauthz/v1/list-objects` | `set{object_id}` |
+| `list_objects_page(... , limit, offset)` | `/pgauthz/v1/list-objects` | `[object_id]` (ordered, offset) |
+| `list_objects_page_with_context(... , ctx, limit, offset)` | `/pgauthz/v1/list-objects` | `[object_id]` (ordered, offset) |
+| `list_objects_page_after(... , limit, after)` | `/pgauthz/v1/list-objects` | `[object_id]` (ordered, keyset) |
+| `list_objects_page_after_with_context(... , ctx, limit, after)` | `/pgauthz/v1/list-objects` | `[object_id]` (ordered, keyset) |
+| `list_subjects(store, subject_type, relation, object_type, object_id)` | `/pgauthz/v1/list-subjects` | `set{subject_id}` |
+| `list_subjects_page(... , limit, offset)` | `/pgauthz/v1/list-subjects` | `[subject_id]` (ordered, offset) |
+| `list_subjects_page_after(... , limit, after)` | `/pgauthz/v1/list-subjects` | `[subject_id]` (ordered, keyset) |
+| `list_actions(store, subject_type, subject_id, object_type, object_id)` | `/pgauthz/v1/list-actions` | `set{action}` |
+| `list_actions_with_context(... , ctx)` | `/pgauthz/v1/list-actions` | `set{action}` |
 
 Each function:
-1. Builds a JSON body with named parameters (`p_store`, `p_user_type`, etc.)
-2. Sends a POST to `config.postgrest_url + "/rpc/<function>"`
+1. Builds a JSON body in the native subject/action/resource vocabulary
+2. Sends a POST to the native callback
+   `config.native_url + "/stores/<store>/pgauthz/v1/<endpoint>"` with the
+   `Authorization: Bearer <native_service_token>` header
 3. Checks for `status_code == 200`
 4. Extracts the result (boolean for checks, set comprehension for searches)
 5. Uses `force_cache` with a configurable TTL
 
-Example — how `check_access` calls PostgREST:
+Example — how `check_access` calls pgauthzd's native callback. The native body
+uses the subject/action/resource vocabulary the daemon shares with its AuthZEN
+surface:
 
 ```rego
 check_access(store, subject_type, subject_id, relation, object_type, object_id) := response.body if {
     response := http.send({
         "method": "POST",
-        "url": concat("", [config.postgrest_url, "/rpc/check_access"]),
-        "headers": {"Content-Type": "application/json"},
+        "url": concat("", [config.native_url, "/stores/", store, "/pgauthz/v1/check"]),
+        "headers": {
+            "Content-Type": "application/json",
+            "Authorization": concat("", ["Bearer ", config.native_service_token]),
+        },
         "body": {
-            "p_store": store,
-            "p_user_type": subject_type,
-            "p_user_id": subject_id,
-            "p_relation": relation,
-            "p_object_type": object_type,
-            "p_object_id": object_id,
+            "subject":  {"type": subject_type, "id": subject_id},
+            "action":   {"name": relation},
+            "resource": {"type": object_type, "id": object_id},
         },
         "raise_error": false,
         "force_cache": true,
@@ -227,8 +256,13 @@ check_access(store, subject_type, subject_id, relation, object_type, object_id) 
 # Default store used by the policy layer.
 default_store := "demo"
 
-# PostgREST base URL — resolves via Docker network.
-postgrest_url := "http://postgrest:3000"
+# Native pgauthzd callback (primary transport). Resolves via Docker network.
+# native_url        <- env NATIVE_URL          (reads: decision-only instance)
+# native_write_url  <- env NATIVE_WRITE_URL     (writes: full instance)
+# native_service_token <- env NATIVE_SERVICE_TOKEN (Bearer token for the callback)
+native_url := opa.runtime().env.NATIVE_URL
+native_write_url := opa.runtime().env.NATIVE_WRITE_URL
+native_service_token := opa.runtime().env.NATIVE_SERVICE_TOKEN
 
 # Default cache TTL for http.send responses (seconds). 0 = no caching.
 default_cache_ttl_seconds := 0
@@ -236,6 +270,11 @@ default_cache_ttl_seconds := 0
 # Per-store, per-object-type overrides.
 cache_ttl_seconds := {}
 ```
+
+The client library uses the native path
+`<native_url>/stores/{store}/pgauthz/v1/{endpoint}` with the Bearer service
+token. This is the sole transport — there is no PostgREST fallback (PostgREST
+has been removed from the project entirely).
 
 Cache TTL resolution order:
 1. `cache_ttl_seconds[store][object_type]` — exact match
@@ -320,7 +359,7 @@ allow if {
 
 OPA evaluates all `allow` rules — if any one matches, the result is `true`.
 The four variants handle every combination of context and contextual tuples
-so the correct PostgREST endpoint is always called.
+so the correct native `/pgauthz/v1/check` request is always called.
 
 **`allow_detailed`** — the allow decision PLUS a classification (opt-in,
 uncached): `state: allow | deny | conditional`, the missing condition-context
@@ -788,7 +827,7 @@ the policy handles all four combinations automatically.
 
 OPA's `http.send` supports response caching via `force_cache` and
 `force_cache_duration_seconds`. The Zanzibar client library uses these to
-cache PostgREST responses.
+cache pgauthzd callback responses.
 
 ### Configuration
 
@@ -820,7 +859,7 @@ The cache TTL for a given `(store, object_type)` is resolved in order:
 
 | TTL | Latency | Consistency | Use case |
 |---|---|---|---|
-| 0 (default) | Every check hits PostgREST | Always fresh | Low volume, security-critical |
+| 0 (default) | Every check hits pgauthzd | Always fresh | Low volume, security-critical |
 | 1–5 seconds | Reduced load | Slight lag | Medium volume, acceptable staleness |
 | 30+ seconds | Minimal load | Noticeable lag | High volume, rarely-changing data |
 
@@ -936,7 +975,7 @@ hop for the ReBAC call (softened by the decision cache). Note AuthZEN's
 fixed surface means team-specific *rules* are not exposed through it — they
 live in the sidecar.
 
-**The invariant in both options:** nothing calls PostgREST/PostgreSQL
+**The invariant in both options:** nothing calls pgauthzd/PostgreSQL
 directly. Team policies compose *on top of* the front door (inside the
 shared PDP, or in front of it) — never around it.
 
@@ -990,14 +1029,17 @@ tokens from `opa/http-client.env.json`.
 
 ## 13. Security
 
-- **Read PostgREST must not be exposed externally.** It runs as
-  `api_anon` (inheriting `authz_reader`) and has no authentication
-  layer of its own. Keep it internal to the Docker network — OPA is
-  the security boundary for all read-path access checks.
-- **Write PostgREST is fronted by OPA, not exposed.** The writer has no host
-  port and does **no** JWT verification of its own — it runs as a fixed
-  `authz_writer` role and is reachable only by OPA, which verifies the token,
-  requires the configured writer role, and forwards the write. See
+- **The read (decision-only) pgauthzd must not be exposed externally.** It
+  connects with a read-only DB role (inheriting `authz_reader`) and does no
+  end-user JWT verification of its own — its callback listener only checks the
+  shared service token (`INTERNAL_SERVICE_TOKEN`) and optional mTLS. Keep it
+  internal to the Docker network — OPA is the security boundary for all
+  read-path access checks.
+- **The write (full) pgauthzd is fronted by OPA, not exposed.** It has no host
+  port and does **no** JWT verification of its own — it connects as a fixed
+  `authz_writer` role and is reachable only by OPA (over the same service-token
+  callback), which verifies the token, requires the configured writer role, and
+  forwards the write. See
   [DEVELOPMENT.md → Write API](../docs/DEVELOPMENT.md#write-api-opa-fronted).
 - **JWKS rotation:** Replace `opa/data/jwks.json` with your identity
   provider's JWKS endpoint, or mount the file from a secrets manager.
@@ -1437,16 +1479,16 @@ Returns the revision, last download time, and activation status:
 
 ### Scaling
 
-All three components (OPA, PostgREST, PostgreSQL) run co-located on a
+All three components (OPA, pgauthzd, PostgreSQL) run co-located on a
 single VM. To scale out, deploy multiple such stacks — each VM runs its
-own OPA + PostgREST + PostgreSQL read replica. A load balancer distributes
+own OPA + pgauthzd + PostgreSQL read replica. A load balancer distributes
 authorization requests across the stacks.
 
 ```
                            VM 1                          VM 2
                     ┌─────────────────┐           ┌─────────────────┐
                     │ OPA             │           │ OPA             │
-  Application ─────│ PostgREST        │           │ PostgREST       │
+  Application ─────│ pgauthzd         │           │ pgauthzd        │
        │            │ PG replica  ◀──WAL──┐       │ PG replica  ◀──WAL──┐
        │            └─────────────────┘   │       └─────────────────┘   │
        │                                  │                             │
@@ -1462,7 +1504,7 @@ authorization requests across the stacks.
 **Why this works:**
 - **OPA is stateless** — any instance can handle any request. No session
   stickiness required.
-- **PostgREST is stateless** — each instance maintains its own connection
+- **pgauthzd is stateless** — each instance maintains its own pgx connection
   pool to the local PostgreSQL replica.
 - **No shared state between VMs** — each stack is self-contained. The
   only coordination is PostgreSQL streaming replication from the primary.
@@ -1474,7 +1516,7 @@ Round-robin or least-connections are both fine since all instances are
 equivalent.
 
 **Health checks** should verify the full stack, not just OPA. A simple
-POST through OPA that reaches PostgREST and PostgreSQL catches failures
+POST through OPA that reaches pgauthzd and PostgreSQL catches failures
 at any layer:
 
 ```
@@ -1531,7 +1573,7 @@ SELECT now() - pg_last_xact_replay_timestamp() AS replication_lag;
 
 Tuple management (creating/deleting relationships, importing models) must
 target the primary PostgreSQL instance directly — not through the
-OPA/PostgREST read path. Your application backend connects to the primary
+OPA/pgauthzd read path. Your application backend connects to the primary
 for writes while authorization checks go through the load balancer.
 
 ### Connection limits and concurrency
@@ -1540,47 +1582,46 @@ Each authorization check flows through three components, each with its own
 concurrency model:
 
 ```
-  Client ──▶ OPA ──▶ PostgREST ──▶ PostgreSQL
-          (unlimited)  (pooled)     (max_connections)
+  Client ──▶ OPA ──▶ pgauthzd ──▶ PostgreSQL
+          (unlimited)  (pooled)   (max_connections)
 ```
 
 **OPA** handles concurrent requests via Go goroutines — there is no
 configurable limit. Each `http.send` call opens a **new TCP connection**
-to PostgREST (OPA disables keep-alive). Under load, OPA can open as many
+to pgauthzd (OPA disables keep-alive). Under load, OPA can open as many
 outbound connections as there are concurrent policy evaluations.
 
-**PostgREST** maintains a fixed-size **connection pool** to PostgreSQL.
+**pgauthzd** maintains a fixed-size **pgx connection pool** to PostgreSQL.
 When the pool is exhausted, requests queue until a connection becomes
-available or the acquisition timeout expires (HTTP 504).
+available or the acquisition timeout expires.
 
 **PostgreSQL** enforces a hard `max_connections` limit. Connections beyond
 this are rejected.
 
 #### Current settings
 
+The database connection pool now lives in pgauthzd (its `DB_POOL_MAX`), not
+PostgREST — size it below PostgreSQL's `max_connections`, leaving headroom for
+direct access (migrations, admin tools, monitoring, other services).
+
 | Component | Setting | Value | Purpose |
 |---|---|---|---|
 | PostgreSQL | `max_connections` | 250 | Hard connection limit |
-| PostgREST | `PGRST_DB_POOL` | 100 | Pooled connections to PostgreSQL |
-| PostgREST | `PGRST_DB_POOL_ACQUISITION_TIMEOUT` | 10s | Max wait for a free connection |
+| pgauthzd | `DB_POOL_MAX` | (below `max_connections`) | Pooled pgx connections to PostgreSQL |
 | OPA | `default_cache_ttl_seconds` | 1 | Cache `http.send` responses (seconds) |
-
-The PostgREST pool (100) is sized below PostgreSQL's limit (250), leaving
-150 connections for direct access (migrations, admin tools, monitoring,
-other services).
 
 #### Tuning guidelines
 
-- **PostgREST pool too small** → 504 errors under load. Increase
-  `PGRST_DB_POOL` (but stay below `max_connections`).
-- **PostgREST pool too large** → wastes PostgreSQL memory (~10 MB per
+- **pgauthzd pool too small** → requests queue and eventually error under load.
+  Increase `DB_POOL_MAX` (but stay below `max_connections`).
+- **pgauthzd pool too large** → wastes PostgreSQL memory (~10 MB per
   connection). Size it to your actual peak concurrency.
 - **OPA cache TTL** reduces outbound connections significantly. With a
   1-second TTL, repeated checks for the same user+resource within that
-  window are served from OPA's in-memory cache without hitting PostgREST.
+  window are served from OPA's in-memory cache without hitting pgauthzd.
   Increase the TTL per-store/per-object-type in `pgauthz_config.rego` for
   less-volatile data (e.g., team memberships).
-- **Multiple PostgREST instances** — if a single PostgREST pool isn't
+- **Multiple pgauthzd instances** — if a single pgauthzd pool isn't
   enough, run multiple instances. Each maintains its own pool.
 
 ### Monitoring
@@ -1588,7 +1629,7 @@ other services).
 - **OPA health:** `GET http://localhost:8181/health`
 - **OPA metrics:** `GET http://localhost:8181/v1/data/system/health`
   (when configured with `--set=decision_logs.console=true`)
-- **PostgREST health:** Not externally exposed — check via OPA by sending
+- **pgauthzd health:** Not externally exposed — check via OPA by sending
   a probe query (as `tests/test-opa.sh` does)
 
 ### Cache tuning
@@ -1601,7 +1642,7 @@ staleness window.
 
 ### Linux and Docker host tuning
 
-All three components (OPA, PostgREST, PostgreSQL) run on the same server.
+All three components (OPA, pgauthzd, PostgreSQL) run on the same server.
 The typical deployment pattern is multiple such stacks on separate VMs,
 each PostgreSQL instance configured as a streaming replica.
 
@@ -1681,12 +1722,12 @@ services:
       - listen_addresses=127.0.0.1
       # ...
 
-  postgrest:
+  pgauthzd:
     network_mode: host
     environment:
-      PGRST_DB_URI: postgres://authz:authz@127.0.0.1:5432/authz
-      PGRST_SERVER_PORT: "3000"
-      # ...
+      DB_URI: postgres://authz:authz@127.0.0.1:5432/authz
+      INTERNAL_SERVICE_TOKEN: "${INTERNAL_SERVICE_TOKEN}"
+      # ... (decision-only for reads, full for writes)
 
   opa:
     network_mode: host
@@ -1720,7 +1761,7 @@ services:
           cpus: "2"
           memory: 1G
 
-  postgrest:
+  pgauthzd:
     deploy:
       resources:
         limits:

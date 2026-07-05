@@ -1,6 +1,6 @@
 # Default values for pgauthz.
-# Secure-by-default: OPA is the only externally reachable service; PostgREST
-# (reader + writer) and PostgreSQL are ClusterIP-only and locked down with
+# Secure-by-default: OPA is the only externally reachable service; the pgauthzd
+# reader/writer callbacks and PostgreSQL are ClusterIP-only and locked down with
 # NetworkPolicies. Override the dev secrets before any real deployment.
 
 nameOverride: ""
@@ -12,9 +12,11 @@ fullnameOverride: ""
 images:
   pullPolicy: IfNotPresent
   postgres:   { repository: ghcr.io/cloudnative-pg/postgresql, tag: "18.4" }
-  postgrest:  { repository: postgrest/postgrest,               tag: "v14.14" }
   opa:        { repository: openpolicyagent/opa,               tag: "1.18.2" }
   migrations: { repository: pgauthz-migrations,                tag: "0.7.3" }
+  # pgauthzd — the unified daemon. Used for the native reader (decision-only)
+  # and writer (full) callback instances OPA calls back into.
+  pgauthzd:      { repository: pgauthz-pgauthzd,               tag: "0.7.3" }
   authzenDirect: { repository: pgauthz-authzen-direct,         tag: "0.7.3" }
   authzenOpa:    { repository: pgauthz-authzen-opa,            tag: "0.7.3" }
 
@@ -130,9 +132,12 @@ pooler:
 # an external secret store (External Secrets Operator / Vault) and existingSecret.
 secrets:
   existingSecret: ""           # if set, the chart creates no Secret and reads keys from it
-  authenticatorPassword: "authz"    # authz_authenticator login (PostgREST)
-  authzenDirectPassword: "authz"    # authzen_direct login (read-only Go service)
+  authzenDirectPassword: "authz"    # authzen_direct login (read-only: reader + AuthZEN direct)
+  pgauthzdRwPassword: "authz"       # pgauthzd_rw login (writer, full profile)
   opaAdminToken: "change-me-in-production"
+  # Shared SERVICE credential OPA presents to the pgauthzd reader/writer callback
+  # listeners (Authorization: Bearer). MUST be overridden for real deployments.
+  nativeServiceToken: "change-me-in-production"
 
 # ── OPA: the single front door ───────────────────────────────────────────────
 opa:
@@ -157,10 +162,12 @@ opa:
   # (or point OPA's authn at a JWKS URL instead of this file).
   jwks: ""                     # "" = use files/opa/data/jwks.json from the chart
 
-# ── PostgREST reader (internal only) ─────────────────────────────────────────
-postgrestReader:
+# ── pgauthzd reader — native decision path (internal only, fronted by OPA) ────
+# decision-only profile: read-only DB role (authzen_direct → authz_reader).
+# Serves OPA's native READ callbacks; replaces the PostgREST reader.
+reader:
   replicas: 3
-  dbPool: 20                   # replicas x dbPool must stay < max_connections
+  dbPoolMax: 20                # replicas x dbPoolMax must stay < max_connections
   # Route reads at the pooler (replicas) by default. Set to "rw" to send reads
   # to the primary when read-your-writes freshness matters more than scale-out
   # (the project deliberately has no consistency tokens; replica lag + the OPA
@@ -171,10 +178,12 @@ postgrestReader:
     limits:   { memory: 256Mi }
   autoscaling: { enabled: true, minReplicas: 3, maxReplicas: 10, targetCPUUtilizationPercentage: 70 }
 
-# ── PostgREST writer (internal only, fronted by OPA) ─────────────────────────
-postgrestWriter:
+# ── pgauthzd writer — native write path (internal only, fronted by OPA) ───────
+# full profile: writer DB role (pgauthzd_rw → authz_writer). Serves OPA's native
+# WRITE callbacks (and reads); targets the primary (-rw). Replaces PostgREST writer.
+writer:
   replicas: 2
-  dbPool: 10
+  dbPoolMax: 10
   # synchronous_commit for the writer's connections. "remote_apply" (default)
   # means a grant/revoke only acks once every synchronous standby has APPLIED
   # it — combined with database.replication.synchronous, no replica in the
@@ -199,7 +208,7 @@ authzen:
   exposeViaIngress: false
 
 # ── Ingress ──────────────────────────────────────────────────────────────────
-# Only OPA (and optionally AuthZEN) are ever exposed. PostgREST + Postgres never.
+# Only OPA (and optionally AuthZEN) are ever exposed. pgauthzd + Postgres never.
 ingress:
   enabled: true
   className: ""                # "traefik" on k3d
@@ -208,6 +217,6 @@ ingress:
   tls: { enabled: false, secretName: "" }
 
 # Default-deny NetworkPolicies + explicit allow rules. Keep enabled — this is a
-# core part of the security model (PostgREST is unauthenticated behind OPA).
+# core part of the security model (the pgauthzd callbacks are policy-free behind OPA).
 networkPolicies:
   enabled: true

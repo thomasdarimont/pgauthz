@@ -15,20 +15,18 @@ database:
 
 # Pooler left OFF for the local demo: reads go straight to the -ro Service.
 # The CNPG pooler is PgBouncer in transaction mode, which rejects the prepared
-# statements both PostgREST and pgx use — so pooler-ro needs prepared statements
+# statements pgauthzd (pgx) uses — so pooler-ro needs prepared statements
 # disabled (or session mode). Not worth it for a laptop; enable for real scale.
 pooler:
   enabled: false
 
-postgrestReader:
+reader:
   replicas: 1
-  # Read from the replica (-ro). The chart auto-disables PostgREST's LISTEN
-  # channel for replica targets (LISTEN is rejected on a hot standby). Set to
-  # "rw" to read the primary instead (keeps live schema-cache reload).
+  # Read from the replica (-ro). Set to "rw" to read the primary instead.
   target: "ro"
   autoscaling: { enabled: false, minReplicas: 1, maxReplicas: 2, targetCPUUtilizationPercentage: 80 }
 
-postgrestWriter:
+writer:
   replicas: 1
 
 opa:

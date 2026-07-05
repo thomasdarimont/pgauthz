@@ -47,3 +47,14 @@ func TestCompatRouterSeparation(t *testing.T) {
 		t.Error("internal: /access/v1/evaluation must NOT be on the internal listener")
 	}
 }
+
+// The callback listener's handler has a nil AuthZEN backend; /healthz must not
+// panic dereferencing it (regression: Helm k3d probe on :8081).
+func TestCallbackHealthzNilBackend(t *testing.T) {
+	h := &Handler{cfg: &config.Config{}} // backend/raw/rawWrite all nil
+	w := httptest.NewRecorder()
+	h.Healthz(w, httptest.NewRequest("GET", "/healthz", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("nil-backend healthz: got %d, want 200", w.Code)
+	}
+}

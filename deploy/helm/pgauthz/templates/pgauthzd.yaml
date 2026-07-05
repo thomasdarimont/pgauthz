@@ -1,0 +1,179 @@
+{{- /*
+pgauthzd reader + writer — the native decision/write path OPA calls back into,
+replacing the former PostgREST reader/writer split.
+
+  reader  (PGAUTHORIZER_PROFILE=decision-only) — read-only DB role
+          (authzen_direct → authz_reader); targets the read endpoint
+          (reader.target: pooler-ro | ro | rw). Serves OPA's native READ
+          callbacks (/pgauthz/v1/check, list_*, explain, …).
+  writer  (PGAUTHORIZER_PROFILE=full) — writer DB role (pgauthzd_rw →
+          authz_writer); targets the primary (-rw). Serves OPA's native
+          WRITE callbacks (/pgauthz/v1/write, delete, …) AND reads.
+
+Both expose ONLY the OPA CALLBACK listener (INTERNAL_LISTEN_ADDR, service-token
+guarded) to OPA; the primary JWT listener (:8080) is unused/ClusterIP and
+NetworkPolicy-locked. The callback bypasses the policy layer, so it is guarded
+by the shared INTERNAL_SERVICE_TOKEN and reachable only by OPA (NetworkPolicy).
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pgauthz.fullname" . }}-reader
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.reader.autoscaling.enabled }}
+  replicas: {{ .Values.reader.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "pgauthz.name" . }}
+      app.kubernetes.io/component: pgauthzd-reader
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "pgauthz.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: pgauthzd-reader
+    spec:
+      containers:
+        - name: pgauthzd
+          image: {{ include "pgauthz.image" .Values.images.pgauthzd }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          env:
+            # SECURITY: the callback listener bypasses OPA's policy layer. It is
+            # guarded by INTERNAL_SERVICE_TOKEN and reachable only by OPA
+            # (NetworkPolicy). Never add an Ingress.
+            - { name: PGAUTHORIZER_PROFILE, value: decision-only }
+            - { name: LISTEN_ADDR,          value: ":8080" }   # unused JWT listener
+            - { name: INTERNAL_LISTEN_ADDR, value: ":8081" }   # OPA callback listener
+            - name: INTERNAL_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef: { name: {{ include "pgauthz.secretName" . }}, key: native-service-token }
+            - name: AZD_PW
+              valueFrom:
+                secretKeyRef: { name: {{ include "pgauthz.fullname" . }}-authzen-direct, key: password }
+            - name: DATABASE_URL
+              # Read-only role (authzen_direct → authz_reader); follows
+              # reader.target (pooler-ro / ro / rw) so single-instance clusters
+              # work too.
+              value: postgres://authzen_direct:$(AZD_PW)@{{ include "pgauthz.readerHost" . }}:5432/authz
+            # Always SET LOCAL ROLE on a no-db_role read, so the connection
+            # role's SET-ROLE memberships never leak into namespace checks.
+            - { name: DEFAULT_DB_ROLE, value: authz_reader }
+            - { name: DB_POOL_MAX,   value: {{ .Values.reader.dbPoolMax | quote }} }
+            - { name: JWKS_FILE,     value: /jwks/jwks.json }
+            - { name: JWT_ISSUER,    value: {{ .Values.opa.jwtIssuer | quote }} }
+            - { name: JWT_AUDIENCE,  value: {{ .Values.opa.jwtAudience | quote }} }
+            - { name: DEFAULT_STORE, value: {{ .Values.opa.defaultStore | quote }} }
+            - { name: ALLOW_SUBJECT_OVERRIDE, value: "false" }
+          ports:
+            - { name: jwt,      containerPort: 8080 }
+            - { name: callback, containerPort: 8081 }
+          readinessProbe: { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 5 }
+          livenessProbe:  { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 10 }
+          resources: {{- toYaml .Values.reader.resources | nindent 12 }}
+          volumeMounts:
+            - { name: jwks, mountPath: /jwks, readOnly: true }
+      volumes:
+        - name: jwks
+          configMap: { name: {{ include "pgauthz.fullname" . }}-opa-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pgauthz.fullname" . }}-reader
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "pgauthz.name" . }}
+    app.kubernetes.io/component: pgauthzd-reader
+  # Only the callback listener is exposed; OPA's NATIVE_URL points here.
+  ports: [{ name: callback, port: 8081, targetPort: 8081 }]
+{{- if .Values.reader.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "pgauthz.fullname" . }}-reader
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: {{ include "pgauthz.fullname" . }}-reader }
+  minReplicas: {{ .Values.reader.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.reader.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: {{ .Values.reader.autoscaling.targetCPUUtilizationPercentage }} }
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pgauthz.fullname" . }}-writer
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.writer.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "pgauthz.name" . }}
+      app.kubernetes.io/component: pgauthzd-writer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "pgauthz.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: pgauthzd-writer
+    spec:
+      containers:
+        - name: pgauthzd
+          image: {{ include "pgauthz.image" .Values.images.pgauthzd }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          env:
+            # Full profile: writer-capable DB role (pgauthzd_rw → authz_writer).
+            # OPA is the front door (verifies JWT + writer role, forwards the
+            # authorized write over the service-token-guarded callback). Writes
+            # go to the PRIMARY (-rw). Reachable only by OPA — never host-exposed.
+            - { name: PGAUTHORIZER_PROFILE, value: full }
+            - { name: LISTEN_ADDR,          value: ":8080" }   # unused JWT listener
+            - { name: INTERNAL_LISTEN_ADDR, value: ":8081" }   # OPA callback listener
+            - name: INTERNAL_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef: { name: {{ include "pgauthz.secretName" . }}, key: native-service-token }
+            - name: RW_PW
+              valueFrom:
+                secretKeyRef: { name: {{ include "pgauthz.fullname" . }}-pgauthzd-rw, key: password }
+            - name: DATABASE_URL
+              # remote_apply: with database.replication.synchronous enabled, a
+              # grant/revoke only acks once the synchronous standbys APPLIED it
+              # (no stale allow after a revoke ack). No-op without sync standbys.
+              value: postgres://pgauthzd_rw:$(RW_PW)@{{ include "pgauthz.dbRW" . }}:5432/authz?options=-csynchronous_commit%3D{{ .Values.writer.synchronousCommit | default "remote_apply" }}
+            - { name: DB_POOL_MAX,   value: {{ .Values.writer.dbPoolMax | quote }} }
+            - { name: JWKS_FILE,     value: /jwks/jwks.json }
+            - { name: JWT_ISSUER,    value: {{ .Values.opa.jwtIssuer | quote }} }
+            - { name: JWT_AUDIENCE,  value: {{ .Values.opa.jwtAudience | quote }} }
+            - { name: DEFAULT_STORE, value: {{ .Values.opa.defaultStore | quote }} }
+            - { name: ALLOW_SUBJECT_OVERRIDE, value: "false" }
+          ports:
+            - { name: jwt,      containerPort: 8080 }
+            - { name: callback, containerPort: 8081 }
+          readinessProbe: { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 5 }
+          livenessProbe:  { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 10 }
+          resources: {{- toYaml .Values.writer.resources | nindent 12 }}
+          volumeMounts:
+            - { name: jwks, mountPath: /jwks, readOnly: true }
+      volumes:
+        - name: jwks
+          configMap: { name: {{ include "pgauthz.fullname" . }}-opa-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pgauthz.fullname" . }}-writer
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "pgauthz.name" . }}
+    app.kubernetes.io/component: pgauthzd-writer
+  # Only the callback listener is exposed; OPA's NATIVE_WRITE_URL points here.
+  ports: [{ name: callback, port: 8081, targetPort: 8081 }]

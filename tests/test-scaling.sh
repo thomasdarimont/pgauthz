@@ -62,16 +62,15 @@ assert "replica: eva can_read accounting doc" "t" \
 assert "replica: unknown subject denied" "f" \
   "$(qp "$REPLICA" "SELECT authz.check_access('demo','internal_user','ghost_xyz','can_read','document','doc_acc_001');")"
 
-# PostgREST connects to the read-only replica, which cannot receive LISTEN/NOTIFY
-# (the engine NOTIFYs the primary on schema changes, but LISTEN/NOTIFY is not
-# replicated and a standby rejects LISTEN). So PostgREST holds whatever schema
-# cache it loaded at startup — before the schema existed. In this topology a
-# schema change therefore requires reloading the replica-facing PostgREST;
-# restart it so it re-reads the now-present authz schema.
-echo "==> Reloading PostgREST's schema cache (read-only replica can't LISTEN)..."
-"${COMPOSE[@]}" restart postgrest >/dev/null 2>&1 || true
+# pgauthzd uses pgx and holds no schema cache (unlike PostgREST), so there is
+# nothing to reload on a schema change. But the replica-facing pgauthzd-reader
+# may have started (and restarted) before the schema+roles existed on the
+# primary/replica; bounce it to guarantee it is connected to the now-initialized
+# replica before the OPA-path assertions.
+echo "==> Ensuring pgauthzd-reader is connected to the initialized replica..."
+"${COMPOSE[@]}" restart pgauthzd-reader >/dev/null 2>&1 || true
 
-echo "==> Asserting the OPA -> PostgREST -> replica path..."
+echo "==> Asserting the OPA -> pgauthzd -> replica path..."
 opa() {  # input-json
   curl -s -m 10 http://localhost:8181/v1/data/authz/allow \
     -H "Authorization: Bearer ${OPA_ADMIN_TOKEN:-change-me-in-production}" -d "$1"

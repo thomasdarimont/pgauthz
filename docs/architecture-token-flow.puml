@@ -9,10 +9,10 @@ skinparam maxMessageSize 260
 title Where tokens are validated — the three request paths
 
 actor "Client" as app
-participant "authzen-opa\n(Go)" as az
+participant "pgauthzd\n(compat-opa)" as az
 participant "OPA\n:8181" as opa
-participant "PostgREST\nreader (api_anon)" as pgrst
-participant "PostgREST\nwriter (authz_writer)" as pgw
+participant "pgauthzd reader\n(decision-only)" as pgrd
+participant "pgauthzd writer\n(full)" as pgw
 database "PostgreSQL\nengine (SECURITY DEFINER)" as pg
 
 group Read — OPA front door (token mode)
@@ -25,14 +25,14 @@ group Read — OPA front door (token mode)
     REQUIRE_TOKEN_FOR_READS=false
     (trusted-PEP mode).
   end note
-  opa -> pgrst : /rpc/check_access (cached)
-  pgrst -> pg : check_access(...)
+  opa -> pgrd : native /pgauthz/v1/check\n(service token; cached)
+  pgrd -> pg : check_access(...) via pgx
 end
 
 group AuthZEN — token-forwarding (defense in depth)
   app -> az : POST /access/v1/evaluation\nAuthorization: Bearer <jwt>
   note right of az
-    **Go middleware validates** —
+    **pgauthzd middleware validates** —
     multi-issuer (JWT_ISSUERS,
     iss selects the validator);
     search/* endpoints require
@@ -44,8 +44,8 @@ group AuthZEN — token-forwarding (defense in depth)
     token — no tokenless
     subject-trust anywhere.
   end note
-  opa -> pgrst : /rpc/check_access
-  pgrst -> pg : check_access(...)
+  opa -> pgrd : native /pgauthz/v1/check
+  pgrd -> pg : check_access(...) via pgx
 end
 
 group Write — OPA-fronted writer
@@ -55,13 +55,13 @@ group Write — OPA-fronted writer
     requires the writer role**
     (WRITER_ROLE in JWT_ROLES_CLAIM).
   end note
-  opa -> pgw : forward authorized write\n(subject injected as audit author)
+  opa -> pgw : native write callback\n(subject injected as audit author)
   note right of pgw
-    Writer does **no JWT** of its own
-    (fixed authz_writer role,
-    reachable only by OPA).
+    Writer does **no end-user JWT** of its
+    own — a full-profile pgauthzd, service
+    token, reachable only by OPA.
   end note
-  pgw -> pg : write_tuple(...)
+  pgw -> pg : write_tuples_jsonb(...) via pgx
 end
 
 @enduml

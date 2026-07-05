@@ -17,14 +17,14 @@ component "Load Balancer" as lb #Plum
 node "VM 1 (read)" as vm1 {
     component "OPA" as opa3a #LightBlue
     component "AuthZEN" as az3a #PaleGreen
-    component "PostgREST" as pgrst3a #LightGreen
+    component "pgauthzd\n(reader)" as pgd3a #LightGreen
     database "PG Replica" as pgr3a #LightYellow
 }
 
 node "VM 2 (read)" as vm2 {
     component "OPA" as opa3b #LightBlue
     component "AuthZEN" as az3b #PaleGreen
-    component "PostgREST" as pgrst3b #LightGreen
+    component "pgauthzd\n(reader)" as pgd3b #LightGreen
     database "PG Replica" as pgr3b #LightYellow
 }
 
@@ -36,14 +36,14 @@ lb -down-> opa3a : "OPA data API\n/v1/data/authz/*"
 lb -down-> opa3b
 lb -down-> az3a : "AuthZEN 1.0 API\n/access/v1/*"
 lb -down-> az3b
-opa3a -down-> pgrst3a
-opa3b -down-> pgrst3b
-az3a -down-> opa3a : "authzen-opa\n(policy-enriched)"
-az3a -down-> pgr3a : "authzen-direct\n(SQL, lowest latency)"
+opa3a -down-> pgd3a : "native callback"
+opa3b -down-> pgd3b
+az3a -down-> opa3a : "compat-opa\n(policy-enriched)"
+az3a -down-> pgr3a : "decision-only\n(SQL, lowest latency)"
 az3b -down-> opa3b
 az3b -down-> pgr3b
-pgrst3a -down-> pgr3a
-pgrst3b -down-> pgr3b
+pgd3a -down-> pgr3a
+pgd3b -down-> pgr3b
 
 ' Writes go to primary
 app3 -down-> pgp3 : "tuple writes\n(direct SQL)"
@@ -54,9 +54,9 @@ pgp3 -right-> pgr3b : "  WAL  "
 
 legend bottom left
   |= Color |= Component |
-  | <#PaleGreen> | AuthZEN API — AuthZEN 1.0 (Go); authzen-direct → PG, authzen-opa → OPA |
+  | <#PaleGreen> | AuthZEN API — AuthZEN 1.0 (pgauthzd); decision-only → PG, compat-opa → OPA |
   | <#LightBlue> | OPA — policy evaluation |
-  | <#LightGreen> | PostgREST — internal read API |
+  | <#LightGreen> | pgauthzd (reader) — decision-only; OPA read callback (native) |
   | <#Orange> | PostgreSQL primary — read-write |
   | <#LightYellow> | PostgreSQL replica — read-only (WAL) |
   | <#Plum> | Load Balancer — distributes reads |
