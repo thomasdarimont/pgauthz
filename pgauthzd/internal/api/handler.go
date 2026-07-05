@@ -25,12 +25,19 @@ type Handler struct {
 	// regexes) its tokens may access. Only issuers with a non-empty `stores`
 	// list appear here; absent = unrestricted.
 	issuerStores map[string][]*regexp.Regexp
-	backend      authz.Backend
-	cfg          *config.Config
+	// backend serves the AuthZEN surface (/access/v1): the OPA-compat backend on
+	// the compat-opa profile, the direct pgx backend on the direct profiles.
+	backend authz.Backend
+	// raw serves the native /pgauthz/v1 surface and is ALWAYS a direct pgx
+	// backend — never OPA. On direct profiles raw == backend; on compat-opa it
+	// is a separate read-only pgx backend, which is what keeps the native raw
+	// endpoints policy-free (no re-entry into the OPA policy layer).
+	raw authz.Backend
+	cfg *config.Config
 }
 
-func NewHandler(backend authz.Backend, cfg *config.Config) *Handler {
-	h := &Handler{backend: backend, cfg: cfg, issuerStores: map[string][]*regexp.Regexp{}}
+func NewHandler(backend, raw authz.Backend, cfg *config.Config) *Handler {
+	h := &Handler{backend: backend, raw: raw, cfg: cfg, issuerStores: map[string][]*regexp.Regexp{}}
 	for _, iss := range cfg.Issuers {
 		if iss.Issuer == "" || len(iss.Stores) == 0 {
 			continue
@@ -45,46 +52,57 @@ func NewHandler(backend authz.Backend, cfg *config.Config) *Handler {
 	return h
 }
 
-// NewRouter returns a fully configured HTTP handler with middleware.
+// NewRouter returns the single-listener router used by the direct profiles:
+// AuthZEN + the full native surface (read + write), all served by the one pgx
+// backend (which is both `backend` and `raw`).
 func NewRouter(backend authz.Backend, cfg *config.Config, jwtMW *JWTMiddleware) http.Handler {
-	h := NewHandler(backend, cfg)
-
+	h := NewHandler(backend, backend, cfg)
 	mux := http.NewServeMux()
+	registerAuthZEN(mux, h)
+	registerNativeRead(mux, h)
+	registerNativeWrite(mux, h)
+	mux.HandleFunc("GET /healthz", h.Healthz)
+	return withMiddleware(mux, jwtMW)
+}
+
+// NewExternalRouter is the compat-opa PUBLIC listener: the policy-wrapped
+// AuthZEN surface only (backend = OPA). The native raw endpoints are
+// deliberately absent here — they bypass policy and live on the internal
+// listener.
+func NewExternalRouter(h *Handler, jwtMW *JWTMiddleware) http.Handler {
+	mux := http.NewServeMux()
+	registerAuthZEN(mux, h)
+	mux.HandleFunc("GET /healthz", h.Healthz)
+	return withMiddleware(mux, jwtMW)
+}
+
+// NewInternalRouter is the compat-opa INTERNAL listener: the policy-FREE native
+// raw read surface only (served by the direct pgx `raw` backend). This is what
+// the OPA sidecar calls back into. Must not be exposed to untrusted callers.
+func NewInternalRouter(h *Handler, jwtMW *JWTMiddleware) http.Handler {
+	mux := http.NewServeMux()
+	registerNativeRead(mux, h)
+	mux.HandleFunc("GET /healthz", h.Healthz)
+	return withMiddleware(mux, jwtMW)
+}
+
+func withMiddleware(mux *http.ServeMux, jwtMW *JWTMiddleware) http.Handler {
+	var handler http.Handler = mux
+	handler = jwtMW.Middleware(handler)
+	handler = RequestID(handler)
+	handler = Logging(handler)
+	handler = Recovery(handler)
+	return handler
+}
+
+// registerAuthZEN wires the spec-compliant AuthZEN surface + tenant discovery.
+func registerAuthZEN(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("POST /access/v1/evaluation", h.Evaluation)
 	mux.HandleFunc("POST /access/v1/evaluations", h.Evaluations)
 	mux.HandleFunc("POST /access/v1/search/subject", h.SearchSubject)
 	mux.HandleFunc("POST /access/v1/search/resource", h.SearchResource)
 	mux.HandleFunc("POST /access/v1/search/action", h.SearchAction)
 	mux.HandleFunc("GET /.well-known/authzen-configuration", h.WellKnown)
-	mux.HandleFunc("GET /healthz", h.Healthz)
-
-	// Native pgauthz API (vendor-specific, separate from spec-pure AuthZEN).
-	// Requires the direct backend (authz.NativeReader); 501 on compat-opa.
-	mux.HandleFunc("POST /pgauthz/v1/explain", h.Explain)
-	mux.HandleFunc("POST /pgauthz/v1/watch", h.Watch)
-	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/explain", h.Explain)
-	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/watch", h.Watch)
-
-	// Native raw decision + search (policy-FREE; direct backend, 501 on
-	// compat-opa). What an OPA sidecar calls back into when a policy delegates
-	// to the graph.
-	mux.HandleFunc("POST /pgauthz/v1/check", h.NativeCheck)
-	mux.HandleFunc("POST /pgauthz/v1/check-batch", h.NativeCheckBatch)
-	mux.HandleFunc("POST /pgauthz/v1/list-objects", h.NativeListObjects)
-	mux.HandleFunc("POST /pgauthz/v1/list-subjects", h.NativeListSubjects)
-	mux.HandleFunc("POST /pgauthz/v1/list-actions", h.NativeListActions)
-	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/check", h.NativeCheck)
-	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/check-batch", h.NativeCheckBatch)
-	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/list-objects", h.NativeListObjects)
-	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/list-subjects", h.NativeListSubjects)
-	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/list-actions", h.NativeListActions)
-
-	// Native write path: full profile only (403 on decision-only, which is
-	// read-only by DB role; 501 on compat-opa, whose writes go through OPA).
-	mux.HandleFunc("POST /pgauthz/v1/write", h.WriteTuples)
-	mux.HandleFunc("POST /pgauthz/v1/delete", h.DeleteTuples)
-	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/write", h.WriteTuples)
-	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/delete", h.DeleteTuples)
 
 	// Store-scoped variants (OpenFGA-style): the path segment selects the
 	// pgauthz store, so each store presents as its own AuthZEN PDP with its
@@ -100,14 +118,36 @@ func NewRouter(backend authz.Backend, cfg *config.Config, jwtMW *JWTMiddleware) 
 	// host and the tenant path, so discovery for the PDP identified by
 	// .../stores/{store} lives at /.well-known/authzen-configuration/stores/{store}.
 	mux.HandleFunc("GET /.well-known/authzen-configuration/stores/{store}", h.WellKnown)
+}
 
-	var handler http.Handler = mux
-	handler = jwtMW.Middleware(handler)
-	handler = RequestID(handler)
-	handler = Logging(handler)
-	handler = Recovery(handler)
+// registerNativeRead wires the native raw decision + search + explain/watch
+// surface. Policy-free (served by the direct `raw` backend); 501 if raw is not
+// a direct backend.
+func registerNativeRead(mux *http.ServeMux, h *Handler) {
+	mux.HandleFunc("POST /pgauthz/v1/explain", h.Explain)
+	mux.HandleFunc("POST /pgauthz/v1/watch", h.Watch)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/explain", h.Explain)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/watch", h.Watch)
 
-	return handler
+	mux.HandleFunc("POST /pgauthz/v1/check", h.NativeCheck)
+	mux.HandleFunc("POST /pgauthz/v1/check-batch", h.NativeCheckBatch)
+	mux.HandleFunc("POST /pgauthz/v1/list-objects", h.NativeListObjects)
+	mux.HandleFunc("POST /pgauthz/v1/list-subjects", h.NativeListSubjects)
+	mux.HandleFunc("POST /pgauthz/v1/list-actions", h.NativeListActions)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/check", h.NativeCheck)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/check-batch", h.NativeCheckBatch)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/list-objects", h.NativeListObjects)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/list-subjects", h.NativeListSubjects)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/list-actions", h.NativeListActions)
+}
+
+// registerNativeWrite wires the native write path (full profile only; 403 on
+// decision-only, 501 when raw is not a NativeWriter).
+func registerNativeWrite(mux *http.ServeMux, h *Handler) {
+	mux.HandleFunc("POST /pgauthz/v1/write", h.WriteTuples)
+	mux.HandleFunc("POST /pgauthz/v1/delete", h.DeleteTuples)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/write", h.WriteTuples)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/delete", h.DeleteTuples)
 }
 
 // store resolves the pgauthz store for a request: the /stores/{store} path

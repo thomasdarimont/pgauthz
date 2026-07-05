@@ -79,8 +79,16 @@ services:
         VERSION: ${VERSION:-dev}   # `VERSION=0.2.2 docker compose build` stamps it; else dev
     ports:
       - "8091:8080"
+      # Internal native-callback listener. In production DO NOT publish this —
+      # bind it to the OPA sidecar network only. Published here for the tests.
+      - "8093:8081"
     environment:
       LISTEN_ADDR: ":8080"
+      # Internal listener for the policy-FREE native raw endpoints the OPA
+      # sidecar calls back into (replaces OPA→PostgREST). Read-only role.
+      INTERNAL_LISTEN_ADDR: ":8081"
+      DATABASE_URL: "postgres://authzen_direct:${AUTHZEN_DIRECT_PASSWORD:-authz}@authz-db:5432/authz"
+      DB_POOL_MAX: "10"
       OPA_URL: "http://opa:8181"
       OPA_PACKAGE: "${OPA_PACKAGE:-authz}"
       JWKS_FILE: "/jwks/jwks.json"
@@ -95,4 +103,7 @@ services:
     volumes:
       - ./opa/data:/jwks:ro
     depends_on:
-      - opa
+      opa:
+        condition: service_started
+      authz-db:
+        condition: service_healthy

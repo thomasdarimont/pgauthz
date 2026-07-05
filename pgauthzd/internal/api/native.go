@@ -26,7 +26,7 @@ func writeWriteError(w http.ResponseWriter, err error) {
 
 // nativeReader returns the backend as a NativeReader, or writes 501 and false.
 func (h *Handler) nativeReader(w http.ResponseWriter) (authz.NativeReader, bool) {
-	nr, ok := h.backend.(authz.NativeReader)
+	nr, ok := h.raw.(authz.NativeReader)
 	if !ok {
 		writeError(w, http.StatusNotImplemented,
 			"the pgauthz native API requires the direct backend (profile decision-only|full); "+
@@ -46,7 +46,7 @@ func (h *Handler) nativeWriter(w http.ResponseWriter) (authz.NativeWriter, bool)
 	// Capability first: only the direct backend implements native writes, so
 	// compat-opa (whose writes go through the OPA front door) gets 501 —
 	// consistent with the native read endpoints.
-	nw, ok := h.backend.(authz.NativeWriter)
+	nw, ok := h.raw.(authz.NativeWriter)
 	if !ok {
 		writeError(w, http.StatusNotImplemented,
 			"the pgauthz native write API requires the direct backend (profile full); "+

@@ -10,7 +10,7 @@ import (
 )
 
 func testHandler(issuers []config.Issuer) *Handler {
-	return NewHandler(nil, &config.Config{
+	return NewHandler(nil, nil, &config.Config{
 		DefaultStore: "demo",
 		StoreHeader:  "X-AuthZ-Store",
 		Issuers:      issuers,

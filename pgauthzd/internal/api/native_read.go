@@ -8,11 +8,12 @@ package api
 // compat-opa deployment can front the graph with policy without OPA needing
 // PostgREST, and without re-entering its own policy-wrapped /access/v1 surface.
 //
-// Direct backend only: the gate is authz.NativeReader (implemented by the pgx
-// backend, not the OPA-compat backend), so on a compat-opa instance these
-// return 501 until it grows a direct backend for the callback (a later step).
-// The vocabulary matches the AuthZEN surface (subject/action/resource) so the
-// same subject-resolution and store-binding apply; the responses are
+// Served by the direct pgx `raw` backend (never OPA): on the direct profiles
+// that is the single backend; on compat-opa it is a separate read-only pgx
+// backend exposed only on the INTERNAL listener that the OPA sidecar calls back
+// into. When no raw backend is configured the gate (authz.NativeReader) returns
+// 501. The vocabulary matches the AuthZEN surface (subject/action/resource) so
+// the same subject-resolution and store-binding apply; the responses are
 // pgauthz-native (allowed / objects / subjects / actions).
 
 import (
@@ -65,7 +66,7 @@ func (h *Handler) NativeCheck(w http.ResponseWriter, r *http.Request) {
 		Context: req.Context,
 	}
 	if req.Detail {
-		if dc, ok := h.backend.(authz.DetailedChecker); ok {
+		if dc, ok := h.raw.(authz.DetailedChecker); ok {
 			decision, detail, err := dc.CheckAccessDetailed(r.Context(), evalReq)
 			if err != nil {
 				writeInternalError(w, err)
@@ -76,7 +77,7 @@ func (h *Handler) NativeCheck(w http.ResponseWriter, r *http.Request) {
 		}
 		// detail requested but unsupported → fall through to the plain answer
 	}
-	decision, err := h.backend.CheckAccess(r.Context(), evalReq)
+	decision, err := h.raw.CheckAccess(r.Context(), evalReq)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -160,7 +161,7 @@ func (h *Handler) NativeCheckBatch(w http.ResponseWriter, r *http.Request) {
 			Action: action, ObjectType: objType, ObjectID: objID, Context: c.Context,
 		}
 	}
-	results, err := h.backend.CheckAccessBatch(r.Context(), store, evals, req.Context, semantic)
+	results, err := h.raw.CheckAccessBatch(r.Context(), store, evals, req.Context, semantic)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -207,7 +208,7 @@ func (h *Handler) NativeListObjects(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	objects, pageResp, err := h.backend.ListResources(r.Context(), store,
+	objects, pageResp, err := h.raw.ListResources(r.Context(), store,
 		subjectType, subjectID, req.Action.Name, req.Resource.Type, req.Context, decodePage(req.Page))
 	if err != nil {
 		writeInternalError(w, err)
@@ -250,7 +251,7 @@ func (h *Handler) NativeListSubjects(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	subjects, pageResp, err := h.backend.ListSubjects(r.Context(), store,
+	subjects, pageResp, err := h.raw.ListSubjects(r.Context(), store,
 		req.Subject.Type, req.Action.Name, req.Resource.Type, req.Resource.ID, req.Context, decodePage(req.Page))
 	if err != nil {
 		writeInternalError(w, err)
@@ -289,7 +290,7 @@ func (h *Handler) NativeListActions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	actions, err := h.backend.ListActions(r.Context(), store,
+	actions, err := h.raw.ListActions(r.Context(), store,
 		subjectType, subjectID, req.Resource.Type, req.Resource.ID, req.Context)
 	if err != nil {
 		writeInternalError(w, err)

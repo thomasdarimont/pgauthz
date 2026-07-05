@@ -56,13 +56,21 @@ const (
 )
 
 type Config struct {
-	Profile     Profile
-	ListenAddr  string
-	BaseURL     string
-	JWKSURL     string
-	JWKSFile    string
-	JWTIssuer   string
-	JWTAudience string
+	Profile Profile
+	// ListenAddr is the primary (external) listener. On compat-opa it serves
+	// the policy-wrapped AuthZEN surface; on direct profiles it serves
+	// everything (AuthZEN + native).
+	ListenAddr string
+	// InternalListenAddr is the compat-opa-only internal listener that serves
+	// the policy-FREE native raw endpoints an OPA sidecar calls back into. It
+	// must NOT be exposed to untrusted callers (it bypasses the policy layer) —
+	// bind it to the sidecar/localhost network. Empty = disabled.
+	InternalListenAddr string
+	BaseURL            string
+	JWKSURL            string
+	JWKSFile           string
+	JWTIssuer          string
+	JWTAudience        string
 
 	// Issuers is the resolved set of trusted issuers (the legacy single-issuer
 	// env vars plus any from JWT_ISSUERS).
@@ -138,6 +146,7 @@ func Load() (*Config, error) {
 	c := &Config{
 		Profile:               Profile(env("PGAUTHORIZER_PROFILE", "")),
 		ListenAddr:            env("LISTEN_ADDR", ":8080"),
+		InternalListenAddr:    env("INTERNAL_LISTEN_ADDR", ""),
 		BaseURL:               env("BASE_URL", ""),
 		JWKSURL:               env("JWKS_URL", ""),
 		JWKSFile:              env("JWKS_FILE", ""),

@@ -340,6 +340,8 @@ All configuration is via environment variables.
 | `OPA_URL` | *required* | OPA server base URL (e.g. `http://opa:8181`) |
 | `OPA_PACKAGE` | `authz` | OPA Rego package name |
 | `FORWARD_TOKEN_TO_OPA` | `false` | Forward the verified bearer token to OPA as `input.token` so OPA re-validates it — lets OPA run token-only (`REQUIRE_TOKEN_FOR_READS=true`) instead of trusting the forwarded subject. Leave off for trusted-PEP setups that check arbitrary subjects |
+| `DATABASE_URL` | *empty* | Optional. A **read-only** DSN enables the native raw callback surface (`/pgauthz/v1/check`, `list-*`) an OPA sidecar calls back into instead of PostgREST. Asserted read-only at startup |
+| `INTERNAL_LISTEN_ADDR` | *empty* | Address for the internal listener serving that native raw surface (e.g. `:8081`). **Do not publish it** — bind to the OPA sidecar network. Empty = raw surface not served |
 
 ## Architecture
 
@@ -436,9 +438,13 @@ error handling (400 on malformed requests).
 ## Native pgauthz API (`/pgauthz/v1/*`)
 
 Vendor-specific operations beyond the standards-compliant AuthZEN surface,
-kept on a separate path so `/access/v1` stays spec-pure. Available only on the
-**direct** profiles (`decision-only` / `full`); the `compat-opa` profile
-returns `501 Not Implemented` for these routes.
+kept on a separate path so `/access/v1` stays spec-pure. Served by the direct
+pgx backend. On the **direct** profiles (`decision-only` / `full`) they sit on
+the main listener. On **`compat-opa`** they are served — read-only — on a
+separate **internal** listener (`INTERNAL_LISTEN_ADDR`) that an OPA sidecar
+calls back into instead of PostgREST; they are deliberately absent from the
+public listener there (a raw graph answer must not bypass the policy layer).
+Without a configured native backend the routes return `501 Not Implemented`.
 
 | Method | Path | Profile | Description |
 |--------|------|---------|-------------|
