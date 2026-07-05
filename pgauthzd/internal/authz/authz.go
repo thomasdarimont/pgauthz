@@ -1,6 +1,9 @@
 package authz
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // PageRequest holds pagination parameters. After is a keyset cursor (the last
 // id of the previous page); when set it takes precedence over Offset, so paging
@@ -50,6 +53,31 @@ type Backend interface {
 		subjectType, subjectID, objectType, objectID string,
 		reqContext map[string]any) ([]string, error)
 	Healthz(ctx context.Context) error
+}
+
+// NativeReader is an optional backend capability exposing pgauthz-native
+// READ operations beyond the AuthZEN standard surface — the "why" (explain)
+// and the changefeed (watch). Implemented by the direct pgx backend; the
+// OPA-compat backend does not implement it (those routes return 501). Returns
+// raw JSON straight from the engine so the HTTP layer stays a thin passthrough.
+type NativeReader interface {
+	// Explain returns explain_access's structured decision + trace.
+	Explain(ctx context.Context, req EvalRequest) (json.RawMessage, error)
+	// WatchChanges returns a page of the audit changefeed for a store
+	// (cursored by after_at/after_seq, lag-gated, filterable).
+	WatchChanges(ctx context.Context, req WatchRequest) (json.RawMessage, error)
+}
+
+// WatchRequest is a cursored changefeed page request.
+type WatchRequest struct {
+	Store       string
+	AfterAt     string // RFC3339; "" = from the beginning
+	AfterSeq    int64
+	Limit       int
+	Lag         string   // interval, e.g. "1 second"; "" = default
+	ObjectTypes []string // nil = all
+	Namespaces  []string // nil = all
+	Relations   []string // nil = all
 }
 
 // DetailedChecker is an optional backend capability: a check that also

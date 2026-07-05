@@ -210,9 +210,14 @@ Requests are scoped to an authorization store. The store is selected via
 
 1. **The URL path** — every endpoint is also available store-scoped, e.g.
    `POST /stores/{store}/access/v1/evaluation`. Each store presents as its
-   own AuthZEN PDP, including a store-scoped discovery document at
-   `GET /stores/{store}/.well-known/authzen-configuration` (whose endpoint
-   URLs carry the store prefix).
+   own AuthZEN PDP with its own metadata: the `policy_decision_point`
+   identifier and every endpoint URL carry the `/stores/{store}` prefix.
+   Per AuthZEN 1.0 §9.2 (the multi-tenant model), the spec-canonical
+   discovery URL is **path-insertion** — the well-known segment goes
+   *between* the host and the tenant path:
+   `GET /.well-known/authzen-configuration/stores/{store}`. The
+   path-appending form `GET /stores/{store}/.well-known/authzen-configuration`
+   is also served (OpenFGA-style) and returns the identical document.
 2. The `X-AuthZ-Store` HTTP header (configurable name)
 3. The `DEFAULT_STORE` environment variable (default: `demo`)
 
@@ -427,3 +432,37 @@ The test script generates ES256 JWTs signed with the demo key and verifies
 single evaluations, batch evaluations, search endpoints, well-known discovery,
 health checks, JWT authentication (401 without/with invalid token), and
 error handling (400 on malformed requests).
+
+## Native pgauthz API (`/pgauthz/v1/*`)
+
+Vendor-specific operations beyond the standards-compliant AuthZEN surface,
+kept on a separate path so `/access/v1` stays spec-pure. Available only on the
+**direct** profiles (`decision-only` / `full`); the `compat-opa` profile
+returns `501 Not Implemented` for these routes.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/pgauthz/v1/explain` | Structured "why" — `explain_access` decision + trace. Same subject/store rules as an AuthZEN evaluation. |
+| POST | `/pgauthz/v1/watch` | A cursored page of the store's audit **changefeed** (HTTP transport over `authz.watch_changes`). |
+
+Both are also available store-scoped under `/stores/{store}/pgauthz/v1/…`.
+
+**Watch cursoring.** The changefeed cursor is the composite
+`(after_at, after_seq)` — pass the whole `next_cursor` from a page back to get
+the next one; `after_seq` alone is not sufficient. Filters: `object_types`,
+`namespaces`, `relations` (arrays), `limit`, `lag` (default `1 second`).
+
+```bash
+curl -X POST localhost:8090/pgauthz/v1/watch -H "Authorization: Bearer $TOKEN" \
+  -d '{"limit":100}'
+# => {"store":"demo","events":[...],"next_cursor":{"after_at":"...","after_seq":42}}
+```
+
+The watch/audit surface needs an **auditor-capable** connection role
+(`authz_auditor`, which inherits `authz_reader` and adds only audit *reads* —
+still write-incapable, so a `decision-only` instance keeps its can't-write
+guarantee). The bundled `authzen_direct` login role is granted it.
+
+Roadmap: `/pgauthz/v1/audit` (time-travel), `/pgauthz/v1/models` +
+`/pgauthz/v1/stores` (inspection), and the write surface (`tuples`, model
+publish/apply) on the `full` profile.

@@ -131,6 +131,11 @@ BEGIN
 END
 $$;
 GRANT authz_reader TO authzen_direct;
+-- The direct backend also serves the native /pgauthz/v1 audit + watch
+-- changefeed, which need auditor privileges. authz_auditor INHERITs
+-- authz_reader and adds only READ access to the audit trail (no writes), so a
+-- decision-only (read-only) instance keeps its can't-write guarantee.
+GRANT authz_auditor TO authzen_direct;
 
 -- Playground BFF metadata/explore role: a dedicated read-only LOGIN role for the
 -- web playground's ENGINE_DSN. It INHERITs authz_reader (check/explain/describe_model)

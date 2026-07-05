@@ -318,13 +318,29 @@ run_tests() {
         echo "    FAIL  Well-known endpoint  (HTTP error)"
         return
     }
-    api_version=$(echo "$result" | jq -r '.api_version')
-    if [ "$api_version" = "1.0" ]; then
+    # AuthZEN 1.0 §9.1: policy_decision_point (REQUIRED) + spec endpoint names.
+    pdp=$(echo "$result" | jq -r '.policy_decision_point')
+    eval_ep=$(echo "$result" | jq -r '.access_evaluation_endpoint')
+    if [ -n "$pdp" ] && [ "$pdp" != "null" ] && echo "$eval_ep" | grep -q '/access/v1/evaluation$'; then
         pass_count=$((pass_count + 1))
-        echo "    PASS  Well-known endpoint returns api_version 1.0"
+        echo "    PASS  Well-known: policy_decision_point + access_evaluation_endpoint (spec fields)"
     else
         fail_count=$((fail_count + 1))
-        echo "    FAIL  Well-known endpoint  (expected api_version=1.0, got=$api_version)"
+        echo "    FAIL  Well-known  (pdp=$pdp eval=$eval_ep)"
+    fi
+
+    # AuthZEN 1.0 §9.2 tenant model: path-INSERTION discovery scopes the PDP
+    # identifier + endpoints to the store.
+    total=$((total + 1))
+    tres=$(curl -sf "$base_url/.well-known/authzen-configuration/stores/demo" 2>/dev/null) || tres=""
+    tpdp=$(echo "$tres" | jq -r '.policy_decision_point' 2>/dev/null)
+    teval=$(echo "$tres" | jq -r '.access_evaluation_endpoint' 2>/dev/null)
+    if echo "$tpdp" | grep -q '/stores/demo$' && echo "$teval" | grep -q '/stores/demo/access/v1/evaluation$'; then
+        pass_count=$((pass_count + 1))
+        echo "    PASS  Well-known: tenant (path-insertion) discovery scopes PDP to /stores/demo"
+    else
+        fail_count=$((fail_count + 1))
+        echo "    FAIL  Well-known tenant discovery  (pdp=$tpdp eval=$teval)"
     fi
 
     # --- Health check (exempt from JWT) ---
@@ -388,6 +404,39 @@ run_tests() {
 
 run_tests "$DIRECT_URL" "authzen-direct"
 run_tests "$OPA_URL" "authzen-opa"
+
+# --- Native pgauthz API (/pgauthz/v1/*) — direct backend only ---
+# explain (the "why") + watch (changefeed HTTP transport). The direct backend
+# implements authz.NativeReader; the OPA-compat backend returns 501.
+echo ""
+echo "==> Native pgauthz API (/pgauthz/v1)..."
+echo ""
+
+check_json "explain: alice can_read payroll (decision.allowed)" \
+    "$DIRECT_URL/pgauthz/v1/explain" "$AUTH_ALICE" \
+    '{"subject":{"type":"internal_user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}' \
+    '.decision.allowed' "true"
+
+check_json "explain: alice cannot read tax doc (decision.allowed)" \
+    "$DIRECT_URL/pgauthz/v1/explain" "$AUTH_ALICE" \
+    '{"subject":{"type":"internal_user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_tax_001"}}' \
+    '.decision.allowed' "false"
+
+check_json "watch: changefeed returns events" \
+    "$DIRECT_URL/pgauthz/v1/watch" "$AUTH_ALICE" \
+    '{"limit":5}' \
+    '(.events | length) > 0' "true"
+
+check_json "watch: page carries a composite next_cursor" \
+    "$DIRECT_URL/pgauthz/v1/watch" "$AUTH_ALICE" \
+    '{"limit":5}' \
+    '(.next_cursor | has("after_at") and has("after_seq"))' "true"
+
+check_http "native explain is 501 on the OPA-compat backend" \
+    "501" \
+    -X POST "$OPA_URL/pgauthz/v1/explain" \
+    -H "Content-Type: application/json" -H "$AUTH_ALICE" \
+    -d '{"subject":{"type":"internal_user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}'
 
 # --- Cache-Control: no-cache → fresh decision (authzen-opa) ---
 # The standard freshness header maps to OPA's input.no_cache (0-second

@@ -113,12 +113,16 @@ type PageResult struct {
 
 // --- Well-Known ---
 
+// WellKnownResponse is the AuthZEN 1.0 PDP metadata document (§9.1). Field
+// names match the spec exactly; PolicyDecisionPoint (the PDP identifier) is
+// REQUIRED. For a store-scoped (tenant) PDP the identifier and endpoints carry
+// the /stores/{store} path, so each store presents as its own PDP.
 type WellKnownResponse struct {
-	EvaluationEndpoint     string   `json:"evaluation_endpoint"`
-	EvaluationsEndpoint    string   `json:"evaluations_endpoint"`
-	SubjectSearchEndpoint  string   `json:"subject_search_endpoint"`
-	ResourceSearchEndpoint string   `json:"resource_search_endpoint"`
-	ActionSearchEndpoint   string   `json:"action_search_endpoint"`
-	APIVersion             string   `json:"api_version"`
-	Capabilities           []string `json:"capabilities"`
+	PolicyDecisionPoint    string   `json:"policy_decision_point"`
+	AccessEvaluationEndpt  string   `json:"access_evaluation_endpoint"`
+	AccessEvaluationsEndpt string   `json:"access_evaluations_endpoint"`
+	SearchSubjectEndpoint  string   `json:"search_subject_endpoint"`
+	SearchResourceEndpoint string   `json:"search_resource_endpoint"`
+	SearchActionEndpoint   string   `json:"search_action_endpoint"`
+	Capabilities           []string `json:"capabilities,omitempty"`
 }

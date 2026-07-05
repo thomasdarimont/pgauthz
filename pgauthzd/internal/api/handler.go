@@ -58,6 +58,13 @@ func NewRouter(backend authz.Backend, cfg *config.Config, jwtMW *JWTMiddleware) 
 	mux.HandleFunc("GET /.well-known/authzen-configuration", h.WellKnown)
 	mux.HandleFunc("GET /healthz", h.Healthz)
 
+	// Native pgauthz API (vendor-specific, separate from spec-pure AuthZEN).
+	// Requires the direct backend (authz.NativeReader); 501 on compat-opa.
+	mux.HandleFunc("POST /pgauthz/v1/explain", h.Explain)
+	mux.HandleFunc("POST /pgauthz/v1/watch", h.Watch)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/explain", h.Explain)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/watch", h.Watch)
+
 	// Store-scoped variants (OpenFGA-style): the path segment selects the
 	// pgauthz store, so each store presents as its own AuthZEN PDP with its
 	// own discovery document. Path beats the store header, which beats
@@ -68,6 +75,10 @@ func NewRouter(backend authz.Backend, cfg *config.Config, jwtMW *JWTMiddleware) 
 	mux.HandleFunc("POST /stores/{store}/access/v1/search/resource", h.SearchResource)
 	mux.HandleFunc("POST /stores/{store}/access/v1/search/action", h.SearchAction)
 	mux.HandleFunc("GET /stores/{store}/.well-known/authzen-configuration", h.WellKnown)
+	// AuthZEN 1.0 §9.2 tenant model: the well-known URI is INSERTED between
+	// host and the tenant path, so discovery for the PDP identified by
+	// .../stores/{store} lives at /.well-known/authzen-configuration/stores/{store}.
+	mux.HandleFunc("GET /.well-known/authzen-configuration/stores/{store}", h.WellKnown)
 
 	var handler http.Handler = mux
 	handler = jwtMW.Middleware(handler)
@@ -502,19 +513,22 @@ func (h *Handler) WellKnown(w http.ResponseWriter, r *http.Request) {
 		base = scheme + "://" + r.Host
 	}
 
-	// Store-scoped discovery advertises store-scoped endpoints, so each
-	// store presents as a self-contained AuthZEN PDP.
+	// Store-scoped (tenant) discovery: the PDP identifier and every endpoint
+	// carry the /stores/{store} path, so each store presents as its own
+	// AuthZEN PDP (AuthZEN 1.0 §9.2 tenant model). The path-insertion
+	// discovery URL is /.well-known/authzen-configuration/stores/{store}
+	// (see the route); the store is the same PathValue either way.
 	if s := r.PathValue("store"); s != "" {
 		base += "/stores/" + s
 	}
 
 	writeJSON(w, http.StatusOK, WellKnownResponse{
-		EvaluationEndpoint:     base + "/access/v1/evaluation",
-		EvaluationsEndpoint:    base + "/access/v1/evaluations",
-		SubjectSearchEndpoint:  base + "/access/v1/search/subject",
-		ResourceSearchEndpoint: base + "/access/v1/search/resource",
-		ActionSearchEndpoint:   base + "/access/v1/search/action",
-		APIVersion:             "1.0",
+		PolicyDecisionPoint:    base,
+		AccessEvaluationEndpt:  base + "/access/v1/evaluation",
+		AccessEvaluationsEndpt: base + "/access/v1/evaluations",
+		SearchSubjectEndpoint:  base + "/access/v1/search/subject",
+		SearchResourceEndpoint: base + "/access/v1/search/resource",
+		SearchActionEndpoint:   base + "/access/v1/search/action",
 		Capabilities:           []string{"evaluation", "evaluations", "subject-search", "resource-search", "action-search"},
 	})
 }
@@ -570,6 +584,13 @@ func EncodePageAfter(after string) string {
 }
 
 // --- JSON helpers ---
+
+// writeRawJSON writes pre-serialized JSON (from the engine) verbatim.
+func writeRawJSON(w http.ResponseWriter, status int, body []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	w.Write(body)
+}
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

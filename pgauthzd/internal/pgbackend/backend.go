@@ -336,6 +336,93 @@ func (b *Backend) ListActions(ctx context.Context, store string,
 // that was accidentally pointed at a writable DSN fails to start rather than
 // silently becoming write-capable. (SECURITY: the guarantee lives in the DB
 // role, not the profile flag.)
+// Explain implements authz.NativeReader.Explain via authz.explain_access,
+// through withRole so the per-app namespace isolation that governs reads also
+// governs the explanation.
+func (b *Backend) Explain(ctx context.Context, req authz.EvalRequest) (json.RawMessage, error) {
+	var ctxJSON []byte
+	if req.Context != nil {
+		var err error
+		if ctxJSON, err = json.Marshal(req.Context); err != nil {
+			return nil, fmt.Errorf("marshaling context: %w", err)
+		}
+	}
+	var raw []byte
+	err := b.withRole(ctx, func(q querier) error {
+		return q.QueryRow(ctx,
+			"SELECT authz.explain_access($1,$2,$3,$4,$5,$6,$7)",
+			req.Store, req.SubjectType, req.SubjectID, req.Action,
+			req.ObjectType, req.ObjectID, ctxJSON,
+		).Scan(&raw)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("explain_access: %w", err)
+	}
+	return raw, nil
+}
+
+// WatchChanges implements authz.NativeReader.WatchChanges via
+// authz.watch_changes, aggregated into a JSON array + a next-cursor. Runs as
+// the pooled (auditor) role — the changefeed is an audit-scope operation, not
+// per-app-namespace scoped.
+func (b *Backend) WatchChanges(ctx context.Context, req authz.WatchRequest) (json.RawMessage, error) {
+	// Empty cursor = from the beginning: pass '-infinity', NOT NULL. The
+	// changefeed cursor compares (performed_at, seq) > (p_after_at, ...), and
+	// any comparison against NULL is NULL → zero rows.
+	afterAt := "-infinity"
+	if req.AfterAt != "" {
+		afterAt = req.AfterAt
+	}
+	// Same NULL trap as afterAt: the lag gate is performed_at <= now() - p_lag,
+	// so a NULL p_lag excludes everything. Default to 1s (the function default).
+	lag := "1 second"
+	if req.Lag != "" {
+		lag = req.Lag
+	}
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 1000
+	}
+	// The changefeed cursor is the COMPOSITE (performed_at, seq) — the function
+	// compares (performed_at, seq) > (p_after_at, p_after_seq). Return both as
+	// the next cursor; seq alone is insufficient (a resumed page with
+	// after_at='-infinity' would re-match everything). last_* are the max of
+	// the page (rows already come ordered), NULL-safe to the incoming cursor.
+	var events []byte
+	var lastAt *time.Time
+	var lastSeq int64
+	err := b.pool.QueryRow(ctx, `
+		SELECT coalesce(jsonb_agg(to_jsonb(w) ORDER BY w.performed_at, w.seq), '[]'::jsonb),
+		       max(w.performed_at),
+		       coalesce(max(w.seq), $3::bigint)
+		  FROM authz.watch_changes($1, $2::timestamptz, $3, $4, $5::interval, $6, $7, $8) w`,
+		req.Store, afterAt, req.AfterSeq, limit, lag,
+		nilIfEmpty(req.ObjectTypes), nilIfEmpty(req.Namespaces), nilIfEmpty(req.Relations),
+	).Scan(&events, &lastAt, &lastSeq)
+	if err != nil {
+		return nil, fmt.Errorf("watch_changes: %w", err)
+	}
+	cursor := map[string]any{"after_seq": lastSeq}
+	if lastAt != nil {
+		cursor["after_at"] = lastAt.UTC().Format(time.RFC3339Nano)
+	} else {
+		cursor["after_at"] = req.AfterAt // unchanged when the page is empty
+	}
+	out, _ := json.Marshal(map[string]any{
+		"store":       req.Store,
+		"events":      json.RawMessage(events),
+		"next_cursor": cursor,
+	})
+	return out, nil
+}
+
+func nilIfEmpty(s []string) any {
+	if len(s) == 0 {
+		return nil
+	}
+	return s
+}
+
 func (b *Backend) AssertReadOnly(ctx context.Context) error {
 	var writer, tuplesWrite bool
 	err := b.pool.QueryRow(ctx, `
