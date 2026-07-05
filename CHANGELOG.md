@@ -7,6 +7,24 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Security
+
+- **Fixed a fail-open in tuple expiry (SECURITY-AUDIT F11), migration 0006.**
+  The v0.7 expiry enforcement hid expired tuples with a row-level-security
+  policy whose write-side escape was a **caller-settable GUC**
+  (`authz.tuples_include_expired`). Because expiry is read inside the
+  `SECURITY DEFINER` functions app roles invoke, a **direct `authz_reader`
+  SQL connection could set that GUC and make expired grants grant again**
+  (not reachable through the OPA/PostgREST front door, which exposes RPC
+  only — a direct-SQL trust-tier hole). The escape is now a dedicated
+  `BYPASSRLS` role (`authz_rls_bypass`) that owns the `SECURITY DEFINER`
+  helper functions performing the two operations that must see expired rows
+  (reactivating upsert, cleanup); the SELECT policy has no GUC escape and is
+  unbypassable by any caller value. `EXECUTE` on the helpers is granted only
+  to `authz_owner` and no LOGIN role can reach the bypass role. Found and
+  fixed in the v0.7 security-audit delta; verified closed (the reproduction
+  now denies).
+
 ### Added
 
 - **Signed release tags (SSH).** `release.sh` now creates signed tags

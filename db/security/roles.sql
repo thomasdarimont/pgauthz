@@ -56,8 +56,33 @@ BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authz_owner') THEN
         CREATE ROLE authz_owner NOLOGIN;
     END IF;
+    -- Dedicated BYPASSRLS role that OWNS the authz._rls_* helper functions
+    -- (SECURITY-AUDIT F11 / migration 0006). Those helpers are the only path
+    -- that may see/modify expired tuples (the RLS SELECT policy hides them);
+    -- they run as this role via SECURITY DEFINER. Never LOGIN; EXECUTE granted
+    -- only to authz_owner, so app roles cannot call them and thereby sidestep
+    -- the namespace/type checks the public write functions perform first.
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authz_rls_bypass') THEN
+        CREATE ROLE authz_rls_bypass NOLOGIN BYPASSRLS;
+    ELSE
+        ALTER ROLE authz_rls_bypass NOLOGIN BYPASSRLS;
+    END IF;
 END
 $$;
+
+-- Privileges the bypass helpers need for their DML + the audit trigger that
+-- fires as this role (the audit trigger function is not SECURITY DEFINER).
+GRANT USAGE ON SCHEMA authz TO authz_rls_bypass;
+GRANT SELECT, INSERT, UPDATE, DELETE ON authz.tuples       TO authz_rls_bypass;
+GRANT SELECT                         ON authz.types, authz.relations TO authz_rls_bypass;
+GRANT INSERT                         ON authz.tuples_audit TO authz_rls_bypass;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA authz TO authz_rls_bypass;
+-- The audit trigger (_audit_tuple) fires as this role during the helpers' DML
+-- and falls back to _effective_role() for performed_by when the
+-- authz.performed_by GUC is unset. (COALESCE short-circuits when it IS set, so
+-- this is only the fallback; _effective_role reads the `role` GUC / session_user,
+-- which SECURITY DEFINER does not alter, so it still returns the true caller.)
+GRANT EXECUTE ON FUNCTION authz._effective_role() TO authz_rls_bypass;
 
 -- Role hierarchy: auditor and writer inherit reader, admin inherits writer + auditor.
 GRANT authz_reader TO authz_auditor;
@@ -431,15 +456,47 @@ BEGIN
         EXECUTE format('ALTER TYPE %s OWNER TO authz_owner', r.obj);
     END LOOP;
 
-    -- Routines, except the condition sandbox (stays on authz_eval).
+    -- Routines, except the condition sandbox (stays on authz_eval) and the
+    -- expiry RLS-bypass helpers (owned by authz_rls_bypass — see below).
     FOR r IN
         SELECT p.oid::regprocedure AS obj
           FROM pg_catalog.pg_proc p
           JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
          WHERE n.nspname = 'authz'
            AND p.proname <> '_exec_condition'
+           AND p.proname NOT LIKE '\_rls\_%'
     LOOP
         EXECUTE format('ALTER ROUTINE %s OWNER TO authz_owner', r.obj);
+    END LOOP;
+END
+$$;
+
+------------------------------------------------------------------------
+-- Expiry RLS-bypass helpers (SECURITY-AUDIT F11): OWN them by
+-- authz_rls_bypass and make them SECURITY DEFINER, so they run with
+-- BYPASSRLS while their authz_owner callers do not. Dynamic over the
+-- authz._rls_* prefix so a new helper is covered automatically (mirrors the
+-- search_path pin). EXECUTE only to authz_owner — never app roles. Pin
+-- search_path here too (this runs AFTER the general pin loop above).
+--
+-- CRITICAL: without the explicit re-own these functions would stay owned by
+-- the bootstrap superuser and, being SECURITY DEFINER, would run as superuser.
+------------------------------------------------------------------------
+DO $$
+DECLARE
+    f record;
+BEGIN
+    FOR f IN
+        SELECT p.oid::regprocedure AS sig
+          FROM pg_catalog.pg_proc p
+          JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+         WHERE n.nspname = 'authz'
+           AND p.proname LIKE '\_rls\_%'
+    LOOP
+        EXECUTE format('ALTER FUNCTION %s OWNER TO authz_rls_bypass', f.sig);
+        EXECUTE format('ALTER FUNCTION %s SECURITY DEFINER', f.sig);
+        EXECUTE format('ALTER FUNCTION %s SET search_path = pg_catalog, authz, pg_temp', f.sig);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO authz_owner', f.sig);
     END LOOP;
 END
 $$;

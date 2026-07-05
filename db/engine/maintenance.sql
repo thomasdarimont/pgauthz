@@ -219,17 +219,9 @@ BEGIN
         v_store_id := authz._s(p_store);
     END IF;
 
-    -- The escape is required: the WHERE reads expires_at, which folds the
-    -- SELECT policy in — without it the expired rows are invisible even to
-    -- their own cleanup.
-    PERFORM set_config('authz.tuples_include_expired', 'on', true);
-    DELETE FROM authz.tuples t
-     WHERE t.expires_at IS NOT NULL
-       AND t.expires_at <= now() - p_grace
-       AND (v_store_id IS NULL OR t.store_id = v_store_id);
-
-    GET DIAGNOSTICS v_count = ROW_COUNT;  -- before the reset (a statement itself)
-    PERFORM set_config('authz.tuples_include_expired', '', true);
+    -- The DELETE must SEE expired rows (its WHERE reads expires_at, which the
+    -- SELECT policy hides); the bypass helper owns that statement (F11 fix).
+    v_count := authz._rls_delete_expired(v_store_id, p_grace);
     RETURN v_count;
 END;
 $$;

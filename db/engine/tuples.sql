@@ -17,6 +17,104 @@
 -- second (10-arg) overload behind on upgraded installs.
 DROP FUNCTION IF EXISTS authz.write_tuple(text, text, text, text, text, text, text, text, jsonb, text);
 
+------------------------------------------------------------------------
+-- RLS-bypass helpers (SECURITY-AUDIT F11 / migrations 0005-0006).
+--
+-- The tuple-expiry SELECT policy hides expired rows from EVERY read, including
+-- the ON CONFLICT read inside an upsert and the row scan inside a cleanup
+-- DELETE. These two operations must see expired rows (to reactivate a re-grant
+-- and to garbage-collect). They are the ONLY paths that need to; the escape is
+-- therefore a dedicated BYPASSRLS role that OWNS these helpers — roles.sql
+-- makes them SECURITY DEFINER owned by authz_rls_bypass, so they run with
+-- BYPASSRLS while the caller (a definer function owned by authz_owner) does
+-- not. EXECUTE is granted only to authz_owner: app roles cannot call them
+-- directly, so they never sidestep the namespace/type checks the public
+-- write functions perform first. Plain SET ROLE cannot achieve this — Postgres
+-- forbids setting `role` inside a SECURITY DEFINER function.
+--
+-- Targeted deletes (delete_tuple/tuples/user) deliberately do NOT bypass: an
+-- already-expired row they cannot reach grants nothing and is reclaimed by
+-- cleanup_expired_tuples — leaving it is harmless, so they stay minimal.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._rls_upsert_tuple(
+    p_store_id int, p_user_type int, p_user_id text, p_user_relation int,
+    p_relation int, p_object_type int, p_object_id text,
+    p_condition_id int, p_condition_context jsonb, p_expires_at timestamptz
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+BEGIN
+    -- Runs as authz_rls_bypass (BYPASSRLS): the ON CONFLICT read of an EXPIRED
+    -- conflicting row succeeds, so a re-grant reactivates it.
+    INSERT INTO authz.tuples (store_id, user_type, user_id, user_relation, relation, object_type, object_id, condition_id, condition_context, expires_at)
+    VALUES (p_store_id, p_user_type, p_user_id, p_user_relation, p_relation, p_object_type, p_object_id, p_condition_id, p_condition_context, p_expires_at)
+    ON CONFLICT (store_id, object_type, object_id, relation, user_type, user_id, COALESCE(user_relation::int, 0))
+    DO UPDATE SET
+        condition_id      = EXCLUDED.condition_id,
+        condition_context = EXCLUDED.condition_context,
+        expires_at        = EXCLUDED.expires_at
+    WHERE tuples.condition_id      IS DISTINCT FROM EXCLUDED.condition_id
+       OR tuples.condition_context IS DISTINCT FROM EXCLUDED.condition_context
+       OR tuples.expires_at        IS DISTINCT FROM EXCLUDED.expires_at;
+    RETURN FOUND;  -- inserted or condition/expiry changed; false for an identical live tuple
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION authz._rls_write_tuples(
+    p_store_id int, p_tuples authz.tuple_input[]
+) RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_count int;
+BEGIN
+    -- Set-based batch insert; the tuple_input type has no expiry field, so a
+    -- batch re-grant over an EXPIRING/EXPIRED row makes it permanent (see
+    -- write_tuples). Runs as authz_rls_bypass so the ON CONFLICT reactivation
+    -- can see hidden rows. Name resolution needs SELECT on types/relations
+    -- (granted to the bypass role in roles.sql).
+    INSERT INTO authz.tuples (store_id, user_type, user_id, user_relation, relation, object_type, object_id)
+    SELECT p_store_id, ut.id, t.user_id, ur.id, r.id, ot.id, t.object_id
+      FROM unnest(p_tuples) AS t
+      JOIN authz.types ut     ON ut.store_id = p_store_id AND ut.name = t.user_type
+      JOIN authz.relations r  ON r.store_id  = p_store_id AND r.name  = t.relation
+      JOIN authz.types ot     ON ot.store_id = p_store_id AND ot.name = t.object_type
+      LEFT JOIN authz.relations ur ON ur.store_id = p_store_id AND ur.name = t.user_relation
+    ON CONFLICT (store_id, object_type, object_id, relation, user_type, user_id, COALESCE(user_relation::int, 0))
+    DO UPDATE SET expires_at = NULL
+    WHERE tuples.expires_at IS NOT NULL;
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    RETURN v_count;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION authz._rls_delete_expired(
+    p_store_id int, p_grace interval
+) RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_count int;
+BEGIN
+    -- Runs as authz_rls_bypass so the WHERE (which reads expires_at) can see
+    -- the expired rows it deletes. Audited via the ordinary trigger.
+    DELETE FROM authz.tuples t
+     WHERE t.expires_at IS NOT NULL
+       AND t.expires_at <= now() - p_grace
+       AND (p_store_id IS NULL OR t.store_id = p_store_id);
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    RETURN v_count;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION authz._rls_delete_store_tuples(
+    p_store_id int
+) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+    -- Purge ALL of a store's tuples incl. expired ones (delete_store; the
+    -- store row's FK requires no tuples remain). Runs as authz_rls_bypass.
+    DELETE FROM authz.tuples WHERE store_id = p_store_id;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION authz.write_tuple(
     p_store             text,
     p_user_type         text,
@@ -38,7 +136,6 @@ DECLARE
     v_object_type   integer := authz._t(v_store_id, p_object_type);
     v_user_relation integer;
     v_condition_id  integer;
-    v_changed       boolean;
 BEGIN
     -- Set application user for the audit trigger (transaction-local)
     -- The true in set_config(..., true) makes the variable transaction-local, so it auto-resets after each call — no risk of leaking between requests.
@@ -119,31 +216,12 @@ BEGIN
         END;
     END IF;
 
-    -- The upsert must be able to SEE an expired row (re-granting reactivates
-    -- it), but the RLS SELECT policy hides expired rows even from the
-    -- ON CONFLICT read of the existing row. Sanctioned escape, set and reset
-    -- immediately around this one statement (audit_maintenance pattern).
-    PERFORM set_config('authz.tuples_include_expired', 'on', true);
-
-    INSERT INTO authz.tuples (store_id, user_type, user_id, user_relation, relation, object_type, object_id, condition_id, condition_context, expires_at)
-    VALUES (v_store_id, v_user_type, p_user_id, v_user_relation, v_relation, v_object_type, p_object_id, v_condition_id, p_condition_context, p_expires_at)
-    ON CONFLICT (store_id, object_type, object_id, relation, user_type, user_id, COALESCE(user_relation::int, 0))
-    DO UPDATE SET
-        condition_id      = EXCLUDED.condition_id,
-        condition_context = EXCLUDED.condition_context,
-        expires_at        = EXCLUDED.expires_at
-    WHERE tuples.condition_id      IS DISTINCT FROM EXCLUDED.condition_id
-       OR tuples.condition_context IS DISTINCT FROM EXCLUDED.condition_context
-       OR tuples.expires_at        IS DISTINCT FROM EXCLUDED.expires_at;
-
-    -- Capture BEFORE resetting the GUC: PERFORM is itself a statement and
-    -- would overwrite FOUND.
-    v_changed := FOUND;
-    PERFORM set_config('authz.tuples_include_expired', '', true);
-
-    -- inserted, or condition/expiry changed (incl. reactivating an EXPIRED
-    -- grant); false for an identical tuple.
-    RETURN v_changed;
+    -- The upsert must SEE an expired row to reactivate a re-grant, which the
+    -- RLS SELECT policy hides; the bypass helper (owned by a BYPASSRLS role)
+    -- does it. Namespace/type checks above already ran as the effective role.
+    RETURN authz._rls_upsert_tuple(v_store_id, v_user_type, p_user_id, v_user_relation,
+                                   v_relation, v_object_type, p_object_id,
+                                   v_condition_id, p_condition_context, p_expires_at);
 END;
 $$;
 
@@ -289,33 +367,10 @@ BEGIN
         RAISE EXCEPTION 'Type restriction violation(s): %', v_bad;
     END IF;
 
-    -- Escape so ON CONFLICT can read (and reactivate) expired rows.
-    PERFORM set_config('authz.tuples_include_expired', 'on', true);
-
-    INSERT INTO authz.tuples (store_id, user_type, user_id, user_relation, relation, object_type, object_id)
-    SELECT v_store_id,
-           ut.id,
-           t.user_id,
-           ur.id,
-           r.id,
-           ot.id,
-           t.object_id
-      FROM unnest(p_tuples) AS t
-      JOIN authz.types ut     ON ut.store_id = v_store_id AND ut.name = t.user_type
-      JOIN authz.relations r  ON r.store_id  = v_store_id AND r.name  = t.relation
-      JOIN authz.types ot     ON ot.store_id = v_store_id AND ot.name = t.object_type
-      LEFT JOIN authz.relations ur ON ur.store_id = v_store_id AND ur.name = t.user_relation
-    ON CONFLICT (store_id, object_type, object_id, relation, user_type, user_id, COALESCE(user_relation::int, 0))
-    -- The composite tuple_input has no expiry field (like conditions — use
-    -- write_tuple / the jsonb variant for expiring grants). A batch re-grant
-    -- over an EXPIRING/EXPIRED row makes it a permanent grant — not a silent
-    -- no-op against a row RLS has hidden; identical permanent duplicates
-    -- still don't count. (Escape GUC set around the statement — see below.)
-    DO UPDATE SET expires_at = NULL
-    WHERE tuples.expires_at IS NOT NULL;
-
-    GET DIAGNOSTICS v_count = ROW_COUNT;
-    PERFORM set_config('authz.tuples_include_expired', '', true);
+    -- The set-based insert (with ON CONFLICT reactivation of expired rows)
+    -- must see hidden rows: the bypass helper owns that statement. All
+    -- validation above ran as the effective role.
+    v_count := authz._rls_write_tuples(v_store_id, p_tuples);
     RETURN v_count;
 END;
 $$;
@@ -412,7 +467,6 @@ DECLARE
     v_relation      integer := authz._r(v_store_id, p_relation);
     v_object_type   integer := authz._t(v_store_id, p_object_type);
     v_user_relation integer;
-    v_deleted       boolean;
 BEGIN
     -- Set application user for the audit trigger (transaction-local)
     PERFORM set_config('authz.performed_by', COALESCE(p_performed_by, ''), true);
@@ -424,9 +478,6 @@ BEGIN
         v_user_relation := authz._r(v_store_id, p_user_relation);
     END IF;
 
-    -- Deletes must reach EXPIRED rows too (revoking an expiring grant,
-    -- cleanup) — the WHERE reads columns, which folds the SELECT policy in.
-    PERFORM set_config('authz.tuples_include_expired', 'on', true);
     DELETE FROM authz.tuples
      WHERE store_id      = v_store_id
        AND object_type   = v_object_type
@@ -436,9 +487,7 @@ BEGIN
        AND user_id       = p_user_id
        AND user_relation IS NOT DISTINCT FROM v_user_relation;
 
-    v_deleted := FOUND;  -- capture before the GUC reset overwrites FOUND
-    PERFORM set_config('authz.tuples_include_expired', '', true);
-    RETURN v_deleted;
+    RETURN FOUND;
 END;
 $$;
 
@@ -509,7 +558,6 @@ BEGIN
        FROM (SELECT DISTINCT t.object_type FROM unnest(p_tuples) AS t) AS t
        JOIN authz.types ot ON ot.store_id = v_store_id AND ot.name = t.object_type;
 
-    PERFORM set_config('authz.tuples_include_expired', 'on', true);
     DELETE FROM authz.tuples tup
      USING (
         SELECT ut.id AS user_type,
@@ -533,7 +581,6 @@ BEGIN
        AND tup.object_id     = d.object_id;
 
     GET DIAGNOSTICS v_count = ROW_COUNT;
-    PERFORM set_config('authz.tuples_include_expired', '', true);
     RETURN v_count;
 END;
 $$;
@@ -609,15 +656,11 @@ BEGIN
        FROM (SELECT DISTINCT object_type FROM authz.tuples
               WHERE store_id = v_store_id AND user_type = v_user_type AND user_id = p_user_id) t;
 
-    -- Offboarding must remove EXPIRED grants too (they could otherwise be
-    -- reactivated by a later re-grant); sanctioned escape, tx-local.
-    PERFORM set_config('authz.tuples_include_expired', 'on', true);
     DELETE FROM authz.tuples
      WHERE store_id  = v_store_id
        AND user_type = v_user_type
        AND user_id   = p_user_id;
-    GET DIAGNOSTICS v_count = ROW_COUNT;  -- before the reset (a statement itself)
-    PERFORM set_config('authz.tuples_include_expired', '', true);
+    GET DIAGNOSTICS v_count = ROW_COUNT;
     RETURN v_count;
 END;
 $$;
