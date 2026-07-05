@@ -450,7 +450,7 @@ Without a configured native backend the routes return `501 Not Implemented`.
 
 | Method | Path | Profile | Description |
 |--------|------|---------|-------------|
-| POST | `/pgauthz/v1/check` | direct | Raw, **policy-free** access decision (`{"allowed":bool}`); `context` for conditions, `detail:true` for the rich result. |
+| POST | `/pgauthz/v1/check` | direct | Raw, **policy-free** access decision (`{"allowed":bool}`); `context` for conditions, `detail:true` for the rich result, `contextual_tuples` for an ephemeral-tuple check (needs `authz_contextual_reader`). |
 | POST | `/pgauthz/v1/check-batch` | direct | Many raw decisions in one round-trip (`{"results":[bool,…]}`); optional `semantic`. |
 | POST | `/pgauthz/v1/list-objects` | direct | Objects of a type the subject can act on (`list_objects`); keyset-paginated. |
 | POST | `/pgauthz/v1/list-subjects` | direct | Subjects of a type that can act on the object (`list_subjects`); keyset-paginated. |

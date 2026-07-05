@@ -122,3 +122,11 @@ type WriteRequest struct {
 type DetailedChecker interface {
 	CheckAccessDetailed(ctx context.Context, req EvalRequest) (decision bool, detail map[string]any, err error)
 }
+
+// ContextualChecker is an optional backend capability: a check that also
+// evaluates ephemeral "contextual" tuples (a JSONB array in the
+// write_tuples_jsonb element shape) alongside the stored graph, without
+// persisting them. Implemented by the direct pgx backend.
+type ContextualChecker interface {
+	CheckWithContextualTuples(ctx context.Context, req EvalRequest, contextualTuples json.RawMessage) (bool, error)
+}

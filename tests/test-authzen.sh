@@ -433,8 +433,10 @@ check_json "watch: page carries a composite next_cursor" \
     '{"limit":5}' \
     '(.next_cursor | has("after_at") and has("after_seq"))' "true"
 
-check_http "native explain is 501 on the OPA-compat backend" \
-    "501" \
+# The compat-opa PUBLIC listener does not expose the native surface (it lives on
+# the internal callback listener); the route is simply absent here → 404.
+check_http "native explain is not on the OPA-compat public listener (404)" \
+    "404" \
     -X POST "$OPA_URL/pgauthz/v1/explain" \
     -H "Content-Type: application/json" -H "$AUTH_ALICE" \
     -d '{"subject":{"type":"internal_user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}'
@@ -477,8 +479,8 @@ check_json "list-actions: returns an array" \
     '{"subject":{"type":"internal_user","id":"alice"},"resource":{"type":"document","id":"doc_payroll_001"}}' \
     '(.actions | type)' "array"
 
-check_http "native check is 501 on the OPA-compat backend" \
-    "501" \
+check_http "native check is not on the OPA-compat public listener (404)" \
+    "404" \
     -X POST "$OPA_URL/pgauthz/v1/check" \
     -H "Content-Type: application/json" -H "$AUTH_ALICE" \
     -d '{"subject":{"type":"internal_user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}'
@@ -520,8 +522,8 @@ check_http "write is 403 on the read-only decision-only instance" \
     -X POST "$DIRECT_URL/pgauthz/v1/write" \
     -H "Content-Type: application/json" -H "$AUTH_WP" -d "$WP_BODY"
 
-check_http "write is 501 on the OPA-compat backend" \
-    "501" \
+check_http "write is not on the OPA-compat public listener (404)" \
+    "404" \
     -X POST "$OPA_URL/pgauthz/v1/write" \
     -H "Content-Type: application/json" -H "$AUTH_WP" -d "$WP_BODY"
 

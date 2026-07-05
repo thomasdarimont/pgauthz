@@ -169,7 +169,23 @@ explain_access(store, subject_type, subject_id, relation, object_type, object_id
 # conditional, missing_context, conditions, model). Runs the explain
 # machinery in the engine — per-decision opt-in, deliberately NOT cached
 # (callers use it to react to a specific denial, e.g. step-up).
+# Native: /pgauthz/v1/check with detail:true returns {"allowed":bool,"detail":{...}};
+# flatten back to the {decision, state, missing_context, conditions, model}
+# shape the caller expects (the boolean lives under "decision").
+check_access_detailed(store, subject_type, subject_id, relation, object_type, object_id, ctx) := object.union({"decision": response.body.allowed}, response.body.detail) if {
+	config.use_native
+	response := _native_send(store, "check", {
+		"subject": {"type": subject_type, "id": subject_id},
+		"action": {"name": relation},
+		"resource": {"type": object_type, "id": object_id},
+		"context": ctx,
+		"detail": true,
+	}, -1)
+	response.status_code == 200
+}
+
 check_access_detailed(store, subject_type, subject_id, relation, object_type, object_id, ctx) := response.body if {
+	not config.use_native
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/check_access_detailed"]),
@@ -355,7 +371,23 @@ list_objects_with_context(store, subject_type, subject_id, relation, object_type
 }
 
 # list_objects with pagination — returns an ordered array (not a set).
+# Native: raw ordered array for (limit, offset). The native endpoint fetches
+# limit+1 and trims to limit internally, so passing the caller's already-+1
+# limit returns exactly what the Go-side buildPage needs for its has-more probe.
+list_objects_page(store, subject_type, subject_id, relation, object_type, limit, offset) := response.body.objects if {
+	config.use_native
+	response := _native_send(store, "list-objects", {
+		"subject": {"type": subject_type, "id": subject_id},
+		"action": {"name": relation},
+		"resource": {"type": object_type},
+		"limit": limit,
+		"offset": offset,
+	}, _effective_cache_ttl(store, object_type))
+	response.status_code == 200
+}
+
 list_objects_page(store, subject_type, subject_id, relation, object_type, limit, offset) := objects if {
+	not config.use_native
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_objects"]),
@@ -378,7 +410,21 @@ list_objects_page(store, subject_type, subject_id, relation, object_type, limit,
 }
 
 # list_objects with pagination and request context.
+list_objects_page_with_context(store, subject_type, subject_id, relation, object_type, ctx, limit, offset) := response.body.objects if {
+	config.use_native
+	response := _native_send(store, "list-objects", {
+		"subject": {"type": subject_type, "id": subject_id},
+		"action": {"name": relation},
+		"resource": {"type": object_type},
+		"context": ctx,
+		"limit": limit,
+		"offset": offset,
+	}, _effective_cache_ttl(store, object_type))
+	response.status_code == 200
+}
+
 list_objects_page_with_context(store, subject_type, subject_id, relation, object_type, ctx, limit, offset) := objects if {
+	not config.use_native
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_objects"]),
@@ -404,7 +450,20 @@ list_objects_page_with_context(store, subject_type, subject_id, relation, object
 # list_objects with keyset pagination — `after` is the last object_id of the
 # previous page (the SQL function ignores p_offset when p_after is set). Returns
 # an ordered array.
+list_objects_page_after(store, subject_type, subject_id, relation, object_type, limit, after) := response.body.objects if {
+	config.use_native
+	response := _native_send(store, "list-objects", {
+		"subject": {"type": subject_type, "id": subject_id},
+		"action": {"name": relation},
+		"resource": {"type": object_type},
+		"limit": limit,
+		"after": after,
+	}, _effective_cache_ttl(store, object_type))
+	response.status_code == 200
+}
+
 list_objects_page_after(store, subject_type, subject_id, relation, object_type, limit, after) := objects if {
+	not config.use_native
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_objects"]),
@@ -427,7 +486,21 @@ list_objects_page_after(store, subject_type, subject_id, relation, object_type, 
 }
 
 # list_objects with keyset pagination and request context.
+list_objects_page_after_with_context(store, subject_type, subject_id, relation, object_type, ctx, limit, after) := response.body.objects if {
+	config.use_native
+	response := _native_send(store, "list-objects", {
+		"subject": {"type": subject_type, "id": subject_id},
+		"action": {"name": relation},
+		"resource": {"type": object_type},
+		"context": ctx,
+		"limit": limit,
+		"after": after,
+	}, _effective_cache_ttl(store, object_type))
+	response.status_code == 200
+}
+
 list_objects_page_after_with_context(store, subject_type, subject_id, relation, object_type, ctx, limit, after) := objects if {
+	not config.use_native
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_objects"]),
@@ -484,7 +557,20 @@ list_subjects(store, subject_type, relation, object_type, object_id) := subjects
 }
 
 # list_subjects with pagination — returns an ordered array.
+list_subjects_page(store, subject_type, relation, object_type, object_id, limit, offset) := response.body.subjects if {
+	config.use_native
+	response := _native_send(store, "list-subjects", {
+		"subject": {"type": subject_type},
+		"action": {"name": relation},
+		"resource": {"type": object_type, "id": object_id},
+		"limit": limit,
+		"offset": offset,
+	}, _effective_cache_ttl(store, object_type))
+	response.status_code == 200
+}
+
 list_subjects_page(store, subject_type, relation, object_type, object_id, limit, offset) := subjects if {
+	not config.use_native
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_subjects"]),
@@ -508,7 +594,20 @@ list_subjects_page(store, subject_type, relation, object_type, object_id, limit,
 
 # list_subjects with keyset pagination — `after` is the last subject_id of the
 # previous page. Returns an ordered array.
+list_subjects_page_after(store, subject_type, relation, object_type, object_id, limit, after) := response.body.subjects if {
+	config.use_native
+	response := _native_send(store, "list-subjects", {
+		"subject": {"type": subject_type},
+		"action": {"name": relation},
+		"resource": {"type": object_type, "id": object_id},
+		"limit": limit,
+		"after": after,
+	}, _effective_cache_ttl(store, object_type))
+	response.status_code == 200
+}
+
 list_subjects_page_after(store, subject_type, relation, object_type, object_id, limit, after) := subjects if {
+	not config.use_native
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/list_subjects"]),
@@ -533,7 +632,19 @@ list_subjects_page_after(store, subject_type, relation, object_type, object_id, 
 # check_access_with_contextual_tuples: access check with ephemeral tuples.
 # Contextual tuples are evaluated alongside stored tuples but never persisted.
 # Each tuple is {user_type, user_id, user_relation, relation, object_type, object_id}.
+check_access_with_contextual_tuples(store, subject_type, subject_id, relation, object_type, object_id, ctx_tuples) := response.body.allowed if {
+	config.use_native
+	response := _native_send(store, "check", {
+		"subject": {"type": subject_type, "id": subject_id},
+		"action": {"name": relation},
+		"resource": {"type": object_type, "id": object_id},
+		"contextual_tuples": ctx_tuples,
+	}, _effective_cache_ttl(store, object_type))
+	response.status_code == 200
+}
+
 check_access_with_contextual_tuples(store, subject_type, subject_id, relation, object_type, object_id, ctx_tuples) := response.body if {
+	not config.use_native
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/check_access_with_contextual_tuples"]),
@@ -555,7 +666,20 @@ check_access_with_contextual_tuples(store, subject_type, subject_id, relation, o
 }
 
 # check_access_with_contextual_tuples with request context.
+check_access_with_contextual_tuples_ctx(store, subject_type, subject_id, relation, object_type, object_id, ctx, ctx_tuples) := response.body.allowed if {
+	config.use_native
+	response := _native_send(store, "check", {
+		"subject": {"type": subject_type, "id": subject_id},
+		"action": {"name": relation},
+		"resource": {"type": object_type, "id": object_id},
+		"context": ctx,
+		"contextual_tuples": ctx_tuples,
+	}, _effective_cache_ttl(store, object_type))
+	response.status_code == 200
+}
+
 check_access_with_contextual_tuples_ctx(store, subject_type, subject_id, relation, object_type, object_id, ctx, ctx_tuples) := response.body if {
+	not config.use_native
 	response := http.send({
 		"method": "POST",
 		"url": concat("", [config.postgrest_url, "/rpc/check_access_with_contextual_tuples"]),

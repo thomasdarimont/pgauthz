@@ -31,6 +31,10 @@ type nativeCheckBody struct {
 	// Detail opts into the rich result (state/missing_context/conditions/model)
 	// when the backend supports it — the native equivalent of X-Authz-Detail.
 	Detail bool `json:"detail,omitempty"`
+	// ContextualTuples, when present, are evaluated as ephemeral tuples
+	// alongside the stored graph (never persisted). JSONB array in the
+	// write_tuples_jsonb element shape.
+	ContextualTuples json.RawMessage `json:"contextual_tuples,omitempty"`
 }
 
 // NativeCheck — POST /pgauthz/v1/check: a single raw access decision.
@@ -64,6 +68,20 @@ func (h *Handler) NativeCheck(w http.ResponseWriter, r *http.Request) {
 		Store: store, SubjectType: subjectType, SubjectID: subjectID,
 		Action: req.Action.Name, ObjectType: req.Resource.Type, ObjectID: req.Resource.ID,
 		Context: req.Context,
+	}
+	if len(req.ContextualTuples) > 0 {
+		cc, ok := h.raw.(authz.ContextualChecker)
+		if !ok {
+			writeError(w, http.StatusNotImplemented, "contextual-tuple checks require the direct backend")
+			return
+		}
+		decision, err := cc.CheckWithContextualTuples(r.Context(), evalReq, req.ContextualTuples)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"allowed": decision})
+		return
 	}
 	if req.Detail {
 		if dc, ok := h.raw.(authz.DetailedChecker); ok {
@@ -173,12 +191,30 @@ func (h *Handler) NativeCheckBatch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"results": out})
 }
 
+// nativePage carries pagination for a native list call. The raw limit/offset/
+// after fields are for the OPA callback (which already holds them, and does its
+// own has-more/next-token handling); the opaque page token is for external
+// AuthZEN-style callers. Raw fields take precedence when limit is set.
+type nativePage struct {
+	Limit  int        `json:"limit,omitempty"`
+	Offset int        `json:"offset,omitempty"`
+	After  string     `json:"after,omitempty"`
+	Page   *PageToken `json:"page,omitempty"`
+}
+
+func (p nativePage) pageReq() *authz.PageRequest {
+	if p.Limit > 0 {
+		return &authz.PageRequest{Limit: p.Limit, Offset: p.Offset, After: p.After}
+	}
+	return decodePage(p.Page)
+}
+
 type nativeListObjectsBody struct {
 	Subject  Subject        `json:"subject"`
 	Action   Action         `json:"action"`
 	Resource Resource       `json:"resource"` // only Type is used
 	Context  map[string]any `json:"context,omitempty"`
-	Page     *PageToken     `json:"page,omitempty"`
+	nativePage
 }
 
 // NativeListObjects — POST /pgauthz/v1/list-objects: which objects of a type the
@@ -209,7 +245,7 @@ func (h *Handler) NativeListObjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	objects, pageResp, err := h.raw.ListResources(r.Context(), store,
-		subjectType, subjectID, req.Action.Name, req.Resource.Type, req.Context, decodePage(req.Page))
+		subjectType, subjectID, req.Action.Name, req.Resource.Type, req.Context, req.pageReq())
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -222,7 +258,7 @@ type nativeListSubjectsBody struct {
 	Action   Action         `json:"action"`
 	Resource Resource       `json:"resource"`
 	Context  map[string]any `json:"context,omitempty"`
-	Page     *PageToken     `json:"page,omitempty"`
+	nativePage
 }
 
 // NativeListSubjects — POST /pgauthz/v1/list-subjects: which subjects of a type
@@ -252,7 +288,7 @@ func (h *Handler) NativeListSubjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	subjects, pageResp, err := h.raw.ListSubjects(r.Context(), store,
-		req.Subject.Type, req.Action.Name, req.Resource.Type, req.Resource.ID, req.Context, decodePage(req.Page))
+		req.Subject.Type, req.Action.Name, req.Resource.Type, req.Resource.ID, req.Context, req.pageReq())
 	if err != nil {
 		writeInternalError(w, err)
 		return

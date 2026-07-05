@@ -136,6 +136,13 @@ GRANT authz_reader TO authzen_direct;
 -- authz_reader and adds only READ access to the audit trail (no writes), so a
 -- decision-only (read-only) instance keeps its can't-write guarantee.
 GRANT authz_auditor TO authzen_direct;
+-- Contextual-tuple checks (native /pgauthz/v1/check with contextual_tuples, and
+-- the compat OPA callback) evaluate ephemeral tuples in a single request. The
+-- capability is gated behind authz_contextual_reader — kept away from the
+-- UNAUTHENTICATED api_anon/authz_reader. authzen_direct is JWT-authenticated and
+-- trusted (behind OPA on the compat path), so it is the intended trusted-backend
+-- grantee. Ephemeral tuples never persist and only affect that request's answer.
+GRANT authz_contextual_reader TO authzen_direct;
 
 -- pgauthzd FULL-profile role: the read-write instance connects here. INHERITs
 -- authz_writer (hence authz_reader + auditor's readable audit trail), so one

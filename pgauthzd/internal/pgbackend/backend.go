@@ -285,6 +285,31 @@ func (b *Backend) CheckAccessDetailed(ctx context.Context, req authz.EvalRequest
 	return decision, report, nil
 }
 
+// CheckWithContextualTuples implements authz.ContextualChecker via
+// authz.check_access_with_contextual_tuples_jsonb: the ephemeral tuples are
+// evaluated with the stored graph but never persisted.
+func (b *Backend) CheckWithContextualTuples(ctx context.Context, req authz.EvalRequest, contextualTuples json.RawMessage) (bool, error) {
+	var ctxJSON []byte
+	if req.Context != nil {
+		var err error
+		if ctxJSON, err = json.Marshal(req.Context); err != nil {
+			return false, fmt.Errorf("marshaling context: %w", err)
+		}
+	}
+	var decision bool
+	err := b.withRole(ctx, func(q querier) error {
+		return q.QueryRow(ctx,
+			"SELECT authz.check_access_with_contextual_tuples_jsonb($1,$2,$3,$4,$5,$6,$7,$8)",
+			req.Store, req.SubjectType, req.SubjectID, req.Action,
+			req.ObjectType, req.ObjectID, ctxJSON, []byte(contextualTuples),
+		).Scan(&decision)
+	})
+	if err != nil {
+		return false, fmt.Errorf("check_access_with_contextual_tuples_jsonb: %w", err)
+	}
+	return decision, nil
+}
+
 func (b *Backend) CheckAccessBatch(ctx context.Context, store string, reqs []authz.EvalRequest,
 	globalContext map[string]any, semantic string) ([]authz.EvalResult, error) {
 
