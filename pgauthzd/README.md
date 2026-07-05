@@ -442,10 +442,23 @@ returns `501 Not Implemented` for these routes.
 
 | Method | Path | Profile | Description |
 |--------|------|---------|-------------|
+| POST | `/pgauthz/v1/check` | direct | Raw, **policy-free** access decision (`{"allowed":bool}`); `context` for conditions, `detail:true` for the rich result. |
+| POST | `/pgauthz/v1/check-batch` | direct | Many raw decisions in one round-trip (`{"results":[bool,…]}`); optional `semantic`. |
+| POST | `/pgauthz/v1/list-objects` | direct | Objects of a type the subject can act on (`list_objects`); keyset-paginated. |
+| POST | `/pgauthz/v1/list-subjects` | direct | Subjects of a type that can act on the object (`list_subjects`); keyset-paginated. |
+| POST | `/pgauthz/v1/list-actions` | direct | Relations the subject holds on the object (`list_actions`). |
 | POST | `/pgauthz/v1/explain` | direct | Structured "why" — `explain_access` decision + trace. Same subject/store rules as an AuthZEN evaluation. |
 | POST | `/pgauthz/v1/watch` | direct | A cursored page of the store's audit **changefeed** (HTTP transport over `authz.watch_changes`). |
 | POST | `/pgauthz/v1/write` | **full** | Batch-upsert tuples (`write_tuples_jsonb`). |
 | POST | `/pgauthz/v1/delete` | **full** | Batch-delete tuples (`delete_tuples_jsonb`). |
+
+The `check` / `list-*` endpoints are **policy-free by construction** — they run
+straight against the direct pgx backend, never through a policy layer. That is
+what an external OPA sidecar calls back into when a Rego policy delegates to the
+graph, so a compat deployment can front the graph with policy without OPA
+needing PostgREST and without re-entering its own policy-wrapped `/access/v1`
+surface. They use the AuthZEN subject/action/resource vocabulary (same
+subject-resolution and store-binding) and return pgauthz-native bodies.
 
 All are also available store-scoped under `/stores/{store}/pgauthz/v1/…`.
 

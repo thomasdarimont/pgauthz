@@ -439,6 +439,50 @@ check_http "native explain is 501 on the OPA-compat backend" \
     -H "Content-Type: application/json" -H "$AUTH_ALICE" \
     -d '{"subject":{"type":"internal_user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}'
 
+# --- Native raw decision + search (/pgauthz/v1/check, /list-*) ---
+# Policy-FREE graph answers on the direct backend — what an OPA sidecar calls
+# back into. Same subject/store rules as AuthZEN; 501 on the OPA-compat backend.
+check_json "check: raw allow (alice can_read payroll)" \
+    "$DIRECT_URL/pgauthz/v1/check" "$AUTH_ALICE" \
+    '{"subject":{"type":"internal_user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}' \
+    '.allowed' "true"
+
+check_json "check: raw deny (alice can_read tax)" \
+    "$DIRECT_URL/pgauthz/v1/check" "$AUTH_ALICE" \
+    '{"subject":{"type":"internal_user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_tax_001"}}' \
+    '.allowed' "false"
+
+check_json "check: detail=true carries a state" \
+    "$DIRECT_URL/pgauthz/v1/check" "$AUTH_ALICE" \
+    '{"subject":{"type":"internal_user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"},"detail":true}' \
+    '(.detail.state != null)' "true"
+
+check_json "check-batch: [allow, deny] in order" \
+    "$DIRECT_URL/pgauthz/v1/check-batch" "$AUTH_ALICE" \
+    '{"subject":{"type":"internal_user","id":"alice"},"checks":[{"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}},{"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_tax_001"}}]}' \
+    '.results' "[true,false]"
+
+check_json "list-objects: returns an array" \
+    "$DIRECT_URL/pgauthz/v1/list-objects" "$AUTH_ALICE" \
+    '{"subject":{"type":"internal_user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document"}}' \
+    '(.objects | type)' "array"
+
+check_json "list-subjects: returns an array" \
+    "$DIRECT_URL/pgauthz/v1/list-subjects" "$AUTH_ALICE" \
+    '{"subject":{"type":"internal_user"},"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}' \
+    '(.subjects | type)' "array"
+
+check_json "list-actions: returns an array" \
+    "$DIRECT_URL/pgauthz/v1/list-actions" "$AUTH_ALICE" \
+    '{"subject":{"type":"internal_user","id":"alice"},"resource":{"type":"document","id":"doc_payroll_001"}}' \
+    '(.actions | type)' "array"
+
+check_http "native check is 501 on the OPA-compat backend" \
+    "501" \
+    -X POST "$OPA_URL/pgauthz/v1/check" \
+    -H "Content-Type: application/json" -H "$AUTH_ALICE" \
+    -d '{"subject":{"type":"internal_user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}'
+
 # --- Native write path (/pgauthz/v1/write, /delete) — FULL profile only ---
 # The full instance (:8092) connects with a writer-capable role. The read-only
 # decision-only instance (:8090) 403s; compat-opa (:8091) 501s. Audit author =

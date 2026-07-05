@@ -65,6 +65,20 @@ func NewRouter(backend authz.Backend, cfg *config.Config, jwtMW *JWTMiddleware) 
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/explain", h.Explain)
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/watch", h.Watch)
 
+	// Native raw decision + search (policy-FREE; direct backend, 501 on
+	// compat-opa). What an OPA sidecar calls back into when a policy delegates
+	// to the graph.
+	mux.HandleFunc("POST /pgauthz/v1/check", h.NativeCheck)
+	mux.HandleFunc("POST /pgauthz/v1/check-batch", h.NativeCheckBatch)
+	mux.HandleFunc("POST /pgauthz/v1/list-objects", h.NativeListObjects)
+	mux.HandleFunc("POST /pgauthz/v1/list-subjects", h.NativeListSubjects)
+	mux.HandleFunc("POST /pgauthz/v1/list-actions", h.NativeListActions)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/check", h.NativeCheck)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/check-batch", h.NativeCheckBatch)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/list-objects", h.NativeListObjects)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/list-subjects", h.NativeListSubjects)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/list-actions", h.NativeListActions)
+
 	// Native write path: full profile only (403 on decision-only, which is
 	// read-only by DB role; 501 on compat-opa, whose writes go through OPA).
 	mux.HandleFunc("POST /pgauthz/v1/write", h.WriteTuples)
