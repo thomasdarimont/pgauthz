@@ -440,12 +440,14 @@ kept on a separate path so `/access/v1` stays spec-pure. Available only on the
 **direct** profiles (`decision-only` / `full`); the `compat-opa` profile
 returns `501 Not Implemented` for these routes.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/pgauthz/v1/explain` | Structured "why" — `explain_access` decision + trace. Same subject/store rules as an AuthZEN evaluation. |
-| POST | `/pgauthz/v1/watch` | A cursored page of the store's audit **changefeed** (HTTP transport over `authz.watch_changes`). |
+| Method | Path | Profile | Description |
+|--------|------|---------|-------------|
+| POST | `/pgauthz/v1/explain` | direct | Structured "why" — `explain_access` decision + trace. Same subject/store rules as an AuthZEN evaluation. |
+| POST | `/pgauthz/v1/watch` | direct | A cursored page of the store's audit **changefeed** (HTTP transport over `authz.watch_changes`). |
+| POST | `/pgauthz/v1/write` | **full** | Batch-upsert tuples (`write_tuples_jsonb`). |
+| POST | `/pgauthz/v1/delete` | **full** | Batch-delete tuples (`delete_tuples_jsonb`). |
 
-Both are also available store-scoped under `/stores/{store}/pgauthz/v1/…`.
+All are also available store-scoped under `/stores/{store}/pgauthz/v1/…`.
 
 **Watch cursoring.** The changefeed cursor is the composite
 `(after_at, after_seq)` — pass the whole `next_cursor` from a page back to get
@@ -463,6 +465,34 @@ The watch/audit surface needs an **auditor-capable** connection role
 still write-incapable, so a `decision-only` instance keeps its can't-write
 guarantee). The bundled `authzen_direct` login role is granted it.
 
+### Native write path (`full` profile)
+
+The `write`/`delete` endpoints exist **only on the `full` profile** — a direct
+backend on a **writer-capable** connection role (`pgauthzd_rw`, which inherits
+`authz_writer`). The security boundary is the DB role, not a flag:
+
+- a **`decision-only`** instance (read-only role, e.g. `authzen_direct`) returns
+  **`403`** — and asserts at startup that its role genuinely cannot write;
+- the **`compat-opa`** profile returns **`501`** (its writes go through the OPA
+  front door, not this native path).
+
+```bash
+curl -X POST localhost:8092/pgauthz/v1/write -H "Authorization: Bearer $TOKEN" \
+  -d '{"tuples":[{"user_type":"user","user_id":"alice","relation":"viewer",
+                  "object_type":"doc","object_id":"readme"}],
+       "consistency":"applied"}'
+# => {"store":"demo","written":1}
+```
+
+The request body is `{ "tuples": [ … ], "consistency": "…" }`: `tuples` is the
+`write_tuples_jsonb` array shape (`user_type`, `user_id`, `relation`,
+`object_type`, `object_id`, plus optional `user_relation`, `condition`,
+`context`, `expires_at`). The audit author (`performed_by`) is the
+authenticated subject; the per-app DB role from the token governs namespace
+scope exactly as it does for reads. `consistency` maps per-transaction to
+`synchronous_commit`: `applied` (= `remote_apply`, strict revocation),
+`durable` (`on`), `eventual` (`local`); omitted = the connection default.
+
 Roadmap: `/pgauthz/v1/audit` (time-travel), `/pgauthz/v1/models` +
-`/pgauthz/v1/stores` (inspection), and the write surface (`tuples`, model
-publish/apply) on the `full` profile.
+`/pgauthz/v1/stores` (inspection), and model publish/apply on the `full`
+profile.

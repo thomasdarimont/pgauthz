@@ -3,7 +3,14 @@ package authz
 import (
 	"context"
 	"encoding/json"
+	"errors"
 )
+
+// ErrForbiddenRole signals that a caller's per-app DB role is not authorized
+// for the attempted operation (e.g. a reader-only role reached a write). It is
+// a caller/authorization error, not a server fault — handlers map it to 403,
+// not 500. Backends wrap it with %w so errors.Is recognizes it.
+var ErrForbiddenRole = errors.New("db role not authorized for this operation")
 
 // PageRequest holds pagination parameters. After is a keyset cursor (the last
 // id of the previous page); when set it takes precedence over Offset, so paging
@@ -78,6 +85,33 @@ type WatchRequest struct {
 	ObjectTypes []string // nil = all
 	Namespaces  []string // nil = all
 	Relations   []string // nil = all
+}
+
+// NativeWriter is an optional backend capability: pgauthz tuple WRITES over
+// the direct pgx connection (the `full` profile). Each op runs in a
+// transaction that SET LOCAL ROLEs to a writer-capable role (the per-app role
+// from the token when present, validated writer + not admin; else the default
+// writer), applies the per-write consistency mode, and records performed_by =
+// the authenticated subject. Implemented only by the direct backend on a
+// writable connection; decision-only / compat-opa do not (405/501).
+type NativeWriter interface {
+	// WriteTuples upserts a batch; returns the count affected.
+	WriteTuples(ctx context.Context, req WriteRequest) (int, error)
+	// DeleteTuples removes a batch; returns the count affected.
+	DeleteTuples(ctx context.Context, req WriteRequest) (int, error)
+}
+
+// WriteRequest is a batch tuple write/delete. Tuples is the JSONB array in the
+// write_tuples_jsonb/delete_tuples_jsonb shape. PerformedBy is the audit author
+// (the authenticated subject). Consistency maps to synchronous_commit
+// (applied|durable|eventual); "" = the connection default. The per-app DB role
+// to assume is taken from the request context (the verified token), same as the
+// read path — the backend reads it there, not from this struct.
+type WriteRequest struct {
+	Store       string
+	Tuples      json.RawMessage
+	PerformedBy string
+	Consistency string
 }
 
 // DetailedChecker is an optional backend capability: a check that also

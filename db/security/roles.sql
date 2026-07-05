@@ -137,6 +137,27 @@ GRANT authz_reader TO authzen_direct;
 -- decision-only (read-only) instance keeps its can't-write guarantee.
 GRANT authz_auditor TO authzen_direct;
 
+-- pgauthzd FULL-profile role: the read-write instance connects here. INHERITs
+-- authz_writer (hence authz_reader + auditor's readable audit trail), so one
+-- connection serves reads, the native /pgauthz/v1 write path, and watch. This
+-- is the writer counterpart to authzen_direct (read-only): the security
+-- boundary is the ROLE — a decision-only instance uses authzen_direct and
+-- physically cannot write; only the full instance uses this writer role.
+-- Multi-tenant per-app namespace isolation still works: grant the per-app
+-- reader/writer roles TO pgauthzd_rw and the service SET LOCAL ROLEs to them
+-- per request (membership provides SET ROLE); the default (no per-app role)
+-- writes as authz_writer.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'pgauthzd_rw') THEN
+        -- Dev password — override in production deployments.
+        CREATE ROLE pgauthzd_rw LOGIN PASSWORD 'authz';
+    END IF;
+END
+$$;
+GRANT authz_writer  TO pgauthzd_rw;
+GRANT authz_auditor TO pgauthzd_rw;
+
 -- Playground BFF metadata/explore role: a dedicated read-only LOGIN role for the
 -- web playground's ENGINE_DSN. It INHERITs authz_reader (check/explain/describe_model)
 -- AND gets direct SELECT on the metadata tables, because the playground browses
@@ -171,6 +192,7 @@ GRANT SELECT ON authz.stores, authz.types, authz.relations, authz.conditions, au
 --    listings prefer pagination (p_limit) and object/user wildcards (O(1)).
 ALTER ROLE authz_authenticator SET statement_timeout = '60s';
 ALTER ROLE authzen_direct      SET statement_timeout = '60s';
+ALTER ROLE pgauthzd_rw         SET statement_timeout = '60s';
 ALTER ROLE authz_metadata      SET statement_timeout = '60s';
 
 -- 2. Capability — pg_sleep is a PUBLIC builtin and the one obvious

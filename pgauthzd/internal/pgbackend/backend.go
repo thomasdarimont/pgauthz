@@ -108,6 +108,124 @@ func (b *Backend) checkRole(ctx context.Context, role string) error {
 	return nil
 }
 
+// writeWithRole runs a mutating fn inside a single transaction that assumes a
+// writer-capable role and applies the request's consistency mode. It mirrors
+// the PostgREST-writer trust boundary: the per-app role from the token (when
+// present, validated writer + not admin) is assumed via SET LOCAL ROLE, else
+// the connection's default writer identity is used; the tx is scoped so the
+// role never leaks back into the pool. Consistency maps to a whitelisted
+// synchronous_commit (strict-revocation lives here, per-tx, as it did on the
+// writer connection URI).
+func (b *Backend) writeWithRole(ctx context.Context, consistency string, fn func(q querier) error) error {
+	role := api.DBRoleFromContext(ctx)
+	tx, err := b.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin write tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
+	if role != "" {
+		if err := b.checkWriterRole(ctx, role); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+pgx.Identifier{role}.Sanitize()); err != nil {
+			return fmt.Errorf("assuming writer role %q: %w", role, err)
+		}
+	}
+	if sc := syncCommit(consistency); sc != "" {
+		// Whitelisted constant, never caller text — safe to interpolate.
+		if _, err := tx.Exec(ctx, "SET LOCAL synchronous_commit = "+sc); err != nil {
+			return fmt.Errorf("setting consistency %q: %w", consistency, err)
+		}
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// checkWriterRole validates a per-app role before assuming it for a write,
+// mirroring the writer-side _pre_request(): member of authz_writer, not admin.
+// Fail closed on unknown roles. Reuses the same cache as checkRole but under a
+// distinct key so a reader-only role can't be cached as write-capable.
+func (b *Backend) checkWriterRole(ctx context.Context, role string) error {
+	cacheKey := "w:" + role
+	if b.roleCacheTTL > 0 {
+		if v, ok := b.roleOK.Load(cacheKey); ok {
+			e := v.(roleCacheEntry)
+			if time.Since(e.checked) < b.roleCacheTTL {
+				if e.allowed {
+					return nil
+				}
+				return fmt.Errorf("db role %q is not an allowed writer role: %w", role, authz.ErrForbiddenRole)
+			}
+		}
+	}
+	var allowed bool
+	err := b.pool.QueryRow(ctx,
+		`SELECT pg_has_role($1, 'authz_writer', 'member')
+		    AND NOT pg_has_role($1, 'authz_admin', 'member')`, role).Scan(&allowed)
+	if err != nil {
+		return fmt.Errorf("validating writer db role %q: %w", role, err)
+	}
+	if b.roleCacheTTL > 0 {
+		b.roleOK.Store(cacheKey, roleCacheEntry{allowed: allowed, checked: time.Now()})
+	}
+	if !allowed {
+		return fmt.Errorf("db role %q is not an allowed writer role: %w", role, authz.ErrForbiddenRole)
+	}
+	return nil
+}
+
+// syncCommit maps a request consistency mode to a whitelisted
+// synchronous_commit setting; "" means leave the connection default untouched.
+// "applied" is strict revocation (wait for the sync standby to apply) — the
+// remote_apply the writer connection used; "eventual" trades durability for
+// latency on writes that tolerate it.
+func syncCommit(consistency string) string {
+	switch consistency {
+	case "applied", "strict", "remote_apply":
+		return "remote_apply"
+	case "durable", "on":
+		return "on"
+	case "eventual", "local":
+		return "local"
+	default:
+		return ""
+	}
+}
+
+// WriteTuples implements authz.NativeWriter.WriteTuples via
+// authz.write_tuples_jsonb, recording performed_by = the authenticated subject.
+func (b *Backend) WriteTuples(ctx context.Context, req authz.WriteRequest) (int, error) {
+	var n int
+	err := b.writeWithRole(ctx, req.Consistency, func(q querier) error {
+		return q.QueryRow(ctx,
+			"SELECT authz.write_tuples_jsonb($1, $2, $3)",
+			req.Store, []byte(req.Tuples), textOrNil(req.PerformedBy),
+		).Scan(&n)
+	})
+	if err != nil {
+		return 0, fmt.Errorf("write_tuples_jsonb: %w", err)
+	}
+	return n, nil
+}
+
+// DeleteTuples implements authz.NativeWriter.DeleteTuples via
+// authz.delete_tuples_jsonb, recording performed_by = the authenticated subject.
+func (b *Backend) DeleteTuples(ctx context.Context, req authz.WriteRequest) (int, error) {
+	var n int
+	err := b.writeWithRole(ctx, req.Consistency, func(q querier) error {
+		return q.QueryRow(ctx,
+			"SELECT authz.delete_tuples_jsonb($1, $2, $3)",
+			req.Store, []byte(req.Tuples), textOrNil(req.PerformedBy),
+		).Scan(&n)
+	})
+	if err != nil {
+		return 0, fmt.Errorf("delete_tuples_jsonb: %w", err)
+	}
+	return n, nil
+}
+
 func (b *Backend) CheckAccess(ctx context.Context, req authz.EvalRequest) (bool, error) {
 	var decision bool
 	err := b.withRole(ctx, func(q querier) error {

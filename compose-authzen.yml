@@ -38,6 +38,39 @@ services:
       authz-db:
         condition: service_healthy
 
+  # pgauthzd FULL profile: direct pgx, read+write. Connects with the
+  # writer-capable pgauthzd_rw role and exposes the native /pgauthz/v1/write
+  # + /delete path (in addition to eval, search, explain, watch). The
+  # read-only authzen-direct above (decision-only) 403s on writes; the security
+  # boundary is the DB role, not the profile flag.
+  pgauthzd-full:
+    build:
+      context: ./pgauthzd
+      args:
+        BINARY: pgauthzd
+        VERSION: ${VERSION:-dev}
+    ports:
+      - "8092:8080"
+    environment:
+      LISTEN_ADDR: ":8080"
+      PGAUTHORIZER_PROFILE: "full"
+      # Writer-capable non-superuser role (inherits authz_writer), created by
+      # db/security/roles.sql. This is the ONLY authzen service that can write.
+      DATABASE_URL: "postgres://pgauthzd_rw:${PGAUTHZD_RW_PASSWORD:-authz}@authz-db:5432/authz"
+      DB_POOL_MAX: "10"
+      JWKS_FILE: "/jwks/jwks.json"
+      JWT_ISSUER: "${JWT_ISSUER:-https://auth.example.com}"
+      JWT_AUDIENCE: "${JWT_AUDIENCE:-authz-api}"
+      DEFAULT_STORE: "${DEFAULT_STORE:-demo}"
+      ALLOW_SUBJECT_OVERRIDE: "${ALLOW_SUBJECT_OVERRIDE:-false}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+    restart: unless-stopped
+    volumes:
+      - ./opa/data:/jwks:ro
+    depends_on:
+      authz-db:
+        condition: service_healthy
+
   authzen-opa:
     build:
       context: ./pgauthzd

@@ -8,8 +8,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PG_DIR="$SCRIPT_DIR/.."
-DIRECT_URL="${AUTHZEN_DIRECT_URL:-http://localhost:8090}"
-OPA_URL="${AUTHZEN_OPA_URL:-http://localhost:8091}"
+DIRECT_URL="${AUTHZEN_DIRECT_URL:-http://localhost:8090}"   # decision-only (read-only role)
+OPA_URL="${AUTHZEN_OPA_URL:-http://localhost:8091}"         # compat-opa
+FULL_URL="${PGAUTHZD_FULL_URL:-http://localhost:8092}"      # full (writer role, native write path)
 KEY_FILE="$PG_DIR/opa/keys/demo.key.txt"
 
 pass_count=0
@@ -437,6 +438,48 @@ check_http "native explain is 501 on the OPA-compat backend" \
     -X POST "$OPA_URL/pgauthz/v1/explain" \
     -H "Content-Type: application/json" -H "$AUTH_ALICE" \
     -d '{"subject":{"type":"internal_user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}'
+
+# --- Native write path (/pgauthz/v1/write, /delete) — FULL profile only ---
+# The full instance (:8092) connects with a writer-capable role. The read-only
+# decision-only instance (:8090) 403s; compat-opa (:8091) 501s. Audit author =
+# the authenticated subject.
+echo ""
+echo "==> Native write path (/pgauthz/v1/write) — full profile..."
+echo ""
+
+AUTH_WP="Authorization: Bearer $(make_token wprobe internal_user)"
+WP_BODY='{"tuples":[{"user_type":"internal_user","user_id":"wprobe","relation":"viewer","object_type":"document","object_id":"az_wdoc"}]}'
+
+# Clean slate (ignore result — the tuple may not exist yet).
+curl -sf -X POST "$FULL_URL/pgauthz/v1/delete" -H "Content-Type: application/json" -H "$AUTH_WP" -d "$WP_BODY" >/dev/null 2>&1 || true
+
+check_json "write: upsert grants the tuple (written=1)" \
+    "$FULL_URL/pgauthz/v1/write" "$AUTH_WP" "$WP_BODY" \
+    '.written' "1"
+
+check_json "write: the new grant is immediately visible (decision)" \
+    "$FULL_URL/access/v1/evaluation" "$AUTH_WP" \
+    '{"subject":{"type":"internal_user","id":"wprobe"},"action":{"name":"viewer"},"resource":{"type":"document","id":"az_wdoc"}}' \
+    '.decision' "true"
+
+check_json "delete: removes the tuple (deleted=1)" \
+    "$FULL_URL/pgauthz/v1/delete" "$AUTH_WP" "$WP_BODY" \
+    '.deleted' "1"
+
+check_json "delete: access is revoked (decision)" \
+    "$FULL_URL/access/v1/evaluation" "$AUTH_WP" \
+    '{"subject":{"type":"internal_user","id":"wprobe"},"action":{"name":"viewer"},"resource":{"type":"document","id":"az_wdoc"}}' \
+    '.decision' "false"
+
+check_http "write is 403 on the read-only decision-only instance" \
+    "403" \
+    -X POST "$DIRECT_URL/pgauthz/v1/write" \
+    -H "Content-Type: application/json" -H "$AUTH_WP" -d "$WP_BODY"
+
+check_http "write is 501 on the OPA-compat backend" \
+    "501" \
+    -X POST "$OPA_URL/pgauthz/v1/write" \
+    -H "Content-Type: application/json" -H "$AUTH_WP" -d "$WP_BODY"
 
 # --- Cache-Control: no-cache → fresh decision (authzen-opa) ---
 # The standard freshness header maps to OPA's input.no_cache (0-second

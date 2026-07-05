@@ -65,6 +65,13 @@ func NewRouter(backend authz.Backend, cfg *config.Config, jwtMW *JWTMiddleware) 
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/explain", h.Explain)
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/watch", h.Watch)
 
+	// Native write path: full profile only (403 on decision-only, which is
+	// read-only by DB role; 501 on compat-opa, whose writes go through OPA).
+	mux.HandleFunc("POST /pgauthz/v1/write", h.WriteTuples)
+	mux.HandleFunc("POST /pgauthz/v1/delete", h.DeleteTuples)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/write", h.WriteTuples)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/delete", h.DeleteTuples)
+
 	// Store-scoped variants (OpenFGA-style): the path segment selects the
 	// pgauthz store, so each store presents as its own AuthZEN PDP with its
 	// own discovery document. Path beats the store header, which beats
