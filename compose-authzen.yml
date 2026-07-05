@@ -51,6 +51,10 @@ services:
         VERSION: ${VERSION:-dev}
     ports:
       - "8092:8080"
+      # OPA callback listener (writer-capable, since this is the full profile).
+      # OPA forwards authorized writes here. Published for the tests only — in
+      # production bind to the OPA sidecar network.
+      - "8094:8081"
     environment:
       LISTEN_ADDR: ":8080"
       PGAUTHORIZER_PROFILE: "full"
@@ -58,6 +62,10 @@ services:
       # db/security/roles.sql. This is the ONLY authzen service that can write.
       DATABASE_URL: "postgres://pgauthzd_rw:${PGAUTHZD_RW_PASSWORD:-authz}@authz-db:5432/authz"
       DB_POOL_MAX: "10"
+      # Enable the OPA callback listener: because this is the full profile the
+      # callback serves native reads AND writes (capability follows the role).
+      INTERNAL_LISTEN_ADDR: ":8081"
+      INTERNAL_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
       JWKS_FILE: "/jwks/jwks.json"
       JWT_ISSUER: "${JWT_ISSUER:-https://auth.example.com}"
       JWT_AUDIENCE: "${JWT_AUDIENCE:-authz-api}"
@@ -97,6 +105,12 @@ services:
       # INTERNAL_TLS_KEY:   "/tls/internal-server.key"
       # INTERNAL_CLIENT_CA: "/tls/ca.crt"
       DATABASE_URL: "postgres://authzen_direct:${AUTHZEN_DIRECT_PASSWORD:-authz}@authz-db:5432/authz"
+      # authzen_direct may be granted per-app roles (WITH INHERIT FALSE) to SET
+      # ROLE for namespace isolation. A read with no db_role must NOT run as
+      # authzen_direct directly (its SET-ROLE memberships would leak into
+      # membership-keyed namespace checks) — always SET ROLE to a namespace-free
+      # reader default.
+      DEFAULT_DB_ROLE: "authz_reader"
       DB_POOL_MAX: "10"
       OPA_URL: "http://opa:8181"
       OPA_PACKAGE: "${OPA_PACKAGE:-authz}"

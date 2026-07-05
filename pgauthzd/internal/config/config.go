@@ -141,6 +141,16 @@ type Config struct {
 	// pgbackend only
 	DatabaseURL string
 	DBPoolMax   int
+	// DefaultDBRole, when set, is the role the read path SET LOCAL ROLEs to when
+	// a request carries no per-app db_role. It mirrors the PostgREST reader's
+	// always-SET-ROLE model (default api_anon): the query never runs as the raw
+	// connection role, so that role's SET-ROLE memberships (needed to assume
+	// per-app roles) don't leak into membership-keyed checks like namespace
+	// access. Set to a namespace-free reader (e.g. authz_reader) on the compat
+	// read callback whose connection role is granted per-app roles. Empty = run
+	// as the connection role (fine when it holds no per-app memberships). Env
+	// DEFAULT_DB_ROLE.
+	DefaultDBRole string
 	// DBRoleCacheTTLSeconds bounds how long a per-app role validation result
 	// is cached (DB_ROLE_CACHE_TTL_SECONDS, default 60; 0 = no caching,
 	// re-validate every request). Security-sensitive: a dropped role /
@@ -189,6 +199,7 @@ func Load() (*Config, error) {
 		AllowSubjectOverride:  envBool("ALLOW_SUBJECT_OVERRIDE", false),
 		DatabaseURL:           env("DATABASE_URL", ""),
 		DBPoolMax:             envInt("DB_POOL_MAX", 25),
+		DefaultDBRole:         env("DEFAULT_DB_ROLE", ""),
 		DBRoleCacheTTLSeconds: envInt("DB_ROLE_CACHE_TTL_SECONDS", 60),
 		OPAURL:                env("OPA_URL", ""),
 		OPAPackage:            env("OPA_PACKAGE", "authz"),

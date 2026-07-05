@@ -406,7 +406,7 @@ read_doc_input() {   # <object_id>
 
 # Batch write: two tuples inserted (RETURNS the count).
 check_jq "Batch write inserts 2 viewer tuples" \
-    "authz/write" "$(batch_input "$TOKEN_WRITER" write_batch)" ".result.result.body" "2"
+    "authz/write" "$(batch_input "$TOKEN_WRITER" write_batch)" ".result.result.body.written" "2"
 
 sleep 2
 
@@ -415,7 +415,7 @@ check "Probe can read batch doc B (after batch write)" "authz/allow" "$(read_doc
 
 # Batch delete: both tuples removed.
 check_jq "Batch delete removes 2 viewer tuples" \
-    "authz/write" "$(batch_input "$TOKEN_WRITER" delete_batch)" ".result.result.body" "2"
+    "authz/write" "$(batch_input "$TOKEN_WRITER" delete_batch)" ".result.result.body.deleted" "2"
 
 sleep 2
 
@@ -587,7 +587,11 @@ BEGIN
         CREATE ROLE test_opa_ns_app NOLOGIN;
     END IF;
     GRANT authz_reader TO test_opa_ns_app;
-    GRANT test_opa_ns_app TO authz_authenticator;  -- reader must SET ROLE to it
+    GRANT test_opa_ns_app TO authz_authenticator;  -- PostgREST reader SET ROLEs to it (NOINHERIT role)
+    -- Native read callback (authzen_direct is INHERIT) must SET ROLE to it WITHOUT
+    -- inheriting its namespace grants — else a read with no db_role would see the
+    -- namespaced tuple. INHERIT FALSE (PG16+) allows SET ROLE without inheritance.
+    GRANT test_opa_ns_app TO authzen_direct WITH INHERIT FALSE, SET TRUE;
     BEGIN
         PERFORM authz.model_register_type('demo', 'ns_secret', 0, 'opa_ns_test');
     EXCEPTION WHEN unique_violation THEN NULL;  -- fixture already present

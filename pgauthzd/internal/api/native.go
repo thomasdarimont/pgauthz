@@ -43,10 +43,10 @@ func (h *Handler) nativeReader(w http.ResponseWriter) (authz.NativeReader, bool)
 // the OPA front door (501). The profile gate is defense-in-depth; the hard
 // guarantee is that a non-full instance connects with a role that cannot write.
 func (h *Handler) nativeWriter(w http.ResponseWriter) (authz.NativeWriter, bool) {
-	// Capability first: only the direct backend implements native writes, so
-	// compat-opa (whose writes go through the OPA front door) gets 501 —
-	// consistent with the native read endpoints.
-	nw, ok := h.raw.(authz.NativeWriter)
+	// Capability first: only the direct writer backend implements native writes,
+	// so compat-opa without a write listener (and the OPA-compat backend
+	// generally) gets 501 — consistent with the native read endpoints.
+	nw, ok := h.rawWrite.(authz.NativeWriter)
 	if !ok {
 		writeError(w, http.StatusNotImplemented,
 			"the pgauthz native write API requires the direct backend (profile full); "+
@@ -72,6 +72,20 @@ func (h *Handler) nativeWriter(w http.ResponseWriter) (authz.NativeWriter, bool)
 type writeTuplesBody struct {
 	Tuples      json.RawMessage `json:"tuples"`
 	Consistency string          `json:"consistency,omitempty"`
+	// PerformedBy is the audit author. On the direct profiles it defaults to the
+	// authenticated JWT subject; on the compat write listener (service auth, no
+	// JWT) OPA passes the authenticated subject here explicitly.
+	PerformedBy string `json:"performed_by,omitempty"`
+}
+
+// performedBy resolves the audit author: an explicit body value (the OPA
+// callback path) wins, else the authenticated JWT subject.
+func (h *Handler) writePerformedBy(r *http.Request, body writeTuplesBody) string {
+	if body.PerformedBy != "" {
+		return body.PerformedBy
+	}
+	_, id := SubjectFromContext(r.Context())
+	return id
 }
 
 // WriteTuples — POST /pgauthz/v1/write: batch-upsert tuples. The audit author
@@ -95,7 +109,7 @@ func (h *Handler) WriteTuples(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	_, performedBy := SubjectFromContext(r.Context())
+	performedBy := h.writePerformedBy(r, req)
 	n, err := nw.WriteTuples(r.Context(), authz.WriteRequest{
 		Store: store, Tuples: req.Tuples, PerformedBy: performedBy, Consistency: req.Consistency,
 	})
@@ -126,7 +140,7 @@ func (h *Handler) DeleteTuples(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	_, performedBy := SubjectFromContext(r.Context())
+	performedBy := h.writePerformedBy(r, req)
 	n, err := nw.DeleteTuples(r.Context(), authz.WriteRequest{
 		Store: store, Tuples: req.Tuples, PerformedBy: performedBy, Consistency: req.Consistency,
 	})
@@ -135,6 +149,86 @@ func (h *Handler) DeleteTuples(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"store": store, "deleted": n})
+}
+
+type deleteUserBody struct {
+	User        Subject `json:"user"` // Type=user_type, ID=user_id
+	Consistency string  `json:"consistency,omitempty"`
+	PerformedBy string  `json:"performed_by,omitempty"`
+}
+
+// DeleteUserTuples — POST /pgauthz/v1/delete-user: offboarding, remove every
+// tuple for a subject.
+func (h *Handler) DeleteUserTuples(w http.ResponseWriter, r *http.Request) {
+	nw, ok := h.nativeWriter(w)
+	if !ok {
+		return
+	}
+	var req deleteUserBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.User.Type == "" || req.User.ID == "" {
+		writeBadRequest(w, "user.type and user.id are required")
+		return
+	}
+	store, ok := h.storeChecked(w, r)
+	if !ok {
+		return
+	}
+	performedBy := req.PerformedBy
+	if performedBy == "" {
+		_, performedBy = SubjectFromContext(r.Context())
+	}
+	n, err := nw.DeleteUserTuples(r.Context(), authz.DeleteUserRequest{
+		Store: store, UserType: req.User.Type, UserID: req.User.ID,
+		PerformedBy: performedBy, Consistency: req.Consistency,
+	})
+	if err != nil {
+		writeWriteError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"store": store, "deleted": n})
+}
+
+type checkedWriteBody struct {
+	Preconditions json.RawMessage `json:"preconditions,omitempty"`
+	Deletes       json.RawMessage `json:"deletes,omitempty"`
+	Writes        json.RawMessage `json:"writes,omitempty"`
+	Consistency   string          `json:"consistency,omitempty"`
+	PerformedBy   string          `json:"performed_by,omitempty"`
+}
+
+// WriteTuplesChecked — POST /pgauthz/v1/write-checked: conditional/atomic write
+// (preconditions gate deletes+writes). Returns the engine's JSONB result.
+func (h *Handler) WriteTuplesChecked(w http.ResponseWriter, r *http.Request) {
+	nw, ok := h.nativeWriter(w)
+	if !ok {
+		return
+	}
+	var req checkedWriteBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, "invalid JSON: "+err.Error())
+		return
+	}
+	store, ok := h.storeChecked(w, r)
+	if !ok {
+		return
+	}
+	performedBy := req.PerformedBy
+	if performedBy == "" {
+		_, performedBy = SubjectFromContext(r.Context())
+	}
+	out, err := nw.WriteTuplesChecked(r.Context(), authz.CheckedWriteRequest{
+		Store: store, Preconditions: req.Preconditions, Deletes: req.Deletes, Writes: req.Writes,
+		PerformedBy: performedBy, Consistency: req.Consistency,
+	})
+	if err != nil {
+		writeWriteError(w, err)
+		return
+	}
+	writeRawJSON(w, http.StatusOK, out)
 }
 
 type explainRequestBody struct {

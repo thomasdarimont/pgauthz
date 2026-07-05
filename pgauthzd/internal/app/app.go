@@ -41,11 +41,18 @@ func Run(name string, force config.Profile) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// backend serves the AuthZEN surface; raw serves the native /pgauthz/v1
-	// surface and is ALWAYS a direct pgx backend (never OPA). On direct profiles
-	// they are the same pool; on compat-opa, backend=OPA and raw is a separate
-	// read-only pgx backend that the OPA sidecar calls back into.
-	var backend, raw authz.Backend
+	// backend serves the AuthZEN surface; raw serves the native /pgauthz/v1 READ
+	// surface (ALWAYS a direct pgx backend, never OPA); rawWrite serves native
+	// WRITES and is set only on a WRITER-capable instance. On direct profiles
+	// they share the pool; on compat-opa, backend=OPA and raw is a separate
+	// read-only pgx backend the OPA sidecar calls back into.
+	//
+	// Reader/writer separation is a DEPLOYMENT choice, not a per-process split:
+	// each instance carries one capability tier (its role). Point OPA's read
+	// callback at a read-only instance and its write callback at a full
+	// instance to separate them; point both at one full instance to keep it
+	// simple.
+	var backend, raw, rawWrite authz.Backend
 	switch cfg.Profile {
 	case config.ProfileDecisionOnly, config.ProfileFull:
 		if cfg.DatabaseURL == "" {
@@ -56,13 +63,19 @@ func Run(name string, force config.Profile) error {
 			return perr
 		}
 		defer pool.Close()
-		// Fail-closed capability guarantee: a decision-only instance must sit
-		// on a role that cannot write.
 		if cfg.Profile == config.ProfileDecisionOnly {
+			// Fail-closed: a decision-only instance must sit on a read-only role.
 			if perr := pgb.AssertReadOnly(ctx); perr != nil {
 				return perr
 			}
 			slog.Info("decision-only: verified read-only DB role")
+		} else {
+			// full: fail closed if the role can't actually write.
+			if perr := pgb.AssertWritable(ctx); perr != nil {
+				return perr
+			}
+			rawWrite = pgb
+			slog.Info("full: verified writer DB role")
 		}
 		backend = pgb
 		raw = pgb
@@ -125,35 +138,45 @@ func Run(name string, force config.Profile) error {
 		SubjectTypeDefault: cfg.SubjectTypeDefault,
 	})
 
-	// Build the listeners. Direct profiles serve everything on one listener.
-	// compat-opa serves the policy-wrapped AuthZEN surface externally, and —
-	// when the native callback surface is enabled — the policy-FREE raw
-	// endpoints on a SEPARATE internal listener (must not be publicly exposed).
+	// Build the listeners.
+	//  - Direct profiles serve everything (AuthZEN + native) on one JWT-authed
+	//    main listener.
+	//  - compat-opa serves the policy-wrapped AuthZEN surface on its main
+	//    listener (OPA backend).
+	//  - ANY direct-capable instance may additionally expose the OPA CALLBACK
+	//    listener (service-auth): the native surface an OPA sidecar calls back
+	//    into. Its capability follows the instance's role — read-only instances
+	//    serve read callbacks, a full instance serves read+write. Reader/writer
+	//    separation = point OPA's read and write callbacks at different
+	//    (read-only vs full) instances.
 	var servers []*http.Server
 	if cfg.Profile == config.ProfileCompatOPA {
-		h := api.NewHandler(backend, raw, cfg)
+		h := api.NewHandler(backend, raw, rawWrite, cfg)
 		servers = append(servers, &http.Server{Addr: cfg.ListenAddr, Handler: api.NewExternalRouter(h, jwtMW)})
-		if raw != nil && cfg.InternalListenAddr != "" {
-			// Fail closed: the internal listener bypasses the policy layer, so it
-			// must never run without the shared service credential.
-			if cfg.InternalServiceToken == "" {
-				return fmt.Errorf("INTERNAL_LISTEN_ADDR is set but INTERNAL_SERVICE_TOKEN is empty; refusing to expose the native callback surface without a service credential")
-			}
-			tlsCfg, terr := internalTLSConfig(cfg)
-			if terr != nil {
-				return terr
-			}
-			intSrv := &http.Server{Addr: cfg.InternalListenAddr, Handler: api.NewInternalRouter(h, cfg.InternalServiceToken)}
-			if tlsCfg != nil {
-				intSrv.TLSConfig = tlsCfg
-			}
-			servers = append(servers, intSrv)
-			slog.Info("compat-opa internal (native raw) listener", "addr", cfg.InternalListenAddr, "mtls", tlsCfg != nil)
-		} else if raw != nil {
-			slog.Warn("compat-opa native callback backend configured but INTERNAL_LISTEN_ADDR is empty; native raw surface will not be served")
-		}
 	} else {
 		servers = append(servers, &http.Server{Addr: cfg.ListenAddr, Handler: api.NewRouter(backend, cfg, jwtMW)})
+	}
+
+	// OPA callback listener (service-auth), available whenever a direct backend
+	// is present and INTERNAL_LISTEN_ADDR is set. Serves native reads, plus
+	// writes when this instance is writer-capable (rawWrite != nil).
+	if raw != nil && cfg.InternalListenAddr != "" {
+		// Fail closed: the callback bypasses the policy layer, so it must never
+		// run without the shared service credential.
+		if cfg.InternalServiceToken == "" {
+			return fmt.Errorf("INTERNAL_LISTEN_ADDR is set but INTERNAL_SERVICE_TOKEN is empty; refusing to expose the native callback surface without a service credential")
+		}
+		tlsCfg, terr := internalTLSConfig(cfg)
+		if terr != nil {
+			return terr
+		}
+		hCb := api.NewHandler(nil, raw, rawWrite, cfg)
+		cbSrv := &http.Server{Addr: cfg.InternalListenAddr, Handler: api.NewCallbackRouter(hCb, cfg.InternalServiceToken)}
+		if tlsCfg != nil {
+			cbSrv.TLSConfig = tlsCfg
+		}
+		servers = append(servers, cbSrv)
+		slog.Info("OPA callback listener", "addr", cfg.InternalListenAddr, "writable", rawWrite != nil, "mtls", tlsCfg != nil)
 	}
 
 	// Graceful shutdown of every listener on signal.
@@ -247,7 +270,7 @@ func newPGBackend(ctx context.Context, cfg *config.Config) (*pgbackend.Backend, 
 		pool.Close()
 		return nil, nil, fmt.Errorf("connecting to database: %w", err)
 	}
-	return pgbackend.New(pool, time.Duration(cfg.DBRoleCacheTTLSeconds)*time.Second), pool, nil
+	return pgbackend.New(pool, time.Duration(cfg.DBRoleCacheTTLSeconds)*time.Second, cfg.DefaultDBRole), pool, nil
 }
 
 func setupLogging(level string) {

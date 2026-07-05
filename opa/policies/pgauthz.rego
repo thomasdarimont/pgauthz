@@ -741,13 +741,19 @@ list_actions(store, subject_type, subject_id, object_type, object_id) := actions
 # -----------------------------------------------------------------------
 
 # write_tuple: persist a single tuple. Returns {status, body}.
-write_tuple(store, t, performed_by, headers) := _send_write("/rpc/write_tuple", _write_body(store, t, performed_by), headers)
+write_tuple(store, t, performed_by, headers) := _native_write(store, "write", {"tuples": [t], "performed_by": performed_by}, headers) if config.use_native_write
+
+write_tuple(store, t, performed_by, headers) := _send_write("/rpc/write_tuple", _write_body(store, t, performed_by), headers) if not config.use_native_write
 
 # delete_tuple: remove a single tuple. Returns {status, body}.
-delete_tuple(store, t, performed_by, headers) := _send_write("/rpc/delete_tuple", _delete_body(store, t, performed_by), headers)
+delete_tuple(store, t, performed_by, headers) := _native_write(store, "delete", {"tuples": [t], "performed_by": performed_by}, headers) if config.use_native_write
+
+delete_tuple(store, t, performed_by, headers) := _send_write("/rpc/delete_tuple", _delete_body(store, t, performed_by), headers) if not config.use_native_write
 
 # write_tuples / delete_tuples: batch write/delete. The tuples array is passed
 # through as-is (same element shape as a single tuple). body = count affected.
+write_tuples(store, tuples, performed_by, headers) := _native_write(store, "write", {"tuples": tuples, "performed_by": performed_by}, headers) if config.use_native_write
+
 write_tuples(store, tuples, performed_by, headers) := _send_write(
 	"/rpc/write_tuples_jsonb", {
 		"p_store": store,
@@ -755,7 +761,9 @@ write_tuples(store, tuples, performed_by, headers) := _send_write(
 		"p_performed_by": performed_by,
 	},
 	headers,
-)
+) if not config.use_native_write
+
+delete_tuples(store, tuples, performed_by, headers) := _native_write(store, "delete", {"tuples": tuples, "performed_by": performed_by}, headers) if config.use_native_write
 
 delete_tuples(store, tuples, performed_by, headers) := _send_write(
 	"/rpc/delete_tuples_jsonb", {
@@ -764,9 +772,11 @@ delete_tuples(store, tuples, performed_by, headers) := _send_write(
 		"p_performed_by": performed_by,
 	},
 	headers,
-)
+) if not config.use_native_write
 
 # delete_user_tuples: offboarding — remove every tuple for a subject.
+delete_user_tuples(store, user, performed_by, headers) := _native_write(store, "delete-user", {"user": {"type": user.user_type, "id": user.user_id}, "performed_by": performed_by}, headers) if config.use_native_write
+
 delete_user_tuples(store, user, performed_by, headers) := _send_write(
 	"/rpc/delete_user_tuples", {
 		"p_store": store,
@@ -775,10 +785,12 @@ delete_user_tuples(store, user, performed_by, headers) := _send_write(
 		"p_performed_by": performed_by,
 	},
 	headers,
-)
+) if not config.use_native_write
 
 # write_tuples_checked: conditional/atomic write — preconditions, then deletes
 # and writes, in one transaction (optimistic concurrency).
+write_tuples_checked(store, preconditions, deletes, writes, performed_by, headers) := _native_write(store, "write-checked", {"preconditions": preconditions, "deletes": deletes, "writes": writes, "performed_by": performed_by}, headers) if config.use_native_write
+
 write_tuples_checked(store, preconditions, deletes, writes, performed_by, headers) := _send_write(
 	"/rpc/write_tuples_checked", {
 		"p_store": store,
@@ -788,7 +800,37 @@ write_tuples_checked(store, preconditions, deletes, writes, performed_by, header
 		"p_performed_by": performed_by,
 	},
 	headers,
+) if not config.use_native_write
+
+# _native_write POSTs an authorized write to the writer instance's callback
+# listener (store-scoped path). Forwards the service credential + the per-app
+# role (X-Authz-Role) and consistency (from write.rego's _headers → body).
+# Returns {status, body} to match _send_write's contract.
+_native_write(store, suffix, body, headers) := {"status": resp.status_code, "body": resp.body} if {
+	resp := http.send(object.union(
+		{
+			"method": "POST",
+			"url": concat("", [config.native_write_url, "/stores/", store, "/pgauthz/v1/", suffix]),
+			"headers": _native_write_headers(headers),
+			"body": object.union(body, _native_consistency(headers)),
+			"raise_error": false,
+		},
+		_native_tls_opts,
+	))
+}
+
+_native_write_headers(headers) := object.union(
+	object.union({"Content-Type": "application/json"}, _native_auth),
+	_native_forward_role(headers),
 )
+
+_native_forward_role(headers) := {"X-Authz-Role": headers["X-Authz-Role"]} if headers["X-Authz-Role"]
+
+_native_forward_role(headers) := {} if not headers["X-Authz-Role"]
+
+_native_consistency(headers) := {"consistency": headers["X-Authz-Consistency"]} if headers["X-Authz-Consistency"]
+
+_native_consistency(headers) := {} if not headers["X-Authz-Consistency"]
 
 # headers carries Content-Type and, when namespace isolation is configured, the
 # caller's X-Authz-Role (consumed by authz._pre_request on the writer).

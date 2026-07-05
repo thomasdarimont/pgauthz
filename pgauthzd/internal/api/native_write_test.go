@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,6 +24,12 @@ type writeStubBackend struct {
 func (b *writeStubBackend) WriteTuples(context.Context, authz.WriteRequest) (int, error) {
 	return b.written, b.writeErr
 }
+func (b *writeStubBackend) DeleteUserTuples(context.Context, authz.DeleteUserRequest) (int, error) {
+	return b.written, b.writeErr
+}
+func (b *writeStubBackend) WriteTuplesChecked(context.Context, authz.CheckedWriteRequest) (json.RawMessage, error) {
+	return nil, b.writeErr
+}
 func (b *writeStubBackend) DeleteTuples(context.Context, authz.WriteRequest) (int, error) {
 	return b.written, b.writeErr
 }
@@ -36,7 +43,7 @@ func writeReq() *http.Request {
 // A forbidden per-app role (reader-only token reaching the write path) must
 // surface as 403, not a 500 server fault.
 func TestWriteForbiddenRoleIs403(t *testing.T) {
-	h := NewHandler(&writeStubBackend{writeErr: authz.ErrForbiddenRole}, &writeStubBackend{writeErr: authz.ErrForbiddenRole}, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo"})
+	h := NewHandler(&writeStubBackend{writeErr: authz.ErrForbiddenRole}, &writeStubBackend{writeErr: authz.ErrForbiddenRole}, &writeStubBackend{writeErr: authz.ErrForbiddenRole}, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo"})
 	w := httptest.NewRecorder()
 	h.WriteTuples(w, writeReq())
 	if w.Code != http.StatusForbidden {
@@ -46,7 +53,7 @@ func TestWriteForbiddenRoleIs403(t *testing.T) {
 
 // A genuine backend fault stays a 500.
 func TestWriteInternalErrorIs500(t *testing.T) {
-	h := NewHandler(&writeStubBackend{writeErr: context.DeadlineExceeded}, &writeStubBackend{writeErr: context.DeadlineExceeded}, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo"})
+	h := NewHandler(&writeStubBackend{writeErr: context.DeadlineExceeded}, &writeStubBackend{writeErr: context.DeadlineExceeded}, &writeStubBackend{writeErr: context.DeadlineExceeded}, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo"})
 	w := httptest.NewRecorder()
 	h.WriteTuples(w, writeReq())
 	if w.Code != http.StatusInternalServerError {
@@ -56,7 +63,7 @@ func TestWriteInternalErrorIs500(t *testing.T) {
 
 // A successful write is 200 with the affected count.
 func TestWriteOK(t *testing.T) {
-	h := NewHandler(&writeStubBackend{written: 1}, &writeStubBackend{written: 1}, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo"})
+	h := NewHandler(&writeStubBackend{written: 1}, &writeStubBackend{written: 1}, &writeStubBackend{written: 1}, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo"})
 	w := httptest.NewRecorder()
 	h.WriteTuples(w, writeReq())
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"written":1`) {
@@ -67,7 +74,7 @@ func TestWriteOK(t *testing.T) {
 // The read-only (decision-only) profile refuses writes with 403 even though the
 // backend is write-capable — the profile gate fires before the backend call.
 func TestWriteDecisionOnlyIs403(t *testing.T) {
-	h := NewHandler(&writeStubBackend{written: 1}, &writeStubBackend{written: 1}, &config.Config{Profile: config.ProfileDecisionOnly, DefaultStore: "demo"})
+	h := NewHandler(&writeStubBackend{written: 1}, &writeStubBackend{written: 1}, &writeStubBackend{written: 1}, &config.Config{Profile: config.ProfileDecisionOnly, DefaultStore: "demo"})
 	w := httptest.NewRecorder()
 	h.WriteTuples(w, writeReq())
 	if w.Code != http.StatusForbidden {
@@ -77,7 +84,7 @@ func TestWriteDecisionOnlyIs403(t *testing.T) {
 
 // A backend that does NOT implement NativeWriter (compat-opa) returns 501.
 func TestWriteCompatOPAIs501(t *testing.T) {
-	h := NewHandler(&opaishBackend{}, &opaishBackend{}, &config.Config{Profile: config.ProfileCompatOPA, DefaultStore: "demo"})
+	h := NewHandler(&opaishBackend{}, &opaishBackend{}, &opaishBackend{}, &config.Config{Profile: config.ProfileCompatOPA, DefaultStore: "demo"})
 	w := httptest.NewRecorder()
 	h.WriteTuples(w, writeReq())
 	if w.Code != http.StatusNotImplemented {

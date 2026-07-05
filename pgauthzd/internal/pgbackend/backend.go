@@ -23,6 +23,11 @@ type Backend struct {
 	// Security-sensitive caches must not live forever.
 	roleOK       sync.Map // role string -> roleCacheEntry
 	roleCacheTTL time.Duration
+	// defaultRole, when non-empty, is the trusted role the read path SET LOCAL
+	// ROLEs to when a request carries no per-app role — so reads never run as
+	// the raw connection role (whose SET-ROLE memberships would otherwise leak
+	// into membership-keyed checks). See config.DefaultDBRole.
+	defaultRole string
 }
 
 type roleCacheEntry struct {
@@ -32,9 +37,10 @@ type roleCacheEntry struct {
 
 // New creates a Backend. roleCacheTTL bounds how long a role-validation
 // result (allowed OR denied) may be reused; 0 disables caching entirely
-// (every request re-validates against pg_has_role).
-func New(pool *pgxpool.Pool, roleCacheTTL time.Duration) *Backend {
-	return &Backend{pool: pool, roleCacheTTL: roleCacheTTL}
+// (every request re-validates against pg_has_role). defaultRole is the trusted
+// fallback read role (empty = run as the connection role).
+func New(pool *pgxpool.Pool, roleCacheTTL time.Duration, defaultRole string) *Backend {
+	return &Backend{pool: pool, roleCacheTTL: roleCacheTTL, defaultRole: defaultRole}
 }
 
 // querier is the subset of pgx query methods shared by the pool and a
@@ -54,11 +60,23 @@ type querier interface {
 func (b *Backend) withRole(ctx context.Context, fn func(q querier) error) error {
 	role := api.DBRoleFromContext(ctx)
 	if role == "" {
-		return fn(b.pool)
+		// No per-app role: fall back to the configured trusted default (always
+		// SET ROLE so the connection role's SET-ROLE memberships never leak),
+		// or run as the connection role when no default is set.
+		if b.defaultRole == "" {
+			return fn(b.pool)
+		}
+		return b.withFixedRole(ctx, b.defaultRole, fn)
 	}
 	if err := b.checkRole(ctx, role); err != nil {
 		return err
 	}
+	return b.withFixedRole(ctx, role, fn)
+}
+
+// withFixedRole runs fn in a transaction that SET LOCAL ROLEs to role (already
+// validated or operator-trusted).
+func (b *Backend) withFixedRole(ctx context.Context, role string, fn func(q querier) error) error {
 	tx, err := b.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin role-scoped tx: %w", err)
@@ -224,6 +242,48 @@ func (b *Backend) DeleteTuples(ctx context.Context, req authz.WriteRequest) (int
 		return 0, fmt.Errorf("delete_tuples_jsonb: %w", err)
 	}
 	return n, nil
+}
+
+// DeleteUserTuples implements authz.NativeWriter.DeleteUserTuples via
+// authz.delete_user_tuples (offboarding).
+func (b *Backend) DeleteUserTuples(ctx context.Context, req authz.DeleteUserRequest) (int, error) {
+	var n int
+	err := b.writeWithRole(ctx, req.Consistency, func(q querier) error {
+		return q.QueryRow(ctx,
+			"SELECT authz.delete_user_tuples($1, $2, $3, $4)",
+			req.Store, req.UserType, req.UserID, textOrNil(req.PerformedBy),
+		).Scan(&n)
+	})
+	if err != nil {
+		return 0, fmt.Errorf("delete_user_tuples: %w", err)
+	}
+	return n, nil
+}
+
+// WriteTuplesChecked implements authz.NativeWriter.WriteTuplesChecked via
+// authz.write_tuples_checked: preconditions gate deletes+writes atomically.
+func (b *Backend) WriteTuplesChecked(ctx context.Context, req authz.CheckedWriteRequest) (json.RawMessage, error) {
+	var raw []byte
+	err := b.writeWithRole(ctx, req.Consistency, func(q querier) error {
+		return q.QueryRow(ctx,
+			"SELECT authz.write_tuples_checked($1, $2, $3, $4, $5)",
+			req.Store, jsonbOrDefault(req.Preconditions), jsonbOrDefault(req.Deletes),
+			jsonbOrDefault(req.Writes), textOrNil(req.PerformedBy),
+		).Scan(&raw)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("write_tuples_checked: %w", err)
+	}
+	return raw, nil
+}
+
+// jsonbOrDefault passes an empty JSONB array when the field is absent, matching
+// the engine function's defaults.
+func jsonbOrDefault(b json.RawMessage) []byte {
+	if len(b) == 0 {
+		return []byte("[]")
+	}
+	return []byte(b)
 }
 
 func (b *Backend) CheckAccess(ctx context.Context, req authz.EvalRequest) (bool, error) {
@@ -581,6 +641,25 @@ func (b *Backend) AssertReadOnly(ctx context.Context) error {
 		return fmt.Errorf("decision-only profile requires a read-only DB role, but the " +
 			"connection role can write (member of authz_writer or has write on authz.tuples) — " +
 			"connect as a reader-only role (e.g. authzen_direct / a role inheriting only authz_reader)")
+	}
+	return nil
+}
+
+// AssertWritable verifies the pool's connection role IS writer-capable — the
+// startup check for the native write listener. It must be a member of
+// authz_writer (which gates the write functions); a role that can't write fails
+// closed rather than 500ing on the first write. The inverse of AssertReadOnly.
+func (b *Backend) AssertWritable(ctx context.Context) error {
+	var writer bool
+	err := b.pool.QueryRow(ctx,
+		`SELECT pg_has_role(current_user, 'authz_writer', 'MEMBER')`).Scan(&writer)
+	if err != nil {
+		return fmt.Errorf("checking writer role: %w", err)
+	}
+	if !writer {
+		return fmt.Errorf("the write listener requires a writer-capable DB role, but the " +
+			"connection role is not a member of authz_writer — connect as a writer role " +
+			"(e.g. pgauthzd_rw / a role inheriting authz_writer)")
 	}
 	return nil
 }

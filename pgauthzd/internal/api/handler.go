@@ -28,16 +28,21 @@ type Handler struct {
 	// backend serves the AuthZEN surface (/access/v1): the OPA-compat backend on
 	// the compat-opa profile, the direct pgx backend on the direct profiles.
 	backend authz.Backend
-	// raw serves the native /pgauthz/v1 surface and is ALWAYS a direct pgx
+	// raw serves the native /pgauthz/v1 READ surface and is ALWAYS a direct pgx
 	// backend — never OPA. On direct profiles raw == backend; on compat-opa it
 	// is a separate read-only pgx backend, which is what keeps the native raw
 	// endpoints policy-free (no re-entry into the OPA policy layer).
 	raw authz.Backend
-	cfg *config.Config
+	// rawWrite serves the native /pgauthz/v1 WRITE surface — a WRITER-capable
+	// direct pgx backend. On direct profiles rawWrite == backend; on compat-opa
+	// it is a separate writer pool served ONLY on the dedicated write listener,
+	// so the read path stays structurally read-only. nil = writes unavailable.
+	rawWrite authz.Backend
+	cfg      *config.Config
 }
 
-func NewHandler(backend, raw authz.Backend, cfg *config.Config) *Handler {
-	h := &Handler{backend: backend, raw: raw, cfg: cfg, issuerStores: map[string][]*regexp.Regexp{}}
+func NewHandler(backend, raw, rawWrite authz.Backend, cfg *config.Config) *Handler {
+	h := &Handler{backend: backend, raw: raw, rawWrite: rawWrite, cfg: cfg, issuerStores: map[string][]*regexp.Regexp{}}
 	for _, iss := range cfg.Issuers {
 		if iss.Issuer == "" || len(iss.Stores) == 0 {
 			continue
@@ -56,13 +61,36 @@ func NewHandler(backend, raw authz.Backend, cfg *config.Config) *Handler {
 // AuthZEN + the full native surface (read + write), all served by the one pgx
 // backend (which is both `backend` and `raw`).
 func NewRouter(backend authz.Backend, cfg *config.Config, jwtMW *JWTMiddleware) http.Handler {
-	h := NewHandler(backend, backend, cfg)
+	h := NewHandler(backend, backend, backend, cfg)
 	mux := http.NewServeMux()
 	registerAuthZEN(mux, h)
 	registerNativeRead(mux, h)
 	registerNativeWrite(mux, h)
 	mux.HandleFunc("GET /healthz", h.Healthz)
 	return withMiddleware(mux, jwtMW)
+}
+
+// NewCallbackRouter is the OPA CALLBACK listener: the native surface an OPA
+// sidecar calls back into, guarded by a shared SERVICE credential (not the
+// end-user JWT) — OPA already authenticated the caller and asserts the subject
+// + per-app role. It serves native READS, plus native WRITES when this instance
+// is writer-capable (rawWrite != nil), so a read-only instance's callback stays
+// structurally read-only. Capability follows the instance's role; reader/writer
+// separation is achieved by pointing OPA at different instances. Must not be
+// exposed to untrusted callers.
+func NewCallbackRouter(h *Handler, serviceToken string) http.Handler {
+	mux := http.NewServeMux()
+	registerNativeRead(mux, h)
+	if h.rawWrite != nil {
+		registerNativeWrite(mux, h)
+	}
+	mux.HandleFunc("GET /healthz", h.Healthz)
+	var handler http.Handler = mux
+	handler = ServiceAuthMiddleware(serviceToken)(handler)
+	handler = RequestID(handler)
+	handler = Logging(handler)
+	handler = Recovery(handler)
+	return handler
 }
 
 // NewExternalRouter is the compat-opa PUBLIC listener: the policy-wrapped
@@ -74,23 +102,6 @@ func NewExternalRouter(h *Handler, jwtMW *JWTMiddleware) http.Handler {
 	registerAuthZEN(mux, h)
 	mux.HandleFunc("GET /healthz", h.Healthz)
 	return withMiddleware(mux, jwtMW)
-}
-
-// NewInternalRouter is the compat-opa INTERNAL listener: the policy-FREE native
-// raw read surface only (served by the direct pgx `raw` backend). This is what
-// the OPA sidecar calls back into. It is guarded by a shared SERVICE credential
-// (not the end-user JWT) — OPA already authenticated the caller and asserts the
-// subject + per-app role. Must not be exposed to untrusted callers.
-func NewInternalRouter(h *Handler, serviceToken string) http.Handler {
-	mux := http.NewServeMux()
-	registerNativeRead(mux, h)
-	mux.HandleFunc("GET /healthz", h.Healthz)
-	var handler http.Handler = mux
-	handler = ServiceAuthMiddleware(serviceToken)(handler)
-	handler = RequestID(handler)
-	handler = Logging(handler)
-	handler = Recovery(handler)
-	return handler
 }
 
 func withMiddleware(mux *http.ServeMux, jwtMW *JWTMiddleware) http.Handler {
@@ -153,8 +164,12 @@ func registerNativeRead(mux *http.ServeMux, h *Handler) {
 func registerNativeWrite(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("POST /pgauthz/v1/write", h.WriteTuples)
 	mux.HandleFunc("POST /pgauthz/v1/delete", h.DeleteTuples)
+	mux.HandleFunc("POST /pgauthz/v1/delete-user", h.DeleteUserTuples)
+	mux.HandleFunc("POST /pgauthz/v1/write-checked", h.WriteTuplesChecked)
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/write", h.WriteTuples)
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/delete", h.DeleteTuples)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/delete-user", h.DeleteUserTuples)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/write-checked", h.WriteTuplesChecked)
 }
 
 // store resolves the pgauthz store for a request: the /stores/{store} path

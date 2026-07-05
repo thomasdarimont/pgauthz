@@ -121,6 +121,10 @@ services:
       # service token must match authzen-opa's INTERNAL_SERVICE_TOKEN.
       NATIVE_URL: "${NATIVE_URL:-http://authzen-opa:8081}"
       NATIVE_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
+      # Authorized writes go to a WRITER instance's callback (full profile).
+      # Separate from NATIVE_URL so reads (read-only instance) and writes (full
+      # instance) target different deployments — the reader/writer separation.
+      NATIVE_WRITE_URL: "${NATIVE_WRITE_URL:-http://pgauthzd-full:8081}"
       # Optional mTLS to the native listener (transport-layer caller auth, under
       # the service token). Point NATIVE_URL at https://... and mount the certs.
       # Prefer mesh-provided mTLS where available.

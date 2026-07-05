@@ -99,6 +99,12 @@ type NativeWriter interface {
 	WriteTuples(ctx context.Context, req WriteRequest) (int, error)
 	// DeleteTuples removes a batch; returns the count affected.
 	DeleteTuples(ctx context.Context, req WriteRequest) (int, error)
+	// DeleteUserTuples removes every tuple for a subject (offboarding); returns
+	// the count affected.
+	DeleteUserTuples(ctx context.Context, req DeleteUserRequest) (int, error)
+	// WriteTuplesChecked applies preconditions + deletes + writes atomically
+	// (optimistic concurrency); returns the engine's JSONB result verbatim.
+	WriteTuplesChecked(ctx context.Context, req CheckedWriteRequest) (json.RawMessage, error)
 }
 
 // WriteRequest is a batch tuple write/delete. Tuples is the JSONB array in the
@@ -112,6 +118,26 @@ type WriteRequest struct {
 	Tuples      json.RawMessage
 	PerformedBy string
 	Consistency string
+}
+
+// DeleteUserRequest is an offboarding delete: every tuple for (UserType,UserID).
+type DeleteUserRequest struct {
+	Store       string
+	UserType    string
+	UserID      string
+	PerformedBy string
+	Consistency string
+}
+
+// CheckedWriteRequest is a conditional/atomic write: preconditions gate the
+// deletes+writes, all in one transaction. Each field is a JSONB array.
+type CheckedWriteRequest struct {
+	Store         string
+	Preconditions json.RawMessage
+	Deletes       json.RawMessage
+	Writes        json.RawMessage
+	PerformedBy   string
+	Consistency   string
 }
 
 // DetailedChecker is an optional backend capability: a check that also
