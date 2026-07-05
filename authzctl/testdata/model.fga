@@ -1,0 +1,20 @@
+model
+  schema 1.1
+
+type user
+
+type group
+  relations
+    define member: [user]
+
+type folder
+  relations
+    define viewer: [user, group#member]
+
+type doc
+  relations
+    define parent: [folder]
+    define owner: [user]
+    define viewer: [user, user:*, group#member]
+    define can_read: viewer or owner or viewer from parent
+    define can_write: owner

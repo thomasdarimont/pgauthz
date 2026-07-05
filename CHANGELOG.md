@@ -9,6 +9,25 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **`authzctl` — model-as-code toolchain** (new top-level Go CLI; review #3's
+  top item). Author models as **verbatim OpenFGA DSL** (`.fga`) in git,
+  parsed with the official `openfga/language` transformer — no new DSL —
+  and piped into the existing `import_openfga_model`. Verbs:
+  `model import | publish | plan | diff | apply | export | status |
+  versions | rollout | test`. `publish` turns a git file into the next
+  immutable registry version; `plan` exits non-zero on blockers
+  (CI-gateable); `apply --plan-first` refuses blocked rollouts;
+  `model test` runs YAML fixtures (a **superset of OpenFGA's store-test
+  format** — existing OpenFGA tests port directly) against a hermetic
+  ephemeral store, with pgauthz extensions (condition `context`,
+  `contextual_tuples`, golden `explain` reason paths) and `--junit` output.
+  DSL `condition` blocks are parsed but not imported (OpenFGA CEL and
+  pgauthz CEL vocabularies differ) — authzctl prints a
+  `create_condition_cel` scaffold per condition instead. Own Go module
+  (keeps the ANTLR dependency tree out of the services); integration suite
+  `tests/test-authzctl.sh` wired into `test-all.sh`, CI, and
+  `pre-release.sh`.
+
 - **`plan_model_apply`: dry-run for model rollouts** (review #2 priority 2).
   Read-only report of what `apply_model` would do to a store: per-section
   changes (types add/update, relations add/remove, rules, type restrictions,

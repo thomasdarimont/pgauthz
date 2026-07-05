@@ -1,0 +1,53 @@
+# authzctl model test fixture — superset of OpenFGA's store-test YAML.
+model_file: ./model.fga
+
+tuples:
+  - user: user:alice
+    relation: member
+    object: group:eng
+  - user: group:eng#member
+    relation: viewer
+    object: folder:specs
+  - user: folder:specs
+    relation: parent
+    object: doc:design
+  - user: user:bob
+    relation: owner
+    object: doc:readme
+  - user: user:*
+    relation: viewer
+    object: doc:public
+
+tests:
+  - name: direct ownership
+    check:
+      - user: user:bob
+        object: doc:readme
+        assertions: { can_read: true, can_write: true }
+      - user: user:alice
+        object: doc:readme
+        assertions: { can_read: false }
+
+  - name: group member reads via folder inheritance
+    check:
+      - user: user:alice
+        object: doc:design
+        assertions: { can_read: true, can_write: false }
+    explain:
+      - user: user:alice
+        relation: can_write
+        object: doc:design
+        expect_reasons: [no_direct_tuple, computed]
+
+  - name: wildcard makes the doc public
+    check:
+      - user: user:mallory
+        object: doc:public
+        assertions: { can_read: true }
+
+  - name: bob sees his documents
+    list_objects:
+      - user: user:bob
+        type: doc
+        assertions:
+          can_write: [doc:readme]

@@ -53,3 +53,6 @@ build/
 /authz/pg/authzen/authzen-direct
 /authz/pg/authzen/authzen-opa
 .pgauthz-overlays
+
+# authzctl CLI binary
+authzctl/authzctl
