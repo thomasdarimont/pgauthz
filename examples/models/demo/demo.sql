@@ -885,3 +885,35 @@ SELECT authz.explain_access('demo',
     p_redact => true);
 -- => subjects become "internal_user:***", objects "document:***", detail null,
 --    but "decision" and each step's typed "reason" are preserved.
+
+-- 9g. Rich decision result — which KIND of "no"? The boolean API collapses
+-- "a condition would have granted but its required context was missing" into
+-- deny (fail closed). check_access_detailed classifies instead:
+--   state=allow | deny | conditional, plus the missing context keys —
+-- so a PEP can react to CONDITIONAL (supply the keys / step up and re-check)
+-- instead of treating it as a final deny. Same engine walk as explain, minus
+-- the trace. Over HTTP: OPA rule authz/allow_detailed; AuthZEN services via
+-- the X-Authz-Detail request header (detail lands in the response context).
+
+-- Without the required request context → CONDITIONAL, naming what's missing:
+SELECT authz.check_access_detailed('demo',
+    'internal_user', 'alice', 'viewer', 'document', 'doc_explain_001');
+-- => {"state": "conditional", "decision": false,
+--     "missing_context": ["request.current_time"],
+--     "conditions": ["non_expired_grant"], "reason": "condition_denied",
+--     "model": null, "store": "demo"}
+
+-- Supplying current_time INSIDE the 2-hour grant window → ALLOW:
+SELECT authz.check_access_detailed('demo',
+    'internal_user', 'alice', 'viewer', 'document', 'doc_explain_001',
+    '{"current_time": "2026-03-11T10:00:00Z"}');
+-- => {"state": "allow", "decision": true, "missing_context": [], ...}
+
+-- Supplying an EXPIRED current_time → plain DENY (the condition evaluated
+-- with complete inputs and said no — nothing was missing):
+SELECT authz.check_access_detailed('demo',
+    'internal_user', 'alice', 'viewer', 'document', 'doc_explain_001',
+    '{"current_time": "2026-03-11T12:00:01Z"}');
+-- => {"state": "deny", "decision": false, "missing_context": [], ...}
+-- ("model" reports {name, version} for stores managed by the model registry —
+--  see MODEL_DESIGN §16; the hand-built demo store is unmanaged, so null.)

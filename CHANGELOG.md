@@ -9,6 +9,21 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Rich decision results (opt-in): which KIND of "no"** (review #3
+  priority 3). New engine function `authz.check_access_detailed` classifies
+  a decision — `state: allow | deny | conditional` — plus the missing
+  condition-context keys (namespaced `request.*`/`stored.*`), the conditions
+  that lacked input, the explain reason, and the registry model version for
+  managed stores. `conditional` distinguishes "denied because required
+  context was not supplied" (recoverable: supply it / step up and re-check)
+  from a genuine deny; the boolean APIs keep collapsing it to deny (fail
+  closed, unchanged). Exposed as the OPA rule `authz/allow_detailed`
+  (allowlisted in system_authz; uncached by design) and on both AuthZEN
+  services via the `X-Authz-Detail` request header, which populates the
+  AuthZEN response `context` field. Runs the explain machinery — a
+  per-decision opt-in, not a hot-path default. 10 SQL tests + e2e on OPA and
+  both AuthZEN services; demo walkthrough section 9g.
+
 - **`authzctl` — model-as-code toolchain** (new top-level Go CLI; review #3's
   top item). Author models as **verbatim OpenFGA DSL** (`.fga`) in git,
   parsed with the official `openfga/language` transformer — no new DSL —

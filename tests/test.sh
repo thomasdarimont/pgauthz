@@ -157,6 +157,11 @@ echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_model_versioning.sql"
 
 echo ""
+echo "==> Running decision detail (rich results) checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_decision_detail.sql"
+
+echo ""
 echo "==> Running model registry (publish/apply/drift) checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_model_registry.sql"

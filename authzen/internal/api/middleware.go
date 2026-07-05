@@ -33,6 +33,7 @@ const (
 	ctxIssuer
 	ctxDBRole
 	ctxNoCache
+	ctxDetail
 )
 
 // IssuerFromContext returns the verified token's issuer (`iss` claim, matched
@@ -61,6 +62,14 @@ func DBRoleFromContext(ctx context.Context) string {
 // so the semantics hold there trivially).
 func NoCacheFromContext(ctx context.Context) bool {
 	v, ok := ctx.Value(ctxNoCache).(bool)
+	return ok && v
+}
+
+// DetailFromContext reports whether the caller asked for the rich decision
+// result (X-Authz-Detail header): state allow|deny|conditional plus missing
+// condition-context keys in the AuthZEN response context field.
+func DetailFromContext(ctx context.Context) bool {
+	v, ok := ctx.Value(ctxDetail).(bool)
 	return ok && v
 }
 
@@ -260,6 +269,12 @@ func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 		// to serve a cached decision (forwarded as input.no_cache to OPA).
 		if strings.Contains(strings.ToLower(r.Header.Get("Cache-Control")), "no-cache") {
 			ctx = context.WithValue(ctx, ctxNoCache, true)
+		}
+
+		// Opt-in rich decision result (state/missing_context in the response
+		// context field). Header-based like X-AuthZ-Store / Cache-Control.
+		if v := r.Header.Get("X-Authz-Detail"); v != "" && !strings.EqualFold(v, "false") {
+			ctx = context.WithValue(ctx, ctxDetail, true)
 		}
 
 		iss := claimString(claims, "iss")

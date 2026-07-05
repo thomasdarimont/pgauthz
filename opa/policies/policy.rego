@@ -133,6 +133,24 @@ explain := pgauthz.explain_access(
 	_subject_valid
 }
 
+# allow_detailed — the allow decision PLUS detail: state allow|deny|
+# conditional and the missing condition-context keys, so a caller can
+# distinguish "denied" from "denied because you did not supply
+# device.trust_level" and step up. Less than `explain` (no trace/tree),
+# more than `allow` (a classification, not just a boolean). Same subject
+# rules as allow; the AuthZEN services map it into the response context.
+allow_detailed := pgauthz.check_access_detailed(
+	store,
+	subject_type,
+	subject_id,
+	input.action,
+	input.resource.type,
+	input.resource.id,
+	object.get(input, "context", null),
+) if {
+	_subject_valid
+}
+
 # token_debug — opt-in (TOKEN_DEBUG=true) diagnostics explaining why a token is
 # rejected (issuer/audience/expiry/signature). Returns undefined when disabled or
 # no token. Grants nothing — purely a configuration aid.

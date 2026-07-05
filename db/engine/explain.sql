@@ -284,3 +284,87 @@ BEGIN
     );
 END;
 $$;
+
+------------------------------------------------------------------------
+-- check_access_detailed: a check that says WHICH KIND of "no" (and "yes").
+--
+-- The boolean API deliberately collapses "a condition would have granted
+-- but its required context was missing" into deny (fail closed — correct
+-- default). This opt-in variant surfaces the distinction the engine
+-- already tracks (explain_access's condition_missing_keys), so callers
+-- can react to CONDITIONAL denials (e.g. AuthZEN step-up: supply the
+-- missing context and re-check) instead of treating them as final.
+--
+--   {
+--     "decision": false,
+--     "state":    "allow" | "deny" | "conditional",
+--     "reason":   <explain decision reason, e.g. no_match | excluded>,
+--     "missing_context": ["current_time", ...],   -- union over the trace
+--     "conditions":      ["biz_hours", ...],      -- conditions lacking input
+--     "model": {"name": ..., "version": ...} | null,  -- registry-managed stores
+--     "store": <store>
+--   }
+--
+-- state=conditional ⇒ decision=false AND at least one condition failed
+-- ONLY for lack of required context. Errors raise (unchanged); the HTTP
+-- tiers map them to their own error envelope. Cost: this runs the full
+-- explain machinery — per-decision opt-in, not a hot-path default.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.check_access_detailed(
+    p_store       text,
+    p_user_type   text,
+    p_user_id     text,
+    p_relation    text,
+    p_object_type text,
+    p_object_id   text,
+    context       jsonb DEFAULT NULL
+) RETURNS jsonb
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_explain jsonb;
+    v_allowed boolean;
+    v_missing jsonb;
+    v_conds   jsonb;
+    v_model   jsonb;
+    v_state   text;
+BEGIN
+    v_explain := authz.explain_access(p_store, p_user_type, p_user_id,
+                                      p_relation, p_object_type, p_object_id,
+                                      context);
+    v_allowed := (v_explain->'decision'->>'allowed')::boolean;
+
+    SELECT COALESCE(jsonb_agg(DISTINCT k ORDER BY k), '[]'::jsonb)
+      INTO v_missing
+      FROM jsonb_array_elements(v_explain->'trace') AS t(e)
+      CROSS JOIN LATERAL jsonb_array_elements_text(t.e->'condition_missing_keys') AS m(k)
+     WHERE jsonb_typeof(t.e->'condition_missing_keys') = 'array';
+
+    SELECT COALESCE(jsonb_agg(DISTINCT t.e->>'condition_name'
+                              ORDER BY t.e->>'condition_name'), '[]'::jsonb)
+      INTO v_conds
+      FROM jsonb_array_elements(v_explain->'trace') AS t(e)
+     WHERE jsonb_typeof(t.e->'condition_missing_keys') = 'array'
+       AND jsonb_array_length(t.e->'condition_missing_keys') > 0
+       AND t.e->>'condition_name' IS NOT NULL;
+
+    SELECT jsonb_build_object('name', s.model_name, 'version', s.model_version)
+      INTO v_model
+      FROM authz.store_model_state s
+     WHERE s.store_id = authz._s(p_store);
+
+    v_state := CASE
+        WHEN v_allowed THEN 'allow'
+        WHEN jsonb_array_length(v_missing) > 0 THEN 'conditional'
+        ELSE 'deny'
+    END;
+
+    RETURN jsonb_build_object(
+        'decision',        v_allowed,
+        'state',           v_state,
+        'reason',          v_explain->'decision'->>'reason',
+        'missing_context', v_missing,
+        'conditions',      v_conds,
+        'model',           v_model,
+        'store',           p_store);
+END;
+$$;

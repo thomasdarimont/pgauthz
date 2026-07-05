@@ -631,6 +631,45 @@ check "unrestricted read still allowed with db_role" \
     "true"
 
 echo ""
+echo "==> Running rich decision result (allow_detailed) checks..."
+echo ""
+
+# allow_detailed distinguishes WHY: deny vs conditional (a condition would
+# have granted but its required request context was missing).
+docker exec -i "$DB_CONTAINER" psql -q -v ON_ERROR_STOP=1 -U authz -d authz <<'SQL'
+SELECT authz.create_condition_sql('demo', 'dd_probe_clearance',
+    $expr$ ($1->>'clearance') = 'high' $expr$, '{"request": ["clearance"]}');
+SELECT authz.write_tuple('demo', 'internal_user', 'det_probe', 'viewer',
+    'document', 'doc_det_1', p_condition := 'dd_probe_clearance');
+SQL
+
+total=$((total + 1))
+det=$(curl -sf -X POST "$OPA_URL/v1/data/authz/allow_detailed" \
+    -H "Content-Type: application/json" \
+    -d '{"input": {"subject": {"type": "internal_user", "id": "det_probe"}, "action": "viewer", "resource": {"type": "document", "id": "doc_det_1"}}}' \
+    | jq -rc '[(.result.state // "undefined"), ((.result.decision // false)|tostring), ((.result.missing_context // [])|join(",")), ((.result.conditions // [])|join(","))] | join("/")')
+if [ "$det" = "conditional/false/request.clearance/dd_probe_clearance" ]; then
+    pass_count=$((pass_count + 1)); echo "    PASS  allow_detailed: conditional without context"
+else
+    fail_count=$((fail_count + 1)); echo "    FAIL  allow_detailed: conditional without context (got $det)"
+fi
+
+total=$((total + 1))
+det=$(curl -sf -X POST "$OPA_URL/v1/data/authz/allow_detailed" \
+    -H "Content-Type: application/json" \
+    -d '{"input": {"subject": {"type": "internal_user", "id": "det_probe"}, "action": "viewer", "resource": {"type": "document", "id": "doc_det_1"}, "context": {"clearance": "high"}}}' \
+    | jq -r '(.result.state // "undefined") + "/" + ((.result.decision // false)|tostring)')
+if [ "$det" = "allow/true" ]; then
+    pass_count=$((pass_count + 1)); echo "    PASS  allow_detailed: context flips to allow"
+else
+    fail_count=$((fail_count + 1)); echo "    FAIL  allow_detailed: context flips to allow (got $det)"
+fi
+
+docker exec -i "$DB_CONTAINER" psql -q -U authz -d authz -c \
+    "SELECT authz.delete_tuple('demo','internal_user','det_probe','viewer','document','doc_det_1');
+     SELECT authz.delete_condition('demo','dd_probe_clearance');" >/dev/null
+
+echo ""
 echo "==> Running decision-cache bypass (no_cache) checks..."
 echo ""
 

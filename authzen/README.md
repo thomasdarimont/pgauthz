@@ -178,6 +178,18 @@ every decision is fresh by construction. See
 [`opa/README.md`](../opa/README.md) for the cache model and the end-to-end
 staleness bound.
 
+**Rich decisions (`X-Authz-Detail`).** Send the `X-Authz-Detail: true`
+header on `access/v1/evaluation` to receive the AuthZEN response `context`
+field alongside the boolean: `state` (`allow | deny | conditional`),
+`missing_context` (condition keys the caller failed to supply, namespaced
+`request.*`/`stored.*`), `conditions`, `reason`, and the registry `model`
+version for managed stores. `conditional` means "a condition would decide,
+but its required context was missing" — supply it and re-check (step-up)
+instead of treating the deny as final. Without the header the response is
+the plain boolean (the detailed path runs the engine's explain machinery,
+so it is per-decision opt-in). Both backends support it (direct → 
+`check_access_detailed`, OPA → the `allow_detailed` rule).
+
 **Subject override.** By default (`ALLOW_SUBJECT_OVERRIDE=false`) the
 JWT-derived subject is authoritative: a request-body `subject` is accepted
 only if it matches the token, and a *differing* one is rejected with `403`

@@ -93,6 +93,29 @@ explain_access(store, subject_type, subject_id, relation, object_type, object_id
 	response.status_code == 200
 }
 
+# check_access_detailed: the rich decision result (state allow|deny|
+# conditional, missing_context, conditions, model). Runs the explain
+# machinery in the engine — per-decision opt-in, deliberately NOT cached
+# (callers use it to react to a specific denial, e.g. step-up).
+check_access_detailed(store, subject_type, subject_id, relation, object_type, object_id, ctx) := response.body if {
+	response := http.send({
+		"method": "POST",
+		"url": concat("", [config.postgrest_url, "/rpc/check_access_detailed"]),
+		"headers": _read_headers,
+		"body": {
+			"p_store": store,
+			"p_user_type": subject_type,
+			"p_user_id": subject_id,
+			"p_relation": relation,
+			"p_object_type": object_type,
+			"p_object_id": object_id,
+			"context": ctx,
+		},
+		"raise_error": false,
+	})
+	response.status_code == 200
+}
+
 # check_access_with_context: with request context for condition evaluation.
 check_access_with_context(store, subject_type, subject_id, relation, object_type, object_id, ctx) := response.body if {
 	response := http.send({

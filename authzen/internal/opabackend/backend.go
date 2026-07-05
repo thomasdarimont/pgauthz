@@ -54,6 +54,38 @@ func (b *Backend) CheckAccess(ctx context.Context, req authz.EvalRequest) (bool,
 	return result, err
 }
 
+// CheckAccessDetailed implements authz.DetailedChecker by querying the OPA
+// `allow_detailed` rule (data.authz.allow_detailed), which forwards to the
+// engine's check_access_detailed and returns the full report.
+func (b *Backend) CheckAccessDetailed(ctx context.Context, req authz.EvalRequest) (bool, map[string]any, error) {
+	input := map[string]any{
+		"subject": map[string]string{
+			"type": req.SubjectType,
+			"id":   req.SubjectID,
+		},
+		"action": req.Action,
+		"resource": map[string]string{
+			"type": req.ObjectType,
+			"id":   req.ObjectID,
+		},
+	}
+	if req.Store != "" {
+		input["store"] = req.Store
+	}
+	if req.Context != nil {
+		input["context"] = req.Context
+	}
+
+	var report map[string]any
+	if err := b.query(ctx, "allow_detailed", input, &report); err != nil {
+		return false, nil, err
+	}
+	decision, _ := report["decision"].(bool)
+	delete(report, "decision")
+	delete(report, "store")
+	return decision, report, nil
+}
+
 func (b *Backend) CheckAccessBatch(ctx context.Context, store string, reqs []authz.EvalRequest,
 	globalContext map[string]any, semantic string) ([]authz.EvalResult, error) {
 

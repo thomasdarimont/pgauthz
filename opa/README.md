@@ -273,7 +273,7 @@ as they already did.
 `package authz` — the application-facing policy that defines the
 authorization API. This is where you define your business-level rules.
 
-The policy exposes three rules:
+The policy exposes these rules:
 
 **`allow`** — default deny, grants access when the Zanzibar engine confirms it:
 
@@ -321,6 +321,18 @@ allow if {
 OPA evaluates all `allow` rules — if any one matches, the result is `true`.
 The four variants handle every combination of context and contextual tuples
 so the correct PostgREST endpoint is always called.
+
+**`allow_detailed`** — the allow decision PLUS a classification (opt-in,
+uncached): `state: allow | deny | conditional`, the missing condition-context
+keys (`missing_context`, namespaced `request.*` / `stored.*`), the conditions
+that lacked input, and the registry model version for managed stores. A
+`conditional` result means a condition *would* decide but its required
+context was not supplied — the caller can provide it (or step up) and
+re-check, instead of treating the deny as final. Backed by the engine's
+`check_access_detailed` (explain machinery, no trace) — heavier than `allow`,
+so use it per-decision, not as the default. The AuthZEN services expose it
+via the `X-Authz-Detail` request header (detail lands in the response
+`context` field).
 
 **`accessible_objects`** — returns the set of object IDs the subject can access:
 

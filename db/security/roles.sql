@@ -195,6 +195,7 @@ GRANT EXECUTE ON FUNCTION authz.list_subjects(text, text, text, text, text, json
 GRANT EXECUTE ON FUNCTION authz.list_actions(text, text, text, text, text, jsonb) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.validate_condition(text, text, jsonb, jsonb) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.explain_access(text, text, text, text, text, text, jsonb, boolean, boolean) TO authz_reader;
+GRANT EXECUTE ON FUNCTION authz.check_access_detailed(text, text, text, text, text, text, jsonb) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.describe_model(text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.export_model(text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.model_status(text) TO authz_reader;
@@ -280,6 +281,7 @@ ALTER FUNCTION authz.audit_list_object(text, text, text, timestamptz, timestampt
 ALTER FUNCTION authz.watch_changes(text, timestamptz, bigint, int, interval, text[], text[], text[]) SECURITY DEFINER;
 ALTER FUNCTION authz.watch_cursor(text) SECURITY DEFINER;
 ALTER FUNCTION authz.explain_access(text, text, text, text, text, text, jsonb, boolean, boolean) SECURITY DEFINER;
+ALTER FUNCTION authz.check_access_detailed(text, text, text, text, text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.describe_model(text) SECURITY DEFINER;
 ALTER FUNCTION authz.write_tuple(text, text, text, text, text, text, text, text, jsonb, text) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_tuple(text, text, text, text, text, text, text, text) SECURITY DEFINER;

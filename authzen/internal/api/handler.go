@@ -213,7 +213,7 @@ func (h *Handler) Evaluation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	decision, err := h.backend.CheckAccess(r.Context(), authz.EvalRequest{
+	evalReq := authz.EvalRequest{
 		Store:       store,
 		SubjectType: subjectType,
 		SubjectID:   subjectID,
@@ -221,7 +221,21 @@ func (h *Handler) Evaluation(w http.ResponseWriter, r *http.Request) {
 		ObjectType:  req.Resource.Type,
 		ObjectID:    req.Resource.ID,
 		Context:     req.Context,
-	})
+	}
+
+	// Opt-in rich result (X-Authz-Detail): backends that support it return
+	// state/missing_context/model for the AuthZEN response context field.
+	if dc, ok := h.backend.(authz.DetailedChecker); ok && DetailFromContext(r.Context()) {
+		decision, detail, err := dc.CheckAccessDetailed(r.Context(), evalReq)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, EvalResponseBody{Decision: decision, Context: detail})
+		return
+	}
+
+	decision, err := h.backend.CheckAccess(r.Context(), evalReq)
 	if err != nil {
 		writeInternalError(w, err)
 		return

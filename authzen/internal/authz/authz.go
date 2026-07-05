@@ -51,3 +51,12 @@ type Backend interface {
 		reqContext map[string]any) ([]string, error)
 	Healthz(ctx context.Context) error
 }
+
+// DetailedChecker is an optional backend capability: a check that also
+// reports WHY (state allow|deny|conditional, missing condition-context keys,
+// the managed model version). detail carries everything except the boolean.
+// Backends that cannot provide it simply don't implement the interface and
+// the handler falls back to the plain boolean check.
+type DetailedChecker interface {
+	CheckAccessDetailed(ctx context.Context, req EvalRequest) (decision bool, detail map[string]any, err error)
+}

@@ -134,6 +134,39 @@ func (b *Backend) CheckAccess(ctx context.Context, req authz.EvalRequest) (bool,
 	return decision, nil
 }
 
+// CheckAccessDetailed implements authz.DetailedChecker via the engine's
+// check_access_detailed (explain-backed; per-decision opt-in). The boolean
+// rides inside the report; everything else becomes the response context.
+func (b *Backend) CheckAccessDetailed(ctx context.Context, req authz.EvalRequest) (bool, map[string]any, error) {
+	var ctxJSON []byte
+	if req.Context != nil {
+		var err error
+		ctxJSON, err = json.Marshal(req.Context)
+		if err != nil {
+			return false, nil, fmt.Errorf("marshaling context: %w", err)
+		}
+	}
+	var raw []byte
+	err := b.withRole(ctx, func(q querier) error {
+		return q.QueryRow(ctx,
+			"SELECT authz.check_access_detailed($1, $2, $3, $4, $5, $6, $7)",
+			req.Store, req.SubjectType, req.SubjectID, req.Action,
+			req.ObjectType, req.ObjectID, ctxJSON,
+		).Scan(&raw)
+	})
+	if err != nil {
+		return false, nil, fmt.Errorf("check_access_detailed: %w", err)
+	}
+	var report map[string]any
+	if err := json.Unmarshal(raw, &report); err != nil {
+		return false, nil, fmt.Errorf("unmarshaling detailed result: %w", err)
+	}
+	decision, _ := report["decision"].(bool)
+	delete(report, "decision") // the boolean is the response's own field
+	delete(report, "store")    // the caller already knows the store
+	return decision, report, nil
+}
+
 func (b *Backend) CheckAccessBatch(ctx context.Context, store string, reqs []authz.EvalRequest,
 	globalContext map[string]any, semantic string) ([]authz.EvalResult, error) {
 

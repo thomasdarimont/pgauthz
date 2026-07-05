@@ -430,6 +430,46 @@ else
     echo "    FAIL  Cache-Control: no-cache sees the revoke immediately  (expected=false, got=$result)"
 fi
 
+# --- X-Authz-Detail → rich decision context (both services) ---
+# The header opts into the AuthZEN response context field carrying
+# state (allow|deny|conditional) + missing condition-context keys.
+echo ""
+echo "==> X-Authz-Detail rich decision context..."
+echo ""
+
+docker exec -i "$DB_CONTAINER" psql -q -v ON_ERROR_STOP=1 -U authz -d authz <<'SQL'
+SELECT authz.create_condition_sql('demo', 'az_det_clearance',
+    $expr$ ($1->>'clearance') = 'high' $expr$, '{"request": ["clearance"]}');
+SELECT authz.write_tuple('demo', 'internal_user', 'det_az', 'viewer',
+    'document', 'doc_det_az1', p_condition := 'az_det_clearance');
+SQL
+
+TOKEN_DET=$(make_token "det_az" "internal_user")
+DET_BODY='{"subject":{"type":"internal_user","id":"det_az"},"action":{"name":"viewer"},"resource":{"type":"document","id":"doc_det_az1"}}'
+
+for svc_url in "$DIRECT_URL" "$OPA_URL"; do
+    svc_name=$([ "$svc_url" = "$DIRECT_URL" ] && echo authzen-direct || echo authzen-opa)
+
+    total=$((total + 1))
+    got=$(curl -sf -X POST "$svc_url/access/v1/evaluation"         -H "Content-Type: application/json"         -H "Authorization: Bearer $TOKEN_DET"         -H "X-Authz-Detail: true"         -d "$DET_BODY" | jq -rc '(.decision|tostring) + "/" + (.context.state // "none") + "/" + ((.context.missing_context // [])|join(","))')
+    if [ "$got" = "false/conditional/request.clearance" ]; then
+        pass_count=$((pass_count + 1)); echo "    PASS  [$svc_name] detail: conditional + missing keys"
+    else
+        fail_count=$((fail_count + 1)); echo "    FAIL  [$svc_name] detail: conditional + missing keys (got $got)"
+    fi
+
+    total=$((total + 1))
+    got=$(curl -sf -X POST "$svc_url/access/v1/evaluation"         -H "Content-Type: application/json"         -H "Authorization: Bearer $TOKEN_DET"         -d "$DET_BODY" | jq -rc '(.decision|tostring) + "/" + (.context // "absent" | if type == "object" then "present" else . end)')
+    if [ "$got" = "false/absent" ]; then
+        pass_count=$((pass_count + 1)); echo "    PASS  [$svc_name] no header -> no context field"
+    else
+        fail_count=$((fail_count + 1)); echo "    FAIL  [$svc_name] no header -> no context field (got $got)"
+    fi
+done
+
+docker exec -i "$DB_CONTAINER" psql -q -U authz -d authz -c     "SELECT authz.delete_tuple('demo','internal_user','det_az','viewer','document','doc_det_az1');
+     SELECT authz.delete_condition('demo','az_det_clearance');" >/dev/null
+
 echo ""
 echo "==> $pass_count passed, $fail_count failed (of $total checks)"
 
