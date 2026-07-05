@@ -200,6 +200,7 @@ GRANT EXECUTE ON FUNCTION authz.export_model(text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.model_status(text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.model_rollout_status(text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.list_model_versions(text) TO authz_reader;
+GRANT EXECUTE ON FUNCTION authz.plan_model_apply(text, text, integer) TO authz_reader;
 
 ------------------------------------------------------------------------
 -- authz_writer: tuple management (inherits reader grants above)
@@ -323,6 +324,7 @@ ALTER FUNCTION authz.list_model_versions(text) SECURITY DEFINER;
 ALTER FUNCTION authz.publish_model(text, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.apply_model(text, text, integer) SECURITY DEFINER;
 ALTER FUNCTION authz.apply_model(text[], text, integer) SECURITY DEFINER;
+ALTER FUNCTION authz.plan_model_apply(text, text, integer) SECURITY DEFINER;
 
 ------------------------------------------------------------------------
 -- Pin search_path on every SECURITY DEFINER function so a caller's

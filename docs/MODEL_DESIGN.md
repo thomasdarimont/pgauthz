@@ -1649,8 +1649,46 @@ the meantime block their own removal. Data written under the newer model can
 make the older model unreachable without cleanup. Plan model evolution the
 way you plan schema migrations — **expand → migrate → contract**: ship
 additive versions first (new relations/rules alongside the old), migrate
-tuples, and only then publish the version that removes the old shape. Before
-applying, compare a canary store's `export_model` against the target
-version's definition to see the exact diff; a first-class `plan_model_apply`
-dry-run (additions, removals, blocking tuples, rollback feasibility) is on
-the roadmap.
+tuples, and only then publish the version that removes the old shape.
+
+**Plan before you apply.** `plan_model_apply` is the read-only dry-run of
+`apply_model` — same store, same version resolution, but it *reports* instead
+of changing anything:
+
+```sql
+SELECT jsonb_pretty(authz.plan_model_apply('tenant_acme', 'saas_core', 3));
+-- {
+--   "store": "tenant_acme", "model": "saas_core", "version": 3,
+--   "no_op": false,            -- live model already matches? nothing to do
+--   "can_apply": false,        -- false ⇒ apply_model would raise; see blockers
+--   "current": {"model_name": "saas_core", "model_version": 2, "in_sync": true},
+--   "blockers": [
+--     {"kind": "relation_referenced_by_tuples", "name": "legacy_viewer", "tuples": 41}
+--   ],
+--   "changes": {
+--     "types":             {"add": ["folder"], "update": []},
+--     "relations":         {"add": ["can_export"], "remove": ["legacy_viewer"]},
+--     "rules":             {"add": [...], "remove": [...]},
+--     "type_restrictions": {"add": [...], "remove": [...]},
+--     "conditions":        {"add": [], "update": ["biz_hours"], "remove": []}
+--   },
+--   "rollback": {            -- could you re-apply the CURRENT version (2) after this?
+--     "to_version": 2,
+--     "possible": false,     -- v3 adds a type, and types are never auto-removed
+--     "type_removals_required": ["folder"],
+--     "relations_requiring_removal": ["can_export"]
+--   }
+-- }
+```
+
+Blocker kinds map one-to-one to `apply_model`'s guard rails: `extra_type`
+(the store has a type the definition lacks), `relation_referenced_by_tuples`
+(delete those tuples first), and `cel_evaluator_missing` (the definition
+carries CEL conditions but the store's database has no evaluator installed).
+The plan diffs the same canonical name-based exports the checksums hash, so
+"empty changes" and "no_op" agree with `model_status` by construction. It is
+advisory: tuple-reference blockers reflect the moment of planning, and
+`apply_model` re-checks everything transactionally — the plan predicts, the
+apply enforces. `plan_model_apply` is reader-callable (like `model_status`),
+so CI/CD pipelines can gate a rollout on `can_apply` and on
+`rollback.possible` without admin credentials.

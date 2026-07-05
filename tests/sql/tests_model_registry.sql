@@ -165,6 +165,67 @@ BEGIN
 END;
 $$;
 
+-- plan_model_apply: dry-run report (no_op, changes, blockers, rollback).
+DO $$
+DECLARE
+    p jsonb;
+BEGIN
+    -- In-sync store, latest version → a no-op plan with no blockers.
+    p := authz.plan_model_apply('test_reg_tgt', 'test_reg_model');
+    PERFORM _test_assert('reg_23_plan_noop',
+        (p->>'no_op') || '/' || (p->>'can_apply') || '/' || (p->'blockers')::text,
+        'true/true/[]');
+
+    -- Planning the DOWNGRADE to v1: the condition comes back, the editor
+    -- relation goes away (no tuples reference it → no blocker), and rolling
+    -- back afterwards (re-applying v2) is feasible (v1 adds no types).
+    p := authz.plan_model_apply('test_reg_tgt', 'test_reg_model', 1);
+    PERFORM _test_assert('reg_24_plan_downgrade',
+        (p->>'no_op') || '/' || (p->>'can_apply')
+            || '/' || (p->'changes'->'conditions'->'add')::text
+            || '/' || (p->'changes'->'relations'->'remove')::text
+            || '/' || (p->'rollback'->>'possible'),
+        'false/true/["always"]/["editor"]/true');
+
+    -- Extra type in the store → extra_type blocker, can_apply=false.
+    p := authz.plan_model_apply('test_reg_t2', 'test_reg_model');
+    PERFORM _test_assert('reg_25_plan_extra_type_blocks',
+        (p->>'can_apply') || '/' || (p->'blockers'->0->>'kind')
+            || '/' || (p->'blockers'->0->>'name'),
+        'false/extra_type/rogue');
+
+    -- Relation slated for removal but still referenced by tuples → blocker
+    -- with the tuple count; deleting the tuples clears it.
+    PERFORM authz.model_register_relation('test_reg_tgt', 'ghost');
+    PERFORM authz.model_add_rule('test_reg_tgt', 'doc', 'ghost', 'direct');
+    PERFORM authz.write_tuple('test_reg_tgt', 'user', 'bob', 'ghost', 'doc', 'doc1');
+    p := authz.plan_model_apply('test_reg_tgt', 'test_reg_model');
+    PERFORM _test_assert('reg_26_plan_tuple_blocker',
+        (p->>'can_apply') || '/' || (p->'blockers'->0->>'kind')
+            || '/' || (p->'blockers'->0->>'name') || '/' || (p->'blockers'->0->>'tuples'),
+        'false/relation_referenced_by_tuples/ghost/1');
+
+    PERFORM authz.delete_tuple('test_reg_tgt', 'user', 'bob', 'ghost', 'doc', 'doc1');
+    p := authz.plan_model_apply('test_reg_tgt', 'test_reg_model');
+    PERFORM _test_assert('reg_27_plan_unblocked_after_tuple_delete',
+        (p->>'can_apply') || '/' || (p->'changes'->'relations'->'remove')::text,
+        'true/["ghost"]');
+    PERFORM authz.apply_model('test_reg_tgt', 'test_reg_model', 2);  -- restore
+
+    -- A version that ADDS a type makes rollback infeasible (apply never
+    -- removes types), and the plan says so up front.
+    PERFORM authz.model_register_type('test_reg_src', 'folder');
+    PERFORM _test_assert('reg_28_publish_v3',
+        authz.publish_model('test_reg_model', 'test_reg_src')::text, '3');
+    p := authz.plan_model_apply('test_reg_tgt', 'test_reg_model', 3);
+    PERFORM _test_assert('reg_29_plan_rollback_infeasible',
+        (p->>'can_apply') || '/' || (p->'changes'->'types'->'add')::text
+            || '/' || (p->'rollback'->>'to_version') || '/' || (p->'rollback'->>'possible')
+            || '/' || (p->'rollback'->'type_removals_required')::text,
+        'true/["folder"]/2/false/["folder"]');
+END;
+$$;
+
 -- Cleanup (store_model_state rows cascade with the stores).
 DO $$
 BEGIN

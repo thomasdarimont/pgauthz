@@ -9,6 +9,20 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **`plan_model_apply`: dry-run for model rollouts** (review #2 priority 2).
+  Read-only report of what `apply_model` would do to a store: per-section
+  changes (types add/update, relations add/remove, rules, type restrictions,
+  conditions add/update/remove), the exact blockers that would make the apply
+  raise (`extra_type`, `relation_referenced_by_tuples` with the tuple count,
+  `cel_evaluator_missing`), `no_op`/`can_apply` verdicts, the store's current
+  managed state, and **rollback feasibility** — whether the currently
+  recorded version could be re-applied afterwards (a version that adds types
+  cannot be rolled back, since types are never removed automatically). Diffs
+  the same canonical name-based exports the checksums hash, so the plan
+  agrees with `model_status` by construction; reader-callable so pipelines
+  can gate rollouts without admin credentials. 7 new SQL tests; usage +
+  example in MODEL_DESIGN §15.
+
 - **Per-request decision-cache bypass.** Read requests may set
   `"no_cache": true` on the OPA input to force a 0-second cache TTL for that
   decision — the escape hatch for revocation-sensitive checks that must see a

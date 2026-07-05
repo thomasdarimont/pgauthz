@@ -548,3 +548,227 @@ LANGUAGE sql STABLE AS $$
      WHERE p_name IS NULL OR r.name = p_name
      ORDER BY r.name, r.version;
 $$;
+
+------------------------------------------------------------------------
+-- _jsonb_array_except / _jsonb_array_except_by_name: set-difference over
+-- jsonb arrays — elements of A with no equal (or same-'name') element in B.
+-- The plan diffs NAME-BASED exports, so these operate on the same canonical
+-- objects the checksum sees.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._jsonb_array_except(p_a jsonb, p_b jsonb)
+RETURNS jsonb
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT COALESCE(jsonb_agg(a.e ORDER BY a.e::text), '[]'::jsonb)
+      FROM jsonb_array_elements(COALESCE(p_a, '[]'::jsonb)) AS a(e)
+     WHERE NOT EXISTS (
+           SELECT 1 FROM jsonb_array_elements(COALESCE(p_b, '[]'::jsonb)) AS b(x)
+            WHERE b.x = a.e);
+$$;
+
+CREATE OR REPLACE FUNCTION authz._jsonb_array_except_by_name(p_a jsonb, p_b jsonb)
+RETURNS jsonb
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT COALESCE(jsonb_agg(a.e ORDER BY a.e->>'name'), '[]'::jsonb)
+      FROM jsonb_array_elements(COALESCE(p_a, '[]'::jsonb)) AS a(e)
+     WHERE NOT EXISTS (
+           SELECT 1 FROM jsonb_array_elements(COALESCE(p_b, '[]'::jsonb)) AS b(x)
+            WHERE b.x->>'name' = a.e->>'name');
+$$;
+
+------------------------------------------------------------------------
+-- plan_model_apply: DRY-RUN of apply_model — what would change, what would
+-- block, and whether rolling back afterwards is feasible. Read-only.
+--
+-- Diffs the store's live export against the registry definition NAME-BASED
+-- (the same canonical objects the checksums hash), so added types/relations
+-- that don't exist in the store yet are planned, not resolution errors.
+--
+-- Returns a jsonb report:
+--   {
+--     store, model, version,           -- resolved target (NULL p_version = latest)
+--     no_op,                           -- live checksum already matches the target
+--     can_apply,                       -- no blockers found
+--     current,                         -- store_model_state + in_sync, or NULL (unmanaged)
+--     blockers: [                      -- each would make apply_model raise
+--       {kind: "extra_type",                     name},
+--       {kind: "relation_referenced_by_tuples",  name, tuples},
+--       {kind: "cel_evaluator_missing",          conditions: [names]}
+--     ],
+--     changes: {
+--       types:             {add: [names], update: [names]},   -- update = namespace/description/labels
+--       relations:         {add: [names], remove: [names]},
+--       rules:             {add: [objs],  remove: [objs]},
+--       type_restrictions: {add: [objs],  remove: [objs]},
+--       conditions:        {add: [names], update: [names], remove: [names]}
+--     },
+--     rollback: {                      -- feasibility of re-applying the CURRENTLY
+--       to_version,                    -- recorded version after this apply
+--       possible,                      -- false if the target adds types the current
+--                                      -- version lacks (no automated type removal)
+--       type_removals_required:        [names],
+--       relations_requiring_removal:   [names]  -- removable only while no tuples
+--                                               -- reference them at rollback time
+--     } | NULL                         -- NULL for unmanaged stores
+--   }
+--
+-- The plan is advisory: tuple-reference blockers reflect THIS moment; a
+-- concurrent write can invalidate them. apply_model re-checks everything
+-- transactionally — the plan predicts, the apply enforces.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.plan_model_apply(
+    p_store   text,
+    p_name    text,
+    p_version integer DEFAULT NULL
+) RETURNS jsonb
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_store_id  integer := authz._s(p_store);
+    v_version   integer;
+    v_sum       text;
+    v_def       jsonb;
+    v_live      jsonb;
+    v_live_sum  text;
+    v_blockers  jsonb := '[]'::jsonb;
+    v_current   jsonb;
+    v_rollback  jsonb;
+    v_cur_ver   integer;
+    v_cur_def   jsonb;
+    v_rel       record;
+    v_refs      bigint;
+    v_rel_remove jsonb;
+    v_cel_missing jsonb;
+BEGIN
+    SELECT r.version, r.checksum, r.definition INTO v_version, v_sum, v_def
+      FROM authz.model_registry r
+     WHERE r.name = p_name
+       AND (p_version IS NULL OR r.version = p_version)
+     ORDER BY r.version DESC
+     LIMIT 1;
+    IF v_version IS NULL THEN
+        RAISE EXCEPTION 'plan_model_apply: no registry entry for model % version %',
+            p_name, COALESCE(p_version::text, '(latest)');
+    END IF;
+    IF (v_def->>'format')::int IS DISTINCT FROM 1 THEN
+        RAISE EXCEPTION 'plan_model_apply: unsupported definition format % (expected 1)',
+            v_def->>'format';
+    END IF;
+
+    v_live     := authz.export_model(p_store);
+    v_live_sum := authz._model_checksum(v_live);
+
+    -- Blocker: extra types (apply_model never removes a type).
+    SELECT v_blockers || COALESCE(jsonb_agg(
+               jsonb_build_object('kind', 'extra_type', 'name', t.e->>'name')
+               ORDER BY t.e->>'name'), '[]'::jsonb)
+      INTO v_blockers
+      FROM jsonb_array_elements(authz._jsonb_array_except_by_name(
+               v_live->'types', v_def->'types')) AS t(e);
+
+    -- Blocker: stale relations still referenced by tuples.
+    v_rel_remove := authz._jsonb_array_except_by_name(v_live->'relations', v_def->'relations');
+    FOR v_rel IN SELECT x.e->>'name' AS name FROM jsonb_array_elements(v_rel_remove) AS x(e)
+    LOOP
+        SELECT count(*) INTO v_refs
+          FROM authz.tuples t
+         WHERE t.store_id = v_store_id
+           AND (t.relation = authz._r(v_store_id, v_rel.name)
+                OR t.user_relation = authz._r(v_store_id, v_rel.name));
+        IF v_refs > 0 THEN
+            v_blockers := v_blockers || jsonb_build_object(
+                'kind', 'relation_referenced_by_tuples',
+                'name', v_rel.name, 'tuples', v_refs);
+        END IF;
+    END LOOP;
+
+    -- Blocker: CEL conditions without an installed evaluator.
+    IF to_regprocedure('authz.cel_compile_check(text)') IS NULL THEN
+        SELECT COALESCE(jsonb_agg(c.e->>'name' ORDER BY c.e->>'name'), '[]'::jsonb)
+          INTO v_cel_missing
+          FROM jsonb_array_elements(v_def->'conditions') AS c(e)
+         WHERE c.e->>'lang' = 'cel';
+        IF jsonb_array_length(v_cel_missing) > 0 THEN
+            v_blockers := v_blockers || jsonb_build_object(
+                'kind', 'cel_evaluator_missing', 'conditions', v_cel_missing);
+        END IF;
+    END IF;
+
+    -- Current managed state (+ live drift), and rollback feasibility: could
+    -- the CURRENTLY recorded version be re-applied after this apply?
+    SELECT s.model_version,
+           jsonb_build_object(
+               'model_name',    s.model_name,
+               'model_version', s.model_version,
+               'in_sync',       (v_live_sum = r.checksum)),
+           r2.definition
+      INTO v_cur_ver, v_current, v_cur_def
+      FROM authz.store_model_state s
+      JOIN authz.model_registry r
+        ON r.name = s.model_name AND r.version = s.model_version
+      LEFT JOIN authz.model_registry r2
+        ON r2.name = s.model_name AND r2.version = s.model_version
+     WHERE s.store_id = v_store_id;
+
+    IF v_cur_def IS NOT NULL THEN
+        v_rollback := jsonb_build_object(
+            'to_version', v_cur_ver,
+            'type_removals_required', (
+                SELECT COALESCE(jsonb_agg(t.e->>'name' ORDER BY t.e->>'name'), '[]'::jsonb)
+                  FROM jsonb_array_elements(authz._jsonb_array_except_by_name(
+                           v_def->'types', v_cur_def->'types')) AS t(e)),
+            'relations_requiring_removal', (
+                SELECT COALESCE(jsonb_agg(x.e->>'name' ORDER BY x.e->>'name'), '[]'::jsonb)
+                  FROM jsonb_array_elements(authz._jsonb_array_except_by_name(
+                           v_def->'relations', v_cur_def->'relations')) AS x(e)));
+        v_rollback := v_rollback || jsonb_build_object(
+            'possible', jsonb_array_length(v_rollback->'type_removals_required') = 0);
+    END IF;
+
+    RETURN jsonb_build_object(
+        'store',     p_store,
+        'model',     p_name,
+        'version',   v_version,
+        'no_op',     (v_live_sum = v_sum),
+        'can_apply', (jsonb_array_length(v_blockers) = 0),
+        'current',   v_current,
+        'blockers',  v_blockers,
+        'changes',   jsonb_build_object(
+            'types', jsonb_build_object(
+                'add', (SELECT COALESCE(jsonb_agg(t.e->>'name' ORDER BY t.e->>'name'), '[]'::jsonb)
+                          FROM jsonb_array_elements(authz._jsonb_array_except_by_name(
+                                   v_def->'types', v_live->'types')) AS t(e)),
+                'update', (
+                    -- same name, different metadata (hash_modulus is physical
+                    -- layout — excluded, matching the checksum semantics)
+                    SELECT COALESCE(jsonb_agg(d.e->>'name' ORDER BY d.e->>'name'), '[]'::jsonb)
+                      FROM jsonb_array_elements(v_def->'types') AS d(e)
+                      JOIN jsonb_array_elements(v_live->'types') AS l(e)
+                        ON l.e->>'name' = d.e->>'name'
+                     WHERE (d.e - 'hash_modulus') <> (l.e - 'hash_modulus'))),
+            'relations', jsonb_build_object(
+                'add', (SELECT COALESCE(jsonb_agg(x.e->>'name' ORDER BY x.e->>'name'), '[]'::jsonb)
+                          FROM jsonb_array_elements(authz._jsonb_array_except_by_name(
+                                   v_def->'relations', v_live->'relations')) AS x(e)),
+                'remove', (SELECT COALESCE(jsonb_agg(x.e->>'name' ORDER BY x.e->>'name'), '[]'::jsonb)
+                             FROM jsonb_array_elements(v_rel_remove) AS x(e))),
+            'rules', jsonb_build_object(
+                'add',    authz._jsonb_array_except(v_def->'rules',  v_live->'rules'),
+                'remove', authz._jsonb_array_except(v_live->'rules', v_def->'rules')),
+            'type_restrictions', jsonb_build_object(
+                'add',    authz._jsonb_array_except(v_def->'type_restrictions',  v_live->'type_restrictions'),
+                'remove', authz._jsonb_array_except(v_live->'type_restrictions', v_def->'type_restrictions')),
+            'conditions', jsonb_build_object(
+                'add', (SELECT COALESCE(jsonb_agg(c.e->>'name' ORDER BY c.e->>'name'), '[]'::jsonb)
+                          FROM jsonb_array_elements(authz._jsonb_array_except_by_name(
+                                   v_def->'conditions', v_live->'conditions')) AS c(e)),
+                'update', (
+                    SELECT COALESCE(jsonb_agg(d.e->>'name' ORDER BY d.e->>'name'), '[]'::jsonb)
+                      FROM jsonb_array_elements(v_def->'conditions') AS d(e)
+                      JOIN jsonb_array_elements(v_live->'conditions') AS l(e)
+                        ON l.e->>'name' = d.e->>'name'
+                     WHERE d.e <> l.e),
+                'remove', (SELECT COALESCE(jsonb_agg(c.e->>'name' ORDER BY c.e->>'name'), '[]'::jsonb)
+                             FROM jsonb_array_elements(authz._jsonb_array_except_by_name(
+                                      v_live->'conditions', v_def->'conditions')) AS c(e)))),
+        'rollback', v_rollback);
+END;
+$$;
