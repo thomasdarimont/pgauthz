@@ -7,6 +7,8 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-05
+
 ### Security
 
 - **Fixed a fail-open in tuple expiry (SECURITY-AUDIT F11), migration 0006.**
@@ -698,7 +700,8 @@ PL/pgSQL.
 - PostgreSQL 18.x (developed/tested on 18.4). PostgREST, OPA, the AuthZEN
   services, and `pg_cel` are optional components of the reference deployment.
 
-[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/thomasdarimont/pgauthz/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.4.0...v0.5.0

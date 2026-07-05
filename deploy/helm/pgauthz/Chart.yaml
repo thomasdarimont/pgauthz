@@ -5,8 +5,8 @@ description: >-
   by CloudNativePG. OPA is the single front door for reads and writes; PostgREST
   (reader + writer) and PostgreSQL are internal-only.
 type: application
-version: 0.7.0
-appVersion: "0.7.0"
+version: 0.7.1
+appVersion: "0.7.1"
 keywords: [authorization, zanzibar, openfga, rebac, postgres, cloudnative-pg, opa]
 home: https://github.com/thomasdarimont/pgauthz
 maintainers:
