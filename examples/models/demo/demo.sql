@@ -397,6 +397,56 @@ DELETE FROM authz.tuples
    AND object_type = authz._t('demo', 'document');
 
 
+
+-- 4z. NATIVE EXPIRY — the simple case, without a condition.
+--
+-- The non_expired_grant condition above is the flexible tool: arbitrary
+-- windows, but the CALLER must supply current_time (and could lie), and the
+-- expired tuple stays in place. For the common case — "access until T" —
+-- tuples carry a native expires_at instead:
+--   * SERVER time decides (callers can't extend their own window),
+--   * every check AND search path stops honoring the grant the moment it
+--     passes (enforced structurally via row-level security),
+--   * expired rows are garbage-collectable with full audit history.
+
+-- Bob may view doc_temp_002 for the next 2 hours — no condition, no context:
+SELECT authz.write_tuple('demo',
+    'internal_user', 'bob', 'viewer', 'document', 'doc_temp_002',
+    p_expires_at => now() + interval '2 hours'
+);
+
+SELECT authz.check_access('demo',
+    'internal_user', 'bob', 'viewer', 'document', 'doc_temp_002');
+-- => true   (and false the moment expires_at passes — on checks, list_objects,
+--            list_subjects, explain: everywhere, with no caller involvement)
+
+-- Searches honor expiry natively too:
+SELECT * FROM authz.list_objects('demo',
+    'internal_user', 'bob', 'viewer', 'document');
+-- => includes doc_temp_002 now; drops it automatically after the 2 hours
+
+-- Re-granting refreshes the expiry (the upsert reactivates even an already-
+-- expired grant); omitting p_expires_at makes it permanent:
+SELECT authz.write_tuple('demo',
+    'internal_user', 'bob', 'viewer', 'document', 'doc_temp_002',
+    p_expires_at => now() + interval '8 hours'
+);
+
+-- Granting something ALREADY expired is rejected up front (dead on arrival —
+-- almost always a clock-skew or stale-payload bug):
+--   SELECT authz.write_tuple('demo', 'internal_user', 'bob', 'viewer',
+--       'document', 'doc_temp_002', p_expires_at => now() - interval '1 minute');
+--   -- ERROR: expires_at (...) is in the past — the grant would never take effect
+
+-- Expired rows grant nothing but still occupy storage until garbage-collected
+-- (deletions are audited; time-travel still shows the grant as allowed for
+-- moments BEFORE its expiry — history is judged as of the asked time):
+SELECT authz.cleanup_expired_tuples('demo');
+-- => number of expired tuples removed (0 right now — bob's grant is live)
+
+-- Rule of thumb: expires_at for plain "until T" grants; conditions for
+-- everything richer (business hours, recurring windows, IP + time combos).
+
 -- ============================================================================
 -- 5. CONTEXTUAL TUPLES — ephemeral per-request relationships
 -- ============================================================================

@@ -31,7 +31,8 @@ type tupleYAML struct {
 	Relation  string         `yaml:"relation"`
 	Object    string         `yaml:"object"`
 	Condition string         `yaml:"condition"`
-	Context   map[string]any `yaml:"context"` // stored condition context
+	Context   map[string]any `yaml:"context"`    // stored condition context
+	ExpiresAt string         `yaml:"expires_at"` // server-time expiry (RFC3339)
 }
 
 type testCase struct {
@@ -185,8 +186,9 @@ func writeTuple(ctx context.Context, conn *pgx.Conn, store string, t tupleYAML) 
 	_, err = conn.Exec(ctx, `SELECT authz.write_tuple($1,$2,$3,$4,$5,$6,
 	                             p_user_relation := nullif($7,''),
 	                             p_condition := nullif($8,''),
-	                             p_condition_context := $9)`,
-		store, u.Type, u.ID, t.Relation, o.Type, o.ID, u.Relation, t.Condition, condCtx)
+	                             p_condition_context := $9,
+	                             p_expires_at := nullif($10,'')::timestamptz)`,
+		store, u.Type, u.ID, t.Relation, o.Type, o.ID, u.Relation, t.Condition, condCtx, t.ExpiresAt)
 	return err
 }
 

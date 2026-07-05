@@ -760,6 +760,37 @@ with multiple TTU and computed rules.
 
 ## 8. Conditions (ABAC)
 
+### Representing expiration — which tool?
+
+"Access until some point in time" can be modeled four ways; pick by how much
+flexibility you actually need:
+
+| Option | Use when | Trade-offs |
+|---|---|---|
+| **`expires_at` on the tuple** (native) | The plain case: "grant until T" | **Server time** decides (a caller cannot stretch its own window); enforced structurally on every check *and* search path; expired rows are cleanup-able (`cleanup_expired_tuples`, audited) and re-grants refresh/reactivate; time-travel judges expiry as of the asked moment. No recurring/relative windows. |
+| **Condition** (SQL/CEL, this section) | Rich windows: business hours, recurring schedules, "N hours after grant", combined with IP/attributes | Fully flexible — but the **caller supplies** `current_time` in the request context (a trust decision: your PEP must be honest), the row stays in place when the window closes, and searches evaluate the expression per candidate. |
+| **Application-side revocation** (delete the tuple at T, e.g. via a scheduler/outbox) | You want an explicit, auditable *revocation event* at T, or downstream consumers (watch/changefeed) must see the removal | Requires external machinery and is only as timely as it runs; between T and the delete, the grant still holds. |
+| **Contextual tuples** ([§9](#9-contextual-tuples)) | The grant should live no longer than a single request | Nothing stored at all — the extreme end of "expiring". |
+
+Rule of thumb: reach for **`expires_at`** first; move to a **condition** only
+when the window is more complex than "until T"; add **scheduled deletion** on
+top of either when consumers need an explicit revocation event in the
+changefeed. The demo walks the contrast in
+[`examples/models/demo/demo.sql`](../examples/models/demo/demo.sql)
+(sections 4 and 4z).
+
+**Migration note — expiry and time travel.** The audit trail records
+*transaction time*: `performed_at` is when **this system** learned a fact,
+not when the fact was true in the real world. Two consequences for
+migrations: importing a tuple whose `expires_at` already passed is rejected
+as dead-on-arrival — it could never grant at any queryable moment, live or
+historical (time-travel compares `expires_at` against the asked time, and
+every queryable moment lies after the import); and importing historical
+grants does **not** backfill `audit_check_access` for the pre-migration era.
+Migrating systems should import only currently-live grants and treat the
+old system's records as the historical source for anything earlier.
+
+
 Conditions add **attribute-based access control** to the tuple model. A condition
 is a named SQL boolean expression evaluated at check time, allowing access to
 depend on runtime context (e.g., current time, IP address, feature flags).

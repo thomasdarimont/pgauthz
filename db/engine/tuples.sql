@@ -13,6 +13,10 @@
 -- created or its condition changed, false if an identical tuple
 -- already existed.
 ------------------------------------------------------------------------
+-- Drop the pre-expiry signature so adding the trailing param doesn't leave a
+-- second (10-arg) overload behind on upgraded installs.
+DROP FUNCTION IF EXISTS authz.write_tuple(text, text, text, text, text, text, text, text, jsonb, text);
+
 CREATE OR REPLACE FUNCTION authz.write_tuple(
     p_store             text,
     p_user_type         text,
@@ -23,7 +27,8 @@ CREATE OR REPLACE FUNCTION authz.write_tuple(
     p_user_relation     text DEFAULT NULL,
     p_condition         text DEFAULT NULL,
     p_condition_context jsonb DEFAULT NULL,
-    p_performed_by      text DEFAULT NULL
+    p_performed_by      text DEFAULT NULL,
+    p_expires_at        timestamptz DEFAULT NULL  -- server-time expiry; NULL = never
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -33,6 +38,7 @@ DECLARE
     v_object_type   integer := authz._t(v_store_id, p_object_type);
     v_user_relation integer;
     v_condition_id  integer;
+    v_changed       boolean;
 BEGIN
     -- Set application user for the audit trigger (transaction-local)
     -- The true in set_config(..., true) makes the variable transaction-local, so it auto-resets after each call — no risk of leaking between requests.
@@ -48,6 +54,15 @@ BEGIN
     -- Wildcard tuples cannot have a user_relation (usersets on * are not meaningful)
     IF p_user_id = '*' AND v_user_relation IS NOT NULL THEN
         RAISE EXCEPTION 'Wildcard user_id (*) cannot be combined with a user_relation';
+    END IF;
+
+    -- A grant that is already expired is dead on arrival — almost certainly a
+    -- caller bug (clock skew, stale payload). Reject it clearly instead of
+    -- storing a row that can never grant. (RLS would reject it anyway via the
+    -- ON CONFLICT SELECT-policy check, but with an opaque error.)
+    IF p_expires_at IS NOT NULL AND p_expires_at <= now() THEN
+        RAISE EXCEPTION 'expires_at (%) is in the past — the grant would never take effect', p_expires_at
+            USING ERRCODE = 'invalid_parameter_value';
     END IF;
 
     -- Object wildcards are privileged: one tuple grants the relation on
@@ -104,17 +119,31 @@ BEGIN
         END;
     END IF;
 
-    INSERT INTO authz.tuples (store_id, user_type, user_id, user_relation, relation, object_type, object_id, condition_id, condition_context)
-    VALUES (v_store_id, v_user_type, p_user_id, v_user_relation, v_relation, v_object_type, p_object_id, v_condition_id, p_condition_context)
+    -- The upsert must be able to SEE an expired row (re-granting reactivates
+    -- it), but the RLS SELECT policy hides expired rows even from the
+    -- ON CONFLICT read of the existing row. Sanctioned escape, set and reset
+    -- immediately around this one statement (audit_maintenance pattern).
+    PERFORM set_config('authz.tuples_include_expired', 'on', true);
+
+    INSERT INTO authz.tuples (store_id, user_type, user_id, user_relation, relation, object_type, object_id, condition_id, condition_context, expires_at)
+    VALUES (v_store_id, v_user_type, p_user_id, v_user_relation, v_relation, v_object_type, p_object_id, v_condition_id, p_condition_context, p_expires_at)
     ON CONFLICT (store_id, object_type, object_id, relation, user_type, user_id, COALESCE(user_relation::int, 0))
     DO UPDATE SET
         condition_id      = EXCLUDED.condition_id,
-        condition_context = EXCLUDED.condition_context
+        condition_context = EXCLUDED.condition_context,
+        expires_at        = EXCLUDED.expires_at
     WHERE tuples.condition_id      IS DISTINCT FROM EXCLUDED.condition_id
-       OR tuples.condition_context IS DISTINCT FROM EXCLUDED.condition_context;
+       OR tuples.condition_context IS DISTINCT FROM EXCLUDED.condition_context
+       OR tuples.expires_at        IS DISTINCT FROM EXCLUDED.expires_at;
 
-    -- FOUND: inserted or condition changed; false for an identical tuple.
-    RETURN FOUND;
+    -- Capture BEFORE resetting the GUC: PERFORM is itself a statement and
+    -- would overwrite FOUND.
+    v_changed := FOUND;
+    PERFORM set_config('authz.tuples_include_expired', '', true);
+
+    -- inserted, or condition/expiry changed (incl. reactivating an EXPIRED
+    -- grant); false for an identical tuple.
+    RETURN v_changed;
 END;
 $$;
 
@@ -260,6 +289,9 @@ BEGIN
         RAISE EXCEPTION 'Type restriction violation(s): %', v_bad;
     END IF;
 
+    -- Escape so ON CONFLICT can read (and reactivate) expired rows.
+    PERFORM set_config('authz.tuples_include_expired', 'on', true);
+
     INSERT INTO authz.tuples (store_id, user_type, user_id, user_relation, relation, object_type, object_id)
     SELECT v_store_id,
            ut.id,
@@ -273,9 +305,17 @@ BEGIN
       JOIN authz.relations r  ON r.store_id  = v_store_id AND r.name  = t.relation
       JOIN authz.types ot     ON ot.store_id = v_store_id AND ot.name = t.object_type
       LEFT JOIN authz.relations ur ON ur.store_id = v_store_id AND ur.name = t.user_relation
-    ON CONFLICT DO NOTHING;
+    ON CONFLICT (store_id, object_type, object_id, relation, user_type, user_id, COALESCE(user_relation::int, 0))
+    -- The composite tuple_input has no expiry field (like conditions — use
+    -- write_tuple / the jsonb variant for expiring grants). A batch re-grant
+    -- over an EXPIRING/EXPIRED row makes it a permanent grant — not a silent
+    -- no-op against a row RLS has hidden; identical permanent duplicates
+    -- still don't count. (Escape GUC set around the statement — see below.)
+    DO UPDATE SET expires_at = NULL
+    WHERE tuples.expires_at IS NOT NULL;
 
     GET DIAGNOSTICS v_count = ROW_COUNT;
+    PERFORM set_config('authz.tuples_include_expired', '', true);
     RETURN v_count;
 END;
 $$;
@@ -284,12 +324,13 @@ $$;
 -- write_tuples_jsonb: HTTP/JSON-friendly version of write_tuples.
 -- Accepts tuples as a JSONB array of objects, each with:
 --   {"user_type", "user_id", "relation", "object_type", "object_id"}
---   and optionally "user_relation" (for userset tuples) and
---   "condition" / "condition_context" (for conditional grants).
+--   and optionally "user_relation" (for userset tuples),
+--   "condition" / "condition_context" (for conditional grants), and
+--   "expires_at" (server-time expiry, e.g. "2026-08-01T00:00:00Z").
 --
 -- Note: the composite authz.tuple_input type used by write_tuples has
--- no condition fields — use this JSONB variant (or write_tuple) for
--- conditional grants.
+-- no condition or expiry fields — use this JSONB variant (or write_tuple)
+-- for conditional or expiring grants.
 --
 -- Example via PostgREST:
 --   POST /rpc/write_tuples_jsonb
@@ -313,7 +354,7 @@ DECLARE
 BEGIN
     PERFORM authz._validate_tuple_jsonb(p_tuples);
 
-    -- Unconditional elements take the set-based batch path.
+    -- Plain elements take the set-based batch path.
     v_count := authz.write_tuples(
         p_store,
         (SELECT coalesce(array_agg(ROW(
@@ -325,15 +366,15 @@ BEGIN
             e->>'object_id'
         )::authz.tuple_input), '{}')
         FROM jsonb_array_elements(p_tuples) AS e
-        WHERE e->>'condition' IS NULL),
+        WHERE e->>'condition' IS NULL AND e->>'expires_at' IS NULL),
         p_performed_by
     );
 
-    -- Conditional elements go through write_tuple, which validates the
-    -- condition name and its required stored-context keys.
+    -- Conditional / expiring elements go through write_tuple, which validates
+    -- the condition name, its required stored-context keys, and the expiry.
     FOR t IN
         SELECT e FROM jsonb_array_elements(p_tuples) AS e
-         WHERE e->>'condition' IS NOT NULL
+         WHERE e->>'condition' IS NOT NULL OR e->>'expires_at' IS NOT NULL
     LOOP
         IF authz.write_tuple(p_store,
                t->>'user_type', t->>'user_id', t->>'relation',
@@ -341,7 +382,8 @@ BEGIN
                p_user_relation     => t->>'user_relation',
                p_condition         => t->>'condition',
                p_condition_context => t->'condition_context',
-               p_performed_by      => p_performed_by) THEN
+               p_performed_by      => p_performed_by,
+               p_expires_at        => (t->>'expires_at')::timestamptz) THEN
             v_count := v_count + 1;
         END IF;
     END LOOP;
@@ -370,6 +412,7 @@ DECLARE
     v_relation      integer := authz._r(v_store_id, p_relation);
     v_object_type   integer := authz._t(v_store_id, p_object_type);
     v_user_relation integer;
+    v_deleted       boolean;
 BEGIN
     -- Set application user for the audit trigger (transaction-local)
     PERFORM set_config('authz.performed_by', COALESCE(p_performed_by, ''), true);
@@ -381,6 +424,9 @@ BEGIN
         v_user_relation := authz._r(v_store_id, p_user_relation);
     END IF;
 
+    -- Deletes must reach EXPIRED rows too (revoking an expiring grant,
+    -- cleanup) — the WHERE reads columns, which folds the SELECT policy in.
+    PERFORM set_config('authz.tuples_include_expired', 'on', true);
     DELETE FROM authz.tuples
      WHERE store_id      = v_store_id
        AND object_type   = v_object_type
@@ -390,7 +436,9 @@ BEGIN
        AND user_id       = p_user_id
        AND user_relation IS NOT DISTINCT FROM v_user_relation;
 
-    RETURN FOUND;
+    v_deleted := FOUND;  -- capture before the GUC reset overwrites FOUND
+    PERFORM set_config('authz.tuples_include_expired', '', true);
+    RETURN v_deleted;
 END;
 $$;
 
@@ -461,6 +509,7 @@ BEGIN
        FROM (SELECT DISTINCT t.object_type FROM unnest(p_tuples) AS t) AS t
        JOIN authz.types ot ON ot.store_id = v_store_id AND ot.name = t.object_type;
 
+    PERFORM set_config('authz.tuples_include_expired', 'on', true);
     DELETE FROM authz.tuples tup
      USING (
         SELECT ut.id AS user_type,
@@ -484,6 +533,7 @@ BEGIN
        AND tup.object_id     = d.object_id;
 
     GET DIAGNOSTICS v_count = ROW_COUNT;
+    PERFORM set_config('authz.tuples_include_expired', '', true);
     RETURN v_count;
 END;
 $$;
@@ -559,12 +609,15 @@ BEGIN
        FROM (SELECT DISTINCT object_type FROM authz.tuples
               WHERE store_id = v_store_id AND user_type = v_user_type AND user_id = p_user_id) t;
 
+    -- Offboarding must remove EXPIRED grants too (they could otherwise be
+    -- reactivated by a later re-grant); sanctioned escape, tx-local.
+    PERFORM set_config('authz.tuples_include_expired', 'on', true);
     DELETE FROM authz.tuples
      WHERE store_id  = v_store_id
        AND user_type = v_user_type
        AND user_id   = p_user_id;
-
-    GET DIAGNOSTICS v_count = ROW_COUNT;
+    GET DIAGNOSTICS v_count = ROW_COUNT;  -- before the reset (a statement itself)
+    PERFORM set_config('authz.tuples_include_expired', '', true);
     RETURN v_count;
 END;
 $$;

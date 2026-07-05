@@ -82,6 +82,12 @@ by `init.sh` on every run.
       authenticated caller.
 - [ ] **Schedule audit-partition maintenance and retention.** See
       [Audit retention](#audit-retention).
+- [ ] **Schedule `cleanup_expired_tuples` if you use tuple expiry.** Expired
+      grants stop granting instantly (RLS-enforced) but occupy storage until
+      garbage-collected; the cleanup is audited and time-travel stays exact.
+      A daily run with a small grace (e.g. `SELECT
+      authz.cleanup_expired_tuples(NULL, '1 day')`) keeps recent expiries
+      inspectable in the live table.
 - [ ] **Tune the condition `statement_timeout`** for your slowest legitimate
       operation. See [Condition (ABAC) policy](#condition-abac-policy).
 - [ ] **Decide your replica-consistency policy** (which checks must hit the

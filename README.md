@@ -13,6 +13,7 @@ that resolve relationship tuples recursively.
 - **Wildcard tuples** — `user:*` grants a relation to all users of a type without individual tuples (public/anonymous access)
 - **Intersection and exclusion** — rule groups support AND (all rules must match) and BUT NOT (base must match, negated must not) semantics
 - **Attribute-based access control (ABAC)** — conditions on tuples (time windows, IP ranges, quotas) evaluated at check time, written in SQL or, optionally, [CEL](#condition-languages-lang)
+- **Native relationship expiration** — `expires_at` on tuples: expired grants stop granting instantly on every check and search path (enforced structurally via row-level security, server time only), re-granting reactivates, `cleanup_expired_tuples` garbage-collects with full audit history, and time-travel judges expiry as of the asked moment; conditions remain for complex time windows
 - **Contextual tuples** — ephemeral per-request relationships that are not persisted (VPN context, org selection)
 - **Multi-store** — independent authorization namespaces with isolated types, relations, models, and tuples
 - **Model registry** — named, **immutable model versions** shared across stores (one store per tenant, one common model): publish from an authoring store, canary one tenant, roll out to the fleet, detect drift per store, and dry-run any apply with `plan_model_apply` (diff, blockers, rollback feasibility) — see [MODEL_DESIGN §16](docs/MODEL_DESIGN.md#16-sharing-one-model-across-stores-model-registry)
@@ -845,6 +846,13 @@ See [MODEL_DESIGN.md](docs/MODEL_DESIGN.md#rule-groups--intersection-and-exclusi
 for detailed examples and use cases.
 
 ## Conditions (Time-Based / ABAC)
+
+> For the plain "access until T" case, prefer the native
+> **`expires_at`** tuple expiry (server-time enforced on every check and
+> search path, cleanup-able, no condition needed) — see
+> [MODEL_DESIGN → Representing expiration](docs/MODEL_DESIGN.md#representing-expiration--which-tool)
+> for when to use which. Conditions are the tool for richer windows and
+> attribute checks.
 
 Tuples can carry a **condition** — an expression that must evaluate to `true`
 at check time for the tuple to grant access. Conditions are written in SQL by

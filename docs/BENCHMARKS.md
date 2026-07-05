@@ -248,3 +248,33 @@ To benchmark a **different model**, add `bench/suites/<name>.sql`: build a store
 + data, then time scenarios with the shared helpers (`pg_temp._bench(label,
 sql, iters)` and `pg_temp._bench_title(text)` from the harness). `./bench/run.sh
 <name>` runs it; `./bench/run.sh` with no args runs every suite.
+
+## Addendum: re-run 2026-07-05 (native expiry / RLS in place)
+
+Re-measured after `tuples.expires_at` landed (row-level security on
+`authz.tuples` enforces expiry structurally on every read path). Two
+findings, kept separate deliberately:
+
+**1. Expiry/RLS overhead (A/B on the same build, drive suite):** checks pay
+roughly **+5–15%** (shallow 0.144 → 0.157 ms/op; userset ~unchanged), large
+`list_objects` scans up to **~+50%** (81.5 → 127 ms/op on the grant-sparse
+case). The transaction-local escape-GUC arm of the policy is free within
+noise (127 vs 132 ms/op). This buys fail-closed structural enforcement — an
+expired tuple cannot grant through ANY of the ~37 tuple-scan sites, present
+or future.
+
+**2. Baseline drift (pre-existing, NOT expiry):** with RLS fully disabled,
+`list_objects` grant-sparse measures **81.5 ms/op today vs 0.49 ms/op in the
+table above** (github `list_objects` 243 vs 41 ms/op, `list_subjects` 594 vs
+233 ms/op). The `check_access` family drifted ~2× (deep 3.1 vs 1.48 ms/op).
+Something between the original measurements and HEAD regressed the `list_*`
+paths (suspects: keyset-pagination restructure, memoization wrapper) — or the
+original numbers were taken under different conditions. **Open investigation
+item** (see todos): bisect the list paths against v0.5.0/v0.6.0 before the
+production-scale benchmark milestone; do not quote the table above for
+`list_*` until resolved.
+
+Representative 2026-07-05 numbers (drive suite, expiry enforcement active):
+shallow 0.16 · deep TTU 3.2 · userset 0.28 · DENY 3.4 · wildcard 0.15 ·
+list_objects sparse 134 · list_subjects shared 11 · list_actions 4.7 ·
+contextual 0.28 ms/op.

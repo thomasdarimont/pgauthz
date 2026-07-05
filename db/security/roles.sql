@@ -206,7 +206,7 @@ GRANT EXECUTE ON FUNCTION authz.plan_model_apply(text, text, integer) TO authz_r
 ------------------------------------------------------------------------
 -- authz_writer: tuple management (inherits reader grants above)
 ------------------------------------------------------------------------
-GRANT EXECUTE ON FUNCTION authz.write_tuple(text, text, text, text, text, text, text, text, jsonb, text) TO authz_writer;
+GRANT EXECUTE ON FUNCTION authz.write_tuple(text, text, text, text, text, text, text, text, jsonb, text, timestamptz) TO authz_writer;
 GRANT EXECUTE ON FUNCTION authz.delete_tuple(text, text, text, text, text, text, text, text) TO authz_writer;
 GRANT EXECUTE ON FUNCTION authz.write_tuples(text, authz.tuple_input[], text) TO authz_writer;
 GRANT EXECUTE ON FUNCTION authz.write_tuples_jsonb(text, jsonb, text) TO authz_writer;
@@ -230,6 +230,7 @@ GRANT EXECUTE ON FUNCTION authz.grant_namespace_access(text, text, text, boolean
 GRANT EXECUTE ON FUNCTION authz.revoke_namespace_access(text, text, text, boolean, boolean) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.find_redundant_tuples(text, text, text, jsonb) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.cleanup_redundant_tuples(text, text, text, jsonb, boolean) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.cleanup_expired_tuples(text, interval, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.ensure_audit_partitions(int) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.create_store(text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.retire_store(text) TO authz_admin;
@@ -283,7 +284,7 @@ ALTER FUNCTION authz.watch_cursor(text) SECURITY DEFINER;
 ALTER FUNCTION authz.explain_access(text, text, text, text, text, text, jsonb, boolean, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.check_access_detailed(text, text, text, text, text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.describe_model(text) SECURITY DEFINER;
-ALTER FUNCTION authz.write_tuple(text, text, text, text, text, text, text, text, jsonb, text) SECURITY DEFINER;
+ALTER FUNCTION authz.write_tuple(text, text, text, text, text, text, text, text, jsonb, text, timestamptz) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_tuple(text, text, text, text, text, text, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.write_tuples(text, authz.tuple_input[], text) SECURITY DEFINER;
 ALTER FUNCTION authz.write_tuples_jsonb(text, jsonb, text) SECURITY DEFINER;
@@ -295,6 +296,7 @@ ALTER FUNCTION authz.grant_namespace_access(text, text, text, boolean, boolean) 
 ALTER FUNCTION authz.revoke_namespace_access(text, text, text, boolean, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.find_redundant_tuples(text, text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.cleanup_redundant_tuples(text, text, text, jsonb, boolean) SECURITY DEFINER;
+ALTER FUNCTION authz.cleanup_expired_tuples(text, interval, text) SECURITY DEFINER;
 ALTER FUNCTION authz.ensure_audit_partitions(int) SECURITY DEFINER;
 ALTER FUNCTION authz.create_store(text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.retire_store(text) SECURITY DEFINER;

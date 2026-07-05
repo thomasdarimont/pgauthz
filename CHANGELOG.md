@@ -9,6 +9,24 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Native relationship expiration: `tuples.expires_at`** (migration `0005`; review #3 priority 4). Grants can carry a server-time expiry:
+  the moment it passes, the tuple stops granting on **every** check and
+  search path. Enforcement is structural — row-level security on
+  `authz.tuples` (FORCEd onto the engine's definer functions) hides expired
+  rows from every read, so a missed filter in any of the ~37 tuple-scan
+  sites is unrepresentable; caller-supplied context has no influence.
+  Write paths: `write_tuple(p_expires_at)` and `"expires_at"` in the jsonb
+  batch/`write_tuples_checked` tuples (flows through the OPA write API);
+  re-granting an expired tuple reactivates it; a batch re-grant makes it
+  permanent; granting an already-expired tuple is rejected up front.
+  `cleanup_expired_tuples(store, grace)` garbage-collects (audited);
+  offboarding removes expired grants too. Time-travel judges expiry **as of
+  the asked time** — a grant that expired at T still shows allowed for
+  p_at < T, even after cleanup deleted the row. Conditions remain the tool
+  for complex time windows; this is the simple case without CEL/SQL.
+  Measured overhead of the RLS enforcement: ~+10% on checks, up to ~+50% on
+  large `list_*` scans (see BENCHMARKS.md addendum). 16 SQL tests.
+
 - **Rich decision results (opt-in): which KIND of "no"** (review #3
   priority 3). New engine function `authz.check_access_detailed` classifies
   a decision — `state: allow | deny | conditional` — plus the missing

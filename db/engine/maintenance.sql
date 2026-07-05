@@ -187,3 +187,49 @@ BEGIN
     END LOOP;
 END;
 $$;
+
+------------------------------------------------------------------------
+-- cleanup_expired_tuples: reclaim storage from expired grants.
+--
+-- Expired tuples already grant NOTHING (row-level security hides them from
+-- every read path the moment expires_at passes) — this is garbage
+-- collection, not revocation. Deletions run through the ordinary audit
+-- trigger, so history is preserved and time-travel stays exact: the replay
+-- honors expires_at against the asked timestamp, and the cleanup DELETE is
+-- just a later event.
+--
+-- p_store NULL = all stores (scheduled maintenance); p_grace keeps recently
+-- expired rows around (debugging/inspection via the audit log).
+--
+--   SELECT authz.cleanup_expired_tuples();                     -- everything expired
+--   SELECT authz.cleanup_expired_tuples('tenant_a', '7 days'); -- one store, 7d grace
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.cleanup_expired_tuples(
+    p_store        text DEFAULT NULL,
+    p_grace        interval DEFAULT '0',
+    p_performed_by text DEFAULT NULL
+) RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer;
+    v_count    integer;
+BEGIN
+    PERFORM set_config('authz.performed_by', COALESCE(p_performed_by, ''), true);
+    IF p_store IS NOT NULL THEN
+        v_store_id := authz._s(p_store);
+    END IF;
+
+    -- The escape is required: the WHERE reads expires_at, which folds the
+    -- SELECT policy in — without it the expired rows are invisible even to
+    -- their own cleanup.
+    PERFORM set_config('authz.tuples_include_expired', 'on', true);
+    DELETE FROM authz.tuples t
+     WHERE t.expires_at IS NOT NULL
+       AND t.expires_at <= now() - p_grace
+       AND (v_store_id IS NULL OR t.store_id = v_store_id);
+
+    GET DIAGNOSTICS v_count = ROW_COUNT;  -- before the reset (a statement itself)
+    PERFORM set_config('authz.tuples_include_expired', '', true);
+    RETURN v_count;
+END;
+$$;

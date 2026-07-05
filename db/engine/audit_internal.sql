@@ -62,7 +62,12 @@ BEGIN
             a.relation, a.object_type, a.object_id,
             a.performed_at DESC, a.seq DESC
       ) sub
-     WHERE sub.action = 'INSERT';
+     WHERE sub.action = 'INSERT'
+       -- Expiry as of the ASKED time, not now(): a grant that expired at T
+       -- still granted for p_at < T (time-travel truth), and cleanup deleting
+       -- the expired row later doesn't change history (that shows up as a
+       -- DELETE event after its own performed_at).
+       AND (sub.expires_at IS NULL OR sub.expires_at > p_at);
 END;
 $$;
 

@@ -522,6 +522,7 @@ _write_body(store, t, performed_by) := object.union(_base_body(store, t, perform
 	"user_relation": "p_user_relation",
 	"condition": "p_condition",
 	"condition_context": "p_condition_context",
+	"expires_at": "p_expires_at",
 }))
 
 # delete_tuple takes no condition fields — only the optional user_relation.

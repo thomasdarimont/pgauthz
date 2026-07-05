@@ -35,12 +35,12 @@ BEGIN
     IF TG_OP = 'UPDATE' THEN
         INSERT INTO authz.tuples_audit (
             action, performed_at, performed_by, store_id, user_type, user_id, user_relation,
-            relation, object_type, object_id, condition_id, condition_context
+            relation, object_type, object_id, condition_id, condition_context, expires_at
         ) VALUES
             ('DELETE', transaction_timestamp(), v_performed_by, OLD.store_id, OLD.user_type, OLD.user_id, OLD.user_relation,
-             OLD.relation, OLD.object_type, OLD.object_id, OLD.condition_id, OLD.condition_context),
+             OLD.relation, OLD.object_type, OLD.object_id, OLD.condition_id, OLD.condition_context, OLD.expires_at),
             ('INSERT', transaction_timestamp(), v_performed_by, NEW.store_id, NEW.user_type, NEW.user_id, NEW.user_relation,
-             NEW.relation, NEW.object_type, NEW.object_id, NEW.condition_id, NEW.condition_context);
+             NEW.relation, NEW.object_type, NEW.object_id, NEW.condition_id, NEW.condition_context, NEW.expires_at);
         -- Watch doorbell — deduplicated to one per store per transaction.
         PERFORM pg_notify('authz_changes', NEW.store_id::text);
         RETURN NEW;
@@ -56,10 +56,10 @@ BEGIN
 
     INSERT INTO authz.tuples_audit (
         action, performed_at, performed_by, store_id, user_type, user_id, user_relation,
-        relation, object_type, object_id, condition_id, condition_context
+        relation, object_type, object_id, condition_id, condition_context, expires_at
     ) VALUES (
         TG_OP, transaction_timestamp(), v_performed_by, v_row.store_id, v_row.user_type, v_row.user_id, v_row.user_relation,
-        v_row.relation, v_row.object_type, v_row.object_id, v_row.condition_id, v_row.condition_context
+        v_row.relation, v_row.object_type, v_row.object_id, v_row.condition_id, v_row.condition_context, v_row.expires_at
     );
 
     -- Watch doorbell — deduplicated to one per store per transaction.

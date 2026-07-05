@@ -138,7 +138,9 @@ LANGUAGE plpgsql AS $$
 DECLARE
     v_store_id   integer := authz._s(p_store, true);
 BEGIN
+    PERFORM set_config('authz.tuples_include_expired', 'on', true);
     DELETE FROM authz.tuples            WHERE store_id = v_store_id;
+    PERFORM set_config('authz.tuples_include_expired', '', true);
     IF p_purge_audit THEN
         PERFORM set_config('authz.audit_maintenance', 'on', true);
         DELETE FROM authz.tuples_audit  WHERE store_id = v_store_id;
