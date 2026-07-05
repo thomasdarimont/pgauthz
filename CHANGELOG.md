@@ -7,7 +7,7 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
-## [0.7.2] - 2026-07-05
+## [0.7.3] - 2026-07-05
 
 ### Fixed
 
@@ -21,6 +21,11 @@ pre-1.0, minor versions may include breaking changes.
   the missing context could actually flip DENY→ALLOW, else `deny`. `allow`
   still fires only on the real boolean, so no authorization was ever wrong.
   8 truth-table tests across OR/AND/EXCLUSION.
+
+## [0.7.2] - 2026-07-05
+
+### Fixed
+
 - **Live expiry now judged per statement, not per transaction** (migration
   0007; review 2026-07-05). The expiry RLS policy compared `expires_at`
   against `now()`, which in PostgreSQL is transaction-start time — so a
@@ -32,11 +37,9 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Documentation
 
-
 - **Re-granting a tuple without `expires_at` clears its expiry** (makes it
   permanent) — documented as a footgun for generic sync/upsert code, which
   should pass `expires_at` explicitly or read-modify-write.
-
 
 ## [0.7.1] - 2026-07-05
 
@@ -731,7 +734,8 @@ PL/pgSQL.
 - PostgreSQL 18.x (developed/tested on 18.4). PostgREST, OPA, the AuthZEN
   services, and `pg_cel` are optional components of the reference deployment.
 
-[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.7.3...HEAD
+[0.7.3]: https://github.com/thomasdarimont/pgauthz/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/thomasdarimont/pgauthz/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/thomasdarimont/pgauthz/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.6.0...v0.7.0
