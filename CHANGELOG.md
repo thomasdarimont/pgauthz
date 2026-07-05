@@ -7,6 +7,20 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`list_objects` scanned every tuple partition of every store** — a
+  partition-count scaling defect present since the beginning, uncovered by
+  the expiry benchmark A/B. The reachability expansion's subject-rooted
+  scans left the partition key (`object_type`) unconstrained, so each
+  recursion iteration touched all tuple partitions in the database (168
+  from just 3 stores in the dev DB; linear in tenant count for
+  store-per-tenant deployments). The scans now carry a tautological
+  `object_type IN (this store's types)` predicate that the executor turns
+  into startup-time partition pruning: sparse `list_objects` 133.9 → 4.6
+  ms/op (raw expansion 94.6 → 0.8 ms) on the 168-partition database.
+  Check paths are object-rooted and were never affected.
+
 ### Added
 
 - **Native relationship expiration: `tuples.expires_at`** (migration `0005`; review #3 priority 4). Grants can carry a server-time expiry:

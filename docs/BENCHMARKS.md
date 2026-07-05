@@ -263,18 +263,27 @@ noise (127 vs 132 ms/op). This buys fail-closed structural enforcement — an
 expired tuple cannot grant through ANY of the ~37 tuple-scan sites, present
 or future.
 
-**2. Baseline drift (pre-existing, NOT expiry):** with RLS fully disabled,
-`list_objects` grant-sparse measures **81.5 ms/op today vs 0.49 ms/op in the
-table above** (github `list_objects` 243 vs 41 ms/op, `list_subjects` 594 vs
-233 ms/op). The `check_access` family drifted ~2× (deep 3.1 vs 1.48 ms/op).
-Something between the original measurements and HEAD regressed the `list_*`
-paths (suspects: keyset-pagination restructure, memoization wrapper) — or the
-original numbers were taken under different conditions. **Open investigation
-item** (see todos): bisect the list paths against v0.5.0/v0.6.0 before the
-production-scale benchmark milestone; do not quote the table above for
-`list_*` until resolved.
+**2. `list_objects` partition-count scaling defect — FOUND AND FIXED
+(2026-07-05).** The apparent 160–270× "baseline drift" was neither drift nor
+a code regression: `list_objects`' reachability expansion scans tuples
+**by subject**, leaving the partition key (`object_type`) unconstrained — so
+every recursion iteration scanned **every tuple partition of every store in
+the database** (168 partitions from just 3 stores here; hash sub-partitioning
+multiplies). The original table was measured on a clean, few-partition
+database, which masked it. This would have degraded linearly with tenant
+count in store-per-tenant deployments. **Fix:** the three subject-rooted
+scans now carry `object_type IN (SELECT id FROM authz.types WHERE store_id =
+…)` — a tautology the executor turns into startup-time partition pruning
+down to the store's own partitions. Measured: raw expansion 94.6 → 0.8 ms;
+end-to-end sparse `list_objects` 133.9 → 4.6 ms/op, rules-suite intersection
+124 → 12 ms/op, github 243 → 129 ms/op (the remainder is real per-candidate
+confirmation work). The check paths are object-rooted and were never
+affected.
 
-Representative 2026-07-05 numbers (drive suite, expiry enforcement active):
-shallow 0.16 · deep TTU 3.2 · userset 0.28 · DENY 3.4 · wildcard 0.15 ·
-list_objects sparse 134 · list_subjects shared 11 · list_actions 4.7 ·
-contextual 0.28 ms/op.
+Representative 2026-07-05 numbers (expiry enforcement active, pruning fix
+in, 168-partition database): shallow 0.16 · deep TTU 3.2 · userset 0.28 ·
+DENY 3.4 · wildcard 0.15 · list_objects sparse 4.6 · list_subjects shared
+13 · list_actions 4.5 · contextual 0.28 ms/op. Residual ~2× vs the original
+table on deep checks / list_subjects is environmental (audit-log growth,
+expiry-RLS overhead, machine state) — to be re-baselined properly in the
+production-scale benchmark milestone.

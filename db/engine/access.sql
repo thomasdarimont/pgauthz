@@ -510,6 +510,14 @@ BEGIN
                AND t.user_type     = v_user_type
                AND t.user_id       IN (p_user_id, '*')
                AND t.user_relation IS NULL
+               -- Partition pruning: these scans are SUBJECT-rooted, so the
+               -- partition key (object_type) is otherwise unconstrained and
+               -- EVERY tuple partition of EVERY store gets scanned per
+               -- iteration (168 partitions from 3 stores in the dev DB —
+               -- 115x slower). The IN() is a tautology (a store's tuples
+               -- only reference its own types) that the executor turns into
+               -- startup-time pruning down to this store's partitions.
+               AND t.object_type   IN (SELECT ty.id FROM authz.types ty WHERE ty.store_id = v_store_id)
           UNION
             -- Expansion: from each reached (object A, relation r),
             -- follow every mechanism that can grant something further.
@@ -533,6 +541,7 @@ BEGIN
                      AND t.user_type     = r.object_type
                      AND t.user_id       = r.object_id
                      AND t.user_relation = r.relation
+                     AND t.object_type   IN (SELECT ty.id FROM authz.types ty WHERE ty.store_id = v_store_id)  -- pruning (see seed scan)
                 UNION ALL
                   -- TTU: link tuple (A)-[ts]->(B) plus a rule on B
                   -- "R from ts" whose computed relation is r
@@ -548,6 +557,7 @@ BEGIN
                      AND t.user_type     = r.object_type
                      AND t.user_id       = r.object_id
                      AND t.user_relation IS NULL
+                     AND t.object_type   IN (SELECT ty.id FROM authz.types ty WHERE ty.store_id = v_store_id)  -- pruning (see seed scan)
               ) AS e (object_type, object_id, relation)
         )
         SELECT c.object_id, c.object_id = '*'
