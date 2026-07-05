@@ -7,7 +7,7 @@ nameOverride: ""
 fullnameOverride: ""
 
 # -- Images. The migrations + authzen images are built from this repo (see
-# deploy/migrations/Dockerfile and authzen/Dockerfile) and must be pushed to a
+# deploy/migrations/Dockerfile and pgauthzd/Dockerfile) and must be pushed to a
 # registry your cluster can pull from (or imported into a local cluster).
 images:
   pullPolicy: IfNotPresent

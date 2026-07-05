@@ -28,7 +28,7 @@ jobs:
 
       # Fast pre-check: surface Go compile/vet errors before the slow stack.
       - name: Go build + vet
-        working-directory: authzen
+        working-directory: pgauthzd
         run: |
           go build ./...
           go vet ./...

@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"thomasdarimont.de/authz/authzen/internal/config"
+	"thomasdarimont.de/authz/pgauthzd/internal/config"
 )
 
 func testHandler(issuers []config.Issuer) *Handler {

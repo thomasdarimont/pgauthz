@@ -10,8 +10,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"thomasdarimont.de/authz/authzen/internal/api"
-	"thomasdarimont.de/authz/authzen/internal/authz"
+	"thomasdarimont.de/authz/pgauthzd/internal/api"
+	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 )
 
 // Backend implements authz.Backend using direct PostgreSQL calls.
@@ -327,6 +327,32 @@ func (b *Backend) ListActions(ctx context.Context, store string,
 		return nil, err
 	}
 	return actions, nil
+}
+
+// AssertReadOnly verifies the pool's connection role cannot write — the
+// database-enforced guarantee behind a decision-only instance. The role must
+// NOT be a member of authz_writer (which gates the write functions) and must
+// hold no direct write privilege on authz.tuples. A decision-only instance
+// that was accidentally pointed at a writable DSN fails to start rather than
+// silently becoming write-capable. (SECURITY: the guarantee lives in the DB
+// role, not the profile flag.)
+func (b *Backend) AssertReadOnly(ctx context.Context) error {
+	var writer, tuplesWrite bool
+	err := b.pool.QueryRow(ctx, `
+		SELECT pg_has_role(current_user, 'authz_writer', 'MEMBER'),
+		       has_table_privilege(current_user, 'authz.tuples', 'INSERT')
+		    OR has_table_privilege(current_user, 'authz.tuples', 'UPDATE')
+		    OR has_table_privilege(current_user, 'authz.tuples', 'DELETE')`,
+	).Scan(&writer, &tuplesWrite)
+	if err != nil {
+		return fmt.Errorf("checking read-only role: %w", err)
+	}
+	if writer || tuplesWrite {
+		return fmt.Errorf("decision-only profile requires a read-only DB role, but the " +
+			"connection role can write (member of authz_writer or has write on authz.tuples) — " +
+			"connect as a reader-only role (e.g. authzen_direct / a role inheriting only authz_reader)")
+	}
+	return nil
 }
 
 func (b *Backend) Healthz(ctx context.Context) error {

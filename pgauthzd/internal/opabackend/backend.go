@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"strings"
 
-	"thomasdarimont.de/authz/authzen/internal/api"
-	"thomasdarimont.de/authz/authzen/internal/authz"
+	"thomasdarimont.de/authz/pgauthzd/internal/api"
+	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 )
 
 // Backend implements authz.Backend by calling OPA HTTP endpoints.

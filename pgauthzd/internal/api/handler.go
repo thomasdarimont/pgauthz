@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"regexp"
 
-	"thomasdarimont.de/authz/authzen/internal/authz"
-	"thomasdarimont.de/authz/authzen/internal/config"
+	"thomasdarimont.de/authz/pgauthzd/internal/authz"
+	"thomasdarimont.de/authz/pgauthzd/internal/config"
 )
 
 var (

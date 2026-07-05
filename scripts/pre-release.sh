@@ -43,7 +43,7 @@ FAILED=0
 
 # ── 1. Go build + vet ────────────────────────────────────────────────────────
 step "Go build + vet (authzen)"
-(cd authzen && go build ./... && go vet ./...) || die "authzen build/vet failed"
+(cd pgauthzd && go build ./... && go vet ./...) || die "pgauthzd build/vet failed"
 step "Go build + vet (authzctl)"
 (cd authzctl && go build ./... && go vet ./...) || die "authzctl build/vet failed"
 if [ -d playground/backend ]; then

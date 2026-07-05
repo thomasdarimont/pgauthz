@@ -35,7 +35,28 @@ type Issuer struct {
 	ClientDBRoles map[string]string `json:"client_db_roles"`
 }
 
+// Profile selects an instance's capability set (PGAUTHORIZER_PROFILE). The
+// security guarantee comes from the DB connection ROLE, not this flag — a
+// decision-only instance must connect with a role that physically cannot
+// write, and asserts so at startup (fail closed). The profile ties together
+// the backend, the DB role's expected privilege, and (later) the exposed API
+// surface, so a read-only API can never sit on a writable role by accident.
+type Profile string
+
+const (
+	// ProfileDecisionOnly — AuthZEN eval/search over a direct read-only pgx
+	// connection. Asserts its DB role cannot write. Scale near replicas.
+	ProfileDecisionOnly Profile = "decision-only"
+	// ProfileFull — direct pgx with read AND write capability (the writer role
+	// path); near the primary. (Native write API lands in a later increment.)
+	ProfileFull Profile = "full"
+	// ProfileCompatOPA — the legacy AuthZEN→OPA→PostgREST path (external OPA
+	// for policy extension). No direct DB connection.
+	ProfileCompatOPA Profile = "compat-opa"
+)
+
 type Config struct {
+	Profile     Profile
 	ListenAddr  string
 	BaseURL     string
 	JWKSURL     string
@@ -115,6 +136,7 @@ type Config struct {
 
 func Load() (*Config, error) {
 	c := &Config{
+		Profile:               Profile(env("PGAUTHORIZER_PROFILE", "")),
 		ListenAddr:            env("LISTEN_ADDR", ":8080"),
 		BaseURL:               env("BASE_URL", ""),
 		JWKSURL:               env("JWKS_URL", ""),
@@ -184,6 +206,25 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("JWKS_URL or JWKS_FILE (or JWT_ISSUERS) is required")
 	}
 
+	// Resolve the profile value. Default: compat-opa when an OPA_URL is set
+	// (legacy behavior), otherwise full (direct pgx read+write). The
+	// per-backend requirement (DATABASE_URL vs OPA_URL) is validated by the
+	// command that wires the backend, not here — Load() stays free of
+	// deployment-topology assumptions (kept testable in isolation).
+	if c.Profile == "" {
+		if c.OPAURL != "" {
+			c.Profile = ProfileCompatOPA
+		} else {
+			c.Profile = ProfileFull
+		}
+	}
+	switch c.Profile {
+	case ProfileDecisionOnly, ProfileFull, ProfileCompatOPA:
+		// ok
+	default:
+		return nil, fmt.Errorf("unknown PGAUTHORIZER_PROFILE %q (decision-only | full | compat-opa)", c.Profile)
+	}
+
 	// Binding requirements: an issuer without a stores binding can reach every
 	// store; without a role binding it can claim any reader role. Enforce when
 	// the REQUIRE_* flags are set; otherwise warn loudly in the configurations
@@ -239,4 +280,16 @@ func envBool(key string, fallback bool) bool {
 		}
 	}
 	return fallback
+}
+
+// UsesDirectBackend reports whether the profile connects to PostgreSQL directly
+// (vs. the compat OPA path).
+func (c *Config) UsesDirectBackend() bool {
+	return c.Profile == ProfileDecisionOnly || c.Profile == ProfileFull
+}
+
+// Writable reports whether the profile's DB role is expected to hold write
+// capability (drives the read-only startup assertion).
+func (c *Config) Writable() bool {
+	return c.Profile == ProfileFull || c.Profile == ProfileCompatOPA
 }

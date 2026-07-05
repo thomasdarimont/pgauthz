@@ -2,7 +2,7 @@ services:
 
   authzen-direct:
     build:
-      context: ./authzen
+      context: ./pgauthzd
       args:
         BINARY: authzen-direct
         VERSION: ${VERSION:-dev}   # `VERSION=0.2.2 docker compose build` stamps it; else dev
@@ -40,7 +40,7 @@ services:
 
   authzen-opa:
     build:
-      context: ./authzen
+      context: ./pgauthzd
       args:
         BINARY: authzen-opa
         VERSION: ${VERSION:-dev}   # `VERSION=0.2.2 docker compose build` stamps it; else dev

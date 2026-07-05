@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"thomasdarimont.de/authz/authzen/internal/config"
+	"thomasdarimont.de/authz/pgauthzd/internal/config"
 )
 
 // resolveSubjectPair is the central subject-override policy. By default

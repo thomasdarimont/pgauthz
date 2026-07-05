@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
-	"thomasdarimont.de/authz/authzen/internal/config"
+	"thomasdarimont.de/authz/pgauthzd/internal/config"
 )
 
 func TestExtractRoles(t *testing.T) {

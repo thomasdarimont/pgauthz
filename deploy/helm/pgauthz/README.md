@@ -35,8 +35,8 @@ with NetworkPolicies.
    ```bash
    # from the repo root
    docker build -f deploy/migrations/Dockerfile -t pgauthz-migrations:0.1.0 .
-   docker build -f authzen/Dockerfile --build-arg BINARY=authzen-direct -t pgauthz-authzen-direct:0.1.0 ./authzen
-   docker build -f authzen/Dockerfile --build-arg BINARY=authzen-opa    -t pgauthz-authzen-opa:0.1.0    ./authzen
+   docker build -f pgauthzd/Dockerfile --build-arg BINARY=authzen-direct -t pgauthz-authzen-direct:0.1.0 ./pgauthzd
+   docker build -f pgauthzd/Dockerfile --build-arg BINARY=authzen-opa    -t pgauthz-authzen-opa:0.1.0    ./pgauthzd
    ```
    Push them to a registry your cluster can pull from, or import into a local
    cluster (k3d shown below).

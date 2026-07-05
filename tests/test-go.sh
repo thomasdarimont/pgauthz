@@ -7,7 +7,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR/../authzen"
+cd "$SCRIPT_DIR/../pgauthzd"
 
 if ! command -v go >/dev/null 2>&1; then
     echo "    SKIP  go not on PATH — skipping AuthZEN Go unit tests"
