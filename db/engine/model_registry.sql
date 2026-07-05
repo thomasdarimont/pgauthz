@@ -434,7 +434,7 @@ $$;
 -- back every store (atomic, nothing half-rolled-out). Right for small
 -- fleets; for hundreds of stores drive the rollout externally in bounded
 -- batches (pin p_version!) with model_rollout_status as the progress/retry
--- view — see MODEL_DESIGN.md §15.
+-- view — see MODEL_DESIGN.md §16.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.apply_model(
     p_stores  text[],

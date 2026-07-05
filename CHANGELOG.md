@@ -21,7 +21,7 @@ pre-1.0, minor versions may include breaking changes.
   the same canonical name-based exports the checksums hash, so the plan
   agrees with `model_status` by construction; reader-callable so pipelines
   can gate rollouts without admin credentials. 7 new SQL tests; usage +
-  example in MODEL_DESIGN §15.
+  example in MODEL_DESIGN §16.
 
 - **Per-request decision-cache bypass.** Read requests may set
   `"no_cache": true` on the OPA input to force a 0-second cache TTL for that
@@ -40,7 +40,7 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Documentation
 
-- **Model rollout guidance** (MODEL_DESIGN §15 + `apply_model` fleet-variant
+- **Model rollout guidance** (MODEL_DESIGN §16 + `apply_model` fleet-variant
   comment): the fleet apply is one atomic transaction — right for small
   fleets, wrong for hundreds of stores (use an external orchestrator with
   bounded batches, a pinned version, and `model_rollout_status` as the

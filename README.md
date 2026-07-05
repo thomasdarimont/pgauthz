@@ -15,16 +15,18 @@ that resolve relationship tuples recursively.
 - **Attribute-based access control (ABAC)** — conditions on tuples (time windows, IP ranges, quotas) evaluated at check time, written in SQL or, optionally, [CEL](#condition-languages-lang)
 - **Contextual tuples** — ephemeral per-request relationships that are not persisted (VPN context, org selection)
 - **Multi-store** — independent authorization namespaces with isolated types, relations, models, and tuples
+- **Model registry** — named, **immutable model versions** shared across stores (one store per tenant, one common model): publish from an authoring store, canary one tenant, roll out to the fleet, detect drift per store, and dry-run any apply with `plan_model_apply` (diff, blockers, rollback feasibility) — see [MODEL_DESIGN §16](docs/MODEL_DESIGN.md#16-sharing-one-model-across-stores-model-registry)
 - **Batch operations** — `write_tuples` / `delete_tuples` for efficient bulk insert and delete
 - **Conditional / atomic writes** — `write_tuples_checked` applies preconditions (exists/absent) plus deletes and writes in one transaction (optimistic concurrency: race-free ownership transfer, "at most one owner")
+- **Strict revocation & per-write consistency** — the write path commits with `synchronous_commit = remote_apply` (an acked revoke is applied on every synchronous replica — no stale allow after the ack), with per-write opt-down via `consistency: applied | durable | eventual`; revocation-sensitive reads bypass the decision cache per request (`no_cache` / `Cache-Control: no-cache`)
 - **Full audit trail** — immutable, monthly-partitioned audit log with application user tracking (`performed_by`)
 - **Time-travel queries** — `audit_check_access` reconstructs permissions at any past point in time from the audit log
 - **Watch / changefeed** — `watch_changes` streams tuple changes (cursored, filterable by object type / namespace / relation) plus a `NOTIFY authz_changes` doorbell, for cache invalidation / materialization / sync
 - **AuthZen Search API** — `list_objects`, `list_subjects`, `list_actions` for discovery queries
 - **OpenFGA import** — import existing OpenFGA JSON models and tuples directly
-- **Namespace-based write access control** — restrict which applications can manage tuples for which object types within a shared store
+- **Namespace-based access control** — restrict which applications can read and manage tuples for which object types within a shared store; per-application isolation is **database-enforced end to end** (OPA forwards the caller's app role, validated role switches on both the read and write path)
 - **PostgREST + OPA integration** — OPA is the single front door for reads *and* writes (JWT verification, policy-as-code, response caching); PostgREST bridges SQL functions to HTTP
-- **AuthZEN 1.0 API** — standard [AuthZEN](https://openid.net/specs/authorization-api-1_0.html) Go API layer with two backends: direct PostgreSQL (`authzen-direct`) and OPA (`authzen-opa`)
+- **AuthZEN 1.0 API** — standard [AuthZEN](https://openid.net/specs/authorization-api-1_0.html) Go API layer with two backends: direct PostgreSQL (`authzen-direct`) and OPA (`authzen-opa`); multi-tenant ready — store-scoped routes (`/stores/{store}/…`), multiple trusted issuers, and per-issuer **store / DB-role bindings** (anchored patterns, enforceable at startup)
 - **Playground (web UI)** — an OpenFGA-playground-style app to browse stores, run access queries, and **visualize the `explain_access` resolution path**, through the real OIDC → OPA → PostgREST path ([`playground/`](playground/README.md))
 - **Performance** — integer IDs, LIST partitioning by object type, covering partial indexes, store-scoped index pruning
 
@@ -1074,6 +1076,11 @@ SELECT authz.check_access('v2_experiment',
 -- Clean up
 SELECT authz.delete_store('v2_experiment');
 ```
+
+Stores are also the **multi-tenancy** unit: one store per tenant isolates
+tuples by construction, while the [model registry](docs/MODEL_DESIGN.md#16-sharing-one-model-across-stores-model-registry)
+shares one versioned model across all tenant stores (publish → canary →
+fleet, with drift detection and a `plan_model_apply` dry-run).
 
 ## Namespace-Based Access Control
 

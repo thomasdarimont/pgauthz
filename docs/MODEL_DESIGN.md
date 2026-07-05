@@ -1548,7 +1548,7 @@ user:* → viewer → folder:public_docs
 Write a tuple with `user_id = '*'`. Any user of that type gets the relation
 without an individual tuple. Propagates through computed relations and TTU.
 
-## 15. Sharing One Model Across Stores (Model Registry)
+## 16. Sharing One Model Across Stores (Model Registry)
 
 Multi-tenant deployments typically run **one store per tenant**: tuples are
 isolated by construction (a check in tenant A's store can never traverse
