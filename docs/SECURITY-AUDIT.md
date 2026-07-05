@@ -20,8 +20,10 @@ one — no independent party has attested to these claims.
   model registry as a cross-store propagation path, and the team-Rego governance
   chokepoint. Each finding re-verified against the source; file:line citations
   point at the current tree.
-- **Date / version:** engine passes 2026-06-29 (~v0.1.4); refresh **2026-07-05**
-  (~v0.6, pre-release). 59 public functions are `SECURITY DEFINER`.
+- **Date / version:** engine passes 2026-06-29 (~v0.1.4); refresh 2026-07-05
+  (~v0.6); **v0.7 delta 2026-07-05** (rich decisions, native expiry, cache
+  bypass, authzctl) — found one High fail-open (F11, open with a designed
+  fix). This is the first non-Info finding in the engine code.
 - **Companion docs:** [`SECURITY.md`](../SECURITY.md) (reporting / supported
   line), [`PRODUCTION.md`](PRODUCTION.md) (hardening), [`ARCHITECTURE.md`](ARCHITECTURE.md)
   (defense-in-depth).
@@ -177,6 +179,39 @@ quoting; registry propagation adds reach, not privilege. The engine remains
 fail-closed, the privileged surface small and consistently owned, and the
 condition sandbox a genuine capability sandbox.
 
+### Delta findings (2026-07, v0.7 — rich decisions, expiry, cache bypass)
+
+An adversarial pass over the surface added since the refresh — native tuple
+expiry (`expires_at` + row-level security), `check_access_detailed` /
+`allow_detailed`, the `no_cache` cache bypass, and `authzctl` — surfaced one
+real fail-open in the expiry enforcement.
+
+| # | Sev | Finding | Status |
+|---|---|---|---|
+| F11 | **High** | **The tuple-expiry RLS escape is a caller-settable GUC (fail-open).** Native expiry hides expired tuples via a row-level-security `SELECT` policy on `authz.tuples`; the sanctioned write/delete/cleanup paths reveal expired rows by arming a transaction-local GUC, `authz.tuples_include_expired`, that the policy honors (migration 0005). But a **custom GUC is settable by any role**, and expiry is read *inside* the `SECURITY DEFINER` functions that app roles legitimately invoke (`check_access`, `list_*`). A direct `authz_reader` connection can therefore `SET authz.tuples_include_expired = 'on'` and make **expired grants grant again** — the exact fail-open expiry was meant to prevent. No policy predicate can distinguish a legitimate arming from a forged one (at evaluation time both are "GUC on, `current_user = authz_owner`"). **Verified** with a live `SET ROLE authz_reader` reproduction (expired check flipped `false → true`). **Exploitability boundary:** *not* reachable through the OPA/PostgREST/AuthZEN front door, which exposes only RPC calls, never raw SQL — so no unauthenticated or HTTP-only caller can trigger it. It is a **direct-SQL trust-tier** hole: it matters for services that connect to Postgres directly as a reader role (`authzen-direct` → `authz_reader`, direct-SQL integrations, or a SQL-injection foothold in a reader-privileged path — none found). **Fix designed, not yet landed** (see below): the GUC escape cannot be made safe (a SET-ROLE alternative is rejected by Postgres inside `SECURITY DEFINER` functions), so the escape must become a dedicated `BYPASSRLS` role that only the sanctioned paths enter via `SECURITY DEFINER` helper functions **owned by** that role, with the policy carrying no GUC escape at all. This touches the ownership-transfer machinery (roles.sql) and the write path, so it is scoped as its own change rather than rushed. | 🔴 **Open — fix designed** |
+
+The audit tables' analogous GUC (`authz.audit_maintenance`) is **not**
+vulnerable in the same way: app roles hold no direct `UPDATE`/`DELETE` grant
+on the audit tables, so even with that GUC armed they cannot issue the DML —
+the function-only-access layer (mechanism 1) is the second gate that expiry
+reads lack. The other v0.7 additions reviewed clean:
+
+- **`check_access_detailed` / `allow_detailed`** run `SECURITY DEFINER`,
+  reader-granted, and expose only what `explain_access` already does
+  (decision reason + missing condition-context keys) — no tuple/subject
+  identifiers beyond the caller's own query. The AuthZEN `X-Authz-Detail`
+  path is opt-in and additive; without the header the response is the plain
+  boolean.
+- **`no_cache` / `Cache-Control: no-cache`** only shortens a cache TTL for
+  one decision; it cannot change a decision or amplify load beyond the
+  cache-busting an authenticated caller already had (F-none; documented in
+  opa/README).
+- **`authzctl`** is an operator/CI tool in the psql trust tier (direct DSN,
+  admin for writes); it introduces no new engine surface — it drives the
+  existing registry/import API. Its OpenFGA-DSL `condition` blocks are
+  parsed-not-imported (vocabulary mismatch), so no untranslated CEL reaches
+  the sandbox.
+
 **Playground BFF (dev-only, out of the deployable engine).** The playground is
 an opt-in overlay (`PGAUTHZ_PLAYGROUND=1`), absent from base `compose.yml` and
 the Helm chart, with no host port (proxy-only) and an OIDC session on every
@@ -206,6 +241,7 @@ These are where real compromise would come from — they are assumptions the eng
 | `authz_contextual_reader` granted too broadly | "What-if" tuple injection can probe for unpublished grants | Grant only to trusted backends (default: not granted to `api_anon`/`authz_reader`) |
 | Dev secrets shipped (`authz` passwords, `opaAdminToken`) | Defaults are DEV ONLY | Override every secret; use a secret store (see PRODUCTION.md) |
 | Superuser can bypass audit triggers | `session_replication_role` defeats any trigger (inherent to PostgreSQL) | Restrict superuser logins administratively |
+| **A direct reader can bypass tuple expiry (F11)** until the fix lands | `SET authz.tuples_include_expired='on'` reveals expired grants — but only over a direct SQL connection as `authz_reader`, never through OPA/PostgREST | Do not expose a direct reader connection beyond trusted services; the front door is unaffected. Fix tracked below |
 
 ## Hardening checklist
 
@@ -239,7 +275,9 @@ another issuer's stores/DB roles despite the anchored bindings; (3) **fail-open*
 boundary** — forge or replay `X-Authz-Role` on the reader *or* writer, or smuggle
 `input.db_role` past `REQUIRE_TOKEN_FOR_READS`; (5) the **role-switch hooks** —
 find a role that passes `_pre_request` / `_pre_request_reader` yet is
-admin-capable or not GRANT-restricted; (6) the **model registry** — make
+admin-capable or not GRANT-restricted; (6) **tuple expiry** — bypass the RLS `SELECT` policy (F11 is the known one via
+the escape GUC; look for others — index-only scans, `COPY`, partition-direct
+DML); (7) the **model registry** — make
 `apply_model` land a model whose live checksum differs from the registry
 (defeating the self-check), or propagate a condition that escapes the sandbox on
 a target store. The SQL test suites (`tests/sql/`, incl. `tests_model_registry`
