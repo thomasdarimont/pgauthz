@@ -7,6 +7,8 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-05
+
 ### Fixed
 
 - **`list_objects` scanned every tuple partition of every store** — a
@@ -667,7 +669,8 @@ PL/pgSQL.
 - PostgreSQL 18.x (developed/tested on 18.4). PostgREST, OPA, the AuthZEN
   services, and `pg_cel` are optional components of the reference deployment.
 
-[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.3.0...v0.4.0
