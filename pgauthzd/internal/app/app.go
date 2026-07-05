@@ -5,6 +5,8 @@ package app
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -137,8 +139,16 @@ func Run(name string, force config.Profile) error {
 			if cfg.InternalServiceToken == "" {
 				return fmt.Errorf("INTERNAL_LISTEN_ADDR is set but INTERNAL_SERVICE_TOKEN is empty; refusing to expose the native callback surface without a service credential")
 			}
-			servers = append(servers, &http.Server{Addr: cfg.InternalListenAddr, Handler: api.NewInternalRouter(h, cfg.InternalServiceToken)})
-			slog.Info("compat-opa internal (native raw) listener", "addr", cfg.InternalListenAddr)
+			tlsCfg, terr := internalTLSConfig(cfg)
+			if terr != nil {
+				return terr
+			}
+			intSrv := &http.Server{Addr: cfg.InternalListenAddr, Handler: api.NewInternalRouter(h, cfg.InternalServiceToken)}
+			if tlsCfg != nil {
+				intSrv.TLSConfig = tlsCfg
+			}
+			servers = append(servers, intSrv)
+			slog.Info("compat-opa internal (native raw) listener", "addr", cfg.InternalListenAddr, "mtls", tlsCfg != nil)
 		} else if raw != nil {
 			slog.Warn("compat-opa native callback backend configured but INTERNAL_LISTEN_ADDR is empty; native raw surface will not be served")
 		}
@@ -166,7 +176,14 @@ func Run(name string, force config.Profile) error {
 	errCh := make(chan error, len(servers))
 	for _, s := range servers {
 		go func(s *http.Server) {
-			if err := s.ListenAndServe(); err != http.ErrServerClosed {
+			// Certs come from TLSConfig.Certificates, so the file args are empty.
+			var err error
+			if s.TLSConfig != nil {
+				err = s.ListenAndServeTLS("", "")
+			} else {
+				err = s.ListenAndServe()
+			}
+			if err != http.ErrServerClosed {
 				errCh <- err
 				return
 			}
@@ -180,6 +197,38 @@ func Run(name string, force config.Profile) error {
 		}
 	}
 	return firstErr
+}
+
+// internalTLSConfig builds the mTLS config for the internal listener, or nil
+// for plain HTTP. When any of the three TLS settings is present all three are
+// required (server cert+key + client CA), and the listener then REQUIRES and
+// verifies a client certificate chained to the CA — so only the OPA sidecar
+// holding a matching cert can connect. This layers under the service token.
+func internalTLSConfig(cfg *config.Config) (*tls.Config, error) {
+	if cfg.InternalTLSCert == "" && cfg.InternalTLSKey == "" && cfg.InternalClientCA == "" {
+		return nil, nil // plain HTTP — fine for same-pod/localhost or mesh-provided mTLS
+	}
+	if cfg.InternalTLSCert == "" || cfg.InternalTLSKey == "" || cfg.InternalClientCA == "" {
+		return nil, fmt.Errorf("internal-listener mTLS requires INTERNAL_TLS_CERT, INTERNAL_TLS_KEY, and INTERNAL_CLIENT_CA together")
+	}
+	serverCert, err := tls.LoadX509KeyPair(cfg.InternalTLSCert, cfg.InternalTLSKey)
+	if err != nil {
+		return nil, fmt.Errorf("loading internal TLS server cert/key: %w", err)
+	}
+	caPEM, err := os.ReadFile(cfg.InternalClientCA)
+	if err != nil {
+		return nil, fmt.Errorf("reading internal client CA: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("internal client CA %q contains no valid certificates", cfg.InternalClientCA)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{serverCert},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    pool,
+		MinVersion:   tls.VersionTLS12,
+	}, nil
 }
 
 // newPGBackend builds a direct pgx backend + its pool from cfg.DatabaseURL.

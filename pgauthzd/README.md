@@ -343,6 +343,7 @@ All configuration is via environment variables.
 | `DATABASE_URL` | *empty* | Optional. A **read-only** DSN enables the native raw callback surface (`/pgauthz/v1/check`, `list-*`) an OPA sidecar calls back into instead of PostgREST. Asserted read-only at startup |
 | `INTERNAL_LISTEN_ADDR` | *empty* | Address for the internal listener serving that native raw surface (e.g. `:8081`). **Do not publish it** — bind to the OPA sidecar network. Empty = raw surface not served |
 | `INTERNAL_SERVICE_TOKEN` | *empty* | Shared service credential the internal listener requires (`Authorization: Bearer`), proving the call came from the OPA sidecar. Must match OPA's `NATIVE_SERVICE_TOKEN`. **Required** when `INTERNAL_LISTEN_ADDR` is set — startup fails closed without it. The listener then trusts OPA's asserted subject (body) + role (`X-Authz-Role`), not the end-user JWT |
+| `INTERNAL_TLS_CERT` / `INTERNAL_TLS_KEY` / `INTERNAL_CLIENT_CA` | *empty* | Optional mTLS on the internal listener (transport-layer caller auth, layered under the service token). Set all three → the listener serves HTTPS and **requires + verifies a client cert** chained to `INTERNAL_CLIENT_CA` (only the OPA sidecar's cert is accepted). Empty = plain HTTP (fine for same-pod/localhost). Prefer mesh-provided mTLS where available |
 
 ## Architecture
 

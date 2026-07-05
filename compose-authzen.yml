@@ -90,6 +90,12 @@ services:
       # Shared service credential the internal listener requires — must match
       # the OPA service's NATIVE_SERVICE_TOKEN. Override in production.
       INTERNAL_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
+      # Optional mTLS on the internal listener (all three together → HTTPS +
+      # RequireAndVerifyClientCert, so only OPA's client cert is accepted).
+      # Prefer mesh-provided mTLS where available.
+      # INTERNAL_TLS_CERT:  "/tls/internal-server.crt"
+      # INTERNAL_TLS_KEY:   "/tls/internal-server.key"
+      # INTERNAL_CLIENT_CA: "/tls/ca.crt"
       DATABASE_URL: "postgres://authzen_direct:${AUTHZEN_DIRECT_PASSWORD:-authz}@authz-db:5432/authz"
       DB_POOL_MAX: "10"
       OPA_URL: "http://opa:8181"

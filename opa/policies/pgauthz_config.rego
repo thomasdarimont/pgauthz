@@ -27,6 +27,19 @@ native_service_token := _env.NATIVE_SERVICE_TOKEN
 # targets pgauthzd's native API; otherwise it uses PostgREST (legacy).
 use_native if native_url
 
+# Optional mTLS to the native callback listener. When a client cert file is
+# configured, http.send presents it (and trusts the server via the CA file), so
+# the internal listener's RequireAndVerifyClientCert accepts the call. File
+# paths are mounted into the OPA container. Set via NATIVE_TLS_CLIENT_CERT /
+# NATIVE_TLS_CLIENT_KEY / NATIVE_TLS_CA_CERT.
+native_tls_client_cert_file := _env.NATIVE_TLS_CLIENT_CERT
+
+native_tls_client_key_file := _env.NATIVE_TLS_CLIENT_KEY
+
+native_tls_ca_cert_file := _env.NATIVE_TLS_CA_CERT
+
+native_tls_enabled if _env.NATIVE_TLS_CLIENT_CERT
+
 # PostgREST WRITER base URL — the fixed-role (authz_writer) write instance.
 # OPA forwards authorized writes here; it is not reachable from the host.
 # Set via POSTGREST_WRITER_URL env var on the OPA service.

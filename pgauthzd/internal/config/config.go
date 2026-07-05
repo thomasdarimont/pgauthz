@@ -73,11 +73,22 @@ type Config struct {
 	// PostgREST plays today. REQUIRED when InternalListenAddr is set (fail
 	// closed: no unauthenticated internal listener). Env INTERNAL_SERVICE_TOKEN.
 	InternalServiceToken string
-	BaseURL              string
-	JWKSURL              string
-	JWKSFile             string
-	JWTIssuer            string
-	JWTAudience          string
+	// Optional mTLS on the internal listener: the transport-layer caller
+	// authentication that layers UNDER the service token. When all three are
+	// set, the listener serves HTTPS and REQUIRES + verifies a client
+	// certificate chained to InternalClientCA (so only the OPA sidecar holding a
+	// matching cert can connect). Prefer mesh-provided mTLS where available;
+	// these are for cross-network / no-mesh deployments. Empty = plain HTTP
+	// (fine for same-pod/localhost). Env INTERNAL_TLS_CERT / INTERNAL_TLS_KEY /
+	// INTERNAL_CLIENT_CA.
+	InternalTLSCert  string
+	InternalTLSKey   string
+	InternalClientCA string
+	BaseURL          string
+	JWKSURL          string
+	JWKSFile         string
+	JWTIssuer        string
+	JWTAudience      string
 
 	// Issuers is the resolved set of trusted issuers (the legacy single-issuer
 	// env vars plus any from JWT_ISSUERS).
@@ -155,6 +166,9 @@ func Load() (*Config, error) {
 		ListenAddr:            env("LISTEN_ADDR", ":8080"),
 		InternalListenAddr:    env("INTERNAL_LISTEN_ADDR", ""),
 		InternalServiceToken:  env("INTERNAL_SERVICE_TOKEN", ""),
+		InternalTLSCert:       env("INTERNAL_TLS_CERT", ""),
+		InternalTLSKey:        env("INTERNAL_TLS_KEY", ""),
+		InternalClientCA:      env("INTERNAL_CLIENT_CA", ""),
 		BaseURL:               env("BASE_URL", ""),
 		JWKSURL:               env("JWKS_URL", ""),
 		JWKSFile:              env("JWKS_FILE", ""),

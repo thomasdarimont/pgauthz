@@ -121,6 +121,12 @@ services:
       # service token must match authzen-opa's INTERNAL_SERVICE_TOKEN.
       NATIVE_URL: "${NATIVE_URL:-http://authzen-opa:8081}"
       NATIVE_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
+      # Optional mTLS to the native listener (transport-layer caller auth, under
+      # the service token). Point NATIVE_URL at https://... and mount the certs.
+      # Prefer mesh-provided mTLS where available.
+      # NATIVE_TLS_CLIENT_CERT: "/tls/opa-client.crt"
+      # NATIVE_TLS_CLIENT_KEY:  "/tls/opa-client.key"
+      # NATIVE_TLS_CA_CERT:     "/tls/ca.crt"
       # Writer instance OPA forwards authorized tuple writes to (write.rego).
       POSTGREST_WRITER_URL: "${POSTGREST_WRITER_URL:-http://postgrest-writer:3001}"
       DEFAULT_CACHE_TTL_SECONDS: "${DEFAULT_CACHE_TTL_SECONDS:-1}"

@@ -65,6 +65,38 @@ _native_headers := object.union(object.union({"Content-Type": "application/json"
 # selects the pgauthz store on the internal listener.
 _native_path(store, suffix) := concat("", [config.native_url, "/stores/", store, "/pgauthz/v1/", suffix])
 
+# _native_tls_opts adds mTLS client-cert options to a native http.send when
+# configured (empty otherwise), so the internal listener's
+# RequireAndVerifyClientCert accepts the call. File paths are mounted into OPA.
+_native_tls_opts := {
+	"tls_client_cert_file": config.native_tls_client_cert_file,
+	"tls_client_key_file": config.native_tls_client_key_file,
+	"tls_ca_cert_file": config.native_tls_ca_cert_file,
+} if config.native_tls_enabled
+
+_native_tls_opts := {} if not config.native_tls_enabled
+
+_native_cache(s) := {"force_cache": true, "force_cache_duration_seconds": s} if s >= 0
+
+_native_cache(s) := {} if s < 0
+
+# _native_send issues a native callback request, centralizing headers, optional
+# mTLS, and caching. cache_seconds >= 0 enables force_cache for that duration; a
+# negative value disables caching (batch / explain are never cached).
+_native_send(store, suffix, body, cache_seconds) := http.send(object.union(
+	object.union(
+		{
+			"method": "POST",
+			"url": _native_path(store, suffix),
+			"headers": _native_headers,
+			"body": body,
+			"raise_error": false,
+		},
+		_native_cache(cache_seconds),
+	),
+	_native_tls_opts,
+))
+
 # check_access delegates to the Zanzibar model in PostgreSQL. Returns true if
 # the subject has the given relation on the object.
 #
@@ -72,19 +104,11 @@ _native_path(store, suffix) := concat("", [config.native_url, "/stores/", store,
 # internal listener; the answer is {"allowed": bool}.
 check_access(store, subject_type, subject_id, relation, object_type, object_id) := response.body.allowed if {
 	config.use_native
-	response := http.send({
-		"method": "POST",
-		"url": _native_path(store, "check"),
-		"headers": _native_headers,
-		"body": {
-			"subject": {"type": subject_type, "id": subject_id},
-			"action": {"name": relation},
-			"resource": {"type": object_type, "id": object_id},
-		},
-		"raise_error": false,
-		"force_cache": true,
-		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
-	})
+	response := _native_send(store, "check", {
+		"subject": {"type": subject_type, "id": subject_id},
+		"action": {"name": relation},
+		"resource": {"type": object_type, "id": object_id},
+	}, _effective_cache_ttl(store, object_type))
 	response.status_code == 200
 }
 
@@ -114,17 +138,11 @@ check_access(store, subject_type, subject_id, relation, object_type, object_id) 
 # for a single check — used by the playground / debugging, not for decisions.
 explain_access(store, subject_type, subject_id, relation, object_type, object_id) := response.body if {
 	config.use_native
-	response := http.send({
-		"method": "POST",
-		"url": _native_path(store, "explain"),
-		"headers": _native_headers,
-		"body": {
-			"subject": {"type": subject_type, "id": subject_id},
-			"action": {"name": relation},
-			"resource": {"type": object_type, "id": object_id},
-		},
-		"raise_error": false,
-	})
+	response := _native_send(store, "explain", {
+		"subject": {"type": subject_type, "id": subject_id},
+		"action": {"name": relation},
+		"resource": {"type": object_type, "id": object_id},
+	}, -1)
 	response.status_code == 200
 }
 
@@ -173,20 +191,12 @@ check_access_detailed(store, subject_type, subject_id, relation, object_type, ob
 # check_access_with_context: with request context for condition evaluation.
 check_access_with_context(store, subject_type, subject_id, relation, object_type, object_id, ctx) := response.body.allowed if {
 	config.use_native
-	response := http.send({
-		"method": "POST",
-		"url": _native_path(store, "check"),
-		"headers": _native_headers,
-		"body": {
-			"subject": {"type": subject_type, "id": subject_id},
-			"action": {"name": relation},
-			"resource": {"type": object_type, "id": object_id},
-			"context": ctx,
-		},
-		"raise_error": false,
-		"force_cache": true,
-		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
-	})
+	response := _native_send(store, "check", {
+		"subject": {"type": subject_type, "id": subject_id},
+		"action": {"name": relation},
+		"resource": {"type": object_type, "id": object_id},
+		"context": ctx,
+	}, _effective_cache_ttl(store, object_type))
 	response.status_code == 200
 }
 
@@ -230,13 +240,7 @@ _native_check_elem(c) := {
 # preserve index order on both sides.
 check_access_batch(store, checks) := [{"decision": d} | some d in response.body.results] if {
 	config.use_native
-	response := http.send({
-		"method": "POST",
-		"url": _native_path(store, "check-batch"),
-		"headers": _native_headers,
-		"body": {"checks": [_native_check_elem(c) | some c in checks]},
-		"raise_error": false,
-	})
+	response := _native_send(store, "check-batch", {"checks": [_native_check_elem(c) | some c in checks]}, -1)
 	response.status_code == 200
 }
 
@@ -257,17 +261,11 @@ check_access_batch(store, checks) := response.body if {
 
 check_access_batch_with_options(store, checks, ctx, semantic) := [{"decision": d} | some d in response.body.results] if {
 	config.use_native
-	response := http.send({
-		"method": "POST",
-		"url": _native_path(store, "check-batch"),
-		"headers": _native_headers,
-		"body": {
-			"checks": [_native_check_elem(c) | some c in checks],
-			"context": ctx,
-			"semantic": semantic,
-		},
-		"raise_error": false,
-	})
+	response := _native_send(store, "check-batch", {
+		"checks": [_native_check_elem(c) | some c in checks],
+		"context": ctx,
+		"semantic": semantic,
+	}, -1)
 	response.status_code == 200
 }
 
@@ -291,19 +289,11 @@ check_access_batch_with_options(store, checks, ctx, semantic) := response.body i
 # list_objects returns which objects a subject can access (a set of ids).
 list_objects(store, subject_type, subject_id, relation, object_type) := objects if {
 	config.use_native
-	response := http.send({
-		"method": "POST",
-		"url": _native_path(store, "list-objects"),
-		"headers": _native_headers,
-		"body": {
-			"subject": {"type": subject_type, "id": subject_id},
-			"action": {"name": relation},
-			"resource": {"type": object_type},
-		},
-		"raise_error": false,
-		"force_cache": true,
-		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
-	})
+	response := _native_send(store, "list-objects", {
+		"subject": {"type": subject_type, "id": subject_id},
+		"action": {"name": relation},
+		"resource": {"type": object_type},
+	}, _effective_cache_ttl(store, object_type))
 	response.status_code == 200
 	objects := {o | some o in response.body.objects}
 }
@@ -332,20 +322,12 @@ list_objects(store, subject_type, subject_id, relation, object_type) := objects 
 # list_objects with request context.
 list_objects_with_context(store, subject_type, subject_id, relation, object_type, ctx) := objects if {
 	config.use_native
-	response := http.send({
-		"method": "POST",
-		"url": _native_path(store, "list-objects"),
-		"headers": _native_headers,
-		"body": {
-			"subject": {"type": subject_type, "id": subject_id},
-			"action": {"name": relation},
-			"resource": {"type": object_type},
-			"context": ctx,
-		},
-		"raise_error": false,
-		"force_cache": true,
-		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
-	})
+	response := _native_send(store, "list-objects", {
+		"subject": {"type": subject_type, "id": subject_id},
+		"action": {"name": relation},
+		"resource": {"type": object_type},
+		"context": ctx,
+	}, _effective_cache_ttl(store, object_type))
 	response.status_code == 200
 	objects := {o | some o in response.body.objects}
 }
@@ -471,19 +453,11 @@ list_objects_page_after_with_context(store, subject_type, subject_id, relation, 
 # list_subjects returns which subjects have access to an object (a set of ids).
 list_subjects(store, subject_type, relation, object_type, object_id) := subjects if {
 	config.use_native
-	response := http.send({
-		"method": "POST",
-		"url": _native_path(store, "list-subjects"),
-		"headers": _native_headers,
-		"body": {
-			"subject": {"type": subject_type},
-			"action": {"name": relation},
-			"resource": {"type": object_type, "id": object_id},
-		},
-		"raise_error": false,
-		"force_cache": true,
-		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
-	})
+	response := _native_send(store, "list-subjects", {
+		"subject": {"type": subject_type},
+		"action": {"name": relation},
+		"resource": {"type": object_type, "id": object_id},
+	}, _effective_cache_ttl(store, object_type))
 	response.status_code == 200
 	subjects := {s | some s in response.body.subjects}
 }
@@ -606,18 +580,10 @@ check_access_with_contextual_tuples_ctx(store, subject_type, subject_id, relatio
 # list_actions returns what a subject can do on an object (a set of relations).
 list_actions(store, subject_type, subject_id, object_type, object_id) := actions if {
 	config.use_native
-	response := http.send({
-		"method": "POST",
-		"url": _native_path(store, "list-actions"),
-		"headers": _native_headers,
-		"body": {
-			"subject": {"type": subject_type, "id": subject_id},
-			"resource": {"type": object_type, "id": object_id},
-		},
-		"raise_error": false,
-		"force_cache": true,
-		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
-	})
+	response := _native_send(store, "list-actions", {
+		"subject": {"type": subject_type, "id": subject_id},
+		"resource": {"type": object_type, "id": object_id},
+	}, _effective_cache_ttl(store, object_type))
 	response.status_code == 200
 	actions := {a | some a in response.body.actions}
 }
@@ -743,19 +709,11 @@ _optional_fields(t, mapping) := {pname: t[sname] |
 # list_actions with request context.
 list_actions_with_context(store, subject_type, subject_id, object_type, object_id, ctx) := actions if {
 	config.use_native
-	response := http.send({
-		"method": "POST",
-		"url": _native_path(store, "list-actions"),
-		"headers": _native_headers,
-		"body": {
-			"subject": {"type": subject_type, "id": subject_id},
-			"resource": {"type": object_type, "id": object_id},
-			"context": ctx,
-		},
-		"raise_error": false,
-		"force_cache": true,
-		"force_cache_duration_seconds": _effective_cache_ttl(store, object_type),
-	})
+	response := _native_send(store, "list-actions", {
+		"subject": {"type": subject_type, "id": subject_id},
+		"resource": {"type": object_type, "id": object_id},
+		"context": ctx,
+	}, _effective_cache_ttl(store, object_type))
 	response.status_code == 200
 	actions := {a | some a in response.body.actions}
 }
