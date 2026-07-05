@@ -139,9 +139,20 @@ if [ "$WAIT_CI" -eq 1 ]; then
   echo "    CI is green (run $run_id)"
 fi
 
-# ── Tag ──────────────────────────────────────────────────────────────────────
-git tag -a "$TAG" -m "$MSG"
-echo "==> Created annotated tag $TAG"
+# ── Tag (signed) ─────────────────────────────────────────────────────────────
+# Release tags are SIGNED (SSH signing — see RELEASING.md). Fail with setup
+# instructions rather than silently falling back to an unsigned tag.
+if [ "$(git config gpg.format || true)" != "ssh" ] || [ -z "$(git config user.signingkey || true)" ]; then
+  echo "!! Tag signing is not configured. One-time setup (SSH signing):" >&2
+  echo "     git config --global gpg.format ssh" >&2
+  echo "     git config --global user.signingkey ~/.ssh/<your-github-key>.pub" >&2
+  echo "   Also upload that key to GitHub as a SIGNING key (Settings → SSH and" >&2
+  echo "   GPG keys → New SSH key → key type 'Signing Key') so tags show as" >&2
+  echo "   Verified. Details: RELEASING.md" >&2
+  die "refusing to create an unsigned release tag"
+fi
+git tag -s "$TAG" -m "$MSG"
+echo "==> Created SIGNED tag $TAG ($(git config user.signingkey))"
 
 if [ "$PUSH" -eq 1 ]; then
   git push origin "$TAG"

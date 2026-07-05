@@ -1,0 +1,22 @@
+# Review gates for security-sensitive paths. With branch protection
+# requiring code-owner reviews, changes here need the owner's approval.
+# (Single-maintainer today; the value is the explicit inventory of what
+# counts as security-critical, and the gate activates as the team grows.)
+
+# The authorization engine's privileged surface
+/db/security/       @thomasdarimont
+/db/migrations/     @thomasdarimont
+/db/engine/         @thomasdarimont
+
+# The policy front door (authn, authz, API allowlist) + its Helm copy
+/opa/policies/                              @thomasdarimont
+/deploy/helm/pgauthz/files/opa/policies/    @thomasdarimont
+
+# Token validation / issuer bindings / role switching in the services
+/authzen/internal/api/      @thomasdarimont
+/authzen/internal/config/   @thomasdarimont
+
+# CI and release machinery
+/.github/           @thomasdarimont
+/scripts/           @thomasdarimont
+/deploy/            @thomasdarimont

@@ -7,6 +7,17 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Signed release tags (SSH).** `release.sh` now creates signed tags
+  (`git tag -s`) and refuses to tag unsigned, printing the one-time SSH
+  signing setup if missing; `RELEASING.md` documents the flow, the GitHub
+  "Signing Key" upload for the Verified badge, and local `git tag -v`
+  verification via an allowed-signers file. `.github/CODEOWNERS` marks the
+  security-sensitive paths (engine roles/migrations, OPA policies + Helm
+  copy, AuthZEN token/issuer code, CI/release machinery) as review-gated —
+  the supply-chain hardening "first slice".
+
 ## [0.7.0] - 2026-07-05
 
 ### Fixed

@@ -11,6 +11,7 @@ that resolve relationship tuples recursively.
 
 - **Relationship-based access control (ReBAC)** — Zanzibar/OpenFGA model with direct, computed, and tuple-to-userset rules
 - **Wildcard tuples** — `user:*` grants a relation to all users of a type without individual tuples (public/anonymous access)
+- **Object wildcards (privileged grants)** — `object_id: *` grants a relation on *every* object of a type (superuser/auditor-style access); default-deny — the model rule must opt in with `allow_object_wildcard` — see [Object Wildcards](#object-wildcards-privileged-grants)
 - **Intersection and exclusion** — rule groups support AND (all rules must match) and BUT NOT (base must match, negated must not) semantics
 - **Attribute-based access control (ABAC)** — conditions on tuples (time windows, IP ranges, quotas) evaluated at check time, written in SQL or, optionally, [CEL](#condition-languages-lang)
 - **Native relationship expiration** — `expires_at` on tuples: expired grants stop granting instantly on every check and search path (enforced structurally via row-level security, server time only), re-granting reactivates, `cleanup_expired_tuples` garbage-collects with full audit history, and time-travel judges expiry as of the asked moment; conditions remain for complex time windows
