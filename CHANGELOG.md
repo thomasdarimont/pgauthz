@@ -7,6 +7,8 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-07-05
+
 ### Fixed
 
 - **Live expiry now judged per statement, not per transaction** (migration
@@ -725,7 +727,8 @@ PL/pgSQL.
 - PostgreSQL 18.x (developed/tested on 18.4). PostgREST, OPA, the AuthZEN
   services, and `pg_cel` are optional components of the reference deployment.
 
-[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/thomasdarimont/pgauthz/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/thomasdarimont/pgauthz/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.5.0...v0.6.0
