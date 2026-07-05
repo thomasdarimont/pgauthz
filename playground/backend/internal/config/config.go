@@ -50,7 +50,7 @@ func Load() Config {
 		Issuer:         env("ISSUER", "http://keycloak:8080/realms/pgauthz"),
 		RedirectURI:    env("REDIRECT_URI", "https://app.pgauthz.test/auth/callback"),
 		OpaURL:         env("OPA_URL", "http://opa:8181"),
-		AuthzenURL:     env("AUTHZEN_URL", "http://authzen-opa:8080"),
+		AuthzenURL:     env("AUTHZEN_URL", "http://pgauthzd-opa:8080"),
 		EngineDSN:      env("ENGINE_DSN", ""),
 		BaseURL:        env("BASE_URL", "https://app.pgauthz.test"),
 		BasePath:       strings.TrimRight(env("BASE_PATH", "/playground"), "/"),

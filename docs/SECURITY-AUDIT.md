@@ -8,14 +8,14 @@ one — no independent party has attested to these claims.
 - **Scope:** the SQL engine (`db/engine/`, `db/security/`, `db/migrations/`) and
   its trust boundaries, **plus** the tiers that now carry security logic: the
   AuthZEN Go services (multi-issuer routing, per-app role switching, token
-  forwarding), the OPA front-door policies (public-path allowlist, read/write
+  forwarding), the OPA sidecar policies (public-path allowlist, read/write
   role forwarding), and the model registry. The playground BFF is reviewed as a
   dev-only tool (out of the deployable engine).
 - **Method:** the original four engine passes (SECURITY DEFINER + roles; the
   condition sandbox; multi-tenant isolation; fail-closed + write validation +
   audit), plus a **2026-07 refresh** covering the surfaces added since v0.1.x:
   multi-issuer JWT routing + store/role bindings, the three `SET LOCAL ROLE`
-  paths (writer + reader hooks, authzen-direct in-service), token forwarding and
+  paths (writer + reader hooks, pgauthzd-decision in-service), token forwarding and
   the trusted-PEP `input.db_role` path, the per-role OPA cache partitioning, the
   model registry as a cross-store propagation path, and the team-Rego governance
   chokepoint. Each finding re-verified against the source; file:line citations
@@ -37,22 +37,34 @@ the worst outcome).
 **Trust boundaries.**
 
 ```
- untrusted          trusted PEP            engine boundary
- client  ──JWT──▶  OPA  ──▶ PostgREST ──SET ROLE──▶ authz.* SECURITY DEFINER fns
-                   (authn,   (api_anon /   ▲                   │ run as authz_owner
-                    policy)   authz_writer,│        ┌──────────┴─────────────┐
-                              or per-app   │        │ base tables (no direct │
-                              role via     │        │ grant to app roles)    │
-                              X-Authz-Role)│        └────────────────────────┘
-                       reader + writer hooks validate: tier member, not admin
+ untrusted        front door       policy sidecar       engine boundary
+ client ──JWT──▶ pgauthzd ─────▶ OPA ──native cb──▶ authz.* SECURITY DEFINER fns
+                 (validates      (authn,  (trusted     ▲                   │ run as authz_owner
+                  the JWT)        policy)   upstream    │        ┌──────────┴─────────────┐
+                                            of the      │        │ base tables (no direct │
+                                            callback;   │        │ grant to app roles)    │
+                                            X-Authz-Role│        └────────────────────────┘
+                                            api_anon/wr)│
+                  callback reader + writer hooks validate: tier member, not admin
  condition expr ───────────────────────────▶ authz_eval (zero-privilege sandbox)
 ```
+
+> *Architecture note (post-audit).* This audit was originally performed against
+> a PostgREST read/write bridge. PostgREST has since been **removed** — pgauthzd
+> is now the external **front door** (validates the JWT), and OPA is an internal
+> policy sidecar that calls **back** into pgauthzd's native `/pgauthz/v1`
+> callback (service-token gated, optional mTLS). The trust boundary keeps the
+> same shape: a bridge OPA calls, still asserting `X-Authz-Role` and validated by
+> the `_pre_request` / `_pre_request_reader` hooks; the old PostgREST
+> authenticator-role + `SET ROLE` dance is gone (pgauthzd connects directly as
+> `authz_reader` / `authz_writer`, per-app role via `X-Authz-Role` /
+> `DB_ROLE_CLAIM`). The findings below are preserved as recorded.
 
 **Actors & assumed capabilities.**
 
 | Actor | Can | Must not be able to |
 |---|---|---|
-| Unauthenticated client | Reach OPA only | Reach PostgREST/Postgres directly |
+| Unauthenticated client | Reach pgauthzd's public front door (rejected without a valid JWT) | Reach the OPA sidecar, pgauthzd's internal callback, or Postgres directly |
 | Authenticated app (PEP-fronted) | Checks + writes within its store/namespace | Read/write another tenant's tuples |
 | A model/condition author (admin) | Define models + conditions; publish/apply registry models | Make a condition that reads tables or runs code |
 | A direct-SQL service role | Call `authz.*` for its tier | Reach base tables; widen its own grants |
@@ -70,8 +82,9 @@ Defense-in-depth, each layer checked against the source:
 
 1. **Function-only access; no table grants.** App roles get `EXECUTE` on the
    `authz.*` API and nothing else — no `SELECT/INSERT/...` on `authz.tuples` etc.
-   (`db/security/roles.sql`; "No direct table grants" at roles.sql:201). PostgREST
-   therefore cannot expose table endpoints.
+   (`db/security/roles.sql`; "No direct table grants" at roles.sql:201). An HTTP
+   bridge (pgauthzd's callback, or the former PostgREST reader) therefore cannot
+   expose table endpoints.
 2. **SECURITY DEFINER, owned by a non-superuser.** All 59 public functions are
    `ALTER … SECURITY DEFINER` (roles.sql) and owned by **`authz_owner`**,
    a `NOLOGIN` non-superuser (roles.sql ownership transfer) — a bug in a
@@ -126,7 +139,7 @@ Defense-in-depth, each layer checked against the source:
     (`authz_writer` / `authz_reader`), and **not** be admin-capable — then
     `SET LOCAL ROLE` (transaction-scoped, no pool leak). An unknown, over-scoped,
     or admin role raises `insufficient_privilege`. `_check_namespace_access` then
-    enforces per app on both paths. `authzen-direct` applies the same discipline
+    enforces per app on both paths. `pgauthzd-decision` applies the same discipline
     in-process (`withRole`/`checkRole`, pgbackend/backend.go).
 11. **Cross-issuer isolation.** The AuthZEN services trust several issuers; the
     token's `iss` selects the validator (signature verified against *that*
@@ -170,7 +183,7 @@ they only delegate, so it is Low — recorded here for transparency.)
 | F7 | Info | **Model registry amplifies admin trust.** `apply_model` lets an admin push a model — including SQL/CEL **condition expressions** — from an authoring store to many tenant stores in one call. This grants no capability beyond `authz_admin` (publish/apply are admin-only, propagation is validated + audited + checksum-verified, and expressions still run in the zero-privilege sandbox), but the *blast radius* of a malicious or compromised admin is now fleet-wide. Treat authoring-store admin as a fleet-privileged role; immutable versions + `models_audit` give the forensic trail. | Accepted (by design; documented) |
 | F8 | Info | **Trusted-PEP mode extends to `input.db_role`.** In `REQUIRE_TOKEN_FOR_READS=false` (trusted-PEP) mode, OPA honors a request-body `input.db_role` for the read role switch (pgauthz.rego:33-36) — the same trust already extended to `input.subject` in that mode. A caller reaching OPA directly could then assert any DB role, but the reader hook still fail-closes to reader-only, non-admin roles that are `GRANT`ed to the authenticator, so it cannot escalate — at most it selects another *reader* namespace. The default `REQUIRE_TOKEN_FOR_READS=true` derives the role from verified claims and ignores `input.db_role`. Keep OPA reachable only by a trusted PEP whenever this mode is on. | Accepted (mirrors `X-Authz-Role`; operational control) |
 | F9 | Low | **403s echo the attempted store/role name.** The issuer-binding rejections include the requested store / DB role in the error string (handler.go, middleware.go). The caller already knows the value it sent, so this leaks nothing to *that* caller; the minor concern is these strings reaching shared logs. Optional: drop the value from the message. | Won't fix (low value) |
-| F10 | Info | **Negative role-validation cache in authzen-direct.** `checkRole` caches *denied* as well as allowed results for `DB_ROLE_CACHE_TTL_SECONDS` (default 60; pgbackend/backend.go). A role newly granted its membership is not honored until the entry expires — a fail-*closed* staleness (availability, not a security gap). Unknown-role lookups are never cached. Set the TTL to `0` to re-validate every request. | Accepted (bounded; documented) |
+| F10 | Info | **Negative role-validation cache in pgauthzd-decision.** `checkRole` caches *denied* as well as allowed results for `DB_ROLE_CACHE_TTL_SECONDS` (default 60; pgbackend/backend.go). A role newly granted its membership is not honored until the entry expires — a fail-*closed* staleness (availability, not a security gap). Unknown-role lookups are never cached. Set the TTL to `0` to re-validate every request. | Accepted (bounded; documented) |
 
 No High/Critical **code** findings in the refresh. Cross-issuer isolation is
 enforced with anchored patterns and 403-not-downgrade semantics; the two new
@@ -188,7 +201,7 @@ real fail-open in the expiry enforcement.
 
 | # | Sev | Finding | Status |
 |---|---|---|---|
-| F11 | **High** | **The tuple-expiry RLS escape is a caller-settable GUC (fail-open).** Native expiry hides expired tuples via a row-level-security `SELECT` policy on `authz.tuples`; the sanctioned write/delete/cleanup paths reveal expired rows by arming a transaction-local GUC, `authz.tuples_include_expired`, that the policy honors (migration 0005). But a **custom GUC is settable by any role**, and expiry is read *inside* the `SECURITY DEFINER` functions that app roles legitimately invoke (`check_access`, `list_*`). A direct `authz_reader` connection can therefore `SET authz.tuples_include_expired = 'on'` and make **expired grants grant again** — the exact fail-open expiry was meant to prevent. No policy predicate can distinguish a legitimate arming from a forged one (at evaluation time both are "GUC on, `current_user = authz_owner`"). **Verified** with a live `SET ROLE authz_reader` reproduction (expired check flipped `false → true`). **Exploitability boundary:** *not* reachable through the OPA/PostgREST/AuthZEN front door, which exposes only RPC calls, never raw SQL — so no unauthenticated or HTTP-only caller can trigger it. It is a **direct-SQL trust-tier** hole: it matters for services that connect to Postgres directly as a reader role (`authzen-direct` → `authz_reader`, direct-SQL integrations, or a SQL-injection foothold in a reader-privileged path — none found). **Fixed (migration 0006):** the SELECT policy carries **no GUC escape** — reads are expiry-honest for every role, unbypassable by any caller value. The two operations that must see expired rows (the reactivating `ON CONFLICT` upsert and cleanup) run in `SECURITY DEFINER` helpers (`authz._rls_*`) **owned by** a dedicated `BYPASSRLS` role, `authz_rls_bypass`, called normally — Postgres forbids `SET ROLE` inside a definer function, so ownership is the mechanism (not a caller-settable GUC or role switch). `EXECUTE` is granted only to `authz_owner`; **no LOGIN role can reach the bypass role** (verified: `pg_has_role` false for `authz_authenticator`/`authzen_direct`/`api_anon`/`authz_metadata`). Re-verified closed: the `SET authz.tuples_include_expired='on'` reproduction now returns `false`; a direct `_rls_*` call as `authz_reader` is denied (no `EXECUTE`). roles.sql excludes `authz._rls_%` from the blanket owner-transfer loop and re-owns them dynamically — else a definer helper could end up superuser-owned. | ✅ **Fixed** |
+| F11 | **High** | **The tuple-expiry RLS escape is a caller-settable GUC (fail-open).** Native expiry hides expired tuples via a row-level-security `SELECT` policy on `authz.tuples`; the sanctioned write/delete/cleanup paths reveal expired rows by arming a transaction-local GUC, `authz.tuples_include_expired`, that the policy honors (migration 0005). But a **custom GUC is settable by any role**, and expiry is read *inside* the `SECURITY DEFINER` functions that app roles legitimately invoke (`check_access`, `list_*`). A direct `authz_reader` connection can therefore `SET authz.tuples_include_expired = 'on'` and make **expired grants grant again** — the exact fail-open expiry was meant to prevent. No policy predicate can distinguish a legitimate arming from a forged one (at evaluation time both are "GUC on, `current_user = authz_owner`"). **Verified** with a live `SET ROLE authz_reader` reproduction (expired check flipped `false → true`). **Exploitability boundary:** *not* reachable through the pgauthzd/OPA/AuthZEN front door, which exposes only RPC calls, never raw SQL — so no unauthenticated or HTTP-only caller can trigger it. It is a **direct-SQL trust-tier** hole: it matters for services that connect to Postgres directly as a reader role (`pgauthzd-decision` → `authz_reader`, direct-SQL integrations, or a SQL-injection foothold in a reader-privileged path — none found). **Fixed (migration 0006):** the SELECT policy carries **no GUC escape** — reads are expiry-honest for every role, unbypassable by any caller value. The two operations that must see expired rows (the reactivating `ON CONFLICT` upsert and cleanup) run in `SECURITY DEFINER` helpers (`authz._rls_*`) **owned by** a dedicated `BYPASSRLS` role, `authz_rls_bypass`, called normally — Postgres forbids `SET ROLE` inside a definer function, so ownership is the mechanism (not a caller-settable GUC or role switch). `EXECUTE` is granted only to `authz_owner`; **no LOGIN role can reach the bypass role** (verified: `pg_has_role` false for `authz_authenticator`/`authzen_direct`/`api_anon`/`authz_metadata`). Re-verified closed: the `SET authz.tuples_include_expired='on'` reproduction now returns `false`; a direct `_rls_*` call as `authz_reader` is denied (no `EXECUTE`). roles.sql excludes `authz._rls_%` from the blanket owner-transfer loop and re-owns them dynamically — else a definer helper could end up superuser-owned. | ✅ **Fixed** |
 
 The audit tables' analogous GUC (`authz.audit_maintenance`) is **not**
 vulnerable in the same way: app roles hold no direct `UPDATE`/`DELETE` grant
@@ -231,8 +244,8 @@ These are where real compromise would come from — they are assumptions the eng
 
 | Risk | Why it matters | Control |
 |---|---|---|
-| Internal tiers exposed (PostgREST/Postgres reachable beyond OPA) | The read API is unauthenticated (`api_anon`) by design; exposure = tuple disclosure | Network isolation / no host ports (compose & chart already do this); verify in your env |
-| `X-Authz-Role` header is **trusted, not signed** (read *and* write) | Both PostgREST instances assume only OPA sets it; the `_pre_request` / `_pre_request_reader` hooks validate the role is a member of the tier role and not admin (core_internal.sql), but cannot prove OPA's authority | Keep both PostgREST instances reachable only by OPA; mTLS/network policy |
+| Internal tiers exposed (pgauthzd's internal callback / Postgres reachable beyond the front door) | The callback listener does not re-verify the end-user JWT (it trusts the OPA sidecar); exposure = tuple disclosure | Network isolation / no host ports (compose & chart already do this); verify in your env |
+| `X-Authz-Role` header is **trusted, not signed** (read *and* write) | Both pgauthzd callback instances (reader + writer) assume only OPA sets it; the `_pre_request` / `_pre_request_reader` hooks validate the role is a member of the tier role and not admin (core_internal.sql), but cannot prove OPA's authority | Keep both pgauthzd callback listeners reachable only by OPA; service token + mTLS/network policy |
 | `input.db_role` honored in trusted-PEP mode | With `REQUIRE_TOKEN_FOR_READS=false`, a caller can assert the read role (bounded to reader-only, non-admin, granted roles — see F8) | Keep the default `REQUIRE_TOKEN_FOR_READS=true`, or keep OPA reachable only by a trusted PEP |
 | Issuer without a `stores` / `db_roles` binding | An unbound issuer's tokens can reach every store / claim any reader role | Set per-issuer bindings; enable `REQUIRE_STORE_BINDING` / `REQUIRE_DB_ROLE_BINDING` (startup error on an unbound issuer) |
 | Model-registry authoring store is fleet-privileged | An admin on the authoring store can push models + conditions to every tenant store (F7) | Restrict `authz_admin` on the authoring store; review `models_audit` + registry versions |
@@ -246,7 +259,7 @@ These are where real compromise would come from — they are assumptions the eng
 
 Deploy-time (most are in [`PRODUCTION.md`](PRODUCTION.md) — this cross-checks them):
 
-- [ ] PostgREST (read + write) and Postgres have **no host ports**; only OPA is reachable.
+- [ ] pgauthzd's internal callback listeners (read + write) and Postgres have **no host ports**; only OPA reaches the callback, and only pgauthzd reaches OPA.
 - [ ] Every secret overridden; `opa.requireTokenForReads=true` unless a trusted PEP fronts reads.
 - [ ] `authz_contextual_reader` granted only to trusted services (and only if used).
 - [ ] JWT verified against your IdP's JWKS; role claim (`DB_ROLE_CLAIM`) mapping reviewed.
@@ -270,8 +283,8 @@ SQL/CEL condition read data, call a function, or escape `authz_eval`; (2)
 **cross-tenant isolation** — find any decision/search path that returns another
 store's tuples, a namespace bypass, or a way for one issuer's token to reach
 another issuer's stores/DB roles despite the anchored bindings; (3) **fail-open**
-— any error/NULL/timeout path that yields *allow*; (4) the **OPA→PostgREST trust
-boundary** — forge or replay `X-Authz-Role` on the reader *or* writer, or smuggle
+— any error/NULL/timeout path that yields *allow*; (4) the **OPA→pgauthzd callback
+trust boundary** — forge or replay `X-Authz-Role` on the reader *or* writer, or smuggle
 `input.db_role` past `REQUIRE_TOKEN_FOR_READS`; (5) the **role-switch hooks** —
 find a role that passes `_pre_request` / `_pre_request_reader` yet is
 admin-capable or not GRANT-restricted; (6) **tuple expiry** — bypass the RLS `SELECT` policy (F11, the escape-GUC path, is now fixed via a

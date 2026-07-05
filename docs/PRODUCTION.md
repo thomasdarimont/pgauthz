@@ -4,7 +4,7 @@ A checklist and role-recipe guide for running pgauthz outside the demo. The
 demo defaults favor convenience; this page is what to change before exposing
 the engine to real traffic. Deeper background is in
 [ARCHITECTURE.md](ARCHITECTURE.md) (security model, deployment topologies),
-[DEVELOPMENT.md](DEVELOPMENT.md) (JWT/PostgREST/operations), and
+[DEVELOPMENT.md](DEVELOPMENT.md) (JWT/operations), and
 [DESIGN.md](DESIGN.md) (rationale).
 
 ## Configuration
@@ -41,9 +41,10 @@ by `init.sh` on every run.
       `AUTHZ_AUTHENTICATOR_PASSWORD`, `AUTHZEN_DIRECT_PASSWORD`. The service-role
       passwords are applied at first DB init, so set them before the first
       `./init.sh` (to change them later: `docker compose down -v && ./init.sh`).
-- [ ] **Never host-expose either PostgREST instance.** The reader (`api_anon`)
-      is a full reader and the writer runs as `authz_writer`; OPA is the
-      mandatory front door, and only OPA should reach PostgREST. See
+- [ ] **Never host-expose pgauthzd's internal callback listeners.** pgauthzd is
+      the external front door; the read callback runs a full reader role and the
+      write callback runs as `authz_writer`, and both are reached **only** by
+      OPA's callback (service token + optional mTLS, no host port). See
       [Network exposure](#network-exposure).
 - [ ] **Decide the AuthZEN subject policy.** Keep `ALLOW_SUBJECT_OVERRIDE=false`
       (token-only) unless the caller is a trusted PEP. See [AuthZEN subject policy](#authzen-subject-policy).
@@ -67,11 +68,12 @@ by `init.sh` on every run.
       unrestricted. See [authzen/README.md → Multi-Store](../authzen/README.md).
 - [ ] **Configure per-app DB roles on both AuthZEN services** (multi-tenant).
       Both services enforce database-level per-application namespace isolation
-      on reads: `authzen-direct` assumes the derived role itself
+      on reads: `pgauthzd-decision` assumes the derived role itself
       (`DB_ROLE_CLAIM` / `CLIENT_DB_ROLES` → `SET LOCAL ROLE`), and
-      `authzen-opa` forwards it to OPA (`input.db_role`), which passes it to
-      the PostgREST reader as `X-Authz-Role` for `_pre_request_reader` to
-      assume. For the OPA path, also set `DB_ROLE_CLAIM` on the **OPA**
+      `pgauthzd-opa` forwards it to OPA (`input.db_role`), which passes it to
+      the pgauthzd read callback as `X-Authz-Role`; pgauthzd validates it and
+      `SET LOCAL ROLE`s to it for the request. For the OPA path, also set
+      `DB_ROLE_CLAIM` on the **OPA**
       service so token-mode requests derive the role from verified claims.
       With no role configured, reads run as the fixed full-reader role.
 - [ ] **Gate the AuthZEN reverse-search endpoints.**
@@ -98,9 +100,9 @@ by `init.sh` on every run.
       [High availability & failover](#high-availability--failover-the-write-path).
 - [ ] **Review namespace grants.** If you use namespaces, grant
       `namespace_access` per type so reads/writes are scoped. For per-app
-      isolation over the OPA write path, issue per-app DB roles and set
-      `DB_ROLE_CLAIM` (the writer's `_pre_request` hook assumes the role
-      from the JWT) — see [DEVELOPMENT.md → Per-app namespace isolation](DEVELOPMENT.md#per-app-namespace-isolation-over-the-opa-write-path).
+      isolation over the pgauthzd write path, issue per-app DB roles and set
+      `DB_ROLE_CLAIM` (pgauthzd validates the role and `SET LOCAL ROLE`s to it
+      per request) — see [DEVELOPMENT.md → Per-app namespace isolation](DEVELOPMENT.md#per-app-namespace-isolation-over-the-pgauthzd-write-path).
 
 ## Role recipes
 
@@ -125,10 +127,9 @@ created and granted in `db/security/roles.sql`.
 
 | Component | Connects as | Effective role(s) | Notes |
 |---|---|---|---|
-| OPA → PostgREST (reader, :3000) | `authz_authenticator` | `SET ROLE` → `api_anon` (or a JWT-claimed role) | `authz_authenticator` is `LOGIN NOINHERIT`; it can `SET ROLE` to any app role. Reader serves anonymous reads as `api_anon`. |
-| PostgREST writer (internal) | `authz_authenticator` | `SET ROLE` → `authz_writer` (fixed anon role) | **No JWT verification** — OPA is the front door (verifies the token + writer role, then forwards). Reachable only by OPA; no host port. |
-| AuthZEN-direct (Go, :8090) | `authzen_direct` | inherits `authz_reader` | Read-only; no `SET ROLE`. Dedicated non-superuser login. |
-| AuthZEN-opa (Go, :8091) | — (no DB connection) | — | Calls OPA → PostgREST. |
+| pgauthzd-decision (Go, :8090, `decision-only`) | `authzen_direct` | inherits `authz_reader` (optional `SET LOCAL ROLE` to a per-app role) | Read-only front door; direct pgx, no OPA. Dedicated non-superuser login. |
+| pgauthzd-opa (Go, :8091, `compat-opa`) | `authzen_direct` | `authz_reader` default (`SET LOCAL ROLE` per-app) | Front door that consults its OPA sidecar; also hosts the internal read callback OPA calls back into for the graph. |
+| pgauthzd-full write callback (internal, `full`) | `pgauthzd_rw` | inherits `authz_writer` (per-app `SET LOCAL ROLE`) | Writer instance; applies writes natively via pgx (no authenticator / `SET ROLE` dance — it connects directly as its writer role). The **callback listener** does no JWT verification of its own — it trusts OPA (its upstream policy sidecar) over the shared service token + `X-Authz-Role`. Internal-only, no host port. (pgauthzd is the external front door; its `/pgauthz/v1/write` API validates the JWT + writer role.) |
 | Backend writers (your app) | a login role granted `authz_writer` (or the writer API with a `role=authz_writer` JWT) | `authz_writer` | |
 | Admin tooling | a login role granted `authz_admin` | `authz_admin` | Store/model/namespace changes. |
 
@@ -146,25 +147,34 @@ GRANT authz_contextual_reader TO <your_trusted_backend_role>;
 
 ## Network exposure
 
-- **OPA is the only front door** — for reads *and* writes. Neither PostgREST
-  instance has per-request authn of its own; keep both on an internal network
-  and expose only OPA (`:8181`).
-- **Reader and writer are isolated by DB role.** The reader runs as
-  `api_anon`/`authz_reader` (no write grants — structurally cannot mutate); the
-  writer runs as the fixed `authz_writer` and is reachable only by OPA. A bug in
-  the read policy therefore cannot escalate to a write.
-- **Read-only deployments:** omit `postgrest-writer` and leave
-  `POSTGREST_WRITER_URL` unset — OPA's write rule returns
+- **pgauthzd is the external front door** — for reads *and* writes; it validates
+  the JWT. OPA is an **internal policy sidecar** reachable only by pgauthzd (and
+  pgauthzd's own callback listeners, which OPA calls back into, have no host
+  port). Expose pgauthzd's front-door ports; keep OPA and the callback listeners
+  on an internal network. An external Nginx/LB may front pgauthzd itself.
+- **Read and write callbacks are isolated by DB role.** The read callback runs a
+  read-only role (`authz_reader`; no write grants — structurally cannot mutate);
+  the write callback runs as `authz_writer` and is reachable only by OPA's
+  callback. A bug in the read policy therefore cannot escalate to a write.
+- **Read-only deployments:** omit the `full`/writer instance and leave
+  `NATIVE_WRITE_URL` unset — OPA's write rule returns
   `{"allowed": false, "error": "writes_disabled"}`.
 - See [ARCHITECTURE.md → Deployment View](ARCHITECTURE.md#7-deployment-view).
 
-### Edge proxy / mTLS in front of OPA
+### Edge proxy / mTLS
 
-OPA exposes plain HTTP and its `/v1/data` API reads the JWT from the request
-**body** (`input.token`) — it does not consume the `Authorization` header or any
-TLS client identity (that header feeds only OPA's own admin gating). For
-production, put a TLS-terminating reverse proxy in front of OPA and stop
-publishing OPA's port to the host, so the proxy is the only entry point.
+In the default topology **pgauthzd is the front door** and OPA is an internal
+sidecar — clients never reach OPA directly, so **stop publishing OPA's port to
+the host** and keep it on an internal network. Front **pgauthzd** with a
+TLS-terminating reverse proxy / load balancer for transport security at the edge.
+
+The proxy template below (in `gateway/`) is for the optional/legacy topology that
+exposes OPA's decision API directly: OPA serves plain HTTP and its `/v1/data` API
+reads the JWT from the request **body** (`input.token`) — it does not consume the
+`Authorization` header or any TLS client identity (that header feeds only OPA's
+own admin gating). The same TLS / mTLS pattern also protects the internal
+pgauthzd↔OPA↔callback hops (prefer mesh-provided mTLS, or the callback listeners'
+built-in `INTERNAL_TLS_*` options, where available).
 
 This cleanly separates two concerns:
 
@@ -201,18 +211,25 @@ authz.
 Real issuers sign tokens with a private key and publish the public key at a
 `jwks_uri`. Each component verifies tokens independently:
 
-**OPA verifies every token** — for reads and writes alike. The demo ships a
-static `opa/data/jwks.json` ES256 key; in production point OPA at your issuer,
-which can fetch and cache a remote `jwks_uri`. The AuthZEN services verify
-independently via `JWKS_URL` or `JWKS_FILE`.
+**pgauthzd verifies the JWT** — for reads and writes alike; it is the front
+door. Multi-issuer via `JWT_ISSUERS` (the token's `iss` selects the validator;
+legacy single-issuer `JWKS_URL`/`JWKS_FILE` still work), so `jwks_uri` rotation
+lives in one place. When policy enrichment is enabled (`compat-opa`), pgauthzd
+forwards the verified token to OPA (`FORWARD_TOKEN_TO_OPA`) and OPA re-validates
+it — defense in depth. The demo ships a static `opa/data/jwks.json` ES256 key;
+in production point pgauthzd (and OPA, when enriching) at your issuer's remote
+`jwks_uri`.
 
-Because OPA fronts the writer (it forwards authorized writes to a fixed-role
-writer that does **no** JWT verification of its own), there is a single place
-that handles tokens and `jwks_uri` rotation — no JWKS to sync into PostgREST,
-and PostgREST's inability to fetch a remote `jwks_uri` is no longer a concern.
+Because pgauthzd is the single front door that validates tokens — and the
+internal **write callback** trusts OPA over the shared service token, doing
+**no** JWT verification of its own — there is one place that handles tokens and
+`jwks_uri` rotation.
 
-**Write authorization** is a faithful port of the old role-claim model into OPA,
-made configurable for any issuer:
+**Write authorization.** pgauthzd's writer is the front door (it validates the
+JWT + writer role and applies the write via pgx); the write-authz **decision** is
+today delegated to the OPA `write.rego` policy the writer consults — fully moving
+it into pgauthzd is the **pending pgauthzd-fronted-writes increment**. The
+role-claim model is configurable for any issuer:
 
 - `JWT_ROLES_CLAIM` — comma-separated list of dotted paths to roles arrays;
   roles are aggregated (set-union) across all of them, default `roles`. For
@@ -221,12 +238,12 @@ made configurable for any issuer:
 - `WRITER_ROLE` — the role value that authorizes tuple writes (matched in any
   configured claim), default `authz_writer`.
 
-OPA verifies the token, requires `WRITER_ROLE` within the configured claim, then
-forwards `write`/`delete` to the writer — recording the authenticated subject as
+OPA (the write-authz decision) requires `WRITER_ROLE` within the configured
+claim and authorizes `write`/`delete` — the authenticated subject is recorded as
 the audit author (`performed_by`). The writer always runs as `authz_writer`
 regardless of token contents, so a forged or over-scoped role claim cannot reach
 admin operations. Admin/model management is intentionally **out of** the
-OPA-fronted write path — perform it via a separate `authz_admin` channel.
+write path — perform it via a separate `authz_admin` channel.
 
 ## AuthZEN subject policy
 
@@ -262,7 +279,7 @@ Like `ALLOW_SUBJECT_OVERRIDE`, `compose.yml` defaults to the safe value (`true`)
 and the demo opts into `false` via `env.sh`.
 
 **Avoiding `false` altogether with token-forwarding.** When the PEP in front of
-OPA is `authzen-opa`, prefer `FORWARD_TOKEN_TO_OPA=true` on it: the service then
+OPA is `pgauthzd-opa`, prefer `FORWARD_TOKEN_TO_OPA=true` on it: the service then
 forwards the verified bearer token to OPA as `input.token`, OPA re-validates it,
 and `REQUIRE_TOKEN_FOR_READS` can stay **`true`** — no tokenless subject-trust
 anywhere (defense in depth; the playground stack runs this way). The tokenless
@@ -329,9 +346,9 @@ and the README "Consistency model" section.
 
 ### Strict revocation: synchronous apply on the write path
 
-The OPA-fronted writer connects with **`synchronous_commit = remote_apply`**
-(connection-scoped in its `PGRST_DB_URI`; Helm:
-`postgrestWriter.synchronousCommit`). With `synchronous_standby_names`
+The pgauthzd `full`/writer instance connects with
+**`synchronous_commit = remote_apply`** (connection-scoped in its
+`DATABASE_URL`; Helm: `writer.synchronousCommit`). With `synchronous_standby_names`
 configured, a grant/revoke is only **acknowledged once every synchronous
 standby has applied it** — after the ack, no replica in the set can serve a
 stale allow. Without synchronous standbys it is a no-op. In one sentence:
@@ -354,9 +371,8 @@ incident):
   success or failure; and a **quorum shrink without read eviction** reopens
   the stale-allow hole.
 - **Per-write consistency modes.** The connection default is the *policy*;
-  individual writes override it via the `consistency` field on the OPA write
-  input (forwarded as `X-Authz-Consistency` → `_pre_request()` →
-  `SET LOCAL synchronous_commit`):
+  individual writes override it via the `consistency` field on the write request,
+  which pgauthzd maps to a per-transaction `SET LOCAL synchronous_commit`:
   `applied` (remote_apply — strict revocation) · `durable` (flushed on sync
   standbys) · `eventual` (primary-only; the opt-down for bulk/latency-tolerant
   grants). Unknown values fail closed. Direct-SQL callers do the same with
@@ -397,10 +413,9 @@ On the Helm/CloudNativePG deployment this is **already handled** when
 
 - CNPG monitors the primary and, on failure, **promotes the most-advanced
   standby** and **repoints the `-rw` Service** to it.
-- Everything that writes connects to that `-rw` name — the migrations Job,
-  `postgrest-writer`, and therefore the OPA write front door — so after failover
-  they reconnect to the **same DNS name** and land on the new primary. No
-  redeploy, no config change.
+- Everything that writes connects to that `-rw` name — the migrations Job and
+  the pgauthzd `full`/writer instance — so after failover they reconnect to the
+  **same DNS name** and land on the new primary. No redeploy, no config change.
 - The `-ro`/`-r` read Services drop the dead node from rotation automatically.
 
 **The application must retry writes.** During the promotion window (seconds to
@@ -467,7 +482,7 @@ database:
       minSyncReplicas: 1             # keep RPO 0 even with one standby down
   # backup: ...                      # always pair HA with backups
 
-postgrestWriter:
+writer:
   synchronousCommit: remote_apply    # (default) strict revocation on ack
 ```
 
@@ -488,8 +503,8 @@ Why these choices, and what they give you:
 - **`minSyncReplicas: 1`** keeps writes flowing (still RPO 0) when one
   standby is down; set `2` if you prefer revokes to block until full
   redundancy is restored.
-- **Stateless tier per AZ.** Run ≥ 2 replicas of OPA / PostgREST /
-  AuthZEN spread across zones (standard deployment spread). Reads via the
+- **Stateless tier per AZ.** Run ≥ 2 replicas of pgauthzd (reader/writer/
+  AuthZEN) + OPA spread across zones (standard deployment spread). Reads via the
   `-ro` Service cross AZs freely (~1 ms); if you want AZ-local reads, set
   the Service's `trafficDistribution: PreferClose` (K8s ≥ 1.31).
 - **Write path** stays on the global `-rw` name — CNPG repoints it on
@@ -551,8 +566,8 @@ the multi-AZ reference config applies with
    rejoins. (Window is safe: the only replica is down, nothing can serve
    stale reads.)
 5. **Repoint writes:** flip the VIP / the `authz-primary` DNS or network
-   alias so the writer's `PGRST_DB_URI` resolves to the new primary.
-   PostgREST reconnects on its own; clients retry per the
+   alias so the writer's `DATABASE_URL` resolves to the new primary.
+   pgauthzd reconnects on its own; clients retry per the
    [HA section](#high-availability--failover-the-write-path).
 6. ⚠ **Rejoin the old node as the new standby — never restart it as-is:**
    its timeline has diverged (it may hold *unacked* local commits — losing
@@ -681,7 +696,7 @@ no `DROP SCHEMA` install path — installing and upgrading are the same operatio
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — security model (defense in depth),
   deployment topologies, decision records
-- [DEVELOPMENT.md](DEVELOPMENT.md) — JWT/PostgREST setup, partition
+- [DEVELOPMENT.md](DEVELOPMENT.md) — JWT setup, partition
   management, operational tasks
 - [DESIGN.md](DESIGN.md) — design rationale (sandboxing, reverse expansion,
   transactional versioning)

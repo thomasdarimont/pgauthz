@@ -176,10 +176,11 @@ jobs:
         run: docker compose -f compose-replication.yml down -v || true
 
   # Exercises the streaming-replication scaling demo (read-write primary +
-  # read-only hot-standby replica + PostgREST/OPA on the replica). Installs via
+  # read-only hot-standby replica + pgauthzd (decision-only reader) on the
+  # replica; OPA is the internal sidecar). Installs via
   # `COMPOSE_FILE=compose-scaling.yml ./init.sh`, so it needs sqlx-cli. Asserts
   # the standby streams the schema + data, resolves checks on the replica, and
-  # serves the OPA -> PostgREST -> replica read path.
+  # serves the LB -> pgauthzd(decision-only/reader) -> replica read path.
   scaling-test:
     name: Streaming replication (read replica)
     runs-on: ubuntu-latest

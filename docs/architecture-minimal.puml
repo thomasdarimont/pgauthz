@@ -13,20 +13,19 @@ title Minimal Architecture with Read/Write
 actor "Application" as app1
 
 node "Docker Host" as host1 {
-    component "OPA\n:8181" as opa1 #LightBlue
-    component "pgauthzd\n:8081 (internal)" as pgd1 #LightGreen
+    component "pgauthzd\n:8080" as pgd1 #LightGreen
     database "PostgreSQL\n:5432" as pg1 #Orange
 }
 
-app1 -down-> opa1 : "POST /v1/data/...\n(authz checks)"
-opa1 -down-> pgd1 : "native callback\n/pgauthz/v1 (internal)"
-pgd1 -down-> pg1 : "SQL (pgx, read-only)"
-app1 -down-> pg1 : "direct SQL\n(tuple writes)"
+' Minimal = no OPA: pgauthzd is the front door, answering straight from the
+' ReBAC graph (decision-only for reads, full for writes). Add OPA only when you
+' need Rego policy enrichment (see the full / enterprise diagrams).
+app1 -down-> pgd1 : "AuthZEN / native API\n(authz checks + tuple writes)"
+pgd1 -down-> pg1 : "SQL (pgx)"
 
 legend bottom left
   |= Color |= Component |
-  | <#LightBlue> | OPA — policy evaluation |
-  | <#LightGreen> | pgauthzd — native callback (read) |
+  | <#LightGreen> | pgauthzd — the front door (AuthZEN + native API) |
   | <#Orange> | PostgreSQL — single instance |
 end legend
 

@@ -41,10 +41,10 @@ services:
 
   # NOTE: PostgREST (reader + writer) has been removed. OPA calls back into
   # pgauthzd's native API for both reads and writes (NATIVE_URL /
-  # NATIVE_WRITE_URL below): the read callback is the decision-only instance
-  # (authzen-opa's internal listener) and the write callback is the full
-  # instance (pgauthzd-full). Both live in compose-authzen.yml, which
-  # start.sh always includes.
+  # NATIVE_WRITE_URL below): the read callback is pgauthzd-opa's internal
+  # listener (read-only role) and the write callback is pgauthzd-full's
+  # (writer role). Both live in compose-authzen.yml, which start.sh always
+  # includes.
 
   opa:
     image: openpolicyagent/opa:1.18.2
@@ -59,9 +59,9 @@ services:
       # is ONLY safe behind a trusted PEP. The demo opts into false via env.sh.
       REQUIRE_TOKEN_FOR_READS: "${REQUIRE_TOKEN_FOR_READS:-true}"
       # pgauthzd native callback: OPA's read/decision data client calls back into
-      # the decision-only instance's INTERNAL listener (authzen-opa:8081); the
+      # the compat-opa instance's INTERNAL listener (pgauthzd-opa:8081); the
       # shared service token must match its INTERNAL_SERVICE_TOKEN.
-      NATIVE_URL: "${NATIVE_URL:-http://authzen-opa:8081}"
+      NATIVE_URL: "${NATIVE_URL:-http://pgauthzd-opa:8081}"
       NATIVE_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
       # Authorized writes go to a WRITER instance's callback (full profile),
       # separate from NATIVE_URL so reads and writes target different (read-only

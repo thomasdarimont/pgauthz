@@ -12,20 +12,27 @@ authorization API backed by the PostgreSQL Zanzibar engine.
 
 ## 1. Architecture Overview
 
-The system has three components connected via a Docker network:
+The request path spans OPA and pgauthzd, backed by PostgreSQL. pgauthzd is the
+front door; OPA is an internal policy sidecar it consults:
 
 ```
                      ┌─────────────────────┐
-  Application ──────▶│   OPA  (:8181)      │
-  (HTTP)             │   Rego policies     │
+  Client ───────────▶│ pgauthzd compat-opa │  front door: validates JWT
+  (HTTP + JWT)       │ (front door)        │  (JWT_ISSUERS), forwards token
                      └────────┬────────────┘
-                              │ http.send (internal, native callback
-                              │ over service token / optional mTLS)
+                              │ consults OPA (FORWARD_TOKEN_TO_OPA)
                               ▼
                      ┌─────────────────────┐
-                     │ pgauthzd            │
-                     │ native /pgauthz/v1  │
-                     │ pgx → SQL           │
+                     │   OPA  (:8181)      │  internal Rego policy sidecar
+                     │   Rego policies     │  (only pgauthzd calls it)
+                     └────────┬────────────┘
+                              │ http.send (native callback,
+                              │ service token / optional mTLS)
+                              ▼
+                     ┌─────────────────────┐
+                     │ pgauthzd            │  native /pgauthz/v1 callback
+                     │ native /pgauthz/v1  │  (decision-only reader /
+                     │ pgx → SQL           │   full writer) — internal only
                      └────────┬────────────┘
                               │ SQL (pgx pool)
                               ▼
@@ -36,24 +43,30 @@ The system has three components connected via a Docker network:
                      └─────────────────────┘
 ```
 
-- **OPA** is the only externally exposed service (port 8181). It receives
-  authorization queries as JSON, evaluates Rego policies, and returns decisions.
-- **pgauthzd** is internal only (no host port). Its `compat-opa` capability
-  profile serves OPA the native `/pgauthz/v1` callback surface on an internal
-  listener; OPA calls it via the Docker network. Reads are served by a
-  **decision-only** pgauthzd instance (read-only DB role); writes by a **full**
-  instance (writer role). Reader/writer separation follows the instance's
-  profile and DB role, not separate REST services.
+- **pgauthzd (front door)** is the client-facing entry point. As the
+  `compat-opa` profile it validates the JWT (multi-issuer via `JWT_ISSUERS`) and
+  forwards the verified token to OPA (`FORWARD_TOKEN_TO_OPA`). As the internal
+  **callback tier** (no host port) it serves OPA the native `/pgauthz/v1`
+  surface: reads by a **decision-only** instance (read-only DB role), writes by
+  a **full** instance (writer role). Reader/writer separation follows the
+  instance's profile and DB role, not separate REST services.
+- **OPA** is an internal Rego policy sidecar — the only caller of OPA is
+  pgauthzd. It evaluates policies and returns decisions, calling **back** into
+  the pgauthzd native callback for graph data; it has no independent path to the
+  database.
 - **PostgreSQL** stores all authorization data and runs the Zanzibar engine.
   The recursive access resolution happens entirely in SQL; pgauthzd runs the
   SQL functions through its pgx connection pool.
 
-Applications never call pgauthzd or PostgreSQL directly — OPA is the single
-entry point. This gives you a clean separation between:
+Clients reach the engine through pgauthzd, the front door — never OPA's policy
+sidecar or PostgreSQL directly. (This document and the base/dev compose in §3
+also expose OPA's Data API at `:8181` for testing the policy layer directly; in
+that mode OPA still reaches the graph only through the pgauthzd native
+callback.) The tiers give you a clean separation between:
 
 - **Policy logic** (Rego) — who can do what, under what conditions
 - **Relationship resolution** (SQL) — graph traversal, tuple matching, condition evaluation
-- **Authentication** (Rego) — JWT verification, subject extraction
+- **Authentication** — JWT validation at the pgauthzd front door, re-verified by OPA
 
 ---
 
@@ -152,8 +165,10 @@ authenticated with a shared service token — pgauthzd reads it from
 `INTERNAL_SERVICE_TOKEN`, OPA sends it as `Authorization: Bearer <token>` from
 its `NATIVE_SERVICE_TOKEN` — and can optionally require mTLS on top. It trusts
 OPA's asserted subject (in the request body) plus the per-app role header
-`X-Authz-Role`; it does **not** re-verify the end-user JWT. OPA is the front
-door and the security boundary — the same trust model PostgREST had.
+`X-Authz-Role`; it does **not** re-verify the end-user JWT. For this internal
+callback OPA is the trusted upstream policy sidecar — pgauthzd (`compat-opa`) is
+the external front door that already validated the JWT — so the callback
+listener need not re-verify it.
 
 Each instance connects to PostgreSQL with a fixed DB role selected by its
 capability profile:
@@ -292,10 +307,10 @@ so cached decisions never cross store, subject, or application-role
 boundaries; the TTL only bounds *temporal* staleness.
 
 Callers of the **AuthZEN services** request the same thing with the standard
-HTTP header `Cache-Control: no-cache` — `authzen-opa` maps it to
+HTTP header `Cache-Control: no-cache` — `pgauthzd-opa` maps it to
 `input.no_cache` (a header can't work at the OPA hop: OPA's REST API does not
 expose request headers to policy input, so the body field is the mechanism
-there). `authzen-direct` has no decision cache, so every decision is fresh by
+there). `pgauthzd-decision` has no decision cache, so every decision is fresh by
 construction.
 
 *DoS note:* the bypass is not a meaningful denial-of-service vector.
@@ -455,7 +470,7 @@ All requests are POST to OPA's Data API at `http://localhost:8181/v1/data/`.
 > safe **only** behind a trusted PEP). The keycloak/playground overlay pins the
 > secure token-only mode (`REQUIRE_TOKEN_FOR_READS=true`), where these return
 > `{"result": false}` — use the `input.token` variants there (the playground's
-> AuthZEN path works because `authzen-opa` forwards the verified token,
+> AuthZEN path works because `pgauthzd-opa` forwards the verified token,
 > `FORWARD_TOKEN_TO_OPA=true`). See §7.
 
 ### Access Check (`allow`)
@@ -976,7 +991,7 @@ fixed surface means team-specific *rules* are not exposed through it — they
 live in the sidecar.
 
 **The invariant in both options:** nothing calls pgauthzd/PostgreSQL
-directly. Team policies compose *on top of* the front door (inside the
+directly. Team policies compose *on top of* the PDP's decision API (inside the
 shared PDP, or in front of it) — never around it.
 
 ---
@@ -1033,13 +1048,17 @@ tokens from `opa/http-client.env.json`.
   connects with a read-only DB role (inheriting `authz_reader`) and does no
   end-user JWT verification of its own — its callback listener only checks the
   shared service token (`INTERNAL_SERVICE_TOKEN`) and optional mTLS. Keep it
-  internal to the Docker network — OPA is the security boundary for all
-  read-path access checks.
-- **The write (full) pgauthzd is fronted by OPA, not exposed.** It has no host
-  port and does **no** JWT verification of its own — it connects as a fixed
-  `authz_writer` role and is reachable only by OPA (over the same service-token
-  callback), which verifies the token, requires the configured writer role, and
-  forwards the write. See
+  internal to the Docker network — for this callback listener OPA is the trusted
+  upstream, while the external front door (pgauthzd `compat-opa`) is what
+  validates the end-user JWT on the read path.
+- **The write (full) pgauthzd callback is fronted by OPA, not exposed.** It has
+  no host port and does **no** JWT verification of its own — it connects as a
+  fixed `authz_writer` role and is reachable only by OPA (over the same
+  service-token callback), which verifies the token, requires the configured
+  writer role, and forwards the write. (The pgauthzd writer is the HTTP write
+  front door; delegating the write-authz *decision* fully into pgauthzd is the
+  pending pgauthzd-fronted-writes increment — today OPA's `write.rego` still
+  fronts that decision.) See
   [DEVELOPMENT.md → Write API](../docs/DEVELOPMENT.md#write-api-opa-fronted).
 - **JWKS rotation:** Replace `opa/data/jwks.json` with your identity
   provider's JWKS endpoint, or mount the file from a secrets manager.
@@ -1516,8 +1535,8 @@ Round-robin or least-connections are both fine since all instances are
 equivalent.
 
 **Health checks** should verify the full stack, not just OPA. A simple
-POST through OPA that reaches pgauthzd and PostgreSQL catches failures
-at any layer:
+probe that traverses OPA, the pgauthzd callback, and PostgreSQL catches
+failures at any layer:
 
 ```
 # Load balancer health check

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Integration tests for AuthZEN API endpoints.
-# Exercises both authzen-direct (port 8090) and authzen-opa (port 8091).
+# Exercises both pgauthzd-decision (port 8090) and pgauthzd-opa (port 8091).
 # Requires bootstrap.sh to have been run first.
 #
 set -euo pipefail
@@ -403,8 +403,8 @@ run_tests() {
 
 # --- Run tests for both services ---
 
-run_tests "$DIRECT_URL" "authzen-direct"
-run_tests "$OPA_URL" "authzen-opa"
+run_tests "$DIRECT_URL" "pgauthzd-decision"
+run_tests "$OPA_URL" "pgauthzd-opa"
 
 # --- Native pgauthz API (/pgauthz/v1/*) — direct backend only ---
 # explain (the "why") + watch (changefeed HTTP transport). The direct backend
@@ -527,14 +527,14 @@ check_http "write is not on the OPA-compat public listener (404)" \
     -X POST "$OPA_URL/pgauthz/v1/write" \
     -H "Content-Type: application/json" -H "$AUTH_WP" -d "$WP_BODY"
 
-# --- Cache-Control: no-cache → fresh decision (authzen-opa) ---
+# --- Cache-Control: no-cache → fresh decision (pgauthzd-opa) ---
 # The standard freshness header maps to OPA's input.no_cache (0-second
 # decision-cache TTL). Proof: prime the OPA cache with an allow, revoke the
 # tuple in the DB, then re-evaluate WITH the header inside the TTL window —
-# the revoke must be visible. (authzen-direct has no decision cache, so the
+# the revoke must be visible. (pgauthzd-decision has no decision cache, so the
 # header is trivially satisfied there.)
 echo ""
-echo "==> Cache-Control: no-cache freshness (authzen-opa)..."
+echo "==> Cache-Control: no-cache freshness (pgauthzd-opa)..."
 echo ""
 
 DB_CONTAINER=$(docker ps --format '{{.Names}}' | grep -E 'authz-db|authz-primary' | head -1)
@@ -586,7 +586,7 @@ TOKEN_DET=$(make_token "det_az" "internal_user")
 DET_BODY='{"subject":{"type":"internal_user","id":"det_az"},"action":{"name":"viewer"},"resource":{"type":"document","id":"doc_det_az1"}}'
 
 for svc_url in "$DIRECT_URL" "$OPA_URL"; do
-    svc_name=$([ "$svc_url" = "$DIRECT_URL" ] && echo authzen-direct || echo authzen-opa)
+    svc_name=$([ "$svc_url" = "$DIRECT_URL" ] && echo pgauthzd-decision || echo pgauthzd-opa)
 
     total=$((total + 1))
     got=$(curl -sf -X POST "$svc_url/access/v1/evaluation"         -H "Content-Type: application/json"         -H "Authorization: Bearer $TOKEN_DET"         -H "X-Authz-Detail: true"         -d "$DET_BODY" | jq -rc '(.decision|tostring) + "/" + (.context.state // "none") + "/" + ((.context.missing_context // [])|join(","))')

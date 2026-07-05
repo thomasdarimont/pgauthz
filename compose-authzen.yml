@@ -1,15 +1,28 @@
+# pgauthzd instances — one binary, three capability PROFILES
+# (PGAUTHORIZER_PROFILE). The security guarantee is the DB connection ROLE, not
+# the flag: a decision-only instance connects with a role that physically cannot
+# write and asserts so at startup.
+#
+#   pgauthzd-decision : decision-only (read-only role) — AuthZEN + native reads
+#   pgauthzd-opa      : compat-opa    (fronts OPA)      — hosts the OPA read callback
+#   pgauthzd-full     : full          (writer role)     — hosts the OPA write callback
+
+x-pgauthzd-build: &pgauthzd-build
+  context: ./pgauthzd
+  args:
+    VERSION: ${VERSION:-dev}   # `VERSION=0.2.2 docker compose build` stamps it; else dev
+
 services:
 
-  authzen-direct:
-    build:
-      context: ./pgauthzd
-      args:
-        BINARY: authzen-direct
-        VERSION: ${VERSION:-dev}   # `VERSION=0.2.2 docker compose build` stamps it; else dev
+  # decision-only: direct pgx, read-only. Serves AuthZEN + native reads with no
+  # OPA in the loop. The security boundary is the DB role, not the flag.
+  pgauthzd-decision:
+    build: *pgauthzd-build
     ports:
       - "8090:8080"
     environment:
       LISTEN_ADDR: ":8080"
+      PGAUTHORIZER_PROFILE: "decision-only"
       # Dedicated non-superuser, read-only role (inherits authz_reader),
       # created by db/security/initdb on first init. Never use the authz
       # superuser here.
@@ -38,17 +51,12 @@ services:
       authz-db:
         condition: service_healthy
 
-  # pgauthzd FULL profile: direct pgx, read+write. Connects with the
-  # writer-capable pgauthzd_rw role and exposes the native /pgauthz/v1/write
-  # + /delete path (in addition to eval, search, explain, watch). The
-  # read-only authzen-direct above (decision-only) 403s on writes; the security
+  # full: direct pgx, read+write. Connects with the writer-capable pgauthzd_rw
+  # role and exposes the native write path (in addition to eval, search, explain,
+  # watch). The read-only pgauthzd-decision above 403s on writes; the security
   # boundary is the DB role, not the profile flag.
   pgauthzd-full:
-    build:
-      context: ./pgauthzd
-      args:
-        BINARY: pgauthzd
-        VERSION: ${VERSION:-dev}
+    build: *pgauthzd-build
     ports:
       - "8092:8080"
       # OPA callback listener (writer-capable, since this is the full profile).
@@ -59,7 +67,7 @@ services:
       LISTEN_ADDR: ":8080"
       PGAUTHORIZER_PROFILE: "full"
       # Writer-capable non-superuser role (inherits authz_writer), created by
-      # db/security/roles.sql. This is the ONLY authzen service that can write.
+      # db/security/roles.sql. This is the ONLY instance that can write.
       DATABASE_URL: "postgres://pgauthzd_rw:${PGAUTHZD_RW_PASSWORD:-authz}@authz-db:5432/authz"
       DB_POOL_MAX: "10"
       # Enable the OPA callback listener: because this is the full profile the
@@ -79,12 +87,11 @@ services:
       authz-db:
         condition: service_healthy
 
-  authzen-opa:
-    build:
-      context: ./pgauthzd
-      args:
-        BINARY: authzen-opa
-        VERSION: ${VERSION:-dev}   # `VERSION=0.2.2 docker compose build` stamps it; else dev
+  # compat-opa: fronts OPA for policy enrichment on /access/v1, AND hosts the
+  # OPA read callback (its internal listener, read-only role) that OPA calls back
+  # into for the graph data — the pgauthzd-fronted-with-OPA topology.
+  pgauthzd-opa:
+    build: *pgauthzd-build
     ports:
       - "8091:8080"
       # Internal native-callback listener. In production DO NOT publish this —
@@ -92,8 +99,9 @@ services:
       - "8093:8081"
     environment:
       LISTEN_ADDR: ":8080"
+      PGAUTHORIZER_PROFILE: "compat-opa"
       # Internal listener for the policy-FREE native raw endpoints the OPA
-      # sidecar calls back into (replaces OPA→PostgREST). Read-only role.
+      # sidecar calls back into. Read-only role.
       INTERNAL_LISTEN_ADDR: ":8081"
       # Shared service credential the internal listener requires — must match
       # the OPA service's NATIVE_SERVICE_TOKEN. Override in production.
@@ -119,7 +127,7 @@ services:
       JWT_AUDIENCE: "${JWT_AUDIENCE:-authz-api}"
       # REQUIRED_SCOPE: "authz:read"  # If set, JWT must contain this scope
       DEFAULT_STORE: "${DEFAULT_STORE:-demo}"
-      # SECURITY: token-only by default (see authzen-direct above). The
+      # SECURITY: token-only by default (see pgauthzd-decision above). The
       # demo/test stack opts into trusted-PEP mode via env.sh, not this file.
       ALLOW_SUBJECT_OVERRIDE: "${ALLOW_SUBJECT_OVERRIDE:-false}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"

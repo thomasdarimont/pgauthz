@@ -6,7 +6,7 @@ are held to a high bar for correctness and security — please read this first.
 ## Getting set up
 
 ```bash
-./start.sh          # start the stack (PostgreSQL, PostgREST, OPA) via docker compose
+./start.sh          # start the stack (PostgreSQL, pgauthzd, OPA) via docker compose
 ./bootstrap.sh      # install the engine + demo model and run all tests
 ```
 

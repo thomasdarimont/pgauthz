@@ -32,7 +32,7 @@ api_anon ── authz_reader            ├── authz_admin
 
 | Role | Capabilities |
 |---|---|
-| `api_anon` | PostgREST anonymous role — inherits `authz_reader` |
+| `api_anon` | Read-only connection role for the `decision-only` pgauthzd — inherits `authz_reader` |
 | `authz_auditor` | Reader + audit trail queries, time-travel access checks (`audit_list_user`, `audit_list_object`, `audit_check_access`, `audit_list_actions`) |
 | `authz_reader` | Live access checks, search queries, explain |
 | `authz_writer` | Tuple management (write, delete, batch operations) |
@@ -284,15 +284,16 @@ deep chains.
 ### Streaming replication (read scaling)
 
 For read-heavy workloads, the primary can stream WAL to one or more
-read-only replicas. PostgREST and OPA connect to the replica for access
-checks while writes go directly to the primary:
+read-only replicas. pgauthzd (the front door) connects to the replica for
+access checks while writes go directly to the primary:
 
 ```
 authz-primary (wal_level=replica)
   └── WAL stream
         └──▶ authz-replica (hot_standby=on, read-only)
-               ├── PostgREST (check_access via REST)
-               └── OPA (policy evaluation via PostgREST)
+               ├── pgauthzd (decision-only — check_access via pgx)
+               └── pgauthzd (compat-opa) + OPA sidecar
+                     └── OPA calls back into pgauthzd's native /pgauthz/v1
 ```
 
 The replica receives the full schema, functions, and data — no setup

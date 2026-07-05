@@ -1,86 +1,61 @@
+{{- /*
+AuthZEN 1.0 HTTP API surface (optional) — both variants are pgauthzd PROFILES of
+the single pgauthzd image, not separate binaries.
+
+  direct  (authzen.direct.enabled) — the AuthZEN 1.0 API served straight from
+          PostgreSQL. This is the SAME decision-only pgauthzd process as the
+          reader callback (one binary, two listeners: :8081 = OPA callback,
+          :8080 = AuthZEN/JWT API). The Deployment lives in pgauthzd.yaml; this
+          file only publishes a Service for the reader pods' :8080 listener.
+  opa     (authzen.opa.enabled) — a pgauthzd `compat-opa` instance that fronts
+          OPA on /access/v1 (policy-enriched AuthZEN). It only talks to OPA (no
+          DATABASE_URL); OPA in turn calls back into the reader/writer callbacks.
+*/ -}}
 {{- if .Values.authzen.direct.enabled }}
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: {{ include "pgauthz.fullname" . }}-authzen-direct
-  labels: {{- include "pgauthz.labels" . | nindent 4 }}
-spec:
-  replicas: {{ .Values.authzen.direct.replicas }}
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: {{ include "pgauthz.name" . }}
-      app.kubernetes.io/component: authzen-direct
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: {{ include "pgauthz.name" . }}
-        app.kubernetes.io/instance: {{ .Release.Name }}
-        app.kubernetes.io/component: authzen-direct
-    spec:
-      containers:
-        - name: authzen-direct
-          image: {{ include "pgauthz.image" .Values.images.authzenDirect }}
-          imagePullPolicy: {{ .Values.images.pullPolicy }}
-          env:
-            - { name: LISTEN_ADDR, value: ":8080" }
-            - name: AZD_PW
-              valueFrom:
-                secretKeyRef: { name: {{ include "pgauthz.fullname" . }}-authzen-direct, key: password }
-            - name: DATABASE_URL
-              # Read-only role; follows the same read target as the reader
-              # (pooler-ro / ro / rw) so single-instance clusters work too.
-              value: postgres://authzen_direct:$(AZD_PW)@{{ include "pgauthz.readerHost" . }}:5432/authz
-            - { name: DB_POOL_MAX, value: {{ .Values.authzen.direct.dbPoolMax | quote }} }
-            - { name: JWKS_FILE,   value: /jwks/jwks.json }
-            - { name: JWT_ISSUER,   value: {{ .Values.opa.jwtIssuer | quote }} }
-            - { name: JWT_AUDIENCE, value: {{ .Values.opa.jwtAudience | quote }} }
-            - { name: DEFAULT_STORE, value: {{ .Values.opa.defaultStore | quote }} }
-            - { name: ALLOW_SUBJECT_OVERRIDE, value: "false" }
-          ports: [{ name: http, containerPort: 8080 }]
-          readinessProbe: { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 5 }
-          livenessProbe:  { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 10 }
-          volumeMounts:
-            - { name: jwks, mountPath: /jwks, readOnly: true }
-      volumes:
-        - name: jwks
-          configMap: { name: {{ include "pgauthz.fullname" . }}-opa-data }
----
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "pgauthz.fullname" . }}-authzen-direct
+  name: {{ include "pgauthz.fullname" . }}-authzen
   labels: {{- include "pgauthz.labels" . | nindent 4 }}
 spec:
+  # Backed by the decision-only pgauthzd (the reader) pods; :8080 is their
+  # AuthZEN 1.0 / JWT listener.
   selector:
     app.kubernetes.io/name: {{ include "pgauthz.name" . }}
-    app.kubernetes.io/component: authzen-direct
+    app.kubernetes.io/component: pgauthzd-reader
   ports: [{ name: http, port: 8080, targetPort: 8080 }]
 {{- end }}
 {{- if .Values.authzen.opa.enabled }}
+{{- if .Values.authzen.direct.enabled }}
 ---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "pgauthz.fullname" . }}-authzen-opa
+  name: {{ include "pgauthz.fullname" . }}-pgauthzd-opa
   labels: {{- include "pgauthz.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.authzen.opa.replicas }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "pgauthz.name" . }}
-      app.kubernetes.io/component: authzen-opa
+      app.kubernetes.io/component: pgauthzd-opa
   template:
     metadata:
       labels:
         app.kubernetes.io/name: {{ include "pgauthz.name" . }}
         app.kubernetes.io/instance: {{ .Release.Name }}
-        app.kubernetes.io/component: authzen-opa
+        app.kubernetes.io/component: pgauthzd-opa
     spec:
       containers:
-        - name: authzen-opa
-          image: {{ include "pgauthz.image" .Values.images.authzenOpa }}
+        - name: pgauthzd
+          image: {{ include "pgauthz.image" .Values.images.pgauthzd }}
           imagePullPolicy: {{ .Values.images.pullPolicy }}
           env:
+            # compat-opa: fronts OPA on /access/v1 for policy-enriched AuthZEN.
+            # No DATABASE_URL — the graph data comes from OPA, which calls back
+            # into the reader/writer native callbacks.
+            - { name: PGAUTHORIZER_PROFILE, value: compat-opa }
             - { name: LISTEN_ADDR, value: ":8080" }
             - name: OPA_URL
               value: http://{{ include "pgauthz.fullname" . }}-opa:8181
@@ -101,11 +76,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "pgauthz.fullname" . }}-authzen-opa
+  name: {{ include "pgauthz.fullname" . }}-pgauthzd-opa
   labels: {{- include "pgauthz.labels" . | nindent 4 }}
 spec:
   selector:
     app.kubernetes.io/name: {{ include "pgauthz.name" . }}
-    app.kubernetes.io/component: authzen-opa
+    app.kubernetes.io/component: pgauthzd-opa
   ports: [{ name: http, port: 8080, targetPort: 8080 }]
 {{- end }}

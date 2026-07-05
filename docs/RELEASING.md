@@ -105,7 +105,7 @@ Sweeps every pinned version reference — confirm each:
       with the CHANGELOG section.
 - [ ] (Optional) Built + smoke-tested the release images
       (`IMAGE_TAG=X.Y.Z ./deploy/helm/pgauthz/start.sh`; check
-      `authzen-direct -version` reports X.Y.Z).
+      `pgauthzd -version` reports X.Y.Z).
 
 ## Gotchas we've hit
 - **Empty CHANGELOG section.** The bump creates the heading but not the notes.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Start the full pgauthz stack (database, PostgREST, OPA, AuthZEN services).
+# Start the full pgauthz stack (database, pgauthzd, OPA).
 # Builds images if needed. Waits until all services are healthy.
 #
 # Options:
@@ -33,7 +33,7 @@ if [ "$PLAYGROUND" = 1 ]; then KEYCLOAK=1; fi
 
 # Persist the overlay selection so env.sh (sourced by init.sh, test.sh,
 # reload-engine.sh, ...) operates on the SAME stack: without this, any of
-# those scripts recreates opa/authzen-opa from the base compose files and
+# those scripts recreates opa/pgauthzd-opa from the base compose files and
 # silently drops the keycloak/playground env (issuers, REQUIRE_TOKEN_FOR_READS,
 # FORWARD_TOKEN_TO_OPA, ...). Overwritten on every start, so a plain ./start.sh
 # clears it. Explicit env vars still override (the :- guards below).

@@ -8,45 +8,44 @@ skinparam nodesep 50
 skinparam ranksep 40
 skinparam padding 6
 
-title Scaled Architecture with read replicas + AuthZEN
+title Read scaling with replicas (pgauthzd front door)
 
 actor "Application" as app3
 
 component "Load Balancer" as lb #Plum
 
 node "VM 1 (read)" as vm1 {
-    component "OPA" as opa3a #LightBlue
-    component "AuthZEN" as az3a #PaleGreen
-    component "pgauthzd\n(reader)" as pgd3a #LightGreen
+    component "pgauthzd\n(decision-only /\ncompat-opa)" as pgd3a #PaleGreen
+    component "OPA\n(sidecar)" as opa3a #LightBlue
     database "PG Replica" as pgr3a #LightYellow
 }
 
 node "VM 2 (read)" as vm2 {
-    component "OPA" as opa3b #LightBlue
-    component "AuthZEN" as az3b #PaleGreen
-    component "pgauthzd\n(reader)" as pgd3b #LightGreen
+    component "pgauthzd\n(decision-only /\ncompat-opa)" as pgd3b #PaleGreen
+    component "OPA\n(sidecar)" as opa3b #LightBlue
     database "PG Replica" as pgr3b #LightYellow
 }
 
 database "PG Primary" as pgp3 #Orange
 
-' Read path
+' Read path — pgauthzd is the ONLY front door; scale it out (with its OPA
+' sidecar) next to each read replica. It answers directly from the graph
+' (decision-only) or consults OPA for Rego policy (compat-opa); only pgauthzd
+' calls OPA, which calls back into pgauthzd's native listener for the graph.
 app3 -down-> lb : "authz checks"
-lb -down-> opa3a : "OPA data API\n/v1/data/authz/*"
-lb -down-> opa3b
-lb -down-> az3a : "AuthZEN 1.0 API\n/access/v1/*"
-lb -down-> az3b
-opa3a -down-> pgd3a : "native callback"
-opa3b -down-> pgd3b
-az3a -down-> opa3a : "compat-opa\n(policy-enriched)"
-az3a -down-> pgr3a : "decision-only\n(SQL, lowest latency)"
-az3b -down-> opa3b
-az3b -down-> pgr3b
-pgd3a -down-> pgr3a
+lb -down-> pgd3a : "AuthZEN + native API"
+lb -down-> pgd3b
+pgd3a -right-> opa3a : "consult policy"
+opa3a -left-> pgd3a : "native callback"
+pgd3b -right-> opa3b
+opa3b -left-> pgd3b
+pgd3a -down-> pgr3a : "SQL (pgx)"
 pgd3b -down-> pgr3b
 
-' Writes go to primary
-app3 -down-> pgp3 : "tuple writes\n(direct SQL)"
+' Writes go to the primary — the focus here is READ scaling, so the write path
+' is kept as a single edge; see architecture-write-api for how it is enforced
+' (a full-profile pgauthzd writer, or — rarely — a scoped application DB role).
+app3 -down-> pgp3 : "writes → primary\n(see write-api)"
 
 ' Replication
 pgp3 -right-> pgr3a : "  WAL  "
@@ -54,10 +53,9 @@ pgp3 -right-> pgr3b : "  WAL  "
 
 legend bottom left
   |= Color |= Component |
-  | <#PaleGreen> | AuthZEN API — AuthZEN 1.0 (pgauthzd); decision-only → PG, compat-opa → OPA |
-  | <#LightBlue> | OPA — policy evaluation |
-  | <#LightGreen> | pgauthzd (reader) — decision-only; OPA read callback (native) |
-  | <#Orange> | PostgreSQL primary — read-write |
+  | <#PaleGreen> | pgauthzd (reader) — the front door; AuthZEN + native API; consults OPA (compat-opa) or answers direct (decision-only) |
+  | <#LightBlue> | OPA — internal Rego policy sidecar; ONLY pgauthzd calls it |
+  | <#Orange> | PostgreSQL primary — read-write (write path: see write-api) |
   | <#LightYellow> | PostgreSQL replica — read-only (WAL) |
   | <#Plum> | Load Balancer — distributes reads |
 end legend

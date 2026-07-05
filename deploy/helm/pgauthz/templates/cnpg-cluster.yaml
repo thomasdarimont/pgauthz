@@ -68,7 +68,7 @@ spec:
     roles:
       - name: authzen_direct
         ensure: present
-        comment: "read-only role: AuthZEN direct service + pgauthzd reader (decision-only)"
+        comment: "read-only role: decision-only pgauthzd (reader callback + AuthZEN 1.0 API)"
         login: true
         inherit: true             # inherits authz_reader (+ auditor per roles.sql)
         # CloudNativePG OWNS managed-role memberships and reconciles away any it

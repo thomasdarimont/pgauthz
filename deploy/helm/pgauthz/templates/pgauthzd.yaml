@@ -5,15 +5,19 @@ replacing the former PostgREST reader/writer split.
   reader  (PGAUTHORIZER_PROFILE=decision-only) — read-only DB role
           (authzen_direct → authz_reader); targets the read endpoint
           (reader.target: pooler-ro | ro | rw). Serves OPA's native READ
-          callbacks (/pgauthz/v1/check, list_*, explain, …).
+          callbacks (/pgauthz/v1/check, list_*, explain, …) on the callback
+          listener (:8081) AND the AuthZEN 1.0 API on the JWT listener (:8080) —
+          one binary, two listeners. The AuthZEN :8080 surface is published as
+          the -authzen Service only when authzen.direct.enabled (see
+          authzen.yaml); otherwise :8080 is unreachable (NetworkPolicy-locked).
   writer  (PGAUTHORIZER_PROFILE=full) — writer DB role (pgauthzd_rw →
           authz_writer); targets the primary (-rw). Serves OPA's native
           WRITE callbacks (/pgauthz/v1/write, delete, …) AND reads.
 
-Both expose ONLY the OPA CALLBACK listener (INTERNAL_LISTEN_ADDR, service-token
-guarded) to OPA; the primary JWT listener (:8080) is unused/ClusterIP and
-NetworkPolicy-locked. The callback bypasses the policy layer, so it is guarded
-by the shared INTERNAL_SERVICE_TOKEN and reachable only by OPA (NetworkPolicy).
+The OPA CALLBACK listener (INTERNAL_LISTEN_ADDR :8081, service-token guarded)
+bypasses the policy layer, so it is reachable only by OPA (NetworkPolicy) and
+guarded by the shared INTERNAL_SERVICE_TOKEN. The writer's :8080 JWT listener
+stays unused/NetworkPolicy-locked.
 */ -}}
 apiVersion: apps/v1
 kind: Deployment
@@ -44,7 +48,7 @@ spec:
             # guarded by INTERNAL_SERVICE_TOKEN and reachable only by OPA
             # (NetworkPolicy). Never add an Ingress.
             - { name: PGAUTHORIZER_PROFILE, value: decision-only }
-            - { name: LISTEN_ADDR,          value: ":8080" }   # unused JWT listener
+            - { name: LISTEN_ADDR,          value: ":8080" }   # AuthZEN 1.0 API + JWT listener (see -authzen Service)
             - { name: INTERNAL_LISTEN_ADDR, value: ":8081" }   # OPA callback listener
             - name: INTERNAL_SERVICE_TOKEN
               valueFrom:

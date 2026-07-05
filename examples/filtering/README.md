@@ -14,8 +14,9 @@ so it returns the full authorized set) against your own table.
 > the engine — pgauthz **co-located** in the app DB, or a derived permissions
 > slice **replicated** into it (see [`db/replication/`](../../db/replication/)).
 > That is the *minority* setup. The common deployment is a **central authz
-> service** reached over REST (OPA → PostgREST) or AuthZEN, where the data is in
-> separate databases — there you call `list_objects` and filter your own query by
+> service** — pgauthzd, reached over its native `/pgauthz/v1` REST API or
+> AuthZEN 1.0 — where the data is in separate databases; there you call
+> `list_objects` and filter your own query by
 > the returned ids (`WHERE id = ANY(:ids)`, plus the wildcard flag) rather than
 > JOINing. This example uses one database to show the co-located form.
 

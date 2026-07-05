@@ -176,7 +176,7 @@ _subject_valid if {
 # RESULT of the search, not the caller, so there is no input.subject to validate
 # here (input.subject_type only names the type to enumerate). Authorize the CALLER
 # instead: a valid token, or — in trusted-PEP mode (require_token_for_reads=false) —
-# an authenticated PEP that forwarded no token (e.g. authzen-opa, which validates
+# an authenticated PEP that forwarded no token (e.g. pgauthzd-opa, which validates
 # the JWT itself and forwards only the resolved subject).
 _subject_search_valid if {
 	input.token

@@ -6,62 +6,57 @@ skinparam defaultFontName monospaced
 skinparam sequenceMessageAlign left
 skinparam maxMessageSize 260
 
-title Where tokens are validated — the three request paths
+title Where tokens are validated — pgauthzd is the front door
 
 actor "Client" as app
-participant "pgauthzd\n(compat-opa)" as az
-participant "OPA\n:8181" as opa
-participant "pgauthzd reader\n(decision-only)" as pgrd
-participant "pgauthzd writer\n(full)" as pgw
+participant "pgauthzd\n(front door)" as pgd
+participant "OPA\n(sidecar)" as opa
 database "PostgreSQL\nengine (SECURITY DEFINER)" as pg
 
-group Read — OPA front door (token mode)
-  app -> opa : POST /v1/data/authz/allow\n{ input.token, action, resource }
-  note right of opa
-    **OPA validates the JWT**
-    (issuer + audience + JWKS,
-    subject & roles from claims).
-    Tokenless input.subject only if
-    REQUIRE_TOKEN_FOR_READS=false
-    (trusted-PEP mode).
+group Direct read (decision-only) — no OPA
+  app -> pgd : POST /access/v1/evaluation\nAuthorization: Bearer <jwt>
+  note right of pgd
+    **pgauthzd validates the JWT** —
+    multi-issuer (JWT_ISSUERS, the
+    "iss" claim selects the validator);
+    subject & roles from claims.
+    Then answers straight from the graph.
   end note
-  opa -> pgrd : native /pgauthz/v1/check\n(service token; cached)
-  pgrd -> pg : check_access(...) via pgx
+  pgd -> pg : check_access(...) via pgx
 end
 
-group AuthZEN — token-forwarding (defense in depth)
-  app -> az : POST /access/v1/evaluation\nAuthorization: Bearer <jwt>
-  note right of az
-    **pgauthzd middleware validates** —
-    multi-issuer (JWT_ISSUERS,
-    iss selects the validator);
-    search/* endpoints require
-    SEARCH_REQUIRED_ROLE.
+group Policy read (compat-opa) — pgauthzd consults OPA
+  app -> pgd : POST /access/v1/evaluation\nAuthorization: Bearer <jwt>
+  note right of pgd
+    pgauthzd validates the JWT, then
+    forwards it to its OPA sidecar
+    (FORWARD_TOKEN_TO_OPA) — defense in depth.
   end note
-  az -> opa : input.token = <jwt>\n(FORWARD_TOKEN_TO_OPA=true)
+  pgd -> opa : consult policy\n(input.token = <jwt>)
   note right of opa
-    **OPA re-validates** the same
-    token — no tokenless
-    subject-trust anywhere.
+    **OPA re-validates** the token and
+    evaluates Rego; for graph data it
+    calls BACK into pgauthzd's native
+    listener (service token) — the only
+    caller of OPA is pgauthzd.
   end note
-  opa -> pgrd : native /pgauthz/v1/check
-  pgrd -> pg : check_access(...) via pgx
+  opa -> pgd : native /pgauthz/v1/check
+  pgd -> pg : check_access(...) via pgx
+  opa --> pgd : decision
 end
 
-group Write — OPA-fronted writer
-  app -> opa : POST /v1/data/authz/write\n{ input.token, tuple }
-  note right of opa
-    **OPA validates the JWT and
+group Write — pgauthzd fronts, consults OPA to authorize
+  app -> pgd : POST /pgauthz/v1/write\n{ tuple }  Authorization: Bearer <jwt>
+  note right of pgd
+    **pgauthzd validates the JWT and
     requires the writer role**
     (WRITER_ROLE in JWT_ROLES_CLAIM).
+    (Write-authz delegation is the pending
+    pgauthzd-fronted-writes increment.)
   end note
-  opa -> pgw : native write callback\n(subject injected as audit author)
-  note right of pgw
-    Writer does **no end-user JWT** of its
-    own — a full-profile pgauthzd, service
-    token, reachable only by OPA.
-  end note
-  pgw -> pg : write_tuples_jsonb(...) via pgx
+  pgd -> opa : authorize write (writer role)
+  opa -> pgd : authorized
+  pgd -> pg : write_tuples_jsonb(...) via pgx
 end
 
 @enduml

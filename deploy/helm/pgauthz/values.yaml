@@ -6,7 +6,7 @@
 nameOverride: ""
 fullnameOverride: ""
 
-# -- Images. The migrations + authzen images are built from this repo (see
+# -- Images. The migrations + pgauthzd images are built from this repo (see
 # deploy/migrations/Dockerfile and pgauthzd/Dockerfile) and must be pushed to a
 # registry your cluster can pull from (or imported into a local cluster).
 images:
@@ -14,11 +14,10 @@ images:
   postgres:   { repository: ghcr.io/cloudnative-pg/postgresql, tag: "18.4" }
   opa:        { repository: openpolicyagent/opa,               tag: "1.18.2" }
   migrations: { repository: pgauthz-migrations,                tag: "0.7.3" }
-  # pgauthzd — the unified daemon. Used for the native reader (decision-only)
-  # and writer (full) callback instances OPA calls back into.
-  pgauthzd:      { repository: pgauthz-pgauthzd,               tag: "0.7.3" }
-  authzenDirect: { repository: pgauthz-authzen-direct,         tag: "0.7.3" }
-  authzenOpa:    { repository: pgauthz-authzen-opa,            tag: "0.7.3" }
+  # pgauthzd — the single unified daemon. Behaviour is selected per Deployment by
+  # PGAUTHORIZER_PROFILE (decision-only | full | compat-opa); ONE image serves the
+  # decision-only reader + AuthZEN API, the full writer, and the compat-opa gateway.
+  pgauthzd:   { repository: pgauthz-pgauthzd,                  tag: "0.7.3" }
 
 # ── Database: CloudNativePG cluster ──────────────────────────────────────────
 database:
@@ -102,7 +101,7 @@ database:
 # raw table access. Point the app at the -ro Service for reads, -rw for writes.
 #
 # SECURITY: a direct DB connection bypasses OPA's JWT/policy layer, so these are
-# TRUSTED services that do their own authn/authz (like authzen-direct). Never
+# TRUSTED services that do their own authn/authz (like the AuthZEN direct API). Never
 # hand DB credentials to untrusted/end-user clients — route those through OPA.
 extraRoles: []
   # - name: reporting_app
@@ -195,12 +194,18 @@ writer:
     requests: { cpu: 100m, memory: 128Mi }
     limits:   { memory: 256Mi }
 
-# ── AuthZEN 1.0 Go services (optional) ───────────────────────────────────────
+# ── AuthZEN 1.0 API surface (optional) ───────────────────────────────────────
+# Both surfaces are pgauthzd profiles of the ONE pgauthzd image — no separate
+# services/images.
 authzen:
+  # direct — the AuthZEN 1.0 API served straight from PostgreSQL (no OPA). This
+  # is the SAME decision-only pgauthzd process as the reader callback (one binary,
+  # two listeners): enabling it only publishes a Service (+ NetworkPolicy) for the
+  # reader pods' :8080 AuthZEN/JWT listener. Scales with reader.replicas.
   direct:
     enabled: true
-    replicas: 2
-    dbPoolMax: 25
+  # opa — a pgauthzd `compat-opa` instance that fronts OPA on /access/v1
+  # (policy-enriched AuthZEN). Optional; the ingress already exposes OPA directly.
   opa:
     enabled: true
     replicas: 2

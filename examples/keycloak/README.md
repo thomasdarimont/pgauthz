@@ -1,9 +1,12 @@
 # examples/keycloak — query the demo store with real Keycloak tokens
 
 Shows the full PEP→PDP path end to end: **Keycloak issues a JWT → OPA verifies it
-and derives the subject from the claims → PostgREST → the PostgreSQL engine
-(`check_access`)**. The subject is never passed in the request — it comes from the
-token, exactly as a real Policy Enforcement Point would call it.
+and derives the subject from the claims → OPA calls back into pgauthzd's native
+`/pgauthz/v1` callback → the PostgreSQL engine (`check_access`)**. The subject is
+never passed in the request — it comes from the token, exactly as a real Policy
+Enforcement Point would call it. (This example drives OPA's data API through the
+nginx gateway directly; in the default stack pgauthzd is the front door and
+consults OPA as an internal sidecar.)
 
 This is a usage example for the optional bundled IdP under [`keycloak/`](../../keycloak/);
 real deployments point OPA's `JWT_ISSUER`/`JWKS_URL` at their own OIDC provider

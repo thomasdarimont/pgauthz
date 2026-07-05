@@ -30,7 +30,4 @@ psql_file "$PG_DB" "$SCRIPT_DIR/db/openfga/functions_openfga.sql"
 echo "==> Re-applying security roles (restores SECURITY DEFINER + grants)..."
 psql_file "$PG_DB" "$SCRIPT_DIR/db/security/roles.sql"
 
-echo "==> Reloading PostgREST schema cache (NOTIFY pgrst)..."
-psql_exec "$PG_DB" -c "NOTIFY pgrst, 'reload schema';" >/dev/null 2>&1 || true
-
 echo "==> Engine code reloaded (structure/data untouched)."

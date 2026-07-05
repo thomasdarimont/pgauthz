@@ -147,8 +147,8 @@ $$;
 --   and optionally "user_relation" (for userset tuples).
 -- Delegates to the native array version after conversion.
 --
--- Example via PostgREST:
---   POST /rpc/check_access_with_contextual_tuples_jsonb
+-- Example via pgauthzd (native `/pgauthz/v1`):
+--   POST /pgauthz/v1/check
 --   {"p_store": "demo", "p_user_type": "internal_user", "p_user_id": "frank",
 --    "p_relation": "viewer", "p_object_type": "document", "p_object_id": "doc_client_001",
 --    "context": null,
@@ -196,8 +196,8 @@ $$;
 -- Returns SETOF access_check_result (same as the array version).
 -- Delegates to the native array version after validation and conversion.
 --
--- Example via PostgREST:
---   POST /rpc/check_access_batch_typed_jsonb
+-- Example via pgauthzd (native `/pgauthz/v1`):
+--   POST /pgauthz/v1/check-batch
 --   {"p_store": "demo", "p_checks": [
 --       {"user_type":"internal_user","user_id":"alice","relation":"can_read","object_type":"document","object_id":"doc1"},
 --       {"user_type":"internal_user","user_id":"bob","relation":"can_edit","object_type":"document","object_id":"doc1"}
@@ -313,12 +313,12 @@ $$;
 --   {"user_type", "user_id", "relation", "object_type", "object_id"}
 -- Returns a JSONB array of objects with {decision: bool} per check.
 --
--- This overload is designed for PostgREST / HTTP callers where passing
+-- This overload is designed for pgauthzd / HTTP callers where passing
 -- PostgreSQL composite arrays is awkward. The native array overload
 -- above is preferred for direct SQL callers.
 --
--- Example via PostgREST:
---   POST /rpc/check_access_batch
+-- Example via pgauthzd (native `/pgauthz/v1`):
+--   POST /pgauthz/v1/check-batch
 --   {"p_store": "demo", "p_checks": [
 --       {"user_type":"user","user_id":"alice","relation":"can_read","object_type":"doc","object_id":"doc1"},
 --       {"user_type":"user","user_id":"bob","relation":"can_edit","object_type":"doc","object_id":"doc1"}

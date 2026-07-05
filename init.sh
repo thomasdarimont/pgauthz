@@ -75,13 +75,6 @@ if [ -n "${AUTHZ_CONTEXTUAL_READER_GRANTEE:-}" ]; then
   psql_exec "$PG_DB" -c "GRANT authz_contextual_reader TO \"$AUTHZ_CONTEXTUAL_READER_GRANTEE\";" >/dev/null
 fi
 
-# A PostgREST instance that connected before the engine schema existed (e.g. a
-# freshly started stack, as in CI) holds a stale/empty schema cache and its
-# /rpc/* endpoints won't see the engine functions. Nudge a reload now that the
-# schema is installed. No-op if no PostgREST is listening on the channel.
-echo "==> Reloading PostgREST schema cache (NOTIFY pgrst)..."
-psql_exec "$PG_DB" -c "NOTIFY pgrst, 'reload schema';" >/dev/null 2>&1 || true
-
 echo ""
 echo "==> Engine installed (no example stores). Connect with:"
 echo "    docker exec -it $DB_CONTAINER psql -U $PG_USER -d $PG_DB"

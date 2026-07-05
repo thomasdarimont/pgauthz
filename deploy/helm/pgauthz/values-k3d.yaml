@@ -34,8 +34,8 @@ opa:
   autoscaling: { enabled: false, minReplicas: 1, maxReplicas: 2, targetCPUUtilizationPercentage: 80 }
 
 authzen:
-  direct: { enabled: true, replicas: 1, dbPoolMax: 10 }
-  opa:    { enabled: true, replicas: 1 }
+  direct: { enabled: true }              # AuthZEN API on the decision-only reader pods
+  opa:    { enabled: true, replicas: 1 } # compat-opa AuthZEN gateway
   exposeViaIngress: true
 
 ingress:

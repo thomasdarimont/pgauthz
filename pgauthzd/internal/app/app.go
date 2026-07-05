@@ -1,6 +1,6 @@
-// Package app is the shared entrypoint for pgauthzd and its compat aliases
-// (authzen-direct/-opa). The profile selects the backend + capability; the
-// aliases pin a profile, everything else is identical.
+// Package app is the entrypoint for pgauthzd. PGAUTHORIZER_PROFILE selects the
+// backend + capability (decision-only | full | compat-opa); everything else is
+// identical.
 package app
 
 import (
@@ -24,17 +24,12 @@ import (
 	"thomasdarimont.de/authz/pgauthzd/internal/pgbackend"
 )
 
-// Run loads config, wires the profile's backend, and serves. `force` pins a
-// profile (compat aliases); empty means use PGAUTHORIZER_PROFILE. `name` is the
-// binary name for logs.
-func Run(name string, force config.Profile) error {
-
+// Run loads config, wires the profile's backend, and serves. `name` is used for
+// log lines.
+func Run(name string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
-	}
-	if force != "" {
-		cfg.Profile = force
 	}
 	setupLogging(cfg.LogLevel)
 

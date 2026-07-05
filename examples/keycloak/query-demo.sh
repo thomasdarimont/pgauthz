@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 #
-# Query the pgauthz 'demo' store with REAL Keycloak tokens, through the full
-# stack: Keycloak (issues the JWT) -> OPA (verifies it, derives the subject from
-# the claims) -> PostgREST -> PostgreSQL engine (check_access). The subject is
-# NOT passed in the request — it comes from the token's preferred_username /
-# subject_type, exactly as a real PEP would call it.
+# Query the pgauthz 'demo' store with REAL Keycloak tokens. This example calls
+# OPA's data API directly (POST /v1/data/authz/allow, via the api.pgauthz.test
+# gateway) to showcase OPA's custom rules (allow / permitted_actions /
+# accessible_objects). Full stack: Keycloak (issues the JWT) -> OPA (verifies it,
+# derives the subject from the claims, evaluates policy) -> pgauthzd's native
+# /pgauthz/v1 callback -> PostgreSQL engine (check_access). NOTE: this is the
+# OPA-data-API entry point; the default/canonical front door is pgauthzd itself
+# (AuthZEN /access/v1 + native /pgauthz/v1), which consults OPA as an internal
+# sidecar. The subject is NOT passed in the request — it comes from the token's
+# preferred_username / subject_type, exactly as a real PEP would call it.
 #
 # Usage:
 #   examples/keycloak/query-demo.sh            # decision table

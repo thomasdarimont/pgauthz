@@ -15,33 +15,32 @@ actor "App with\nDB access" as appB
 actor "Co-located app\n(same database)" as appC
 
 note as N1
-  **A: OPA-fronted write API**
-  OPA verifies the JWT and the writer
-  role (WRITER_ROLE in JWT_ROLES_CLAIM),
-  injects the subject as audit author,
-  then forwards to pgauthzd's native
-  write callback (a full-profile instance
-  that does no JWT of its own).
+  **A: pgauthzd-fronted write API**
+  pgauthzd verifies the JWT and — via its OPA
+  sidecar — the writer role (WRITER_ROLE in
+  JWT_ROLES_CLAIM), records the subject as the
+  audit author, then applies the write natively.
+  Only pgauthzd calls OPA. (Write-authz
+  delegation is the pending pgauthzd-fronted-
+  writes increment; today write.rego fronts it.)
 
-  Multi-app: a per-app DB role from a
-  JWT claim (DB_ROLE_CLAIM) is
-  forwarded as X-Authz-Role; pgauthzd
-  SET LOCAL ROLEs to it,
-  so **namespace isolation** applies
-  per app.
+  Multi-app: a per-app DB role from a JWT claim
+  (DB_ROLE_CLAIM) → pgauthzd SET LOCAL ROLEs to
+  it, so **namespace isolation** applies per app.
 end note
 
 node "HTTP Write API" as optA {
-    component "OPA\n:8181" as opa #LightBlue
-    component "pgauthzd (writer)\n(internal, authz_writer)" as pgd #Salmon
+    component "pgauthzd (writer)\n(full profile)" as pgd #Salmon
+    component "OPA\n(sidecar)" as opa #LightBlue
 }
 
 database "PostgreSQL\nprimary" as pg #Orange
 
-N1 -right-> opa
+N1 -right-> pgd
 
-appA -down-> opa : "A: POST /v1/data/authz/write\n(JWT: writer role)"
-opa -down-> pgd : "native write callback\n(authorized only,\n+ X-Authz-Role)"
+appA -down-> pgd : "A: POST /pgauthz/v1/write\n(JWT: writer role)"
+pgd -right-> opa : "authorize write\n(writer-role policy)"
+opa -left-> pgd : "authorized"
 pgd -down-> pg : "SQL (pgx; authz_writer\nor per-app role)"
 
 appB -down-> pg : "B: direct SQL\nwrite_tuple() /\nwrite_tuples_checked()\n(authz_writer role)"
@@ -61,8 +60,8 @@ end note
 
 legend bottom left
   |= Color |= Component |
-  | <#LightBlue> | OPA — verifies JWT + writer role, forwards the write |
-  | <#Salmon> | pgauthzd (writer) — full profile; fixed authz_writer (or per-app) role, no JWT |
+  | <#Salmon> | pgauthzd (writer) — full profile; the write front door; consults OPA for authz, applies the write natively |
+  | <#LightBlue> | OPA — internal writer-role policy; ONLY pgauthzd calls it |
   | <#Orange> | PostgreSQL — authz schema |
 end legend
 

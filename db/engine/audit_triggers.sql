@@ -11,8 +11,8 @@
 -- Trigger function: logs INSERT and DELETE on authz.tuples.
 -- Reads the optional session variable 'authz.performed_by' to record
 -- which application user triggered the change. Falls back to the
--- effective request role (authz._effective_role() — the SET ROLE
--- identity under PostgREST, or session_user for direct connections).
+-- effective request role (authz._effective_role() — the app identity
+-- pgauthzd sets per request, or session_user for direct connections).
 -- Set via: SELECT set_config('authz.performed_by', 'user@example.com', true);
 -- The write_tuple/delete_tuple functions set this automatically when
 -- a p_performed_by parameter is provided.

@@ -1,10 +1,11 @@
 # AuthZEN API
 
 A Go HTTP API implementing the [AuthZEN 1.0](https://openid.net/specs/authorization-api-1_0.html)
-standard. Two services share a common handler layer but use different backends:
+standard. One `pgauthzd` binary, capability-scoped by `PGAUTHORIZER_PROFILE`, is
+deployed as several demo services sharing a common handler layer but using different backends:
 
-- **authzen-direct** — Go &rarr; PostgreSQL (lowest latency, pure Zanzibar)
-- **authzen-opa** — Go &rarr; OPA &rarr; PostgREST &rarr; PostgreSQL (app-specific Rego policies)
+- **pgauthzd-decision** (`decision-only`) — Go &rarr; PostgreSQL (lowest latency, pure Zanzibar)
+- **pgauthzd-opa** (`compat-opa`) — Go &rarr; OPA &rarr; pgauthzd native callback &rarr; PostgreSQL (app-specific Rego policies)
 
 Both expose identical endpoints and require a valid JWT (ES256/RS256).
 
@@ -27,7 +28,7 @@ Every `access/v1` endpoint (and the discovery document) is also available
 ## Quick Start
 
 ```bash
-# Start the full stack (PostgreSQL, PostgREST, OPA, both AuthZEN services)
+# Start the full stack (PostgreSQL, pgauthzd reader/writer, OPA, both AuthZEN services)
 cd authz/pgauthz
 docker compose -f compose.yml -f compose-authzen.yml up -d --build
 
@@ -171,9 +172,9 @@ client roles). Unset (default), search is open to any authenticated caller.
 
 **Freshness (`Cache-Control: no-cache`).** A caller that must observe a
 just-committed change — e.g. re-checking immediately after a revoke — sends
-the standard `Cache-Control: no-cache` request header. `authzen-opa` maps it
+the standard `Cache-Control: no-cache` request header. `pgauthzd-opa` maps it
 to OPA's `input.no_cache`, bypassing the decision cache for that one request
-(one extra PostgreSQL round-trip); `authzen-direct` has no decision cache, so
+(one extra PostgreSQL round-trip); `pgauthzd-decision` has no decision cache, so
 every decision is fresh by construction. See
 [`opa/README.md`](../opa/README.md) for the cache model and the end-to-end
 staleness bound.
@@ -240,12 +241,12 @@ globally, not per store.
 ## Per-App Namespace Enforcement
 
 pgauthz [namespace restrictions](../docs/DEVELOPMENT.md#namespace-based-write-access-control)
-key on the **effective DB role**. `authzen-direct` can derive a per-app role
+key on the **effective DB role**. `pgauthzd-decision` can derive a per-app role
 from the verified token and assume it per request (`SET LOCAL ROLE` inside a
 transaction), so namespaced types are enforced per calling application:
 
 1. **`DB_ROLE_CLAIM`** — dot-separated claim path carrying the role (mirrors
-   the OPA front door's `DB_ROLE_CLAIM`). Prefer configuring the claim
+   the OPA sidecar's own `DB_ROLE_CLAIM`). Prefer configuring the claim
    per client at the IdP (e.g. a hardcoded `db_role` claim on each Keycloak
    client — the `app-dms` pattern): declarative and auditable.
 2. **Per-issuer `client_db_roles`** — a client-id (`azp`) → role map inside a
@@ -283,10 +284,11 @@ The role must also be `GRANT`ed to the service's
 `DATABASE_URL` user. With neither variable set, behavior is unchanged (the
 fixed connection role applies).
 
-> **authzen-opa:** the same isolation applies on the OPA path. The service
+> **pgauthzd-opa:** the same isolation applies on the OPA path. The service
 > derives the role identically (claim → issuer map → global map, validated
 > against the issuer's `db_roles` binding) and forwards it to OPA as
-> `input.db_role`; OPA passes it to the PostgREST reader as `X-Authz-Role`,
+> `input.db_role`; OPA passes it back to the pgauthzd reader (native
+> `/pgauthz/v1` callback) as `X-Authz-Role`,
 > where `authz._pre_request_reader()` validates it (member of `authz_reader`,
 > not admin-capable, fail closed) and `SET LOCAL ROLE`s to it. In token-mode
 > OPA deployments (`FORWARD_TOKEN_TO_OPA=true` + OPA `DB_ROLE_CLAIM`), OPA
@@ -325,7 +327,7 @@ All configuration is via environment variables.
 | `REQUIRE_DB_ROLE_BINDING` | `false` | When role derivation is configured (`DB_ROLE_CLAIM` / `CLIENT_DB_ROLES`): refuse to start unless every issuer has a `db_roles` or `client_db_roles` binding (recommended `true` for multi-tenant deployments) |
 | `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
 
-### authzen-direct only
+### pgauthzd-decision (`decision-only`) only
 
 | Variable | Default | Description |
 |---|---|---|
@@ -333,14 +335,14 @@ All configuration is via environment variables.
 | `DB_POOL_MAX` | `25` | Connection pool size |
 | `DB_ROLE_CACHE_TTL_SECONDS` | `60` | How long a per-app DB role validation result (allowed *or* denied) is cached before re-checking `pg_has_role`; `0` disables caching (re-validate every request) |
 
-### authzen-opa only
+### pgauthzd-opa (`compat-opa`) only
 
 | Variable | Default | Description |
 |---|---|---|
 | `OPA_URL` | *required* | OPA server base URL (e.g. `http://opa:8181`) |
 | `OPA_PACKAGE` | `authz` | OPA Rego package name |
 | `FORWARD_TOKEN_TO_OPA` | `false` | Forward the verified bearer token to OPA as `input.token` so OPA re-validates it — lets OPA run token-only (`REQUIRE_TOKEN_FOR_READS=true`) instead of trusting the forwarded subject. Leave off for trusted-PEP setups that check arbitrary subjects |
-| `DATABASE_URL` | *empty* | Optional. A **read-only** DSN enables the native raw callback surface (`/pgauthz/v1/check`, `list-*`) an OPA sidecar calls back into instead of PostgREST. Asserted read-only at startup |
+| `DATABASE_URL` | *empty* | Optional. A **read-only** DSN enables the native raw callback surface (`/pgauthz/v1/check`, `list-*`) an OPA sidecar calls back into (replacing the former PostgREST reader). Asserted read-only at startup |
 | `INTERNAL_LISTEN_ADDR` | *empty* | Address for the internal listener serving that native raw surface (e.g. `:8081`). **Do not publish it** — bind to the OPA sidecar network. Empty = raw surface not served |
 | `INTERNAL_SERVICE_TOKEN` | *empty* | Shared service credential the internal listener requires (`Authorization: Bearer`), proving the call came from the OPA sidecar. Must match OPA's `NATIVE_SERVICE_TOKEN`. **Required** when `INTERNAL_LISTEN_ADDR` is set — startup fails closed without it. The listener then trusts OPA's asserted subject (body) + role (`X-Authz-Role`), not the end-user JWT |
 | `INTERNAL_TLS_CERT` / `INTERNAL_TLS_KEY` / `INTERNAL_CLIENT_CA` | *empty* | Optional mTLS on the internal listener (transport-layer caller auth, layered under the service token). Set all three → the listener serves HTTPS and **requires + verifies a client cert** chained to `INTERNAL_CLIENT_CA` (only the OPA sidecar's cert is accepted). Empty = plain HTTP (fine for same-pod/localhost). Prefer mesh-provided mTLS where available |
@@ -353,25 +355,23 @@ All configuration is via environment variables.
 │                    (Bearer JWT)                         │
 └────────────┬───────────────────────────┬────────────────┘
              │                           │
-     ┌───────▼────────┐        ┌─────────▼──────────┐
-     │ authzen-direct │        │   authzen-opa      │
-     │ (port 8090)    │        │   (port 8091)      │
-     │                │        │                    │
-     │ JWT → SQL      │        │ JWT → OPA → REST   │
-     └───────┬────────┘        └─────────┬──────────┘
+    ┌────────▼──────────┐      ┌─────────▼──────────┐
+    │ pgauthzd-decision │      │   pgauthzd-opa     │
+    │ (port 8090)       │      │   (port 8091)      │
+    │                   │      │                    │
+    │ JWT → SQL         │      │ JWT → OPA → native │
+    └────────┬──────────┘      └─────────┬──────────┘
              │                           │
-     ┌───────▼────────┐        ┌─────────▼──────────┐
-     │  PostgreSQL    │        │   OPA (Rego)       │
-     │  authz schema  │        │       │            │
-     │                │        │       ▼            │
-     │                │        │   PostgREST        │
-     │                │        │       │            │
-     │                │        │       ▼            │
-     │                │        │   PostgreSQL       │
-     └────────────────┘        └────────────────────┘
+    ┌────────▼──────────┐      ┌─────────▼──────────┐
+    │  PostgreSQL       │      │   OPA (Rego)       │
+    │  authz schema     │      │       │            │
+    │                   │      │       ▼            │
+    │                   │      │  pgauthzd native   │
+    │                   │      │  callback → PG     │
+    └───────────────────┘      └────────────────────┘
 ```
 
-Both services implement the same `Backend` interface:
+Both profiles are served by the one `pgauthzd` binary over the same `Backend` interface:
 
 ```go
 type Backend interface {
@@ -387,15 +387,15 @@ type Backend interface {
 - **pgbackend** calls PostgreSQL functions directly via pgx (`check_access`,
   `check_access_batch`, `list_objects`, `list_subjects`, `list_actions`)
 - **opabackend** calls OPA's `/v1/data/{pkg}/{rule}` HTTP API, which evaluates
-  Rego policies that in turn call PostgREST
+  Rego policies that in turn call **back** into pgauthzd's native `/pgauthz/v1`
+  callback
 
 ## Project Structure
 
 ```
-authzen/
+pgauthzd/
 ├── cmd/
-│   ├── authzen-direct/main.go    # Direct PostgreSQL entry point
-│   └── authzen-opa/main.go       # OPA proxy entry point
+│   └── pgauthzd/main.go          # Single entry point; profile via PGAUTHORIZER_PROFILE
 ├── internal/
 │   ├── api/
 │   │   ├── handler.go            # AuthZEN endpoint handlers
@@ -414,13 +414,11 @@ authzen/
 ## Building
 
 ```bash
-# Build both binaries
-go build ./cmd/authzen-direct
-go build ./cmd/authzen-opa
+# Build the single binary
+go build ./cmd/pgauthzd
 
-# Docker (select binary via build arg)
-docker build --build-arg BINARY=authzen-direct -t authzen-direct .
-docker build --build-arg BINARY=authzen-opa -t authzen-opa .
+# Docker (one image; select the profile at runtime via PGAUTHORIZER_PROFILE)
+docker build -t pgauthzd .
 ```
 
 ## Testing
@@ -444,7 +442,7 @@ kept on a separate path so `/access/v1` stays spec-pure. Served by the direct
 pgx backend. On the **direct** profiles (`decision-only` / `full`) they sit on
 the main listener. On **`compat-opa`** they are served — read-only — on a
 separate **internal** listener (`INTERNAL_LISTEN_ADDR`) that an OPA sidecar
-calls back into instead of PostgREST; they are deliberately absent from the
+calls back into (replacing the former PostgREST reader); they are deliberately absent from the
 public listener there (a raw graph answer must not bypass the policy layer).
 Without a configured native backend the routes return `501 Not Implemented`.
 
@@ -462,10 +460,10 @@ Without a configured native backend the routes return `501 Not Implemented`.
 
 The `check` / `list-*` endpoints are **policy-free by construction** — they run
 straight against the direct pgx backend, never through a policy layer. That is
-what an external OPA sidecar calls back into when a Rego policy delegates to the
+what the internal OPA sidecar calls back into when a Rego policy delegates to the
 graph, so a compat deployment can front the graph with policy without OPA
-needing PostgREST and without re-entering its own policy-wrapped `/access/v1`
-surface. They use the AuthZEN subject/action/resource vocabulary (same
+needing a separate data bridge (the former PostgREST reader) and without
+re-entering its own policy-wrapped `/access/v1` surface. They use the AuthZEN subject/action/resource vocabulary (same
 subject-resolution and store-binding) and return pgauthz-native bodies.
 
 All are also available store-scoped under `/stores/{store}/pgauthz/v1/…`.
@@ -495,7 +493,8 @@ backend on a **writer-capable** connection role (`pgauthzd_rw`, which inherits
 - a **`decision-only`** instance (read-only role, e.g. `authzen_direct`) returns
   **`403`** — and asserts at startup that its role genuinely cannot write;
 - the **`compat-opa`** profile returns **`501`** (its writes go through the OPA
-  front door, not this native path).
+  write policy (`write.rego`) fronting the `full` writer instance, not this
+  native path).
 
 ```bash
 curl -X POST localhost:8092/pgauthz/v1/write -H "Authorization: Bearer $TOKEN" \

@@ -50,8 +50,9 @@ const (
 	// ProfileFull — direct pgx with read AND write capability (the writer role
 	// path); near the primary. (Native write API lands in a later increment.)
 	ProfileFull Profile = "full"
-	// ProfileCompatOPA — the legacy AuthZEN→OPA→PostgREST path (external OPA
-	// for policy extension). No direct DB connection.
+	// ProfileCompatOPA — the AuthZEN→OPA path; OPA calls back into pgauthzd's
+	// native `/pgauthz/v1` (external OPA for policy extension). No direct DB
+	// connection.
 	ProfileCompatOPA Profile = "compat-opa"
 )
 
@@ -70,7 +71,7 @@ type Config struct {
 	// listener requires (Authorization: Bearer <token>) — it proves the call
 	// came from the trusted OPA sidecar. The listener then trusts OPA's asserted
 	// subject (body) + per-app role (X-Authz-Role), the trusted-backend role
-	// PostgREST plays today. REQUIRED when InternalListenAddr is set (fail
+	// the native `/pgauthz/v1` callback plays. REQUIRED when InternalListenAddr is set (fail
 	// closed: no unauthenticated internal listener). Env INTERNAL_SERVICE_TOKEN.
 	InternalServiceToken string
 	// Optional mTLS on the internal listener: the transport-layer caller
@@ -142,8 +143,8 @@ type Config struct {
 	DatabaseURL string
 	DBPoolMax   int
 	// DefaultDBRole, when set, is the role the read path SET LOCAL ROLEs to when
-	// a request carries no per-app db_role. It mirrors the PostgREST reader's
-	// always-SET-ROLE model (default api_anon): the query never runs as the raw
+	// a request carries no per-app db_role. It mirrors the pgauthzd reader
+	// profile's always-SET-ROLE model (default api_anon): the query never runs as the raw
 	// connection role, so that role's SET-ROLE memberships (needed to assume
 	// per-app roles) don't leak into membership-keyed checks like namespace
 	// access. Set to a namespace-free reader (e.g. authz_reader) on the compat

@@ -1,0 +1,485 @@
+### pgauthzd NATIVE + AuthZEN read API examples against the demo model.
+###
+### Target: the pgauthzd front door. These requests use BOTH surfaces:
+###   * native  POST /pgauthz/v1/*   (vendor read API: check, list-*, explain, watch)
+###   * AuthZEN POST /access/v1/*    (spec-compliant evaluation/search + discovery)
+###
+### PORTS (published by compose-authzen.yml):
+###   * :8090  pgauthzd-decision (decision-only, read-only DB role)
+###            — serves BOTH the native /pgauthz/v1 reads AND the AuthZEN surface.
+###            This is the right front door for this file → @baseUrl below.
+###   * :8092  pgauthzd-full — also serves both (writer role); use for reads too.
+###   * :8091  pgauthzd-opa (compat-opa) — serves the AuthZEN surface ONLY; the
+###            native /pgauthz/v1 endpoints are NOT here (they live on OPA's
+###            internal callback listener) and return 404 on :8091.
+### So point @baseUrl at :8090 for the full read surface; switch to :8091 only
+### for the /access/v1 requests if you want the OPA-fronted (policy) path.
+###
+### AUTH: every request needs a valid JWT (401 otherwise). The pre-minted demo
+### tokens live in http-client.env.json (select the "dev" environment):
+### {{access_token_alice}}, {{access_token_bob}}, {{access_token_carl}}. They are
+### ES256-signed with opa/keys/demo.key.txt (iss https://auth.example.com, aud
+### authz-api). Mint fresh ones with tests/test-authzen.sh's make_token helper,
+### or from Keycloak via keycloak/get-token.sh.
+### NOTE: the demo/test stack runs with ALLOW_SUBJECT_OVERRIDE=true (set in
+### env.sh), so the request-BODY subject is authoritative and any valid demo
+### token authenticates the call. In a secure token-only deployment the JWT
+### subject wins and a mismatched body subject is rejected with 403.
+###
+### Requires: docker compose up (bootstrap.sh) with compose-authzen.yml.
+
+@baseUrl = http://localhost:8090
+@token = {{access_token_alice}}
+
+### =====================================================================
+### NATIVE — SINGLE ACCESS CHECK  (POST /pgauthz/v1/check)
+### Policy-free raw graph decision. Response: { "allowed": <bool> }
+### =====================================================================
+
+### Alice can read the payroll document (via payroll_team membership)
+POST {{baseUrl}}/pgauthz/v1/check
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user", "id": "alice" },
+  "action":   { "name": "can_read" },
+  "resource": { "type": "document", "id": "doc_payroll_001" }
+}
+### Expected: { "allowed": true }
+
+###
+
+### Alice cannot read the tax document (wrong team)
+POST {{baseUrl}}/pgauthz/v1/check
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user", "id": "alice" },
+  "action":   { "name": "can_read" },
+  "resource": { "type": "document", "id": "doc_tax_001" }
+}
+### Expected: { "allowed": false }
+
+###
+
+### Rich result — detail:true carries state/missing_context/model
+### Response: { "allowed": <bool>, "detail": { "state": "allow|deny|conditional", ... } }
+POST {{baseUrl}}/pgauthz/v1/check
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user", "id": "alice" },
+  "action":   { "name": "can_read" },
+  "resource": { "type": "document", "id": "doc_payroll_001" },
+  "detail":   true
+}
+### Expected: { "allowed": true, "detail": { "state": "allow", ... } }
+
+###
+
+### Contextual tuples — ephemeral grant, evaluated but never persisted.
+### Frank has no stored tuple; the contextual viewer tuple grants access
+### for THIS request only. Elements use the write_tuples_jsonb shape.
+POST {{baseUrl}}/pgauthz/v1/check
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user", "id": "frank" },
+  "action":   { "name": "can_read" },
+  "resource": { "type": "document", "id": "doc_client_001" },
+  "contextual_tuples": [
+    {
+      "user_type":   "internal_user",
+      "user_id":     "frank",
+      "relation":    "viewer",
+      "object_type": "document",
+      "object_id":   "doc_client_001"
+    }
+  ]
+}
+### Expected: { "allowed": true } (contextual tuple is not stored)
+
+###
+
+### Store-scoped (tenant) variant — the /stores/{store} path selects the store.
+### Same body, minus any need for the X-AuthZ-Store header / DEFAULT_STORE.
+POST {{baseUrl}}/stores/demo/pgauthz/v1/check
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user", "id": "alice" },
+  "action":   { "name": "can_read" },
+  "resource": { "type": "document", "id": "doc_payroll_001" }
+}
+### Expected: { "allowed": true }
+
+###
+
+### =====================================================================
+### NATIVE — BATCH CHECK  (POST /pgauthz/v1/check-batch)
+### Shared subject/action/resource defaults merge into each check.
+### Response: { "results": [ <bool>, ... ] } (in order)
+### =====================================================================
+
+### Multiple checks for Alice in a single round-trip
+POST {{baseUrl}}/pgauthz/v1/check-batch
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "subject": { "type": "internal_user", "id": "alice" },
+  "checks": [
+    { "action": { "name": "can_read" }, "resource": { "type": "document", "id": "doc_payroll_001" } },
+    { "action": { "name": "can_edit" }, "resource": { "type": "document", "id": "doc_payroll_001" } },
+    { "action": { "name": "can_read" }, "resource": { "type": "document", "id": "doc_tax_001" } }
+  ]
+}
+### Expected: { "results": [true, true, false] }
+
+###
+
+### deny_on_first_deny — short-circuits at the first false (semantic on the batch)
+POST {{baseUrl}}/pgauthz/v1/check-batch
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "subject": { "type": "internal_user", "id": "eva" },
+  "semantic": "deny_on_first_deny",
+  "checks": [
+    { "action": { "name": "can_read" }, "resource": { "type": "document", "id": "doc_payroll_001" } },
+    { "action": { "name": "can_read" }, "resource": { "type": "document", "id": "doc_acc_001" } }
+  ]
+}
+### Expected: { "results": [false, ...] } (short-circuited after the first deny)
+
+###
+
+### =====================================================================
+### NATIVE — LIST OBJECTS  (POST /pgauthz/v1/list-objects)
+### "Which resources of a type can the subject act on?"
+### Only resource.type is used. Response: { "objects": [ ... ], "next_token"? }
+### =====================================================================
+
+### Which documents can Bob read?
+POST {{baseUrl}}/pgauthz/v1/list-objects
+Authorization: Bearer {{access_token_bob}}
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user", "id": "bob" },
+  "action":   { "name": "can_read" },
+  "resource": { "type": "document" }
+}
+### Expected: { "objects": [ ...5 doc ids... ] }
+
+###
+
+### Keyset pagination — first page (limit=2). Follow next_token for the next page.
+POST {{baseUrl}}/pgauthz/v1/list-objects
+Authorization: Bearer {{access_token_bob}}
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user", "id": "bob" },
+  "action":   { "name": "can_read" },
+  "resource": { "type": "document" },
+  "limit": 2
+}
+### Expected: { "objects": [id1, id2], "next_token": "..." }
+
+###
+
+### Next page — pass the previous response's next_token via "after".
+POST {{baseUrl}}/pgauthz/v1/list-objects
+Authorization: Bearer {{access_token_bob}}
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user", "id": "bob" },
+  "action":   { "name": "can_read" },
+  "resource": { "type": "document" },
+  "limit": 2,
+  "after": "PASTE_next_token_HERE"
+}
+### Expected: the following page of object ids
+
+###
+
+### =====================================================================
+### NATIVE — LIST SUBJECTS  (POST /pgauthz/v1/list-subjects)
+### "Which subjects of a type can act on the object?"
+### Only subject.type is used. Response: { "subjects": [ ... ], "next_token"? }
+### =====================================================================
+
+### Which internal users can read the payroll document?
+POST {{baseUrl}}/pgauthz/v1/list-subjects
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user" },
+  "action":   { "name": "can_read" },
+  "resource": { "type": "document", "id": "doc_payroll_001" }
+}
+### Expected: { "subjects": [ "alice", "bob", ... ] }
+
+###
+
+### =====================================================================
+### NATIVE — LIST ACTIONS  (POST /pgauthz/v1/list-actions)
+### "What can the subject do on the object?"  Response: { "actions": [ ... ] }
+### =====================================================================
+
+### What can Alice do on the payroll document?
+POST {{baseUrl}}/pgauthz/v1/list-actions
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user", "id": "alice" },
+  "resource": { "type": "document", "id": "doc_payroll_001" }
+}
+### Expected: { "actions": ["can_edit", "can_read"] }
+
+###
+
+### =====================================================================
+### NATIVE — EXPLAIN  (POST /pgauthz/v1/explain)
+### The structured "why": returns explain_access's JSON verbatim
+### ({ "decision": { "allowed": <bool> }, "trace": [...], ... }).
+### =====================================================================
+
+### Full resolution trace — why Alice can read the payroll doc
+POST {{baseUrl}}/pgauthz/v1/explain
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user", "id": "alice" },
+  "action":   { "name": "can_read" },
+  "resource": { "type": "document", "id": "doc_payroll_001" }
+}
+### Expected: { "decision": { "allowed": true }, "trace": [ ... ] }
+
+###
+
+### Explain a denied access — why Eva cannot read the payroll doc
+POST {{baseUrl}}/pgauthz/v1/explain
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user", "id": "eva" },
+  "action":   { "name": "can_read" },
+  "resource": { "type": "document", "id": "doc_payroll_001" }
+}
+### Expected: { "decision": { "allowed": false }, "trace": [ ... ] }
+
+###
+
+### =====================================================================
+### NATIVE — WATCH  (POST /pgauthz/v1/watch)
+### Cursored page of the store's audit changefeed (HTTP transport over
+### authz.watch_changes). The connection role needs auditor privileges.
+### Response: { "events": [ ... ], "next_cursor": { "after_at", "after_seq" } }
+### =====================================================================
+
+### Most recent changes (first page)
+POST {{baseUrl}}/pgauthz/v1/watch
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "limit": 5
+}
+### Expected: { "events": [...], "next_cursor": { "after_at": "...", "after_seq": N } }
+
+###
+
+### Filtered + cursored — only document/viewer changes after a cursor.
+### Feed after_at/after_seq back from the previous response's next_cursor.
+POST {{baseUrl}}/pgauthz/v1/watch
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "limit": 10,
+  "object_types": ["document"],
+  "relations": ["viewer"],
+  "after_seq": 0
+}
+### Expected: { "events": [ ...matching changes... ], "next_cursor": { ... } }
+
+###
+
+### =====================================================================
+### AuthZEN 1.0 — SINGLE EVALUATION  (POST /access/v1/evaluation)
+### Spec surface. Response: { "decision": <bool> }
+### =====================================================================
+
+### Alice can read the payroll doc
+POST {{baseUrl}}/access/v1/evaluation
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user", "id": "alice" },
+  "action":   { "name": "can_read" },
+  "resource": { "type": "document", "id": "doc_payroll_001" }
+}
+### Expected: { "decision": true }
+
+###
+
+### Rich decision context — opt in with the X-Authz-Detail header.
+### Response gains a "context" object (state, missing_context, ...).
+POST {{baseUrl}}/access/v1/evaluation
+Authorization: Bearer {{token}}
+X-Authz-Detail: true
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user", "id": "alice" },
+  "action":   { "name": "can_read" },
+  "resource": { "type": "document", "id": "doc_payroll_001" }
+}
+### Expected: { "decision": true, "context": { "state": "allow", ... } }
+
+###
+
+### Store-scoped evaluation (tenant PDP): /stores/{store}/access/v1/evaluation
+POST {{baseUrl}}/stores/demo/access/v1/evaluation
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user", "id": "alice" },
+  "action":   { "name": "can_read" },
+  "resource": { "type": "document", "id": "doc_payroll_001" }
+}
+### Expected: { "decision": true }
+
+###
+
+### =====================================================================
+### AuthZEN 1.0 — BATCH EVALUATIONS  (POST /access/v1/evaluations)
+### Shared subject/action/resource merge into each evaluation.
+### Response: { "evaluations": [ { "decision": <bool> }, ... ] }
+### =====================================================================
+
+### Alice: can_read + can_edit but not can_delete on the payroll doc
+POST {{baseUrl}}/access/v1/evaluations
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "subject": { "type": "internal_user", "id": "alice" },
+  "evaluations": [
+    { "action": { "name": "can_read" },   "resource": { "type": "document", "id": "doc_payroll_001" } },
+    { "action": { "name": "can_edit" },   "resource": { "type": "document", "id": "doc_payroll_001" } },
+    { "action": { "name": "can_delete" }, "resource": { "type": "document", "id": "doc_payroll_001" } }
+  ]
+}
+### Expected: { "evaluations": [ {"decision":true}, {"decision":true}, {"decision":false} ] }
+
+###
+
+### Mixed subjects + deny_on_first_deny semantic
+POST {{baseUrl}}/access/v1/evaluations
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "semantic": "deny_on_first_deny",
+  "evaluations": [
+    { "subject": { "type": "internal_user", "id": "eva" },   "action": { "name": "can_read" }, "resource": { "type": "document", "id": "doc_payroll_001" } },
+    { "subject": { "type": "internal_user", "id": "alice" }, "action": { "name": "can_read" }, "resource": { "type": "document", "id": "doc_payroll_001" } }
+  ]
+}
+### Expected: { "evaluations": [ {"decision":false}, ... ] } (short-circuited)
+
+###
+
+### =====================================================================
+### AuthZEN 1.0 — SEARCH  (subject / resource / action)
+### These may be gated by SEARCH_REQUIRED_ROLE (not set in the test stack).
+### =====================================================================
+
+### SUBJECT SEARCH — who can read the payroll doc? (subject.type fixed)
+### Response: { "results": [ { "subject": { "type", "id" } }, ... ], "page"? }
+POST {{baseUrl}}/access/v1/search/subject
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user" },
+  "action":   { "name": "can_read" },
+  "resource": { "type": "document", "id": "doc_payroll_001" }
+}
+### Expected: { "results": [ { "subject": { "type": "internal_user", "id": "alice" } }, ... ] }
+
+###
+
+### RESOURCE SEARCH — which documents can Bob read? (resource.type fixed)
+### Response: { "results": [ { "resource": { "type", "id" } }, ... ], "page"? }
+POST {{baseUrl}}/access/v1/search/resource
+Authorization: Bearer {{access_token_bob}}
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user", "id": "bob" },
+  "action":   { "name": "can_read" },
+  "resource": { "type": "document" }
+}
+### Expected: { "results": [ ...5 documents... ] }
+
+###
+
+### RESOURCE SEARCH with keyset pagination — page size 1, then follow page.next_token
+POST {{baseUrl}}/access/v1/search/resource
+Authorization: Bearer {{access_token_bob}}
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user", "id": "bob" },
+  "action":   { "name": "can_read" },
+  "resource": { "type": "document" },
+  "page":     { "size": 1 }
+}
+### Expected: { "results": [ one ], "page": { "next_token": "..." } }
+
+###
+
+### ACTION SEARCH — what can Alice do on the payroll doc?
+### Response: { "results": [ { "action": { "name" } }, ... ] }
+POST {{baseUrl}}/access/v1/search/action
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user", "id": "alice" },
+  "resource": { "type": "document", "id": "doc_payroll_001" }
+}
+### Expected: { "results": [ { "action": { "name": "can_edit" } }, { "action": { "name": "can_read" } } ] }
+
+###
+
+### =====================================================================
+### AuthZEN 1.0 — DISCOVERY  (GET, no auth required)
+### =====================================================================
+
+### PDP metadata document (AuthZEN §9.1)
+GET {{baseUrl}}/.well-known/authzen-configuration
+### Expected: { "policy_decision_point": "...", "access_evaluation_endpoint": ".../access/v1/evaluation", ... }
+
+###
+
+### Tenant (path-insertion) discovery — scopes the PDP to /stores/demo (§9.2)
+GET {{baseUrl}}/.well-known/authzen-configuration/stores/demo
+### Expected: identifiers + endpoints all carry the /stores/demo path

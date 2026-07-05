@@ -10,7 +10,7 @@ default_store := _env.DEFAULT_STORE
 
 # pgauthzd native callback base URL — the internal (policy-free) listener the
 # read/decision data client calls back into. Set via NATIVE_URL on the OPA
-# service (e.g. http://authzen-opa:8081).
+# service (e.g. http://pgauthzd-opa:8081).
 native_url := _env.NATIVE_URL
 
 # Shared SERVICE credential presented to the native callback listener

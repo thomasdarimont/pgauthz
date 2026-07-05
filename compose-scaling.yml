@@ -90,13 +90,11 @@ services:
   # ── pgauthzd on the replica (read-only native access checks) ────
   # decision-only profile: connects to the REPLICA with a read-only role and
   # asserts at startup that it cannot write. Exposes the OPA CALLBACK listener
-  # (:8081, service token) that OPA calls back into for reads — replacing the
-  # PostgREST reader. Scale this out horizontally near the read replicas.
+  # (:8081, service token) that OPA calls back into for reads.
+  # pgauthzd (decision-only reader). Scale out near the read replicas.
   pgauthzd-reader:
     build:
       context: ./pgauthzd
-      args:
-        BINARY: pgauthzd
     environment:
       PGAUTHORIZER_PROFILE: "decision-only"
       LISTEN_ADDR: ":8080"

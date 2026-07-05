@@ -59,20 +59,19 @@ else
   echo "==> CloudNativePG operator already installed."
 fi
 
-# ── 2. Build + import images (migrations + pgauthzd + AuthZEN) ───────────────
+# ── 2. Build + import images (migrations + pgauthzd) ─────────────────────────
 if [ "${SKIP_BUILD:-}" != "1" ]; then
   need docker; need k3d
   echo "==> Building images (tag $IMAGE_TAG)..."
   docker build -f "$REPO_ROOT/deploy/migrations/Dockerfile" -t "pgauthz-migrations:$IMAGE_TAG" "$REPO_ROOT"
-  # pgauthzd — the unified daemon; runs the native reader (decision-only) and
-  # writer (full) callbacks OPA calls back into.
-  docker build -f "$REPO_ROOT/pgauthzd/Dockerfile" --build-arg BINARY=pgauthzd       --build-arg VERSION="$IMAGE_TAG" -t "pgauthz-pgauthzd:$IMAGE_TAG"       "$REPO_ROOT/pgauthzd"
-  docker build -f "$REPO_ROOT/pgauthzd/Dockerfile" --build-arg BINARY=authzen-direct --build-arg VERSION="$IMAGE_TAG" -t "pgauthz-authzen-direct:$IMAGE_TAG" "$REPO_ROOT/pgauthzd"
-  docker build -f "$REPO_ROOT/pgauthzd/Dockerfile" --build-arg BINARY=authzen-opa    --build-arg VERSION="$IMAGE_TAG" -t "pgauthz-authzen-opa:$IMAGE_TAG"    "$REPO_ROOT/pgauthzd"
+  # pgauthzd — the SINGLE unified daemon. One image, capability-scoped per
+  # Deployment by PGAUTHORIZER_PROFILE (decision-only reader + AuthZEN API, full
+  # writer, compat-opa gateway). No BINARY build-arg — the Dockerfile hardcodes
+  # ./cmd/pgauthzd.
+  docker build -f "$REPO_ROOT/pgauthzd/Dockerfile" --build-arg VERSION="$IMAGE_TAG" -t "pgauthz-pgauthzd:$IMAGE_TAG" "$REPO_ROOT/pgauthzd"
 
   echo "==> Importing images into k3d cluster '$K3D_CLUSTER'..."
-  k3d image import "pgauthz-migrations:$IMAGE_TAG" "pgauthz-pgauthzd:$IMAGE_TAG" \
-                   "pgauthz-authzen-direct:$IMAGE_TAG" "pgauthz-authzen-opa:$IMAGE_TAG" -c "$K3D_CLUSTER"
+  k3d image import "pgauthz-migrations:$IMAGE_TAG" "pgauthz-pgauthzd:$IMAGE_TAG" -c "$K3D_CLUSTER"
 else
   echo "==> SKIP_BUILD=1 — using already-imported images."
 fi
@@ -83,7 +82,7 @@ echo "==> Syncing OPA policies into the chart..."
 
 echo "==> helm upgrade --install $RELEASE ..."
 # NOTE: deliberately NO --wait. The schema/roles are created by the post-install
-# migration hook, and the app Deployments (pgauthzd reader/writer, AuthZEN)
+# migration hook, and the app Deployments (pgauthzd reader/writer + compat-opa)
 # cannot become ready until that runs. --wait would block on those not-ready pods *before*
 # running the hook → deadlock. Helm still waits for the hook Job itself, so the
 # schema is loaded before this returns; we then wait for the apps to settle.
@@ -93,14 +92,12 @@ helm upgrade --install "$RELEASE" "$CHART_DIR" \
   "${VALUE_ARGS[@]}" \
   --set images.migrations.tag="$IMAGE_TAG" \
   --set images.pgauthzd.tag="$IMAGE_TAG" \
-  --set images.authzenDirect.tag="$IMAGE_TAG" \
-  --set images.authzenOpa.tag="$IMAGE_TAG" \
   --timeout 8m
 
 echo ""
 echo "==> Waiting for the application pods to settle (they crash-loop until the"
 echo "    database, roles and schema are ready, then recover)..."
-for d in opa reader writer authzen-direct authzen-opa; do
+for d in opa reader writer pgauthzd-opa; do
   kubectl -n "$NAMESPACE" rollout status "deploy/${RELEASE}-${d}" --timeout=300s 2>/dev/null \
     || echo "   (${RELEASE}-${d} not ready yet — check 'kubectl get pods')"
 done

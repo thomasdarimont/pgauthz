@@ -29,12 +29,12 @@ spec:
                 name: {{ $full }}-opa
                 port: { number: 8181 }
           {{- if and .Values.authzen.exposeViaIngress .Values.authzen.opa.enabled }}
-          # Optional: AuthZEN 1.0 API (OPA-backed) under /authzen.
+          # Optional: AuthZEN 1.0 API (OPA-backed, compat-opa profile) under /authzen.
           - path: /authzen
             pathType: Prefix
             backend:
               service:
-                name: {{ $full }}-authzen-opa
+                name: {{ $full }}-pgauthzd-opa
                 port: { number: 8080 }
           {{- end }}
 {{- end }}

@@ -1,16 +1,27 @@
 # pgauthz Helm chart
 
 Deploys pgauthz on Kubernetes with [CloudNativePG](https://cloudnative-pg.io/)
-as the database layer. OPA is the single front door for reads **and** writes; it
-calls back into pgauthzd's native `/pgauthz/v1` API (over a service-token-guarded
-callback listener). The pgauthzd reader/writer and PostgreSQL are internal-only
-and locked down with NetworkPolicies.
+as the database layer. pgauthzd is the front door for reads **and** writes; OPA
+is an internal Rego policy sidecar that only pgauthzd calls — it evaluates policy
+and calls **back** into pgauthzd's native `/pgauthz/v1` API (over a
+service-token-guarded callback listener) for graph data. The pgauthzd
+reader/writer callbacks and PostgreSQL are internal-only and locked down with
+NetworkPolicies.
 
 ```
-            Ingress ──▶ OPA ──┬─reads──▶ pgauthzd-reader (decision-only) ─▶ CNPG -ro / pooler
-                              └─writes─▶ pgauthzd-writer (full)          ─▶ CNPG -rw
-   (optional) Ingress ──▶ authzen-direct ─▶ CNPG -ro     authzen-opa ─▶ OPA
+   Ingress ──▶ pgauthzd-opa (compat-opa, front door) ──▶ OPA (internal Rego sidecar) ──┐
+               validates JWT, consults OPA                                              │ OPA calls back
+                                                                                        ▼ into the callbacks
+                                        ┌─reads──▶ pgauthzd-reader (decision-only) ─▶ CNPG -ro / pooler
+                                        └─writes─▶ pgauthzd-writer (full)          ─▶ CNPG -rw
+   (optional) …-authzen ─▶ the reader pods' AuthZEN :8080 (decision-only) ─▶ CNPG -ro
 ```
+
+All three surfaces are the ONE `pgauthzd` image, capability-scoped per Deployment
+by `PGAUTHORIZER_PROFILE` (`decision-only` | `full` | `compat-opa`). The
+decision-only reader runs two listeners in one process: the OPA callback (`:8081`)
+and the AuthZEN 1.0 API (`:8080`), so there is no separate `authzen-direct`
+deployment.
 
 ## Architecture
 
@@ -18,17 +29,20 @@ and locked down with NetworkPolicies.
 |---|---|---|---|
 | `…-db` | CloudNativePG `Cluster` | internal | primary `-rw`, replicas `-ro`; PITR-capable |
 | `…-db-pooler-ro` | CloudNativePG `Pooler` | internal | PgBouncer over the replicas |
-| `…-opa` | Deployment + HPA | **Ingress** | the only front door; JWT authn + policy |
-| `…-reader` | Deployment + HPA | internal | pgauthzd `decision-only`; `authzen_direct` (read-only); native READ callback (`:8081`); NetworkPolicy: OPA only |
+| `…-opa` | Deployment + HPA | **Ingress** | internal Rego policy sidecar (JWT authn + policy); the `compat-opa` front consults it, and it calls back into the reader/writer callbacks |
+| `…-reader` | Deployment + HPA | internal | pgauthzd `decision-only`; `authzen_direct` (read-only); native READ callback (`:8081`) + AuthZEN 1.0 API (`:8080`); NetworkPolicy: `:8081` OPA-only |
 | `…-writer` | Deployment | internal | pgauthzd `full`; `pgauthzd_rw` (writer); native WRITE callback (`:8081`); NetworkPolicy: OPA only |
-| `…-authzen-direct` / `-opa` | Deployment | optional Ingress | AuthZEN 1.0 API |
+| `…-authzen` | Service | optional | publishes the reader pods' AuthZEN `:8080` (`authzen.direct.enabled`) |
+| `…-pgauthzd-opa` | Deployment | optional Ingress | pgauthzd `compat-opa`; AuthZEN 1.0 API fronting OPA (`authzen.opa.enabled`) |
 | `…-migrate-N` | Job (Helm hook) | — | installs/upgrades the engine SQL |
 
 OPA reaches the callbacks via `NATIVE_URL` (reader) and `NATIVE_WRITE_URL`
 (writer), authenticating with the shared `NATIVE_SERVICE_TOKEN` (matching each
-instance's `INTERNAL_SERVICE_TOKEN`). The callback listener bypasses OPA's policy
-layer — it trusts OPA's asserted subject (body) + per-app role (`X-Authz-Role`)
-— so it is service-token guarded and reachable only by OPA.
+instance's `INTERNAL_SERVICE_TOKEN`). For this internal callback OPA is the
+trusted upstream policy sidecar — the external front door (pgauthzd `compat-opa`)
+already validated the JWT — so the callback listener does **not** re-verify it;
+it trusts OPA's asserted subject (body) + per-app role (`X-Authz-Role`), and is
+service-token guarded and reachable only by OPA.
 
 ## Prerequisites
 
@@ -42,23 +56,21 @@ layer — it trusts OPA's asserted subject (body) + per-app role (`X-Authz-Role`
    ```bash
    # from the repo root
    docker build -f deploy/migrations/Dockerfile -t pgauthz-migrations:0.1.0 .
-   docker build -f pgauthzd/Dockerfile --build-arg BINARY=pgauthzd       -t pgauthz-pgauthzd:0.1.0       ./pgauthzd
-   docker build -f pgauthzd/Dockerfile --build-arg BINARY=authzen-direct -t pgauthz-authzen-direct:0.1.0 ./pgauthzd
-   docker build -f pgauthzd/Dockerfile --build-arg BINARY=authzen-opa    -t pgauthz-authzen-opa:0.1.0    ./pgauthzd
+   docker build -f pgauthzd/Dockerfile -t pgauthz-pgauthzd:0.1.0 ./pgauthzd
    ```
-   `pgauthz-pgauthzd` runs the reader (decision-only) and writer (full)
-   callbacks; the `authzen-*` images are only needed for the optional AuthZEN
-   1.0 API. Push them to a registry your cluster can pull from, or import into a
+   The single `pgauthz-pgauthzd` image serves every role — the reader
+   (decision-only) + AuthZEN API, the writer (full), and the compat-opa AuthZEN
+   gateway — selected per Deployment by `PGAUTHORIZER_PROFILE` (no `BINARY`
+   build-arg). Push it to a registry your cluster can pull from, or import into a
    local cluster (k3d shown below).
 
 ## Quick start on k3d
 
 ```bash
-# 1. operator (see above), then build the three images (see above)
+# 1. operator (see above), then build the two images (see above)
 
 # 2. import the locally-built images into the k3d cluster
-k3d image import pgauthz-migrations:0.1.0 pgauthz-pgauthzd:0.1.0 \
-                 pgauthz-authzen-direct:0.1.0 pgauthz-authzen-opa:0.1.0 -c <your-k3d-cluster>
+k3d image import pgauthz-migrations:0.1.0 pgauthz-pgauthzd:0.1.0 -c <your-k3d-cluster>
 
 # 3. install (small-footprint local profile)
 ./deploy/helm/pgauthz/sync-files.sh        # embed OPA policies into the chart
@@ -120,9 +132,10 @@ helm upgrade pgauthz ./deploy/helm/pgauthz -f values-k3d.yaml \
 
 `database.instances=N` → CNPG runs 1 primary + (N-1) replicas and exposes
 `<cluster>-rw` (primary), `<cluster>-ro` (replicas only), `<cluster>-r` (any).
-`reader.target` (`rw` / `ro` / `pooler-ro`) selects where both the pgauthzd
-reader **and** `authzen-direct` send reads; point it at `ro` to offload reads to
-replicas. `check_access` is read-only, so it runs unmodified on a hot standby.
+`reader.target` (`rw` / `ro` / `pooler-ro`) selects where the pgauthzd reader
+(which also serves the AuthZEN direct API) sends reads; point it at `ro` to
+offload reads to replicas. `check_access` is read-only, so it runs unmodified on
+a hot standby.
 
 A few things that bite in practice (all handled by the chart, learned the hard way):
 
@@ -270,15 +283,16 @@ primary) and synchronous replication re-established.
 ## Direct SQL access for applications (`extraRoles`)
 
 Some apps need to talk to PostgreSQL directly (SQL) instead of going through the
-OPA HTTP front door — e.g. a backend that calls `authz.check_access(...)` over a
-JDBC/pgx connection, or a sync job that writes tuples. `authzen-direct` already
-works this way; `extraRoles` lets you declare more such roles in `values.yaml`
-without hand-editing the Cluster template.
+pgauthzd HTTP front door — e.g. a backend that calls `authz.check_access(...)` over a
+JDBC/pgx connection, or a sync job that writes tuples. The `authzen_direct`
+role already works this way; `extraRoles` lets you declare more such roles in
+`values.yaml` without hand-editing the Cluster template.
 
-**Security:** a direct DB connection bypasses OPA's JWT verification and Rego
-policy, so these roles are for **trusted services that do their own
-authn/authz**. Never give DB credentials to untrusted/end-user clients — route
-those through OPA. Even so, the roles are confined to the `SECURITY DEFINER`
+**Security:** a direct DB connection bypasses the pgauthzd front door's JWT
+verification and OPA's Rego policy, so these roles are for **trusted services
+that do their own authn/authz**. Never give DB credentials to untrusted/end-user
+clients — route those through the front door (pgauthzd). Even so, the roles are
+confined to the `SECURITY DEFINER`
 function API: they get `EXECUTE` on `authz.*` but **no raw table access**, so
 audit, namespace enforcement and the condition sandbox still apply.
 
@@ -353,8 +367,9 @@ allow-list, which is why it's off by default.
 
 ## Security defaults (keep these)
 
-- Only OPA (and optionally AuthZEN) is exposed; the pgauthzd reader/writer
-  callbacks + Postgres are ClusterIP + default-deny NetworkPolicy.
+- Only the front door (pgauthzd `compat-opa` / OPA's policy API, and optionally
+  the AuthZEN direct API) is exposed; the pgauthzd reader/writer callbacks +
+  Postgres are ClusterIP + default-deny NetworkPolicy.
 - `opa.requireTokenForReads=true`, AuthZEN `ALLOW_SUBJECT_OVERRIDE=false`.
 - Override `secrets.*` (dev defaults) and `opa.jwks` before real use; prefer
   `secrets.existingSecret` backed by a secret store.

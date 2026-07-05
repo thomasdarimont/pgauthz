@@ -43,14 +43,13 @@ node "Bounded Context B" as bcb {
 
 frame "PDP Data Plane" as dataplane {
     component "OPA PDP\n(policy decision)" as opapdp #LightBlue
-    component "AuthZEN API\n(pgauthzd compat-opa)" as azapi #PaleGreen
-    component "pgauthzd\n(native callback → SQL)" as pgrst #LightGreen
+    component "pgauthzd\n(compat-opa)\nAuthZEN front +\nnative callback → SQL" as azapi #PaleGreen
     database "PostgreSQL\npgauthz\n**ReBAC decision engine\n& relationship store**\n(tuples, recursive resolution,\nconditions, search)" as pgauthzdb #Orange
 }
 
 frame "PDP Control Plane" as controlplane {
     component "Policy administration\n(git-versioned Rego\n→ bundles / -watch)" as poladmin #Khaki
-    component "Tuple\nadministration\n(OPA-fronted writer)" as tupadmin #Khaki
+    component "Tuple\nadministration\n(pgauthzd write API /\nauthz_writer channel)" as tupadmin #Khaki
     component "Model / namespace /\ncondition administration\n(dedicated authz_admin\nchannel — never raw\ntable writes)" as modadmin #Khaki
 }
 
@@ -113,11 +112,11 @@ pepgw -down-> opagw : "per-route access policy:\nmay this client use\nthis route
 ' order the PDP pair (single cluster → chain honored): OPA left, AuthZEN
 ' right — matching BC A (→ opa) left and BC B (→ az) right above them
 'opa -[hidden]right-> az
-pepa -down-> opapdp : "fine-grained authorize:\ninput.token +\naction/resource"
+pepa -down-> azapi : "fine-grained authorize\n(AuthZEN 1.0):\ninput.token + action/resource"
 pepb -down-> azapi : "AuthZEN 1.0\n/access/v1/evaluation\n(standards-based PEP)"
-azapi -down-> opapdp : "input.token\n(FORWARD_TOKEN_TO_OPA)"
-opapdp -down-> pgrst : "http.send native /pgauthz/v1/check\n(cached: bounded TTL,\nbypass freshness-critical,\nfail closed)"
-pgrst -down-> pgauthzdb : "pgx\n(SECURITY DEFINER API)"
+azapi -right-> opapdp : "consult policy\n(FORWARD_TOKEN_TO_OPA)"
+opapdp -left-> azapi : "native callback /pgauthz/v1/check\n(cached: bounded TTL,\nbypass freshness-critical,\nfail closed)"
+azapi -down-> pgauthzdb : "pgx\n(SECURITY DEFINER API)"
 
 ' ── Control plane ────────────────────────────────────────────────────
 poladmin -up-> opapdp : "fetch policy"
@@ -225,8 +224,7 @@ legend bottom left
   | <#Violet> | Gateway internal routes — S2S / BC ↔ BC |
   | <#LightSalmon> | Authorizer — the PEP (gateway-embedded or sidecar; JWT validation + authz call) |
   | <#LightBlue> | OPA — Gateway OPA (route PBAC) / Authorization OPA (central PDP; JWT re-validation) |
-  | <#PaleGreen> | AuthZEN 1.0 API — standards-based PEP interface |
-  | <#LightGreen> | pgauthzd — native /pgauthz/v1 callback (pgx→SQL) |
+  | <#PaleGreen> | pgauthzd (compat-opa) — the AuthZEN 1.0 PEP front door; consults OPA and serves the native callback (pgx→SQL) |
   | <#Orange> | pgauthz — ReBAC decision engine + relationship store |
   | <#Khaki> | Control plane — versioned policies; audited tuple + model/admin channels |
 end legend

@@ -19,7 +19,7 @@
 #   ./scripts/pre-release.sh --skip-diagrams
 #
 # NOTE: step 3 recreates the compose stack from the BASE files — if you run
-# the keycloak/playground overlays, their opa/authzen-opa env is reset (the
+# the keycloak/playground overlays, their opa/pgauthzd-opa env is reset (the
 # script prints the re-apply hint at the end).
 #
 set -euo pipefail
@@ -107,8 +107,8 @@ echo "==> Pre-release checks passed."
 echo "    Next: commit/push, wait for CI, then scripts/bump-version.sh + scripts/release.sh"
 if [ "$SKIP_STACK" = 0 ] && docker ps --format '{{.Names}}' 2>/dev/null | grep -q playground-bff; then
     echo ""
-    echo "    NOTE: init.sh reset opa/authzen-opa to the base compose env."
+    echo "    NOTE: init.sh reset opa/pgauthzd-opa to the base compose env."
     echo "    Re-apply the playground overrides:"
     echo "      docker compose -f compose.yml -f compose-authzen.yml \\"
-    echo "        -f compose-keycloak.yml -f compose-playground.yml up -d --no-deps opa authzen-opa"
+    echo "        -f compose-keycloak.yml -f compose-playground.yml up -d --no-deps opa pgauthzd-opa"
 fi

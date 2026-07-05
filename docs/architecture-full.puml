@@ -8,50 +8,50 @@ skinparam nodesep 50
 skinparam ranksep 40
 skinparam padding 6
 
-title Full Architecture (read scaling + write API + AuthZEN)
+title Full Architecture (read scaling + write API)
 
 actor "Application" as app
 
 component "Load Balancer" as lb #Plum
 
 node "VM 1 (read)" as vm1 {
-    component "OPA" as opa_a #LightBlue
-    component "AuthZEN" as az_a #PaleGreen
-    component "pgauthzd\n(reader)" as pgd_a #LightGreen
+    component "pgauthzd\n(decision-only /\ncompat-opa)" as pgd_a #PaleGreen
+    component "OPA\n(sidecar)" as opa_a #LightBlue
     database "PG Replica" as pgr_a #LightYellow
 }
 
 node "VM 2 (read)" as vm2 {
-    component "OPA" as opa_b #LightBlue
-    component "AuthZEN" as az_b #PaleGreen
-    component "pgauthzd\n(reader)" as pgd_b #LightGreen
+    component "pgauthzd\n(decision-only /\ncompat-opa)" as pgd_b #PaleGreen
+    component "OPA\n(sidecar)" as opa_b #LightBlue
     database "PG Replica" as pgr_b #LightYellow
 }
 
 node "VM 0 (primary)" as vm0 {
-    component "OPA\n(write front)" as opa_w #LightBlue
-    component "pgauthzd\n(writer)" as pgd_w #Salmon
+    component "pgauthzd\n(full / writer)" as pgd_w #Salmon
+    component "OPA\n(sidecar)" as opa_w #LightBlue
     database "PG Primary" as pgp #Orange
 }
 
-' Read path
-app -down-> lb : "authz checks\n(read path)"
-lb -down-> opa_a : "OPA data API\n/v1/data/authz/*"
-lb -down-> opa_b
-lb -down-> az_a : "AuthZEN 1.0 API\n/access/v1/*"
-lb -down-> az_b
-opa_a -down-> pgd_a : "native callback"
-opa_b -down-> pgd_b
-az_a -down-> opa_a : "compat-opa\n(policy-enriched)"
-az_a -down-> pgr_a : "decision-only\n(SQL, lowest latency)"
-az_b -down-> opa_b
-az_b -down-> pgr_b
-pgd_a -down-> pgr_a
+' Read path — pgauthzd is the ONLY front door. It answers directly from the
+' graph (decision-only), or consults its OPA sidecar for Rego policy
+' (compat-opa) — and only pgauthzd ever calls OPA; OPA calls back into the same
+' pgauthzd's native listener for the graph data.
+app -down-> lb : "authz checks"
+lb -down-> pgd_a : "AuthZEN + native API"
+lb -down-> pgd_b
+pgd_a -right-> opa_a : "consult policy"
+opa_a -left-> pgd_a : "native callback"
+pgd_b -right-> opa_b
+opa_b -left-> pgd_b
+pgd_a -down-> pgr_a : "SQL (pgx)"
 pgd_b -down-> pgr_b
 
-' Write path — OPA fronts the writer (verifies JWT + writer role, forwards)
-app -down-> opa_w : "writes\n(JWT: writer role)"
-opa_w -down-> pgd_w : "native write callback\n(authorized)"
+' Write path — pgauthzd (full) is the front door; it consults OPA to authorize
+' the write (writer role), then applies it natively. (Write-authz delegation is
+' the pending pgauthzd-fronted-writes increment; today write.rego fronts it.)
+app -down-> pgd_w : "writes\n(JWT: writer role)"
+pgd_w -right-> opa_w : "authorize write"
+opa_w -left-> pgd_w : "authorized"
 pgd_w -down-> pgp : "SQL (pgx, authz_writer)"
 
 ' Replication
@@ -60,10 +60,9 @@ pgp -right-> pgr_b : "  WAL  "
 
 legend bottom left
   |= Color |= Component |
-  | <#PaleGreen> | AuthZEN API — AuthZEN 1.0 (pgauthzd); decision-only → PG, compat-opa → OPA |
-  | <#LightBlue> | OPA — policy evaluation + JWT authn (reads and writes) |
-  | <#LightGreen> | pgauthzd (reader) — decision-only; OPA read callback (native) |
-  | <#Salmon> | pgauthzd (writer) — full profile; OPA write callback (authz_writer) |
+  | <#PaleGreen> | pgauthzd (reader) — the front door; AuthZEN + native API; consults OPA (compat-opa) or answers direct (decision-only) |
+  | <#Salmon> | pgauthzd (writer) — full profile; applies authorized writes to the primary |
+  | <#LightBlue> | OPA — internal Rego policy sidecar; ONLY pgauthzd calls it |
   | <#Orange> | PostgreSQL primary — read-write |
   | <#LightYellow> | PostgreSQL replica — read-only (WAL) |
   | <#Plum> | Load Balancer — distributes reads |

@@ -35,7 +35,7 @@ export DATABASE_URL="${DATABASE_URL:-postgres://${PG_USER}:${PG_PASSWORD}@${PG_H
 # Otherwise: base stack + optional authzen / CEL overlays.
 # Overlay state persisted by start.sh (--cel/--keycloak/--playground): source
 # it so init.sh / test.sh / reload-engine.sh keep the running stack's overlays
-# instead of resetting opa/authzen-opa to the base config. Explicit PGAUTHZ_*
+# instead of resetting opa/pgauthzd-opa to the base config. Explicit PGAUTHZ_*
 # env vars take precedence (the file self-guards with :- defaults).
 if [ -f "$SCRIPT_DIR/.pgauthz-overlays" ]; then
   # shellcheck source=/dev/null

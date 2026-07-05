@@ -7,16 +7,22 @@ production path end to end.
 ![pgauthz playground frontend](playground-frontend.png)
 
 ```
-  Browser ──(session cookie)──▶ BFF (Go) ──(user's token)──▶ OPA ──▶ PostgREST ──▶ engine
-  Lit SPA                       auth-code + PKCE,            data.authz.{allow,
-  (frontend/)                   sessions in pgauthz_playground  explain,...}
+  Browser ──(session cookie)──▶ BFF (Go) ──(user's token)──▶ OPA ──▶ pgauthzd ──▶ engine
+  Lit SPA                       auth-code + PKCE,            data.authz.{allow,  native
+  (frontend/)                   sessions in pgauthz_playground  explain,...}     callback
 ```
+
+(That's the Access Explorer's "As me" query path — the BFF calls the OPA policy
+layer, which resolves the graph through pgauthzd's native `/pgauthz/v1` callback.
+The AuthZEN tab instead goes through the `pgauthzd-opa` front door, which
+consults OPA — the shape a production PEP uses.)
 
 The BFF is a **backend-for-frontend**: the browser does OIDC authorization-code +
 PKCE against Keycloak, the BFF holds the tokens **server-side** (sessions in a
 separate `pgauthz_playground` DB) and exposes only an **http-only secure cookie**
-to the SPA. Every query is forwarded to OPA with the session's access token, so
-it runs **as the logged-in user** — exactly like a real PEP.
+to the SPA. Every query is forwarded with the session's access token, so it runs
+**as the logged-in user** — the way a real PEP evaluates a request (in
+production the PEP calls pgauthzd, the front door, which consults OPA).
 
 ## Run
 
@@ -51,10 +57,12 @@ the header combobox or **`?store=`** in the URL
     including the exact granting tuple (`matched_tuple`).
   - Two evaluation modes (toggle in the Query header):
     **Explore** (default) — **engine-direct**, read-only, **any subject** (the
-    OpenFGA-playground style); **As me (OPA)** — query as the logged-in user
-    **through OPA** (the real PEP path; subject comes from your token).
+    OpenFGA-playground style); **As me (OPA)** — query as the logged-in user via
+    the OPA policy layer (which resolves the graph through pgauthzd's native
+    callback), the subject taken from your token — the PEP evaluation path a
+    production deployment fronts with pgauthzd.
 - **AuthZEN** — an [AuthZEN 1.0](https://openid.net/specs/authorization-api-1_0.html)
-  API console driving the real `authzen-opa` service through the BFF (your
+  API console driving the real `pgauthzd-opa` service through the BFF (your
   session token is injected server-side). Endpoint picker (evaluation,
   evaluations, subject/resource/action search, discovery), a templated request
   built from the shared query fields (left), and the response (right). The
@@ -114,7 +122,7 @@ Demo-grade: dev client secret (`playground-bff-demo-secret`); the BFF session
 cookie is http-only + `Secure` (served via the TLS proxy); the SPA never
 receives a token. The metadata/explore connection uses the dedicated read-only
 `authz_metadata` role (`ENGINE_DSN`), not the engine superuser. The AuthZEN
-console proxies to `authzen-opa` (`AUTHZEN_URL`; empty hides the tab) with the
+console proxies to `pgauthzd-opa` (`AUTHZEN_URL`; empty hides the tab) with the
 session token injected server-side; its reverse-search endpoints are role-gated
-(`SEARCH_REQUIRED_ROLE` on authzen-opa, mirrored in the UI via
+(`SEARCH_REQUIRED_ROLE` on pgauthzd-opa, mirrored in the UI via
 `PLAYGROUND_SEARCH_ROLE` → `/api/me.search_enabled`). Not for production as-is.

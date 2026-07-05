@@ -1,0 +1,296 @@
+### pgauthzd NATIVE write API examples against the demo model.
+###
+### Target: the native write path  POST /pgauthz/v1/{write,delete,delete-user,write-checked}.
+### Between writes, reads via /pgauthz/v1/check verify the effect.
+###
+### PORT (published by compose-authzen.yml):
+###   * :8092  pgauthzd-full (full profile, writer-capable DB role pgauthzd_rw)
+###            — the ONLY instance that can write. @baseUrl below points here.
+### The native write path is deliberately absent everywhere else:
+###   * :8090  pgauthzd-decision (read-only role) → 403 on any write.
+###   * :8091  pgauthzd-opa public listener → 404 (writes go through OPA's
+###            internal write callback, not the public AuthZEN surface).
+###
+### AUTH: every write needs a valid JWT (401 otherwise). Reuse the pre-minted
+### demo tokens from http-client.env.json (select the "dev" environment):
+### {{access_token_alice}} etc. — ES256-signed with opa/keys/demo.key.txt
+### (iss https://auth.example.com, aud authz-api). Mint fresh ones with
+### tests/test-authzen.sh's make_token, or from Keycloak (keycloak/get-token.sh).
+###
+### performed_by (the audit author): an explicit body value wins; otherwise it
+### defaults to the authenticated JWT subject. On the OPA write callback OPA
+### passes the authenticated subject here explicitly — mirror that by setting it.
+### NOTE: the demo/test stack runs with ALLOW_SUBJECT_OVERRIDE=true (env.sh), so
+### tuple subjects are taken from the body as written.
+###
+### Requires: docker compose up (bootstrap.sh) with compose-authzen.yml.
+
+@baseUrl = http://localhost:8092
+@token = {{access_token_alice}}
+
+### =====================================================================
+### WRITE (upsert) TUPLES  (POST /pgauthz/v1/write)
+### Body: { "tuples": [ <write_tuples_jsonb elements> ], "performed_by"?,
+###         "consistency"? }. Tuple element fields: user_type, user_id,
+### relation, object_type, object_id, and optional user_relation,
+### condition_name, context, expires_at. Response: { "store", "written": N }
+### =====================================================================
+
+### Grant alice viewer on a new document
+POST {{baseUrl}}/pgauthz/v1/write
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "tuples": [
+    { "user_type": "internal_user", "user_id": "alice", "relation": "viewer", "object_type": "document", "object_id": "doc_test_001" }
+  ],
+  "performed_by": "http-client"
+}
+### Expected: { "store": "demo", "written": 1 }
+
+###
+
+### Verify: alice can now read doc_test_001 (viewer → can_read)
+POST {{baseUrl}}/pgauthz/v1/check
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user", "id": "alice" },
+  "action":   { "name": "can_read" },
+  "resource": { "type": "document", "id": "doc_test_001" }
+}
+### Expected: { "allowed": true }
+
+###
+
+### Batch write — grant several users in one call (duplicates are upserts)
+POST {{baseUrl}}/pgauthz/v1/write
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "tuples": [
+    { "user_type": "internal_user", "user_id": "alice", "relation": "editor", "object_type": "document", "object_id": "doc_test_001" },
+    { "user_type": "internal_user", "user_id": "bob",   "relation": "viewer", "object_type": "document", "object_id": "doc_test_001" }
+  ],
+  "performed_by": "http-client"
+}
+### Expected: { "store": "demo", "written": 2 }
+
+###
+
+### Write a tuple with an expiry (temporary grant) + explicit condition/context.
+### expires_at, condition_name, and context are optional per-tuple fields.
+POST {{baseUrl}}/pgauthz/v1/write
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "tuples": [
+    {
+      "user_type": "internal_user",
+      "user_id": "alice",
+      "relation": "viewer",
+      "object_type": "document",
+      "object_id": "doc_test_temp",
+      "expires_at": "2030-01-01T00:00:00Z"
+    }
+  ],
+  "performed_by": "http-client"
+}
+### Expected: { "store": "demo", "written": 1 }
+
+###
+
+### Store-scoped write variant — /stores/{store}/pgauthz/v1/write
+POST {{baseUrl}}/stores/demo/pgauthz/v1/write
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "tuples": [
+    { "user_type": "internal_user", "user_id": "bob", "relation": "editor", "object_type": "document", "object_id": "doc_test_001" }
+  ],
+  "performed_by": "http-client"
+}
+### Expected: { "store": "demo", "written": 1 }
+
+###
+
+### =====================================================================
+### DELETE TUPLES  (POST /pgauthz/v1/delete)
+### Same body shape as /write. Response: { "store", "deleted": N }
+### =====================================================================
+
+### Revoke a single tuple — alice's viewer on doc_test_001
+POST {{baseUrl}}/pgauthz/v1/delete
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "tuples": [
+    { "user_type": "internal_user", "user_id": "alice", "relation": "viewer", "object_type": "document", "object_id": "doc_test_001" }
+  ],
+  "performed_by": "http-client"
+}
+### Expected: { "store": "demo", "deleted": 1 }
+
+###
+
+### Batch delete — remove multiple tuples in one call
+POST {{baseUrl}}/pgauthz/v1/delete
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "tuples": [
+    { "user_type": "internal_user", "user_id": "alice", "relation": "editor", "object_type": "document", "object_id": "doc_test_001" },
+    { "user_type": "internal_user", "user_id": "bob",   "relation": "viewer", "object_type": "document", "object_id": "doc_test_001" },
+    { "user_type": "internal_user", "user_id": "bob",   "relation": "editor", "object_type": "document", "object_id": "doc_test_001" }
+  ],
+  "performed_by": "http-client"
+}
+### Expected: { "store": "demo", "deleted": 3 }
+
+###
+
+### Verify: bob can no longer read doc_test_001
+POST {{baseUrl}}/pgauthz/v1/check
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "subject":  { "type": "internal_user", "id": "bob" },
+  "action":   { "name": "can_read" },
+  "resource": { "type": "document", "id": "doc_test_001" }
+}
+### Expected: { "allowed": false }
+
+###
+
+### =====================================================================
+### DELETE ALL TUPLES FOR A USER — offboarding  (POST /pgauthz/v1/delete-user)
+### Body: { "user": { "type": <user_type>, "id": <user_id> }, "performed_by"?,
+###         "consistency"? }. Response: { "store", "deleted": N }
+### =====================================================================
+
+### Seed a throwaway grant, then wipe everything for the user.
+POST {{baseUrl}}/pgauthz/v1/write
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "tuples": [
+    { "user_type": "internal_user", "user_id": "__offboard_test__", "relation": "viewer", "object_type": "document", "object_id": "doc_test_001" }
+  ],
+  "performed_by": "http-client"
+}
+### Expected: { "store": "demo", "written": 1 }
+
+###
+
+### Revoke ALL access for the offboarded user
+POST {{baseUrl}}/pgauthz/v1/delete-user
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "user": { "type": "internal_user", "id": "__offboard_test__" },
+  "performed_by": "offboarding"
+}
+### Expected: { "store": "demo", "deleted": 1 }
+
+###
+
+### =====================================================================
+### CONDITIONAL / ATOMIC WRITE  (POST /pgauthz/v1/write-checked)
+### Preconditions gate the deletes+writes; all-or-nothing (optimistic
+### concurrency). Body: { "preconditions"?, "deletes"?, "writes"?,
+###   "performed_by"?, "consistency"? } — each is a JSONB array. The engine's
+### JSONB result is returned verbatim (committed/applied counts, etc.).
+### =====================================================================
+
+### Grant editor to carol ONLY IF a viewer tuple already exists (precondition).
+POST {{baseUrl}}/pgauthz/v1/write-checked
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "preconditions": [
+    { "match": "exists", "user_type": "internal_user", "user_id": "alice", "relation": "viewer", "object_type": "document", "object_id": "doc_test_002" }
+  ],
+  "writes": [
+    { "user_type": "internal_user", "user_id": "carol", "relation": "editor", "object_type": "document", "object_id": "doc_test_002" }
+  ],
+  "performed_by": "http-client"
+}
+### Expected: engine JSONB result. If the precondition fails, no write is applied.
+
+###
+
+### Atomic swap — delete the old grant and add a new one in one transaction.
+POST {{baseUrl}}/pgauthz/v1/write-checked
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "deletes": [
+    { "user_type": "internal_user", "user_id": "carol", "relation": "editor", "object_type": "document", "object_id": "doc_test_002" }
+  ],
+  "writes": [
+    { "user_type": "internal_user", "user_id": "carol", "relation": "viewer", "object_type": "document", "object_id": "doc_test_002" }
+  ],
+  "performed_by": "http-client"
+}
+### Expected: engine JSONB result (deletes + writes applied atomically)
+
+###
+
+### Cleanup: remove the write-checked test tuples
+POST {{baseUrl}}/pgauthz/v1/delete
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "tuples": [
+    { "user_type": "internal_user", "user_id": "carol", "relation": "viewer", "object_type": "document", "object_id": "doc_test_002" },
+    { "user_type": "internal_user", "user_id": "alice", "relation": "viewer", "object_type": "document", "object_id": "doc_test_temp" }
+  ],
+  "performed_by": "cleanup"
+}
+### Expected: { "store": "demo", "deleted": <n> }
+
+###
+
+### =====================================================================
+### SECURITY — writes must be authenticated and writer-capable
+### =====================================================================
+
+### No token → 401 (unauthenticated)
+POST {{baseUrl}}/pgauthz/v1/write
+Content-Type: application/json
+
+{
+  "tuples": [
+    { "user_type": "internal_user", "user_id": "eve", "relation": "viewer", "object_type": "document", "object_id": "doc_payroll_001" }
+  ]
+}
+### Expected: HTTP 401
+
+###
+
+### Same write against the read-only decision-only instance (:8090) → 403.
+### The security boundary is the DB role: pgauthzd-decision physically cannot write.
+POST http://localhost:8090/pgauthz/v1/write
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "tuples": [
+    { "user_type": "internal_user", "user_id": "alice", "relation": "viewer", "object_type": "document", "object_id": "doc_test_001" }
+  ],
+  "performed_by": "http-client"
+}
+### Expected: HTTP 403 (this instance is read-only / decision-only profile)

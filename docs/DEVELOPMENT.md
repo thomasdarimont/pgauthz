@@ -57,7 +57,7 @@ controlled through these application roles:
 | `authz_admin` | `create_store`, `retire_store`, `delete_store`, `model_register_type`, `model_register_relation`, `model_add_rule`, `model_remove_rule`, `model_remove_rules`, `find_redundant_tuples`, manage `namespace_access` table | `authz_writer` |
 
 `authz_auditor` is a peer of `authz_reader`, not part of the linear chain.
-The PostgREST anonymous role (`api_anon`) inherits `authz_reader`.
+The read-only connection role (`api_anon`) inherits `authz_reader`.
 
 All public functions are `SECURITY DEFINER` — they run as the `authz` owner,
 so application roles need no direct table access.
@@ -111,52 +111,59 @@ Read namespace enforcement applies to: `check_access`, `check_access_with_contex
 `list_objects`, `list_subjects`, `list_actions`, `explain_access`, `audit_check_access`,
 `audit_list_actions`.
 
-#### Per-app namespace isolation over the OPA write path
+#### Per-app namespace isolation over the pgauthzd write path
 
 Namespace write enforcement keys off the **effective DB role**
 (`current_setting('role')` / `session_user`). On a direct SQL connection that
-is simply the role you connect/`SET ROLE` as. But the OPA-fronted writer runs as
-a **fixed `authz_writer`**, so it can't tell apps apart by itself — a namespaced
-write through it would fail closed.
+is simply the role you connect/`SET ROLE` as. But the pgauthzd `full`/writer
+instance connects with a **fixed writer-capable role** (`pgauthzd_rw`, inheriting
+`authz_writer`), so it can't tell apps apart by itself — a namespaced write
+through it would fail closed.
 
-To restore per-app isolation over HTTP, OPA conveys the caller's app role and the
-writer assumes it for the request:
+To restore per-app isolation over HTTP, the caller's app role is conveyed and the
+writer assumes it per request. On the external front door pgauthzd derives the
+role from the verified token (`DB_ROLE_CLAIM`); on the internal callback the OPA
+sidecar forwards it as the `X-Authz-Role` header (from OPA's own
+`DB_ROLE_CLAIM`). Either way pgauthzd validates it and `SET LOCAL ROLE`s to it:
 
 1. **Issue per-app DB roles** and wire them up (the role must be a member of
-   `authz_writer`, granted the namespace, and assumable by `authz_authenticator`):
+   `authz_writer`, granted the namespace, and assumable by the writer's
+   connection role so pgauthzd can `SET LOCAL ROLE` to it):
 
    ```sql
    CREATE ROLE app_hr NOLOGIN;
    GRANT authz_writer TO app_hr;                 -- tuple-writer privileges
-   GRANT app_hr TO authz_authenticator;          -- so the writer can SET ROLE to it
+   GRANT app_hr TO pgauthzd_rw;                  -- so the writer can SET LOCAL ROLE to it
    SELECT authz.grant_namespace_access('demo', 'hr', 'app_hr', p_can_write := true);
    ```
 
-2. **Put the app role in a JWT claim** (e.g. `db_role: "app_hr"`) and point OPA at
-   it with `DB_ROLE_CLAIM=db_role`.
+2. **Put the app role in a JWT claim** (e.g. `db_role: "app_hr"`) and configure
+   `DB_ROLE_CLAIM=db_role` — on pgauthzd for the token-derived front-door path,
+   and on OPA when the write decision is routed through the sidecar.
 
-3. OPA forwards it to the writer as the `X-Authz-Role` header;
-   `authz._pre_request()` (the writer's `PGRST_DB_PRE_REQUEST` hook) validates it
-   — the role must be a member of `authz_writer` and **not** an admin role, so a
-   forged claim can't escalate — and `SET LOCAL ROLE`s to it. The existing
+3. pgauthzd validates the resolved role in a transaction — it must be a member of
+   `authz_writer` and **not** an admin role, so a forged claim can't escalate —
+   and `SET LOCAL ROLE`s to it before applying the write via pgx. The existing
    `_check_namespace_access` then enforces against the per-app role.
 
-The header is trustworthy because the writer is reachable only by OPA, which sets
-it from the verified JWT. `SET LOCAL ROLE` is transaction-scoped, so the role
-never leaks across pooled connections. With `DB_ROLE_CLAIM` unset (the
-default) no header is sent and the writer stays `authz_writer`.
+The role is trustworthy because pgauthzd derives it from the verified token (or,
+on the internal callback, the writer is reachable only by OPA, which sets
+`X-Authz-Role` from the verified JWT). `SET LOCAL ROLE` is transaction-scoped, so
+the role never leaks across pooled connections. With `DB_ROLE_CLAIM` unset (the
+default) no role is conveyed and the writer stays `authz_writer`.
 
-> **Reads:** the read path gets the same treatment. OPA forwards
-> `X-Authz-Role` on read calls too (from the same `DB_ROLE_CLAIM`), and the
-> reader's `PGRST_DB_PRE_REQUEST` hook (`authz._pre_request_reader`) validates
-> it — member of `authz_reader`, **not** admin-capable, fail closed — and
-> `SET LOCAL ROLE`s to it, so the read-side namespace checks
-> (`_check_namespace_access(..., 'can_read')`) key on the calling app instead
-> of the fixed `api_anon`. Wire the app role for reads with
-> `GRANT authz_reader TO app_hr` (implied when it's already a writer) and
-> `grant_namespace_access(..., p_can_read := true)`. The role header is part
-> of OPA's `http.send` cache key, so cached read decisions are partitioned per
-> role. With no role forwarded, reads stay `api_anon` (unchanged).
+> **Reads:** the read path gets the same treatment. pgauthzd derives the per-app
+> role from the token (or, on the OPA read callback, from the forwarded
+> `X-Authz-Role`), validates it — member of `authz_reader`, **not** admin-capable,
+> fail closed — and `SET LOCAL ROLE`s to it in the read transaction, so the
+> read-side namespace checks (`_check_namespace_access(..., 'can_read')`) key on
+> the calling app instead of the fixed reader default. Wire the app role for
+> reads with `GRANT authz_reader TO app_hr` (implied when it's already a writer),
+> `GRANT app_hr TO authzen_direct` (the read connection role, so pgauthzd can
+> assume it), and `grant_namespace_access(..., p_can_read := true)`. On the OPA
+> path the role header is part of OPA's `http.send` cache key, so cached read
+> decisions are partitioned per role. With no role conveyed, reads stay the
+> namespace-free reader default (unchanged).
 
 ### Condition Expression Security
 
@@ -448,7 +455,7 @@ SET session_replication_role = DEFAULT;
 Caveats:
 
 - Requires a real superuser connection. It is not reachable through the
-  API roles or PostgREST — which is the intended barrier.
+  API roles or pgauthzd — which is the intended barrier.
 - Do **not** use `ALTER TABLE ... DISABLE TRIGGER` instead: that disables
   the trigger globally for all concurrent sessions until re-enabled.
 - Changes made this way are invisible to `audit_check_access` — time-travel
@@ -623,7 +630,7 @@ public class DocumentController {
     @GetMapping("/{id}")
     public Document getDocument(@PathVariable String id, JwtAuthenticationToken jwt) {
         // 1. Structural check — cheap, no data needed
-        //    Calls POST /access/v1/evaluation on authzen-direct or authzen-opa
+        //    Calls POST /access/v1/evaluation on pgauthzd-decision or pgauthzd-opa
         if (!authz.checkAccess(jwt, "can_read", "document", id)) {
             throw new AccessDeniedException("Access denied");
         }
@@ -705,7 +712,7 @@ Configure in `application.yml`:
 
 ```yaml
 authzen:
-  url: http://localhost:8090   # authzen-direct (or 8091 for authzen-opa)
+  url: http://localhost:8090   # pgauthzd-decision (or 8091 for pgauthzd-opa)
 ```
 
 ### Direct SQL example (JDBC / pgx)
@@ -731,40 +738,54 @@ err := pool.QueryRow(ctx,
 ).Scan(&allowed)
 ```
 
-## Write API (OPA-fronted)
+## Write API (pgauthzd front door)
 
-The read path (OPA / AuthZEN) handles authorization checks. Tuple **writes**
-go through the **same front door**: OPA verifies the JWT, requires the
-configured writer role, and forwards the operation to a PostgREST **writer**
-instance that runs as a fixed `authz_writer` role and is reachable only by OPA.
+**pgauthzd is the front door** for reads *and* writes. Tuple **writes** go to the
+pgauthzd `full`/writer instance (native `/pgauthz/v1/write`): it validates the
+JWT, requires the configured writer role, records the subject as the audit
+author, and applies the write natively via pgx under a fixed writer-capable role
+(`pgauthzd_rw`, inheriting `authz_writer`). The write-authz **decision** is today
+delegated to the internal OPA `write.rego` policy that the writer consults —
+fully moving that decision into pgauthzd is the **pending pgauthzd-fronted-writes
+increment**. OPA is an internal policy sidecar; clients never call it directly.
 
 ```
 Read path  (authorization checks):
-Application ──▶ OPA / AuthZEN ──▶ PostgREST (reader, :3000) ──▶ PG
+Application ──▶ pgauthzd (front door; validates JWT) ──▶ PG
+                 └─ compat-opa: consults its OPA sidecar, which calls
+                    back into pgauthzd's native read callback ──▶ PG
 
 Write path (tuple management):
-Application ──▶ OPA (:8181, POST /v1/data/authz/write)
-                 │ verifies JWT + writer role
+Application ──▶ pgauthzd full/writer (front door; validates JWT + writer role)
+                 │ write-authz decision consulted from the internal OPA
+                 │ write.rego policy (pending native delegation)
                  ▼
-              PostgREST-writer (fixed authz_writer, internal) ──▶ PG
+              applies via pgx as authz_writer ──▶ PG
 ```
 
-There is **no** host-exposed write endpoint and **no** Nginx gateway — the
-writer has no host port and does no JWT verification of its own. (Earlier
-versions put an Nginx gateway + JWT-verifying writer on `:3001`; that's removed
-— see [ARCHITECTURE.md ADR-6](ARCHITECTURE.md).)
+There is **no** PostgREST and **no** Nginx write gateway — the writer instance is
+internal-only (no host port on the callback listener) and reachable only by OPA's
+callback; PostgREST was removed entirely (see
+[ARCHITECTURE.md ADR-6](ARCHITECTURE.md)). An external Nginx/LB may still front
+pgauthzd itself, but there is no RPC-allowlist proxy in front of a writer.
+
+The OPA `write.rego` policy — the write-authz decision the writer consults — is
+documented below via its `POST /v1/data/authz/write` interface (which the demo
+also lets you drive directly against OPA on `:8181`); the request/response shape
+is the write contract pgauthzd's writer forwards to.
 
 ### Write authorization
 
-OPA verifies the JWT (ES256 against the issuer's JWKS, like the read path) and
-requires the configured **writer role** to appear in the JWT's **roles claim**.
-Both are configurable on the OPA service:
+The OPA `write.rego` write-authz policy re-verifies the JWT (ES256 against the
+issuer's JWKS, as pgauthzd's front door already did) and requires the configured
+**writer role** to appear in the JWT's **roles claim**. Both are configurable on
+the OPA service:
 
 | Env var | Default | Meaning |
 |---|---|---|
 | `JWT_ROLES_CLAIM` | `roles` | Comma-separated list of dotted paths to roles arrays; roles are aggregated (set-union) across all. Keycloak: `realm_access.roles,resource_access.<client>.roles` |
 | `WRITER_ROLE` | `authz_writer` | Role value that authorizes tuple writes (matched in any configured claim) |
-| `POSTGREST_WRITER_URL` | *(unset)* | Writer instance OPA forwards to. **Unset ⇒ writes disabled** (read-only deployment) |
+| `NATIVE_WRITE_URL` | *(unset)* | pgauthzd `full`/writer callback OPA forwards authorized writes to. **Unset ⇒ writes disabled** (read-only deployment) |
 
 The Postgres role is **not** taken from the token — the writer always runs as
 `authz_writer`, so a forged or over-scoped role claim cannot reach admin
@@ -833,7 +854,7 @@ Outcomes:
 | `{"allowed":true,"result":{"status":200,"body":…}}` | applied; `body` is the function return (boolean, or the affected count for batch) |
 | `{"allowed":false,"error":"not_authorized"}` | missing/invalid token, or roles claim lacks `WRITER_ROLE` |
 | `{"allowed":false,"error":"invalid_request"}` | authorized, but malformed `operation` / `tuple` / `tuples` / `user` |
-| `{"allowed":false,"error":"writes_disabled"}` | no `POSTGREST_WRITER_URL` configured (read-only deployment) |
+| `{"allowed":false,"error":"writes_disabled"}` | no `NATIVE_WRITE_URL` configured (read-only deployment) |
 
 ### Conditional / atomic writes (optimistic concurrency)
 
@@ -904,35 +925,38 @@ tooling), not the public write API. See [direct SQL](#via-direct-sql-jdbc).
 
 ### Compose configuration
 
-The writer + OPA wiring ships **enabled** in `compose.yml`:
+The writer instance ships **enabled** in `compose-authzen.yml` (which
+`start.sh` always includes), and the OPA write-callback wiring is in
+`compose.yml`:
 
 ```yaml
-postgrest-writer:
-  image: postgrest/postgrest:v14.14
+# compose-authzen.yml — the full/writer instance and its native callback
+pgauthzd-full:
   environment:
-    PGRST_DB_URI: postgres://authz_authenticator:${AUTHZ_AUTHENTICATOR_PASSWORD:-authz}@authz-db:5432/authz
-    PGRST_DB_ANON_ROLE: authz_writer   # fixed role; NO JWT verification
-    PGRST_DB_SCHEMAS: authz
-    PGRST_DB_POOL: "20"
-    PGRST_SERVER_PORT: "3001"
-  expose:
-    - "3001"            # internal only — reachable solely by OPA
+    PGAUTHORIZER_PROFILE: "full"       # read + write; the ONLY instance that can write
+    # Writer-capable non-superuser role (inherits authz_writer). Not a
+    # PostgREST authenticator — pgauthzd connects directly as this role.
+    DATABASE_URL: "postgres://pgauthzd_rw:${PGAUTHZD_RW_PASSWORD:-authz}@authz-db:5432/authz"
+    INTERNAL_LISTEN_ADDR: ":8081"      # OPA write callback (writer-capable)
+    INTERNAL_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
+  # No host port on the callback listener — reachable solely by OPA
 
+# compose.yml — OPA forwards authorized writes to the writer's callback
 opa:
   environment:
-    POSTGREST_WRITER_URL: "http://postgrest-writer:3001"
+    NATIVE_WRITE_URL: "http://pgauthzd-full:8081"   # unset ⇒ writes disabled
+    NATIVE_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
     # JWT_ROLES_CLAIM: "realm_access.roles"   # default: roles
     # WRITER_ROLE: "authz_writer"             # default
 ```
 
-> **Serialization failures under concurrent writes.** As of PostgREST 14,
-> PostgREST no longer automatically retries transactions that fail with a
-> serialization error (`SQLSTATE 40001`); the error surfaces to the
-> caller instead. pgauthz writes are single-statement RPC calls and the
-> workload is read-dominant, so `40001` is rare — but a client driving
-> heavy concurrent writes (or running against `SERIALIZABLE`/`REPEATABLE
-> READ` replicas) should be prepared to catch `40001` and retry the call
-> itself. (Earlier PostgREST versions retried transparently.)
+> **Serialization failures under concurrent writes.** pgauthzd does not
+> automatically retry transactions that fail with a serialization error
+> (`SQLSTATE 40001`); the error surfaces to the caller instead. pgauthz writes
+> are single-statement RPC calls and the workload is read-dominant, so `40001`
+> is rare — but a client driving heavy concurrent writes (or running against
+> `SERIALIZABLE`/`REPEATABLE READ`) should be prepared to catch `40001` and
+> retry the call itself.
 
 ### Operations reference
 
@@ -1034,12 +1058,14 @@ If a check must reflect a just-committed change, either:
 ### Writing tuples from Spring Boot
 
 When your application creates resources or changes ownership, it needs to
-write authorization tuples. Use the OPA write endpoint (which verifies the JWT
-and forwards to the writer) or direct SQL.
+write authorization tuples. Use the pgauthzd write front door (which validates
+the JWT and writer role) or direct SQL.
 
-**Via OPA (HTTP):** POST `/v1/data/authz/write` with an `{"input": {...}}`
-envelope. Pass the caller's JWT (its roles claim must contain the writer role);
-OPA records the subject as the audit author.
+**Via the OPA write policy (HTTP):** the write-authz decision pgauthzd's writer
+consults is the OPA `write.rego` policy — `POST /v1/data/authz/write` with an
+`{"input": {...}}` envelope, which the demo also lets you drive directly against
+OPA. Pass the caller's JWT (its roles claim must contain the writer role); the
+authenticated subject is recorded as the audit author.
 
 ```java
 @Component
@@ -1162,7 +1188,7 @@ Configure in `application.yml`:
 authz:
   opa-url: http://localhost:8181      # OPA — read checks AND the write endpoint
   # AuthZEN read API (alternative to calling OPA directly):
-  #   http://localhost:8090 (authzen-direct) / :8091 (authzen-opa)
+  #   http://localhost:8090 (pgauthzd-decision) / :8091 (pgauthzd-opa)
 ```
 
 **Via direct SQL (JDBC):**

@@ -52,15 +52,17 @@ should not, escape an isolation boundary, or break the decision path:
 **Out of scope / operator responsibility** — these are deployment choices the
 docs call out, not engine vulnerabilities:
 
-- Exposing the **read** PostgREST endpoint without the OPA/authenticating front
-  door (it is unauthenticated by design and given no host port; see the trust
-  boundary note in the README and `docs/PRODUCTION.md`).
+- Exposing pgauthzd's internal native callback listener (the read/write
+  callback OPA calls back into) without its service token / network isolation
+  (it does not re-verify the end-user JWT — it trusts the OPA sidecar — and is
+  given no host port; see the trust boundary note in the README and
+  `docs/PRODUCTION.md`).
 - Granting `authz_contextual_reader`, `authz_writer`, or `authz_admin` to
   untrusted callers.
 - Eventual-consistency staleness on read replicas / embedded read-only engines
   (route revocation-sensitive checks to the primary — see `docs/PRODUCTION.md`
   → *Replica consistency*).
-- Operating an outdated PostgreSQL/PostgREST/OPA (see the compatibility matrix
+- Operating an outdated PostgreSQL/pgauthzd/OPA (see the compatibility matrix
   in the README).
 
 ## Hardening references
@@ -68,8 +70,8 @@ docs call out, not engine vulnerabilities:
 - [`docs/SECURITY-AUDIT.md`](docs/SECURITY-AUDIT.md) — first-party security
   self-audit: threat model, the verified defense-in-depth mechanisms, findings,
   and a hardening checklist (prep for an external review).
-- README — *Access control roles*, the PostgREST trust-boundary note, and the
-  *Compatibility* matrix.
+- README — *Access control roles*, the pgauthzd callback trust-boundary note,
+  and the *Compatibility* matrix.
 - `docs/PRODUCTION.md` — production hardening checklist, role recipes, replica
   consistency.
 - `docs/ARCHITECTURE.md` — security model and design decision records.

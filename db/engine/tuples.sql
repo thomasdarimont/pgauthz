@@ -387,8 +387,8 @@ $$;
 -- no condition or expiry fields — use this JSONB variant (or write_tuple)
 -- for conditional or expiring grants.
 --
--- Example via PostgREST:
---   POST /rpc/write_tuples_jsonb
+-- Example via pgauthzd (native `/pgauthz/v1`):
+--   POST /pgauthz/v1/write
 --   {"p_store": "demo", "p_tuples": [
 --       {"user_type":"internal_user","user_id":"alice","relation":"member","object_type":"team","object_id":"payroll_team"},
 --       {"user_type":"internal_user","user_id":"bob","relation":"viewer","object_type":"document","object_id":"doc_temp_001",
@@ -592,8 +592,8 @@ $$;
 --   and optionally "user_relation" (for userset tuples).
 -- Delegates to the native array version after conversion.
 --
--- Example via PostgREST:
---   POST /rpc/delete_tuples_jsonb
+-- Example via pgauthzd (native `/pgauthz/v1`):
+--   POST /pgauthz/v1/delete
 --   {"p_store": "demo", "p_tuples": [
 --       {"user_type":"internal_user","user_id":"alice","relation":"member","object_type":"team","object_id":"payroll_team"},
 --       {"user_type":"internal_user","user_id":"bob","relation":"member","object_type":"team","object_id":"accounting_team"}

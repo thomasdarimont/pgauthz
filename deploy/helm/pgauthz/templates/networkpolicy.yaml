@@ -47,7 +47,7 @@ spec:
         - podSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: opa } }
       ports: [{ port: 8081 }]
 ---
-# OPA: from the ingress controller and from authzen-opa.
+# OPA: from the ingress controller and from the compat-opa AuthZEN gateway.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -59,28 +59,48 @@ spec:
   policyTypes: [Ingress]
   ingress:
     - from:
-        - podSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: authzen-opa } }
+        - podSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: pgauthzd-opa } }
         # Ingress-controller traffic: namespaceSelector is empty here (allow
         # from any namespace's ingress controller). Tighten to your controller's
         # namespace/labels in production.
         - namespaceSelector: {}
       ports: [{ port: 8181 }]
+{{- if .Values.authzen.direct.enabled }}
 ---
-# AuthZEN services: from the ingress controller (only if exposed).
+# AuthZEN direct API: the decision-only reader pods' :8080 listener. The reader's
+# :8081 callback stays OPA-only (reader-from-opa above); this ADDS :8080 for the
+# AuthZEN 1.0 API without touching that restriction (NetworkPolicies are additive).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ $full }}-authzen-ingress
+  name: {{ $full }}-authzen-api-ingress
   labels: {{- include "pgauthz.labels" . | nindent 4 }}
 spec:
   podSelector:
-    matchExpressions:
-      - { key: app.kubernetes.io/component, operator: In, values: [authzen-direct, authzen-opa] }
+    matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: pgauthzd-reader }
   policyTypes: [Ingress]
   ingress:
     - from:
         - namespaceSelector: {}
       ports: [{ port: 8080 }]
+{{- end }}
+{{- if .Values.authzen.opa.enabled }}
+---
+# compat-opa AuthZEN gateway: from the ingress controller (only if exposed).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $full }}-pgauthzd-opa-ingress
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: pgauthzd-opa }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {}
+      ports: [{ port: 8080 }]
+{{- end }}
 {{- end }}
 {{- if .Values.database.networkPolicy.enabled }}
 {{- $name := include "pgauthz.name" . }}
