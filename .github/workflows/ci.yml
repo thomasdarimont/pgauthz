@@ -18,13 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Host Go is used by tests/test-go.sh (AuthZEN unit tests); the AuthZEN
-      # service images themselves build inside Docker via docker compose.
+      # Host Go is used for the pgauthzd unit tests; the service images
+      # themselves build inside Docker via docker compose.
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: authzen/go.mod
-          cache-dependency-path: authzen/go.sum
+          go-version-file: pgauthzd/go.mod
+          cache-dependency-path: pgauthzd/go.sum
 
       # Fast pre-check: surface Go compile/vet errors before the slow stack.
       - name: Go build + vet
