@@ -105,7 +105,16 @@ func (poolCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 }
 
-func init() { prometheus.MustRegister(poolCollector{}) }
+func init() {
+	prometheus.MustRegister(poolCollector{})
+	// Pre-initialize fixed-enum labelled series to 0 so they export before the
+	// first occurrence — otherwise a CounterVec exports no series until a label
+	// value is first observed, and rate()/alerts over a missing series are empty
+	// rather than a clean 0. (Only fixed enums; route/status are unbounded.)
+	for _, v := range []string{"fresh", "stale", "wrong_epoch", "unknown"} {
+		FreshnessVerdicts.WithLabelValues(v)
+	}
+}
 
 // Handler returns the Prometheus exposition handler (also serves the default
 // Go/process collectors, e.g. process_start_time_seconds).

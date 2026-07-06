@@ -29,6 +29,7 @@ func TestExposition(t *testing.T) {
 		`profile="decision-only"`,
 		`fallback_enabled="true"`,
 		`pgauthzd_freshness_verdicts_total{verdict="stale"}`,
+		`pgauthzd_freshness_verdicts_total{verdict="wrong_epoch"} 0`, // pre-initialized, never incremented
 		`pgauthzd_freshness_fallback_total`,
 		`pgauthzd_db_pool_connections{pool="replica",state="acquired"} 3`,
 		`pgauthzd_db_pool_connections{pool="replica",state="max"} 25`,
