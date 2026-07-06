@@ -7,9 +7,13 @@
 # Installs the engine on the primary via the documented flow
 # (COMPOSE_FILE=compose-scaling.yml ./init.sh), seeds the demo, then asserts the
 # standby streams the schema + data and resolves checks — directly, through the
-# OPA -> pgauthzd -> replica path, and (ADR 0009) the freshness-token verdicts.
+# OPA -> pgauthzd -> replica path, the freshness-token verdicts (ADR 0009), and
+# finally a REAL standby promotion (clean + lossy) proving the timeline guard
+# (F12): an old-timeline token is wrong_epoch on the promoted primary, never
+# fresh.
 #
-# Leaves the stack running for inspection; the caller tears it down.
+# The promotion phase consumes the topology; the caller tears the stack down
+# (a re-run resets it automatically).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -141,9 +145,15 @@ qp "$PRIMARY" "SELECT pg_reload_conf();" >/dev/null
 # deterministically via replay pause/resume (same lever as the new-enemy test).
 echo "==> Freshness tokens: assert_fresh on the replica (stale → fresh, wrong_epoch)..."
 
-# The primary is authoritative for the current timeline → always fresh.
-assert "freshness: primary is authoritative (fresh)" "fresh" \
+# The primary derives its OWN timeline from the WAL position and applies the
+# same verdict logic as a standby (v0.9.0 / F12 — there is no "primary is
+# always fresh" shortcut): a matching-epoch, already-passed LSN is fresh; a
+# cross-timeline token is wrong_epoch even on a primary. (Fresh stack after
+# `down -v` → the primary is on timeline 1.)
+assert "freshness: primary, matching epoch → fresh" "fresh" \
   "$(qp "$PRIMARY" "SELECT authz.assert_fresh(1, '0/0'::pg_lsn);")"
+assert "freshness: primary, cross-timeline token → wrong_epoch (F12)" "wrong_epoch" \
+  "$(qp "$PRIMARY" "SELECT authz.assert_fresh(999, '0/0'::pg_lsn);")"
 
 # Pause replay so a fresh write deterministically lands ahead of the replica.
 qp "$REPLICA" "SELECT pg_wal_replay_pause();" >/dev/null
@@ -166,10 +176,89 @@ for _ in $(seq 1 20); do
 done
 assert "freshness: replica catches up → fresh" "fresh" "$fverdict"
 
+# ── Freshness tokens: REAL standby promotion, clean + lossy (ADR 0009 / F12) ─
+# Reuses the ADR 0009 prototype mechanics against the live standby. Runs LAST:
+# the promotion consumes the topology (the standby becomes a primary and the
+# old primary diverges). One promotion covers both claims:
+#
+#   token_clean — minted while the standby was fully caught up (its write IS on
+#     the standby). After promotion the verdict must still be wrong_epoch: even
+#     a clean/lossless promotion forces a re-mint — the documented conservative
+#     trade-off (beats confirming a lost write).
+#   token_lost — minted (post-commit) for a write the standby NEVER received
+#     (network-disconnected first). After promotion + advancing the new
+#     timeline's WAL past the token's LSN, a naive LSN-only check WOULD accept
+#     it — the exact v0.8.0 false-allow (F12). The timeline guard must say
+#     wrong_epoch. Asserted BEFORE any CHECKPOINT, so an implementation that
+#     read the timeline from the (lagging) control file would still see the old
+#     timeline here and fail this test.
+echo "==> Freshness tokens: real standby promotion — clean + lossy (ADR 0009 / F12)..."
+
+mint() { qp "$1" "SELECT epoch::text || '|' || lsn::text FROM authz.freshness_token();"; }
+
+# token_clean: write, mint, and wait until the standby fully satisfies it.
+qp "$PRIMARY" "SELECT authz.write_tuple('demo','internal_user','promo_clean','viewer','document','doc_promo_clean');" >/dev/null
+tok=$(mint "$PRIMARY"); clean_epoch=${tok%%|*}; clean_lsn=${tok##*|}
+cverdict=""
+for _ in $(seq 1 20); do
+  cverdict=$(qp "$REPLICA" "SELECT authz.assert_fresh($clean_epoch, '$clean_lsn'::pg_lsn);")
+  [ "$cverdict" = "fresh" ] && break
+  sleep 1
+done
+assert "promotion setup: standby caught up to token_clean (fresh)" "fresh" "$cverdict"
+
+# Disconnect the standby's network BEFORE the next write, so its WAL can never
+# reach the standby — this is what makes the promotion genuinely LOSSY.
+# (docker exec still works on a disconnected container, so psql assertions run.)
+NET=$(docker inspect "$REPLICA" -f '{{range $k,$_ := .NetworkSettings.Networks}}{{$k}}{{end}}')
+echo "==> Disconnecting the standby from '$NET' (write below must never replicate)..."
+docker network disconnect "$NET" "$REPLICA"
+
+qp "$PRIMARY" "SELECT authz.write_tuple('demo','internal_user','promo_lost','viewer','document','doc_promo_lost');" >/dev/null
+tok=$(mint "$PRIMARY"); lost_epoch=${tok%%|*}; lost_lsn=${tok##*|}
+# Sanity: the disconnected standby cannot satisfy token_lost. Depending on how
+# fast the dead walreceiver is noticed this reads stale (receiver row lingers)
+# or unknown (row gone) — both are correct fail-closed verdicts here.
+lverdict=$(qp "$REPLICA" "SELECT authz.assert_fresh($lost_epoch, '$lost_lsn'::pg_lsn);")
+case "$lverdict" in stale|unknown) lverdict="stale-or-unknown" ;; esac
+assert "lossy setup: disconnected standby can't satisfy token_lost (stale|unknown)" "stale-or-unknown" "$lverdict"
+
+echo "==> Promoting the standby (pg_promote — new timeline)..."
+qp "$REPLICA" "SELECT pg_promote(wait := true, wait_seconds := 60);" >/dev/null
+assert "promoted node is out of recovery" "f" "$(qp "$REPLICA" "SELECT pg_is_in_recovery();")"
+# The lost write really is lost — which is exactly why a 'fresh' answer for
+# token_lost would be a stale-allow lie.
+assert "lossy: the promoted node does NOT have the lost write" "f" \
+  "$(qp "$REPLICA" "SELECT authz.check_access('demo','internal_user','promo_lost','can_read','document','doc_promo_lost');")"
+
+# Advance the NEW timeline's WAL past token_lost's LSN so a naive LSN-only
+# check would accept the token — the false-allow hazard the epoch guard closes.
+for i in $(seq 1 5); do
+  qp "$REPLICA" "SELECT pg_switch_wal();" >/dev/null
+  qp "$REPLICA" "SELECT authz.write_tuple('demo','internal_user','promo_filler','viewer','document','doc_filler_$i');" >/dev/null
+done
+assert "hazard armed: naive LSN-only compare WOULD accept token_lost" "t" \
+  "$(qp "$REPLICA" "SELECT pg_current_wal_insert_lsn() >= '$lost_lsn'::pg_lsn;")"
+
+# THE F12 regression assertions (deliberately before any CHECKPOINT):
+assert "LOSSY promotion: lost-write token → wrong_epoch (F12 closed)" "wrong_epoch" \
+  "$(qp "$REPLICA" "SELECT authz.assert_fresh($lost_epoch, '$lost_lsn'::pg_lsn);")"
+assert "CLEAN promotion: caught-up token → wrong_epoch (conservative re-mint)" "wrong_epoch" \
+  "$(qp "$REPLICA" "SELECT authz.assert_fresh($clean_epoch, '$clean_lsn'::pg_lsn);")"
+
+# Recovery path: a token re-minted on the promoted node carries the NEW
+# timeline and is immediately satisfiable — the client's way forward.
+tok=$(mint "$REPLICA"); new_epoch=${tok%%|*}; new_lsn=${tok##*|}
+assert "re-minted token carries the new timeline (epoch $((clean_epoch+1)))" "$((clean_epoch+1))" "$new_epoch"
+assert "promoted node satisfies its own re-minted token (fresh)" "fresh" \
+  "$(qp "$REPLICA" "SELECT authz.assert_fresh($new_epoch, '$new_lsn'::pg_lsn);")"
+
 echo ""
 if [ "$fail" -ne 0 ]; then
   echo "==> SCALING TESTS FAILED"
   exit 1
 fi
 echo "==> All scaling tests passed."
-echo "    (stack left running — tear down with: ${COMPOSE[*]} down -v)"
+echo "    (NOTE: the promotion test consumed the topology — the standby is now a"
+echo "     promoted primary. Tear down with: ${COMPOSE[*]} down -v; a re-run"
+echo "     resets automatically.)"

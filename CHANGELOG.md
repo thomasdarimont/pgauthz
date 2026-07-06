@@ -26,6 +26,17 @@ pre-1.0, minor versions may include breaking changes.
   secrets deriving the same kid (a ~2⁻³¹-per-pair sha256-prefix accident) would
   silently shadow one key at verification; `config.Load` now rejects the keyring
   deterministically at startup.
+- **Real promotion integration tests** (`tests/test-scaling.sh`). The scaling
+  suite now ends with an actual `pg_promote` of the streaming standby, proving
+  the ADR 0009 timeline guard against a live failover: a **lossy** promotion
+  (the standby is network-disconnected before a write, then promoted and its
+  new timeline advanced past the token's LSN — the exact scenario where a naive
+  LSN-only check false-allows, F12) and a **clean** promotion (caught-up token)
+  both yield `wrong_epoch`, asserted before any `CHECKPOINT` so a lagging
+  control-file timeline source would fail the test; a token re-minted on the
+  promoted node carries the new epoch and is immediately `fresh`. Also asserts
+  the primary-side F12 behavior directly (cross-timeline token → `wrong_epoch`
+  on a primary).
 
 ### Removed
 
