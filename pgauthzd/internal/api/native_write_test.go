@@ -82,13 +82,13 @@ func TestWriteDecisionOnlyIs403(t *testing.T) {
 	}
 }
 
-// A backend that does NOT implement NativeWriter (compat-opa) returns 501.
-func TestWriteCompatOPAIs501(t *testing.T) {
-	h := NewHandler(&opaishBackend{}, &opaishBackend{}, &opaishBackend{}, &config.Config{Profile: config.ProfileCompatOPA, DefaultStore: "demo"})
+// A backend whose rawWrite does NOT implement NativeWriter returns 501.
+func TestWriteNonWriterBackendIs501(t *testing.T) {
+	h := NewHandler(&opaishBackend{}, &opaishBackend{}, &opaishBackend{}, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo"})
 	w := httptest.NewRecorder()
 	h.WriteTuples(w, writeReq())
 	if w.Code != http.StatusNotImplemented {
-		t.Fatalf("compat-opa write: got %d, want 501", w.Code)
+		t.Fatalf("non-writer backend write: got %d, want 501", w.Code)
 	}
 }
 

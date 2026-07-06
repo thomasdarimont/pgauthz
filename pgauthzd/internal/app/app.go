@@ -36,28 +36,32 @@ func Run(name string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// backend serves the AuthZEN surface; raw serves the native /pgauthz/v1 READ
-	// surface (ALWAYS a direct pgx backend, never OPA); rawWrite serves native
-	// WRITES and is set only on a WRITER-capable instance. On direct profiles
-	// they share the pool; on compat-opa, backend=OPA and raw is a separate
-	// read-only pgx backend the OPA sidecar calls back into.
-	//
-	// Reader/writer separation is a DEPLOYMENT choice, not a per-process split:
-	// each instance carries one capability tier (its role). Point OPA's read
-	// callback at a read-only instance and its write callback at a full
-	// instance to separate them; point both at one full instance to keep it
-	// simple.
+	// raw/rawWrite serve the native /pgauthz/v1 surface and are ALWAYS a direct
+	// pgx backend (never OPA), so the native path never re-enters the policy
+	// layer. rawWrite is set only on a WRITER-capable (full) instance. backend
+	// serves the AuthZEN /access/v1 surface: the OPA sidecar when OPA_URL is set
+	// (policy enrichment — OPA calls BACK into the native callback listener),
+	// otherwise the same direct pgx backend. Fronting OPA is orthogonal to the
+	// profile; the profile only decides read-only vs read+write.
 	var backend, raw, rawWrite authz.Backend
-	switch cfg.Profile {
-	case config.ProfileDecisionOnly, config.ProfileFull:
-		if cfg.DatabaseURL == "" {
-			return fmt.Errorf("profile %q requires DATABASE_URL", cfg.Profile)
+
+	if cfg.DatabaseURL == "" {
+		// No local DB — valid only as a pure OPA-AuthZEN gateway: OPA fronts
+		// /access/v1 and calls BACK into OTHER instances' native callbacks for
+		// the graph. No native surface and no callback listener are served here
+		// (raw/rawWrite stay nil). Fail closed otherwise.
+		if !cfg.UsesOPA() {
+			return fmt.Errorf("profile %q requires DATABASE_URL (or set OPA_URL for a DB-less OPA-AuthZEN gateway)", cfg.Profile)
 		}
+		backend = newOPABackend(ctx, cfg)
+		slog.Info("DB-less OPA-AuthZEN gateway (native surface disabled)", "opa", cfg.OPAURL)
+	} else {
 		pgb, pool, perr := newPGBackend(ctx, cfg)
 		if perr != nil {
 			return perr
 		}
 		defer pool.Close()
+		raw = pgb
 		if cfg.Profile == config.ProfileDecisionOnly {
 			// Fail-closed: a decision-only instance must sit on a read-only role.
 			if perr := pgb.AssertReadOnly(ctx); perr != nil {
@@ -72,46 +76,16 @@ func Run(name string) error {
 			rawWrite = pgb
 			slog.Info("full: verified writer DB role")
 		}
-		backend = pgb
-		raw = pgb
-		slog.Info("connected to PostgreSQL", "profile", cfg.Profile)
 
-	case config.ProfileCompatOPA:
-		if cfg.OPAURL == "" {
-			return fmt.Errorf("profile %q requires OPA_URL", cfg.Profile)
-		}
-		opab := opabackend.New(cfg.OPAURL, cfg.OPAPackage, cfg.ForwardTokenToOPA)
-		if herr := opab.Healthz(ctx); herr != nil {
-			slog.Warn("OPA health check failed on startup (will retry)", "error", herr)
+		// AuthZEN /access/v1 backend: OPA policy sidecar when OPA_URL is set,
+		// else the direct pgx backend. The native surface stays pgx either way.
+		if cfg.UsesOPA() {
+			backend = newOPABackend(ctx, cfg)
+			slog.Info("AuthZEN /access/v1 fronted by OPA policy sidecar", "url", cfg.OPAURL)
 		} else {
-			slog.Info("connected to OPA", "url", cfg.OPAURL)
+			backend = pgb
 		}
-		backend = opab
-		// Optional native callback surface: when a DATABASE_URL is configured,
-		// stand up a read-only pgx backend for the policy-FREE /pgauthz/v1 raw
-		// endpoints the OPA sidecar calls back into (served on the internal
-		// listener). Without it, native routes stay 501 (today's behavior).
-		if cfg.DatabaseURL != "" {
-			pgb, pool, perr := newPGBackend(ctx, cfg)
-			if perr != nil {
-				return perr
-			}
-			defer pool.Close()
-			// The callback surface is read-only, and must be a direct pgx
-			// backend — asserting both keeps the raw path from ever re-entering
-			// the OPA policy layer (no re-entrancy loop) or mutating data.
-			if perr := pgb.AssertReadOnly(ctx); perr != nil {
-				return fmt.Errorf("compat-opa native callback DB role must be read-only: %w", perr)
-			}
-			if _, ok := any(pgb).(authz.NativeReader); !ok {
-				return fmt.Errorf("compat-opa native callback backend must be a direct pgx backend")
-			}
-			raw = pgb
-			slog.Info("compat-opa: native callback surface enabled (read-only pgx)")
-		}
-
-	default:
-		return fmt.Errorf("unknown profile %q", cfg.Profile)
+		slog.Info("connected to PostgreSQL", "profile", cfg.Profile, "opa", cfg.UsesOPA())
 	}
 
 	var issuers []api.IssuerConfig
@@ -134,23 +108,16 @@ func Run(name string) error {
 	})
 
 	// Build the listeners.
-	//  - Direct profiles serve everything (AuthZEN + native) on one JWT-authed
-	//    main listener.
-	//  - compat-opa serves the policy-wrapped AuthZEN surface on its main
-	//    listener (OPA backend).
-	//  - ANY direct-capable instance may additionally expose the OPA CALLBACK
-	//    listener (service-auth): the native surface an OPA sidecar calls back
+	//  - The main JWT-authed listener serves everything: the AuthZEN /access/v1
+	//    surface (OPA-fronted when OPA_URL is set, else direct pgx) plus the
+	//    native /pgauthz/v1 surface (always direct pgx; writes gated by the
+	//    writer-role claim on a full instance).
+	//  - ANY instance may additionally expose the OPA CALLBACK listener
+	//    (service-auth): the native surface a co-located OPA sidecar calls back
 	//    into. Its capability follows the instance's role — read-only instances
-	//    serve read callbacks, a full instance serves read+write. Reader/writer
-	//    separation = point OPA's read and write callbacks at different
-	//    (read-only vs full) instances.
+	//    serve read callbacks, a full instance serves read+write.
 	var servers []*http.Server
-	if cfg.Profile == config.ProfileCompatOPA {
-		h := api.NewHandler(backend, raw, rawWrite, cfg)
-		servers = append(servers, &http.Server{Addr: cfg.ListenAddr, Handler: api.NewExternalRouter(h, jwtMW)})
-	} else {
-		servers = append(servers, &http.Server{Addr: cfg.ListenAddr, Handler: api.NewRouter(backend, cfg, jwtMW)})
-	}
+	servers = append(servers, &http.Server{Addr: cfg.ListenAddr, Handler: api.NewRouter(backend, raw, rawWrite, cfg, jwtMW)})
 
 	// OPA callback listener (service-auth), available whenever a direct backend
 	// is present and INTERNAL_LISTEN_ADDR is set. Serves native reads, plus
@@ -247,6 +214,18 @@ func internalTLSConfig(cfg *config.Config) (*tls.Config, error) {
 		ClientCAs:    pool,
 		MinVersion:   tls.VersionTLS12,
 	}, nil
+}
+
+// newOPABackend builds the OPA-fronted AuthZEN backend and logs a startup
+// health probe (non-fatal — OPA may still be coming up).
+func newOPABackend(ctx context.Context, cfg *config.Config) authz.Backend {
+	opab := opabackend.New(cfg.OPAURL, cfg.OPAPackage, cfg.ForwardTokenToOPA)
+	if herr := opab.Healthz(ctx); herr != nil {
+		slog.Warn("OPA health check failed on startup (will retry)", "error", herr)
+	} else {
+		slog.Info("connected to OPA", "url", cfg.OPAURL)
+	}
+	return opab
 }
 
 // newPGBackend builds a direct pgx backend + its pool from cfg.DatabaseURL.

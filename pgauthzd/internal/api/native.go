@@ -25,12 +25,13 @@ func writeWriteError(w http.ResponseWriter, err error) {
 }
 
 // nativeReader returns the backend as a NativeReader, or writes 501 and false.
+// The native read surface requires the direct pgx backend (always present on
+// both profiles); 501 is a defensive guard only.
 func (h *Handler) nativeReader(w http.ResponseWriter) (authz.NativeReader, bool) {
 	nr, ok := h.raw.(authz.NativeReader)
 	if !ok {
 		writeError(w, http.StatusNotImplemented,
-			"the pgauthz native API requires the direct backend (profile decision-only|full); "+
-				"this instance runs compat-opa")
+			"the pgauthz native API requires the direct pgx backend")
 		return nil, false
 	}
 	return nr, true
@@ -38,28 +39,32 @@ func (h *Handler) nativeReader(w http.ResponseWriter) (authz.NativeReader, bool)
 
 // nativeWriter returns the backend as a NativeWriter for the write path, or
 // writes an error and false. The native write surface exists only on the FULL
-// profile — a direct pgx backend on a writer-capable connection. decision-only
-// is read-only by DB role (403, not just a flag); compat-opa writes go through
-// the OPA front door (501). The profile gate is defense-in-depth; the hard
-// guarantee is that a non-full instance connects with a role that cannot write.
-func (h *Handler) nativeWriter(w http.ResponseWriter) (authz.NativeWriter, bool) {
-	// Capability first: only the direct writer backend implements native writes,
-	// so compat-opa without a write listener (and the OPA-compat backend
-	// generally) gets 501 — consistent with the native read endpoints.
-	nw, ok := h.rawWrite.(authz.NativeWriter)
-	if !ok {
-		writeError(w, http.StatusNotImplemented,
-			"the pgauthz native write API requires the direct backend (profile full); "+
-				"this instance runs compat-opa (writes go through OPA)")
-		return nil, false
-	}
-	// Then the read-only gate: a decision-only instance runs the direct backend
-	// but connects with a role that cannot write, so refuse up front with 403
-	// rather than surfacing a DB permission error.
+// profile — a direct pgx backend on a writer-capable connection; decision-only
+// is read-only by DB role (501/403). On the PUBLIC listener the caller must
+// also hold the WRITER_ROLE claim (requireWriter) — pgauthzd authorizes writes
+// itself. The profile/role gates are defense-in-depth; the hard guarantee is
+// that a non-full instance connects with a role that physically cannot write.
+func (h *Handler) nativeWriter(w http.ResponseWriter, r *http.Request) (authz.NativeWriter, bool) {
+	// Read-only gate first: a decision-only instance is read-only by DB role, so
+	// refuse writes with 403 (not 501) even though the native write routes are
+	// registered — the profile, not a missing capability, is why.
 	if !h.cfg.Writable() {
 		writeError(w, http.StatusForbidden,
 			"this instance is read-only (decision-only profile); "+
 				"native tuple writes require the full profile")
+		return nil, false
+	}
+	// Then capability: only a writer-capable direct backend implements native
+	// writes (defensive — a full instance always has one).
+	nw, ok := h.rawWrite.(authz.NativeWriter)
+	if !ok {
+		writeError(w, http.StatusNotImplemented,
+			"the pgauthz native write API requires the full profile (writer DB role)")
+		return nil, false
+	}
+	// Finally the writer-role gate on the public listener (no-op on the
+	// service-token callback listener, which trusts OPA's asserted role).
+	if !h.requireWriter(w, r) {
 		return nil, false
 	}
 	return nw, true
@@ -72,9 +77,9 @@ func (h *Handler) nativeWriter(w http.ResponseWriter) (authz.NativeWriter, bool)
 type writeTuplesBody struct {
 	Tuples      json.RawMessage `json:"tuples"`
 	Consistency string          `json:"consistency,omitempty"`
-	// PerformedBy is the audit author. On the direct profiles it defaults to the
-	// authenticated JWT subject; on the compat write listener (service auth, no
-	// JWT) OPA passes the authenticated subject here explicitly.
+	// PerformedBy is the audit author. On the public (JWT) listener it defaults
+	// to the authenticated JWT subject; on the service-token callback listener
+	// (no JWT) OPA passes the authenticated subject here explicitly.
 	PerformedBy string `json:"performed_by,omitempty"`
 }
 
@@ -92,7 +97,7 @@ func (h *Handler) writePerformedBy(r *http.Request, body writeTuplesBody) string
 // (performed_by) is the authenticated subject; the per-app DB role from the
 // token governs namespace scope, same as reads.
 func (h *Handler) WriteTuples(w http.ResponseWriter, r *http.Request) {
-	nw, ok := h.nativeWriter(w)
+	nw, ok := h.nativeWriter(w, r)
 	if !ok {
 		return
 	}
@@ -123,7 +128,7 @@ func (h *Handler) WriteTuples(w http.ResponseWriter, r *http.Request) {
 // DeleteTuples — POST /pgauthz/v1/delete: batch-delete tuples. Same authoring
 // and role semantics as WriteTuples.
 func (h *Handler) DeleteTuples(w http.ResponseWriter, r *http.Request) {
-	nw, ok := h.nativeWriter(w)
+	nw, ok := h.nativeWriter(w, r)
 	if !ok {
 		return
 	}
@@ -160,7 +165,7 @@ type deleteUserBody struct {
 // DeleteUserTuples — POST /pgauthz/v1/delete-user: offboarding, remove every
 // tuple for a subject.
 func (h *Handler) DeleteUserTuples(w http.ResponseWriter, r *http.Request) {
-	nw, ok := h.nativeWriter(w)
+	nw, ok := h.nativeWriter(w, r)
 	if !ok {
 		return
 	}
@@ -203,7 +208,7 @@ type checkedWriteBody struct {
 // WriteTuplesChecked — POST /pgauthz/v1/write-checked: conditional/atomic write
 // (preconditions gate deletes+writes). Returns the engine's JSONB result.
 func (h *Handler) WriteTuplesChecked(w http.ResponseWriter, r *http.Request) {
-	nw, ok := h.nativeWriter(w)
+	nw, ok := h.nativeWriter(w, r)
 	if !ok {
 		return
 	}

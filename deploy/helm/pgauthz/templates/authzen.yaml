@@ -52,10 +52,12 @@ spec:
           image: {{ include "pgauthz.image" .Values.images.pgauthzd }}
           imagePullPolicy: {{ .Values.images.pullPolicy }}
           env:
-            # compat-opa: fronts OPA on /access/v1 for policy-enriched AuthZEN.
-            # No DATABASE_URL — the graph data comes from OPA, which calls back
-            # into the reader/writer native callbacks.
-            - { name: PGAUTHORIZER_PROFILE, value: compat-opa }
+            # DB-less OPA-AuthZEN gateway: OPA_URL fronts OPA on /access/v1 for
+            # policy-enriched AuthZEN. No DATABASE_URL — the graph data comes from
+            # OPA, which calls back into the reader/writer native callbacks.
+            # (Fronting OPA is orthogonal to the profile; the profile is nominal
+            # here since there's no local DB to assert a role on.)
+            - { name: PGAUTHORIZER_PROFILE, value: decision-only }
             - { name: LISTEN_ADDR, value: ":8080" }
             - name: OPA_URL
               value: http://{{ include "pgauthz.fullname" . }}-opa:8181

@@ -1,11 +1,13 @@
-# pgauthzd instances — one binary, three capability PROFILES
-# (PGAUTHORIZER_PROFILE). The security guarantee is the DB connection ROLE, not
-# the flag: a decision-only instance connects with a role that physically cannot
-# write and asserts so at startup.
+# pgauthzd instances — one binary. PGAUTHORIZER_PROFILE selects DB CAPABILITY
+# (decision-only | full); the security guarantee is the DB connection ROLE, not
+# the flag (a decision-only instance connects with a role that physically cannot
+# write and asserts so at startup). Fronting an OPA policy sidecar is ORTHOGONAL
+# to the profile — set OPA_URL and pgauthzd consults OPA for the AuthZEN
+# /access/v1 surface; the native /pgauthz/v1 surface stays direct pgx.
 #
-#   pgauthzd-decision : decision-only (read-only role) — AuthZEN + native reads
-#   pgauthzd-opa      : compat-opa    (fronts OPA)      — hosts the OPA read callback
-#   pgauthzd-full     : full          (writer role)     — hosts the OPA write callback
+#   pgauthzd-decision : decision-only            — AuthZEN + native reads, no OPA
+#   pgauthzd-opa      : decision-only + OPA_URL  — AuthZEN via OPA; hosts the OPA read callback
+#   pgauthzd-full     : full (writer role)       — native write front door; hosts the OPA write callback
 
 x-pgauthzd-build: &pgauthzd-build
   context: ./pgauthzd
@@ -87,9 +89,10 @@ services:
       authz-db:
         condition: service_healthy
 
-  # compat-opa: fronts OPA for policy enrichment on /access/v1, AND hosts the
-  # OPA read callback (its internal listener, read-only role) that OPA calls back
-  # into for the graph data — the pgauthzd-fronted-with-OPA topology.
+  # decision-only + OPA_URL: fronts OPA for policy enrichment on /access/v1, AND
+  # hosts the OPA read callback (its internal listener, read-only role) that OPA
+  # calls back into for the graph data — the pgauthzd-fronted-with-OPA topology.
+  # (Fronting OPA is orthogonal to the profile; this instance is read-only.)
   pgauthzd-opa:
     build: *pgauthzd-build
     ports:
@@ -99,7 +102,7 @@ services:
       - "8093:8081"
     environment:
       LISTEN_ADDR: ":8080"
-      PGAUTHORIZER_PROFILE: "compat-opa"
+      PGAUTHORIZER_PROFILE: "decision-only"
       # Internal listener for the policy-FREE native raw endpoints the OPA
       # sidecar calls back into. Read-only role.
       INTERNAL_LISTEN_ADDR: ":8081"

@@ -34,11 +34,15 @@ type Handler struct {
 	// endpoints policy-free (no re-entry into the OPA policy layer).
 	raw authz.Backend
 	// rawWrite serves the native /pgauthz/v1 WRITE surface — a WRITER-capable
-	// direct pgx backend. On direct profiles rawWrite == backend; on compat-opa
-	// it is a separate writer pool served ONLY on the dedicated write listener,
-	// so the read path stays structurally read-only. nil = writes unavailable.
+	// direct pgx backend (set only on a full instance). nil = writes unavailable
+	// (decision-only), and the write routes return 501/403.
 	rawWrite authz.Backend
-	cfg      *config.Config
+	// requireWriterRole gates the native write endpoints behind the WRITER_ROLE
+	// claim. Set on the PUBLIC (JWT) router — pgauthzd authorizes writes itself.
+	// Left false on the service-token CALLBACK router, which trusts the upstream
+	// OPA's asserted X-Authz-Role instead of a JWT role claim.
+	requireWriterRole bool
+	cfg               *config.Config
 }
 
 func NewHandler(backend, raw, rawWrite authz.Backend, cfg *config.Config) *Handler {
@@ -57,15 +61,25 @@ func NewHandler(backend, raw, rawWrite authz.Backend, cfg *config.Config) *Handl
 	return h
 }
 
-// NewRouter returns the single-listener router used by the direct profiles:
-// AuthZEN + the full native surface (read + write), all served by the one pgx
-// backend (which is both `backend` and `raw`).
-func NewRouter(backend authz.Backend, cfg *config.Config, jwtMW *JWTMiddleware) http.Handler {
-	h := NewHandler(backend, backend, backend, cfg)
+// NewRouter returns the main JWT-authed listener: the AuthZEN /access/v1 surface
+// (served by `backend` — the OPA sidecar when OPA_URL is set, else direct pgx).
+//
+// The native /pgauthz/v1 surface (served by `raw`/`rawWrite`, always direct pgx)
+// is exposed on the public listener ONLY when this instance is NOT fronting OPA.
+// The native path bypasses OPA policy, so when OPA fronts /access/v1 it stays
+// off the public listener and lives only on the internal callback listener OPA
+// calls back into — a client can't sidestep policy via the raw API. When native
+// IS exposed here, pgauthzd authorizes writes itself, so the write routes are
+// gated by the WRITER_ROLE claim (requireWriterRole).
+func NewRouter(backend, raw, rawWrite authz.Backend, cfg *config.Config, jwtMW *JWTMiddleware) http.Handler {
+	h := NewHandler(backend, raw, rawWrite, cfg)
+	h.requireWriterRole = true
 	mux := http.NewServeMux()
 	registerAuthZEN(mux, h)
-	registerNativeRead(mux, h)
-	registerNativeWrite(mux, h)
+	if !cfg.UsesOPA() {
+		registerNativeRead(mux, h)
+		registerNativeWrite(mux, h)
+	}
 	mux.HandleFunc("GET /healthz", h.Healthz)
 	return withMiddleware(mux, jwtMW)
 }
@@ -91,17 +105,6 @@ func NewCallbackRouter(h *Handler, serviceToken string) http.Handler {
 	handler = Logging(handler)
 	handler = Recovery(handler)
 	return handler
-}
-
-// NewExternalRouter is the compat-opa PUBLIC listener: the policy-wrapped
-// AuthZEN surface only (backend = OPA). The native raw endpoints are
-// deliberately absent here — they bypass policy and live on the internal
-// listener.
-func NewExternalRouter(h *Handler, jwtMW *JWTMiddleware) http.Handler {
-	mux := http.NewServeMux()
-	registerAuthZEN(mux, h)
-	mux.HandleFunc("GET /healthz", h.Healthz)
-	return withMiddleware(mux, jwtMW)
 }
 
 func withMiddleware(mux *http.ServeMux, jwtMW *JWTMiddleware) http.Handler {
@@ -268,6 +271,25 @@ func (h *Handler) requireSearchRole(w http.ResponseWriter, r *http.Request) bool
 		}
 	}
 	writeForbidden(w, "search requires the '"+h.cfg.SearchRequiredRole+"' role")
+	return false
+}
+
+// requireWriter gates the native write endpoints on the PUBLIC listener: the
+// caller must hold the configured WRITER_ROLE. pgauthzd is the write front door
+// and authorizes writes itself (no OPA needed). Returns false and writes 403
+// when the caller lacks the role. On the service-token CALLBACK listener the
+// gate is disabled (requireWriterRole=false) — that path trusts the upstream
+// OPA's asserted X-Authz-Role, which pgbackend validates against the DB role.
+func (h *Handler) requireWriter(w http.ResponseWriter, r *http.Request) bool {
+	if !h.requireWriterRole || h.cfg.WriterRole == "" {
+		return true
+	}
+	for _, role := range RolesFromContext(r.Context()) {
+		if role == h.cfg.WriterRole {
+			return true
+		}
+	}
+	writeForbidden(w, "writes require the '"+h.cfg.WriterRole+"' role")
 	return false
 }
 

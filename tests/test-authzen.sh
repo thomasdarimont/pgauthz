@@ -29,6 +29,7 @@ b64url_encode() {
 make_token() {
     local username="$1"
     local subject_type="${2:-internal_user}"
+    local roles_json="${3:-[]}"   # JSON array, e.g. '["authz_writer"]'
     local now
     now=$(date +%s)
     local exp=$((now + 3600))
@@ -44,7 +45,8 @@ make_token() {
         --arg aud "authz-api" \
         --argjson iat "$now" \
         --argjson exp "$exp" \
-        '{sub:$sub,preferred_username:$pun,subject_type:$st,iss:$iss,aud:$aud,iat:$iat,exp:$exp}' | b64url_encode)
+        --argjson roles "$roles_json" \
+        '{sub:$sub,preferred_username:$pun,subject_type:$st,roles:$roles,iss:$iss,aud:$aud,iat:$iat,exp:$exp}' | b64url_encode)
 
     local signing_input="${header}.${payload}"
 
@@ -486,14 +488,18 @@ check_http "native check is not on the OPA-compat public listener (404)" \
     -d '{"subject":{"type":"internal_user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}'
 
 # --- Native write path (/pgauthz/v1/write, /delete) — FULL profile only ---
-# The full instance (:8092) connects with a writer-capable role. The read-only
-# decision-only instance (:8090) 403s; compat-opa (:8091) 501s. Audit author =
-# the authenticated subject.
+# pgauthzd is the write front door and authorizes writes itself: the public
+# listener requires the WRITER_ROLE claim (authz_writer). The full instance
+# (:8092) connects with a writer-capable role; the read-only decision-only
+# instance (:8090) 403s; the OPA-fronted listener (:8091) doesn't expose native
+# writes at all (404). Audit author = the authenticated subject.
 echo ""
 echo "==> Native write path (/pgauthz/v1/write) — full profile..."
 echo ""
 
-AUTH_WP="Authorization: Bearer $(make_token wprobe internal_user)"
+# A writer-role token (authorized) and a token whose roles lack the writer role.
+AUTH_WP="Authorization: Bearer $(make_token wprobe internal_user '["authz_writer"]')"
+AUTH_NOWRITE="Authorization: Bearer $(make_token wprobe_nw internal_user '["viewer"]')"
 WP_BODY='{"tuples":[{"user_type":"internal_user","user_id":"wprobe","relation":"viewer","object_type":"document","object_id":"az_wdoc"}]}'
 
 # Clean slate (ignore result — the tuple may not exist yet).
@@ -517,12 +523,17 @@ check_json "delete: access is revoked (decision)" \
     '{"subject":{"type":"internal_user","id":"wprobe"},"action":{"name":"viewer"},"resource":{"type":"document","id":"az_wdoc"}}' \
     '.decision' "false"
 
+check_http "write is 403 without the writer role (pgauthzd authorizes writes)" \
+    "403" \
+    -X POST "$FULL_URL/pgauthz/v1/write" \
+    -H "Content-Type: application/json" -H "$AUTH_NOWRITE" -d "$WP_BODY"
+
 check_http "write is 403 on the read-only decision-only instance" \
     "403" \
     -X POST "$DIRECT_URL/pgauthz/v1/write" \
     -H "Content-Type: application/json" -H "$AUTH_WP" -d "$WP_BODY"
 
-check_http "write is not on the OPA-compat public listener (404)" \
+check_http "write is not on the OPA-fronted public listener (404)" \
     "404" \
     -X POST "$OPA_URL/pgauthz/v1/write" \
     -H "Content-Type: application/json" -H "$AUTH_WP" -d "$WP_BODY"

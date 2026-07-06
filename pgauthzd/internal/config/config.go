@@ -35,25 +35,28 @@ type Issuer struct {
 	ClientDBRoles map[string]string `json:"client_db_roles"`
 }
 
-// Profile selects an instance's capability set (PGAUTHORIZER_PROFILE). The
-// security guarantee comes from the DB connection ROLE, not this flag — a
-// decision-only instance must connect with a role that physically cannot
-// write, and asserts so at startup (fail closed). The profile ties together
-// the backend, the DB role's expected privilege, and (later) the exposed API
-// surface, so a read-only API can never sit on a writable role by accident.
+// Profile selects an instance's DB CAPABILITY (PGAUTHORIZER_PROFILE): read-only
+// vs read+write. The security guarantee comes from the DB connection ROLE, not
+// this flag — a decision-only instance must connect with a role that physically
+// cannot write, and asserts so at startup (fail closed). The profile ties the
+// DB role's expected privilege to the exposed write surface, so a read-only API
+// can never sit on a writable role by accident.
+//
+// Fronting an OPA policy sidecar is ORTHOGONAL to the profile: set OPA_URL and
+// pgauthzd consults OPA for the AuthZEN /access/v1 surface (forwarding the
+// token); the native /pgauthz/v1 surface is always served directly by pgx and
+// gated by pgauthzd itself. (This supersedes the former `compat-opa` profile.)
 type Profile string
 
 const (
-	// ProfileDecisionOnly — AuthZEN eval/search over a direct read-only pgx
-	// connection. Asserts its DB role cannot write. Scale near replicas.
+	// ProfileDecisionOnly — read-only: AuthZEN eval/search + native reads over a
+	// direct read-only pgx connection. Asserts its DB role cannot write. Scale
+	// near replicas.
 	ProfileDecisionOnly Profile = "decision-only"
 	// ProfileFull — direct pgx with read AND write capability (the writer role
-	// path); near the primary. (Native write API lands in a later increment.)
+	// path); near the primary. Serves the native write API, gated by the
+	// writer-role claim (WRITER_ROLE) on the public listener.
 	ProfileFull Profile = "full"
-	// ProfileCompatOPA — the AuthZEN→OPA path; OPA calls back into pgauthzd's
-	// native `/pgauthz/v1` (external OPA for policy extension). No direct DB
-	// connection.
-	ProfileCompatOPA Profile = "compat-opa"
 )
 
 type Config struct {
@@ -62,10 +65,11 @@ type Config struct {
 	// the policy-wrapped AuthZEN surface; on direct profiles it serves
 	// everything (AuthZEN + native).
 	ListenAddr string
-	// InternalListenAddr is the compat-opa-only internal listener that serves
-	// the policy-FREE native raw endpoints an OPA sidecar calls back into. It
-	// must NOT be exposed to untrusted callers (it bypasses the policy layer) —
-	// bind it to the sidecar/localhost network. Empty = disabled.
+	// InternalListenAddr is the OPA CALLBACK listener: it serves the native raw
+	// endpoints an OPA sidecar calls back into, authenticated by the shared
+	// service token (not the end-user JWT). It must NOT be exposed to untrusted
+	// callers — bind it to the sidecar/localhost network. Set this on any
+	// instance a co-located OPA calls back into. Empty = disabled.
 	InternalListenAddr string
 	// InternalServiceToken is the shared SERVICE credential the internal
 	// listener requires (Authorization: Bearer <token>) — it proves the call
@@ -97,14 +101,25 @@ type Config struct {
 
 	RequiredScope string
 
-	// RolesClaims: comma-separated dotted claim paths to aggregate into the caller's
-	// role set (JWT_ROLES_CLAIM), e.g. "realm_access.roles,resource_access.authz-api.roles".
+	// RolesClaims: comma-separated dotted claim paths to aggregate into the
+	// caller's role set (JWT_ROLES_CLAIM), e.g.
+	// "realm_access.roles,resource_access.authz-api.roles". Defaults to "roles"
+	// (matching OPA's authn_config) so the writer-role and search-role gates work
+	// out of the box; override for issuers that nest roles elsewhere (Keycloak).
 	RolesClaims string
 	// SearchRequiredRole: if set, the reverse-search endpoints (search/subject,
 	// search/resource, search/action) require the caller to hold this role. Empty
 	// (default) leaves search open. These are graph-enumeration queries, so gate
 	// them to an auditor-style role in multi-tenant/end-user deployments.
 	SearchRequiredRole string
+
+	// WriterRole: the JWT role (within JWT_ROLES_CLAIM) a caller must hold to use
+	// the native write endpoints on the PUBLIC listener — pgauthzd is the write
+	// front door and authorizes writes itself (no OPA needed on the write path).
+	// Default "authz_writer". The service-token callback listener does NOT apply
+	// this gate (it trusts the upstream OPA's asserted X-Authz-Role). Env
+	// WRITER_ROLE.
+	WriterRole string
 
 	// DBRoleClaim: dot-separated claim path carrying the caller's per-app DB
 	// role for pgauthz namespace enforcement on the direct backend (mirrors
@@ -186,8 +201,9 @@ func Load() (*Config, error) {
 		JWTIssuer:             env("JWT_ISSUER", ""),
 		JWTAudience:           env("JWT_AUDIENCE", ""),
 		RequiredScope:         env("REQUIRED_SCOPE", ""),
-		RolesClaims:           env("JWT_ROLES_CLAIM", ""),
+		RolesClaims:           env("JWT_ROLES_CLAIM", "roles"),
 		SearchRequiredRole:    env("SEARCH_REQUIRED_ROLE", ""),
+		WriterRole:            env("WRITER_ROLE", "authz_writer"),
 		DBRoleClaim:           env("DB_ROLE_CLAIM", ""),
 		SubjectTypeClaim:      env("SUBJECT_TYPE_CLAIM", "subject_type"),
 		SubjectTypeDefault:    env("SUBJECT_TYPE_DEFAULT", "internal_user"),
@@ -249,23 +265,19 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("JWKS_URL or JWKS_FILE (or JWT_ISSUERS) is required")
 	}
 
-	// Resolve the profile value. Default: compat-opa when an OPA_URL is set
-	// (legacy behavior), otherwise full (direct pgx read+write). The
-	// per-backend requirement (DATABASE_URL vs OPA_URL) is validated by the
-	// command that wires the backend, not here — Load() stays free of
-	// deployment-topology assumptions (kept testable in isolation).
+	// Resolve the profile value. Default: full (direct pgx read+write). Fronting
+	// OPA is orthogonal (OPA_URL), not a profile. The backend requirement
+	// (DATABASE_URL) is validated by the command that wires the backend, not
+	// here — Load() stays free of deployment-topology assumptions (kept testable
+	// in isolation).
 	if c.Profile == "" {
-		if c.OPAURL != "" {
-			c.Profile = ProfileCompatOPA
-		} else {
-			c.Profile = ProfileFull
-		}
+		c.Profile = ProfileFull
 	}
 	switch c.Profile {
-	case ProfileDecisionOnly, ProfileFull, ProfileCompatOPA:
+	case ProfileDecisionOnly, ProfileFull:
 		// ok
 	default:
-		return nil, fmt.Errorf("unknown PGAUTHORIZER_PROFILE %q (decision-only | full | compat-opa)", c.Profile)
+		return nil, fmt.Errorf("unknown PGAUTHORIZER_PROFILE %q (decision-only | full)", c.Profile)
 	}
 
 	// Binding requirements: an issuer without a stores binding can reach every
@@ -325,14 +337,14 @@ func envBool(key string, fallback bool) bool {
 	return fallback
 }
 
-// UsesDirectBackend reports whether the profile connects to PostgreSQL directly
-// (vs. the compat OPA path).
-func (c *Config) UsesDirectBackend() bool {
-	return c.Profile == ProfileDecisionOnly || c.Profile == ProfileFull
+// UsesOPA reports whether an OPA policy sidecar fronts the AuthZEN /access/v1
+// surface (OPA_URL set). Orthogonal to the profile.
+func (c *Config) UsesOPA() bool {
+	return c.OPAURL != ""
 }
 
 // Writable reports whether the profile's DB role is expected to hold write
-// capability (drives the read-only startup assertion).
+// capability (drives the read-only startup assertion + the native write API).
 func (c *Config) Writable() bool {
-	return c.Profile == ProfileFull || c.Profile == ProfileCompatOPA
+	return c.Profile == ProfileFull
 }
