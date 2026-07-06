@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
+	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
 )
 
 // Freshness tokens over HTTP (ADR 0009). Writes return the minted token; reads
@@ -66,6 +67,7 @@ func (h *Handler) checkFreshToken(w http.ResponseWriter, r *http.Request, token 
 		writeInternalError(w, err)
 		return false
 	}
+	metrics.FreshnessVerdicts.WithLabelValues(verdict).Inc()
 	if verdict == "fresh" {
 		return true
 	}
@@ -76,6 +78,7 @@ func (h *Handler) checkFreshToken(w http.ResponseWriter, r *http.Request, token 
 	if fb, ok := h.raw.(authz.FreshnessFallback); ok && fb.HasPrimaryFallback() {
 		*r = *r.WithContext(authz.WithPrimaryFallback(r.Context()))
 		w.Header().Set(ServedByHeader, "primary")
+		metrics.FreshnessFallback.Inc()
 		return true
 	}
 	w.Header().Set(StaleHeader, verdict)

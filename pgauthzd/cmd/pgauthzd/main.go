@@ -24,7 +24,7 @@ func main() {
 		fmt.Printf("pgauthzd %s\n", version)
 		return
 	}
-	if err := app.Run("pgauthzd"); err != nil {
+	if err := app.Run("pgauthzd", version); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

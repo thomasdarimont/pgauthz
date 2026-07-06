@@ -326,6 +326,7 @@ All configuration is via environment variables.
 | `REQUIRE_STORE_BINDING` | `false` | Refuse to start unless **every** trusted issuer has a `stores` binding (recommended `true` for multi-tenant deployments); off = unbound issuers are unrestricted, with a startup warning when several issuers are configured |
 | `REQUIRE_DB_ROLE_BINDING` | `false` | When role derivation is configured (`DB_ROLE_CLAIM` / `CLIENT_DB_ROLES`): refuse to start unless every issuer has a `db_roles` or `client_db_roles` binding (recommended `true` for multi-tenant deployments) |
 | `FRESHNESS_TOKEN_KEY` | *empty* | HMAC secret enabling freshness tokens ([ADR 0009](../docs/adr/0009-freshness-tokens.md) read-your-writes). Set the **same** value on the writer (mints) and the readers (verify). Empty = feature off: writes mint no token and an `at_least_as_fresh` read is rejected (`400`, fail closed) |
+| `METRICS_LISTEN_ADDR` | *empty* | When set (e.g. `:9090`), serves Prometheus `/metrics` on a **separate** listener ([ADR 0010](../docs/adr/0010-metrics-observability.md)). Bind to the pod/mesh network — **never** the public client listener. Empty = metrics disabled |
 | `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
 
 ### pgauthzd-decision (`decision-only`) only

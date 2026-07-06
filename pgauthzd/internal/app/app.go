@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -20,18 +22,24 @@ import (
 	"thomasdarimont.de/authz/pgauthzd/internal/api"
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 	"thomasdarimont.de/authz/pgauthzd/internal/config"
+	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
 	"thomasdarimont.de/authz/pgauthzd/internal/opabackend"
 	"thomasdarimont.de/authz/pgauthzd/internal/pgbackend"
 )
 
 // Run loads config, wires the profile's backend, and serves. `name` is used for
-// log lines.
-func Run(name string) error {
+// log lines; `version` labels the build_info metric.
+func Run(name, version string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
 	setupLogging(cfg.LogLevel)
+
+	// build_info (ADR 0010): value 1, labels carry version/commit/profile/features.
+	fallbackEnabled := cfg.FreshnessPrimaryURL != "" && cfg.Profile == config.ProfileDecisionOnly && !cfg.UsesOPA()
+	metrics.SetBuildInfo(version, buildCommit(), runtime.Version(), string(cfg.Profile),
+		cfg.UsesOPA(), cfg.FreshnessEnabled(), fallbackEnabled)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -118,6 +126,14 @@ func Run(name string) error {
 	//    serve read callbacks, a full instance serves read+write.
 	var servers []*http.Server
 	servers = append(servers, &http.Server{Addr: cfg.ListenAddr, Handler: api.NewRouter(backend, raw, rawWrite, cfg, jwtMW)})
+
+	// Prometheus metrics on a SEPARATE, non-public listener (ADR 0010).
+	if cfg.MetricsListenAddr != "" {
+		mmux := http.NewServeMux()
+		mmux.Handle("GET /metrics", metrics.Handler())
+		servers = append(servers, &http.Server{Addr: cfg.MetricsListenAddr, Handler: mmux})
+		slog.Info("metrics listener", "addr", cfg.MetricsListenAddr)
+	}
 
 	// OPA callback listener (service-auth), available whenever a direct backend
 	// is present and INTERNAL_LISTEN_ADDR is set. Serves native reads, plus
@@ -237,6 +253,13 @@ func newPGBackend(ctx context.Context, cfg *config.Config) (*pgbackend.Backend, 
 	if err != nil {
 		return nil, nil, fmt.Errorf("DATABASE_URL: %w", err)
 	}
+	// Pool stats for /metrics (ADR 0010): the local pool is the replica on a
+	// decision-only reader, the primary on a full instance.
+	localPoolName := "replica"
+	if cfg.Profile == config.ProfileFull {
+		localPoolName = "primary"
+	}
+	metrics.RegisterPool(localPoolName, func() metrics.PoolStat { return pool.Stat() })
 	var primaryPool *pgxpool.Pool
 	// Transparent freshness fallback: a decision-only reader may hold a small
 	// reader-role pool to the primary. Disabled in OPA mode — the AuthZEN read
@@ -248,6 +271,7 @@ func newPGBackend(ctx context.Context, cfg *config.Config) (*pgbackend.Backend, 
 			pool.Close()
 			return nil, nil, fmt.Errorf("FRESHNESS_PRIMARY_URL: %w", err)
 		}
+		metrics.RegisterPool("fallback", func() metrics.PoolStat { return primaryPool.Stat() })
 		slog.Info("freshness: transparent primary fallback enabled", "pool_max", cfg.FreshnessPrimaryPoolMax)
 	}
 	cleanup := func() {
@@ -275,6 +299,24 @@ func newPool(ctx context.Context, dsn string, maxConns int) (*pgxpool.Pool, erro
 		return nil, fmt.Errorf("connecting: %w", err)
 	}
 	return pool, nil
+}
+
+// buildCommit returns the short VCS revision embedded by the Go toolchain, or ""
+// if unavailable (e.g. built without VCS info).
+func buildCommit() string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	for _, s := range bi.Settings {
+		if s.Key == "vcs.revision" {
+			if len(s.Value) > 12 {
+				return s.Value[:12]
+			}
+			return s.Value
+		}
+	}
+	return ""
 }
 
 func setupLogging(level string) {

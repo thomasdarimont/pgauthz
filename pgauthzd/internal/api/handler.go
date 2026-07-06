@@ -104,7 +104,7 @@ func NewCallbackRouter(h *Handler, serviceToken string) http.Handler {
 	handler = RequestID(handler)
 	handler = Logging(handler)
 	handler = Recovery(handler)
-	return handler
+	return Metrics(mux, handler)
 }
 
 func withMiddleware(mux *http.ServeMux, jwtMW *JWTMiddleware) http.Handler {
@@ -113,7 +113,7 @@ func withMiddleware(mux *http.ServeMux, jwtMW *JWTMiddleware) http.Handler {
 	handler = RequestID(handler)
 	handler = Logging(handler)
 	handler = Recovery(handler)
-	return handler
+	return Metrics(mux, handler)
 }
 
 // registerAuthZEN wires the spec-compliant AuthZEN surface + tenant discovery.

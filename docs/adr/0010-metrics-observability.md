@@ -196,9 +196,10 @@ not left to callers.
 
 ## Implementation slices
 
-1. **Slice 1 (highest value / lowest effort):** HTTP RED middleware +
-   `freshness_verdicts/fallback` + `build_info` + `db_pool_connections`. Answers
-   lagging-replica, failover, error/deny-rate, saturation, what's-deployed.
+1. **Slice 1 (highest value / lowest effort) — SHIPPED:** HTTP RED middleware +
+   `freshness_verdicts/fallback` + `build_info` + `db_pool_connections`, on the
+   opt-in `METRICS_LISTEN_ADDR` listener. Answers lagging-replica, failover,
+   error/deny-rate, saturation, what's-deployed.
 2. **Slice 2:** per-store decisions + search, `jwt_validation_failures`,
    `authz_denied`, `condition_eval`, DB/OPA latency histograms.
 3. **Slice 3:** engine/tenant gauges (tuple counts, model version, expiry

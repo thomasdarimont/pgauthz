@@ -9,6 +9,13 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Prometheus metrics** ([ADR 0010](docs/adr/0010-metrics-observability.md), Slice 1)
+  on an opt-in, non-public listener (`METRICS_LISTEN_ADDR`): HTTP RED
+  (`pgauthzd_http_requests_total` / `_duration_seconds` by templated route),
+  freshness verdict/fallback counters (`pgauthzd_freshness_verdicts_total{verdict}`,
+  `pgauthzd_freshness_fallback_total` — lagging-replica + failover signals),
+  `pgauthzd_build_info`, and pgx pool stats (`pgauthzd_db_pool_connections{pool,state}`),
+  plus the default Go/process collectors.
 - **Freshness tokens for read-your-writes across replicas** ([ADR 0009](docs/adr/0009-freshness-tokens.md)).
   An opt-in, HMAC-signed LSN-watermark token (`{epoch=timeline, lsn}`): a write
   mints one (`X-PGAuthz-Revision` header + `"revision"` body), and a read can

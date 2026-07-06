@@ -153,6 +153,12 @@ type Config struct {
 	// FRESHNESS_PRIMARY_POOL_MAX, default 10.
 	FreshnessPrimaryPoolMax int
 
+	// MetricsListenAddr, when set, serves the Prometheus `/metrics` endpoint on a
+	// SEPARATE listener (ADR 0010). Bind it to the pod/mesh network — never the
+	// public client listener (tenants must not scrape ops data). Empty = off. Env
+	// METRICS_LISTEN_ADDR (e.g. ":9090").
+	MetricsListenAddr string
+
 	DefaultStore string
 	StoreHeader  string
 
@@ -231,6 +237,7 @@ func Load() (*Config, error) {
 		FreshnessKey:            env("FRESHNESS_TOKEN_KEY", ""),
 		FreshnessPrimaryURL:     env("FRESHNESS_PRIMARY_URL", ""),
 		FreshnessPrimaryPoolMax: envInt("FRESHNESS_PRIMARY_POOL_MAX", 10),
+		MetricsListenAddr:       env("METRICS_LISTEN_ADDR", ""),
 		DefaultStore:            env("DEFAULT_STORE", "demo"),
 		StoreHeader:             env("STORE_HEADER", "X-PGAuthz-Store"),
 		RequireStoreBinding:     envBool("REQUIRE_STORE_BINDING", false),
