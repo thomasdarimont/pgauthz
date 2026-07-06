@@ -245,6 +245,8 @@ GRANT EXECUTE ON FUNCTION authz.model_status(text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.model_rollout_status(text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.list_model_versions(text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.plan_model_apply(text, text, integer) TO authz_reader;
+-- Freshness token (ADR 0009): the reader-side guard for at_least_as_fresh reads.
+GRANT EXECUTE ON FUNCTION authz.assert_fresh(int, pg_lsn) TO authz_reader;
 
 ------------------------------------------------------------------------
 -- authz_writer: tuple management (inherits reader grants above)
@@ -257,6 +259,9 @@ GRANT EXECUTE ON FUNCTION authz.delete_tuples(text, authz.tuple_input[], text) T
 GRANT EXECUTE ON FUNCTION authz.delete_tuples_jsonb(text, jsonb, text) TO authz_writer;
 GRANT EXECUTE ON FUNCTION authz.delete_user_tuples(text, text, text, text) TO authz_writer;
 GRANT EXECUTE ON FUNCTION authz.write_tuples_checked(text, jsonb, jsonb, jsonb, text) TO authz_writer;
+-- Freshness token (ADR 0009): the writer mints it post-commit (primary-only —
+-- it errors on a standby, so only the full/writer instance ever calls it).
+GRANT EXECUTE ON FUNCTION authz.freshness_token() TO authz_writer;
 
 ------------------------------------------------------------------------
 -- authz_admin: store lifecycle and namespace management
@@ -321,6 +326,10 @@ ALTER FUNCTION authz.watch_changes(text, timestamptz, bigint, int, interval, tex
 ALTER FUNCTION authz.watch_cursor(text) SECURITY DEFINER;
 ALTER FUNCTION authz.explain_access(text, text, text, text, text, text, jsonb, boolean, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.check_access_detailed(text, text, text, text, text, text, jsonb) SECURITY DEFINER;
+-- Freshness-token primitives (ADR 0009). Owner (authz_owner) is granted
+-- pg_read_all_stats below so assert_fresh can read pg_stat_wal_receiver.
+ALTER FUNCTION authz.freshness_token() SECURITY DEFINER;
+ALTER FUNCTION authz.assert_fresh(int, pg_lsn) SECURITY DEFINER;
 ALTER FUNCTION authz.describe_model(text) SECURITY DEFINER;
 ALTER FUNCTION authz.write_tuple(text, text, text, text, text, text, text, text, jsonb, text, timestamptz) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_tuple(text, text, text, text, text, text, text, text) SECURITY DEFINER;
@@ -483,6 +492,16 @@ BEGIN
     END LOOP;
 END
 $$;
+
+------------------------------------------------------------------------
+-- Freshness tokens (ADR 0009): authz.assert_fresh reads the standby's replay
+-- timeline from pg_stat_wal_receiver, whose received_tli is only visible to a
+-- role with pg_read_all_stats. The function is SECURITY DEFINER and runs as its
+-- owner (authz_owner), so grant the stats role to authz_owner — bounded to
+-- monitoring stats, no data access. Without it the guard degrades safely to
+-- 'unknown' (caller routes to the primary), never a false 'fresh'.
+------------------------------------------------------------------------
+GRANT pg_read_all_stats TO authz_owner;
 
 ------------------------------------------------------------------------
 -- Expiry RLS-bypass helpers (SECURITY-AUDIT F11): OWN them by

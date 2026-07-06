@@ -29,6 +29,7 @@ ENGINE_MANIFEST=(
   "access_internal.sql:read"
   "access.sql:read"
   "explain.sql:read"
+  "consistency.sql:read"
   "store.sql:write"
   "tuples.sql:write"
   "maintenance.sql:write"

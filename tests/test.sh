@@ -183,5 +183,10 @@ echo "==> Running watch / changefeed checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_watch.sql"
 
+echo ""
+echo "==> Running freshness-token checks (ADR 0009)..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_freshness.sql"
+
 # Clean up test helpers
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_helpers_cleanup.sql"
