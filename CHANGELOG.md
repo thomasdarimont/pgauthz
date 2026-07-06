@@ -7,6 +7,8 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-06
+
 ### Added
 
 - **Freshness-token key rotation** ([ADR 0009](docs/adr/0009-freshness-tokens.md)).
@@ -888,7 +890,8 @@ PL/pgSQL.
 - PostgreSQL 18.x (developed/tested on 18.4). PostgREST, OPA, the AuthZEN
   services, and `pg_cel` are optional components of the reference deployment.
 
-[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.7.3...v0.8.0
 [0.7.3]: https://github.com/thomasdarimont/pgauthz/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/thomasdarimont/pgauthz/compare/v0.7.1...v0.7.2
