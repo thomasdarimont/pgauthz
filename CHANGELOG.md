@@ -7,6 +7,23 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Freshness tokens for read-your-writes across replicas** ([ADR 0009](docs/adr/0009-freshness-tokens.md)).
+  An opt-in, HMAC-signed LSN-watermark token (`{epoch=timeline, lsn}`): a write
+  mints one (`X-PGAuthz-Revision` header + `"revision"` body), and a read can
+  present it with `X-PGAuthz-Consistency: at_least_as_fresh` to demand
+  read-your-writes. A replica that hasn't caught up answers `409` +
+  `X-PGAuthz-Stale` so the caller retries against the primary; the epoch guards
+  against a lossy-failover false-allow (the timeline is read from the WAL
+  position, never the lagging control file). Engine primitives
+  `authz.freshness_token()` / `authz.assert_fresh()`; enabled by
+  `FRESHNESS_TOKEN_KEY` (same value on writer + readers; empty = off, fail
+  closed). No PostgreSQL 19 dependency.
+- **Proprietary HTTP headers are namespaced `X-PGAuthz-*`** (was the generic,
+  collision-prone `X-Authz-*`): `X-PGAuthz-Role` / `-Detail` / `-Consistency` /
+  `-Revision` / `-Stale` / `-Store` (the last also fixes a casing slip).
+
 ### The pgauthzd front door — PostgREST removed, OPA now opt-in
 
 A large architectural consolidation: **pgauthzd** (one Go daemon) is now the

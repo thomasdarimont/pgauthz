@@ -645,15 +645,16 @@ write rule then returns `writes_disabled`).
   applies the write to the PG primary
 - **Replication lag:** typically sub-second for streaming replication
 
-#### Consistency tokens (zookies): why not, yet
+#### Read-your-writes: freshness tokens
 
 Reads on the **primary** are read-your-writes (MVCC) — *given a fresh snapshot*:
 a new transaction, and no caller-side cache returning the pre-change state (a
 long-running `REPEATABLE READ` transaction, or an OPA cache hit, can still serve
 the old decision on the primary). Replicas are eventually consistent, bounded by
 replication lag. The security-relevant case is a **stale allow after a revoke**.
-Route-to-primary is the default recommendation; a first-class revision-token API
-is **deferred, not rejected**:
+Route-to-primary is the simplest default; for replica-offloaded *fresh* reads,
+pgauthz ships an opt-in **freshness token** ([ADR 0009](adr/0009-freshness-tokens.md)) —
+a write mints one, a later read presents it to demand read-your-writes:
 
 - **A revoke is broader than the confirming check.** Given the heavy read:write
   ratio, checks that must reflect a just-made change can be routed to the primary
@@ -663,61 +664,39 @@ is **deferred, not rejected**:
   the primary, propagate a freshness token to causally-related checks,
   temporarily pin those requests to the primary, or serve from replicas covered
   by `synchronous_commit = remote_apply` (which only protects the standbys named
-  in the synchronous set). A revision token earns its keep only when you want to
-  keep serving even post-write checks from a replica — **not yet justified for
-  the expected single-primary + read-replica deployment**, and it pushes real
-  complexity onto clients (capture a token on write, thread it onto the right
-  later check).
+  in the synchronous set). A freshness token earns its keep when you want to keep
+  serving even post-write checks from a replica without pinning them all to the
+  primary; the cost it asks of clients is threading the token from the write onto
+  the right later check.
 
-- **A WAL LSN cannot be a sound single-RPC zookie.** `pg_current_wal_lsn()`
-  read *inside* `write_tuple`'s transaction is **pre-commit** (call it X); the
-  commit record lands later at Y, with arbitrary interleaved WAL (own + concurrent
-  transactions) between them. A replica only exposes the write once it replays
-  the COMMIT at Y (MVCC), so a `replay_lsn ≥ X` test false-positives — in a busy
-  system `replay_lsn` crosses X almost instantly from *unrelated* traffic, before
-  Y. A sound token must be `≥ Y`: captured *after* the write commits, via
-  `pg_current_wal_insert_lsn()` on the primary (the *insert* LSN — the write LSN
-  can lag under asynchronous commit). A single write RPC can't return that
-  after its own transaction commits — so it's not the cheap win it first appears.
+- **The token is a WAL LSN captured *post-commit*.** An LSN read *inside* the
+  write transaction is pre-commit (call it X) and unsound — the commit lands later
+  at Y, and a replica only exposes the write once it replays Y (a `replay_lsn ≥ X`
+  test false-positives from unrelated traffic). The sound value is `≥ Y`:
+  `pg_current_wal_insert_lsn()` read on the primary *after* the write commits.
+  Because pgauthzd owns the writer connection ([ADR 0007]), it captures that with
+  one extra round-trip right after commit — the obstacle that made this awkward
+  under the old PostgREST bridge is gone. The token is `{epoch, lsn}`, signed.
 
-- **A staleness gauge must compare against the primary.** Received-but-not-yet-
-  applied lag alone —
-  `pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn())` — reads
-  ≈0 for a **disconnected** replica where both LSNs stop advancing, even when it
-  is minutes behind; `pg_last_xact_replay_timestamp()` is likewise ambiguous when
-  the primary is idle. A robust freshness monitor compares the **primary's**
-  current LSN to the replica's replay LSN (read `pg_stat_replication` on the
-  primary, or replicate a periodic heartbeat row) — not just the replica's local
-  receive-vs-replay delta.
+- **The epoch is the WAL timeline; it guards failover.** LSNs are only comparable
+  within a timeline — after a promotion the LSN space forks, so a naive compare
+  could match rewound/diverged WAL. The reader derives its timeline from the WAL
+  position (`pg_stat_wal_receiver.received_tli`), **never** the control file
+  (which lags a promotion by up to a checkpoint), and rejects a cross-timeline
+  token.
 
-**If/when replica-offloaded *fresh* reads are required**, the preferred design is
-an application-level **per-store monotonic revision** rather than leaking WAL
-LSNs into the API (PostgreSQL-native, works for physical *and* logical replicas,
-fits one write RPC):
-
-- A `store_revisions(store_id, epoch, revision)` row. Every authorization write
-  takes `SELECT … FOR UPDATE` on its store's row, applies the
-  tuple/model/condition change, sets `revision = revision + 1`, returns it, and
-  commits before acking the client. Writes for one store serialize (acceptable
-  given write ≪ read — but benchmark it); revision order matches commit order, so
-  a snapshot that sees revision R sees exactly the changes through R.
-- The write RPC returns an opaque, **signed** token `{epoch, store, revision}`
-  (signing stops a client manufacturing a huge future revision to force expensive
-  waits). Checks take a `consistency` mode: `minimize_latency` (replica — today's
-  behaviour), `at_least_as_fresh(token)` (replica only if its
-  `current_revision ≥ token.revision`, else retry another replica / the primary),
-  or `fully_consistent` (primary). The `epoch` invalidates tokens across a
-  failover/restore so a stale token can't match a rewound revision.
-- **OPA caching is part of the contract:** a fresh replica is meaningless if OPA
-  serves an older cached allow — token-constrained / fully-consistent requests
-  must bypass the cache (or key it by evaluated revision). When a replica can't
-  satisfy the token within a short timeout, **fall back to the primary**, else
-  fail closed (`replica_not_fresh_enough`) — never silently evaluate an older
-  revision.
-
-(This forward design follows an external consistency review, and mirrors
-Zanzibar's contract: *evaluate against a snapshot at least as fresh as
-revision R*.)
+The reader (`authz.assert_fresh`) checks whether it has replayed to `token.lsn`
+on `token.epoch`: **fresh** → serve locally; **stale** (behind) / **wrong_epoch**
+(different timeline) / **unknown** (not streaming) → the caller retries against
+the primary (`409 + X-PGAuthz-Stale`). Read modes: `minimize_latency` (replica,
+the default), `at_least_as_fresh(token)`, `fully_consistent` (primary). A signed
+token stops a client manufacturing a future position, and **OPA caching is part
+of the contract** — a token-constrained request must bypass a cache that could
+serve an older allow. The global LSN watermark is chosen over a per-store
+revision counter because the latter serializes writes per store on a `FOR UPDATE`
+row across the `remote_apply` wait; the LSN carries no such cost, needs no PG19
+primitive, and (with the writer-owned connection) mints in one round-trip. Full
+design + the failover prototype: [ADR 0009](adr/0009-freshness-tokens.md).
 
 ### Deployment Scenarios: SaaS Platform Fit
 
@@ -773,9 +752,10 @@ Three mechanisms, in order of strength:
    `-ro`, or `required` durability chosen so a dead replica blocks
    revokes instead). Cost: revoke latency = the slowest synchronous
    replica; all other traffic is unaffected. Designed; see the risk
-   register and the consistency-tokens section.
-3. **Revision tokens** (`at_least_as_fresh`) — deferred to the PG19
-   `WAIT FOR LSN` era; see above.
+   register and the read-your-writes section.
+3. **Freshness tokens** (`at_least_as_fresh`) — **shipped**
+   ([ADR 0009](adr/0009-freshness-tokens.md)), app-level, no PG19 dependency
+   (PG19 `WAIT FOR LSN` would only optimize the replica-side wait); see above.
 
 In all three, the **OPA cache contract** applies: a fresh replica behind
 a stale cached decision is no improvement — revocation-sensitive checks
@@ -1006,7 +986,7 @@ Quality
 
 | Risk | Probability | Impact | Mitigation |
 |---|---|---|---|
-| No consistency tokens (zookies) | Medium | With read replicas, an asynchronous replica can serve stale data after a write. The risk is a **stale allow after a revoke** (a lagging replica still returns `allowed`); a stale deny after a grant is only an availability hiccup. Reads on the primary are read-your-writes (MVCC) given a fresh snapshot | Route the affected subject's security-critical checks to the primary (not just the admin's confirming check — see the *Consistency tokens* section); lag is typically sub-second; serve from replicas under `synchronous_commit = remote_apply` to remove it for that synchronous set. A first-class freshness API is deferred — the documented forward path is a per-store signed **revision** token (`at_least_as_fresh` / `fully_consistent` modes), not a raw WAL LSN. See *Consistency tokens (zookies)* above and README → Consistency model |
+| Replica staleness after a write | Low–Medium | With read replicas, an asynchronous replica can serve stale data after a write. The risk is a **stale allow after a revoke** (a lagging replica still returns `allowed`); a stale deny after a grant is only an availability hiccup. Reads on the primary are read-your-writes (MVCC) given a fresh snapshot | Route the affected subject's security-critical checks to the primary (not just the admin's confirming check — see *Read-your-writes* above); lag is typically sub-second; serve from replicas under `synchronous_commit = remote_apply` to remove it for that synchronous set. For replica-offloaded fresh reads, opt into **freshness tokens** ([ADR 0009](adr/0009-freshness-tokens.md)): `at_least_as_fresh(token)` serves only a caught-up replica, else `409 + X-PGAuthz-Stale`. See *Read-your-writes: freshness tokens* above and README → Consistency model |
 | Recursion depth limit (default 32) | Low | Deeply nested models could hit the ceiling | Each schema layer costs 2-3 levels; 32 covers ~10 layers. Configurable via the `authz.max_depth` GUC (session or database level). Exceeding it raises; cycles are pruned independently. |
 | No streaming push *transport* (WebSocket/SSE) | Low | Real-time UIs must bridge the changefeed themselves | The Watch changefeed exists — `authz.watch_changes` (cursored, lag-gated stream over `tuples_audit`) + a `NOTIFY authz_changes` doorbell. Only an HTTP streaming bridge (WebSocket/SSE) is left to the deployment; exactly-once consumers can use logical replication. |
 | Condition expressions can fail on specific data at check time | Low | A `BEFORE INSERT/UPDATE` trigger test-compiles every condition expression in the sandbox and rejects it if it cannot compile (SQLSTATE class 42 — syntax error, unknown function/column/table, type mismatch), so malformed expressions never get stored. *Data-dependent* runtime errors (class 22, e.g. a cast that fails only on certain inputs) are not caught at write time | Those data-dependent failures are caught at check time and treated as deny (`_exec_condition` errors → false), so a condition is always fail-safe (it can deny, never wrongly grant). Time-travel needs request data beyond the reconstructed timestamp supplied via `audit_check_access(..., p_request_context)`. |

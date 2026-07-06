@@ -1062,12 +1062,17 @@ If a check must reflect a just-committed change, either:
 
 - **Route the confirming check to the primary** (bypass the replica) — the
   simplest correct option, and the one to use for revocations
+- **Opt into freshness tokens** ([ADR 0009](adr/0009-freshness-tokens.md)) — the
+  built-in, timeline-safe version of the manual pin below: a write returns a
+  token (`X-PGAuthz-Revision`), a read sends `X-PGAuthz-Consistency:
+  at_least_as_fresh` + the token, and a lagging replica answers `409 +
+  X-PGAuthz-Stale` so you retry the primary. Enable with `FRESHNESS_TOKEN_KEY`
 - Accept eventual consistency (sub-second lag is fine for most workloads)
 - Pin the replica read manually: capture `pg_current_wal_lsn()` on the
   primary **just after the write commits** (a value read inside the write
   is pre-commit and unsound — see ARCHITECTURE.md), then wait until the
-  replica's `pg_last_wal_replay_lsn()` reaches it before reading (a manual
-  stand-in for a Zanzibar revision token)
+  replica's `pg_last_wal_replay_lsn()` reaches it before reading (freshness
+  tokens above do exactly this for you)
 
 ### Writing tuples from Spring Boot
 

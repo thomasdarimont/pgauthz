@@ -2,12 +2,12 @@
 #
 # Integration test for the streaming-replication scaling demo
 # (compose-scaling.yml): a read-write primary, a read-only hot-standby replica
-# streaming its WAL, and PostgREST + OPA serving access checks off the replica.
+# streaming its WAL, and pgauthzd + OPA serving access checks off the replica.
 #
 # Installs the engine on the primary via the documented flow
 # (COMPOSE_FILE=compose-scaling.yml ./init.sh), seeds the demo, then asserts the
-# standby streams the schema + data and resolves checks — directly and through
-# the OPA -> PostgREST -> replica path.
+# standby streams the schema + data and resolves checks — directly, through the
+# OPA -> pgauthzd -> replica path, and (ADR 0009) the freshness-token verdicts.
 #
 # Leaves the stack running for inspection; the caller tears it down.
 set -euo pipefail
@@ -133,6 +133,38 @@ assert "10× grant/revoke cycles: replica state matched the ack every time (0 vi
 echo "==> Resetting synchronous replication config..."
 qp "$PRIMARY" "ALTER SYSTEM RESET synchronous_standby_names;" >/dev/null
 qp "$PRIMARY" "SELECT pg_reload_conf();" >/dev/null
+
+# ── Freshness tokens (ADR 0009): assert_fresh on the REAL standby ────────────
+# The Go/SQL unit tests cover the pure verdict logic on a primary; here we prove
+# the STANDBY paths (behind → stale, catch-up → fresh, mismatched timeline →
+# wrong_epoch) against actual streaming replication + pg_stat_wal_receiver,
+# deterministically via replay pause/resume (same lever as the new-enemy test).
+echo "==> Freshness tokens: assert_fresh on the replica (stale → fresh, wrong_epoch)..."
+
+# The primary is authoritative for the current timeline → always fresh.
+assert "freshness: primary is authoritative (fresh)" "fresh" \
+  "$(qp "$PRIMARY" "SELECT authz.assert_fresh(1, '0/0'::pg_lsn);")"
+
+# Pause replay so a fresh write deterministically lands ahead of the replica.
+qp "$REPLICA" "SELECT pg_wal_replay_pause();" >/dev/null
+qp "$PRIMARY" "SELECT authz.write_tuple('demo','internal_user','fresh_probe','viewer','document','doc_fresh');" >/dev/null
+# Mint the token AFTER that write; its LSN is ahead of the paused replica.
+ftok=$(qp "$PRIMARY" "SELECT epoch::text || '|' || lsn::text FROM authz.freshness_token();")
+fe=${ftok%%|*}; fl=${ftok##*|}
+assert "freshness: replica behind the token → stale" "stale" \
+  "$(qp "$REPLICA" "SELECT authz.assert_fresh($fe, '$fl'::pg_lsn);")"
+# A token from a different timeline is rejected regardless of LSN (fail closed).
+assert "freshness: mismatched epoch → wrong_epoch" "wrong_epoch" \
+  "$(qp "$REPLICA" "SELECT authz.assert_fresh($((fe+1)), '$fl'::pg_lsn);")"
+# Resume replay → the replica catches up → the SAME token becomes satisfiable.
+qp "$REPLICA" "SELECT pg_wal_replay_resume();" >/dev/null
+fverdict=""
+for _ in $(seq 1 20); do
+  fverdict=$(qp "$REPLICA" "SELECT authz.assert_fresh($fe, '$fl'::pg_lsn);")
+  [ "$fverdict" = "fresh" ] && break
+  sleep 1
+done
+assert "freshness: replica catches up → fresh" "fresh" "$fverdict"
 
 echo ""
 if [ "$fail" -ne 0 ]; then

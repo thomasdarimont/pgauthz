@@ -22,6 +22,7 @@ that resolve relationship tuples recursively.
 - **Batch operations** — `write_tuples` / `delete_tuples` for efficient bulk insert and delete
 - **Conditional / atomic writes** — `write_tuples_checked` applies preconditions (exists/absent) plus deletes and writes in one transaction (optimistic concurrency: race-free ownership transfer, "at most one owner")
 - **Strict revocation & per-write consistency** — the write path commits with `synchronous_commit = remote_apply` (an acked revoke is applied on every synchronous replica — no stale allow after the ack), with per-write opt-down via `consistency: applied | durable | eventual`; revocation-sensitive reads bypass the decision cache per request (`no_cache` / `Cache-Control: no-cache`)
+- **Read-your-writes freshness tokens** — an opt-in, HMAC-signed LSN-watermark token ([ADR 0009](docs/adr/0009-freshness-tokens.md)): a write returns one (`X-PGAuthz-Revision`), and a read presents it (`X-PGAuthz-Consistency: at_least_as_fresh`) to be served only by a replica that has caught up — a lagging one returns `409 + X-PGAuthz-Stale` so the caller retries the primary. Timeline-guarded against failover; no PostgreSQL 19 dependency
 - **Full audit trail** — immutable, monthly-partitioned audit log with application user tracking (`performed_by`)
 - **Time-travel queries** — `audit_check_access` reconstructs permissions at any past point in time from the audit log
 - **Watch / changefeed** — `watch_changes` streams tuple changes (cursored, filterable by object type / namespace / relation) plus a `NOTIFY authz_changes` doorbell, for cache invalidation / materialization / sync
@@ -1486,16 +1487,17 @@ Getting the consistency you need:
   standbys in the *synchronous set* read-your-writes, trading write latency for
   zero lag on those replicas (only).
 
-> **No revision tokens (zookies) yet.** Unlike Zanzibar, pgauthz has no
-> consistency-token API to pin a read to "at least as fresh as this write." You
-> can approximate read-your-writes on a replica manually, but only with a
-> **post-commit** position: *after* the write commits, `SELECT
-> pg_current_wal_insert_lsn()` on the primary, then wait until the replica's
-> `pg_last_wal_replay_lsn()` reaches it (an LSN captured *inside* the write
-> transaction is pre-commit and unsound). The documented forward design is a
-> per-store signed **revision** token with `at_least_as_fresh` /
-> `fully_consistent` modes — see
-> [ARCHITECTURE.md → Consistency tokens](docs/ARCHITECTURE.md).
+> **Revision / freshness tokens (zookies).** pgauthz has an opt-in,
+> Zanzibar-style consistency token to pin a read to "at least as fresh as this
+> write." A write returns a signed LSN-watermark token (`X-PGAuthz-Revision`);
+> a read presents it with `X-PGAuthz-Consistency: at_least_as_fresh` and is
+> served only by a replica that has replayed to it, else `409 + X-PGAuthz-Stale`
+> (retry the primary). The token is a **post-commit** WAL position
+> (`pg_current_wal_insert_lsn()` after the write commits — an LSN captured inside
+> the write transaction is pre-commit and unsound), tagged with the WAL timeline
+> to stay sound across failover. Enable with `FRESHNESS_TOKEN_KEY`. See
+> [ADR 0009](docs/adr/0009-freshness-tokens.md) /
+> [ARCHITECTURE.md → Read-your-writes](docs/ARCHITECTURE.md).
 
 ### Performance optimizations
 
@@ -1697,7 +1699,6 @@ the caller requested.
 
 | Capability | Impact | Notes |
 |---|---|---|
-| **Consistency tokens** | Low–Medium | Zanzibar-style tokens for read-after-write consistency in distributed setups. This solution uses PostgreSQL MVCC — strong consistency on a single instance, eventual consistency with read replicas (negligible lag for authorization data). |
 | **Watch API** | Low | OpenFGA can stream tuple changes. This solution provides `authz.watch_changes` (a cursored, lag-gated changefeed over the audit log) plus a `NOTIFY authz_changes` doorbell; a WebSocket/SSE transport bridge is left to the deployment. |
 | **gRPC API** | Low | OpenFGA has native gRPC. This solution uses SQL directly or pgauthzd's HTTP API for HTTP access. |
 | **SDK ecosystem** | Medium | OpenFGA has official SDKs for Go, JS, Python, Java, .NET. This solution requires direct SQL or HTTP calls via pgauthzd's HTTP API — simpler for teams already on PostgreSQL, but lacks the plug-and-play SDK experience. |

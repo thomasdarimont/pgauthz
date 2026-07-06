@@ -302,9 +302,10 @@ sub-second.
 Replication is asynchronous, so replica reads are eventually consistent:
 the case to guard is a **stale allow after a revoke**. Route
 security-critical checks (especially confirming checks after a revoke) to
-the primary, which is always read-your-writes; there is no revision-token
-(zookie) API yet. See the README "Consistency model" section for the full
-contract.
+the primary, which is always read-your-writes — or opt into **freshness
+tokens** ([ADR 0009](adr/0009-freshness-tokens.md)) to keep those reads on a
+replica that has provably caught up. See the README "Consistency model"
+section for the full contract.
 
 See `compose-scaling.yml` for a working example.
 

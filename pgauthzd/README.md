@@ -325,6 +325,7 @@ All configuration is via environment variables.
 | `STORE_HEADER` | `X-PGAuthz-Store` | HTTP header for store selection |
 | `REQUIRE_STORE_BINDING` | `false` | Refuse to start unless **every** trusted issuer has a `stores` binding (recommended `true` for multi-tenant deployments); off = unbound issuers are unrestricted, with a startup warning when several issuers are configured |
 | `REQUIRE_DB_ROLE_BINDING` | `false` | When role derivation is configured (`DB_ROLE_CLAIM` / `CLIENT_DB_ROLES`): refuse to start unless every issuer has a `db_roles` or `client_db_roles` binding (recommended `true` for multi-tenant deployments) |
+| `FRESHNESS_TOKEN_KEY` | *empty* | HMAC secret enabling freshness tokens ([ADR 0009](../docs/adr/0009-freshness-tokens.md) read-your-writes). Set the **same** value on the writer (mints) and the readers (verify). Empty = feature off: writes mint no token and an `at_least_as_fresh` read is rejected (`400`, fail closed) |
 | `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
 
 ### pgauthzd-decision (`decision-only`) only
@@ -513,6 +514,33 @@ authenticated subject; the per-app DB role from the token governs namespace
 scope exactly as it does for reads. `consistency` maps per-transaction to
 `synchronous_commit`: `applied` (= `remote_apply`, strict revocation),
 `durable` (`on`), `eventual` (`local`); omitted = the connection default.
+
+#### Read-your-writes: freshness tokens (ADR 0009)
+
+Set `FRESHNESS_TOKEN_KEY` (the **same** value on the writer and the readers) to
+turn on LSN-watermark freshness tokens. A write then returns a signed token — in
+the `X-PGAuthz-Revision` response header and a `"revision"` body field:
+
+```
+{ "store": "demo", "written": 1, "revision": "MTowLzNBQjEy..." }
+```
+
+A later read presents it to demand read-your-writes, via two request headers:
+
+```
+X-PGAuthz-Consistency: at_least_as_fresh
+X-PGAuthz-Revision:    <token from the write>
+```
+
+The reader checks whether its (possibly replica) connection has replayed to the
+token's WAL position **on the token's timeline**. Satisfied → the read is served
+normally. Not satisfied → **`409`** with `X-PGAuthz-Stale: <stale|wrong_epoch|
+unknown>`, telling the caller to retry against the primary. Without the header
+pair a read uses the default (`minimize_latency`, answer from the local replica).
+A malformed/forged token — or the feature disabled — is rejected with `400`
+(fail closed: a freshness request is never silently served as if fresh). The
+primary always answers `fresh` (it is authoritative). See
+[ADR 0009](../docs/adr/0009-freshness-tokens.md).
 
 Roadmap: `/pgauthz/v1/audit` (time-travel), `/pgauthz/v1/models` +
 `/pgauthz/v1/stores` (inspection), and model publish/apply on the `full`

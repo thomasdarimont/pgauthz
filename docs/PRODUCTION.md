@@ -338,9 +338,15 @@ policies on top of the platform stack: see
 (per-team packages + the `system_authz.rego` allowlist as the review
 choke-point, or team-owned sidecar OPAs against the decision API).
 
-There is no revision-token (zookie) API; see
-[ARCHITECTURE.md → Consistency tokens](ARCHITECTURE.md#consistency-tokens-zookies-why-not-yet)
-and the README "Consistency model" section.
+For read-your-writes on a replica **without** pinning every sensitive read to the
+primary, opt into **freshness tokens** ([ADR 0009](adr/0009-freshness-tokens.md)):
+a write returns a signed LSN-watermark token, and a later read presents it with
+`X-PGAuthz-Consistency: at_least_as_fresh`. A replica that hasn't replayed to the
+token answers `409 + X-PGAuthz-Stale` so the caller retries against the primary —
+so the primary hop happens only when the replica is *actually* behind, instead of
+unconditionally. Enable by setting `FRESHNESS_TOKEN_KEY` (the same value on the
+writer and the readers). This complements `remote_apply` (write-side durability)
+with a read-side freshness handle; it needs no PostgreSQL 19 primitives.
 
 ### Strict revocation: synchronous apply on the write path
 
