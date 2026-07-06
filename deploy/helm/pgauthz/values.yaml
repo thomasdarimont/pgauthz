@@ -1,7 +1,9 @@
 # Default values for pgauthz.
-# Secure-by-default: OPA is the only externally reachable service; the pgauthzd
-# reader/writer callbacks and PostgreSQL are ClusterIP-only and locked down with
-# NetworkPolicies. Override the dev secrets before any real deployment.
+# Secure-by-default: pgauthzd (the AuthZEN 1.0 front door) is the only
+# externally reachable service; OPA is an internal policy sidecar, and the
+# pgauthzd reader/writer native callbacks and PostgreSQL are ClusterIP-only,
+# locked down with NetworkPolicies. Override the dev secrets before any real
+# deployment.
 
 nameOverride: ""
 fullnameOverride: ""
@@ -15,8 +17,10 @@ images:
   opa:        { repository: openpolicyagent/opa,               tag: "1.18.2" }
   migrations: { repository: pgauthz-migrations,                tag: "0.7.3" }
   # pgauthzd — the single unified daemon. Behaviour is selected per Deployment by
-  # PGAUTHORIZER_PROFILE (decision-only | full | compat-opa); ONE image serves the
-  # decision-only reader + AuthZEN API, the full writer, and the compat-opa gateway.
+  # PGAUTHORIZER_PROFILE (decision-only | full) — DB capability — plus the
+  # orthogonal OPA_URL flag (front OPA on /access/v1). ONE image serves the
+  # decision-only reader + AuthZEN API, the full writer, and the OPA-fronted
+  # AuthZEN gateway.
   pgauthzd:   { repository: pgauthz-pgauthzd,                  tag: "0.7.3" }
 
 # ── Database: CloudNativePG cluster ──────────────────────────────────────────
@@ -204,12 +208,15 @@ authzen:
   # reader pods' :8080 AuthZEN/JWT listener. Scales with reader.replicas.
   direct:
     enabled: true
-  # opa — a pgauthzd `compat-opa` instance that fronts OPA on /access/v1
-  # (policy-enriched AuthZEN). Optional; the ingress already exposes OPA directly.
+  # opa — a DB-less pgauthzd instance (decision-only + OPA_URL) that fronts OPA
+  # on /access/v1 (policy-enriched AuthZEN). When enabled it is the ingress front
+  # door (path /); OPA itself stays internal.
   opa:
     enabled: true
     replicas: 2
-  # Expose the AuthZEN HTTP API via Ingress in addition to OPA.
+  # Deprecated/no-op: the ingress `/` now always routes to the pgauthzd AuthZEN
+  # front door (the OPA-fronted gateway when authzen.opa.enabled, else the direct
+  # reader). Kept for backwards compatibility with existing values overrides.
   exposeViaIngress: false
 
 # ── Ingress ──────────────────────────────────────────────────────────────────

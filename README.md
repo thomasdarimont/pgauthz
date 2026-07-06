@@ -28,8 +28,8 @@ that resolve relationship tuples recursively.
 - **AuthZen Search API** — `list_objects`, `list_subjects`, `list_actions` for discovery queries
 - **OpenFGA import** — import existing OpenFGA JSON models and tuples directly
 - **Namespace-based access control** — restrict which applications can read and manage tuples for which object types within a shared store; per-application isolation is **database-enforced end to end** (OPA forwards the caller's app role, validated role switches on both the read and write path)
-- **OPA + pgauthzd integration** — **pgauthzd is the front door** for reads *and* writes: it validates the JWT and exposes AuthZEN 1.0 / the native `/pgauthz/v1` API. OPA is an **internal policy sidecar** that only pgauthzd calls (the `compat-opa` profile forwards the verified token to it for policy-as-code + response caching); OPA's Rego then calls **back** into pgauthzd's native `/pgauthz/v1` API (over a shared service token, optionally mTLS) for both reads and writes
-- **AuthZEN 1.0 API** — standard [AuthZEN](https://openid.net/specs/authorization-api-1_0.html) API served by the one `pgauthzd` binary, capability-scoped by profile: direct PostgreSQL (`decision-only`, service `pgauthzd-decision`) and OPA-fronted (`compat-opa`, service `pgauthzd-opa`); multi-tenant ready — store-scoped routes (`/stores/{store}/…`), multiple trusted issuers, and per-issuer **store / DB-role bindings** (anchored patterns, enforceable at startup)
+- **OPA + pgauthzd integration** — **pgauthzd is the front door** for reads *and* writes: it validates the JWT and exposes AuthZEN 1.0 / the native `/pgauthz/v1` API. OPA is an **internal policy sidecar** that only pgauthzd calls (a pgauthzd instance with `OPA_URL` set forwards the verified token to it for policy-as-code + response caching); OPA's Rego then calls **back** into pgauthzd's native `/pgauthz/v1` API (over a shared service token, optionally mTLS) for both reads and writes
+- **AuthZEN 1.0 API** — standard [AuthZEN](https://openid.net/specs/authorization-api-1_0.html) API served by the one `pgauthzd` binary, capability-scoped by profile (`decision-only` | `full`, DB capability only), with OPA fronting an orthogonal `OPA_URL` flag: direct PostgreSQL (`decision-only`, service `pgauthzd-decision`) and OPA-fronted (`OPA_URL` set, service `pgauthzd-opa`); multi-tenant ready — store-scoped routes (`/stores/{store}/…`), multiple trusted issuers, and per-issuer **store / DB-role bindings** (anchored patterns, enforceable at startup)
 - **Playground (web UI)** — an OpenFGA-playground-style app to browse stores, run access queries, and **visualize the `explain_access` resolution path**, through the real OIDC → pgauthzd → OPA → native callback path ([`playground/`](playground/README.md))
 - **Performance** — integer IDs, LIST partitioning by object type, covering partial indexes, store-scoped index pruning
 
@@ -151,8 +151,8 @@ rest are the components of the reference deployment.
 | Component | Version | Required? | Notes |
 |---|---|---|---|
 | **PostgreSQL** | 18.4 | **required** | The engine. Uses partitioning, generated identity, and JSONB; developed and tested on 18.x. |
-| pgauthzd | — | optional | Single Go daemon exposing the engine over HTTP (native `/pgauthz/v1` + AuthZEN 1.0 API); capability profiles `decision-only` (read-only DB role) / `full` (read+write) / `compat-opa` (fronts OPA). OPA's Rego calls back into it for reads and writes. |
-| OPA | 1.18.2 | optional | Internal policy-as-code sidecar (Rego) that only pgauthzd calls (`compat-opa`); not a client-facing entry point. |
+| pgauthzd | — | optional | Single Go daemon exposing the engine over HTTP (native `/pgauthz/v1` + AuthZEN 1.0 API); capability profiles `decision-only` (read-only DB role) / `full` (read+write); fronting OPA is the orthogonal `OPA_URL` flag (not a third profile). OPA's Rego calls back into it for reads and writes. |
+| OPA | 1.18.2 | optional | Internal policy-as-code sidecar (Rego) that only pgauthzd calls (when `OPA_URL` is set); not a client-facing entry point. |
 | Go (pgauthzd) | 1.26 | optional | One `pgauthzd` binary; demo services `pgauthzd-decision` / `pgauthzd-opa` / `pgauthzd-full`. |
 | `sqlx-cli` | 0.9.0 | install/upgrade | Applies the structural migrations in [`db/migrations/`](db/migrations/) (tracked in `public._sqlx_migrations`). Slim Postgres-only build — `cargo install sqlx-cli --no-default-features --features rustls,postgres`. Baked into the [migration image](deploy/migrations/Dockerfile); `init*.sh` use a local install. Not needed at query time. |
 | `pg_cel` extension | pgrx 0.19.1, `cel` 0.13 | optional | Only for `lang='cel'` conditions; built per PostgreSQL major (see [`extensions/pg-cel`](extensions/pg-cel/)). |
@@ -1269,7 +1269,7 @@ pattern:
 
 | Topology | Where authz data lives | How an app reads it | Data filtering |
 |---|---|---|---|
-| **Central authz service** (common) | its own database / cluster | over the wire — AuthZEN 1.0 / native `/pgauthz/v1` to pgauthzd (which, in `compat-opa`, consults OPA — OPA then calls back into the native callback) | `list_objects` returns the id set; the app filters its own query by it (`WHERE id = ANY(:ids)` + wildcard flag), like an OpenFGA-style engine |
+| **Central authz service** (common) | its own database / cluster | over the wire — AuthZEN 1.0 / native `/pgauthz/v1` to pgauthzd (which, when `OPA_URL` is set, consults OPA — OPA then calls back into the native callback) | `list_objects` returns the id set; the app filters its own query by it (`WHERE id = ANY(:ids)` + wildcard flag), like an OpenFGA-style engine |
 | **Embedded read-only engine** | central, with raw tuples + model replicated into the app DB | the **read-only engine excerpt** runs locally (`init-readonly.sh`) — full `check_access` / `list_*` / `explain` | JOIN `list_objects(...)` locally |
 | **Replicated permissions (derived)** | central, with a *flattened* permissions table replicated into the app DB | local lookups on the derived table ([`db/replication/`](db/replication/)) | JOIN the derived table |
 | **Co-located** (minority) | inside the app's own database | local SQL | JOIN `list_objects(...)` directly ([Authorization as a JOIN](#authorization-as-a-join-data-filtering)) |
@@ -1334,15 +1334,15 @@ The authorization engine is designed to run as part of a three-tier stack:
   separation is achieved by running **separate pgauthzd instances**, not separate
   services.
 - **OPA** (Open Policy Agent) is an **internal policy sidecar** that only pgauthzd
-  calls (the `compat-opa` profile forwards it the verified token). Its Rego
+  calls (a pgauthzd instance with `OPA_URL` set forwards it the verified token). Its Rego
   policies re-validate the token and call **back** into pgauthzd's native
   `/pgauthz/v1` API — the read callback for checks/lists, the write callback for
   tuple writes — combining the graph result with additional policy logic
   (environment checks, rate limits, etc.). OPA has no independent path to the
   database.
 
-Applications call **pgauthzd** for authorization decisions. In the `compat-opa`
-profile pgauthzd consults OPA, which calls back into a pgauthzd callback instance,
+Applications call **pgauthzd** for authorization decisions. When `OPA_URL` is set,
+pgauthzd consults OPA, which calls back into a pgauthzd callback instance,
 which calls PostgreSQL; a `decision-only` pgauthzd answers straight from the graph
 with no OPA hop. Reads route to a **decision-only** pgauthzd instance
 (read-only DB role); writes (`write_tuple`, `delete_tuple`, …) route to a
@@ -1365,7 +1365,7 @@ JWT (issuer, audience, signature via JWKS — multi-issuer via `JWT_ISSUERS`, th
 `iss` claim selecting the validator; legacy single-issuer envs still work) and
 derives the subject from the token claims, so pgauthz runs behind **any** OAuth2
 AS / OIDC provider — just point pgauthzd's issuer config / `JWKS_URL` at yours.
-When the `compat-opa` profile is enabled, pgauthzd forwards the verified token to
+When `OPA_URL` is set, pgauthzd forwards the verified token to
 its OPA sidecar, which re-validates it (defense in depth). An **optional bundled Keycloak** demo
 (Terraform-provisioned, TLS) lives in [`keycloak/`](keycloak/) for a runnable
 end-to-end example — start it with `./start.sh --keycloak`, and see
@@ -1380,7 +1380,7 @@ The `authzen/` directory contains a Go API layer implementing the
 One `pgauthzd` binary, capability-scoped by profile, is deployed as several demo services sharing a common HTTP handler layer:
 
 - **`pgauthzd-decision`** (port 8090) — the `decision-only` profile: Go → PostgreSQL (lowest latency, pure Zanzibar)
-- **`pgauthzd-opa`** (port 8091) — the `compat-opa` profile: Go → OPA → pgauthzd native callback → PostgreSQL (app-specific Rego policies)
+- **`pgauthzd-opa`** (port 8091) — OPA-fronted (`OPA_URL` set): Go → OPA → pgauthzd native callback → PostgreSQL (app-specific Rego policies)
 
 Both expose identical endpoints:
 

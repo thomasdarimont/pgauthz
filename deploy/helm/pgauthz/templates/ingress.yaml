@@ -21,20 +21,19 @@ spec:
     - host: {{ .Values.ingress.host | quote }}
       http:
         paths:
-          # OPA is the single front door.
+          # pgauthzd is the front door (AuthZEN 1.0 /access/v1). OPA is an
+          # internal policy sidecar (ClusterIP) — never ingress-exposed; the
+          # pgauthzd gateway consults it and OPA calls back into the reader/
+          # writer native callbacks. Route to the OPA-fronted AuthZEN gateway
+          # when enabled (policy-enriched), else the direct AuthZEN reader.
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: {{ $full }}-opa
-                port: { number: 8181 }
-          {{- if and .Values.authzen.exposeViaIngress .Values.authzen.opa.enabled }}
-          # Optional: AuthZEN 1.0 API (OPA-backed, compat-opa profile) under /authzen.
-          - path: /authzen
-            pathType: Prefix
-            backend:
-              service:
+                {{- if .Values.authzen.opa.enabled }}
                 name: {{ $full }}-pgauthzd-opa
+                {{- else }}
+                name: {{ $full }}-authzen
+                {{- end }}
                 port: { number: 8080 }
-          {{- end }}
 {{- end }}

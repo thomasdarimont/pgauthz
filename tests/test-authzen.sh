@@ -9,7 +9,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PG_DIR="$SCRIPT_DIR/.."
 DIRECT_URL="${AUTHZEN_DIRECT_URL:-http://localhost:8090}"   # decision-only (read-only role)
-OPA_URL="${AUTHZEN_OPA_URL:-http://localhost:8091}"         # compat-opa
+OPA_URL="${AUTHZEN_OPA_URL:-http://localhost:8091}"         # OPA-fronted (OPA_URL set)
 FULL_URL="${PGAUTHZD_FULL_URL:-http://localhost:8092}"      # full (writer role, native write path)
 KEY_FILE="$PG_DIR/opa/keys/demo.key.txt"
 
@@ -435,7 +435,7 @@ check_json "watch: page carries a composite next_cursor" \
     '{"limit":5}' \
     '(.next_cursor | has("after_at") and has("after_seq"))' "true"
 
-# The compat-opa PUBLIC listener does not expose the native surface (it lives on
+# The OPA-fronted PUBLIC listener does not expose the native surface (it lives on
 # the internal callback listener); the route is simply absent here → 404.
 check_http "native explain is not on the OPA-compat public listener (404)" \
     "404" \

@@ -9,7 +9,7 @@ reader/writer callbacks and PostgreSQL are internal-only and locked down with
 NetworkPolicies.
 
 ```
-   Ingress ──▶ pgauthzd-opa (compat-opa, front door) ──▶ OPA (internal Rego sidecar) ──┐
+   Ingress ──▶ pgauthzd-opa (OPA-fronted front door) ──▶ OPA (internal Rego sidecar) ──┐
                validates JWT, consults OPA                                              │ OPA calls back
                                                                                         ▼ into the callbacks
                                         ┌─reads──▶ pgauthzd-reader (decision-only) ─▶ CNPG -ro / pooler
@@ -18,7 +18,9 @@ NetworkPolicies.
 ```
 
 All three surfaces are the ONE `pgauthzd` image, capability-scoped per Deployment
-by `PGAUTHORIZER_PROFILE` (`decision-only` | `full` | `compat-opa`). The
+by `PGAUTHORIZER_PROFILE` (`decision-only` | `full` — DB capability only); fronting
+OPA is the orthogonal `OPA_URL` flag, not a third profile (the OPA gateway is a
+`decision-only`/DB-less instance with `OPA_URL` set). The
 decision-only reader runs two listeners in one process: the OPA callback (`:8081`)
 and the AuthZEN 1.0 API (`:8080`), so there is no separate `authzen-direct`
 deployment.
@@ -29,17 +31,17 @@ deployment.
 |---|---|---|---|
 | `…-db` | CloudNativePG `Cluster` | internal | primary `-rw`, replicas `-ro`; PITR-capable |
 | `…-db-pooler-ro` | CloudNativePG `Pooler` | internal | PgBouncer over the replicas |
-| `…-opa` | Deployment + HPA | **Ingress** | internal Rego policy sidecar (JWT authn + policy); the `compat-opa` front consults it, and it calls back into the reader/writer callbacks |
+| `…-opa` | Deployment + HPA | **Ingress** | internal Rego policy sidecar (JWT authn + policy); the OPA-fronted front consults it, and it calls back into the reader/writer callbacks |
 | `…-reader` | Deployment + HPA | internal | pgauthzd `decision-only`; `authzen_direct` (read-only); native READ callback (`:8081`) + AuthZEN 1.0 API (`:8080`); NetworkPolicy: `:8081` OPA-only |
 | `…-writer` | Deployment | internal | pgauthzd `full`; `pgauthzd_rw` (writer); native WRITE callback (`:8081`); NetworkPolicy: OPA only |
 | `…-authzen` | Service | optional | publishes the reader pods' AuthZEN `:8080` (`authzen.direct.enabled`) |
-| `…-pgauthzd-opa` | Deployment | optional Ingress | pgauthzd `compat-opa`; AuthZEN 1.0 API fronting OPA (`authzen.opa.enabled`) |
+| `…-pgauthzd-opa` | Deployment | optional Ingress | pgauthzd `decision-only`/DB-less with `OPA_URL` set (OPA-fronted AuthZEN gateway); AuthZEN 1.0 API fronting OPA (`authzen.opa.enabled`) |
 | `…-migrate-N` | Job (Helm hook) | — | installs/upgrades the engine SQL |
 
 OPA reaches the callbacks via `NATIVE_URL` (reader) and `NATIVE_WRITE_URL`
 (writer), authenticating with the shared `NATIVE_SERVICE_TOKEN` (matching each
 instance's `INTERNAL_SERVICE_TOKEN`). For this internal callback OPA is the
-trusted upstream policy sidecar — the external front door (pgauthzd `compat-opa`)
+trusted upstream policy sidecar — the external front door (the OPA-fronted pgauthzd)
 already validated the JWT — so the callback listener does **not** re-verify it;
 it trusts OPA's asserted subject (body) + per-app role (`X-Authz-Role`), and is
 service-token guarded and reachable only by OPA.
@@ -59,8 +61,9 @@ service-token guarded and reachable only by OPA.
    docker build -f pgauthzd/Dockerfile -t pgauthz-pgauthzd:0.1.0 ./pgauthzd
    ```
    The single `pgauthz-pgauthzd` image serves every role — the reader
-   (decision-only) + AuthZEN API, the writer (full), and the compat-opa AuthZEN
-   gateway — selected per Deployment by `PGAUTHORIZER_PROFILE` (no `BINARY`
+   (decision-only) + AuthZEN API, the writer (full), and the OPA-fronted AuthZEN
+   gateway (`decision-only`/DB-less + `OPA_URL`) — selected per Deployment by
+   `PGAUTHORIZER_PROFILE` + the orthogonal `OPA_URL` flag (no `BINARY`
    build-arg). Push it to a registry your cluster can pull from, or import into a
    local cluster (k3d shown below).
 
@@ -367,7 +370,7 @@ allow-list, which is why it's off by default.
 
 ## Security defaults (keep these)
 
-- Only the front door (pgauthzd `compat-opa` / OPA's policy API, and optionally
+- Only the front door (the OPA-fronted pgauthzd / OPA's policy API, and optionally
   the AuthZEN direct API) is exposed; the pgauthzd reader/writer callbacks +
   Postgres are ClusterIP + default-deny NetworkPolicy.
 - `opa.requireTokenForReads=true`, AuthZEN `ALLOW_SUBJECT_OVERRIDE=false`.

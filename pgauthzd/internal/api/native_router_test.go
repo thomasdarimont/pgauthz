@@ -15,12 +15,12 @@ func routeExists(mux *http.ServeMux, method, path string) bool {
 	return pattern != ""
 }
 
-// The compat-opa listener split must hold structurally: the EXTERNAL surface
+// The OPA-fronted listener split must hold structurally: the EXTERNAL surface
 // carries AuthZEN (policy-wrapped) but never the native raw endpoints, and the
 // INTERNAL surface carries the native raw endpoints (policy-free) but never
 // AuthZEN. This is what keeps the raw graph path from being an external policy
 // bypass and prevents OPA re-entering its own policy-wrapped surface.
-func TestCompatRouterSeparation(t *testing.T) {
+func TestOPAFrontedRouterSeparation(t *testing.T) {
 	h := &Handler{cfg: &config.Config{}}
 
 	ext := http.NewServeMux()

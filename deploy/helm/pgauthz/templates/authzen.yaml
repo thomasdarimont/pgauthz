@@ -7,9 +7,10 @@ the single pgauthzd image, not separate binaries.
           reader callback (one binary, two listeners: :8081 = OPA callback,
           :8080 = AuthZEN/JWT API). The Deployment lives in pgauthzd.yaml; this
           file only publishes a Service for the reader pods' :8080 listener.
-  opa     (authzen.opa.enabled) — a pgauthzd `compat-opa` instance that fronts
-          OPA on /access/v1 (policy-enriched AuthZEN). It only talks to OPA (no
-          DATABASE_URL); OPA in turn calls back into the reader/writer callbacks.
+  opa     (authzen.opa.enabled) — a DB-less pgauthzd instance (decision-only +
+          OPA_URL) that fronts OPA on /access/v1 (policy-enriched AuthZEN). It
+          only talks to OPA (no DATABASE_URL); OPA in turn calls back into the
+          reader/writer callbacks. When enabled it is the ingress front door (/).
 */ -}}
 {{- if .Values.authzen.direct.enabled }}
 apiVersion: v1

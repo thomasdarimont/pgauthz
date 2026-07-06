@@ -1,6 +1,6 @@
 // pgauthzd — the unified pgauthz service (AuthZEN API + native /pgauthz/v1 over
 // the PostgreSQL engine), capability-scoped by PGAUTHORIZER_PROFILE
-// (decision-only | full | compat-opa). See internal/app for the entrypoint. The
+// (decision-only | full). See internal/app for the entrypoint. The
 // security guarantee comes from the DB connection ROLE, not the flag: a
 // decision-only instance connects with a role that physically cannot write and
 // asserts so at startup. This is the single binary — the former

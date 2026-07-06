@@ -15,13 +15,13 @@ actor "Application" as app3
 component "Load Balancer" as lb #Plum
 
 node "VM 1 (read)" as vm1 {
-    component "pgauthzd\n(decision-only /\ncompat-opa)" as pgd3a #PaleGreen
+    component "pgauthzd\n(decision-only,\n± OPA_URL)" as pgd3a #PaleGreen
     component "OPA\n(sidecar)" as opa3a #LightBlue
     database "PG Replica" as pgr3a #LightYellow
 }
 
 node "VM 2 (read)" as vm2 {
-    component "pgauthzd\n(decision-only /\ncompat-opa)" as pgd3b #PaleGreen
+    component "pgauthzd\n(decision-only,\n± OPA_URL)" as pgd3b #PaleGreen
     component "OPA\n(sidecar)" as opa3b #LightBlue
     database "PG Replica" as pgr3b #LightYellow
 }
@@ -30,7 +30,7 @@ database "PG Primary" as pgp3 #Orange
 
 ' Read path — pgauthzd is the ONLY front door; scale it out (with its OPA
 ' sidecar) next to each read replica. It answers directly from the graph
-' (decision-only) or consults OPA for Rego policy (compat-opa); only pgauthzd
+' (decision-only) or consults OPA for Rego policy (OPA_URL set); only pgauthzd
 ' calls OPA, which calls back into pgauthzd's native listener for the graph.
 app3 -down-> lb : "authz checks"
 lb -down-> pgd3a : "AuthZEN + native API"
@@ -53,7 +53,7 @@ pgp3 -right-> pgr3b : "  WAL  "
 
 legend bottom left
   |= Color |= Component |
-  | <#PaleGreen> | pgauthzd (reader) — the front door; AuthZEN + native API; consults OPA (compat-opa) or answers direct (decision-only) |
+  | <#PaleGreen> | pgauthzd (reader) — the front door; AuthZEN + native API; consults OPA (OPA_URL set) or answers direct (decision-only) |
   | <#LightBlue> | OPA — internal Rego policy sidecar; ONLY pgauthzd calls it |
   | <#Orange> | PostgreSQL primary — read-write (write path: see write-api) |
   | <#LightYellow> | PostgreSQL replica — read-only (WAL) |

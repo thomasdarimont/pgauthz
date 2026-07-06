@@ -43,7 +43,7 @@ node "Bounded Context B" as bcb {
 
 frame "PDP Data Plane" as dataplane {
     component "OPA PDP\n(policy decision)" as opapdp #LightBlue
-    component "pgauthzd\n(compat-opa)\nAuthZEN front +\nnative callback → SQL" as azapi #PaleGreen
+    component "pgauthzd\n(+ OPA_URL)\nAuthZEN front +\nnative callback → SQL" as azapi #PaleGreen
     database "PostgreSQL\npgauthz\n**ReBAC decision engine\n& relationship store**\n(tuples, recursive resolution,\nconditions, search)" as pgauthzdb #Orange
 }
 
@@ -224,7 +224,7 @@ legend bottom left
   | <#Violet> | Gateway internal routes — S2S / BC ↔ BC |
   | <#LightSalmon> | Authorizer — the PEP (gateway-embedded or sidecar; JWT validation + authz call) |
   | <#LightBlue> | OPA — Gateway OPA (route PBAC) / Authorization OPA (central PDP; JWT re-validation) |
-  | <#PaleGreen> | pgauthzd (compat-opa) — the AuthZEN 1.0 PEP front door; consults OPA and serves the native callback (pgx→SQL) |
+  | <#PaleGreen> | pgauthzd (+ OPA_URL) — the AuthZEN 1.0 PEP front door; consults OPA and serves the native callback (pgx→SQL) |
   | <#Orange> | pgauthz — ReBAC decision engine + relationship store |
   | <#Khaki> | Control plane — versioned policies; audited tuple + model/admin channels |
 end legend

@@ -25,13 +25,13 @@ type Handler struct {
 	// regexes) its tokens may access. Only issuers with a non-empty `stores`
 	// list appear here; absent = unrestricted.
 	issuerStores map[string][]*regexp.Regexp
-	// backend serves the AuthZEN surface (/access/v1): the OPA-compat backend on
-	// the compat-opa profile, the direct pgx backend on the direct profiles.
+	// backend serves the AuthZEN surface (/access/v1): the OPA backend when
+	// OPA_URL is set (policy enrichment), else the direct pgx backend.
 	backend authz.Backend
 	// raw serves the native /pgauthz/v1 READ surface and is ALWAYS a direct pgx
-	// backend — never OPA. On direct profiles raw == backend; on compat-opa it
-	// is a separate read-only pgx backend, which is what keeps the native raw
-	// endpoints policy-free (no re-entry into the OPA policy layer).
+	// backend — never OPA. When not fronting OPA, raw == backend; when fronting
+	// OPA it is the separate direct pgx backend, which is what keeps the native
+	// raw endpoints policy-free (no re-entry into the OPA policy layer).
 	raw authz.Backend
 	// rawWrite serves the native /pgauthz/v1 WRITE surface — a WRITER-capable
 	// direct pgx backend (set only on a full instance). nil = writes unavailable

@@ -47,7 +47,9 @@ spec:
         - podSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: opa } }
       ports: [{ port: 8081 }]
 ---
-# OPA: from the ingress controller and from the compat-opa AuthZEN gateway.
+# OPA is an INTERNAL policy sidecar: only the pgauthzd OPA-fronted AuthZEN
+# gateway may reach it (:8181). OPA is NOT the ingress front door — the ingress
+# controller reaches pgauthzd, never OPA directly.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -60,10 +62,6 @@ spec:
   ingress:
     - from:
         - podSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: pgauthzd-opa } }
-        # Ingress-controller traffic: namespaceSelector is empty here (allow
-        # from any namespace's ingress controller). Tighten to your controller's
-        # namespace/labels in production.
-        - namespaceSelector: {}
       ports: [{ port: 8181 }]
 {{- if .Values.authzen.direct.enabled }}
 ---
@@ -86,7 +84,7 @@ spec:
 {{- end }}
 {{- if .Values.authzen.opa.enabled }}
 ---
-# compat-opa AuthZEN gateway: from the ingress controller (only if exposed).
+# pgauthzd OPA-fronted AuthZEN gateway (:8080): the ingress front door (path /).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

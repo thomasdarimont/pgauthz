@@ -1,5 +1,5 @@
 // Package app is the entrypoint for pgauthzd. PGAUTHORIZER_PROFILE selects the
-// backend + capability (decision-only | full | compat-opa); everything else is
+// backend + capability (decision-only | full; OPA_URL orthogonally fronts OPA); everything else is
 // identical.
 package app
 

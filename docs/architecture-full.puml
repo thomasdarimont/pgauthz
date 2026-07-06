@@ -15,13 +15,13 @@ actor "Application" as app
 component "Load Balancer" as lb #Plum
 
 node "VM 1 (read)" as vm1 {
-    component "pgauthzd\n(decision-only /\ncompat-opa)" as pgd_a #PaleGreen
+    component "pgauthzd\n(decision-only,\n± OPA_URL)" as pgd_a #PaleGreen
     component "OPA\n(sidecar)" as opa_a #LightBlue
     database "PG Replica" as pgr_a #LightYellow
 }
 
 node "VM 2 (read)" as vm2 {
-    component "pgauthzd\n(decision-only /\ncompat-opa)" as pgd_b #PaleGreen
+    component "pgauthzd\n(decision-only,\n± OPA_URL)" as pgd_b #PaleGreen
     component "OPA\n(sidecar)" as opa_b #LightBlue
     database "PG Replica" as pgr_b #LightYellow
 }
@@ -34,7 +34,7 @@ node "VM 0 (primary)" as vm0 {
 
 ' Read path — pgauthzd is the ONLY front door. It answers directly from the
 ' graph (decision-only), or consults its OPA sidecar for Rego policy
-' (compat-opa) — and only pgauthzd ever calls OPA; OPA calls back into the same
+' (OPA_URL set) — and only pgauthzd ever calls OPA; OPA calls back into the same
 ' pgauthzd's native listener for the graph data.
 app -down-> lb : "authz checks"
 lb -down-> pgd_a : "AuthZEN + native API"
@@ -60,7 +60,7 @@ pgp -right-> pgr_b : "  WAL  "
 
 legend bottom left
   |= Color |= Component |
-  | <#PaleGreen> | pgauthzd (reader) — the front door; AuthZEN + native API; consults OPA (compat-opa) or answers direct (decision-only) |
+  | <#PaleGreen> | pgauthzd (reader) — the front door; AuthZEN + native API; consults OPA (OPA_URL set) or answers direct (decision-only) |
   | <#Salmon> | pgauthzd (writer) — full profile; applies authorized writes to the primary |
   | <#LightBlue> | OPA — internal Rego policy sidecar; ONLY pgauthzd calls it |
   | <#Orange> | PostgreSQL primary — read-write |

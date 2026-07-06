@@ -93,7 +93,7 @@ type WatchRequest struct {
 // from the token when present, validated writer + not admin; else the default
 // writer), applies the per-write consistency mode, and records performed_by =
 // the authenticated subject. Implemented only by the direct backend on a
-// writable connection; decision-only / compat-opa do not (405/501).
+// writable connection; a decision-only (read-only) instance does not (403/501).
 type NativeWriter interface {
 	// WriteTuples upserts a batch; returns the count affected.
 	WriteTuples(ctx context.Context, req WriteRequest) (int, error)

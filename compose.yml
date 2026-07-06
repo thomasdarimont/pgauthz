@@ -59,7 +59,7 @@ services:
       # is ONLY safe behind a trusted PEP. The demo opts into false via env.sh.
       REQUIRE_TOKEN_FOR_READS: "${REQUIRE_TOKEN_FOR_READS:-true}"
       # pgauthzd native callback: OPA's read/decision data client calls back into
-      # the compat-opa instance's INTERNAL listener (pgauthzd-opa:8081); the
+      # the OPA-fronted instance's INTERNAL listener (pgauthzd-opa:8081); the
       # shared service token must match its INTERNAL_SERVICE_TOKEN.
       NATIVE_URL: "${NATIVE_URL:-http://pgauthzd-opa:8081}"
       NATIVE_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"

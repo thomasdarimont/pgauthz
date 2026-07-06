@@ -752,7 +752,7 @@ increment**. OPA is an internal policy sidecar; clients never call it directly.
 ```
 Read path  (authorization checks):
 Application ──▶ pgauthzd (front door; validates JWT) ──▶ PG
-                 └─ compat-opa: consults its OPA sidecar, which calls
+                 └─ OPA_URL set: consults its OPA sidecar, which calls
                     back into pgauthzd's native read callback ──▶ PG
 
 Write path (tuple management):

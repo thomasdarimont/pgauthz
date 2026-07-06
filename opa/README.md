@@ -17,7 +17,7 @@ front door; OPA is an internal policy sidecar it consults:
 
 ```
                      ┌─────────────────────┐
-  Client ───────────▶│ pgauthzd compat-opa │  front door: validates JWT
+  Client ───────────▶│ pgauthzd + OPA_URL  │  front door: validates JWT
   (HTTP + JWT)       │ (front door)        │  (JWT_ISSUERS), forwards token
                      └────────┬────────────┘
                               │ consults OPA (FORWARD_TOKEN_TO_OPA)
@@ -43,8 +43,8 @@ front door; OPA is an internal policy sidecar it consults:
                      └─────────────────────┘
 ```
 
-- **pgauthzd (front door)** is the client-facing entry point. As the
-  `compat-opa` profile it validates the JWT (multi-issuer via `JWT_ISSUERS`) and
+- **pgauthzd (front door)** is the client-facing entry point. With
+  `OPA_URL` set it validates the JWT (multi-issuer via `JWT_ISSUERS`) and
   forwards the verified token to OPA (`FORWARD_TOKEN_TO_OPA`). As the internal
   **callback tier** (no host port) it serves OPA the native `/pgauthz/v1`
   surface: reads by a **decision-only** instance (read-only DB role), writes by
@@ -105,7 +105,7 @@ the important shape is:
   Reads are served by a **decision-only** pgauthzd instance connecting with a
   read-only DB role; writes by a **full** pgauthzd instance connecting with the
   writer role. Both expose OPA the native `/pgauthz/v1` callback surface
-  (`compat-opa` profile) and are unreachable from outside the Docker network.
+  (on the internal callback listener) and are unreachable from outside the Docker network.
 - **OPA** — the only externally exposed service (`8181:8181`).
 
 ```yaml
@@ -166,7 +166,7 @@ authenticated with a shared service token — pgauthzd reads it from
 its `NATIVE_SERVICE_TOKEN` — and can optionally require mTLS on top. It trusts
 OPA's asserted subject (in the request body) plus the per-app role header
 `X-Authz-Role`; it does **not** re-verify the end-user JWT. For this internal
-callback OPA is the trusted upstream policy sidecar — pgauthzd (`compat-opa`) is
+callback OPA is the trusted upstream policy sidecar — the OPA-fronted pgauthzd (`OPA_URL` set) is
 the external front door that already validated the JWT — so the callback
 listener need not re-verify it.
 
@@ -1049,7 +1049,7 @@ tokens from `opa/http-client.env.json`.
   end-user JWT verification of its own — its callback listener only checks the
   shared service token (`INTERNAL_SERVICE_TOKEN`) and optional mTLS. Keep it
   internal to the Docker network — for this callback listener OPA is the trusted
-  upstream, while the external front door (pgauthzd `compat-opa`) is what
+  upstream, while the external front door (the OPA-fronted pgauthzd, `OPA_URL` set) is what
   validates the end-user JWT on the read path.
 - **The write (full) pgauthzd callback is fronted by OPA, not exposed.** It has
   no host port and does **no** JWT verification of its own — it connects as a

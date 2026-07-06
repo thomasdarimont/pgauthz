@@ -47,8 +47,10 @@ echo "==> Context: $(kubectl config current-context)"
 if ! kubectl get crd clusters.postgresql.cnpg.io >/dev/null 2>&1; then
   ver="${CNPG_VERSION:-}"
   if [ -z "$ver" ]; then
+    # Read the whole response with jq — a `grep -m1` here closes the pipe early,
+    # which makes curl fail with error 56 (broken pipe) under `set -o pipefail`.
     ver=$(curl -fsSL https://api.github.com/repos/cloudnative-pg/cloudnative-pg/releases/latest \
-            | grep -m1 '"tag_name"' | sed -E 's/.*"v?([^"]+)".*/\1/')
+            | jq -r '.tag_name' | sed -E 's/^v//')
   fi
   branch="release-$(echo "$ver" | cut -d. -f1,2)"
   echo "==> Installing CloudNativePG operator $ver..."
@@ -66,7 +68,7 @@ if [ "${SKIP_BUILD:-}" != "1" ]; then
   docker build -f "$REPO_ROOT/deploy/migrations/Dockerfile" -t "pgauthz-migrations:$IMAGE_TAG" "$REPO_ROOT"
   # pgauthzd — the SINGLE unified daemon. One image, capability-scoped per
   # Deployment by PGAUTHORIZER_PROFILE (decision-only reader + AuthZEN API, full
-  # writer, compat-opa gateway). No BINARY build-arg — the Dockerfile hardcodes
+  # writer, OPA-fronted AuthZEN gateway). No BINARY build-arg — the Dockerfile hardcodes
   # ./cmd/pgauthzd.
   docker build -f "$REPO_ROOT/pgauthzd/Dockerfile" --build-arg VERSION="$IMAGE_TAG" -t "pgauthz-pgauthzd:$IMAGE_TAG" "$REPO_ROOT/pgauthzd"
 
@@ -82,7 +84,7 @@ echo "==> Syncing OPA policies into the chart..."
 
 echo "==> helm upgrade --install $RELEASE ..."
 # NOTE: deliberately NO --wait. The schema/roles are created by the post-install
-# migration hook, and the app Deployments (pgauthzd reader/writer + compat-opa)
+# migration hook, and the app Deployments (pgauthzd reader/writer + OPA-fronted gateway)
 # cannot become ready until that runs. --wait would block on those not-ready pods *before*
 # running the hook → deadlock. Helm still waits for the hook Job itself, so the
 # schema is loaded before this returns; we then wait for the apps to settle.

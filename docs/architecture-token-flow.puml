@@ -25,7 +25,7 @@ group Direct read (decision-only) — no OPA
   pgd -> pg : check_access(...) via pgx
 end
 
-group Policy read (compat-opa) — pgauthzd consults OPA
+group Policy read (OPA_URL set) — pgauthzd consults OPA
   app -> pgd : POST /access/v1/evaluation\nAuthorization: Bearer <jwt>
   note right of pgd
     pgauthzd validates the JWT, then

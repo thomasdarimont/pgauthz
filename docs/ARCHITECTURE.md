@@ -98,8 +98,8 @@ AuthZEN 1.0 (`/access/v1/*`) or the native `/pgauthz/v1/*` API to pgauthzd,
 which **validates the JWT** (multi-issuer via `JWT_ISSUERS` — the token's
 `iss` claim selects the validator; legacy single-issuer envs still work) and
 resolves subject + roles from claims. **OPA is an internal policy sidecar and
-the only caller of OPA is pgauthzd.** When policy enrichment is enabled (the
-`compat-opa` profile) pgauthzd forwards the verified token to OPA
+the only caller of OPA is pgauthzd.** When policy enrichment is enabled (a
+pgauthzd instance with `OPA_URL` set) pgauthzd forwards the verified token to OPA
 (`FORWARD_TOKEN_TO_OPA`, defense in depth); OPA evaluates Rego and calls
 **back** into pgauthzd's native `/pgauthz/v1` callback listener (shared
 service token / optional mTLS, no host port) for graph data — OPA has no
@@ -112,8 +112,8 @@ from the project entirely — the native callback is the only backend
 
 | Interface | Protocol | Direction | Purpose |
 |---|---|---|---|
-| pgauthzd (front door) | HTTP `:8090`/`:8091` — AuthZEN 1.0 `/access/v1/*` + native `/pgauthz/v1/*` | Inbound (from clients) | **The entry point** for reads and writes; pgauthzd validates the JWT. `:8090` = `decision-only` (direct→PG, lowest latency); `:8091` = `compat-opa` (consults OPA) |
-| OPA API | HTTP POST `:8181` | Internal (from pgauthzd only) | Rego policy evaluation when enrichment is enabled (`compat-opa`); pgauthzd is the sole caller |
+| pgauthzd (front door) | HTTP `:8090`/`:8091` — AuthZEN 1.0 `/access/v1/*` + native `/pgauthz/v1/*` | Inbound (from clients) | **The entry point** for reads and writes; pgauthzd validates the JWT. `:8090` = `decision-only` (direct→PG, lowest latency); `:8091` = OPA-fronted (`OPA_URL` set — consults OPA) |
+| OPA API | HTTP POST `:8181` | Internal (from pgauthzd only) | Rego policy evaluation when enrichment is enabled (`OPA_URL` set); pgauthzd is the sole caller |
 | pgauthzd native callback | HTTP POST (internal) | Internal (from OPA only) | OPA calls **back** into a pgauthzd `full`/reader instance for graph data and forwarded writes (writer DB role); service-token authenticated, no host port |
 | PostgreSQL | TCP `:5432` | Inbound | Direct SQL access for co-located apps (write paths B/C) |
 | Identity Provider | JWKS (HTTP) | Outbound (pgauthzd; OPA when enriching) | JWT verification key fetching |
@@ -164,7 +164,7 @@ sources next to this file (regenerate with
    scaled out with its OPA sidecar next to each read replica. pgauthzd
    exposes AuthZEN 1.0 (`/access/v1/*`) and the native `/pgauthz/v1/*`
    API; it answers straight from the graph (`decision-only`, lowest
-   latency) or consults its OPA sidecar for Rego policy (`compat-opa`) —
+   latency) or consults its OPA sidecar for Rego policy (`OPA_URL` set) —
    OPA in turn calls back into pgauthzd's native listener for the graph.
    Writes go to the primary — either directly via SQL:
 
@@ -223,8 +223,8 @@ makes the **bounded context the resource-server trust boundary**:
 services inside one BC are deliberately not isolated from each other by
 audience values. Each service's **authorizer sidecar (PEP — one per
 service)** performs the fine-grained check by calling the
-**AuthZEN 1.0 front door** (`/access/v1/*`, served by `pgauthzd` in the
-`compat-opa` profile). pgauthzd validates the token, then forwards it to
+**AuthZEN 1.0 front door** (`/access/v1/*`, served by an OPA-fronted
+`pgauthzd` — an instance with `OPA_URL` set). pgauthzd validates the token, then forwards it to
 its OPA sidecar (`FORWARD_TOKEN_TO_OPA`) for the Rego policy decision — the
 PEP never talks to OPA directly.
 
@@ -272,7 +272,7 @@ matters).
 | SECURITY DEFINER functions | Security | Application roles have zero table access. The function API is the only entry point, making the table schema an internal implementation detail. |
 | Integer ID encoding | Performance | `smallint` IDs (2 bytes) instead of text for types/relations. Smaller rows, faster comparisons, better cache hit ratio. |
 | LIST partitioning by object_type | Performance | Each type gets its own partition. `check_access` benefits from partition pruning — only the relevant partition is scanned. |
-| pgauthzd front door + optional OPA sidecar | Compatibility | pgauthzd is the HTTP front door — it validates the JWT and exposes the SQL functions over its native `/pgauthz/v1` API and AuthZEN 1.0. OPA is an internal policy-as-code sidecar (Rego, caching) that only pgauthzd calls; it is optional (enabled by the `compat-opa` profile). |
+| pgauthzd front door + optional OPA sidecar | Compatibility | pgauthzd is the HTTP front door — it validates the JWT and exposes the SQL functions over its native `/pgauthz/v1` API and AuthZEN 1.0. OPA is an internal policy-as-code sidecar (Rego, caching) that only pgauthzd calls; it is optional (enabled by setting `OPA_URL` on a pgauthzd instance — orthogonal to the DB capability profile). |
 | Models as data, not schema | Operability | Model changes are INSERT/DELETE operations. No schema migrations, no function reloads, no downtime. |
 | Condition sandboxing via `authz_eval` | Security | User-defined SQL expressions run under a role with zero grants (no table/file/function access). Bounded in time by a `statement_timeout` on the service roles (timeout fails closed); `pg_sleep` revoked from PUBLIC. Evaluation errors fail closed (deny). |
 | Multi-store isolation | Operability | Independent authorization namespaces enable blue-green model deployment, test environments, and parallel experiments. |
@@ -284,9 +284,9 @@ matters).
 | Technology | Role | Why |
 |---|---|---|
 | PostgreSQL 18 | Authorization engine | Recursive PL/pgSQL, advanced partitioning, `SECURITY DEFINER`, `gen_random_uuid()` |
-| pgauthzd (Go) | HTTP front door to the engine | Single daemon serving the native `/pgauthz/v1` API + AuthZEN 1.0 over a pgx pool; validates JWTs; capability profiles (`decision-only` / `full` / `compat-opa`) scope reads vs writes by DB role; also serves the OPA callback (replaces PostgREST) |
+| pgauthzd (Go) | HTTP front door to the engine | Single daemon serving the native `/pgauthz/v1` API + AuthZEN 1.0 over a pgx pool; validates JWTs; capability profiles (`decision-only` / `full`) scope reads vs writes by DB role; fronting OPA is the orthogonal `OPA_URL` flag (not a third profile); also serves the OPA callback (replaces PostgREST) |
 | OPA (Rego) | Internal policy sidecar (only pgauthzd calls it) | Policy-as-code, response caching, composable rules, JWT re-validation; calls **back** into pgauthzd's native callback for graph data |
-| Go (pgauthzd) | Standard authorization API | AuthZEN 1.0 endpoints (evaluation, batch, search), served by the one pgauthzd binary. Capability profiles: `pgauthzd-decision` (`decision-only`, direct→PG) and `pgauthzd-opa` (`compat-opa`, via→OPA) |
+| Go (pgauthzd) | Standard authorization API | AuthZEN 1.0 endpoints (evaluation, batch, search), served by the one pgauthzd binary. Capability profiles: `pgauthzd-decision` (`decision-only`, direct→PG) and `pgauthzd-opa` (OPA-fronted via `OPA_URL`, via→OPA) |
 | Docker Compose | Deployment | Single-command setup for development and production |
 
 ---
@@ -319,7 +319,7 @@ matters).
 
 pgauthzd is the front door: clients speak AuthZEN 1.0 / native `/pgauthz/v1`
 to it and it validates the JWT. In `decision-only` it answers straight from
-the graph via pgx; in `compat-opa` it consults its **internal OPA sidecar**,
+the graph via pgx; with `OPA_URL` set it consults its **internal OPA sidecar**,
 which re-validates the token, evaluates Rego, and calls **back** into
 pgauthzd's native `/pgauthz/v1` callback (service-token / optional mTLS) — a
 `decision-only` reader or a `full` writer instance — for the graph. Only
@@ -328,7 +328,7 @@ is the only backend (ADR-6).
 
 | Component | Responsibility |
 |---|---|
-| **pgauthzd (front door)** | **The client-facing entry point.** Standard AuthZEN 1.0 (`/access/v1/*`) + native `/pgauthz/v1/*` HTTP endpoints, served by the one pgauthzd binary. Capability profiles: `pgauthzd-decision` (`decision-only`, Go→PG) and `pgauthzd-opa` (`compat-opa`, consults OPA). **Validates the JWT** — **multi-issuer** via `JWT_ISSUERS` (the token's `iss` selects the validator; legacy single-issuer envs still work). Reverse-search endpoints optionally role-gated (`SEARCH_REQUIRED_ROLE` + `JWT_ROLES_CLAIM`). `pgauthzd-opa` forwards the verified token to OPA (`FORWARD_TOKEN_TO_OPA`) so OPA re-validates it — defense in depth. |
+| **pgauthzd (front door)** | **The client-facing entry point.** Standard AuthZEN 1.0 (`/access/v1/*`) + native `/pgauthz/v1/*` HTTP endpoints, served by the one pgauthzd binary. Capability profiles: `pgauthzd-decision` (`decision-only`, Go→PG) and `pgauthzd-opa` (OPA-fronted via `OPA_URL`, consults OPA). **Validates the JWT** — **multi-issuer** via `JWT_ISSUERS` (the token's `iss` selects the validator; legacy single-issuer envs still work). Reverse-search endpoints optionally role-gated (`SEARCH_REQUIRED_ROLE` + `JWT_ROLES_CLAIM`). `pgauthzd-opa` forwards the verified token to OPA (`FORWARD_TOKEN_TO_OPA`) so OPA re-validates it — defense in depth. |
 | **OPA (internal sidecar)** | Reachable **only by pgauthzd** (shared service token, no host port); the sole caller of OPA is pgauthzd. Policy-as-code (Rego) evaluation, JWT re-validation, response caching, endpoint security. Calls **back** into pgauthzd's native callback for graph data — no independent path to the database. |
 | **pgauthzd (decision-only)** | Serves the reads that OPA calls **back** for, via the native `/pgauthz/v1` callback. Connects with a read-only DB role (inherits `authz_reader`), verified read-only at startup. Internal only — no host port. |
 | **pgauthzd (full)** | Serves OPA-forwarded tuple writes via the native callback. Connects with a fixed `authz_writer` role and applies the write natively via pgx; does **no** JWT verification of its own — it trusts OPA's asserted subject + `X-Authz-Role`, gated by the shared service token. Internal only — no host port. (Full write-authz delegation to OPA is the pending pgauthzd-fronted-writes increment.) |
@@ -457,7 +457,7 @@ Deployment View).
 The trust model across the three request paths — **where the JWT is
 validated on each hop**. pgauthzd is the front door and validates the token
 in every path; the groups mirror `architecture-token-flow.puml`: **direct
-read** (`decision-only`, no OPA), **policy read** (`compat-opa`, pgauthzd
+read** (`decision-only`, no OPA), **policy read** (`OPA_URL` set, pgauthzd
 consults OPA), and **write** (pgauthzd fronts, consulting OPA to authorize):
 
 ![Token validation flow](architecture-token-flow.svg)
@@ -487,7 +487,7 @@ Application       pgauthzd              PostgreSQL
 
 This is the **direct read** path (`decision-only`): pgauthzd is the front
 door, validates the JWT, and answers straight from the graph — no OPA
-involved. In the **policy read** path (`compat-opa`) pgauthzd instead
+involved. In the **policy read** path (`OPA_URL` set) pgauthzd instead
 consults its OPA sidecar (forwarding the token, `FORWARD_TOKEN_TO_OPA`); OPA
 re-validates the token, evaluates Rego, and calls back into pgauthzd's native
 `/pgauthz/v1/check` for the graph before pgauthzd returns the decision.
@@ -580,7 +580,7 @@ The engine is **fail-closed** throughout:
 │                                                                      │
 │  ┌─────────────────┐  ┌─────────────────┐                            │
 │  │ pgauthzd  :8090 │  │ pgauthzd  :8091 │                            │
-│  │ decision-only   │  │ compat-opa      │                            │
+│  │ decision-only   │  │ OPA-fronted     │                            │
 │  └────────┬────────┘  └────────┬────────┘                            │
 │           │ SQL (pgx)          │ consult OPA                         │
 │           │            ┌───────▼────────┐                            │
@@ -601,7 +601,7 @@ The engine is **fail-closed** throughout:
 ```
 
 pgauthzd is the front door. The `decision-only` instance (`:8090`) answers
-reads straight from the graph via pgx; the `compat-opa` instance (`:8091`)
+reads straight from the graph via pgx; the OPA-fronted instance (`:8091`, `OPA_URL` set)
 consults the **internal OPA Rego policy sidecar**. OPA is reachable only by
 pgauthzd and calls **back** into pgauthzd's native callback for graph data —
 the callback lands on separate instances bound to separate DB roles
@@ -615,10 +615,10 @@ write rule then returns `writes_disabled`).
 |---|---|---|---|
 | `authz-db` | `postgres:18.4` | 55433:5432 | `max_connections=250`, tuned `shared_buffers`, `work_mem` |
 | `pgauthzd` (decision-only) | `pgauthzd` (multi-stage) | internal only | Read-only, `api_anon`/`authz_reader` role; serves the native `/pgauthz/v1` read callback |
-| `opa` | `openpolicyagent/opa:1.18.2` | 8181:8181 | Internal Rego policy sidecar that pgauthzd consults (`compat-opa`); calls **back** into pgauthzd's native callback listeners. Only pgauthzd calls it. Token auth + basic authorization. Env: `JWT_ISSUER`, `JWT_AUDIENCE`, `DEFAULT_STORE`, `NATIVE_URL`, `NATIVE_WRITE_URL`, `NATIVE_SERVICE_TOKEN`, `JWT_ROLES_CLAIM`, `WRITER_ROLE`, `REQUIRE_TOKEN_FOR_READS` (tokenless `input.subject` reads only when `false` — trusted-PEP mode; the keycloak overlay pins `true`), `DEFAULT_CACHE_TTL_SECONDS`. |
+| `opa` | `openpolicyagent/opa:1.18.2` | 8181:8181 | Internal Rego policy sidecar that pgauthzd consults (when `OPA_URL` is set); calls **back** into pgauthzd's native callback listeners. Only pgauthzd calls it. Token auth + basic authorization. Env: `JWT_ISSUER`, `JWT_AUDIENCE`, `DEFAULT_STORE`, `NATIVE_URL`, `NATIVE_WRITE_URL`, `NATIVE_SERVICE_TOKEN`, `JWT_ROLES_CLAIM`, `WRITER_ROLE`, `REQUIRE_TOKEN_FOR_READS` (tokenless `input.subject` reads only when `false` — trusted-PEP mode; the keycloak overlay pins `true`), `DEFAULT_CACHE_TTL_SECONDS`. |
 | `pgauthzd` (full/writer) | `pgauthzd` (multi-stage) | internal only | Fixed `authz_writer` role, **no JWT** of its own — the OPA writer-role policy authorizes the forwarded write today; trusts the service token + `X-Authz-Role`; reachable only by OPA (which pgauthzd's write front door consults) |
 | `pgauthzd-decision` | `pgauthzd` (multi-stage) | 8090:8080 | AuthZEN 1.0 API, `decision-only` profile, Go→PostgreSQL direct (via `compose-authzen.yml`) |
-| `pgauthzd-opa` | `pgauthzd` (multi-stage) | 8091:8080 | AuthZEN 1.0 API, `compat-opa` profile, Go→OPA (via `compose-authzen.yml`). Extra env: `JWT_ISSUERS` (multi-issuer), `SEARCH_REQUIRED_ROLE` + `JWT_ROLES_CLAIM` (role-gated search), `FORWARD_TOKEN_TO_OPA` (OPA re-validates the token) |
+| `pgauthzd-opa` | `pgauthzd` (multi-stage) | 8091:8080 | AuthZEN 1.0 API, OPA-fronted (`OPA_URL` set), Go→OPA (via `compose-authzen.yml`). Extra env: `JWT_ISSUERS` (multi-issuer), `SEARCH_REQUIRED_ROLE` + `JWT_ROLES_CLAIM` (role-gated search), `FORWARD_TOKEN_TO_OPA` (OPA re-validates the token) |
 
 ### Scaled Deployment
 
@@ -642,7 +642,7 @@ write rule then returns `writes_disabled`).
 
 - **Read path:** the load balancer distributes read requests to **pgauthzd**
   (the front door) across replica nodes; pgauthzd answers directly
-  (`decision-only`) or consults its co-located OPA sidecar (`compat-opa`)
+  (`decision-only`) or consults its co-located OPA sidecar (`OPA_URL` set)
 - **Write path:** applications send writes to the primary's **pgauthzd writer**
   (`full`), which verifies the JWT + writer role (consulting OPA today) and
   applies the write to the PG primary
@@ -1021,7 +1021,7 @@ and demote OPA to an **internal policy sidecar that only pgauthzd calls**.
 Clients speak AuthZEN 1.0 / native `/pgauthz/v1` to pgauthzd, which
 **validates the JWT** (multi-issuer via `JWT_ISSUERS`) and resolves subject +
 roles. For reads, a `decision-only` pgauthzd answers straight from the graph;
-a `compat-opa` pgauthzd consults OPA, which re-validates the forwarded token
+an OPA-fronted pgauthzd (`OPA_URL` set) consults OPA, which re-validates the forwarded token
 (`FORWARD_TOKEN_TO_OPA`), evaluates Rego, and calls **back** into pgauthzd's
 native `/pgauthz/v1` callback (over a shared service token — pgauthzd
 `INTERNAL_SERVICE_TOKEN` ↔ OPA `NATIVE_SERVICE_TOKEN`, optional mTLS) for

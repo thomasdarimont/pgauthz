@@ -292,7 +292,7 @@ authz-primary (wal_level=replica)
   └── WAL stream
         └──▶ authz-replica (hot_standby=on, read-only)
                ├── pgauthzd (decision-only — check_access via pgx)
-               └── pgauthzd (compat-opa) + OPA sidecar
+               └── pgauthzd (+ OPA_URL) + OPA sidecar
                      └── OPA calls back into pgauthzd's native /pgauthz/v1
 ```
 

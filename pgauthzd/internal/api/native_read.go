@@ -4,14 +4,15 @@ package api
 // /list-objects, /list-subjects, /list-actions). These are policy-FREE by
 // construction: they run straight against the direct pgx backend (the ReBAC
 // graph answer), NEVER through a policy layer. That is exactly what an external
-// OPA sidecar calls back into when a Rego policy delegates to the graph — so a
-// compat-opa deployment can front the graph with policy without OPA needing
+// OPA sidecar calls back into when a Rego policy delegates to the graph — so an
+// OPA-fronted deployment can answer the graph with policy without OPA needing
 // PostgREST, and without re-entering its own policy-wrapped /access/v1 surface.
 //
-// Served by the direct pgx `raw` backend (never OPA): on the direct profiles
-// that is the single backend; on compat-opa it is a separate read-only pgx
-// backend exposed only on the INTERNAL listener that the OPA sidecar calls back
-// into. When no raw backend is configured the gate (authz.NativeReader) returns
+// Served by the direct pgx `raw` backend (never OPA). When NOT fronting OPA it
+// is exposed on the public listener; when fronting OPA (OPA_URL set) the native
+// surface stays OFF the public listener and lives only on the INTERNAL callback
+// listener the OPA sidecar calls back into. When no raw backend is configured
+// the gate (authz.NativeReader) returns
 // 501. The vocabulary matches the AuthZEN surface (subject/action/resource) so
 // the same subject-resolution and store-binding apply; the responses are
 // pgauthz-native (allowed / objects / subjects / actions).

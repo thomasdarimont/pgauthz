@@ -128,7 +128,7 @@ created and granted in `db/security/roles.sql`.
 | Component | Connects as | Effective role(s) | Notes |
 |---|---|---|---|
 | pgauthzd-decision (Go, :8090, `decision-only`) | `authzen_direct` | inherits `authz_reader` (optional `SET LOCAL ROLE` to a per-app role) | Read-only front door; direct pgx, no OPA. Dedicated non-superuser login. |
-| pgauthzd-opa (Go, :8091, `compat-opa`) | `authzen_direct` | `authz_reader` default (`SET LOCAL ROLE` per-app) | Front door that consults its OPA sidecar; also hosts the internal read callback OPA calls back into for the graph. |
+| pgauthzd-opa (Go, :8091, OPA-fronted — `OPA_URL` set) | `authzen_direct` | `authz_reader` default (`SET LOCAL ROLE` per-app) | Front door that consults its OPA sidecar; also hosts the internal read callback OPA calls back into for the graph. |
 | pgauthzd-full write callback (internal, `full`) | `pgauthzd_rw` | inherits `authz_writer` (per-app `SET LOCAL ROLE`) | Writer instance; applies writes natively via pgx (no authenticator / `SET ROLE` dance — it connects directly as its writer role). The **callback listener** does no JWT verification of its own — it trusts OPA (its upstream policy sidecar) over the shared service token + `X-Authz-Role`. Internal-only, no host port. (pgauthzd is the external front door; its `/pgauthz/v1/write` API validates the JWT + writer role.) |
 | Backend writers (your app) | a login role granted `authz_writer` (or the writer API with a `role=authz_writer` JWT) | `authz_writer` | |
 | Admin tooling | a login role granted `authz_admin` | `authz_admin` | Store/model/namespace changes. |
@@ -214,7 +214,7 @@ Real issuers sign tokens with a private key and publish the public key at a
 **pgauthzd verifies the JWT** — for reads and writes alike; it is the front
 door. Multi-issuer via `JWT_ISSUERS` (the token's `iss` selects the validator;
 legacy single-issuer `JWKS_URL`/`JWKS_FILE` still work), so `jwks_uri` rotation
-lives in one place. When policy enrichment is enabled (`compat-opa`), pgauthzd
+lives in one place. When policy enrichment is enabled (`OPA_URL` set), pgauthzd
 forwards the verified token to OPA (`FORWARD_TOKEN_TO_OPA`) and OPA re-validates
 it — defense in depth. The demo ships a static `opa/data/jwks.json` ES256 key;
 in production point pgauthzd (and OPA, when enriching) at your issuer's remote

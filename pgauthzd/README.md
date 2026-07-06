@@ -5,7 +5,7 @@ standard. One `pgauthzd` binary, capability-scoped by `PGAUTHORIZER_PROFILE`, is
 deployed as several demo services sharing a common handler layer but using different backends:
 
 - **pgauthzd-decision** (`decision-only`) — Go &rarr; PostgreSQL (lowest latency, pure Zanzibar)
-- **pgauthzd-opa** (`compat-opa`) — Go &rarr; OPA &rarr; pgauthzd native callback &rarr; PostgreSQL (app-specific Rego policies)
+- **pgauthzd-opa** (OPA-fronted — `OPA_URL` set) — Go &rarr; OPA &rarr; pgauthzd native callback &rarr; PostgreSQL (app-specific Rego policies)
 
 Both expose identical endpoints and require a valid JWT (ES256/RS256).
 
@@ -335,7 +335,7 @@ All configuration is via environment variables.
 | `DB_POOL_MAX` | `25` | Connection pool size |
 | `DB_ROLE_CACHE_TTL_SECONDS` | `60` | How long a per-app DB role validation result (allowed *or* denied) is cached before re-checking `pg_has_role`; `0` disables caching (re-validate every request) |
 
-### pgauthzd-opa (`compat-opa`) only
+### pgauthzd-opa (OPA-fronted — `OPA_URL` set) only
 
 | Variable | Default | Description |
 |---|---|---|
@@ -439,8 +439,9 @@ error handling (400 on malformed requests).
 
 Vendor-specific operations beyond the standards-compliant AuthZEN surface,
 kept on a separate path so `/access/v1` stays spec-pure. Served by the direct
-pgx backend. On the **direct** profiles (`decision-only` / `full`) they sit on
-the main listener. On **`compat-opa`** they are served — read-only — on a
+pgx backend. When **not fronting OPA** (`OPA_URL` unset, `decision-only` /
+`full`) they sit on the main listener. When **fronting OPA** (`OPA_URL` set)
+they are served — read-only — on a
 separate **internal** listener (`INTERNAL_LISTEN_ADDR`) that an OPA sidecar
 calls back into (replacing the former PostgREST reader); they are deliberately absent from the
 public listener there (a raw graph answer must not bypass the policy layer).
@@ -492,7 +493,7 @@ backend on a **writer-capable** connection role (`pgauthzd_rw`, which inherits
 
 - a **`decision-only`** instance (read-only role, e.g. `authzen_direct`) returns
   **`403`** — and asserts at startup that its role genuinely cannot write;
-- the **`compat-opa`** profile returns **`501`** (its writes go through the OPA
+- an **OPA-fronted** instance (`OPA_URL` set) returns **`501`** (its writes go through the OPA
   write policy (`write.rego`) fronting the `full` writer instance, not this
   native path).
 

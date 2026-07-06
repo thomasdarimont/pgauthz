@@ -35,7 +35,7 @@ opa:
 
 authzen:
   direct: { enabled: true }              # AuthZEN API on the decision-only reader pods
-  opa:    { enabled: true, replicas: 1 } # compat-opa AuthZEN gateway
+  opa:    { enabled: true, replicas: 1 } # OPA-fronted AuthZEN gateway (decision-only + OPA_URL)
   exposeViaIngress: true
 
 ingress:

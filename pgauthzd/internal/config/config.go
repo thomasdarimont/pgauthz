@@ -61,9 +61,9 @@ const (
 
 type Config struct {
 	Profile Profile
-	// ListenAddr is the primary (external) listener. On compat-opa it serves
-	// the policy-wrapped AuthZEN surface; on direct profiles it serves
-	// everything (AuthZEN + native).
+	// ListenAddr is the primary (external) listener. It serves the AuthZEN
+	// /access/v1 surface (OPA-fronted when OPA_URL is set, else direct pgx) plus
+	// the native /pgauthz/v1 surface — the latter only when NOT fronting OPA.
 	ListenAddr string
 	// InternalListenAddr is the OPA CALLBACK listener: it serves the native raw
 	// endpoints an OPA sidecar calls back into, authenticated by the shared
