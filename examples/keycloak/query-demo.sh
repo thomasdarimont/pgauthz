@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 #
-# Query the pgauthz 'demo' store with REAL Keycloak tokens. This example calls
-# OPA's data API directly (POST /v1/data/authz/allow, via the api.pgauthz.test
-# gateway) to showcase OPA's custom rules (allow / permitted_actions /
-# accessible_objects). Full stack: Keycloak (issues the JWT) -> OPA (verifies it,
-# derives the subject from the claims, evaluates policy) -> pgauthzd's native
-# /pgauthz/v1 callback -> PostgreSQL engine (check_access). NOTE: this is the
-# OPA-data-API entry point; the default/canonical front door is pgauthzd itself
-# (AuthZEN /access/v1 + native /pgauthz/v1), which consults OPA as an internal
-# sidecar. The subject is NOT passed in the request — it comes from the token's
-# preferred_username / subject_type, exactly as a real PEP would call it.
+# Query the pgauthz 'demo' store with REAL Keycloak tokens through the canonical
+# front door: Keycloak (issues the JWT) -> pgauthzd (AuthZEN 1.0 /access/v1;
+# validates the JWT, consults its internal OPA sidecar) -> OPA -> pgauthzd's
+# native engine callback -> PostgreSQL (check_access). OPA is internal — the
+# gateway (api.pgauthz.test) routes to pgauthzd, never to OPA directly.
+#
+# The subject is NOT passed in the request — pgauthzd derives it from the token
+# (preferred_username / subject_type), exactly as a real PEP would call it. The
+# token rides in the Authorization: Bearer header (standard AuthZEN).
 #
 # Usage:
 #   examples/keycloak/query-demo.sh            # decision table
@@ -24,7 +23,7 @@ VERBOSE=0
 for arg in "$@"; do
   case "$arg" in
     -v|--verbose) VERBOSE=1 ;;
-    -h|--help)    sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "Unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -44,19 +43,21 @@ CURL=(curl -sS)
 
 get_token() { "$GET_TOKEN" "$1" | sed -E 's/^export TOKEN=//'; }
 
-# call <endpoint-path> <json-body> -> prints the raw response. With --verbose it
-# also echoes the request (endpoint + body, JWT truncated for readability).
+# call <token> <endpoint-path> <json-body> -> prints the raw response. The token
+# rides in the Authorization header (AuthZEN). With --verbose it also echoes the
+# request (endpoint + body, JWT truncated for readability).
 call() {
-  # Verbose output goes to stderr so it never pollutes the response that callers
-  # capture and pipe to jq.
+  local token="$1" path="$2" body="$3"
   if [ "$VERBOSE" = 1 ]; then
     {
-      echo "  → POST $BASE/$1"
-      printf '    '
-      printf '%s' "$2" | jq -c '.input.token = ((.input.token // "")[0:18] + "…<JWT>")'
+      echo "  → POST $BASE/$path  (Authorization: Bearer ${token:0:18}…<JWT>)"
+      printf '    %s\n' "$body"
     } >&2
   fi
-  "${CURL[@]}" "$BASE/$1" -H 'Content-Type: application/json' -d "$2"
+  "${CURL[@]}" "$BASE/$path" \
+    -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer $token" \
+    -d "$body"
 }
 
 echo "==> Fetching Keycloak tokens for the demo users..."
@@ -65,12 +66,12 @@ TOK_eva="$(get_token eva)"
 TOK_carol="$(get_token carol)"
 TOK_bob="$(get_token bob)"
 
-# allow: <token> <action> <doc-id> -> ALLOW | DENY
+# allow: <token> <action> <doc-id> -> ALLOW | DENY  (AuthZEN evaluation)
 allow() {
   local res
-  res="$(call "v1/data/authz/allow" \
-    "{\"input\":{\"token\":\"$1\",\"action\":\"$2\",\"resource\":{\"type\":\"document\",\"id\":\"$3\"}}}" \
-    | jq -r '.result')"
+  res="$(call "$1" "access/v1/evaluation" \
+    "{\"action\":{\"name\":\"$2\"},\"resource\":{\"type\":\"document\",\"id\":\"$3\"}}" \
+    | jq -r '.decision')"
   case "$res" in true) echo "ALLOW" ;; false) echo "DENY" ;; *) echo "ERR($res)" ;; esac
 }
 
@@ -92,16 +93,16 @@ row "carol (client: acme)"   "$TOK_carol" can_read doc_client_001    # ALLOW (cl
 row "carol (client: acme)"   "$TOK_carol" can_read doc_payroll_001   # DENY  (internal only)
 
 echo
-echo "==> permitted_actions — what may alice do on document:doc_payroll_001?"
-call "v1/data/authz/permitted_actions" \
-  "{\"input\":{\"token\":\"$TOK_alice\",\"resource\":{\"type\":\"document\",\"id\":\"doc_payroll_001\"}}}" \
-  | jq -c '.result'
+echo "==> action search — what may alice do on document:doc_payroll_001?"
+call "$TOK_alice" "access/v1/search/action" \
+  "{\"resource\":{\"type\":\"document\",\"id\":\"doc_payroll_001\"}}" \
+  | jq -c '[.results[].action.name]'
 
 echo
-echo "==> accessible_objects — which documents can bob (advisor on eng_42) read?"
-call "v1/data/authz/accessible_objects" \
-  "{\"input\":{\"token\":\"$TOK_bob\",\"action\":\"can_read\",\"resource\":{\"type\":\"document\"}}}" \
-  | jq -c '.result'
+echo "==> resource search — which documents can bob (advisor on eng_42) read?"
+call "$TOK_bob" "access/v1/search/resource" \
+  "{\"action\":{\"name\":\"can_read\"},\"resource\":{\"type\":\"document\"}}" \
+  | jq -c '[.results[].resource.id]'
 
 echo
 echo "==> client_credentials — the app-dms SERVICE (no human) reads a document."
@@ -113,5 +114,5 @@ printf '%-26s %-9s %-24s %s\n' "service_account:app-dms" "can_read" "document:do
 
 echo
 echo "==> Done. The subject was derived from each Keycloak JWT — no subject was"
-echo "    passed in the request. Swap in your own OIDC issuer by repointing OPA's"
-echo "    JWT_ISSUER / JWKS_URL; the queries above stay identical."
+echo "    passed in the request. Swap in your own OIDC issuer by adding it to"
+echo "    pgauthzd's JWT_ISSUERS (and OPA's JWKS_URL); the queries above stay identical."

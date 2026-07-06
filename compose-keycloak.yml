@@ -1,16 +1,18 @@
 # Optional demo overlay: a real OIDC issuer (Keycloak 26.6.4) in front of pgauthz,
 # provisioned by Terraform (keycloak/terraform) and fronted by an nginx proxy that
 # terminates TLS for *.pgauthz.test (mkcert). Mirrors the keycloak-dev-training
-# dev layout. Real deployments bring their own OAuth2 AS / OIDC OP — just point
-# OPA's JWT_ISSUER / JWKS_URL at it. The fast self-minted test tokens
-# (tests/test-authzen.sh) are unaffected; this overlay is opt-in.
+# dev layout. Real deployments bring their own OAuth2 AS / OIDC OP — just add it
+# to pgauthzd's JWT_ISSUERS (and OPA's JWKS_URL). The fast self-minted test tokens
+# (tests/test-authzen.sh) are unaffected; this overlay is opt-in. The nginx proxy
+# routes api.pgauthz.test to pgauthzd (the AuthZEN front door); OPA stays internal.
 #
 # Quick start:
 #   ./keycloak/config/generate-mkcerts.sh                        # once: mkcert *.pgauthz.test
 #   docker compose -f compose.yml -f compose-keycloak.yml up -d
 #   (cd keycloak/terraform && terraform init && terraform apply) # provision the realm
 #   eval "$(./keycloak/get-token.sh alice)"
-#   curl -s https://api.pgauthz.test/v1/evaluation -H "Authorization: Bearer $TOKEN" ...
+#   curl -s https://api.pgauthz.test/access/v1/evaluation -H "Authorization: Bearer $TOKEN" \
+#        -d '{"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}'
 #
 # /etc/hosts (if these don't already resolve to loopback):
 #   127.0.0.1 pgauthz.test id.pgauthz.test admin.pgauthz.test api.pgauthz.test
@@ -112,6 +114,14 @@ services:
       # (the store isn't namespaced); see keycloak/README.md "Per-app DB role" and
       # the commented mapper in terraform/client.authz-api.tf, then uncomment this.
       # DB_ROLE_CLAIM: db_role
+
+  # The keycloak example routes api.pgauthz.test through pgauthzd (the front door,
+  # via the nginx proxy above). Since OPA runs in token-mode here
+  # (REQUIRE_TOKEN_FOR_READS=true), pgauthzd must FORWARD the verified bearer token
+  # to OPA so it re-validates via the input.token path (no tokenless subject-trust).
+  pgauthzd-opa:
+    environment:
+      FORWARD_TOKEN_TO_OPA: "true"
 
 volumes:
   keycloak-db-data:
