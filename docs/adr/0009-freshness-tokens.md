@@ -96,7 +96,10 @@ token = { kid, epoch: <timeline_id>, lsn: <pg_lsn> }   -- HMAC-signed, base64url
 - **Global**, not per-store — a replica replayed to LSN L has replayed *everything*
   ≤ L, so one watermark covers all stores. Slightly conservative (a token from
   store A also waits out unrelated writes), which is acceptable and far simpler
-  than per-store keying.
+  than per-store keying. **Timeline-local ordering:** "a later token covers all
+  earlier writes" holds only *within one WAL timeline* — a failover
+  (`wrong_epoch`) voids the ordering contract until the client reconciles its
+  intended state on the new primary (review #6).
 - **HMAC-signed** with a server-side key so clients cannot forge a future position;
   readers reject a bad signature (fail closed). The token is a freshness assertion,
   not a capability — it grants nothing on its own.
@@ -188,7 +191,7 @@ by verdict:
 |---|---|
 | `stale` | retry the primary / another replica, or wait |
 | `unknown` | this node can't judge; retry the primary |
-| `wrong_epoch` | **not retryable** — the token's timeline is gone (failover); re-mint via a new write or drop the constraint |
+| `wrong_epoch` | **not retryable, and not fixed by an unrelated re-mint** — the token's timeline is gone (failover), and the write it covers may have been LOST. Re-read and reconcile the intended authorization state on the new primary, reapply the change idempotently if missing, then use that write's token. Matters most for revokes/offboarding |
 | bad token (400) | reject; do not retry |
 
 `primary_consulted: true` means the transparent fallback already re-checked the

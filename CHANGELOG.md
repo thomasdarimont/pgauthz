@@ -7,6 +7,36 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **`wrong_epoch` recovery guidance is now reconcile-first** (review #6). The
+  structured freshness 409 (and ADR 0009 / README) previously advised
+  "re-mint via a new write" — misleading after a **lossy** promotion, where the
+  original write may be gone and an unrelated write's token proves nothing
+  about it. The guidance is now: re-read and reconcile the intended
+  authorization state on the current primary, reapply the change idempotently
+  if missing, then use that write's token (matters most for
+  revokes/offboarding, as the promotion integration test demonstrates).
+- **Token ordering documented as timeline-local.** "A later token covers all
+  earlier writes" holds only within one WAL timeline; a failover
+  (`wrong_epoch`) voids the ordering contract until the client reconciles
+  (PRODUCTION.md PEP guidance + ADR 0009).
+- **The served OpenAPI document is instance-accurate.** An OPA-fronted
+  instance (whose public listener does not register the native routes) now
+  serves a copy with the native paths omitted; the source file keeps the full
+  contract, and native operations carry a machine-readable
+  `x-pgauthz-availability` extension (`listeners`, `public_listener:
+  not-when-opa-fronted`, `profile: full` on writes). New `OPENAPI_ENABLED`
+  (default `true`) disables the endpoints entirely.
+
+### Fixed
+
+- **Mint-status tri-state edge:** freshness keys configured but a write
+  backend that cannot mint now reports `X-PGAuthz-Revision-Status:
+  unavailable` (enabled-but-broken, counted + logged) instead of `disabled`
+  (feature off). Defensive-only — a `full` instance's direct pgx backend
+  always mints.
+
 ## [0.10.0] - 2026-07-07
 
 ### Added

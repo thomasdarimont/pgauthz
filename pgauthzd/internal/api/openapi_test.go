@@ -49,9 +49,10 @@ func TestOpenAPISpecValidates(t *testing.T) {
 }
 
 // fullMux is the production public mux in its widest shape (full profile, not
-// fronting OPA) — the configuration the document describes.
+// fronting OPA, openapi endpoints on) — the configuration the document
+// describes.
 func fullMux() *http.ServeMux {
-	h := &Handler{cfg: &config.Config{Profile: config.ProfileFull}}
+	h := &Handler{cfg: &config.Config{Profile: config.ProfileFull, OpenAPIEnabled: true}}
 	return newPublicMux(h, false)
 }
 
@@ -177,6 +178,7 @@ func TestResponsesMatchOpenAPISpec(t *testing.T) {
 	b := &contractStub{freshStub{epoch: 1, lsn: "0/AA", verdict: "stale"}}
 	h := NewHandler(b, b, b, &config.Config{
 		Profile: config.ProfileFull, DefaultStore: "demo", FreshnessKeys: testFreshKeys,
+		OpenAPIEnabled: true,
 	})
 	mux := newPublicMux(h, false)
 	staleTok := authz.EncodeFreshnessToken(testKeyring[0], 1, "FF/0")
@@ -251,5 +253,49 @@ func TestOpenAPIEndpointsServeTheDocument(t *testing.T) {
 	h.OpenAPIYAML(wy, httptest.NewRequest("GET", "/pgauthz/v1/openapi.yaml", nil))
 	if ct := wy.Header().Get("Content-Type"); ct != "application/yaml" {
 		t.Fatalf("yaml endpoint content type: %q", ct)
+	}
+}
+
+// An OPA-fronted instance's served document is INSTANCE-ACCURATE (review #6):
+// the native paths its public listener does not register are omitted (except
+// the openapi meta endpoints, which stay registered), while AuthZEN remains.
+func TestOpenAPIServedDocIsInstanceAccurate(t *testing.T) {
+	h := &Handler{cfg: &config.Config{OPAURL: "http://opa:8181", OpenAPIEnabled: true}}
+	w := httptest.NewRecorder()
+	h.OpenAPIJSON(w, httptest.NewRequest("GET", "/pgauthz/v1/openapi.json", nil))
+	var got struct {
+		Paths map[string]any `json:"paths"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for p := range got.Paths {
+		if strings.HasPrefix(p, "/pgauthz/v1/openapi.") {
+			continue
+		}
+		if strings.HasPrefix(p, "/pgauthz/v1/") || strings.HasPrefix(p, "/stores/{store}/pgauthz/v1/") {
+			t.Errorf("OPA-fronted served doc must not describe native path %s", p)
+		}
+	}
+	for _, want := range []string{"/access/v1/evaluation", "/pgauthz/v1/openapi.json", "/healthz"} {
+		if _, ok := got.Paths[want]; !ok {
+			t.Errorf("OPA-fronted served doc must keep %s", want)
+		}
+	}
+
+	// The YAML form of the filtered variant agrees.
+	wy := httptest.NewRecorder()
+	h.OpenAPIYAML(wy, httptest.NewRequest("GET", "/pgauthz/v1/openapi.yaml", nil))
+	if strings.Contains(wy.Body.String(), "/pgauthz/v1/check:") {
+		t.Error("OPA-fronted YAML form must not describe native paths")
+	}
+}
+
+// OPENAPI_ENABLED=false removes the endpoints entirely (exposure minimization).
+func TestOpenAPIEndpointsCanBeDisabled(t *testing.T) {
+	h := &Handler{cfg: &config.Config{Profile: config.ProfileFull}} // OpenAPIEnabled false
+	mux := newPublicMux(h, false)
+	if routeExists(mux, "GET", "/pgauthz/v1/openapi.json") || routeExists(mux, "GET", "/pgauthz/v1/openapi.yaml") {
+		t.Fatal("OPENAPI_ENABLED=false must not register the openapi endpoints")
 	}
 }

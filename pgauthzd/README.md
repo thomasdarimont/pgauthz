@@ -45,9 +45,16 @@ The document cannot silently drift from the code: `internal/api/openapi_test.go`
 enforces **bidirectional route coverage** (every documented path must resolve in
 the production router, every registered route must be documented) and validates
 real handler responses against the schemas — `go test` (and the pre-release
-check) fail on any mismatch. The document describes the FULL surface; per-mode
-availability (OPA fronting hides the native routes from the public listener,
-`decision-only` rejects writes) is noted in the operation descriptions.
+check) fail on any mismatch.
+
+The **served** document is **instance-accurate**: an OPA-fronted instance
+(whose public listener does not register the native routes) serves a copy with
+the native paths omitted, so a generated client can't be misled into calling
+operations that instance rejects. The source file describes the full surface,
+and native operations carry a machine-readable **`x-pgauthz-availability`**
+extension (`listeners`, `public_listener: not-when-opa-fronted`, `profile:
+full` on writes) for generators and scanners. Set `OPENAPI_ENABLED=false` to
+disable the endpoints entirely (exposure minimization).
 
 ## Quick Start
 
@@ -351,6 +358,7 @@ All configuration is via environment variables.
 | `REQUIRE_DB_ROLE_BINDING` | `false` | When role derivation is configured (`DB_ROLE_CLAIM` / `CLIENT_DB_ROLES`): refuse to start unless every issuer has a `db_roles` or `client_db_roles` binding (recommended `true` for multi-tenant deployments) |
 | `FRESHNESS_TOKEN_KEYS` | *empty* | Ordered, comma-separated HMAC secrets enabling freshness tokens ([ADR 0009](../docs/adr/0009-freshness-tokens.md) read-your-writes): the **first** key mints, **every** key verifies — which is what makes key rotation a zero-downtime overlap (`old,new` → `new,old` → `new`; runbook in [PRODUCTION.md](../docs/PRODUCTION.md)). Set the **same** list on the writer and the readers. Empty = feature off: writes mint no token and an `at_least_as_fresh` read is rejected (`400`, fail closed) |
 | `FRESHNESS_TOKEN_KEY` | *empty* | Single-key alias for `FRESHNESS_TOKEN_KEYS` (setting both is a startup error) |
+| `OPENAPI_ENABLED` | `true` | Serve this instance's OpenAPI description at `GET /pgauthz/v1/openapi.{json,yaml}` (unauthenticated; instance-accurate). Set `false` to disable the endpoints entirely |
 | `METRICS_LISTEN_ADDR` | *empty* | When set (e.g. `:9090`), serves Prometheus `/metrics` on a **separate** listener ([ADR 0010](../docs/adr/0010-metrics-observability.md)). Bind to the pod/mesh network — **never** the public client listener. Empty = metrics disabled |
 | `METRICS_SAMPLE_INTERVAL_SECONDS` | `30` | Interval for the engine/tenant gauge sampler (per-store tuple counts). Only runs when metrics are exposed; `0` disables it |
 | `METRICS_MAX_STORES` | `100` | Cap on per-store series (top-N by tuple count); `pgauthzd_stores_total` still reports the true count |
@@ -576,7 +584,7 @@ the read is served normally. Not satisfied → **`409`** with
   "error": "freshness_constraint_unsatisfied",
   "verdict": "wrong_epoch",
   "primary_consulted": true,
-  "message": "…retrying cannot succeed — obtain a new token with a fresh write…"
+  "message": "…the write it covers may have been lost — re-read and reconcile…"
 }
 ```
 
@@ -584,7 +592,7 @@ the read is served normally. Not satisfied → **`409`** with
 |---|---|
 | `stale` | retry the primary / another replica, or wait |
 | `unknown` | this node can't judge its timeline; retry the primary |
-| `wrong_epoch` | **not retryable** — a failover happened since the write; re-mint via a new write or drop the constraint |
+| `wrong_epoch` | **not retryable, and not fixed by an unrelated re-mint** — a failover happened and the write may have been **lost**; re-read and reconcile the intended state on the new primary (reapply idempotently), then use that write's token |
 
 `primary_consulted: true` means the transparent fallback already re-checked the
 primary and it can't satisfy the token either. Without the header pair a read

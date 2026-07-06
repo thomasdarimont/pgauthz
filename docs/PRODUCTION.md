@@ -373,8 +373,11 @@ mechanisms divide the work:
 
 If a PEP/BFF fronts pgauthz for end users, the PEP owns consistency selection:
 
-- retain the newest token it has observed (tokens are global watermarks —
-  the latest one covers all earlier writes);
+- retain the newest token it has observed — **within one WAL timeline** a
+  later token covers all earlier committed positions, so keeping the newest
+  suffices. A timeline change (`wrong_epoch` after a failover) voids that
+  ordering contract: discard retained tokens and reconcile the intended
+  authorization state on the new primary before trusting new ones;
 - never let an end user weaken consistency (the consistency header must be
   set by the PEP, not passed through from the client);
 - require `at_least_as_fresh` (or `remote_apply` + replica discipline) for

@@ -98,6 +98,12 @@ func TestFreshnessFallbackPrimaryAlsoStale(t *testing.T) {
 	if strings.Contains(body.Message, "retry against the primary") {
 		t.Fatalf("wrong_epoch guidance must not suggest retrying the primary: %q", body.Message)
 	}
+	// Review #6: the original write may be LOST after a lossy promotion — the
+	// guidance must be reconcile/reapply, never just "mint a new token" (an
+	// unrelated write's token proves nothing about the lost mutation).
+	if !strings.Contains(body.Message, "reconcile") {
+		t.Fatalf("wrong_epoch guidance must tell the client to reconcile: %q", body.Message)
+	}
 }
 
 // at_least_as_fresh with NO token is a client error (400), not a silent
@@ -167,6 +173,36 @@ func TestWriteMintFailureSurfaced(t *testing.T) {
 }
 
 var errMintBoom = errors.New("boom: primary connection lost post-commit")
+
+// minterlessStub is a NativeWriter WITHOUT FreshnessToken — the topology
+// anomaly where freshness is enabled but the backend can't mint.
+type minterlessStub struct {
+	authz.Backend
+}
+
+func (minterlessStub) WriteTuples(context.Context, authz.WriteRequest) (int, error)  { return 1, nil }
+func (minterlessStub) DeleteTuples(context.Context, authz.WriteRequest) (int, error) { return 1, nil }
+func (minterlessStub) DeleteUserTuples(context.Context, authz.DeleteUserRequest) (int, error) {
+	return 1, nil
+}
+func (minterlessStub) WriteTuplesChecked(context.Context, authz.CheckedWriteRequest) (json.RawMessage, error) {
+	return nil, nil
+}
+
+// Freshness enabled + a writer that cannot mint is `unavailable` (enabled but
+// broken), NOT `disabled` (feature off) — review #6's tri-state edge.
+func TestWriteMinterMissingIsUnavailable(t *testing.T) {
+	b := &minterlessStub{}
+	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo", FreshnessKeys: testFreshKeys})
+	w := httptest.NewRecorder()
+	h.WriteTuples(w, writeReq())
+	if w.Code != http.StatusOK {
+		t.Fatalf("write must still succeed: got %d body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get(RevisionStatusHeader); got != "unavailable" {
+		t.Fatalf("minter-less writer with freshness enabled: expected unavailable, got %q", got)
+	}
+}
 
 // Key rotation at the guard: a token minted under the retiring key still passes
 // while that key is anywhere in the keyring (any order), and 400s once removed.

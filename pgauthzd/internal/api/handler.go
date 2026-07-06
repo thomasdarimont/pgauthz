@@ -95,10 +95,13 @@ func newPublicMux(h *Handler, usesOPA bool) *http.ServeMux {
 	}
 	mux.HandleFunc("GET /healthz", h.Healthz)
 	// The API contract, served unauthenticated (exempted in the JWT
-	// middleware). Describes the FULL surface; per-mode availability (OPA
-	// fronting, profile) is noted in the document itself.
-	mux.HandleFunc("GET /pgauthz/v1/openapi.json", h.OpenAPIJSON)
-	mux.HandleFunc("GET /pgauthz/v1/openapi.yaml", h.OpenAPIYAML)
+	// middleware) and INSTANCE-ACCURATE (an OPA-fronted instance's copy omits
+	// the native paths its public listener does not register). OPENAPI_ENABLED
+	// (default true) turns the endpoints off entirely.
+	if h.cfg.OpenAPIEnabled {
+		mux.HandleFunc("GET /pgauthz/v1/openapi.json", h.OpenAPIJSON)
+		mux.HandleFunc("GET /pgauthz/v1/openapi.yaml", h.OpenAPIYAML)
+	}
 	return mux
 }
 

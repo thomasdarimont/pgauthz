@@ -8,7 +8,9 @@
 # schemas. Change the API and the tests force this file to follow (and vice
 # versa).
 #
-# Availability by deployment mode (the document describes the FULL surface):
+# Availability by deployment mode (THIS FILE describes the full surface; the
+# SERVED document is instance-accurate — an OPA-fronted instance omits the
+# native paths its public listener does not register):
 #   - AuthZEN /access/v1: always on the public listener.
 #   - Native /pgauthz/v1 reads: public listener only when NOT fronting OPA
 #     (no OPA_URL); always on the internal callback listener.
@@ -17,6 +19,11 @@
 #   - The internal callback listener authenticates with the shared service
 #     token (and optional mTLS), not the end-user JWT, and additionally
 #     honors the X-PGAuthz-Role header from its trusted OPA upstream.
+#
+# Native operations carry a machine-readable `x-pgauthz-availability`
+# extension: `listeners` (where the operation exists), `public_listener:
+# not-when-opa-fronted`, and `profile: full` on writes — so generators and
+# scanners can tell instance-conditional operations from universal ones.
 openapi: 3.0.3
 info:
   title: pgauthzd
@@ -274,6 +281,9 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
       operationId: check
       summary: Raw access decision
       parameters:
@@ -295,6 +305,9 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
       operationId: checkStore
       summary: Raw access decision, store-scoped
       parameters:
@@ -317,6 +330,9 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
       operationId: checkBatch
       summary: Many raw decisions in one round-trip
       parameters:
@@ -338,6 +354,9 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
       operationId: checkBatchStore
       summary: Many raw decisions, store-scoped
       parameters:
@@ -360,6 +379,9 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
       operationId: listObjects
       summary: Which objects of a type can the subject act on?
       parameters:
@@ -381,6 +403,9 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
       operationId: listObjectsStore
       summary: Object search, store-scoped
       parameters:
@@ -403,6 +428,9 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
       operationId: listSubjects
       summary: Which subjects of a type can act on the object?
       parameters:
@@ -424,6 +452,9 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
       operationId: listSubjectsStore
       summary: Subject search, store-scoped
       parameters:
@@ -446,6 +477,9 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
       operationId: listActions
       summary: Which relations does the subject hold on the object?
       parameters:
@@ -467,6 +501,9 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
       operationId: listActionsStore
       summary: Action list, store-scoped
       parameters:
@@ -489,6 +526,9 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
       operationId: explain
       summary: WHY was access allowed or denied (decision + trace)
       parameters:
@@ -510,6 +550,9 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
       operationId: explainStore
       summary: Explain, store-scoped
       parameters:
@@ -532,6 +575,9 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
       operationId: watch
       summary: Cursored page of the store's audit changefeed
       description: >
@@ -554,6 +600,9 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
       operationId: watchStore
       summary: Changefeed page, store-scoped
       parameters:
@@ -574,6 +623,10 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+        profile: full
       operationId: writeTuples
       summary: Batch-upsert relationship tuples
       parameters:
@@ -592,6 +645,10 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+        profile: full
       operationId: writeTuplesStore
       summary: Batch-upsert tuples, store-scoped
       parameters:
@@ -611,6 +668,10 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+        profile: full
       operationId: deleteTuples
       summary: Batch-delete relationship tuples
       parameters:
@@ -629,6 +690,10 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+        profile: full
       operationId: deleteTuplesStore
       summary: Batch-delete tuples, store-scoped
       parameters:
@@ -648,6 +713,10 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+        profile: full
       operationId: deleteUserTuples
       summary: Offboarding — remove every tuple for a subject
       parameters:
@@ -666,6 +735,10 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+        profile: full
       operationId: deleteUserTuplesStore
       summary: Offboarding, store-scoped
       parameters:
@@ -685,6 +758,10 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+        profile: full
       operationId: writeTuplesChecked
       summary: Conditional/atomic write — preconditions gate deletes+writes
       parameters:
@@ -703,6 +780,10 @@ paths:
       security:
         - bearerAuth: []
         - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+        profile: full
       operationId: writeTuplesCheckedStore
       summary: Conditional/atomic write, store-scoped
       parameters:
@@ -1076,10 +1157,14 @@ components:
       description: >
         An at_least_as_fresh read this node cannot satisfy. The
         verdict picks the recovery: stale/unknown → retry the primary or
-        another replica; wrong_epoch → NOT retryable (a failover happened
-        since the write) — re-mint via a new write or drop the constraint.
-        primary_consulted=true means the transparent fallback already
-        re-checked the primary and it cannot satisfy the token either.
+        another replica; wrong_epoch → NOT retryable, and NOT fixed by an
+        unrelated new token: a failover happened since the write and the
+        write itself may have been lost — re-read and reconcile the intended
+        authorization state on the current primary (reapply the change
+        idempotently if missing), then use that write's token. This matters
+        most for revokes/offboarding. primary_consulted=true means the
+        transparent fallback already re-checked the primary and it cannot
+        satisfy the token either.
       headers:
         X-PGAuthz-Stale: { $ref: '#/components/headers/XPGAuthzStale' }
       content:

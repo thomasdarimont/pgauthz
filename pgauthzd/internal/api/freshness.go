@@ -146,16 +146,22 @@ func writeFreshnessConflict(w http.ResponseWriter, verdict string, primaryConsul
 	})
 }
 
-// freshnessAction is the per-verdict client guidance (review #5):
+// freshnessAction is the per-verdict client guidance (reviews #5/#6):
 //
 //	stale       → retry the primary / another replica, or wait
 //	unknown     → this node can't judge; retry the primary
-//	wrong_epoch → NOT retryable; re-mint via a new write or drop the constraint
+//	wrong_epoch → NOT retryable, and NOT fixed by an unrelated re-mint: the
+//	              original write may have been LOST in the failover, so the
+//	              client must re-read and reconcile its intended state on the
+//	              new primary (reapply idempotently), then use that write's
+//	              token. This matters most for revokes/offboarding.
 func freshnessAction(verdict string, primaryConsulted bool) string {
 	switch verdict {
 	case "wrong_epoch":
-		return "the token was minted on a different WAL timeline (a failover happened since the write); " +
-			"retrying cannot succeed — obtain a new token with a fresh write, or drop the consistency requirement"
+		return "the token was minted on a different WAL timeline (a failover happened since the write), and " +
+			"the write it covers may have been lost — re-read and reconcile the intended authorization state " +
+			"on the current primary, reapplying the change idempotently if it is missing, then use the token " +
+			"from that write"
 	case "unknown":
 		if primaryConsulted {
 			return "neither this node nor the primary could determine freshness; retry later"
@@ -194,7 +200,13 @@ func (h *Handler) mintRevision(w http.ResponseWriter, r *http.Request) string {
 	}
 	fm, ok := h.rawWrite.(authz.FreshnessMinter)
 	if !ok {
-		w.Header().Set(RevisionStatusHeader, "disabled")
+		// Freshness is ENABLED but this write backend cannot mint — a topology
+		// anomaly (a full instance's direct pgx backend always can), not the
+		// feature being off. Report `unavailable` (review #6) and count it so
+		// the misconfiguration is visible, same as a runtime mint failure.
+		metrics.FreshnessMintFailures.Inc()
+		slog.Error("freshness tokens enabled but the write backend cannot mint them (no FreshnessMinter)")
+		w.Header().Set(RevisionStatusHeader, "unavailable")
 		return ""
 	}
 	epoch, lsn, err := fm.FreshnessToken(r.Context())

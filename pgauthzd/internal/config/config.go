@@ -160,6 +160,15 @@ type Config struct {
 	// FRESHNESS_PRIMARY_POOL_MAX, default 10.
 	FreshnessPrimaryPoolMax int
 
+	// OpenAPIEnabled serves this instance's OpenAPI description at
+	// GET /pgauthz/v1/openapi.{json,yaml} on the public listener,
+	// unauthenticated (the document ships in the public repository). The served
+	// document is INSTANCE-ACCURATE: an OPA-fronted instance's copy omits the
+	// native paths its public listener does not register. Env OPENAPI_ENABLED,
+	// default true; set false to disable the endpoints entirely (exposure
+	// minimization).
+	OpenAPIEnabled bool
+
 	// MetricsListenAddr, when set, serves the Prometheus `/metrics` endpoint on a
 	// SEPARATE listener (ADR 0010). Bind it to the pod/mesh network — never the
 	// public client listener (tenants must not scrape ops data). Empty = off. Env
@@ -253,6 +262,7 @@ func Load() (*Config, error) {
 		SubjectIDFallback:            env("SUBJECT_ID_FALLBACK_CLAIM", "sub"),
 		FreshnessPrimaryURL:          env("FRESHNESS_PRIMARY_URL", ""),
 		FreshnessPrimaryPoolMax:      envInt("FRESHNESS_PRIMARY_POOL_MAX", 10),
+		OpenAPIEnabled:               envBool("OPENAPI_ENABLED", true),
 		MetricsListenAddr:            env("METRICS_LISTEN_ADDR", ""),
 		MetricsSampleIntervalSeconds: envInt("METRICS_SAMPLE_INTERVAL_SECONDS", 30),
 		MetricsMaxStores:             envInt("METRICS_MAX_STORES", 100),
