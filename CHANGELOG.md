@@ -7,6 +7,38 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Verdict-specific freshness errors** ([ADR 0009](docs/adr/0009-freshness-tokens.md)).
+  An unsatisfiable `at_least_as_fresh` read now returns a structured `409` —
+  `{error: "freshness_constraint_unsatisfied", verdict, primary_consulted,
+  message}` (plus the existing `X-PGAuthz-Stale` header) — with per-verdict
+  guidance: `stale`/`unknown` → retry the primary; `wrong_epoch` → **not
+  retryable** (a failover happened; re-mint via a new write or drop the
+  constraint). `primary_consulted: true` says the transparent fallback already
+  re-checked the primary, so "retry the primary" is no longer offered as advice.
+- **Mint failures are surfaced, not silent.** A write that commits but cannot
+  mint its freshness token now reports `X-PGAuthz-Revision-Status: unavailable`
+  (vs `issued` / `disabled`), increments
+  `pgauthzd_freshness_mint_failures_total`, and logs the error;
+  `pgauthzd_freshness_tokens_minted_total` counts successes.
+- **Duplicate derived key ids are a startup error.** Two `FRESHNESS_TOKEN_KEYS`
+  secrets deriving the same kid (a ~2⁻³¹-per-pair sha256-prefix accident) would
+  silently shadow one key at verification; `config.Load` now rejects the keyring
+  deterministically at startup.
+
+### Changed
+
+- **Bad-token 400s are opaque by design.** The freshness guard returns one fixed
+  message for every bad-token cause (malformed / unknown-or-retired kid /
+  signature mismatch) so a probe can't distinguish "key rotated away" from
+  "forged"; the specific reason is now logged server-side instead.
+- Documented the **cooperative-consistency contract** (ADR 0009 + PRODUCTION.md):
+  freshness tokens upgrade only the reads that present them — deployment-level
+  revocation visibility remains `remote_apply`'s job, and a PEP fronting end
+  users must own consistency selection (retain the newest token, never let
+  clients weaken the mode, cache-bypass after revokes).
+
 ## [0.9.0] - 2026-07-06
 
 ### Added

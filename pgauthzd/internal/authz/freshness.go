@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -48,6 +49,23 @@ func NewKeyring(secrets []string) Keyring {
 		ring = append(ring, Key{KID: deriveKID(s), Secret: []byte(s)})
 	}
 	return ring
+}
+
+// Validate rejects a keyring in which two entries derive the same kid — a
+// ~2^-31-per-pair accident between distinct secrets that would otherwise cause
+// silent verification failures for the shadowed key (byKID returns the first
+// match, so the second key's tokens would always fail the MAC). Checked at
+// startup (config.Load), so a collision is a deterministic configuration error
+// instead of a runtime ambiguity.
+func (k Keyring) Validate() error {
+	seen := map[string]bool{}
+	for _, key := range k {
+		if seen[key.KID] {
+			return fmt.Errorf("freshness keyring: two secrets derive the same key id %q; change one of them", key.KID)
+		}
+		seen[key.KID] = true
+	}
+	return nil
 }
 
 // KIDs returns the derived key ids in ring order (metrics pre-init).
@@ -129,40 +147,45 @@ func EncodeFreshnessToken(key Key, epoch int32, lsn string) string {
 }
 
 // DecodeFreshnessToken verifies the signature against the keyring entry the
-// token's kid selects and returns {epoch, lsn, kid}. It returns ErrBadToken on
-// any malformed input, unknown kid, or signature mismatch — one opaque error,
-// so a probe can't distinguish "key rotated away" from "forged".
+// token's kid selects and returns {epoch, lsn, kid}. Every failure wraps
+// ErrBadToken with a REASON for the server log (unknown kid vs signature vs
+// malformed — the rotation-stranded-client signal); the HTTP guard must send
+// the CALLER one fixed opaque message regardless, so a probe cannot distinguish
+// "key rotated away" from "forged" (no oracle).
 func DecodeFreshnessToken(ring Keyring, token string) (epoch int32, lsn string, kid string, err error) {
 	encPayload, encMAC, ok := strings.Cut(token, ".")
 	if !ok {
-		return 0, "", "", ErrBadToken
+		return 0, "", "", fmt.Errorf("%w: malformed (no signature segment)", ErrBadToken)
 	}
 	payload, err := freshnessB64.DecodeString(encPayload)
 	if err != nil {
-		return 0, "", "", ErrBadToken
+		return 0, "", "", fmt.Errorf("%w: malformed payload encoding", ErrBadToken)
 	}
 	gotMAC, err := freshnessB64.DecodeString(encMAC)
 	if err != nil {
-		return 0, "", "", ErrBadToken
+		return 0, "", "", fmt.Errorf("%w: malformed signature encoding", ErrBadToken)
 	}
 	kidStr, rest, ok := strings.Cut(string(payload), ":")
 	if !ok {
-		return 0, "", "", ErrBadToken
+		return 0, "", "", fmt.Errorf("%w: malformed payload", ErrBadToken)
 	}
 	key, ok := ring.byKID(kidStr)
 	if !ok {
-		return 0, "", "", ErrBadToken
+		if len(kidStr) > 16 { // caller-controlled; bound what reaches the log
+			kidStr = kidStr[:16] + "…"
+		}
+		return 0, "", "", fmt.Errorf("%w: unknown key id %q (retired by rotation, or forged)", ErrBadToken, kidStr)
 	}
 	if !hmac.Equal(gotMAC, freshnessMAC(key.Secret, string(payload))) {
-		return 0, "", "", ErrBadToken
+		return 0, "", "", fmt.Errorf("%w: signature mismatch (kid %s)", ErrBadToken, key.KID)
 	}
 	epochStr, lsnStr, ok := strings.Cut(rest, ":")
 	if !ok {
-		return 0, "", "", ErrBadToken
+		return 0, "", "", fmt.Errorf("%w: malformed payload", ErrBadToken)
 	}
 	n, err := strconv.ParseInt(epochStr, 10, 32)
 	if err != nil {
-		return 0, "", "", ErrBadToken
+		return 0, "", "", fmt.Errorf("%w: malformed epoch", ErrBadToken)
 	}
 	return int32(n), lsnStr, key.KID, nil
 }

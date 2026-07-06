@@ -1,6 +1,7 @@
 package authz
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -37,14 +38,14 @@ func TestFreshnessTokenRejectsTamper(t *testing.T) {
 	// signature no longer matches.
 	bad := []byte(tok)
 	bad[0] ^= 0x01
-	if _, _, _, err := DecodeFreshnessToken(r, string(bad)); err != ErrBadToken {
+	if _, _, _, err := DecodeFreshnessToken(r, string(bad)); !errors.Is(err, ErrBadToken) {
 		t.Fatalf("tampered token: got err %v, want ErrBadToken", err)
 	}
 }
 
 func TestFreshnessTokenRejectsWrongKey(t *testing.T) {
 	tok := EncodeFreshnessToken(ring("key-a")[0], 7, "0/100")
-	if _, _, _, err := DecodeFreshnessToken(ring("key-b"), tok); err != ErrBadToken {
+	if _, _, _, err := DecodeFreshnessToken(ring("key-b"), tok); !errors.Is(err, ErrBadToken) {
 		t.Fatalf("wrong key: got err %v, want ErrBadToken", err)
 	}
 }
@@ -52,7 +53,7 @@ func TestFreshnessTokenRejectsWrongKey(t *testing.T) {
 func TestFreshnessTokenRejectsMalformed(t *testing.T) {
 	r := ring("k")
 	for _, bad := range []string{"", "no-dot", ".", "!!!.###", "abc.def"} {
-		if _, _, _, err := DecodeFreshnessToken(r, bad); err != ErrBadToken {
+		if _, _, _, err := DecodeFreshnessToken(r, bad); !errors.Is(err, ErrBadToken) {
 			t.Fatalf("malformed %q: got err %v, want ErrBadToken", bad, err)
 		}
 	}
@@ -85,7 +86,7 @@ func TestFreshnessKeyringRotationOverlap(t *testing.T) {
 // same opaque error as a forgery.
 func TestFreshnessKeyringRejectsRetiredKey(t *testing.T) {
 	tok := EncodeFreshnessToken(ring("retired-secret")[0], 1, "0/50")
-	if _, _, _, err := DecodeFreshnessToken(ring("current-secret"), tok); err != ErrBadToken {
+	if _, _, _, err := DecodeFreshnessToken(ring("current-secret"), tok); !errors.Is(err, ErrBadToken) {
 		t.Fatalf("retired key: got err %v, want ErrBadToken", err)
 	}
 }
@@ -100,7 +101,7 @@ func TestFreshnessKeyringRejectsKIDSwap(t *testing.T) {
 	payload := r[0].KID + ":9:2/FF"
 	_, encMAC, _ := strings.Cut(tok, ".")
 	forged := freshnessB64.EncodeToString([]byte(payload)) + "." + encMAC
-	if _, _, _, err := DecodeFreshnessToken(r, forged); err != ErrBadToken {
+	if _, _, _, err := DecodeFreshnessToken(r, forged); !errors.Is(err, ErrBadToken) {
 		t.Fatalf("kid-swapped token: got err %v, want ErrBadToken", err)
 	}
 }
@@ -122,5 +123,22 @@ func TestKeyringDerivation(t *testing.T) {
 	}
 	if _, ok := r.byKID("nope"); ok {
 		t.Fatal("unknown kid must not resolve")
+	}
+}
+
+// A kid collision between DISTINCT secrets (~2^-31 per pair; not constructible
+// with real sha256 inputs here, so built literally) must be a deterministic
+// startup error — byKID's first-match would otherwise silently shadow the
+// second key and fail all its tokens.
+func TestKeyringValidateRejectsKIDCollision(t *testing.T) {
+	collided := Keyring{
+		{KID: "AAAAAA", Secret: []byte("secret-one")},
+		{KID: "AAAAAA", Secret: []byte("secret-two")},
+	}
+	if err := collided.Validate(); err == nil || !strings.Contains(err.Error(), "same key id") {
+		t.Fatalf("expected kid-collision error, got %v", err)
+	}
+	if err := NewKeyring([]string{"a", "b"}).Validate(); err != nil {
+		t.Fatalf("distinct kids must validate, got %v", err)
 	}
 }

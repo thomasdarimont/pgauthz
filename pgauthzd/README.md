@@ -542,13 +542,40 @@ The reader checks whether its connection has replayed to the token's WAL
 position **on the token's timeline** — the same verdict logic on a replica and
 on a primary, so a promoted primary rejects a cross-timeline token
 (`wrong_epoch`) instead of confirming a write a lossy failover lost. Satisfied →
-the read is served normally. Not satisfied → **`409`** with `X-PGAuthz-Stale:
-<stale|wrong_epoch|unknown>`, telling the caller to retry against the primary.
-Without the header pair a read uses the default (`minimize_latency`, answer from
-the local replica). A malformed/forged token, a token minted under a key no
-longer in the keyring, or the feature disabled — all rejected with `400` (fail
-closed: a freshness request is never silently served as if fresh). See
+the read is served normally. Not satisfied → **`409`** with
+`X-PGAuthz-Stale: <verdict>` and a structured body telling the caller the
+*right* recovery for the verdict:
+
+```json
+{
+  "status": 409,
+  "error": "freshness_constraint_unsatisfied",
+  "verdict": "wrong_epoch",
+  "primary_consulted": true,
+  "message": "…retrying cannot succeed — obtain a new token with a fresh write…"
+}
+```
+
+| Verdict | Client action |
+|---|---|
+| `stale` | retry the primary / another replica, or wait |
+| `unknown` | this node can't judge its timeline; retry the primary |
+| `wrong_epoch` | **not retryable** — a failover happened since the write; re-mint via a new write or drop the constraint |
+
+`primary_consulted: true` means the transparent fallback already re-checked the
+primary and it can't satisfy the token either. Without the header pair a read
+uses the default (`minimize_latency`, answer from the local replica). A
+malformed/forged token, a token minted under a key no longer in the keyring, or
+the feature disabled — all rejected with **`400`** and one fixed opaque message
+(fail closed, and no oracle: a probe can't distinguish "key rotated away" from
+"forged"; the reason is logged server-side only). See
 [ADR 0009](../docs/adr/0009-freshness-tokens.md).
+
+Every write also reports the mint outcome in **`X-PGAuthz-Revision-Status`**:
+`issued` (token in `X-PGAuthz-Revision`), `unavailable` (freshness is enabled
+but minting failed — the write itself committed; counted in
+`pgauthzd_freshness_mint_failures_total` and logged), or `disabled` (feature not
+configured).
 
 **Key rotation.** Tokens embed a key id derived from the secret
 (`base64url(sha256(secret)[:4])`), so the verifier picks the right keyring entry

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -27,6 +28,11 @@ const (
 	// ServedByHeader reports "primary" when a read was transparently served from
 	// the primary fallback pool because the local replica wasn't fresh enough.
 	ServedByHeader = "X-PGAuthz-Served-By"
+	// RevisionStatusHeader reports the mint outcome on a write:
+	// issued | unavailable (enabled but minting failed — the write itself
+	// committed) | disabled (feature not configured). Lets a caller that expects
+	// read-your-writes tell a broken mint from a switched-off feature.
+	RevisionStatusHeader = "X-PGAuthz-Revision-Status"
 
 	consistencyAtLeastAsFresh = "at_least_as_fresh"
 )
@@ -61,7 +67,12 @@ func (h *Handler) checkFreshToken(w http.ResponseWriter, r *http.Request, token 
 	}
 	epoch, lsn, kid, err := authz.DecodeFreshnessToken(h.freshKeys, token)
 	if err != nil {
-		writeBadRequest(w, "invalid freshness token: "+err.Error())
+		// The CALLER gets one fixed opaque message for every bad-token cause — a
+		// probe must not distinguish "key retired by rotation" from "forged" (no
+		// oracle). The operational detail (unknown kid / signature / malformed,
+		// wrapped in err) goes to the server log only.
+		slog.Info("rejected freshness token", "reason", err)
+		writeBadRequest(w, "invalid freshness token")
 		return false
 	}
 	// Rotation drain signal: which keyring entry verified this token. The old
@@ -88,6 +99,7 @@ func (h *Handler) checkFreshToken(w http.ResponseWriter, r *http.Request, token 
 	// unconditionally authoritative for this token: a promoted primary on a new
 	// timeline must reject a cross-timeline token too (ADR 0009). Only serve from
 	// the primary if it can actually satisfy the token; otherwise fail closed.
+	primaryConsulted := false
 	if fb, ok := h.raw.(authz.FreshnessFallback); ok && fb.HasPrimaryFallback() {
 		pv, perr := fb.AssertFreshPrimary(r.Context(), epoch, lsn)
 		if perr != nil {
@@ -101,12 +113,60 @@ func (h *Handler) checkFreshToken(w http.ResponseWriter, r *http.Request, token 
 			metrics.FreshnessFallback.Inc()
 			return true
 		}
-		verdict = pv // the primary can't satisfy it either → fail closed below
+		verdict, primaryConsulted = pv, true // primary can't satisfy it either → fail closed below
 	}
-	w.Header().Set(StaleHeader, verdict)
-	writeError(w, http.StatusConflict,
-		"cannot satisfy the freshness token ("+verdict+"); retry against the primary")
+	writeFreshnessConflict(w, verdict, primaryConsulted)
 	return false
+}
+
+// freshnessConflict is the structured 409 body for an unsatisfiable
+// at_least_as_fresh read: the verdict plus whether the primary was already
+// consulted let a client pick the RIGHT recovery, instead of the old generic
+// "retry against the primary" — which is wrong advice for wrong_epoch (no retry
+// can ever succeed: the token's timeline is gone) and after a failed
+// transparent fallback (the primary WAS the retry).
+type freshnessConflict struct {
+	Status           int    `json:"status"`
+	Error            string `json:"error"`
+	Verdict          string `json:"verdict"`
+	PrimaryConsulted bool   `json:"primary_consulted"`
+	Message          string `json:"message"`
+}
+
+func writeFreshnessConflict(w http.ResponseWriter, verdict string, primaryConsulted bool) {
+	w.Header().Set(StaleHeader, verdict)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	json.NewEncoder(w).Encode(freshnessConflict{
+		Status:           http.StatusConflict,
+		Error:            "freshness_constraint_unsatisfied",
+		Verdict:          verdict,
+		PrimaryConsulted: primaryConsulted,
+		Message:          freshnessAction(verdict, primaryConsulted),
+	})
+}
+
+// freshnessAction is the per-verdict client guidance (review #5):
+//
+//	stale       → retry the primary / another replica, or wait
+//	unknown     → this node can't judge; retry the primary
+//	wrong_epoch → NOT retryable; re-mint via a new write or drop the constraint
+func freshnessAction(verdict string, primaryConsulted bool) string {
+	switch verdict {
+	case "wrong_epoch":
+		return "the token was minted on a different WAL timeline (a failover happened since the write); " +
+			"retrying cannot succeed — obtain a new token with a fresh write, or drop the consistency requirement"
+	case "unknown":
+		if primaryConsulted {
+			return "neither this node nor the primary could determine freshness; retry later"
+		}
+		return "this node cannot determine its WAL timeline; retry against the primary"
+	default: // stale
+		if primaryConsulted {
+			return "the primary was consulted and cannot satisfy the token either; retry later"
+		}
+		return "this node has not replayed up to the token's position; retry against the primary or wait"
+	}
 }
 
 // readGuard wraps a read handler with the freshness guard (a no-op unless the
@@ -120,25 +180,34 @@ func (h *Handler) readGuard(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// mintRevision mints a freshness token for a just-completed write and sets the
-// X-PGAuthz-Revision response header, returning the token (or "" when disabled /
-// unsupported / on a soft mint failure). Minting is best-effort: the write has
-// already committed, so a mint error must not fail the request — the client
-// simply gets no token for it.
+// mintRevision mints a freshness token for a just-completed write, sets the
+// X-PGAuthz-Revision response header, and reports the outcome in
+// X-PGAuthz-Revision-Status (issued | unavailable | disabled). Minting is
+// best-effort: the write has already committed, so a mint error must not fail
+// the request — but it must not be SILENT either (review #5): the failure is
+// counted, logged, and marked `unavailable` so the caller knows it lost
+// read-your-writes for this write (vs `disabled` = feature off).
 func (h *Handler) mintRevision(w http.ResponseWriter, r *http.Request) string {
 	if !h.cfg.FreshnessEnabled() {
+		w.Header().Set(RevisionStatusHeader, "disabled")
 		return ""
 	}
 	fm, ok := h.rawWrite.(authz.FreshnessMinter)
 	if !ok {
+		w.Header().Set(RevisionStatusHeader, "disabled")
 		return ""
 	}
 	epoch, lsn, err := fm.FreshnessToken(r.Context())
 	if err != nil {
+		metrics.FreshnessMintFailures.Inc()
+		slog.Error("freshness token mint failed; write committed without a revision", "error", err)
+		w.Header().Set(RevisionStatusHeader, "unavailable")
 		return ""
 	}
+	metrics.FreshnessMinted.Inc()
 	tok := authz.EncodeFreshnessToken(h.freshKeys[0], epoch, lsn)
 	w.Header().Set(RevisionHeader, tok)
+	w.Header().Set(RevisionStatusHeader, "issued")
 	return tok
 }
 

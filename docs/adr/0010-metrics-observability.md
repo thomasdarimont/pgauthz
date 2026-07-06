@@ -83,6 +83,8 @@ enumerations / scraping.
 | `pgauthzd_replica_replay_lag_bytes` | gauge | — | sampled `receive_lsn − replay_lsn` |
 | `pgauthzd_wal_receiver_up` | gauge | — | `pg_stat_wal_receiver.status = streaming` (0/1) |
 | `pgauthzd_freshness_tokens_minted_total` | counter | — | writes opting into read-your-writes |
+| `pgauthzd_freshness_mint_failures_total` | counter | — | committed writes that lost their token (`X-PGAuthz-Revision-Status: unavailable`) |
+| `pgauthzd_freshness_key_verifications_total` | counter | `kid` | key-rotation drain signal — drop the retiring key when its kid flatlines (kid set = configured keyring, bounded) |
 
 `verdict` ∈ `fresh \| stale \| wrong_epoch \| unknown`. **Caveat (per ADR 0009):**
 `replica_replay_lag_bytes` reads ~0 for a *disconnected* standby, so always pair
@@ -214,3 +216,9 @@ not left to callers.
    DEFINER `authz.store_stats`. Deferred: model-version (registry uses content
    hashes, not a plain version column) and expired-tuple backlog (RLS-hidden from
    the reader role — needs the bypass path).
+4. **Freshness follow-ups (post-v0.9, review #5) — SHIPPED:**
+   `freshness_tokens_minted_total` + `freshness_mint_failures_total` (mint
+   visibility; pairs with `X-PGAuthz-Revision-Status`) and
+   `freshness_key_verifications_total{kid}` (rotation drain). Still open from
+   the catalog: `freshness_deficit_bytes`, `replica_replay_lag_bytes`,
+   `wal_receiver_up` (need engine-side sampling).

@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 )
 
 // Issuer describes one trusted token issuer and where to find its signing keys.
@@ -290,6 +292,12 @@ func Load() (*Config, error) {
 		}
 		seen[k] = true
 		c.FreshnessKeys = append(c.FreshnessKeys, k)
+	}
+	// Distinct secrets deriving the SAME key id (a ~2^-31-per-pair sha256-prefix
+	// accident) would silently shadow one key at verification time — make it a
+	// deterministic startup error instead.
+	if err := authz.NewKeyring(c.FreshnessKeys).Validate(); err != nil {
+		return nil, err
 	}
 
 	// Build the trusted-issuer list. The legacy single JWKS_URL/JWKS_FILE/

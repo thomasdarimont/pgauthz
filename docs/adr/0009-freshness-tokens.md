@@ -112,6 +112,16 @@ token = { kid, epoch: <timeline_id>, lsn: <pg_lsn> }   -- HMAC-signed, base64url
   `KEY_PREVIOUS` pair was rejected because it cannot express the
   accept-before-mint phase.
 
+### Scope: cooperative consistency, not global revocation enforcement
+
+A token upgrades only the reads that *present* it; a default
+(`minimize_latency`) read may still hit a lagging replica. Deployment-level
+revocation visibility is Layer B's job (`remote_apply` + the serving ⊆
+sync-set invariant); the token is the *causal read-your-writes* handle for
+participating workflows. A PEP fronting end users must own consistency
+selection (retain the newest observed token, never let clients weaken the
+mode, cache-bypass after revokes) — see PRODUCTION.md.
+
 ### Mint (writer)
 
 After the write transaction commits, on the **same** pgx connection:
@@ -123,6 +133,13 @@ SELECT pg_current_wal_insert_lsn(),
 
 One extra cheap round trip. The writer returns the signed token in the native
 write response (and an `X-PGAuthz-Revision` header on AuthZEN writes).
+
+Minting is **best-effort but never silent**: the write has already committed,
+so a mint failure must not fail the request — instead it is counted
+(`pgauthzd_freshness_mint_failures_total`), logged, and reported to the caller
+as `X-PGAuthz-Revision-Status: unavailable` (vs `issued` / `disabled`), so a
+client that expected read-your-writes can tell a broken mint from a
+switched-off feature.
 
 ### Read modes
 
@@ -148,8 +165,12 @@ special case):
 
 Verdict, at the guard (HTTP) then in the engine (`assert_fresh`):
 
-1. Bad signature → **400**. `at_least_as_fresh` with **no token** → **400** — a
-   missing token is a client error, never a silent downgrade to a low-latency read.
+1. Bad signature / unknown kid → **400**. `at_least_as_fresh` with **no token**
+   → **400** — a missing token is a client error, never a silent downgrade to a
+   low-latency read. The 400 message is one fixed opaque string for every
+   bad-token cause: a probe must not be able to distinguish "key retired by
+   rotation" from "forged" (**no oracle**); the operational detail (unknown kid
+   vs signature vs malformed) goes to the server log only.
 2. timeline unknown (empty `pg_stat_wal_receiver`) → **`unknown`** → route to primary.
 3. `node_timeline != token.epoch` → **`wrong_epoch`** → route to primary. This is
    the lossy-failover guard: a promoted primary is on a **new** timeline, so an
@@ -157,6 +178,24 @@ Verdict, at the guard (HTTP) then in the engine (`assert_fresh`):
    (even a clean promotion forces a re-mint), which beats confirming a lost write.
 4. `node_position < token.lsn` → **`stale`** → briefly wait / route to primary.
 5. Otherwise → **`fresh`** → serve locally.
+
+An unsatisfiable read returns a **structured 409** —
+`{error: "freshness_constraint_unsatisfied", verdict, primary_consulted,
+message}` plus `X-PGAuthz-Stale: <verdict>` — because the right recovery differs
+by verdict:
+
+| Verdict | Client action |
+|---|---|
+| `stale` | retry the primary / another replica, or wait |
+| `unknown` | this node can't judge; retry the primary |
+| `wrong_epoch` | **not retryable** — the token's timeline is gone (failover); re-mint via a new write or drop the constraint |
+| bad token (400) | reject; do not retry |
+
+`primary_consulted: true` means the transparent fallback already re-checked the
+primary and it could not satisfy the token either — "retry the primary" is no
+longer useful advice. (A future refinement could validate timeline *ancestry* +
+the fork LSN to accept old-timeline tokens after a provably-lossless promotion;
+conservative rejection is the deliberate choice today.)
 
 ### Pagination
 

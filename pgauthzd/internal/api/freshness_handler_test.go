@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,6 +22,7 @@ type freshStub struct {
 	verdict        string // replica verdict
 	primaryVerdict string // verdict when re-checked on the primary (fallback)
 	assertErr      error
+	mintErr        error
 	fallback       bool
 }
 
@@ -38,7 +40,7 @@ func (b *freshStub) WriteTuplesChecked(context.Context, authz.CheckedWriteReques
 	return nil, nil
 }
 func (b *freshStub) FreshnessToken(context.Context) (int32, string, error) {
-	return b.epoch, b.lsn, nil
+	return b.epoch, b.lsn, b.mintErr
 }
 func (b *freshStub) AssertFresh(context.Context, int32, string) (string, error) {
 	return b.verdict, b.assertErr
@@ -84,6 +86,18 @@ func TestFreshnessFallbackPrimaryAlsoStale(t *testing.T) {
 	if authz.PrimaryFallback(r.Context()) {
 		t.Fatal("context must NOT be marked for primary fallback when the primary is not fresh")
 	}
+	// Structured body: verdict + primary_consulted let the client pick the right
+	// recovery (a wrong_epoch after a consulted primary is NOT retryable).
+	var body freshnessConflict
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode 409 body: %v (%s)", err, w.Body.String())
+	}
+	if body.Error != "freshness_constraint_unsatisfied" || body.Verdict != "wrong_epoch" || !body.PrimaryConsulted {
+		t.Fatalf("unexpected 409 body: %+v", body)
+	}
+	if strings.Contains(body.Message, "retry against the primary") {
+		t.Fatalf("wrong_epoch guidance must not suggest retrying the primary: %q", body.Message)
+	}
 }
 
 // at_least_as_fresh with NO token is a client error (400), not a silent
@@ -128,7 +142,31 @@ func TestWriteMintsRevision(t *testing.T) {
 	if err != nil || e != 1 || l != "0/ABC" || kid != testKeyring[0].KID {
 		t.Fatalf("decode header token: {%d,%s,%s} err=%v", e, l, kid, err)
 	}
+	if got := w.Header().Get(RevisionStatusHeader); got != "issued" {
+		t.Fatalf("expected X-PGAuthz-Revision-Status: issued, got %q", got)
+	}
 }
+
+// Mint failure after a committed write: the write still succeeds (200), but the
+// gap is surfaced — no token, X-PGAuthz-Revision-Status: unavailable (vs
+// "disabled", which means the feature is off) (review #5).
+func TestWriteMintFailureSurfaced(t *testing.T) {
+	b := &freshStub{mintErr: errMintBoom}
+	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo", FreshnessKeys: testFreshKeys})
+	w := httptest.NewRecorder()
+	h.WriteTuples(w, writeReq())
+	if w.Code != http.StatusOK {
+		t.Fatalf("a mint failure must not fail the committed write: got %d body=%s", w.Code, w.Body.String())
+	}
+	if w.Header().Get(RevisionHeader) != "" {
+		t.Fatal("no token must be issued on a mint failure")
+	}
+	if got := w.Header().Get(RevisionStatusHeader); got != "unavailable" {
+		t.Fatalf("expected X-PGAuthz-Revision-Status: unavailable, got %q", got)
+	}
+}
+
+var errMintBoom = errors.New("boom: primary connection lost post-commit")
 
 // Key rotation at the guard: a token minted under the retiring key still passes
 // while that key is anywhere in the keyring (any order), and 400s once removed.
@@ -176,7 +214,7 @@ func TestWriteMintsWithFirstKey(t *testing.T) {
 	}
 }
 
-// With freshness disabled (no key), a write mints nothing.
+// With freshness disabled (no key), a write mints nothing and says so.
 func TestWriteNoMintWhenDisabled(t *testing.T) {
 	b := &freshStub{epoch: 1, lsn: "0/ABC"}
 	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo"})
@@ -184,6 +222,9 @@ func TestWriteNoMintWhenDisabled(t *testing.T) {
 	h.WriteTuples(w, writeReq())
 	if w.Header().Get(RevisionHeader) != "" || strings.Contains(w.Body.String(), "revision") {
 		t.Fatalf("freshness disabled: expected no token; body=%s", w.Body.String())
+	}
+	if got := w.Header().Get(RevisionStatusHeader); got != "disabled" {
+		t.Fatalf("expected X-PGAuthz-Revision-Status: disabled, got %q", got)
 	}
 }
 
@@ -231,8 +272,17 @@ func TestFreshnessGuard(t *testing.T) {
 				if w.Code != tc.wantCode {
 					t.Fatalf("code=%d want %d body=%s", w.Code, tc.wantCode, w.Body.String())
 				}
-				if tc.wantCode == http.StatusConflict && w.Header().Get(StaleHeader) != tc.verdict {
-					t.Fatalf("X-PGAuthz-Stale=%q want %q", w.Header().Get(StaleHeader), tc.verdict)
+				if tc.wantCode == http.StatusConflict {
+					if w.Header().Get(StaleHeader) != tc.verdict {
+						t.Fatalf("X-PGAuthz-Stale=%q want %q", w.Header().Get(StaleHeader), tc.verdict)
+					}
+					var body freshnessConflict
+					if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+						t.Fatalf("decode 409 body: %v (%s)", err, w.Body.String())
+					}
+					if body.Error != "freshness_constraint_unsatisfied" || body.Verdict != tc.verdict || body.PrimaryConsulted {
+						t.Fatalf("unexpected 409 body: %+v", body)
+					}
 				}
 			}
 		})

@@ -371,6 +371,27 @@ stale-deny / extra primary hop, never an allow. Rotate on suspicion without
 ceremony; step 3 immediately (skipping the overlap) only costs in-flight
 `at_least_as_fresh` reads a `400`.
 
+**Freshness is cooperative — it is not global revocation enforcement.** A
+freshness token upgrades only the reads that *present* it; a default
+(`minimize_latency`) read may still be served by a lagging replica. The two
+mechanisms divide the work:
+
+- **`remote_apply` (Layer B)** is the *deployment-level* revocation guarantee:
+  a revoke is acknowledged only once every synchronous replica has applied it.
+- **Freshness tokens** are *causal read-your-writes* for participating
+  workflows: "this later read must see that earlier write."
+
+If a PEP/BFF fronts pgauthz for end users, the PEP owns consistency selection:
+
+- retain the newest token it has observed (tokens are global watermarks —
+  the latest one covers all earlier writes);
+- never let an end user weaken consistency (the consistency header must be
+  set by the PEP, not passed through from the client);
+- require `at_least_as_fresh` (or `remote_apply` + replica discipline) for
+  security-sensitive flows — permission changes, sharing, offboarding;
+- bypass or revision-key any decision cache after a revocation, so a cached
+  allow can't outlive the revoke the token machinery just enforced.
+
 Optionally, set `FRESHNESS_PRIMARY_URL` (a reader-role DSN to the primary) on a
 decision-only reader for **transparent fallback**: instead of the `409`, the
 reader re-runs a not-fresh-enough read on the primary itself and returns the

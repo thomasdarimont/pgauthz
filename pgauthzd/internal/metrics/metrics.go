@@ -52,6 +52,19 @@ var (
 		Help: "Successful freshness-token signature verifications by key id (rotation drain signal).",
 	}, []string{"kid"})
 
+	// FreshnessMinted / FreshnessMintFailures: read-your-writes availability on
+	// the write path. A mint failure cannot fail the (already-committed) write,
+	// so this pair — plus the X-PGAuthz-Revision-Status header — is what makes
+	// the gap visible instead of silent.
+	FreshnessMinted = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "pgauthzd_freshness_tokens_minted_total",
+		Help: "Freshness tokens successfully minted on writes (ADR 0009).",
+	})
+	FreshnessMintFailures = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "pgauthzd_freshness_mint_failures_total",
+		Help: "Writes that committed but could not mint a freshness token (caller got X-PGAuthz-Revision-Status: unavailable).",
+	})
+
 	buildInfo = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "pgauthzd_build_info",
 		Help: "Build/runtime info; value is always 1, the labels carry the data.",
