@@ -125,20 +125,27 @@ already exists for writes; extended to reads):
 
 ### Reader guard — `assert_fresh(token)`
 
-On the reader's **own replica connection** (no second pool needed for the check):
+`assert_fresh` derives **this node's** `(timeline, WAL position)` and compares
+them to the token — the *same* logic on a standby and a primary, so a **promoted
+primary is guarded too** (there is deliberately **no** "primary is always fresh"
+special case):
 
-1. Verify the token signature; bad → fail closed (400).
-2. Determine the replica's current replay timeline from
-   `pg_stat_wal_receiver.received_tli`. If `pg_stat_wal_receiver` is **empty**
-   (not actively streaming — archive recovery / disconnected), the timeline is
-   unknown → **fail closed / route to primary**.
-3. If `received_tli != token.epoch` → the replica is not on the token's timeline →
-   **route to primary** (conservative: a token whose LSN is at/below the timeline
-   divergence point is technically still valid on the shared history, but
-   cross-epoch reject is sound and simple; refine only if measured to matter).
-4. If `pg_last_wal_replay_lsn() < token.lsn` → not caught up yet → briefly wait
-   (bounded) and re-check, else **route to primary**.
-5. Otherwise the replica is provably fresh → serve locally.
+- **standby:** timeline = `pg_stat_wal_receiver.received_tli` (recovery-safe; NULL
+  when not streaming / without `pg_read_all_stats`), position = `pg_last_wal_replay_lsn()`.
+- **primary:** timeline = `pg_walfile_name(pg_current_wal_insert_lsn())`, position
+  = `pg_current_wal_insert_lsn()`.
+
+Verdict, at the guard (HTTP) then in the engine (`assert_fresh`):
+
+1. Bad signature → **400**. `at_least_as_fresh` with **no token** → **400** — a
+   missing token is a client error, never a silent downgrade to a low-latency read.
+2. timeline unknown (empty `pg_stat_wal_receiver`) → **`unknown`** → route to primary.
+3. `node_timeline != token.epoch` → **`wrong_epoch`** → route to primary. This is
+   the lossy-failover guard: a promoted primary is on a **new** timeline, so an
+   old-timeline token is rejected *here too* — not served as if fresh. Conservative
+   (even a clean promotion forces a re-mint), which beats confirming a lost write.
+4. `node_position < token.lsn` → **`stale`** → briefly wait / route to primary.
+5. Otherwise → **`fresh`** → serve locally.
 
 ### Pagination
 
@@ -176,21 +183,21 @@ pinning all sensitive reads to the primary. A deployment can use either or both.
   poll in step 4 with a single replica-side preamble — a drop-in optimization; the
   token format and guard are unchanged.
 
-## Open decision (deferred to implementation)
+## Stale-read routing shape (both shipped)
 
-**Stale-read routing shape** — when a replica cannot satisfy an
-`at_least_as_fresh` token:
+When a replica cannot satisfy an `at_least_as_fresh` token, the reader either:
 
-- **(a) Retryable signal** — return `409` + `X-PGAuthz-Stale` and let the
-  gateway/client retry against the primary-connected instance. Single pool, small
-  change; turns "route sensitive reads to primary" from *always* into
+- **(a) Retryable signal** (default) — return `409` + `X-PGAuthz-Stale` and let
+  the gateway/client retry against the primary-connected instance. Single pool;
+  turns "route sensitive reads to primary" from *always* into
   *only-when-actually-stale*.
-- **(b) Transparent fallback** — the reader carries a second pool to the primary
-  and re-runs the check there itself. Transparent to callers, but adds connection
-  management and a reader→primary reachability requirement.
-
-Recommend shipping **(a)** first (it delivers the precision win with minimal
-surface) and adding **(b)** as an opt-in later.
+- **(b) Transparent fallback** (opt-in, `FRESHNESS_PRIMARY_URL`) — the reader
+  holds a second pool to the primary. It does **not** assume the primary is
+  authoritative for the token: it **re-runs `assert_fresh` against the primary
+  pool** and serves from the primary (`X-PGAuthz-Served-By: primary`) only on a
+  `fresh` verdict. A promoted primary on a new timeline returns `wrong_epoch` →
+  the guard fails closed (`409`) instead of serving a possibly-lost write. Adds
+  connection management + a reader→primary reachability requirement.
 
 ## Alternatives considered
 

@@ -16,14 +16,18 @@ import (
 // FreshnessChecker so we can drive mint (write path) and the read guard.
 type freshStub struct {
 	authz.Backend
-	epoch     int32
-	lsn       string
-	verdict   string
-	assertErr error
-	fallback  bool
+	epoch          int32
+	lsn            string
+	verdict        string // replica verdict
+	primaryVerdict string // verdict when re-checked on the primary (fallback)
+	assertErr      error
+	fallback       bool
 }
 
 func (b *freshStub) HasPrimaryFallback() bool { return b.fallback }
+func (b *freshStub) AssertFreshPrimary(context.Context, int32, string) (string, error) {
+	return b.primaryVerdict, nil
+}
 
 func (b *freshStub) WriteTuples(context.Context, authz.WriteRequest) (int, error)  { return 1, nil }
 func (b *freshStub) DeleteTuples(context.Context, authz.WriteRequest) (int, error) { return 1, nil }
@@ -40,22 +44,59 @@ func (b *freshStub) AssertFresh(context.Context, int32, string) (string, error) 
 	return b.verdict, b.assertErr
 }
 
-// With a primary fallback configured, a not-fresh read proceeds (served from the
-// primary) instead of 409 — marked in the context and the X-PGAuthz-Served-By header.
+// Replica stale + the PRIMARY confirms fresh ⇒ transparent fallback proceeds,
+// marked in the context and the X-PGAuthz-Served-By header.
 func TestFreshnessTransparentFallback(t *testing.T) {
 	tok := authz.EncodeFreshnessToken([]byte(testFreshKey), 1, "0/50")
-	b := &freshStub{verdict: "stale", fallback: true}
+	b := &freshStub{verdict: "stale", fallback: true, primaryVerdict: "fresh"}
 	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileDecisionOnly, FreshnessKey: testFreshKey})
 	w := httptest.NewRecorder()
 	r := freshGuardReq("at_least_as_fresh", tok)
 	if ok := h.freshnessOK(w, r); !ok {
-		t.Fatalf("with fallback, a stale read should proceed; code=%d body=%s", w.Code, w.Body.String())
+		t.Fatalf("with fallback, a stale read confirmed fresh on the primary should proceed; code=%d body=%s", w.Code, w.Body.String())
 	}
 	if got := w.Header().Get(ServedByHeader); got != "primary" {
 		t.Fatalf("expected X-PGAuthz-Served-By: primary, got %q", got)
 	}
 	if !authz.PrimaryFallback(r.Context()) {
 		t.Fatal("request context should be marked for primary fallback")
+	}
+}
+
+// Fallback must re-validate on the primary: if the primary ALSO can't satisfy
+// the token (e.g. a promoted primary on a new timeline → wrong_epoch), the guard
+// fails closed (409) instead of blindly serving from it (ADR 0009 #2).
+func TestFreshnessFallbackPrimaryAlsoStale(t *testing.T) {
+	tok := authz.EncodeFreshnessToken([]byte(testFreshKey), 1, "0/50")
+	b := &freshStub{verdict: "stale", fallback: true, primaryVerdict: "wrong_epoch"}
+	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileDecisionOnly, FreshnessKey: testFreshKey})
+	w := httptest.NewRecorder()
+	r := freshGuardReq("at_least_as_fresh", tok)
+	if ok := h.freshnessOK(w, r); ok {
+		t.Fatal("fallback must NOT proceed when the primary can't satisfy the token")
+	}
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", w.Code)
+	}
+	if got := w.Header().Get(StaleHeader); got != "wrong_epoch" {
+		t.Fatalf("expected X-PGAuthz-Stale: wrong_epoch (primary verdict), got %q", got)
+	}
+	if authz.PrimaryFallback(r.Context()) {
+		t.Fatal("context must NOT be marked for primary fallback when the primary is not fresh")
+	}
+}
+
+// at_least_as_fresh with NO token is a client error (400), not a silent
+// downgrade to a low-latency read (ADR 0009 #3).
+func TestFreshnessMissingTokenIs400(t *testing.T) {
+	b := &freshStub{}
+	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileDecisionOnly, FreshnessKey: testFreshKey})
+	w := httptest.NewRecorder()
+	if ok := h.freshnessOK(w, freshGuardReq("at_least_as_fresh", "")); ok {
+		t.Fatal("at_least_as_fresh without a token must not proceed")
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
 	}
 }
 

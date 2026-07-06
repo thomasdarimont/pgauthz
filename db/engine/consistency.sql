@@ -48,39 +48,43 @@ COMMENT ON FUNCTION authz.freshness_token() IS
     'ADR 0009: mint an LSN-watermark freshness token {epoch=timeline, lsn} on the primary (post-commit).';
 
 ------------------------------------------------------------------------
--- _freshness_verdict(...) — the PURE decision, with no environment calls, so
--- every branch is unit-testable with synthetic inputs (the standby paths are
--- unreachable on a primary-only test DB). assert_fresh() below is the thin
--- env-probe wrapper. Verdicts:
---   'fresh'       node is at/after the token on the token''s timeline → serve locally
---   'stale'       right timeline, not yet replayed to the token → wait / route to primary
---   'wrong_epoch' node is on a different timeline than the token → route to primary
---   'unknown'     standby not streaming / timeline unreadable → route to primary (fail closed)
--- Not in recovery ⇒ primary ⇒ authoritative for the current timeline ⇒ 'fresh'.
+-- _freshness_verdict(...) — the PURE decision from a node's (timeline, WAL
+-- position) vs the token, no environment calls (unit-testable with synthetic
+-- inputs). assert_fresh() below feeds it this node's live values.
+--   'fresh'       node is on the token's timeline AND at/after its LSN → serve
+--   'stale'       right timeline, position behind the token → wait / route to primary
+--   'wrong_epoch' node is on a DIFFERENT timeline than the token → route to primary
+--   'unknown'     timeline unreadable (standby not streaming / no stats) → fail closed
+--
+-- There is NO primary special-case: a PROMOTED primary is on a NEW timeline, so
+-- a token minted on the old one is wrong_epoch — NOT blindly 'fresh'. That is
+-- the lossy-failover read-your-writes guard (ADR 0009): the old primary may have
+-- acked a write the promoted primary never received, and returning 'fresh' there
+-- would be a stale-allow. Timeline comparison is exact (conservative): even a
+-- CLEAN promotion makes old-timeline tokens re-mint, which beats a false allow.
 ------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS authz._freshness_verdict(boolean, int, pg_lsn, int, pg_lsn);
 CREATE OR REPLACE FUNCTION authz._freshness_verdict(
-    p_in_recovery  boolean,
-    p_received_tli int,
-    p_replay       pg_lsn,
-    p_epoch        int,
-    p_lsn          pg_lsn
+    p_node_tli int,     -- this node's timeline (NULL ⇒ unknown, fail closed)
+    p_node_pos pg_lsn,  -- this node's WAL position (replay on a standby, insert on a primary)
+    p_epoch    int,     -- token timeline (epoch)
+    p_lsn      pg_lsn   -- token LSN
 )
 RETURNS text
 LANGUAGE sql
 IMMUTABLE
 AS $$
     SELECT CASE
-        WHEN NOT p_in_recovery                        THEN 'fresh'
-        WHEN p_received_tli IS NULL                   THEN 'unknown'
-        WHEN p_received_tli <> p_epoch                THEN 'wrong_epoch'
-        WHEN p_replay IS NOT NULL AND p_replay >= p_lsn THEN 'fresh'
+        WHEN p_node_tli IS NULL                             THEN 'unknown'
+        WHEN p_node_tli <> p_epoch                          THEN 'wrong_epoch'
+        WHEN p_node_pos IS NOT NULL AND p_node_pos >= p_lsn THEN 'fresh'
         ELSE 'stale'
     END;
 $$;
 
 ------------------------------------------------------------------------
--- assert_fresh(epoch, lsn) — probe THIS node and return the verdict. The only
--- environment reads live here; the decision is _freshness_verdict above.
+-- assert_fresh(epoch, lsn) — probe THIS node's timeline + WAL position and
+-- apply the verdict. The only environment reads live here.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.assert_fresh(
     p_epoch int,
@@ -91,17 +95,25 @@ LANGUAGE plpgsql
 STABLE
 AS $$
 DECLARE
-    v_recovery boolean := pg_is_in_recovery();
-    v_tli      int;
-    v_replay   pg_lsn;
+    v_tli int;
+    v_pos pg_lsn;
 BEGIN
-    IF v_recovery THEN
-        SELECT received_tli INTO v_tli FROM pg_stat_wal_receiver;  -- NULL without pg_read_all_stats
-        v_replay := pg_last_wal_replay_lsn();
+    IF pg_is_in_recovery() THEN
+        -- Standby: the timeline it is replaying (recovery-safe via the WAL
+        -- receiver; NULL without pg_read_all_stats or when not streaming) + its
+        -- replay position. pg_walfile_name() cannot run during recovery.
+        SELECT received_tli INTO v_tli FROM pg_stat_wal_receiver;
+        v_pos := pg_last_wal_replay_lsn();
+    ELSE
+        -- Primary: its CURRENT timeline + insert position, derived from the WAL
+        -- position (never the lagging control file). A promoted primary is on a
+        -- new timeline, so a token from the old one comes out wrong_epoch.
+        v_pos := pg_current_wal_insert_lsn();
+        v_tli := ('x' || substr(pg_walfile_name(v_pos), 1, 8))::bit(32)::int;
     END IF;
-    RETURN authz._freshness_verdict(v_recovery, v_tli, v_replay, p_epoch, p_lsn);
+    RETURN authz._freshness_verdict(v_tli, v_pos, p_epoch, p_lsn);
 END;
 $$;
 
 COMMENT ON FUNCTION authz.assert_fresh(int, pg_lsn) IS
-    'ADR 0009: does this node satisfy a freshness token? fresh|stale|wrong_epoch|unknown (fail-closed).';
+    'ADR 0009: does this node satisfy a freshness token? fresh|stale|wrong_epoch|unknown (fail-closed; timeline-guarded on primary AND standby).';

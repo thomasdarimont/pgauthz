@@ -36,9 +36,16 @@ const (
 // Returns false (having written a response) when the request must not proceed.
 func (h *Handler) freshnessOK(w http.ResponseWriter, r *http.Request) bool {
 	mode := r.Header.Get(ConsistencyHeader)
-	token := r.Header.Get(RevisionHeader)
-	if !strings.EqualFold(mode, consistencyAtLeastAsFresh) || token == "" {
+	if !strings.EqualFold(mode, consistencyAtLeastAsFresh) {
 		return true // minimize_latency / fully_consistent / absent → routing, not this guard
+	}
+	token := r.Header.Get(RevisionHeader)
+	if token == "" {
+		// at_least_as_fresh REQUIRES a token. A missing one is a client error, NOT
+		// a silent downgrade to a low-latency read — that would fail OPEN (a config
+		// mistake would look successful while serving possibly-stale data).
+		writeBadRequest(w, consistencyAtLeastAsFresh+" requires an "+RevisionHeader+" token")
+		return false
 	}
 	return h.checkFreshToken(w, r, token)
 }
@@ -72,18 +79,28 @@ func (h *Handler) checkFreshToken(w http.ResponseWriter, r *http.Request, token 
 		return true
 	}
 	// Not fresh (stale/wrong_epoch/unknown). With transparent fallback configured,
-	// mark this request so the backend re-runs its reads on the PRIMARY (which is
-	// authoritative) and proceed; otherwise tell the caller to retry the primary
-	// itself (409, retryable — not a server fault).
+	// re-validate against the PRIMARY before serving from it — the primary is NOT
+	// unconditionally authoritative for this token: a promoted primary on a new
+	// timeline must reject a cross-timeline token too (ADR 0009). Only serve from
+	// the primary if it can actually satisfy the token; otherwise fail closed.
 	if fb, ok := h.raw.(authz.FreshnessFallback); ok && fb.HasPrimaryFallback() {
-		*r = *r.WithContext(authz.WithPrimaryFallback(r.Context()))
-		w.Header().Set(ServedByHeader, "primary")
-		metrics.FreshnessFallback.Inc()
-		return true
+		pv, perr := fb.AssertFreshPrimary(r.Context(), epoch, lsn)
+		if perr != nil {
+			writeInternalError(w, perr)
+			return false
+		}
+		metrics.FreshnessVerdicts.WithLabelValues(pv).Inc()
+		if pv == "fresh" {
+			*r = *r.WithContext(authz.WithPrimaryFallback(r.Context()))
+			w.Header().Set(ServedByHeader, "primary")
+			metrics.FreshnessFallback.Inc()
+			return true
+		}
+		verdict = pv // the primary can't satisfy it either → fail closed below
 	}
 	w.Header().Set(StaleHeader, verdict)
 	writeError(w, http.StatusConflict,
-		"replica cannot satisfy the freshness token ("+verdict+"); retry against the primary")
+		"cannot satisfy the freshness token ("+verdict+"); retry against the primary")
 	return false
 }
 

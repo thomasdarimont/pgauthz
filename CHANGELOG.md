@@ -7,6 +7,24 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Freshness tokens: a promoted primary no longer accepts stale tokens**
+  ([ADR 0009](docs/adr/0009-freshness-tokens.md)). `assert_fresh` previously
+  returned `fresh` unconditionally on any primary, so after a **lossy failover** a
+  promoted primary (new timeline) would confirm a token minted on the old
+  timeline whose write it never received — a stale-allow. It now derives its own
+  timeline + WAL position (`pg_walfile_name(pg_current_wal_insert_lsn())`) and
+  applies the same `wrong_epoch`/`stale` checks as a standby, so a cross-timeline
+  token is rejected everywhere. **Breaking:** a primary can now return
+  `wrong_epoch`/`stale` for a token instead of always `fresh`.
+- **Transparent primary fallback re-validates on the primary.** It previously
+  marked the request for primary routing without re-checking; it now re-runs
+  `assert_fresh` against the primary pool and only serves from it on a `fresh`
+  verdict (else `409`), closing the same lossy-failover hole on the fallback path.
+- **`at_least_as_fresh` without a token is now `400`** (was a silent downgrade to
+  a low-latency read — a fail-open on client misconfiguration).
+
 ## [0.8.0] - 2026-07-06
 
 ### Added

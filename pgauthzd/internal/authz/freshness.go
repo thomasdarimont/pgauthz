@@ -34,14 +34,17 @@ type FreshnessChecker interface {
 	AssertFresh(ctx context.Context, epoch int32, lsn string) (verdict string, err error)
 }
 
-// FreshnessFallback reports whether a backend can transparently serve a read
-// from the PRIMARY when the local replica can't satisfy a freshness token
-// (ADR 0009). When true, the freshness guard stamps the request context with
-// WithPrimaryFallback instead of returning 409, and the backend routes that
-// request's reads to the primary pool. Implemented by the direct pgx backend
-// only when a fallback pool is configured.
+// FreshnessFallback lets the guard transparently serve a read from the PRIMARY
+// when the local replica can't satisfy a freshness token (ADR 0009). The guard
+// re-validates the token against the primary (AssertFreshPrimary) and only on a
+// 'fresh' verdict stamps the request context with WithPrimaryFallback (the
+// backend then routes that request's reads to the primary pool) — a promoted
+// primary on a new timeline must still reject a cross-timeline token. Implemented
+// by the direct pgx backend only when a fallback pool is configured.
 type FreshnessFallback interface {
 	HasPrimaryFallback() bool
+	// AssertFreshPrimary runs the freshness verdict against the PRIMARY pool.
+	AssertFreshPrimary(ctx context.Context, epoch int32, lsn string) (verdict string, err error)
 }
 
 type ctxKeyPrimaryFallback struct{}

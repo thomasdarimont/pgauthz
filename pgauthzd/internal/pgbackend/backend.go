@@ -95,6 +95,22 @@ func (b *Backend) readPool(ctx context.Context) *pgxpool.Pool {
 // primary fallback is configured on this backend.
 func (b *Backend) HasPrimaryFallback() bool { return b.primaryPool != nil }
 
+// AssertFreshPrimary runs the freshness verdict against the PRIMARY pool (ADR
+// 0009): the fallback guard re-validates a token here before serving from the
+// primary, so a promoted primary on a new timeline still rejects a cross-timeline
+// token (wrong_epoch) rather than being assumed authoritative.
+func (b *Backend) AssertFreshPrimary(ctx context.Context, epoch int32, lsn string) (string, error) {
+	if b.primaryPool == nil {
+		return "unknown", nil // no fallback pool → can't confirm; fail closed
+	}
+	var verdict string
+	if err := b.primaryPool.QueryRow(ctx,
+		"SELECT authz.assert_fresh($1, $2::pg_lsn)", epoch, lsn).Scan(&verdict); err != nil {
+		return "", fmt.Errorf("asserting freshness on primary: %w", err)
+	}
+	return verdict, nil
+}
+
 // StoreStats implements authz.StoreStatser (ADR 0010, Slice 3): top-N stores by
 // tuple count + the total store count, via the SECURITY DEFINER authz.store_stats.
 func (b *Backend) StoreStats(ctx context.Context, limit int) ([]authz.StoreStat, int64, error) {
