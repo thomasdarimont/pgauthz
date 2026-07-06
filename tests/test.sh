@@ -61,15 +61,12 @@ echo "==> Running write precondition (optimistic concurrency) checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_preconditions.sql"
 
-echo ""
-echo "==> Running write-consistency (per-write synchronous_commit) checks..."
-echo ""
-psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_write_consistency.sql"
-
-echo ""
-echo "==> Running reader pre-request hook checks..."
-echo ""
-psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_pre_request_reader.sql"
+# NOTE: per-write consistency mode mapping (applied/durable/eventual + fail-closed
+# on unknown) and the per-app reader-role validation formerly lived in the SQL
+# _pre_request/_pre_request_reader hooks and were tested here. Those hooks were
+# removed with PostgREST; pgauthzd now performs both in Go — covered by
+# pgauthzd's TestSyncCommit unit test and the end-to-end namespace-isolation
+# checks in tests/test-opa.sh.
 
 echo ""
 echo "==> Running describe_model (readable rendering) checks..."

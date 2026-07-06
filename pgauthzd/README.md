@@ -276,7 +276,7 @@ derivation is configured, the service logs a startup warning per unbound
 issuer in multi-issuer setups, and `REQUIRE_DB_ROLE_BINDING=true` makes the
 gap a startup **error**. Before
 assuming a role the backend validates it (member of `authz_reader`, **not**
-admin-capable — mirroring the writer's `_pre_request()` policy) and fails
+admin-capable) and `SET LOCAL ROLE`s to it in Go, and fails
 closed on unknown roles; validation results are cached for
 `DB_ROLE_CACHE_TTL_SECONDS` (default 60, `0` = re-validate every request), so
 dropping a role or revoking its membership takes effect within that window.
@@ -289,8 +289,8 @@ fixed connection role applies).
 > against the issuer's `db_roles` binding) and forwards it to OPA as
 > `input.db_role`; OPA passes it back to the pgauthzd reader (native
 > `/pgauthz/v1` callback) as `X-Authz-Role`,
-> where `authz._pre_request_reader()` validates it (member of `authz_reader`,
-> not admin-capable, fail closed) and `SET LOCAL ROLE`s to it. In token-mode
+> where the pgauthzd reader validates it (member of `authz_reader`,
+> not admin-capable, fail closed) and `SET LOCAL ROLE`s to it in Go. In token-mode
 > OPA deployments (`FORWARD_TOKEN_TO_OPA=true` + OPA `DB_ROLE_CLAIM`), OPA
 > re-derives the role from the verified claims and ignores `input.db_role`;
 > the input field is honored only in trusted-PEP mode

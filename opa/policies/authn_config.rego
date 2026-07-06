@@ -64,6 +64,7 @@ writer_role := "authz_writer" if not _env.WRITER_ROLE
 # X-Authz-Role header; pgauthzd validates it (reader for reads, writer for
 # writes; never admin) and SET LOCAL ROLEs to it, so namespace enforcement
 # applies per application.
-# Unset → no header (fixed authz_writer / api_anon apply).
+# Unset → no header (the callback runs as its connection's role: authz_writer
+# on the writer, authz_reader on the reader).
 # Set via DB_ROLE_CLAIM, e.g. "db_role".
 db_role_claim_path := split(_env.DB_ROLE_CLAIM, ".") if _env.DB_ROLE_CLAIM

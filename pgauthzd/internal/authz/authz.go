@@ -12,6 +12,11 @@ import (
 // not 500. Backends wrap it with %w so errors.Is recognizes it.
 var ErrForbiddenRole = errors.New("db role not authorized for this operation")
 
+// ErrInvalidConsistency is returned when a write requests an unrecognized
+// consistency mode. Fails closed (rejects the write) rather than silently
+// downgrading the durability guarantee — maps to 400 Bad Request.
+var ErrInvalidConsistency = errors.New("unknown consistency mode")
+
 // PageRequest holds pagination parameters. After is a keyset cursor (the last
 // id of the previous page); when set it takes precedence over Offset, so paging
 // never re-runs the per-candidate access check on earlier pages. Offset is kept

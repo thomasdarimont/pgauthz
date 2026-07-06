@@ -93,9 +93,10 @@ func (b *Backend) withFixedRole(ctx context.Context, role string, fn func(q quer
 	return tx.Commit(ctx)
 }
 
-// checkRole validates a per-app DB role before assuming it, mirroring the
-// writer-side _pre_request() policy: the role must be a member of
-// authz_reader and must NOT be admin-capable. Unknown roles error → fail closed.
+// checkRole validates a per-app DB role before assuming it: the role must be a
+// member of authz_reader and must NOT be admin-capable (the rule the former SQL
+// _pre_request_reader hook enforced; pgauthzd owns it now). Unknown roles error
+// → fail closed.
 func (b *Backend) checkRole(ctx context.Context, role string) error {
 	if b.roleCacheTTL > 0 {
 		if v, ok := b.roleOK.Load(role); ok {
@@ -127,9 +128,9 @@ func (b *Backend) checkRole(ctx context.Context, role string) error {
 }
 
 // writeWithRole runs a mutating fn inside a single transaction that assumes a
-// writer-capable role and applies the request's consistency mode. It mirrors
-// the PostgREST-writer trust boundary: the per-app role from the token (when
-// present, validated writer + not admin) is assumed via SET LOCAL ROLE, else
+// writer-capable role and applies the request's consistency mode. The per-app
+// role from the token (when present, validated writer + not admin) is assumed
+// via SET LOCAL ROLE, else
 // the connection's default writer identity is used; the tx is scoped so the
 // role never leaks back into the pool. Consistency maps to a whitelisted
 // synchronous_commit (strict-revocation lives here, per-tx, as it did on the
@@ -149,7 +150,13 @@ func (b *Backend) writeWithRole(ctx context.Context, consistency string, fn func
 			return fmt.Errorf("assuming writer role %q: %w", role, err)
 		}
 	}
-	if sc := syncCommit(consistency); sc != "" {
+	sc, ok := syncCommit(consistency)
+	if !ok {
+		// Fail closed: never silently downgrade a misspelled consistency request.
+		return fmt.Errorf("%w %q (expected applied | durable | eventual)",
+			authz.ErrInvalidConsistency, consistency)
+	}
+	if sc != "" {
 		// Whitelisted constant, never caller text — safe to interpolate.
 		if _, err := tx.Exec(ctx, "SET LOCAL synchronous_commit = "+sc); err != nil {
 			return fmt.Errorf("setting consistency %q: %w", consistency, err)
@@ -161,9 +168,9 @@ func (b *Backend) writeWithRole(ctx context.Context, consistency string, fn func
 	return tx.Commit(ctx)
 }
 
-// checkWriterRole validates a per-app role before assuming it for a write,
-// mirroring the writer-side _pre_request(): member of authz_writer, not admin.
-// Fail closed on unknown roles. Reuses the same cache as checkRole but under a
+// checkWriterRole validates a per-app role before assuming it for a write:
+// member of authz_writer, not admin (the rule the former SQL _pre_request hook
+// enforced). Fail closed on unknown roles. Reuses the same cache as checkRole but under a
 // distinct key so a reader-only role can't be cached as write-capable.
 func (b *Backend) checkWriterRole(ctx context.Context, role string) error {
 	cacheKey := "w:" + role
@@ -194,21 +201,26 @@ func (b *Backend) checkWriterRole(ctx context.Context, role string) error {
 	return nil
 }
 
-// syncCommit maps a request consistency mode to a whitelisted
-// synchronous_commit setting; "" means leave the connection default untouched.
-// "applied" is strict revocation (wait for the sync standby to apply) — the
-// remote_apply the writer connection used; "eventual" trades durability for
-// latency on writes that tolerate it.
-func syncCommit(consistency string) string {
+// syncCommit maps a request consistency mode to a whitelisted synchronous_commit
+// setting. An empty mode ("") means "leave the connection default untouched" and
+// returns ("", true). An UNRECOGNIZED mode returns ok=false so the caller FAILS
+// CLOSED — a misspelled consistency request must never be silently reinterpreted
+// as a weaker guarantee (this replaces the fail-closed check the former SQL
+// _pre_request hook performed). "applied" is strict revocation (wait for the
+// sync standby to apply) — the remote_apply the writer connection used;
+// "eventual" trades durability for latency on writes that tolerate it.
+func syncCommit(consistency string) (value string, ok bool) {
 	switch consistency {
+	case "":
+		return "", true // absent → connection default
 	case "applied", "strict", "remote_apply":
-		return "remote_apply"
+		return "remote_apply", true
 	case "durable", "on":
-		return "on"
+		return "on", true
 	case "eventual", "local":
-		return "local"
+		return "local", true
 	default:
-		return ""
+		return "", false // unknown → fail closed
 	}
 }
 

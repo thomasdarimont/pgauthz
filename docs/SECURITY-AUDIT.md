@@ -44,8 +44,8 @@ the worst outcome).
                                             of the      │        │ base tables (no direct │
                                             callback;   │        │ grant to app roles)    │
                                             X-Authz-Role│        └────────────────────────┘
-                                            api_anon/wr)│
-                  callback reader + writer hooks validate: tier member, not admin
+                                            reader/writer)│
+                  pgauthzd validates the forwarded X-Authz-Role: tier member, not admin
  condition expr ───────────────────────────▶ authz_eval (zero-privilege sandbox)
 ```
 
@@ -54,11 +54,13 @@ the worst outcome).
 > is now the external **front door** (validates the JWT), and OPA is an internal
 > policy sidecar that calls **back** into pgauthzd's native `/pgauthz/v1`
 > callback (service-token gated, optional mTLS). The trust boundary keeps the
-> same shape: a bridge OPA calls, still asserting `X-Authz-Role` and validated by
-> the `_pre_request` / `_pre_request_reader` hooks; the old PostgREST
-> authenticator-role + `SET ROLE` dance is gone (pgauthzd connects directly as
-> `authz_reader` / `authz_writer`, per-app role via `X-Authz-Role` /
-> `DB_ROLE_CLAIM`). The findings below are preserved as recorded.
+> same shape: a bridge OPA calls, still asserting `X-Authz-Role`. The old
+> PostgREST authenticator-role + `SET ROLE` dance **and** the SQL
+> `_pre_request` / `_pre_request_reader` hooks are gone — pgauthzd connects
+> directly as its reader/writer role and now validates the forwarded
+> `X-Authz-Role` (tier member, not admin) and applies `SET LOCAL ROLE` in Go
+> (per-app role via `X-Authz-Role` / `DB_ROLE_CLAIM`). The findings below are
+> preserved as recorded.
 
 **Actors & assumed capabilities.**
 
@@ -245,13 +247,13 @@ These are where real compromise would come from — they are assumptions the eng
 | Risk | Why it matters | Control |
 |---|---|---|
 | Internal tiers exposed (pgauthzd's internal callback / Postgres reachable beyond the front door) | The callback listener does not re-verify the end-user JWT (it trusts the OPA sidecar); exposure = tuple disclosure | Network isolation / no host ports (compose & chart already do this); verify in your env |
-| `X-Authz-Role` header is **trusted, not signed** (read *and* write) | Both pgauthzd callback instances (reader + writer) assume only OPA sets it; the `_pre_request` / `_pre_request_reader` hooks validate the role is a member of the tier role and not admin (core_internal.sql), but cannot prove OPA's authority | Keep both pgauthzd callback listeners reachable only by OPA; service token + mTLS/network policy |
+| `X-Authz-Role` header is **trusted, not signed** (read *and* write) | Both pgauthzd callback instances (reader + writer) assume only OPA sets it; pgauthzd validates the role is a member of the tier role and not admin (in Go, then `SET LOCAL ROLE`), but cannot prove OPA's authority | Keep both pgauthzd callback listeners reachable only by OPA; service token + mTLS/network policy |
 | `input.db_role` honored in trusted-PEP mode | With `REQUIRE_TOKEN_FOR_READS=false`, a caller can assert the read role (bounded to reader-only, non-admin, granted roles — see F8) | Keep the default `REQUIRE_TOKEN_FOR_READS=true`, or keep OPA reachable only by a trusted PEP |
 | Issuer without a `stores` / `db_roles` binding | An unbound issuer's tokens can reach every store / claim any reader role | Set per-issuer bindings; enable `REQUIRE_STORE_BINDING` / `REQUIRE_DB_ROLE_BINDING` (startup error on an unbound issuer) |
 | Model-registry authoring store is fleet-privileged | An admin on the authoring store can push models + conditions to every tenant store (F7) | Restrict `authz_admin` on the authoring store; review `models_audit` + registry versions |
 | OPA compromise / wrong policy | OPA is the PEP — a bad policy or breach bypasses authn/authz. Team-added Rego packages need an explicit line in the `system_authz` public-path allowlist, so that file is the governance chokepoint | Review Rego; pin/version OPA; gate `system_authz.rego` edits in CI/CODEOWNERS; treat policies as security-critical |
 | Playground deployed beyond dev | Arbitrary-subject probing if `PLAYGROUND_EXPLORE_ROLE` unset (read-only; P1) | Keep it opt-in/dev-only; set `PLAYGROUND_EXPLORE_ROLE`; never host-expose |
-| `authz_contextual_reader` granted too broadly | "What-if" tuple injection can probe for unpublished grants | Grant only to trusted backends (default: not granted to `api_anon`/`authz_reader`) |
+| `authz_contextual_reader` granted too broadly | "What-if" tuple injection can probe for unpublished grants | Grant only to trusted backends (default: not granted to `authz_reader`) |
 | Dev secrets shipped (`authz` passwords, `opaAdminToken`) | Defaults are DEV ONLY | Override every secret; use a secret store (see PRODUCTION.md) |
 | Superuser can bypass audit triggers | `session_replication_role` defeats any trigger (inherent to PostgreSQL) | Restrict superuser logins administratively |
 
@@ -264,7 +266,7 @@ Deploy-time (most are in [`PRODUCTION.md`](PRODUCTION.md) — this cross-checks 
 - [ ] `authz_contextual_reader` granted only to trusted services (and only if used).
 - [ ] JWT verified against your IdP's JWKS; role claim (`DB_ROLE_CLAIM`) mapping reviewed.
 - [ ] **Multi-tenant AuthZEN:** every issuer bound to its `stores` + `db_roles`; `REQUIRE_STORE_BINDING` / `REQUIRE_DB_ROLE_BINDING` on.
-- [ ] **Per-app namespace isolation on reads:** app roles are `GRANT`ed to `authz_authenticator` (so the reader can `SET ROLE`) and to the namespace with `can_read`.
+- [ ] **Per-app namespace isolation on reads:** app roles are `GRANT`ed to the reader's login role `authzen_direct` (so pgauthzd can `SET LOCAL ROLE`) and to the namespace with `can_read`.
 - [ ] **Model registry:** authoring-store `authz_admin` treated as fleet-privileged; rollout via canary → fleet.
 - [ ] `statement_timeout` tuned for your slowest legitimate op (large `list_*`, time-travel).
 - [ ] Superuser logins restricted; `authz_owner` stays non-superuser.
@@ -285,13 +287,14 @@ store's tuples, a namespace bypass, or a way for one issuer's token to reach
 another issuer's stores/DB roles despite the anchored bindings; (3) **fail-open**
 — any error/NULL/timeout path that yields *allow*; (4) the **OPA→pgauthzd callback
 trust boundary** — forge or replay `X-Authz-Role` on the reader *or* writer, or smuggle
-`input.db_role` past `REQUIRE_TOKEN_FOR_READS`; (5) the **role-switch hooks** —
-find a role that passes `_pre_request` / `_pre_request_reader` yet is
-admin-capable or not GRANT-restricted; (6) **tuple expiry** — bypass the RLS `SELECT` policy (F11, the escape-GUC path, is now fixed via a
+`input.db_role` past `REQUIRE_TOKEN_FOR_READS`; (5) **pgauthzd's role
+validation** — find a role that passes pgauthzd's `X-Authz-Role` check (Go:
+member of the tier role, not admin) yet is admin-capable or not
+GRANT-restricted; (6) **tuple expiry** — bypass the RLS `SELECT` policy (F11, the escape-GUC path, is now fixed via a
 BYPASSRLS-owned helper; look for others — index-only scans, `COPY`, partition-direct
 DML); (7) the **model registry** — make
 `apply_model` land a model whose live checksum differs from the registry
 (defeating the self-check), or propagate a condition that escapes the sandbox on
-a target store. The SQL test suites (`tests/sql/`, incl. `tests_model_registry`
-and `tests_pre_request_reader`) and `bench/` model fixtures are useful starting
-corpora.
+a target store. The SQL test suites (`tests/sql/`, incl. `tests_model_registry`),
+pgauthzd's role-validation Go tests (`pgauthzd/internal/pgbackend/`), and `bench/`
+model fixtures are useful starting corpora.

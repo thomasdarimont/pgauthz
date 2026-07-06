@@ -159,7 +159,7 @@ type Config struct {
 	DBPoolMax   int
 	// DefaultDBRole, when set, is the role the read path SET LOCAL ROLEs to when
 	// a request carries no per-app db_role. It mirrors the pgauthzd reader
-	// profile's always-SET-ROLE model (default api_anon): the query never runs as the raw
+	// profile's always-SET-ROLE model (default authz_reader): the query never runs as the raw
 	// connection role, so that role's SET-ROLE memberships (needed to assume
 	// per-app roles) don't leak into membership-keyed checks like namespace
 	// access. Set to a namespace-free reader (e.g. authz_reader) on the compat

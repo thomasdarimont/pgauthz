@@ -38,7 +38,7 @@ by `init.sh` on every run.
       editing files. `docker compose` and the helper scripts read it; the real
       `.env` is gitignored. See [Configuration](#configuration).
 - [ ] **Change every default password** in `.env`: `PG_PASSWORD` (superuser),
-      `AUTHZ_AUTHENTICATOR_PASSWORD`, `AUTHZEN_DIRECT_PASSWORD`. The service-role
+      `AUTHZEN_DIRECT_PASSWORD`, `PGAUTHZD_RW_PASSWORD`. The service-role
       passwords are applied at first DB init, so set them before the first
       `./init.sh` (to change them later: `docker compose down -v && ./init.sh`).
 - [ ] **Never host-expose pgauthzd's internal callback listeners.** pgauthzd is
@@ -119,7 +119,6 @@ created and granted in `db/security/roles.sql`.
 | `authz_auditor` | `audit_check_access`, `audit_list_*` | `authz_reader` |
 | `authz_writer` | `write_tuple`/`delete_tuple` + batch ops | `authz_reader` |
 | `authz_admin` | store/model/namespace management, `ensure_audit_partitions`, `find_redundant_tuples` | `authz_writer`, `authz_auditor` |
-| `api_anon` | (none of its own) | `authz_reader` |
 | `authz_owner` | owns the schema + objects (definer context) | — |
 | `authz_eval` | **zero grants** — the condition-evaluation sandbox | — |
 
@@ -137,7 +136,7 @@ created and granted in `db/security/roles.sql`.
 caller inject the very grant being tested, so the privilege is separate. Grant
 it **only** to a trusted PDP/backend role that constructs contextual tuples
 from legitimate request context — e.g. a backend that already authenticates
-its callers. **Never** grant it to `api_anon`, `authzen_direct`, or any role
+its callers. **Never** grant it to `authz_reader`, `authzen_direct`, or any role
 reachable by untrusted clients. Set `AUTHZ_CONTEXTUAL_READER_GRANTEE` in `.env`
 and `init.sh` applies the grant, or do it manually:
 
@@ -199,7 +198,7 @@ authz.
 ## Secrets, passwords, and JWT
 
 - Replace all `authz` dev passwords via `.env` (`PG_PASSWORD`,
-  `AUTHZ_AUTHENTICATOR_PASSWORD`, `AUTHZEN_DIRECT_PASSWORD`) — see
+  `AUTHZEN_DIRECT_PASSWORD`, `PGAUTHZD_RW_PASSWORD`) — see
   [Configuration](#configuration). Store secrets in your platform's secret
   manager, not in committed files.
 - Configure JWT verification on OPA and the AuthZEN services: `JWKS_URL` (or

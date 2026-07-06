@@ -21,6 +21,10 @@ func writeWriteError(w http.ResponseWriter, err error) {
 		writeForbidden(w, err.Error())
 		return
 	}
+	if errors.Is(err, authz.ErrInvalidConsistency) {
+		writeBadRequest(w, err.Error())
+		return
+	}
 	writeInternalError(w, err)
 }
 

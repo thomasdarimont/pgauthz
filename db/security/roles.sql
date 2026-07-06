@@ -1,20 +1,20 @@
 -- Role setup for authorization API access control.
 --
 -- Application roles (NOLOGIN — used via SET ROLE or inheritance):
---   authz_reader  — access checks and search queries (PostgREST/OPA)
+--   authz_reader  — access checks and search queries
 --   authz_auditor — reader + audit trail queries (compliance/security teams)
 --   authz_writer  — reader + write tuples (application backends)
 --   authz_admin   — full control including store management
---   api_anon      — PostgREST anonymous role (inherits authz_reader)
 --
--- Connection role (LOGIN, NOINHERIT):
---   authz_authenticator — PostgREST connects as this role and switches
---                         to api_anon or the JWT role via SET ROLE
+-- Connection roles (LOGIN) — pgauthzd connects and SET LOCAL ROLEs per request
+-- (created in db/security/initdb on first boot; re-created below on re-init):
+--   authzen_direct — read-only (INHERITs authz_reader); pgauthzd decision-only
+--   pgauthzd_rw    — read+write (INHERITs authz_writer); pgauthzd full
 --
 -- Role hierarchy:
 --
---   api_anon ─→ authz_reader ─┬─→ authz_auditor ──┬─→ authz_admin
---                             └─→ authz_writer ───┘
+--   authz_reader ─┬─→ authz_auditor ──┬─→ authz_admin
+--                 └─→ authz_writer ───┘
 --
 -- Note: authz_eval (condition expression sandbox) is created in
 -- schema.sql because core_internal.sql depends on it at load time.
@@ -41,9 +41,6 @@ BEGIN
     END IF;
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authz_admin') THEN
         CREATE ROLE authz_admin NOLOGIN;
-    END IF;
-    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'api_anon') THEN
-        CREATE ROLE api_anon NOLOGIN;
     END IF;
     -- Dedicated privilege for contextual-tuple checks (see grants below):
     -- callers can inject ephemeral tuples into a decision, so this is kept
@@ -90,33 +87,6 @@ GRANT authz_reader TO authz_writer;
 GRANT authz_writer TO authz_admin;
 GRANT authz_auditor TO authz_admin;
 
--- PostgREST anonymous role inherits reader privileges.
-GRANT authz_reader TO api_anon;
-
--- PostgREST authenticator: a dedicated non-superuser LOGIN role.
--- PostgREST connects as this role and switches the per-request identity
--- with SET ROLE (api_anon, or the role claimed in the JWT). NOINHERIT
--- ensures the authenticator has no privileges of its own — every request
--- runs as the switched role. Never use a superuser here: namespace
--- enforcement keys on the effective role and a superuser passes every
--- pg_has_role() check.
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authz_authenticator') THEN
-        -- Dev password — override in production deployments.
-        CREATE ROLE authz_authenticator LOGIN NOINHERIT PASSWORD 'authz';
-    END IF;
-END
-$$;
-
--- The authenticator must be able to SET ROLE to any role a request
--- (anonymous or JWT-claimed) may run as.
-GRANT api_anon      TO authz_authenticator;
-GRANT authz_reader  TO authz_authenticator;
-GRANT authz_auditor TO authz_authenticator;
-GRANT authz_writer  TO authz_authenticator;
-GRANT authz_admin   TO authz_authenticator;
-
 -- AuthZEN Go service (authzen-direct): connects directly and calls the
 -- read API (evaluation + search). A dedicated non-superuser LOGIN role
 -- that INHERITs authz_reader — read-only, no SET ROLE in the service.
@@ -139,7 +109,7 @@ GRANT authz_auditor TO authzen_direct;
 -- Contextual-tuple checks (native /pgauthz/v1/check with contextual_tuples, and
 -- the compat OPA callback) evaluate ephemeral tuples in a single request. The
 -- capability is gated behind authz_contextual_reader — kept away from the
--- UNAUTHENTICATED api_anon/authz_reader. authzen_direct is JWT-authenticated and
+-- general authz_reader. authzen_direct is JWT-authenticated and
 -- trusted (behind OPA on the compat path), so it is the intended trusted-backend
 -- grantee. Ephemeral tuples never persist and only affect that request's answer.
 GRANT authz_contextual_reader TO authzen_direct;
@@ -189,7 +159,7 @@ GRANT SELECT ON authz.stores, authz.types, authz.relations, authz.conditions, au
 --
 -- 1. Time — arm a statement_timeout on the service LOGIN roles as a generous
 --    hang-backstop. NOTE: this is per-role and applies to EVERY statement on
---    those connections (every check, listing, batch write, and PostgREST's
+--    those connections (every check, listing, batch write, and the service's
 --    own schema introspection) — not only condition evaluation. So it must be
 --    larger than the slowest LEGITIMATE operation: time-travel
 --    (audit_check_access, ~seconds) and broad list_objects/list_subjects can
@@ -197,7 +167,6 @@ GRANT SELECT ON authz.stores, authz.types, authz.relations, authz.conditions, au
 --    without tripping those. A timed-out condition fails closed: the cancel
 --    aborts the check (never a silent allow). Tune per deployment; for large
 --    listings prefer pagination (p_limit) and object/user wildcards (O(1)).
-ALTER ROLE authz_authenticator SET statement_timeout = '60s';
 ALTER ROLE authzen_direct      SET statement_timeout = '60s';
 ALTER ROLE pgauthzd_rw         SET statement_timeout = '60s';
 ALTER ROLE authz_metadata      SET statement_timeout = '60s';
@@ -238,7 +207,7 @@ GRANT EXECUTE ON FUNCTION authz.check_access_with_context(text, text, text, text
 -- powerful for trusted backend/PDP usage, but if exposed to user-controlled
 -- clients a caller could inject the very grant being tested. So they live
 -- behind a SEPARATE role — authz_contextual_reader — NOT the general
--- authz_reader (which api_anon inherits). Grant authz_contextual_reader only
+-- authz_reader. Grant authz_contextual_reader only
 -- to trusted callers; never to a role reachable by untrusted clients.
 --   e.g.  GRANT authz_contextual_reader TO <trusted_backend_role>;
 -- (REVOKE from authz_reader too, in case an older install granted it there.)
@@ -273,18 +242,13 @@ GRANT EXECUTE ON FUNCTION authz.delete_tuples(text, authz.tuple_input[], text) T
 GRANT EXECUTE ON FUNCTION authz.delete_tuples_jsonb(text, jsonb, text) TO authz_writer;
 GRANT EXECUTE ON FUNCTION authz.delete_user_tuples(text, text, text, text) TO authz_writer;
 GRANT EXECUTE ON FUNCTION authz.write_tuples_checked(text, jsonb, jsonb, jsonb, text) TO authz_writer;
--- PostgREST db-pre-request hook (runs as the anon->authz_writer role).
-GRANT EXECUTE ON FUNCTION authz._pre_request() TO authz_writer;
--- Reader-side hook (runs as api_anon → per-app reader role; see slice B of
--- per-app namespace isolation). Granted to authz_reader so api_anon inherits.
-GRANT EXECUTE ON FUNCTION authz._pre_request_reader() TO authz_reader;
 
 ------------------------------------------------------------------------
 -- authz_admin: store lifecycle and namespace management
 -- (inherits writer + reader grants above)
 ------------------------------------------------------------------------
 -- No direct table grants — all access goes through SECURITY DEFINER functions.
--- This prevents PostgREST from exposing table endpoints via REST.
+-- This prevents any HTTP bridge from exposing table endpoints directly.
 GRANT EXECUTE ON FUNCTION authz.grant_namespace_access(text, text, text, boolean, boolean) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.revoke_namespace_access(text, text, text, boolean, boolean) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.find_redundant_tuples(text, text, text, jsonb) TO authz_admin;

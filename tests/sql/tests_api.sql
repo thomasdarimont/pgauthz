@@ -948,17 +948,17 @@ SELECT * FROM _test_teardown_api();
 
 -- api_114: contextual-tuple checks require the dedicated authz_contextual_reader
 -- role, NOT the general authz_reader. A caller can inject ephemeral tuples into
--- a decision, so the privilege is separated: a plain reader (api_anon, which
--- inherits authz_reader) can run a normal check but cannot inject contextual
--- tuples. (set_config('role', ...) is the transaction-local SET ROLE the
--- engine honors; the test session is the superuser, which we switch away from.)
+-- a decision, so the privilege is separated: a plain reader (authz_reader) can
+-- run a normal check but cannot inject contextual tuples. (set_config('role', ...)
+-- is the transaction-local SET ROLE the engine honors; the test session is the
+-- superuser, which we switch away from.)
 SELECT _test_setup_api();
 DO $$
 DECLARE v_normal_ok boolean; v_ctx_state text := NULL;
 BEGIN
-    PERFORM set_config('role', 'api_anon', true);
+    PERFORM set_config('role', 'authz_reader', true);
 
-    -- A normal check still works (api_anon has authz_reader).
+    -- A normal check still works (authz_reader is a plain reader).
     v_normal_ok := authz.check_access('test_api', 'user', 'alice', 'reader', 'doc', 'doc1') IS NOT NULL;
 
     -- Injecting contextual tuples is blocked (separate privilege).
@@ -1464,8 +1464,8 @@ $$;
 DELETE FROM _test_results RETURNING *;
 
 -- ================================================================
--- api_anon boundary: the PostgREST anonymous role is a full READER
--- by design (OPA is the mandatory front door) and must never gain
+-- authz_reader boundary: the plain reader role is a full READER
+-- by design (pgauthzd is the front door) and must never gain
 -- write or admin capabilities.
 -- ================================================================
 SELECT _test_setup_api();
@@ -1477,13 +1477,13 @@ BEGIN
     PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
 
     -- api_91: anonymous role can run read checks
-    PERFORM set_config('role', 'api_anon', true);
+    PERFORM set_config('role', 'authz_reader', true);
     v_bool := authz.check_access('test_api', 'user', 'alice', 'reader', 'doc', 'doc1');
     PERFORM set_config('role', 'none', true);
     PERFORM _test_assert('api_91_anon_can_read', v_bool::text, 'true');
 
     -- api_92: anonymous role cannot write tuples
-    PERFORM set_config('role', 'api_anon', true);
+    PERFORM set_config('role', 'authz_reader', true);
     BEGIN
         PERFORM authz.write_tuple('test_api', 'user', 'bob', 'reader', 'doc', 'doc1');
         v_err := 'no exception raised';
@@ -1494,7 +1494,7 @@ BEGIN
     PERFORM _test_assert_true('api_92_anon_cannot_write', v_err IS NULL, v_err);
 
     -- api_93: anonymous role cannot manage stores
-    PERFORM set_config('role', 'api_anon', true);
+    PERFORM set_config('role', 'authz_reader', true);
     BEGIN
         PERFORM authz.create_store('anon_probe');
         v_err := 'no exception raised';

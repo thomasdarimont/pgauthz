@@ -57,7 +57,7 @@ controlled through these application roles:
 | `authz_admin` | `create_store`, `retire_store`, `delete_store`, `model_register_type`, `model_register_relation`, `model_add_rule`, `model_remove_rule`, `model_remove_rules`, `find_redundant_tuples`, manage `namespace_access` table | `authz_writer` |
 
 `authz_auditor` is a peer of `authz_reader`, not part of the linear chain.
-The read-only connection role (`api_anon`) inherits `authz_reader`.
+The decision-only pgauthzd connects as `authzen_direct`, which inherits `authz_reader`.
 
 All public functions are `SECURITY DEFINER` — they run as the `authz` owner,
 so application roles need no direct table access.
@@ -741,13 +741,12 @@ err := pool.QueryRow(ctx,
 ## Write API (pgauthzd front door)
 
 **pgauthzd is the front door** for reads *and* writes. Tuple **writes** go to the
-pgauthzd `full`/writer instance (native `/pgauthz/v1/write`): it validates the
-JWT, requires the configured writer role, records the subject as the audit
-author, and applies the write natively via pgx under a fixed writer-capable role
-(`pgauthzd_rw`, inheriting `authz_writer`). The write-authz **decision** is today
-delegated to the internal OPA `write.rego` policy that the writer consults —
-fully moving that decision into pgauthzd is the **pending pgauthzd-fronted-writes
-increment**. OPA is an internal policy sidecar; clients never call it directly.
+pgauthzd `full`/writer instance (native `/pgauthz/v1/write`): pgauthzd **validates
+the JWT itself, requires the configured writer role, records the subject as the
+audit author, and applies the write natively via pgx** under a fixed
+writer-capable role (`pgauthzd_rw`, inheriting `authz_writer`). **OPA is not on
+this path** — pgauthzd authorizes the write itself. OPA remains an internal read
+sidecar; clients never call it directly.
 
 ```
 Read path  (authorization checks):
@@ -757,39 +756,39 @@ Application ──▶ pgauthzd (front door; validates JWT) ──▶ PG
 
 Write path (tuple management):
 Application ──▶ pgauthzd full/writer (front door; validates JWT + writer role)
-                 │ write-authz decision consulted from the internal OPA
-                 │ write.rego policy (pending native delegation)
                  ▼
               applies via pgx as authz_writer ──▶ PG
 ```
 
-There is **no** PostgREST and **no** Nginx write gateway — the writer instance is
-internal-only (no host port on the callback listener) and reachable only by OPA's
-callback; PostgREST was removed entirely (see
+There is **no** PostgREST and **no** Nginx write gateway — the writer *is*
+pgauthzd itself, exposing a JWT-authenticated native write API (dev:
+`http://localhost:8092`). PostgREST was removed entirely (see
 [ARCHITECTURE.md ADR-6](ARCHITECTURE.md)). An external Nginx/LB may still front
-pgauthzd itself, but there is no RPC-allowlist proxy in front of a writer.
+pgauthzd itself, but there is no RPC-allowlist proxy in front of a writer. (The
+full instance also runs an internal service-token callback listener that OPA
+uses for graph read/write callbacks — that listener is not the client write
+path.)
 
-The OPA `write.rego` policy — the write-authz decision the writer consults — is
-documented below via its `POST /v1/data/authz/write` interface (which the demo
-also lets you drive directly against OPA on `:8181`); the request/response shape
-is the write contract pgauthzd's writer forwards to.
+A deployment that wants to layer extra Rego write policy in front of writes can
+instead drive OPA's `write.rego` via OPA's data API — kept as the [OPA data-API
+write alternative](#opa-data-api-write-alternative) at the end of this section.
 
 ### Write authorization
 
-The OPA `write.rego` write-authz policy re-verifies the JWT (ES256 against the
-issuer's JWKS, as pgauthzd's front door already did) and requires the configured
-**writer role** to appear in the JWT's **roles claim**. Both are configurable on
-the OPA service:
+**pgauthzd itself** authorizes writes: it validates the JWT (ES256 against the
+issuer's JWKS — the same front-door verification it does for reads) and requires
+the configured **writer role** to appear in the JWT's **roles claim**. Both are
+configurable on the pgauthzd `full` instance:
 
 | Env var | Default | Meaning |
 |---|---|---|
 | `JWT_ROLES_CLAIM` | `roles` | Comma-separated list of dotted paths to roles arrays; roles are aggregated (set-union) across all. Keycloak: `realm_access.roles,resource_access.<client>.roles` |
-| `WRITER_ROLE` | `authz_writer` | Role value that authorizes tuple writes (matched in any configured claim) |
-| `NATIVE_WRITE_URL` | *(unset)* | pgauthzd `full`/writer callback OPA forwards authorized writes to. **Unset ⇒ writes disabled** (read-only deployment) |
+| `WRITER_ROLE` | `authz_writer` | Role value the caller's roles claim must contain to use the write endpoints |
 
-The Postgres role is **not** taken from the token — the writer always runs as
-`authz_writer`, so a forged or over-scoped role claim cannot reach admin
-operations. A token that authorizes writes (with the default config):
+The Postgres role is **not** taken from the token — the writer always connects as
+the fixed `pgauthzd_rw` login role (inheriting `authz_writer`), so a forged or
+over-scoped role claim cannot reach admin operations. A token that authorizes
+writes (with the default config):
 
 ```json
 {
@@ -802,59 +801,71 @@ operations. A token that authorizes writes (with the default config):
 }
 ```
 
-### The write endpoint
+### The write endpoints
 
-`POST /v1/data/authz/write` with an OPA `{"input": {...}}` envelope. The
-`operation` field selects the action:
+Writes go to the pgauthzd `full` instance (dev: `http://localhost:8092`) with
+`Authorization: Bearer <JWT>`. The store is selected by the
+`/stores/{store}/pgauthz/v1/…` path prefix, the `X-AuthZ-Store` header, or the
+instance's `DEFAULT_STORE` — **not** a `store` body field. The authenticated
+subject is recorded as the audit author (`performed_by`); an explicit
+`performed_by` in the body overrides it.
 
-| `operation` | Payload field | Maps to |
+| Endpoint | Body | Response |
 |---|---|---|
-| `write` / `delete` | `tuple` (object) | `write_tuple` / `delete_tuple` |
-| `write_batch` / `delete_batch` | `tuples` (array) | `write_tuples_jsonb` / `delete_tuples_jsonb` |
-| `delete_user` | `user` (`{user_type, user_id}`) | `delete_user_tuples` (offboarding) |
-| `write_checked` | `preconditions` + `deletes` + `writes` (arrays) | `write_tuples_checked` (conditional/atomic — see below) |
+| `POST /pgauthz/v1/write` | `{"tuples":[…]}` (batch upsert) | `{"store":…,"written":N}` |
+| `POST /pgauthz/v1/delete` | `{"tuples":[…]}` (batch delete) | `{"store":…,"deleted":N}` |
+| `POST /pgauthz/v1/delete-user` | `{"user":{"type","id"}}` (offboarding) | `{"store":…,"deleted":N}` |
+| `POST /pgauthz/v1/write-checked` | `{"preconditions":[…],"deletes":[…],"writes":[…]}` (conditional/atomic — see below) | engine JSONB verbatim, e.g. `{"deleted":1,"written":1}` |
 
-A tuple object is `{user_type, user_id, relation, object_type, object_id}` plus
-optional `user_relation` and (writes only) `condition` + `condition_context`.
-`store` is optional (defaults to OPA's `DEFAULT_STORE`). The authenticated
-subject is recorded as the audit author (`performed_by`).
+A **tuple** element is `{user_type, user_id, relation, object_type, object_id}`
+plus optional `user_relation`, `condition_name`, `context`, and `expires_at`.
+A batch is simply multiple elements in `tuples`. All bodies also accept optional
+top-level `performed_by` and `consistency`.
 
 ```bash
 TOKEN=...   # JWT whose roles claim contains authz_writer
 
-# Single write
-curl -sX POST http://localhost:8181/v1/data/authz/write \
-  -H "Content-Type: application/json" \
-  -d '{"input":{"token":"'"$TOKEN"'","store":"demo","operation":"write",
-        "tuple":{"user_type":"internal_user","user_id":"alice","relation":"viewer",
-                 "object_type":"document","object_id":"doc_new_001"}}}'
-# => {"result":{"allowed":true,"result":{"status":200,"body":true}}}
+# Single write (a batch of one)
+curl -sX POST http://localhost:8092/pgauthz/v1/write \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"tuples":[
+        {"user_type":"internal_user","user_id":"alice","relation":"viewer",
+         "object_type":"document","object_id":"doc_new_001"}]}'
+# => {"store":"demo","written":1}
 
-# Batch write (body = number of tuples inserted)
-curl -sX POST http://localhost:8181/v1/data/authz/write \
-  -H "Content-Type: application/json" \
-  -d '{"input":{"token":"'"$TOKEN"'","store":"demo","operation":"write_batch",
-        "tuples":[
-          {"user_type":"internal_user","user_id":"alice","relation":"viewer","object_type":"document","object_id":"doc_001"},
-          {"user_type":"internal_user","user_id":"bob","relation":"editor","object_type":"document","object_id":"doc_001"}
-        ]}}'
-# => {"result":{"allowed":true,"result":{"status":200,"body":2}}}
+# Batch write — several grants in one call (duplicates are upserts)
+curl -sX POST http://localhost:8092/pgauthz/v1/write \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"tuples":[
+        {"user_type":"internal_user","user_id":"alice","relation":"viewer","object_type":"document","object_id":"doc_001"},
+        {"user_type":"internal_user","user_id":"bob","relation":"editor","object_type":"document","object_id":"doc_001"}]}'
+# => {"store":"demo","written":2}
+
+# Revoke — batch delete (same tuple body shape)
+curl -sX POST http://localhost:8092/pgauthz/v1/delete \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"tuples":[
+        {"user_type":"internal_user","user_id":"alice","relation":"viewer","object_type":"document","object_id":"doc_001"}]}'
+# => {"store":"demo","deleted":1}
 
 # Offboarding — remove every tuple for a subject
-curl -sX POST http://localhost:8181/v1/data/authz/write \
-  -H "Content-Type: application/json" \
-  -d '{"input":{"token":"'"$TOKEN"'","store":"demo","operation":"delete_user",
-        "user":{"user_type":"internal_user","user_id":"alice"}}}'
+curl -sX POST http://localhost:8092/pgauthz/v1/delete-user \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"user":{"type":"internal_user","id":"alice"}}'
+# => {"store":"demo","deleted":3}
 ```
 
 Outcomes:
 
-| Result | Meaning |
+| HTTP status | Meaning |
 |---|---|
-| `{"allowed":true,"result":{"status":200,"body":…}}` | applied; `body` is the function return (boolean, or the affected count for batch) |
-| `{"allowed":false,"error":"not_authorized"}` | missing/invalid token, or roles claim lacks `WRITER_ROLE` |
-| `{"allowed":false,"error":"invalid_request"}` | authorized, but malformed `operation` / `tuple` / `tuples` / `user` |
-| `{"allowed":false,"error":"writes_disabled"}` | no `NATIVE_WRITE_URL` configured (read-only deployment) |
+| `200` + `{"written":N}` / `{"deleted":N}` / engine JSONB | applied |
+| `401` | missing or invalid JWT |
+| `403` | authenticated but the roles claim lacks `WRITER_ROLE`, **or** the request hit a read-only `decision-only` instance (read-only by DB role) |
+| `400` | authorized, but a malformed body (missing `tuples` / `user`, invalid JSON) |
+
+The OPA-fronted public listener (`pgauthzd-opa`, `:8091`) does not expose native
+writes at all — those routes return `404` there.
 
 ### Conditional / atomic writes (optimistic concurrency)
 
@@ -875,28 +886,28 @@ no-ops).
 Race-free **ownership transfer** — make Bob the owner only if Alice still is:
 
 ```bash
-curl -sX POST http://localhost:8181/v1/data/authz/write \
-  -H "Content-Type: application/json" \
-  -d '{"input":{"token":"'"$TOKEN"'","store":"acme","operation":"write_checked",
-        "preconditions":[{"match":"exists","user_type":"user","user_id":"alice",
-                          "relation":"owner","object_type":"document","object_id":"d1"}],
-        "deletes":[{"user_type":"user","user_id":"alice","relation":"owner",
-                    "object_type":"document","object_id":"d1"}],
-        "writes":[{"user_type":"user","user_id":"bob","relation":"owner",
-                   "object_type":"document","object_id":"d1"}]}}'
-# => {"result":{"allowed":true,"result":{"status":200,"body":{"deleted":1,"written":1}}}}
+curl -sX POST http://localhost:8092/pgauthz/v1/write-checked \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -H "X-AuthZ-Store: acme" \
+  -d '{"preconditions":[{"match":"exists","user_type":"user","user_id":"alice",
+                         "relation":"owner","object_type":"document","object_id":"d1"}],
+       "deletes":[{"user_type":"user","user_id":"alice","relation":"owner",
+                   "object_type":"document","object_id":"d1"}],
+       "writes":[{"user_type":"user","user_id":"bob","relation":"owner",
+                  "object_type":"document","object_id":"d1"}]}'
+# => {"deleted":1,"written":1}
 ```
 
 "At most one owner" — assign only if none exists (`absent`, partial filter):
 
 ```jsonc
-"operation":"write_checked",
+// POST /pgauthz/v1/write-checked
 "preconditions":[{"match":"absent","relation":"owner","object_type":"document","object_id":"d1"}],
 "writes":[{"user_type":"user","user_id":"alice","relation":"owner","object_type":"document","object_id":"d1"}]
 ```
 
-A failed precondition returns the writer's `400` with
-`"Write precondition failed: …"` and **nothing is written**.
+A failed precondition returns `400` with `"Write precondition failed: …"` and
+**nothing is written**.
 
 Same call in **direct SQL**:
 
@@ -919,32 +930,38 @@ SELECT authz.write_tuples_checked('acme',
 ### Admin / model operations
 
 Store lifecycle (`create_store`/`delete_store`), model evolution (`model_*`),
-namespace management, and OpenFGA import are **not** exposed over OPA — they
-require `authz_admin` and are run via **direct SQL** (or your own admin
-tooling), not the public write API. See [direct SQL](#via-direct-sql-jdbc).
+namespace management, and OpenFGA import are **not** exposed over the public
+write API — they require `authz_admin` and are run via **direct SQL** (or your
+own admin tooling). See [direct SQL](#via-direct-sql-jdbc).
 
 ### Compose configuration
 
-The writer instance ships **enabled** in `compose-authzen.yml` (which
-`start.sh` always includes), and the OPA write-callback wiring is in
-`compose.yml`:
+The `full`/writer instance ships **enabled** in `compose-authzen.yml` (which
+`start.sh` always includes). Its public listener (`:8092`) is the JWT-authenticated
+native write front door; its internal service-token listener (`:8081`) is the OPA
+read/write callback:
 
 ```yaml
-# compose-authzen.yml — the full/writer instance and its native callback
+# compose-authzen.yml — the full/writer instance
 pgauthzd-full:
+  ports:
+    - "8092:8080"                      # public native write API (JWT-authenticated)
+    - "8094:8081"                      # OPA callback listener (published for tests)
   environment:
     PGAUTHORIZER_PROFILE: "full"       # read + write; the ONLY instance that can write
-    # Writer-capable non-superuser role (inherits authz_writer). Not a
-    # PostgREST authenticator — pgauthzd connects directly as this role.
+    # Writer-capable non-superuser role (inherits authz_writer). pgauthzd
+    # connects directly as this role — no PostgREST authenticator.
     DATABASE_URL: "postgres://pgauthzd_rw:${PGAUTHZD_RW_PASSWORD:-authz}@authz-db:5432/authz"
-    INTERNAL_LISTEN_ADDR: ":8081"      # OPA write callback (writer-capable)
+    INTERNAL_LISTEN_ADDR: ":8081"      # OPA read/write callback (writer-capable)
     INTERNAL_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
-  # No host port on the callback listener — reachable solely by OPA
+    # JWT_ROLES_CLAIM: "roles"         # default; WRITER_ROLE default authz_writer
 
-# compose.yml — OPA forwards authorized writes to the writer's callback
+# compose.yml — OPA. NATIVE_WRITE_URL enables ONLY the OPA data-API write
+# alternative (write.rego forwards to the writer's callback). It is NOT on the
+# native write path above; unset it and native writes still work.
 opa:
   environment:
-    NATIVE_WRITE_URL: "http://pgauthzd-full:8081"   # unset ⇒ writes disabled
+    NATIVE_WRITE_URL: "http://pgauthzd-full:8081"   # OPA data-API write path only
     NATIVE_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
     # JWT_ROLES_CLAIM: "realm_access.roles"   # default: roles
     # WRITER_ROLE: "authz_writer"             # default
@@ -960,20 +977,17 @@ opa:
 
 ### Operations reference
 
-All tuple writes go through `POST /v1/data/authz/write` (above). The `operation`
-maps to a SQL function:
+Each native write endpoint maps to a SQL function:
 
-| Operation | SQL function | `body` returns |
+| Endpoint | SQL function | Response |
 |---|---|---|
-| `write` | `write_tuple` | boolean (created?) |
-| `delete` | `delete_tuple` | boolean (deleted?) |
-| `write_batch` | `write_tuples_jsonb` | count inserted (duplicates skipped) |
-| `delete_batch` | `delete_tuples_jsonb` | count deleted |
-| `delete_user` | `delete_user_tuples` | count removed |
-| `write_checked` | `write_tuples_checked` | `{"written": n, "deleted": m}` (conditional/atomic) |
+| `POST /pgauthz/v1/write` | `write_tuples_jsonb` | `{"written": n}` (count inserted, duplicates upserted) |
+| `POST /pgauthz/v1/delete` | `delete_tuples_jsonb` | `{"deleted": n}` (count deleted) |
+| `POST /pgauthz/v1/delete-user` | `delete_user_tuples` | `{"deleted": n}` (count removed) |
+| `POST /pgauthz/v1/write-checked` | `write_tuples_checked` | engine JSONB, e.g. `{"written": n, "deleted": m}` (conditional/atomic) |
 
 **Admin / model operations** require `authz_admin` and are **direct SQL only**
-(not exposed over OPA):
+(not exposed over the public write API):
 
 | Function | Purpose |
 |---|---|
@@ -995,7 +1009,7 @@ Application:
   1. BEGIN
   2. INSERT INTO documents (id, ...) VALUES ('doc_123', ...);
   3. COMMIT
-  4. POST /v1/data/authz/write → OPA → writer → PG primary
+  4. POST /pgauthz/v1/write → pgauthzd writer → PG primary
 ```
 
 Simple, but if step 4 fails, the document exists without the permission
@@ -1015,7 +1029,7 @@ Application (single transaction):
   COMMIT;
 
 Outbox processor (async):
-  3. Read from outbox → POST /v1/data/authz/write (OPA) → mark as processed
+  3. Read from outbox → POST /pgauthz/v1/write (pgauthzd writer) → mark as processed
 ```
 
 No distributed transactions. The outbox processor retries on failure.
@@ -1027,7 +1041,7 @@ For event-driven architectures, publish authorization changes to a topic.
 A consumer calls the write API:
 
 ```
-Application ──▶ Kafka topic ──▶ Consumer ──▶ OPA ──▶ writer ──▶ PG primary
+Application ──▶ Kafka topic ──▶ Consumer ──▶ pgauthzd writer ──▶ PG primary
 ```
 
 Partition by `(object_type, object_id)` to preserve ordering per
@@ -1058,14 +1072,14 @@ If a check must reflect a just-committed change, either:
 ### Writing tuples from Spring Boot
 
 When your application creates resources or changes ownership, it needs to
-write authorization tuples. Use the pgauthzd write front door (which validates
-the JWT and writer role) or direct SQL.
+write authorization tuples. Use the pgauthzd native write front door (which
+validates the JWT and writer role) or direct SQL.
 
-**Via the OPA write policy (HTTP):** the write-authz decision pgauthzd's writer
-consults is the OPA `write.rego` policy — `POST /v1/data/authz/write` with an
-`{"input": {...}}` envelope, which the demo also lets you drive directly against
-OPA. Pass the caller's JWT (its roles claim must contain the writer role); the
-authenticated subject is recorded as the audit author.
+**Via the native write API (HTTP):** `POST /pgauthz/v1/write` on the pgauthzd
+`full` instance with an `Authorization: Bearer <JWT>` header and a native
+`{"tuples":[...]}` body. The caller's JWT roles claim must contain the writer
+role; the authenticated subject is recorded as the audit author. The store is
+selected by the `X-AuthZ-Store` header (or the instance's `DEFAULT_STORE`).
 
 ```java
 @Component
@@ -1073,31 +1087,34 @@ public class AuthZWriter {
 
     private final RestClient rest;
 
-    public AuthZWriter(@Value("${authz.opa-url}") String opaUrl) {
-        this.rest = RestClient.builder().baseUrl(opaUrl).build();
+    public AuthZWriter(@Value("${authz.writer-url}") String writerUrl) {
+        this.rest = RestClient.builder().baseUrl(writerUrl).build();
     }
 
     /** Grant a relation on a resource to a subject. */
     public void writeTuple(String token, String store, String userType, String userId,
                            String relation, String objectType, String objectId) {
-        send(token, store, "write", "tuple", tuple(userType, userId, relation, objectType, objectId));
+        writeTuples(token, store,
+            List.of(tuple(userType, userId, relation, objectType, objectId)));
     }
 
-    /** Write multiple tuples in a single round-trip. Returns the number inserted. */
+    /** Write multiple tuples in a single round-trip. Returns the number written. */
     public int writeTuples(String token, String store, List<Map<String, String>> tuples) {
-        return count(send(token, store, "write_batch", "tuples", tuples));
+        return send(token, store, "/pgauthz/v1/write",
+                    Map.of("tuples", tuples)).written();
     }
 
     /** Revoke a relation. */
     public void deleteTuple(String token, String store, String userType, String userId,
                             String relation, String objectType, String objectId) {
-        send(token, store, "delete", "tuple", tuple(userType, userId, relation, objectType, objectId));
+        send(token, store, "/pgauthz/v1/delete",
+             Map.of("tuples", List.of(tuple(userType, userId, relation, objectType, objectId))));
     }
 
     /** Remove all tuples for a user (offboarding). */
     public void deleteUserTuples(String token, String store, String userType, String userId) {
-        send(token, store, "delete_user", "user",
-             Map.of("user_type", userType, "user_id", userId));
+        send(token, store, "/pgauthz/v1/delete-user",
+             Map.of("user", Map.of("type", userType, "id", userId)));
     }
 
     private static Map<String, String> tuple(String userType, String userId, String relation,
@@ -1106,37 +1123,18 @@ public class AuthZWriter {
                       "object_type", objectType, "object_id", objectId);
     }
 
-    private WriteResponse send(String token, String store, String operation,
-                               String payloadKey, Object payload) {
-        var input = new HashMap<String, Object>();
-        input.put("token", token);
-        input.put("store", store);
-        input.put("operation", operation);
-        input.put(payloadKey, payload);
-
-        var resp = rest.post()
-            .uri("/v1/data/authz/write")
-            .body(Map.of("input", input))
-            .retrieve()
+    private WriteResponse send(String token, String store, String path, Object body) {
+        return rest.post()
+            .uri(path)
+            .header("Authorization", "Bearer " + token)
+            .header("X-AuthZ-Store", store)
+            .body(body)
+            .retrieve()   // non-2xx (401/403/400) throws — the write was refused
             .body(WriteResponse.class);
-
-        if (resp == null || resp.result() == null || !resp.result().allowed()) {
-            throw new IllegalStateException("authz write denied: " +
-                (resp != null && resp.result() != null ? resp.result().error() : "no response"));
-        }
-        return resp;
     }
 
-    private int count(WriteResponse resp) {
-        var fwd = resp.result().result();
-        return fwd != null && fwd.body() instanceof Number n ? n.intValue() : 0;
-    }
-
-    // OPA wraps the policy decision under "result".
-    record WriteResponse(Decision result) {
-        record Decision(boolean allowed, String error, Forward result) {}
-        record Forward(int status, Object body) {}
-    }
+    // pgauthzd returns {"store": "...", "written": n} / {"deleted": n}.
+    record WriteResponse(String store, int written, int deleted) {}
 }
 ```
 
@@ -1186,8 +1184,8 @@ Configure in `application.yml`:
 
 ```yaml
 authz:
-  opa-url: http://localhost:8181      # OPA — read checks AND the write endpoint
-  # AuthZEN read API (alternative to calling OPA directly):
+  writer-url: http://localhost:8092   # pgauthzd full instance — native write API
+  # AuthZEN read API (pgauthzd read instances):
   #   http://localhost:8090 (pgauthzd-decision) / :8091 (pgauthzd-opa)
 ```
 
@@ -1215,6 +1213,52 @@ jdbc.update(
     "demo", "internal_user", userId, "offboarding"
 );
 ```
+
+### OPA data-API write alternative
+
+The native `/pgauthz/v1/write` path above is the primary write API. As an
+**alternative**, a deployment that wants to layer extra Rego write policy in
+front of writes (audit rules, custom authorization, request shaping) can drive
+OPA's `write.rego` directly against **OPA's data API** on `:8181`. OPA
+re-verifies the JWT (defense in depth), applies its Rego policy, and forwards the
+authorized write to the pgauthzd writer's callback (`NATIVE_WRITE_URL`, unset ⇒
+writes disabled). This is not on the native path — it exists only where OPA is
+deliberately fronting writes.
+
+`POST /v1/data/authz/write` with an OPA `{"input": {...}}` envelope; the
+`operation` field selects the action:
+
+| `operation` | Payload field | Maps to |
+|---|---|---|
+| `write` / `delete` | `tuple` (object) | `write_tuple` / `delete_tuple` |
+| `write_batch` / `delete_batch` | `tuples` (array) | `write_tuples_jsonb` / `delete_tuples_jsonb` |
+| `delete_user` | `user` (`{user_type, user_id}`) | `delete_user_tuples` (offboarding) |
+| `write_checked` | `preconditions` + `deletes` + `writes` (arrays) | `write_tuples_checked` |
+
+A tuple object is `{user_type, user_id, relation, object_type, object_id}` plus
+optional `user_relation` and (writes only) `condition` + `condition_context`
+(**note:** the OPA envelope uses `condition`/`condition_context`, whereas the
+native API uses `condition_name`/`context`). `store` and `token` are envelope
+fields; the authenticated subject is recorded as the audit author.
+
+```bash
+# Single write via the OPA data API
+curl -sX POST http://localhost:8181/v1/data/authz/write \
+  -H "Content-Type: application/json" \
+  -d '{"input":{"token":"'"$TOKEN"'","store":"demo","operation":"write",
+        "tuple":{"user_type":"internal_user","user_id":"alice","relation":"viewer",
+                 "object_type":"document","object_id":"doc_new_001"}}}'
+# => {"result":{"allowed":true,"result":{"status":200,"body":true}}}
+```
+
+Outcomes are wrapped in OPA's policy result:
+
+| Result | Meaning |
+|---|---|
+| `{"allowed":true,"result":{"status":200,"body":…}}` | applied; `body` is the function return (boolean, or the affected count for batch) |
+| `{"allowed":false,"error":"not_authorized"}` | missing/invalid token, or roles claim lacks `WRITER_ROLE` |
+| `{"allowed":false,"error":"invalid_request"}` | authorized, but malformed `operation` / `tuple` / `tuples` / `user` |
+| `{"allowed":false,"error":"writes_disabled"}` | no `NATIVE_WRITE_URL` configured (read-only deployment) |
 
 ### Downstream services
 

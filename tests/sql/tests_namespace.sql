@@ -333,7 +333,7 @@ SELECT authz.grant_namespace_access('test_ns_read', 'documents', 'authz_writer',
 DO $$
 DECLARE v_err text := NULL;
 BEGIN
-    PERFORM set_config('role', 'api_anon', true);
+    PERFORM set_config('role', 'authz_reader', true);
     BEGIN
         PERFORM authz.check_access('test_ns_read', 'user', 'u1', 'viewer', 'doc', 'doc1');
     EXCEPTION WHEN raise_exception THEN
@@ -353,7 +353,7 @@ SELECT authz.grant_namespace_access('test_ns_read', 'documents', 'authz_reader',
 DO $$
 DECLARE v_bool boolean;
 BEGIN
-    PERFORM set_config('role', 'api_anon', true);
+    PERFORM set_config('role', 'authz_reader', true);
     v_bool := authz.check_access('test_ns_read', 'user', 'u1', 'viewer', 'doc', 'doc1');
     PERFORM set_config('role', 'none', true);
     PERFORM _test_assert('ns_r_11_set_role_read_with_grant_allowed', v_bool::text, 'true');
@@ -383,12 +383,16 @@ $$;
 SELECT * FROM _test_teardown_ns_write();
 
 -- ─────────────────────────────────────────────────────────────────────
--- Pre-request role assumption (OPA-fronted writer + namespace isolation).
+-- Per-app role assumption + namespace isolation.
 --
--- The OPA-fronted writer runs as a fixed authz_writer. OPA conveys the caller's
--- app role in the X-Authz-Role header; authz._pre_request() (the PostgREST
--- db-pre-request hook) validates it and SET LOCAL ROLEs to it, so the existing
--- namespace enforcement applies to the per-app role rather than the fixed one.
+-- pgauthzd conveys the caller's app role (from the verified token / OPA's
+-- X-Authz-Role) and — after validating it (member of authz_writer, NOT admin;
+-- see pgauthzd's checkWriterRole, covered end to end by tests/test-opa.sh) —
+-- SET LOCAL ROLEs to it. Here we assume the role directly (the transaction-local
+-- `role` GUC the engine reads via _effective_role, the same effect as SET LOCAL
+-- ROLE) and check that the engine's namespace enforcement keys on the assumed
+-- per-app role rather than the connection role. The role-VALIDATION itself now
+-- lives in pgauthzd (Go), so it is exercised by the integration suite, not here.
 -- ─────────────────────────────────────────────────────────────────────
 DROP ROLE IF EXISTS test_app_a;
 DROP ROLE IF EXISTS test_app_b;
@@ -401,13 +405,12 @@ SELECT _test_setup_ns_write();
 -- Only app_a may write the 'documents' namespace.
 SELECT authz.grant_namespace_access('test_ns_write', 'documents', 'test_app_a', p_can_write := true);
 
--- pr_01: X-Authz-Role app_a (has the grant) → write allowed.
+-- pr_01: assumed role app_a (has the grant) → write allowed.
 DO $$
 DECLARE v_result text;
 BEGIN
-    PERFORM set_config('request.headers', json_build_object('x-authz-role','test_app_a')::text, true);
+    PERFORM set_config('role', 'test_app_a', true);
     BEGIN
-        PERFORM authz._pre_request();
         PERFORM authz.write_tuple('test_ns_write','user','u_pr','viewer','doc','doc_pr_a');
         v_result := 'allowed';
     EXCEPTION WHEN OTHERS THEN v_result := 'denied'; END;
@@ -416,13 +419,12 @@ BEGIN
 END;
 $$;
 
--- pr_02: X-Authz-Role app_b (no grant) → namespace isolation blocks the write.
+-- pr_02: assumed role app_b (no grant) → namespace isolation blocks the write.
 DO $$
 DECLARE v_result text; v_err text;
 BEGIN
-    PERFORM set_config('request.headers', json_build_object('x-authz-role','test_app_b')::text, true);
+    PERFORM set_config('role', 'test_app_b', true);
     BEGIN
-        PERFORM authz._pre_request();
         PERFORM authz.write_tuple('test_ns_write','user','u_pr','viewer','doc','doc_pr_b');
         v_result := 'allowed';
     EXCEPTION WHEN OTHERS THEN v_result := 'denied'; v_err := SQLERRM; END;
@@ -430,36 +432,6 @@ BEGIN
     PERFORM _test_assert_true('pr_02_app_b_without_grant_blocked',
         v_result = 'denied' AND v_err LIKE '%Permission denied%namespace%',
         coalesce(v_err, 'no exception'));
-END;
-$$;
-
--- pr_03: X-Authz-Role authz_admin → rejected (no privilege escalation to admin).
-DO $$
-DECLARE v_result text; v_err text;
-BEGIN
-    PERFORM set_config('request.headers', json_build_object('x-authz-role','authz_admin')::text, true);
-    BEGIN
-        PERFORM authz._pre_request();
-        v_result := 'assumed';
-    EXCEPTION WHEN OTHERS THEN v_result := 'rejected'; v_err := SQLERRM; END;
-    RESET ROLE;
-    PERFORM _test_assert_true('pr_03_admin_role_rejected',
-        v_result = 'rejected' AND v_err LIKE '%not an allowed writer role%',
-        coalesce(v_err, 'no exception'));
-END;
-$$;
-
--- pr_04: no X-Authz-Role header → pre-request is a no-op (no error, no SET ROLE).
-DO $$
-DECLARE v_result text;
-BEGIN
-    PERFORM set_config('request.headers', '{}', true);
-    BEGIN
-        PERFORM authz._pre_request();
-        v_result := 'ok';
-    EXCEPTION WHEN OTHERS THEN v_result := 'error'; END;
-    RESET ROLE;
-    PERFORM _test_assert('pr_04_no_header_noop', v_result, 'ok');
 END;
 $$;
 

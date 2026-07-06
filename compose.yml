@@ -19,10 +19,11 @@ services:
       POSTGRES_PASSWORD: "${PG_PASSWORD:-authz}"
       POSTGRES_DB: authz
       # Passed to db/security/initdb/01_authenticator.sh to set the service
-      # login-role passwords on first boot — must match the connection strings
-      # below. Default to the dev password; override via .env (see .env.example).
-      AUTHZ_AUTHENTICATOR_PASSWORD: "${AUTHZ_AUTHENTICATOR_PASSWORD:-authz}"
+      # login-role passwords on first boot — must match the pgauthzd DATABASE_URLs
+      # (compose-authzen.yml). Default to the dev password; override via .env
+      # (see .env.example).
       AUTHZEN_DIRECT_PASSWORD: "${AUTHZEN_DIRECT_PASSWORD:-authz}"
+      PGAUTHZD_RW_PASSWORD: "${PGAUTHZD_RW_PASSWORD:-authz}"
     ports:
       - "55433:5432"
     healthcheck:
@@ -34,7 +35,7 @@ services:
       # Named volume — no :z (that SELinux relabel flag is for bind mounts;
       # Docker manages a named volume's SELinux context itself).
       - authz-db-data:/var/lib/postgresql
-      # Creates the service LOGIN roles (authz_authenticator, authzen_direct) on
+      # Creates the service LOGIN roles (authzen_direct, pgauthzd_rw) on
       # first init, before the services connect (they exit if their login role
       # is missing; roles.sql — run later by init.sh — adds the grants).
       - ./db/security/initdb:/docker-entrypoint-initdb.d:ro

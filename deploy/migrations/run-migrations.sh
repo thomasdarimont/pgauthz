@@ -79,8 +79,8 @@ echo "==> Loading engine code (functions + roles) as role authz..."
   done
   echo "SELECT authz.ensure_audit_partitions();"
   if [ -n "${CONDITION_STATEMENT_TIMEOUT:-}" ]; then
-    echo "ALTER ROLE authz_authenticator SET statement_timeout = '${CONDITION_STATEMENT_TIMEOUT}';"
-    echo "ALTER ROLE authzen_direct      SET statement_timeout = '${CONDITION_STATEMENT_TIMEOUT}';"
+    echo "ALTER ROLE authzen_direct SET statement_timeout = '${CONDITION_STATEMENT_TIMEOUT}';"
+    echo "ALTER ROLE pgauthzd_rw    SET statement_timeout = '${CONDITION_STATEMENT_TIMEOUT}';"
   fi
   echo "NOTIFY pgrst, 'reload schema';"
 } | "${PSQL[@]}" -f -

@@ -25,10 +25,10 @@ _effective_cache_ttl(store, object_type) := 0 if input.no_cache
 
 _effective_cache_ttl(store, object_type) := _cache_ttl(store, object_type) if not input.no_cache
 
-# Per-app DB role forwarded on READ calls as X-Authz-Role, consumed by the
-# reader's _pre_request_reader() hook (SET LOCAL ROLE) so the engine's
-# read-side namespace checks key on the calling application, not the fixed
-# api_anon. Trust ladder mirrors subject resolution:
+# Per-app DB role forwarded on READ calls as X-Authz-Role, which pgauthzd
+# validates and SET LOCAL ROLEs to so the engine's read-side namespace checks
+# key on the calling application, not the reader's fixed connection role
+# (authz_reader). Trust ladder mirrors subject resolution:
 #   - token present  → data.authn.db_role (verified claim; raw input ignored)
 #   - trusted-PEP mode (require_token_for_reads=false) → input.db_role — the
 #     PEP is already trusted to assert subjects, asserting the role is the

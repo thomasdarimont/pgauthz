@@ -417,14 +417,13 @@ is the only backend (ADR-6).
 
 ```
                 ┌── authz_auditor ──┐
-api_anon ── authz_reader            ├── authz_admin
+     authz_reader                   ├── authz_admin
                 └── authz_writer ───┘
 ```
 
 | Role | Grants | Purpose |
 |---|---|---|
 | `authz_eval` | Zero grants | Sandboxed condition evaluation |
-| `api_anon` | Inherits `authz_reader` | Read-only connection role for the `decision-only` pgauthzd (and the legacy PostgREST anon role) |
 | `authz_auditor` | Reader + `audit_*` functions | Compliance / security teams |
 | `authz_reader` | `check_access`, `list_*`, `explain_access` | Read-only access checks |
 | `authz_contextual_reader` | `check_access_with_contextual_tuples*` | Contextual-tuple checks (inject ephemeral tuples) — trusted PDP callers only; granted to no one by default |
@@ -614,7 +613,7 @@ write rule then returns `writes_disabled`).
 | Service | Image | Ports | Notes |
 |---|---|---|---|
 | `authz-db` | `postgres:18.4` | 55433:5432 | `max_connections=250`, tuned `shared_buffers`, `work_mem` |
-| `pgauthzd` (decision-only) | `pgauthzd` (multi-stage) | internal only | Read-only, `api_anon`/`authz_reader` role; serves the native `/pgauthz/v1` read callback |
+| `pgauthzd` (decision-only) | `pgauthzd` (multi-stage) | internal only | Read-only; connects as `authzen_direct` (inherits `authz_reader`); serves the native `/pgauthz/v1` read callback |
 | `opa` | `openpolicyagent/opa:1.18.2` | 8181:8181 | Internal Rego policy sidecar that pgauthzd consults (when `OPA_URL` is set); calls **back** into pgauthzd's native callback listeners. Only pgauthzd calls it. Token auth + basic authorization. Env: `JWT_ISSUER`, `JWT_AUDIENCE`, `DEFAULT_STORE`, `NATIVE_URL`, `NATIVE_WRITE_URL`, `NATIVE_SERVICE_TOKEN`, `JWT_ROLES_CLAIM`, `WRITER_ROLE`, `REQUIRE_TOKEN_FOR_READS` (tokenless `input.subject` reads only when `false` — trusted-PEP mode; the keycloak overlay pins `true`), `DEFAULT_CACHE_TTL_SECONDS`. |
 | `pgauthzd` (full/writer) | `pgauthzd` (multi-stage) | internal only | Fixed `authz_writer` role, **no JWT** of its own — the OPA writer-role policy authorizes the forwarded write today; trusts the service token + `X-Authz-Role`; reachable only by OPA (which pgauthzd's write front door consults) |
 | `pgauthzd-decision` | `pgauthzd` (multi-stage) | 8090:8080 | AuthZEN 1.0 API, `decision-only` profile, Go→PostgreSQL direct (via `compose-authzen.yml`) |

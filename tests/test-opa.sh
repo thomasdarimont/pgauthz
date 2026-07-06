@@ -575,7 +575,7 @@ echo ""
 
 # End-to-end slice-B proof: a namespaced type is readable only when the
 # caller's per-app DB role is forwarded (input.db_role → OPA X-Authz-Role →
-# reader _pre_request_reader → SET LOCAL ROLE → _check_namespace_access).
+# pgauthzd reader → SET LOCAL ROLE → _check_namespace_access).
 # Uses the trusted-PEP role source (input.db_role, honored because the demo
 # runs REQUIRE_TOKEN_FOR_READS=false); the token-claim source
 # (DB_ROLE_CLAIM) shares the same forwarding + hook path.
@@ -587,7 +587,6 @@ BEGIN
         CREATE ROLE test_opa_ns_app NOLOGIN;
     END IF;
     GRANT authz_reader TO test_opa_ns_app;
-    GRANT test_opa_ns_app TO authz_authenticator;  -- PostgREST reader SET ROLEs to it (NOINHERIT role)
     -- Native read callback (authzen_direct is INHERIT) must SET ROLE to it WITHOUT
     -- inheriting its namespace grants — else a read with no db_role would see the
     -- namespaced tuple. INHERIT FALSE (PG16+) allows SET ROLE without inheritance.
@@ -600,7 +599,7 @@ BEGIN
     PERFORM authz.model_add_rule('demo', 'ns_secret', 'ns_viewer', 'direct');
     -- can_write too: the fixture's own write_tuple below must pass the
     -- namespace write check (the superuser is a member of every role, so
-    -- this grant covers it); reads via api_anon stay ungranted.
+    -- this grant covers it); reads via the default reader stay ungranted.
     PERFORM authz.grant_namespace_access('demo', 'opa_ns_test', 'test_opa_ns_app',
                                          p_can_read := true, p_can_write := true);
     PERFORM authz.write_tuple('demo', 'internal_user', 'alice', 'ns_viewer',
@@ -609,7 +608,7 @@ END;
 $$;
 SQL
 
-# Without a role: the reader stays api_anon, which has no grant on the
+# Without a role: the reader stays the default reader (authz_reader), which has no grant on the
 # namespace — the engine denies the read, so the decision is false.
 check "namespaced read denied without db_role" \
     "authz/allow" \

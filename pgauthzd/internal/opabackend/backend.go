@@ -280,9 +280,9 @@ func (b *Backend) query(ctx context.Context, rule string, input any, dest any) e
 	}
 	// Forward the derived per-app DB role (DB_ROLE_CLAIM / CLIENT_DB_ROLES,
 	// already validated against the issuer's db_roles binding by the
-	// middleware) as input.db_role. OPA forwards it to the PostgREST reader
-	// as X-Authz-Role so _pre_request_reader() applies per-app namespace
-	// isolation. In token mode OPA re-derives the role from the verified
+	// middleware) as input.db_role. OPA forwards it to pgauthzd's native reader
+	// callback as X-Authz-Role, which pgauthzd validates + SET LOCAL ROLEs to
+	// for per-app namespace isolation. In token mode OPA re-derives the role from the verified
 	// claims and ignores this field; it is honored only in trusted-PEP mode
 	// (require_token_for_reads=false).
 	if m, ok := input.(map[string]any); ok {

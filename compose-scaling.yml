@@ -50,6 +50,11 @@ services:
       POSTGRES_USER: authz
       POSTGRES_PASSWORD: authz
       POSTGRES_DB: authz
+      # Passed to 01_authenticator.sh to set the service login-role passwords on
+      # first boot — must match the pgauthzd DATABASE_URLs (reader below; writer
+      # example uses PGAUTHZD_RW_PASSWORD). Default to the dev password.
+      AUTHZEN_DIRECT_PASSWORD: "${AUTHZEN_DIRECT_PASSWORD:-authz}"
+      PGAUTHZD_RW_PASSWORD: "${PGAUTHZD_RW_PASSWORD:-authz}"
     ports:
       - "55433:5432"
     healthcheck:
@@ -60,7 +65,7 @@ services:
     volumes:
       - authz-primary-data:/var/lib/postgresql:z
       - ./db/scaling/init-replication-user.sh:/docker-entrypoint-initdb.d/01-replication-user.sh:ro
-      # Create the service LOGIN roles (authz_authenticator, authzen_direct) at
+      # Create the service LOGIN roles (authzen_direct, pgauthzd_rw) at
       # initdb — before pgauthzd-reader first connects — so the read instance
       # doesn't crash-loop waiting for roles.sql (which init.sh runs only after
       # `up --wait`). The replica streams these roles from the primary.

@@ -21,18 +21,17 @@ This means:
 
 ### Role hierarchy
 
-Five application roles — both `authz_auditor` and `authz_writer`
+Four application roles — both `authz_auditor` and `authz_writer`
 inherit from `authz_reader`, and `authz_admin` inherits both:
 
 ```
                 ┌── authz_auditor ──┐
-api_anon ── authz_reader            ├── authz_admin
+     authz_reader                   ├── authz_admin
                 └── authz_writer ───┘
 ```
 
 | Role | Capabilities |
 |---|---|
-| `api_anon` | Read-only connection role for the `decision-only` pgauthzd — inherits `authz_reader` |
 | `authz_auditor` | Reader + audit trail queries, time-travel access checks (`audit_list_user`, `audit_list_object`, `audit_check_access`, `audit_list_actions`) |
 | `authz_reader` | Live access checks, search queries, explain |
 | `authz_writer` | Tuple management (write, delete, batch operations) |

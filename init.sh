@@ -67,8 +67,8 @@ fi
 # needs a fresh DB: down -v + init); these knobs apply on every init.
 if [ -n "${CONDITION_STATEMENT_TIMEOUT:-}" ]; then
   echo "==> Setting statement_timeout=$CONDITION_STATEMENT_TIMEOUT on service roles..."
-  psql_exec "$PG_DB" -c "ALTER ROLE authz_authenticator SET statement_timeout = '$CONDITION_STATEMENT_TIMEOUT';
-                         ALTER ROLE authzen_direct      SET statement_timeout = '$CONDITION_STATEMENT_TIMEOUT';" >/dev/null
+  psql_exec "$PG_DB" -c "ALTER ROLE authzen_direct SET statement_timeout = '$CONDITION_STATEMENT_TIMEOUT';
+                         ALTER ROLE pgauthzd_rw    SET statement_timeout = '$CONDITION_STATEMENT_TIMEOUT';" >/dev/null
 fi
 if [ -n "${AUTHZ_CONTEXTUAL_READER_GRANTEE:-}" ]; then
   echo "==> Granting authz_contextual_reader to $AUTHZ_CONTEXTUAL_READER_GRANTEE..."
