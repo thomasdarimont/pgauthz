@@ -43,6 +43,8 @@ func Run(name, version string) error {
 	// Pre-init the per-kid rotation-drain series so a retiring key exports 0
 	// (not "missing") from startup.
 	metrics.InitFreshnessKeyIDs(authz.NewKeyring(cfg.FreshnessKeys).KIDs())
+	// The served OpenAPI document reports the build version as info.version.
+	api.SetOpenAPIVersion(version)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

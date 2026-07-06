@@ -1464,8 +1464,11 @@ driving `check_access`.
 
 ### AuthZEN 1.0 API
 
-The `authzen/` directory contains a Go API layer implementing the
-[AuthZEN 1.0](https://openid.net/specs/authorization-api-1_0.html) standard.
+The `pgauthzd/` directory contains the Go daemon implementing the
+[AuthZEN 1.0](https://openid.net/specs/authorization-api-1_0.html) standard
+(plus the native `/pgauthz/v1` API). Its full HTTP contract is served as an
+**OpenAPI description** at `GET /pgauthz/v1/openapi.json` (contract-tested
+against the routes; see [pgauthzd/README.md](pgauthzd/README.md#openapi-description)).
 One `pgauthzd` binary, capability-scoped by profile, is deployed as several demo services sharing a common HTTP handler layer:
 
 - **`pgauthzd-decision`** (port 8090) — the `decision-only` profile: Go → PostgreSQL (lowest latency, pure Zanzibar)

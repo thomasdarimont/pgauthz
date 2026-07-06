@@ -80,14 +80,26 @@ func NewHandler(backend, raw, rawWrite authz.Backend, cfg *config.Config) *Handl
 func NewRouter(backend, raw, rawWrite authz.Backend, cfg *config.Config, jwtMW *JWTMiddleware) http.Handler {
 	h := NewHandler(backend, raw, rawWrite, cfg)
 	h.requireWriterRole = true
+	return withMiddleware(newPublicMux(h, cfg.UsesOPA()), jwtMW)
+}
+
+// newPublicMux wires the PUBLIC listener's route set. Kept as its own function
+// so the OpenAPI route-coverage test (openapi_test.go) introspects exactly the
+// mux production uses — not a re-declared copy that could drift.
+func newPublicMux(h *Handler, usesOPA bool) *http.ServeMux {
 	mux := http.NewServeMux()
 	registerAuthZEN(mux, h)
-	if !cfg.UsesOPA() {
+	if !usesOPA {
 		registerNativeRead(mux, h)
 		registerNativeWrite(mux, h)
 	}
 	mux.HandleFunc("GET /healthz", h.Healthz)
-	return withMiddleware(mux, jwtMW)
+	// The API contract, served unauthenticated (exempted in the JWT
+	// middleware). Describes the FULL surface; per-mode availability (OPA
+	// fronting, profile) is noted in the document itself.
+	mux.HandleFunc("GET /pgauthz/v1/openapi.json", h.OpenAPIJSON)
+	mux.HandleFunc("GET /pgauthz/v1/openapi.yaml", h.OpenAPIYAML)
+	return mux
 }
 
 // NewCallbackRouter is the OPA CALLBACK listener: the native surface an OPA

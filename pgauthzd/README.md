@@ -20,10 +20,34 @@ Both expose identical endpoints and require a valid JWT (ES256/RS256).
 | POST | `/access/v1/search/action` | What actions can a subject perform? |
 | GET | `/.well-known/authzen-configuration` | PDP discovery (no auth) |
 | GET | `/healthz` | Health check (no auth) |
+| GET | `/pgauthz/v1/openapi.json` / `.yaml` | This server's OpenAPI description (no auth) |
 
 Every `access/v1` endpoint (and the discovery document) is also available
 **store-scoped** under `/stores/{store}/…` — see
 [Multi-Store Support](#multi-store-support).
+
+### OpenAPI description
+
+The full HTTP contract — native `/pgauthz/v1` + AuthZEN `/access/v1`, including
+every `X-PGAuthz-*` request/response header, the error envelopes (standard, the
+structured freshness `409`), and both security schemes (public JWT vs the
+internal callback's service token) — is described in
+[`internal/api/openapi.yaml`](internal/api/openapi.yaml), embedded into the
+binary and served at `GET /pgauthz/v1/openapi.json` (and `.yaml`), with
+`info.version` stamped to the build version. Feed it to openapi-generator /
+Postman / Swagger UI for typed clients and exploration:
+
+```bash
+curl -s http://localhost:8090/pgauthz/v1/openapi.json | jq .info
+```
+
+The document cannot silently drift from the code: `internal/api/openapi_test.go`
+enforces **bidirectional route coverage** (every documented path must resolve in
+the production router, every registered route must be documented) and validates
+real handler responses against the schemas — `go test` (and the pre-release
+check) fail on any mismatch. The document describes the FULL surface; per-mode
+availability (OPA fronting hides the native routes from the public listener,
+`decision-only` rejects writes) is noted in the operation descriptions.
 
 ## Quick Start
 

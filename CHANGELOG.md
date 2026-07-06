@@ -51,6 +51,24 @@ pre-1.0, minor versions may include breaking changes.
   architecture removes. PRODUCTION.md's "Edge TLS / mTLS" section now
   documents the per-hop guidance; the template remains in git history.
 
+### Added
+
+- **OpenAPI description for pgauthzd, contract-tested against the code.** The
+  full HTTP surface — native `/pgauthz/v1` and AuthZEN `/access/v1` (incl. the
+  store-scoped variants), every `X-PGAuthz-*` request/response header, the
+  error envelopes (standard + the structured freshness `409`), and both
+  security schemes (public-listener JWT vs the internal callback's service
+  token) — lives in `pgauthzd/internal/api/openapi.yaml`, is embedded into the
+  binary, and is served unauthenticated at `GET /pgauthz/v1/openapi.json`
+  (and `.yaml`) with `info.version` stamped to the build version. AuthZEN
+  shapes cross-checked against the official openid/authzen JSON schemas
+  (`properties` bags accepted; the detail `context` documented as a vendor
+  extension). Drift is impossible to ship: `openapi_test.go` enforces
+  bidirectional route coverage (documented ⊆ registered ⊆ documented) and
+  validates real handler responses against the schemas — wired into `go test`,
+  CI, and `scripts/pre-release.sh` (which now also runs the pgauthzd unit
+  tests).
+
 ### Added (docs / examples)
 
 - **README "A complete example first"** — the full lifecycle in one

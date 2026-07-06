@@ -1,0 +1,1546 @@
+# OpenAPI description of pgauthzd's HTTP surface: the native /pgauthz/v1 API
+# and the AuthZEN 1.0 /access/v1 API (plus health + discovery).
+#
+# This file is the CONTRACT: it is embedded into the binary and served at
+# GET /pgauthz/v1/openapi.{json,yaml}, and openapi_test.go enforces it against
+# the code — every path here must resolve in the router, every registered
+# route must appear here, and handler responses are validated against the
+# schemas. Change the API and the tests force this file to follow (and vice
+# versa).
+#
+# Availability by deployment mode (the document describes the FULL surface):
+#   - AuthZEN /access/v1: always on the public listener.
+#   - Native /pgauthz/v1 reads: public listener only when NOT fronting OPA
+#     (no OPA_URL); always on the internal callback listener.
+#   - Native /pgauthz/v1 writes: full profile only (decision-only → 403);
+#     on the public listener additionally gated by the WRITER_ROLE claim.
+#   - The internal callback listener authenticates with the shared service
+#     token (and optional mTLS), not the end-user JWT, and additionally
+#     honors the X-PGAuthz-Role header from its trusted OPA upstream.
+openapi: 3.0.3
+info:
+  title: pgauthzd
+  description: >
+    PostgreSQL-native Zanzibar-style authorization over HTTP: the pgauthz
+    native API (raw graph decisions, search, explain, watch, tuple writes)
+    and the AuthZEN 1.0 access evaluation/search API.
+  # Placeholder — replaced at startup with the build version (the same value
+  # build_info reports); see api.SetOpenAPIVersion.
+  version: 0.0.0-dev
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+# Default: the public listener's end-user/service JWT. Native operations
+# additionally accept the shared service token — that is how the SAME paths
+# are authenticated on the internal callback listener (declared per
+# operation below as bearerAuth OR serviceToken). Discovery, health, and this
+# document are public (security: []).
+security:
+  - bearerAuth: []
+
+tags:
+  - name: authzen
+    description: AuthZEN 1.0 access evaluation and search (spec-pure surface).
+  - name: native-read
+    description: >
+      Native pgauthz reads — raw ReBAC graph answers, policy-free by
+      construction. Point reads honor the freshness protocol — see the
+      X-PGAuthz-Consistency header.
+  - name: native-write
+    description: >
+      Native pgauthz writes (full profile). Successful writes mint a freshness
+      token (X-PGAuthz-Revision) when FRESHNESS_TOKEN_KEYS is configured.
+  - name: meta
+    description: Health, discovery, and this document.
+
+paths:
+  # ── AuthZEN 1.0 ────────────────────────────────────────────────────────────
+  /access/v1/evaluation:
+    post:
+      tags: [authzen]
+      operationId: evaluation
+      summary: Single access evaluation (AuthZEN §5)
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+        - $ref: '#/components/parameters/DetailHeader'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/Evaluation' }
+      responses:
+        '200': { $ref: '#/components/responses/EvaluationOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+  /stores/{store}/access/v1/evaluation:
+    post:
+      tags: [authzen]
+      operationId: evaluationStore
+      summary: Single access evaluation, store-scoped
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+        - $ref: '#/components/parameters/DetailHeader'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/Evaluation' }
+      responses:
+        '200': { $ref: '#/components/responses/EvaluationOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /access/v1/evaluations:
+    post:
+      tags: [authzen]
+      operationId: evaluations
+      summary: Batch access evaluations (AuthZEN §6)
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/Evaluations' }
+      responses:
+        '200': { $ref: '#/components/responses/EvaluationsOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+  /stores/{store}/access/v1/evaluations:
+    post:
+      tags: [authzen]
+      operationId: evaluationsStore
+      summary: Batch access evaluations, store-scoped
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/Evaluations' }
+      responses:
+        '200': { $ref: '#/components/responses/EvaluationsOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /access/v1/search/subject:
+    post:
+      tags: [authzen]
+      operationId: searchSubject
+      summary: Subject search — who can act on this resource? (AuthZEN §7)
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/SearchSubject' }
+      responses:
+        '200': { $ref: '#/components/responses/SearchSubjectOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+  /stores/{store}/access/v1/search/subject:
+    post:
+      tags: [authzen]
+      operationId: searchSubjectStore
+      summary: Subject search, store-scoped
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/SearchSubject' }
+      responses:
+        '200': { $ref: '#/components/responses/SearchSubjectOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /access/v1/search/resource:
+    post:
+      tags: [authzen]
+      operationId: searchResource
+      summary: Resource search — which resources can the subject act on? (AuthZEN §8)
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/SearchResource' }
+      responses:
+        '200': { $ref: '#/components/responses/SearchResourceOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+  /stores/{store}/access/v1/search/resource:
+    post:
+      tags: [authzen]
+      operationId: searchResourceStore
+      summary: Resource search, store-scoped
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/SearchResource' }
+      responses:
+        '200': { $ref: '#/components/responses/SearchResourceOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /access/v1/search/action:
+    post:
+      tags: [authzen]
+      operationId: searchAction
+      summary: Action search — what can the subject do on this resource?
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/SearchAction' }
+      responses:
+        '200': { $ref: '#/components/responses/SearchActionOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+  /stores/{store}/access/v1/search/action:
+    post:
+      tags: [authzen]
+      operationId: searchActionStore
+      summary: Action search, store-scoped
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/SearchAction' }
+      responses:
+        '200': { $ref: '#/components/responses/SearchActionOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  # ── AuthZEN discovery (§9) ─────────────────────────────────────────────────
+  /.well-known/authzen-configuration:
+    get:
+      tags: [meta]
+      operationId: wellKnown
+      summary: AuthZEN PDP metadata (§9.1)
+      security: []
+      responses:
+        '200': { $ref: '#/components/responses/WellKnownOK' }
+  /stores/{store}/.well-known/authzen-configuration:
+    get:
+      tags: [meta]
+      operationId: wellKnownStorePath
+      summary: AuthZEN PDP metadata for one store (path-suffixed convenience form)
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+      responses:
+        '200': { $ref: '#/components/responses/WellKnownOK' }
+  /.well-known/authzen-configuration/stores/{store}:
+    get:
+      tags: [meta]
+      operationId: wellKnownStoreInserted
+      summary: AuthZEN PDP metadata for one store (§9.2 tenant form)
+      description: >
+        AuthZEN 1.0 §9.2: the well-known URI is inserted between host and the
+        tenant path, so discovery for the PDP identified by /stores/{store}
+        lives here.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+      responses:
+        '200': { $ref: '#/components/responses/WellKnownOK' }
+
+  # ── Native reads ───────────────────────────────────────────────────────────
+  /pgauthz/v1/check:
+    post:
+      tags: [native-read]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: check
+      summary: Raw access decision
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/NativeCheck' }
+      responses:
+        '200': { $ref: '#/components/responses/NativeCheckOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /stores/{store}/pgauthz/v1/check:
+    post:
+      tags: [native-read]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: checkStore
+      summary: Raw access decision, store-scoped
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/NativeCheck' }
+      responses:
+        '200': { $ref: '#/components/responses/NativeCheckOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+
+  /pgauthz/v1/check-batch:
+    post:
+      tags: [native-read]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: checkBatch
+      summary: Many raw decisions in one round-trip
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/NativeCheckBatch' }
+      responses:
+        '200': { $ref: '#/components/responses/NativeCheckBatchOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /stores/{store}/pgauthz/v1/check-batch:
+    post:
+      tags: [native-read]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: checkBatchStore
+      summary: Many raw decisions, store-scoped
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/NativeCheckBatch' }
+      responses:
+        '200': { $ref: '#/components/responses/NativeCheckBatchOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+
+  /pgauthz/v1/list-objects:
+    post:
+      tags: [native-read]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: listObjects
+      summary: Which objects of a type can the subject act on?
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/NativeListObjects' }
+      responses:
+        '200': { $ref: '#/components/responses/NativeListObjectsOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /stores/{store}/pgauthz/v1/list-objects:
+    post:
+      tags: [native-read]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: listObjectsStore
+      summary: Object search, store-scoped
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/NativeListObjects' }
+      responses:
+        '200': { $ref: '#/components/responses/NativeListObjectsOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+
+  /pgauthz/v1/list-subjects:
+    post:
+      tags: [native-read]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: listSubjects
+      summary: Which subjects of a type can act on the object?
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/NativeListSubjects' }
+      responses:
+        '200': { $ref: '#/components/responses/NativeListSubjectsOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /stores/{store}/pgauthz/v1/list-subjects:
+    post:
+      tags: [native-read]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: listSubjectsStore
+      summary: Subject search, store-scoped
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/NativeListSubjects' }
+      responses:
+        '200': { $ref: '#/components/responses/NativeListSubjectsOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+
+  /pgauthz/v1/list-actions:
+    post:
+      tags: [native-read]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: listActions
+      summary: Which relations does the subject hold on the object?
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/NativeListActions' }
+      responses:
+        '200': { $ref: '#/components/responses/NativeListActionsOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /stores/{store}/pgauthz/v1/list-actions:
+    post:
+      tags: [native-read]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: listActionsStore
+      summary: Action list, store-scoped
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/NativeListActions' }
+      responses:
+        '200': { $ref: '#/components/responses/NativeListActionsOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+
+  /pgauthz/v1/explain:
+    post:
+      tags: [native-read]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: explain
+      summary: WHY was access allowed or denied (decision + trace)
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/Explain' }
+      responses:
+        '200': { $ref: '#/components/responses/ExplainOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /stores/{store}/pgauthz/v1/explain:
+    post:
+      tags: [native-read]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: explainStore
+      summary: Explain, store-scoped
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/Explain' }
+      responses:
+        '200': { $ref: '#/components/responses/ExplainOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+
+  /pgauthz/v1/watch:
+    post:
+      tags: [native-read]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: watch
+      summary: Cursored page of the store's audit changefeed
+      description: >
+        HTTP transport over authz.watch_changes. The connection role needs
+        auditor privileges. Not guarded by the freshness protocol (it is a
+        cursor-based changefeed, not a read-your-writes point query).
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+      requestBody: { $ref: '#/components/requestBodies/Watch' }
+      responses:
+        '200': { $ref: '#/components/responses/WatchOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /stores/{store}/pgauthz/v1/watch:
+    post:
+      tags: [native-read]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: watchStore
+      summary: Changefeed page, store-scoped
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+      requestBody: { $ref: '#/components/requestBodies/Watch' }
+      responses:
+        '200': { $ref: '#/components/responses/WatchOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+
+  # ── Native writes (full profile) ───────────────────────────────────────────
+  /pgauthz/v1/write:
+    post:
+      tags: [native-write]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: writeTuples
+      summary: Batch-upsert relationship tuples
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+      requestBody: { $ref: '#/components/requestBodies/WriteTuples' }
+      responses:
+        '200': { $ref: '#/components/responses/WriteOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /stores/{store}/pgauthz/v1/write:
+    post:
+      tags: [native-write]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: writeTuplesStore
+      summary: Batch-upsert tuples, store-scoped
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+      requestBody: { $ref: '#/components/requestBodies/WriteTuples' }
+      responses:
+        '200': { $ref: '#/components/responses/WriteOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+
+  /pgauthz/v1/delete:
+    post:
+      tags: [native-write]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: deleteTuples
+      summary: Batch-delete relationship tuples
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+      requestBody: { $ref: '#/components/requestBodies/WriteTuples' }
+      responses:
+        '200': { $ref: '#/components/responses/DeleteOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /stores/{store}/pgauthz/v1/delete:
+    post:
+      tags: [native-write]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: deleteTuplesStore
+      summary: Batch-delete tuples, store-scoped
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+      requestBody: { $ref: '#/components/requestBodies/WriteTuples' }
+      responses:
+        '200': { $ref: '#/components/responses/DeleteOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+
+  /pgauthz/v1/delete-user:
+    post:
+      tags: [native-write]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: deleteUserTuples
+      summary: Offboarding — remove every tuple for a subject
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+      requestBody: { $ref: '#/components/requestBodies/DeleteUser' }
+      responses:
+        '200': { $ref: '#/components/responses/DeleteOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /stores/{store}/pgauthz/v1/delete-user:
+    post:
+      tags: [native-write]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: deleteUserTuplesStore
+      summary: Offboarding, store-scoped
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+      requestBody: { $ref: '#/components/requestBodies/DeleteUser' }
+      responses:
+        '200': { $ref: '#/components/responses/DeleteOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+
+  /pgauthz/v1/write-checked:
+    post:
+      tags: [native-write]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: writeTuplesChecked
+      summary: Conditional/atomic write — preconditions gate deletes+writes
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+      requestBody: { $ref: '#/components/requestBodies/WriteChecked' }
+      responses:
+        '200': { $ref: '#/components/responses/WriteCheckedOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /stores/{store}/pgauthz/v1/write-checked:
+    post:
+      tags: [native-write]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      operationId: writeTuplesCheckedStore
+      summary: Conditional/atomic write, store-scoped
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+      requestBody: { $ref: '#/components/requestBodies/WriteChecked' }
+      responses:
+        '200': { $ref: '#/components/responses/WriteCheckedOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+
+  # ── Meta ───────────────────────────────────────────────────────────────────
+  /healthz:
+    get:
+      tags: [meta]
+      operationId: healthz
+      summary: Liveness/readiness — pings the backend
+      security: []
+      responses:
+        '200':
+          description: Healthy.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+        '503':
+          description: Backend unhealthy.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /pgauthz/v1/openapi.json:
+    get:
+      tags: [meta]
+      operationId: openapiJSON
+      summary: This document (JSON)
+      security: []
+      responses:
+        '200':
+          description: The OpenAPI description of this server.
+          content:
+            application/json:
+              schema: { type: object }
+  /pgauthz/v1/openapi.yaml:
+    get:
+      tags: [meta]
+      operationId: openapiYAML
+      summary: This document (YAML source)
+      security: []
+      responses:
+        '200':
+          description: The OpenAPI description of this server.
+          content:
+            application/yaml:
+              schema: { type: string }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        PUBLIC listener: an end-user/service JWT from a trusted issuer
+        (multi-issuer via JWT_ISSUERS). Per-issuer store and db-role bindings
+        apply; writes additionally require the WRITER_ROLE claim.
+    serviceToken:
+      type: http
+      scheme: bearer
+      description: >
+        INTERNAL callback listener only: the shared service credential
+        (Authorization: Bearer <INTERNAL_SERVICE_TOKEN>), optionally layered
+        under mTLS. The listener trusts its OPA upstream — it does NOT
+        re-verify the end-user JWT, and honors the X-PGAuthz-Role header
+        (per-app DB role) asserted by OPA. Never expose this listener to
+        untrusted callers.
+
+  parameters:
+    StorePath:
+      name: store
+      in: path
+      required: true
+      schema: { type: string }
+      description: The pgauthz store (tenant) this request is scoped to.
+    StoreHeader:
+      name: X-PGAuthz-Store
+      in: header
+      required: false
+      schema: { type: string }
+      description: >
+        Store selection for unscoped paths: the /stores/{store} path segment
+        wins, then this header, then the instance's DEFAULT_STORE.
+    ConsistencyHeader:
+      name: X-PGAuthz-Consistency
+      in: header
+      required: false
+      schema:
+        type: string
+        enum: [minimize_latency, at_least_as_fresh]
+      description: >
+        Read consistency. `at_least_as_fresh` REQUIRES an
+        X-PGAuthz-Revision token and demands read-your-writes: the node serves
+        the read only if it has replayed to the token's WAL position on the
+        token's timeline; otherwise 409 (or transparent primary fallback).
+        Default: minimize_latency (answer locally).
+    RevisionHeader:
+      name: X-PGAuthz-Revision
+      in: header
+      required: false
+      schema: { type: string }
+      description: >
+        The opaque freshness token returned by an earlier write; required with
+        `X-PGAuthz-Consistency: at_least_as_fresh`.
+    DetailHeader:
+      name: X-PGAuthz-Detail
+      in: header
+      required: false
+      schema: { type: string, enum: ["true"] }
+      description: >
+        Opt into the rich decision detail on the AuthZEN evaluation response
+        (state allow|deny|conditional, missing_context, conditions, reason,
+        model) — returned in the response `context` field.
+
+  headers:
+    XPGAuthzRevision:
+      schema: { type: string }
+      description: >
+        Freshness token minted for this write (HMAC-signed {kid, timeline,
+        LSN}). Present a later read with it via X-PGAuthz-Revision +
+        X-PGAuthz-Consistency: at_least_as_fresh for read-your-writes.
+    XPGAuthzRevisionStatus:
+      schema:
+        type: string
+        enum: [issued, unavailable, disabled]
+      description: >
+        Mint outcome for this write. `issued` = token in X-PGAuthz-Revision;
+        `unavailable` = freshness is enabled but minting failed (the write
+        itself committed); `disabled` = freshness not configured.
+    XPGAuthzStale:
+      schema:
+        type: string
+        enum: [stale, wrong_epoch, unknown]
+      description: The freshness verdict that caused a 409.
+    XPGAuthzServedBy:
+      schema: { type: string, enum: [primary] }
+      description: >
+        Present when the read was transparently served from the primary
+        fallback pool because the local replica wasn't fresh enough.
+
+  requestBodies:
+    Evaluation:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/EvaluationRequest' }
+    Evaluations:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/EvaluationsRequest' }
+    SearchSubject:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/SearchSubjectRequest' }
+    SearchResource:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/SearchResourceRequest' }
+    SearchAction:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/SearchActionRequest' }
+    NativeCheck:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/NativeCheckRequest' }
+    NativeCheckBatch:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/NativeCheckBatchRequest' }
+    NativeListObjects:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/NativeListObjectsRequest' }
+    NativeListSubjects:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/NativeListSubjectsRequest' }
+    NativeListActions:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/NativeListActionsRequest' }
+    Explain:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ExplainRequest' }
+    Watch:
+      required: false
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/WatchRequest' }
+    WriteTuples:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/WriteTuplesRequest' }
+    DeleteUser:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/DeleteUserRequest' }
+    WriteChecked:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/WriteCheckedRequest' }
+
+  responses:
+    EvaluationOK:
+      description: The access decision.
+      headers:
+        X-PGAuthz-Served-By: { $ref: '#/components/headers/XPGAuthzServedBy' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/EvaluationResponse' }
+    EvaluationsOK:
+      description: One decision per evaluation, in order.
+      headers:
+        X-PGAuthz-Served-By: { $ref: '#/components/headers/XPGAuthzServedBy' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/EvaluationsResponse' }
+    SearchSubjectOK:
+      description: Subjects that can perform the action on the resource.
+      headers:
+        X-PGAuthz-Served-By: { $ref: '#/components/headers/XPGAuthzServedBy' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/SearchSubjectResponse' }
+    SearchResourceOK:
+      description: Resources the subject can perform the action on.
+      headers:
+        X-PGAuthz-Served-By: { $ref: '#/components/headers/XPGAuthzServedBy' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/SearchResourceResponse' }
+    SearchActionOK:
+      description: Actions the subject can perform on the resource.
+      headers:
+        X-PGAuthz-Served-By: { $ref: '#/components/headers/XPGAuthzServedBy' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/SearchActionResponse' }
+    WellKnownOK:
+      description: AuthZEN PDP metadata.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/WellKnownResponse' }
+    NativeCheckOK:
+      description: The raw decision (plus optional rich detail).
+      headers:
+        X-PGAuthz-Served-By: { $ref: '#/components/headers/XPGAuthzServedBy' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/NativeCheckResponse' }
+    NativeCheckBatchOK:
+      description: One boolean per check, in order.
+      headers:
+        X-PGAuthz-Served-By: { $ref: '#/components/headers/XPGAuthzServedBy' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/NativeCheckBatchResponse' }
+    NativeListObjectsOK:
+      description: Object IDs the subject can act on (keyset-paginated).
+      headers:
+        X-PGAuthz-Served-By: { $ref: '#/components/headers/XPGAuthzServedBy' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/NativeListObjectsResponse' }
+    NativeListSubjectsOK:
+      description: Subject IDs that can act on the object (keyset-paginated).
+      headers:
+        X-PGAuthz-Served-By: { $ref: '#/components/headers/XPGAuthzServedBy' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/NativeListSubjectsResponse' }
+    NativeListActionsOK:
+      description: Relations the subject holds on the object.
+      headers:
+        X-PGAuthz-Served-By: { $ref: '#/components/headers/XPGAuthzServedBy' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/NativeListActionsResponse' }
+    ExplainOK:
+      description: >
+        The engine's explain_access JSON verbatim: result, decision
+        {allowed, reason}, summary (human-readable trace), tree, steps.
+      headers:
+        X-PGAuthz-Served-By: { $ref: '#/components/headers/XPGAuthzServedBy' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ExplainResponse' }
+    WatchOK:
+      description: >
+        The engine's watch_changes JSON verbatim: changes[], cursor, and
+        has_more.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/WatchResponse' }
+    WriteOK:
+      description: Tuples written.
+      headers:
+        X-PGAuthz-Revision: { $ref: '#/components/headers/XPGAuthzRevision' }
+        X-PGAuthz-Revision-Status: { $ref: '#/components/headers/XPGAuthzRevisionStatus' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/WriteResponse' }
+    DeleteOK:
+      description: Tuples deleted.
+      headers:
+        X-PGAuthz-Revision: { $ref: '#/components/headers/XPGAuthzRevision' }
+        X-PGAuthz-Revision-Status: { $ref: '#/components/headers/XPGAuthzRevisionStatus' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/DeleteResponse' }
+    WriteCheckedOK:
+      description: >
+        The engine's write_tuples_checked JSON verbatim — applied (bool),
+        precondition results, and counts. The freshness token rides the
+        X-PGAuthz-Revision header only.
+      headers:
+        X-PGAuthz-Revision: { $ref: '#/components/headers/XPGAuthzRevision' }
+        X-PGAuthz-Revision-Status: { $ref: '#/components/headers/XPGAuthzRevisionStatus' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/WriteCheckedResponse' }
+    BadRequest:
+      description: >
+        Malformed request — invalid JSON, missing required fields, an invalid
+        consistency mode, or an invalid/forged/retired freshness token (one
+        opaque message for every bad-token cause; the reason is logged
+        server-side only).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing/invalid bearer token (or service token on the internal listener).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: >
+        Authorization failure — issuer store/db-role binding violation,
+        missing WRITER_ROLE claim on a public write, SEARCH_REQUIRED_ROLE not
+        held, a forbidden per-app DB role, or a write to a read-only
+        (decision-only) instance.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    FreshnessConflict:
+      description: >
+        An at_least_as_fresh read this node cannot satisfy. The
+        verdict picks the recovery: stale/unknown → retry the primary or
+        another replica; wrong_epoch → NOT retryable (a failover happened
+        since the write) — re-mint via a new write or drop the constraint.
+        primary_consulted=true means the transparent fallback already
+        re-checked the primary and it cannot satisfy the token either.
+      headers:
+        X-PGAuthz-Stale: { $ref: '#/components/headers/XPGAuthzStale' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/FreshnessConflict' }
+    ServerError:
+      description: Internal error.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotImplemented:
+      description: >
+        The operation requires a capability this instance does not have
+        (e.g. native reads without a direct pgx backend, or native writes
+        without the full profile's writer backend).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    # ── shared vocabulary ────────────────────────────────────────────────────
+    Subject:
+      type: object
+      properties:
+        type: { type: string, description: Subject type (e.g. internal_user). }
+        id: { type: string, description: Subject identifier. }
+        properties:
+          type: object
+          additionalProperties: true
+          description: >
+            AuthZEN-standard extension attributes. Accepted for compatibility;
+            pgauthz does not evaluate them — pass condition input via the
+            request-level context instead.
+      description: >
+        On the public listener a request subject must match the JWT-derived
+        subject unless ALLOW_SUBJECT_OVERRIDE is enabled (trusted-PEP mode);
+        an omitted subject defaults to the authenticated one (the official
+        AuthZEN schema requires subject — pgauthzd is deliberately more
+        lenient here).
+    Action:
+      type: object
+      properties:
+        name: { type: string, description: The relation/permission to test (e.g. can_read). }
+        properties:
+          type: object
+          additionalProperties: true
+          description: Accepted for AuthZEN compatibility; not evaluated.
+    Resource:
+      type: object
+      properties:
+        type: { type: string }
+        id: { type: string }
+        properties:
+          type: object
+          additionalProperties: true
+          description: Accepted for AuthZEN compatibility; not evaluated.
+    Context:
+      type: object
+      additionalProperties: true
+      description: Request context for conditional (ABAC) tuples.
+    PageToken:
+      type: object
+      properties:
+        token:
+          type: string
+          description: >
+            Opaque cursor from the previous page's next_token. Under
+            at_least_as_fresh the freshness floor is BOUND into this cursor,
+            so later pages stay at least as fresh as the first.
+        size: { type: integer, minimum: 1 }
+    PageResult:
+      type: object
+      properties:
+        next_token: { type: string }
+      required: [next_token]
+
+    # ── AuthZEN ──────────────────────────────────────────────────────────────
+    EvaluationRequest:
+      type: object
+      properties:
+        subject: { $ref: '#/components/schemas/Subject' }
+        action: { $ref: '#/components/schemas/Action' }
+        resource: { $ref: '#/components/schemas/Resource' }
+        context: { $ref: '#/components/schemas/Context' }
+    EvaluationResponse:
+      type: object
+      properties:
+        decision: { type: boolean }
+        context:
+          type: object
+          additionalProperties: true
+          description: >
+            Rich decision detail — a pgauthz EXTENSION returned only when the
+            caller opts in via X-PGAuthz-Detail: state allow|deny|conditional,
+            missing_context, conditions, reason, model. Note this is not the
+            official AuthZEN response-context reason envelope ({id,
+            reason_admin, reason_user}); callers that never send the header
+            never see a context field.
+      required: [decision]
+    EvaluationsRequest:
+      type: object
+      properties:
+        subject: { $ref: '#/components/schemas/Subject' }
+        action: { $ref: '#/components/schemas/Action' }
+        resource: { $ref: '#/components/schemas/Resource' }
+        context: { $ref: '#/components/schemas/Context' }
+        semantic:
+          type: string
+          enum: [execute_all, deny_on_first_deny, permit_on_first_permit]
+        evaluations:
+          type: array
+          items: { $ref: '#/components/schemas/EvaluationRequest' }
+      required: [evaluations]
+      description: >
+        Top-level subject/action/resource/context are shared defaults merged
+        into each evaluation.
+    EvaluationsResponse:
+      type: object
+      properties:
+        evaluations:
+          type: array
+          items: { $ref: '#/components/schemas/EvaluationResponse' }
+      required: [evaluations]
+    SearchSubjectRequest:
+      type: object
+      properties:
+        subject:
+          allOf: [{ $ref: '#/components/schemas/Subject' }]
+          description: Only subject.type is used (the type to search).
+        action: { $ref: '#/components/schemas/Action' }
+        resource: { $ref: '#/components/schemas/Resource' }
+        context: { $ref: '#/components/schemas/Context' }
+        page: { $ref: '#/components/schemas/PageToken' }
+      required: [subject, action, resource]
+    SearchResourceRequest:
+      type: object
+      properties:
+        subject: { $ref: '#/components/schemas/Subject' }
+        action: { $ref: '#/components/schemas/Action' }
+        resource:
+          allOf: [{ $ref: '#/components/schemas/Resource' }]
+          description: Only resource.type is used (the type to search).
+        context: { $ref: '#/components/schemas/Context' }
+        page: { $ref: '#/components/schemas/PageToken' }
+      required: [subject, action, resource]
+    SearchActionRequest:
+      type: object
+      properties:
+        subject: { $ref: '#/components/schemas/Subject' }
+        resource: { $ref: '#/components/schemas/Resource' }
+        context: { $ref: '#/components/schemas/Context' }
+      required: [subject, resource]
+    SearchSubjectResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              subject: { $ref: '#/components/schemas/Subject' }
+            required: [subject]
+        page: { $ref: '#/components/schemas/PageResult' }
+      required: [results]
+    SearchResourceResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              resource: { $ref: '#/components/schemas/Resource' }
+            required: [resource]
+        page: { $ref: '#/components/schemas/PageResult' }
+      required: [results]
+    SearchActionResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              action: { $ref: '#/components/schemas/Action' }
+            required: [action]
+      required: [results]
+    WellKnownResponse:
+      type: object
+      properties:
+        policy_decision_point: { type: string }
+        access_evaluation_endpoint: { type: string }
+        access_evaluations_endpoint: { type: string }
+        search_subject_endpoint: { type: string }
+        search_resource_endpoint: { type: string }
+        search_action_endpoint: { type: string }
+        capabilities:
+          type: array
+          items: { type: string }
+      required: [policy_decision_point]
+
+    # ── native reads ─────────────────────────────────────────────────────────
+    NativeCheckRequest:
+      type: object
+      properties:
+        subject: { $ref: '#/components/schemas/Subject' }
+        action: { $ref: '#/components/schemas/Action' }
+        resource: { $ref: '#/components/schemas/Resource' }
+        context: { $ref: '#/components/schemas/Context' }
+        detail:
+          type: boolean
+          description: Opt into the rich result (the native X-PGAuthz-Detail).
+        contextual_tuples:
+          type: array
+          items: { $ref: '#/components/schemas/TupleInput' }
+          description: >
+            Ephemeral tuples evaluated alongside the stored graph for this
+            check only (never persisted). Requires the contextual-reader
+            capability on the connection role.
+      required: [action, resource]
+    NativeCheckResponse:
+      type: object
+      properties:
+        allowed: { type: boolean }
+        detail:
+          type: object
+          additionalProperties: true
+          description: Rich decision detail (only when requested and supported).
+      required: [allowed]
+    NativeCheckBatchRequest:
+      type: object
+      properties:
+        subject: { $ref: '#/components/schemas/Subject' }
+        action: { $ref: '#/components/schemas/Action' }
+        resource: { $ref: '#/components/schemas/Resource' }
+        context: { $ref: '#/components/schemas/Context' }
+        semantic:
+          type: string
+          enum: [execute_all, deny_on_first_deny, permit_on_first_permit]
+          default: execute_all
+        checks:
+          type: array
+          items: { $ref: '#/components/schemas/NativeCheckRequest' }
+      required: [checks]
+      description: >
+        Top-level subject/action/resource are shared defaults merged into each
+        check (same convention as AuthZEN /evaluations).
+    NativeCheckBatchResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items: { type: boolean }
+      required: [results]
+    NativeListObjectsRequest:
+      type: object
+      properties:
+        subject: { $ref: '#/components/schemas/Subject' }
+        action: { $ref: '#/components/schemas/Action' }
+        resource:
+          allOf: [{ $ref: '#/components/schemas/Resource' }]
+          description: Only resource.type is used.
+        context: { $ref: '#/components/schemas/Context' }
+        limit: { type: integer, minimum: 1, description: Raw paging (callback callers). }
+        offset: { type: integer, minimum: 0 }
+        after: { type: string, description: Raw keyset cursor (callback callers). }
+        page: { $ref: '#/components/schemas/PageToken' }
+      required: [action, resource]
+    NativeListObjectsResponse:
+      type: object
+      properties:
+        objects:
+          type: array
+          items: { type: string }
+        next_token: { type: string }
+      required: [objects]
+    NativeListSubjectsRequest:
+      type: object
+      properties:
+        subject:
+          allOf: [{ $ref: '#/components/schemas/Subject' }]
+          description: Only subject.type is used.
+        action: { $ref: '#/components/schemas/Action' }
+        resource: { $ref: '#/components/schemas/Resource' }
+        context: { $ref: '#/components/schemas/Context' }
+        limit: { type: integer, minimum: 1 }
+        offset: { type: integer, minimum: 0 }
+        after: { type: string }
+        page: { $ref: '#/components/schemas/PageToken' }
+      required: [subject, action, resource]
+    NativeListSubjectsResponse:
+      type: object
+      properties:
+        subjects:
+          type: array
+          items: { type: string }
+        next_token: { type: string }
+      required: [subjects]
+    NativeListActionsRequest:
+      type: object
+      properties:
+        subject: { $ref: '#/components/schemas/Subject' }
+        resource: { $ref: '#/components/schemas/Resource' }
+        context: { $ref: '#/components/schemas/Context' }
+      required: [resource]
+    NativeListActionsResponse:
+      type: object
+      properties:
+        actions:
+          type: array
+          items: { type: string }
+      required: [actions]
+    ExplainRequest:
+      type: object
+      properties:
+        subject: { $ref: '#/components/schemas/Subject' }
+        action: { $ref: '#/components/schemas/Action' }
+        resource: { $ref: '#/components/schemas/Resource' }
+        context: { $ref: '#/components/schemas/Context' }
+      required: [action, resource]
+    ExplainResponse:
+      type: object
+      additionalProperties: true
+      description: >
+        authz.explain_access JSON verbatim — result (bool), decision
+        {allowed, reason}, summary (human-readable), tree (recursive trace),
+        steps (flat step list).
+    WatchRequest:
+      type: object
+      properties:
+        after_at: { type: string, description: Timestamp cursor (changed_at of the last seen change). }
+        after_seq: { type: integer, format: int64, description: Tie-break sequence cursor. }
+        limit: { type: integer, minimum: 1 }
+        lag: { type: string, description: "Safety lag interval (e.g. '1 second')." }
+        object_types:
+          type: array
+          items: { type: string }
+        namespaces:
+          type: array
+          items: { type: string }
+        relations:
+          type: array
+          items: { type: string }
+    WatchResponse:
+      type: object
+      additionalProperties: true
+      description: >
+        authz.watch_changes JSON verbatim — changes[], cursor {at, seq},
+        has_more.
+
+    # ── native writes ────────────────────────────────────────────────────────
+    TupleInput:
+      type: object
+      properties:
+        user_type: { type: string }
+        user_id: { type: string }
+        user_relation:
+          type: string
+          description: Set for userset subjects (e.g. team#member → 'member').
+        relation: { type: string }
+        object_type: { type: string }
+        object_id: { type: string }
+        condition: { type: string, description: Name of a condition gating this tuple. }
+        context: { $ref: '#/components/schemas/Context' }
+        expires_at: { type: string, format: date-time }
+      required: [user_type, user_id, relation, object_type, object_id]
+    Consistency:
+      type: string
+      enum: [applied, durable, eventual]
+      description: >
+        Per-transaction durability (maps to synchronous_commit): applied =
+        remote_apply (strict revocation), durable = on, eventual = local.
+        Omitted = the connection default.
+    WriteTuplesRequest:
+      type: object
+      properties:
+        tuples:
+          type: array
+          items: { $ref: '#/components/schemas/TupleInput' }
+          minItems: 1
+        consistency: { $ref: '#/components/schemas/Consistency' }
+        performed_by:
+          type: string
+          description: >
+            Audit author. Public listener: defaults to the JWT subject.
+            Internal callback listener: OPA passes the authenticated subject
+            explicitly.
+      required: [tuples]
+    WriteResponse:
+      type: object
+      properties:
+        store: { type: string }
+        written: { type: integer }
+        revision:
+          type: string
+          description: Freshness token for this write (when enabled).
+      required: [store, written]
+    DeleteResponse:
+      type: object
+      properties:
+        store: { type: string }
+        deleted: { type: integer }
+        revision: { type: string }
+      required: [store, deleted]
+    DeleteUserRequest:
+      type: object
+      properties:
+        user: { $ref: '#/components/schemas/Subject' }
+        consistency: { $ref: '#/components/schemas/Consistency' }
+        performed_by: { type: string }
+      required: [user]
+    WriteCheckedRequest:
+      type: object
+      properties:
+        preconditions:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+          description: >
+            Tuple-existence preconditions (write_tuples_checked shape); all
+            must hold or nothing is applied.
+        deletes:
+          type: array
+          items: { $ref: '#/components/schemas/TupleInput' }
+        writes:
+          type: array
+          items: { $ref: '#/components/schemas/TupleInput' }
+        consistency: { $ref: '#/components/schemas/Consistency' }
+        performed_by: { type: string }
+    WriteCheckedResponse:
+      type: object
+      additionalProperties: true
+      description: >
+        authz.write_tuples_checked JSON verbatim — applied (bool), failed
+        precondition detail, written/deleted counts.
+
+    # ── errors & meta ────────────────────────────────────────────────────────
+    Error:
+      type: object
+      properties:
+        status: { type: integer }
+        message: { type: string }
+      required: [status, message]
+    FreshnessConflict:
+      type: object
+      properties:
+        status: { type: integer }
+        error:
+          type: string
+          enum: [freshness_constraint_unsatisfied]
+        verdict:
+          type: string
+          enum: [stale, wrong_epoch, unknown]
+        primary_consulted:
+          type: boolean
+          description: The transparent fallback already re-checked the primary.
+        message: { type: string, description: Per-verdict recovery guidance. }
+      required: [status, error, verdict, primary_consulted, message]
+    Health:
+      type: object
+      properties:
+        status: { type: string, enum: [ok] }
+      required: [status]

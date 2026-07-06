@@ -43,9 +43,12 @@ done
 cd "$ROOT"
 FAILED=0
 
-# ── 1. Go build + vet ────────────────────────────────────────────────────────
-step "Go build + vet (authzen)"
-(cd pgauthzd && go build ./... && go vet ./...) || die "pgauthzd build/vet failed"
+# ── 1. Go build + vet + unit tests ───────────────────────────────────────────
+step "Go build + vet + tests (pgauthzd)"
+# The unit tests include the OpenAPI contract suite (internal/api/openapi_test.go):
+# spec↔route coverage in BOTH directions + response-schema validation, so a
+# release cannot ship an openapi.yaml that drifted from the actual routes.
+(cd pgauthzd && go build ./... && go vet ./... && go test ./...) || die "pgauthzd build/vet/test failed"
 step "Go build + vet (pgauthzctl)"
 (cd pgauthzctl && go build ./... && go vet ./...) || die "pgauthzctl build/vet failed"
 if [ -d playground/backend ]; then
