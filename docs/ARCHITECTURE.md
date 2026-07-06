@@ -106,7 +106,7 @@ service token / optional mTLS, no host port) for graph data — OPA has no
 independent path to the database. A `decision-only` pgauthzd answers reads
 straight from the graph via pgx, no OPA involved. PostgREST has been removed
 from the project entirely — the native callback is the only backend
-(see ADR-6).
+(see [ADR 0007](adr/0007-pgauthzd-front-door.md)).
 
 ### External Interfaces
 
@@ -324,7 +324,7 @@ which re-validates the token, evaluates Rego, and calls **back** into
 pgauthzd's native `/pgauthz/v1` callback (service-token / optional mTLS) — a
 `decision-only` reader or a `full` writer instance — for the graph. Only
 pgauthzd calls OPA. PostgREST has been removed entirely; the native callback
-is the only backend (ADR-6).
+is the only backend ([ADR 0007](adr/0007-pgauthzd-front-door.md)).
 
 | Component | Responsibility |
 |---|---|
@@ -937,113 +937,21 @@ Each SQL test suite uses its own isolated store.
 
 ## 9. Architecture Decisions
 
-### ADR-1: Pure PostgreSQL over External Authorization Service
+Architecture decisions are recorded as ADRs under [`docs/adr/`](adr/), numbered
+sequentially; status flows Proposed → Accepted → Superseded. The log:
 
-**Context:** The system needs to answer permission queries with minimal
-operational overhead. External services (SpiceDB, OpenFGA) add
-deployment complexity, network latency, and a separate data store to
-manage.
+| ADR | Decision | Status |
+|---|---|---|
+| [0001](adr/0001-schema-migrations.md) | Schema migrations (non-destructive upgrades) | Accepted |
+| [0002](adr/0002-pure-postgresql-engine.md) | Pure PostgreSQL over an external authorization service | Accepted |
+| [0003](adr/0003-security-definer-not-rls.md) | SECURITY DEFINER over Row-Level Security | Accepted |
+| [0004](adr/0004-integer-type-relation-ids.md) | Integer IDs for type and relation names | Accepted |
+| [0005](adr/0005-list-partition-by-object-type.md) | LIST partitioning by object type | Accepted |
+| [0006](adr/0006-models-as-data.md) | Models as data, not schema | Accepted |
+| [0007](adr/0007-pgauthzd-front-door.md) | pgauthzd is the front door; OPA is an internal policy sidecar | Accepted |
 
-**Decision:** Implement the full Zanzibar model as PL/pgSQL functions
-inside PostgreSQL.
-
-**Consequences:** No additional services to deploy for the core engine.
-Applications can call `check_access` directly via SQL. Trade-off: no
-gRPC, no SDK ecosystem, no built-in consistency tokens (zookies).
-
-### ADR-2: SECURITY DEFINER over Row-Level Security
-
-**Context:** Application roles need to be prevented from reading or
-modifying authorization tables directly.
-
-**Decision:** All public functions are `SECURITY DEFINER` (run as the
-schema owner). No direct table grants to any application role. The
-schema owner is `authz_owner`, a **non-superuser** role, so definer
-functions execute with table-ownership privileges only — never
-superuser — limiting the blast radius of any flaw in the function layer.
-
-**Consequences:** The table schema is an internal implementation detail
-that can change freely. RLS is unnecessary — the function layer
-enforces access control. All writes go through `write_tuple`/`delete_tuple`
-which validate input, enforce namespaces, and fire audit triggers.
-
-### ADR-3: Integer IDs for Type and Relation Names
-
-**Context:** The `tuples` table is the hot path. Row size and index
-efficiency directly affect performance.
-
-**Decision:** Store type and relation names as `smallint` IDs (2 bytes).
-The public API accepts text and resolves internally.
-
-**Consequences:** Significantly smaller rows and indexes. One extra
-lookup per API call (cached by buffer cache after first call).
-
-### ADR-4: LIST Partitioning by Object Type
-
-**Context:** `check_access` always targets a specific object type.
-Without partitioning, every query scans the full tuples table.
-
-**Decision:** LIST-partition `tuples` by `object_type`. Each type gets
-its own partition. High-volume types can add HASH sub-partitioning.
-
-**Consequences:** Partition pruning ensures only the relevant type's
-partition is scanned. Adding a new type requires creating a new
-partition (handled by `model_register_type`).
-
-### ADR-5: Models as Data, Not Schema
-
-**Context:** Authorization models evolve over time. Schema-based changes
-require migrations and downtime.
-
-**Decision:** Store model rules as rows in `authz.models`. Model changes
-are INSERT/DELETE operations that take effect immediately.
-
-**Consequences:** No schema migrations for model changes. The model
-table has a primary key and unique index, enabling both full
-replacement (`import_openfga_model`) and incremental updates
-(`model_add_rule`, `model_remove_rule`). Full replacement is
-transactional — PostgreSQL MVCC ensures concurrent readers see either
-the complete old model or the complete new model, with no denial window.
-
-### ADR-6: pgauthzd is the front door; OPA is an internal policy sidecar (supersedes PostgREST + the Nginx write gateway)
-
-**Context:** PostgREST exposed REST endpoints for all tables and leaked
-function signatures in error responses (no built-in "RPC-only" mode), and
-it could only verify a *static* JWK/JWKS — it could not fetch a rotating
-`jwks_uri`. Even earlier versions placed an Nginx reverse proxy in front of
-the writer that allowlisted `POST /rpc/*`. The engine's HTTP bridge is now
-**pgauthzd**, a single Go daemon exposing the native `/pgauthz/v1` API (and
-AuthZEN 1.0) over a pgx pool.
-
-**Decision:** Make **pgauthzd the front door** for both reads and writes,
-and demote OPA to an **internal policy sidecar that only pgauthzd calls**.
-Clients speak AuthZEN 1.0 / native `/pgauthz/v1` to pgauthzd, which
-**validates the JWT** (multi-issuer via `JWT_ISSUERS`) and resolves subject +
-roles. For reads, a `decision-only` pgauthzd answers straight from the graph;
-an OPA-fronted pgauthzd (`OPA_URL` set) consults OPA, which re-validates the forwarded token
-(`FORWARD_TOKEN_TO_OPA`), evaluates Rego, and calls **back** into pgauthzd's
-native `/pgauthz/v1` callback (over a shared service token — pgauthzd
-`INTERNAL_SERVICE_TOKEN` ↔ OPA `NATIVE_SERVICE_TOKEN`, optional mTLS) for
-graph data. OPA has no independent path to the database. For writes, the
-pgauthzd `full`/writer instance is the write front door: it verifies the JWT
-+ writer role (`WRITER_ROLE` within `JWT_ROLES_CLAIM`), records the subject
-as audit author, and applies the write natively via pgx under a fixed
-`authz_writer` role. Fully delegating the *write-authz decision* into
-pgauthzd is the **pending pgauthzd-fronted-writes increment** — today the OPA
-`write.rego` policy still fronts that decision (pgauthzd forwards over the
-service token, asserting the per-app role via `X-Authz-Role`). Reader/writer
-separation follows the instance profile (`decision-only` vs `full`), not two
-PostgREST services. PostgREST has been removed from the project entirely —
-the native `/pgauthz/v1` callback is the only backend; there is no fallback.
-
-**Consequences:** One place — pgauthzd, the front door — owns JWT validation
-and `jwks_uri` / `JWT_ISSUERS` rotation (no JWKS to sync into a separate
-bridge). No write endpoint is host-exposed, and the native API is RPC-shaped
-by design (no table/schema leakage) — no extra proxy container. OPA, when
-enabled, is reachable only by pgauthzd. Tuple writes only — admin/model ops
-use a separate `authz_admin` channel. A read-only deployment omits the `full`
-instance (and `NATIVE_WRITE_URL`); the write rule then returns
-`writes_disabled`.
+To add one: create `docs/adr/NNNN-*.md` (for decisions on authorization
+semantics, security boundaries, or operational contracts) and a row here.
 
 ---
 

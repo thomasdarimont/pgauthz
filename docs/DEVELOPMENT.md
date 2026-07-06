@@ -763,7 +763,7 @@ Application ──▶ pgauthzd full/writer (front door; validates JWT + writer r
 There is **no** PostgREST and **no** Nginx write gateway — the writer *is*
 pgauthzd itself, exposing a JWT-authenticated native write API (dev:
 `http://localhost:8092`). PostgREST was removed entirely (see
-[ARCHITECTURE.md ADR-6](ARCHITECTURE.md)). An external Nginx/LB may still front
+[ADR 0007](adr/0007-pgauthzd-front-door.md)). An external Nginx/LB may still front
 pgauthzd itself, but there is no RPC-allowlist proxy in front of a writer. (The
 full instance also runs an internal service-token callback listener that OPA
 uses for graph read/write callbacks — that listener is not the client write
