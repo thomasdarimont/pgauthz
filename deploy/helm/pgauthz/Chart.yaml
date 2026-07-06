@@ -6,8 +6,8 @@ description: >-
   back into pgauthzd's native API); the pgauthzd reader/writer and PostgreSQL
   are internal-only.
 type: application
-version: 0.9.0
-appVersion: "0.9.0"
+version: 0.10.0
+appVersion: "0.10.0"
 keywords: [authorization, zanzibar, openfga, rebac, postgres, cloudnative-pg, opa]
 home: https://github.com/thomasdarimont/pgauthz
 maintainers:
