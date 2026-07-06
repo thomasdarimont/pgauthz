@@ -7,6 +7,74 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### The pgauthzd front door — PostgREST removed, OPA internalized
+
+A large architectural consolidation: **pgauthzd** (one Go daemon) is now the
+external front door for reads *and* writes, PostgREST is gone entirely, and OPA
+is an internal policy sidecar reachable only by pgauthzd.
+
+### Changed
+
+- **pgauthzd is the external front door.** Clients speak AuthZEN 1.0
+  (`/access/v1/*`) or the native `/pgauthz/v1/*` API to pgauthzd, which validates
+  the JWT (multi-issuer via `JWT_ISSUERS`; the `iss` claim selects the validator).
+  OPA is an internal sidecar — the *only* caller of OPA is pgauthzd, which
+  forwards the verified token; OPA's Rego calls **back** into pgauthzd's native
+  `/pgauthz/v1` callback for graph data (service-token authenticated, optional
+  mTLS). The old "OPA is the single front door" topology is gone.
+- **pgauthzd fronts and authorizes writes.** The `full`/writer instance exposes
+  `POST /pgauthz/v1/{write,delete,delete-user,write-checked}` and gates them on a
+  `WRITER_ROLE` claim (default `authz_writer`; `JWT_ROLES_CLAIM` defaults to
+  `roles`) — it authorizes writes itself instead of relying on an OPA-fronted
+  writer. Writes apply natively via pgx under a fixed writer DB role.
+- **Profiles are DB capability only: `decision-only` | `full`.** The former
+  `compat-opa` profile is replaced by an orthogonal **`OPA_URL`** flag: set it and
+  pgauthzd consults OPA for the AuthZEN surface; the native surface stays direct
+  pgx and is exposed on the public listener only when *not* fronting OPA (so the
+  raw API can't sidestep OPA policy). A DB-less instance with `OPA_URL` set is a
+  pure OPA-AuthZEN gateway.
+- **One daemon, one image.** The separate `authzen-direct` / `authzen-opa`
+  services are collapsed into pgauthzd profiles; reader/writer separation is a
+  deployment topology (a `decision-only` reader instance + a `full` writer
+  instance), not a per-process split.
+- Helm: the ingress front door routes to pgauthzd (not OPA); OPA's NetworkPolicy
+  is tightened to gateway-only. The `examples/keycloak` demo now routes through
+  pgauthzd (AuthZEN) via the gateway instead of hitting OPA's data API directly.
+
+### Removed
+
+- **PostgREST — removed from the project entirely.** Every read and write path,
+  and every deployment (compose, scaling, Helm), uses the native pgauthzd
+  callback. There is no PostgREST fallback.
+- **PostgREST role/hook residue:** the `authz_authenticator` LOGIN role, the
+  `api_anon` role (folded into `authz_reader` — there is no anonymous tier; every
+  request is JWT-validated), and the `authz._pre_request` / `_pre_request_reader`
+  db-pre-request hooks. pgauthzd now validates the per-app DB role (member of
+  `authz_reader`/`authz_writer`, not admin) and applies `SET LOCAL ROLE` +
+  the consistency mode itself in Go.
+
+### Added
+
+- **Native `/pgauthz/v1` API:** `check`, `check-batch`, `list-objects`,
+  `list-subjects`, `list-actions`, `explain`, `watch`, and the write endpoints —
+  plus their `/stores/{store}/…` tenant variants.
+- **OPA callback listener** (service-token auth, optional mTLS `RequireAndVerify`
+  client cert) — the native surface an OPA sidecar calls back into, kept off the
+  public listener.
+- **Multi-issuer JWT validation** (`JWT_ISSUERS` JSON array) with per-issuer
+  store and DB-role bindings.
+- `authz_watcher` — a dedicated read-only login role (granted `authz_auditor`)
+  for the `examples/watch` changefeed consumer, replacing the bootstrap superuser.
+
+### Fixed
+
+- **Per-write consistency now fails closed.** An unknown/misspelled consistency
+  mode is rejected (400) instead of being silently ignored (which downgraded the
+  durability guarantee) — restoring the behavior the removed SQL hook enforced.
+- `pgauthzd-opa` now carries `restart: unless-stopped`, so on a fresh database it
+  crash-loops until roles are ready (like the reader/writer) instead of exiting
+  and breaking `up --wait`.
+
 ## [0.7.3] - 2026-07-05
 
 ### Fixed
