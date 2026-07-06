@@ -1,4 +1,4 @@
-# authzctl model test fixture — superset of OpenFGA's store-test YAML.
+# pgauthzctl model test fixture — superset of OpenFGA's store-test YAML.
 model_file: ./model.fga
 
 tuples:

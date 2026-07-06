@@ -1,4 +1,4 @@
-# authzctl — model-as-code toolchain
+# pgauthzctl — model-as-code toolchain
 
 A thin CLI over the pgauthz model registry and OpenFGA import: author
 authorization models as `.fga` files in git, test them in CI, publish them
@@ -10,14 +10,14 @@ new DSL), and the test fixture format is a superset of OpenFGA's store-test
 YAML, so existing OpenFGA models and tests port directly.
 
 ```
-model.fga (git) ──authzctl publish──▶ registry version N (immutable)
+model.fga (git) ──pgauthzctl publish──▶ registry version N (immutable)
                         │
-tests.authz.yaml ──authzctl test──▶ ephemeral store → check/list/explain asserts
+tests.authz.yaml ──pgauthzctl test──▶ ephemeral store → check/list/explain asserts
                         │
-registry ──authzctl plan / apply──▶ canary store → tenant fleet
+registry ──pgauthzctl plan / apply──▶ canary store → tenant fleet
 ```
 
-`authzctl version` prints the version plus the VCS revision it was built
+`pgauthzctl version` prints the version plus the VCS revision it was built
 from. Like the authzen binaries, the version is stamped at build time
 (`go build -ldflags "-X main.version=0.7.0"`); a plain `go build` reports
 `dev` with the revision.
@@ -30,7 +30,7 @@ from. Like the authzen binaries, the version is stamped at build time
 export PGAUTHZ_DSN=postgres://authz:authz@localhost:55433/authz
 ```
 
-authzctl is an **operator/CI tool** in the same trust tier as psql — model
+pgauthzctl is an **operator/CI tool** in the same trust tier as psql — model
 and registry operations are admin-by-design (deliberately not exposed via
 the OPA front door). `plan`, `diff`, `export`, `status`, `versions` and
 `rollout` work with a reader-grade DSN; `import`, `publish`, `apply` and
@@ -40,19 +40,19 @@ the OPA front door). `plan`, `diff`, `export`, `status`, `versions` and
 
 ```bash
 # Author → test → publish → canary → fleet
-authzctl model test  ./tests.authz.yaml --junit report.xml
-authzctl model publish ./model.fga --name saas_core --message "$(git rev-parse --short HEAD)"
-authzctl model plan  saas_core --store tenant_canary        # exit 1 on blockers → CI gate
-authzctl model apply saas_core --store tenant_canary --plan-first
-authzctl model apply saas_core --stores tenant_a,tenant_b   # small fleets: one atomic tx
-authzctl model rollout saas_core                             # fleet view: versions + drift
+pgauthzctl model test  ./tests.authz.yaml --junit report.xml
+pgauthzctl model publish ./model.fga --name saas_core --message "$(git rev-parse --short HEAD)"
+pgauthzctl model plan  saas_core --store tenant_canary        # exit 1 on blockers → CI gate
+pgauthzctl model apply saas_core --store tenant_canary --plan-first
+pgauthzctl model apply saas_core --stores tenant_a,tenant_b   # small fleets: one atomic tx
+pgauthzctl model rollout saas_core                             # fleet view: versions + drift
 
 # Inspect
-authzctl model status --store tenant_a
-authzctl model diff saas_core@3 --store tenant_a
-authzctl model export --store tenant_a          # canonical JSON (round-trippable)
-authzctl model export --store tenant_a --dsl    # human-readable (display only)
-authzctl model versions saas_core
+pgauthzctl model status --store tenant_a
+pgauthzctl model diff saas_core@3 --store tenant_a
+pgauthzctl model export --store tenant_a          # canonical JSON (round-trippable)
+pgauthzctl model export --store tenant_a --dsl    # human-readable (display only)
+pgauthzctl model versions saas_core
 ```
 
 For large fleets, orchestrate `apply` per store (or in bounded batches with
@@ -108,7 +108,7 @@ gated) — a superuser test database also works.
 OpenFGA `condition` blocks are **parsed but not imported**: the OpenFGA CEL
 vocabulary (bare parameter names) differs from pgauthz CEL
 (`request.*` / `stored.*` namespaces), so an automatic translation would be
-wrong more often than right. authzctl prints a warning with a
+wrong more often than right. pgauthzctl prints a warning with a
 `create_condition_cel` scaffold per condition — create them natively and
 reference them from tuples as usual. Models without DSL conditions
 round-trip cleanly.

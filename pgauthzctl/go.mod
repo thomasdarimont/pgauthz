@@ -1,4 +1,4 @@
-module thomasdarimont.de/authz/authzctl
+module thomasdarimont.de/authz/pgauthzctl
 
 go 1.26
 

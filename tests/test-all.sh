@@ -57,9 +57,9 @@ echo ""
 run_tests "$SCRIPT_DIR/test-go.sh"
 
 echo ""
-echo "==> Running authzctl CLI integration tests..."
+echo "==> Running pgauthzctl CLI integration tests..."
 echo ""
-run_tests "$SCRIPT_DIR/test-authzctl.sh"
+run_tests "$SCRIPT_DIR/test-pgauthzctl.sh"
 
 test_duration=$((SECONDS - test_start))
 

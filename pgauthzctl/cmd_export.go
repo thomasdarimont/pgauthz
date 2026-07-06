@@ -18,7 +18,7 @@ func cmdApply(args []string) error {
 	planFirst := fs.Bool("plan-first", false, "refuse when the plan reports blockers")
 	pos := parseAll(fs, args)
 	if (*store == "") == (*stores == "") || len(pos) != 1 {
-		return fmt.Errorf("usage: authzctl model apply <name[@version]> --store <s> | --stores a,b,c [--plan-first]")
+		return fmt.Errorf("usage: pgauthzctl model apply <name[@version]> --store <s> | --stores a,b,c [--plan-first]")
 	}
 	name, version, err := parseModelRef(pos[0])
 	if err != nil {
@@ -77,7 +77,7 @@ func cmdExport(args []string) error {
 	dsl := fs.Bool("dsl", false, "human-readable DSL-flavored text (display only, not round-trippable)")
 	_ = parseAll(fs, args)
 	if *store == "" {
-		return fmt.Errorf("usage: authzctl model export --store <store> [--dsl]")
+		return fmt.Errorf("usage: pgauthzctl model export --store <store> [--dsl]")
 	}
 
 	ctx := context.Background()
@@ -108,7 +108,7 @@ func cmdStatus(args []string) error {
 	store := fs.String("store", "", "store (required)")
 	_ = parseAll(fs, args)
 	if *store == "" {
-		return fmt.Errorf("usage: authzctl model status --store <store>")
+		return fmt.Errorf("usage: pgauthzctl model status --store <store>")
 	}
 
 	ctx := context.Background()
@@ -176,7 +176,7 @@ func cmdRollout(args []string) error {
 	fs, dsn := newFlags("model rollout")
 	pos := parseAll(fs, args)
 	if len(pos) != 1 {
-		return fmt.Errorf("usage: authzctl model rollout <name>")
+		return fmt.Errorf("usage: pgauthzctl model rollout <name>")
 	}
 
 	ctx := context.Background()

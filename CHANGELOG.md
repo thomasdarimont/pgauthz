@@ -241,7 +241,7 @@ OPA-free, answering directly from PostgreSQL.
   per-decision opt-in, not a hot-path default. 10 SQL tests + e2e on OPA and
   both AuthZEN services; demo walkthrough section 9g.
 
-- **`authzctl` — model-as-code toolchain** (new top-level Go CLI; review #3's
+- **`pgauthzctl` — model-as-code toolchain** (new top-level Go CLI; review #3's
   top item). Author models as **verbatim OpenFGA DSL** (`.fga`) in git,
   parsed with the official `openfga/language` transformer — no new DSL —
   and piped into the existing `import_openfga_model`. Verbs:
@@ -254,10 +254,10 @@ OPA-free, answering directly from PostgreSQL.
   ephemeral store, with pgauthz extensions (condition `context`,
   `contextual_tuples`, golden `explain` reason paths) and `--junit` output.
   DSL `condition` blocks are parsed but not imported (OpenFGA CEL and
-  pgauthz CEL vocabularies differ) — authzctl prints a
+  pgauthz CEL vocabularies differ) — pgauthzctl prints a
   `create_condition_cel` scaffold per condition instead. Own Go module
   (keeps the ANTLR dependency tree out of the services); integration suite
-  `tests/test-authzctl.sh` wired into `test-all.sh`, CI, and
+  `tests/test-pgauthzctl.sh` wired into `test-all.sh`, CI, and
   `pre-release.sh`.
 
 - **`plan_model_apply`: dry-run for model rollouts** (review #2 priority 2).

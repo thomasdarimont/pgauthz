@@ -22,7 +22,7 @@ one — no independent party has attested to these claims.
   point at the current tree.
 - **Date / version:** engine passes 2026-06-29 (~v0.1.4); refresh 2026-07-05
   (~v0.6); **v0.7 delta 2026-07-05** (rich decisions, native expiry, cache
-  bypass, authzctl) — found one High fail-open (F11), **fixed** in migration 0006 — the first
+  bypass, pgauthzctl) — found one High fail-open (F11), **fixed** in migration 0006 — the first
   non-Info engine finding, found and closed within the same delta.
 - **Companion docs:** [`SECURITY.md`](../SECURITY.md) (reporting / supported
   line), [`PRODUCTION.md`](PRODUCTION.md) (hardening), [`ARCHITECTURE.md`](ARCHITECTURE.md)
@@ -198,7 +198,7 @@ condition sandbox a genuine capability sandbox.
 
 An adversarial pass over the surface added since the refresh — native tuple
 expiry (`expires_at` + row-level security), `check_access_detailed` /
-`allow_detailed`, the `no_cache` cache bypass, and `authzctl` — surfaced one
+`allow_detailed`, the `no_cache` cache bypass, and `pgauthzctl` — surfaced one
 real fail-open in the expiry enforcement.
 
 | # | Sev | Finding | Status |
@@ -221,7 +221,7 @@ reads lack. The other v0.7 additions reviewed clean:
   one decision; it cannot change a decision or amplify load beyond the
   cache-busting an authenticated caller already had (F-none; documented in
   opa/README).
-- **`authzctl`** is an operator/CI tool in the psql trust tier (direct DSN,
+- **`pgauthzctl`** is an operator/CI tool in the psql trust tier (direct DSN,
   admin for writes); it introduces no new engine surface — it drives the
   existing registry/import API. Its OpenFGA-DSL `condition` blocks are
   parsed-not-imported (vocabulary mismatch), so no untranslated CEL reaches

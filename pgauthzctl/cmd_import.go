@@ -13,7 +13,7 @@ func cmdImport(args []string) error {
 	store := fs.String("store", "", "target store (required)")
 	pos := parseAll(fs, args)
 	if *store == "" || len(pos) != 1 {
-		return fmt.Errorf("usage: authzctl model import <model.fga|model.json> --store <store>")
+		return fmt.Errorf("usage: pgauthzctl model import <model.fga|model.json> --store <store>")
 	}
 
 	modelJSON, warnings, err := loadModelJSON(pos[0])
@@ -49,7 +49,7 @@ func cmdPublish(args []string) error {
 	viaStore := fs.String("via-store", "", "existing store to publish through (default: ephemeral scratch store)")
 	pos := parseAll(fs, args)
 	if *name == "" || len(pos) != 1 {
-		return fmt.Errorf("usage: authzctl model publish <model.fga|model.json> --name <model> [--message m]")
+		return fmt.Errorf("usage: pgauthzctl model publish <model.fga|model.json> --name <model> [--message m]")
 	}
 
 	modelJSON, warnings, err := loadModelJSON(pos[0])
@@ -71,8 +71,8 @@ func cmdPublish(args []string) error {
 	if store == "" {
 		b := make([]byte, 4)
 		rand.Read(b)
-		store = "authzctl_pub_" + hex.EncodeToString(b)
-		if _, err := conn.Exec(ctx, "SELECT authz.create_store($1, 'authzctl publish scratch')", store); err != nil {
+		store = "pgauthzctl_pub_" + hex.EncodeToString(b)
+		if _, err := conn.Exec(ctx, "SELECT authz.create_store($1, 'pgauthzctl publish scratch')", store); err != nil {
 			return err
 		}
 		defer conn.Exec(context.Background(), "SELECT authz.delete_store($1)", store)

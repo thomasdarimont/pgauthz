@@ -76,7 +76,7 @@ func cmdTest(args []string) error {
 	keep := fs.Bool("keep-store", false, "keep the ephemeral store for debugging")
 	pos := parseAll(fs, args)
 	if len(pos) != 1 {
-		return fmt.Errorf("usage: authzctl model test <tests.authz.yaml> [--junit out.xml]")
+		return fmt.Errorf("usage: pgauthzctl model test <tests.authz.yaml> [--junit out.xml]")
 	}
 	fixPath := pos[0]
 
@@ -102,8 +102,8 @@ func cmdTest(args []string) error {
 	// Ephemeral store per run: fixtures are hermetic and repeatable.
 	b := make([]byte, 4)
 	rand.Read(b)
-	store := "authzctl_test_" + hex.EncodeToString(b)
-	if _, err := conn.Exec(ctx, "SELECT authz.create_store($1, 'authzctl model test')", store); err != nil {
+	store := "pgauthzctl_test_" + hex.EncodeToString(b)
+	if _, err := conn.Exec(ctx, "SELECT authz.create_store($1, 'pgauthzctl model test')", store); err != nil {
 		return err
 	}
 	if !*keep {

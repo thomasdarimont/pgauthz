@@ -26,7 +26,7 @@ func cmdVersion() {
 			}
 		}
 	}
-	out := "authzctl " + version
+	out := "pgauthzctl " + version
 	if rev != "" {
 		out += fmt.Sprintf(" (commit %s%s)", rev, dirty)
 	}

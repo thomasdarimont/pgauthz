@@ -1,4 +1,4 @@
-// authzctl — model-as-code toolchain for pgauthz.
+// pgauthzctl — model-as-code toolchain for pgauthz.
 //
 // A thin CLI over the engine's model registry and OpenFGA import: author
 // models as .fga files in git, test them in CI, publish them as immutable
@@ -12,16 +12,16 @@ import (
 	"os"
 )
 
-const usage = `authzctl — pgauthz operations toolchain
+const usage = `pgauthzctl — pgauthz operations toolchain
 
 Usage:
-  authzctl <command> [<verb>] [flags]
+  pgauthzctl <command> [<verb>] [flags]
 
 Commands:
   model     Model-as-code lifecycle (the verbs below)
-  version   Print the authzctl version
+  version   Print the pgauthzctl version
 
-Model verbs (authzctl model <verb>):
+Model verbs (pgauthzctl model <verb>):
   import    Load a model (.fga DSL or OpenFGA JSON) into a store
   publish   Publish a model file as the next immutable registry version
   plan      Dry-run: what would applying a registry version change?

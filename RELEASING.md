@@ -5,7 +5,7 @@ record and is **signed** (SSH signing) from v0.8.0 onward.
 
 ```bash
 ./scripts/pre-release.sh          # local preflight: Go build/vet (authzen,
-                                  # authzctl, BFF), diagram + Helm-policy
+                                  # pgauthzctl, BFF), diagram + Helm-policy
                                   # freshness, full stack test run, CHANGELOG
 ./scripts/bump-version.sh X.Y.Z   # version refs + CHANGELOG roll
 git commit -am "Bump version to X.Y.Z" && git push

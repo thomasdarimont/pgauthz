@@ -32,7 +32,7 @@ func cmdPlan(args []string) error {
 	asJSON := fs.Bool("json", false, "raw plan JSON")
 	pos := parseAll(fs, args)
 	if *store == "" || len(pos) != 1 {
-		return fmt.Errorf("usage: authzctl model plan <name[@version]> --store <store> [--json]")
+		return fmt.Errorf("usage: pgauthzctl model plan <name[@version]> --store <store> [--json]")
 	}
 
 	plan, err := fetchPlan(context.Background(), *dsn, *store, pos[0])
@@ -56,7 +56,7 @@ func cmdDiff(args []string) error {
 	store := fs.String("store", "", "target store (required)")
 	pos := parseAll(fs, args)
 	if *store == "" || len(pos) != 1 {
-		return fmt.Errorf("usage: authzctl model diff <name[@version]> --store <store>")
+		return fmt.Errorf("usage: pgauthzctl model diff <name[@version]> --store <store>")
 	}
 
 	plan, err := fetchPlan(context.Background(), *dsn, *store, pos[0])
