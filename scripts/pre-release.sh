@@ -18,9 +18,11 @@
 #   ./scripts/pre-release.sh --skip-stack   # skip init.sh + test-all.sh (fast checks only)
 #   ./scripts/pre-release.sh --skip-diagrams
 #
-# NOTE: step 3 recreates the compose stack from the BASE files — if you run
-# the keycloak/playground overlays, their opa/pgauthzd-opa env is reset (the
-# script prints the re-apply hint at the end).
+# NOTE: step 3 forces the canonical DEMO-mode stack (OPA on, keycloak/playground
+# OFF) regardless of any persisted dev overlays — the test suites are demo/
+# trusted-PEP suites and would fail against a keycloak token-only OPA. If you had
+# the keycloak/playground overlays running, the script prints a re-apply hint at
+# the end.
 #
 set -euo pipefail
 
@@ -81,7 +83,12 @@ fi
 
 # ── 3. Full stack tests (CI main job) ────────────────────────────────────────
 if [ "$SKIP_STACK" = 0 ]; then
-    step "Full stack: ./init.sh + ./tests/test-all.sh"
+    step "Full stack: ./init.sh + ./tests/test-all.sh (demo mode: OPA on, keycloak/playground off)"
+    # Release gate must be deterministic: the test-all suites (test-opa,
+    # test-authzen) are DEMO / trusted-PEP suites. A persisted keycloak/playground
+    # overlay puts OPA in token-only mode, which those suites correctly fail
+    # against. Force the canonical demo stack regardless of local overlay state.
+    export PGAUTHZ_OPA=1 PGAUTHZ_KEYCLOAK=0 PGAUTHZ_PLAYGROUND=0
     ./init.sh
     ./tests/test-all.sh || die "test-all.sh failed"
 else
@@ -105,10 +112,9 @@ if [ "$FAILED" != 0 ]; then
 fi
 echo "==> Pre-release checks passed."
 echo "    Next: commit/push, wait for CI, then scripts/bump-version.sh + scripts/release.sh"
-if [ "$SKIP_STACK" = 0 ] && docker ps --format '{{.Names}}' 2>/dev/null | grep -q playground-bff; then
+if [ "$SKIP_STACK" = 0 ]; then
     echo ""
-    echo "    NOTE: init.sh reset opa/pgauthzd-opa to the base compose env."
-    echo "    Re-apply the playground overrides:"
-    echo "      docker compose -f compose.yml -f compose-authzen.yml \\"
-    echo "        -f compose-keycloak.yml -f compose-playground.yml up -d --no-deps opa pgauthzd-opa"
+    echo "    NOTE: the stack is now in DEMO mode (OPA on, keycloak/playground OFF),"
+    echo "    and .pgauthz-overlays was reset accordingly. To restore the playground:"
+    echo "      ./start.sh --playground        (add --cel / --metrics as you had them)"
 fi

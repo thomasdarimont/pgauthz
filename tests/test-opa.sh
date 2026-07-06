@@ -165,12 +165,12 @@ if [ "$opa_up" = 0 ]; then
     exit 0
 fi
 
-echo "==> Waiting for a warm PostgREST schema cache (via OPA)..."
-# PostgREST is not exposed to the host. On a freshly started stack it may have
-# connected before the engine schema existed and be serving a stale/empty
-# schema cache (init.sh sends a reload). Wait until a KNOWN demo grant actually
-# resolves true through OPA -> PostgREST, so the suite never runs against a
-# cold cache. (The demo store is loaded by test.sh before this script.)
+echo "==> Waiting for the OPA -> pgauthzd path to warm up..."
+# On a freshly started stack OPA and the pgauthzd native callback may still be
+# coming up (and on a replica the demo data may still be replicating). Wait until
+# a KNOWN demo grant actually resolves true through OPA -> pgauthzd, so the suite
+# never runs before the path is ready. (The demo store is loaded by test.sh
+# before this script.)
 for i in $(seq 1 60); do
     result=$(curl -sf -X POST "$OPA_URL/v1/data/authz/allow" \
         -H "Content-Type: application/json" \
@@ -318,7 +318,7 @@ fi
 
 # --- Write through OPA (fixed-role writer; OPA verifies the JWT) ---
 #
-# The writer PostgREST runs as a fixed authz_writer role and does NOT verify
+# The writer instance runs as a fixed authz_writer role and does NOT verify
 # JWTs — OPA is the front door: it verifies the ES256 token, requires the
 # configured writer role in the configured claim, and forwards write/delete to
 # the writer, injecting the JWT subject as the audit author.

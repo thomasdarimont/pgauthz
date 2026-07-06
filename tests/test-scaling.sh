@@ -62,8 +62,8 @@ assert "replica: eva can_read accounting doc" "t" \
 assert "replica: unknown subject denied" "f" \
   "$(qp "$REPLICA" "SELECT authz.check_access('demo','internal_user','ghost_xyz','can_read','document','doc_acc_001');")"
 
-# pgauthzd uses pgx and holds no schema cache (unlike PostgREST), so there is
-# nothing to reload on a schema change. But the replica-facing pgauthzd-reader
+# pgauthzd uses pgx and holds no schema cache, so there is nothing to reload on
+# a schema change. But the replica-facing pgauthzd-reader
 # may have started (and restarted) before the schema+roles existed on the
 # primary/replica; bounce it to guarantee it is connected to the now-initialized
 # replica before the OPA-path assertions.
@@ -76,7 +76,7 @@ opa() {  # input-json
     -H "Authorization: Bearer ${OPA_ADMIN_TOKEN:-change-me-in-production}" -d "$1"
 }
 eva_opa=""
-for _ in $(seq 1 20); do   # allow PostgREST to come back + reload its cache
+for _ in $(seq 1 20); do   # allow pgauthzd-reader to reconnect to the replica
   eva_opa=$(opa '{"input":{"subject":{"type":"internal_user","id":"eva"},"action":"can_read","resource":{"type":"document","id":"doc_acc_001"}}}' || true)
   [ "$eva_opa" = '{"result":true}' ] && break
   sleep 2

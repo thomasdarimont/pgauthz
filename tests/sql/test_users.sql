@@ -25,7 +25,7 @@ GRANT authz_reader TO app_readonly;
 GRANT authz_writer TO app_readwrite;
 GRANT authz_auditor TO app_auditor;
 
--- Allow the authenticator role to switch to test users (for PostgREST testing).
+-- Allow the connection role (authz) to SET ROLE to the test users.
 GRANT app_readonly TO authz;
 GRANT app_readwrite TO authz;
 GRANT app_auditor TO authz;

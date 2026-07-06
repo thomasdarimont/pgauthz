@@ -317,10 +317,10 @@ $$;
 SELECT * FROM _test_teardown_ns_read();
 
 -- ================================================================
--- namespace enforcement under SET ROLE (PostgREST-style identity)
+-- namespace enforcement under SET ROLE (per-app identity)
 --
--- PostgREST connects as a single authenticator and switches the
--- request identity with SET ROLE. Enforcement must follow the
+-- pgauthzd connects as a fixed role and switches the request
+-- identity per-request with SET LOCAL ROLE. Enforcement must follow the
 -- SET ROLE identity, not the connection's session_user.
 -- set_config('role', ..., true) is the transaction-local equivalent
 -- of SET LOCAL ROLE.

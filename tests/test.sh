@@ -63,8 +63,8 @@ psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_preconditions.sql"
 
 # NOTE: per-write consistency mode mapping (applied/durable/eventual + fail-closed
 # on unknown) and the per-app reader-role validation formerly lived in the SQL
-# _pre_request/_pre_request_reader hooks and were tested here. Those hooks were
-# removed with PostgREST; pgauthzd now performs both in Go — covered by
+# _pre_request/_pre_request_reader hooks and were tested here. Those hooks are
+# gone; pgauthzd now performs both in Go — covered by
 # pgauthzd's TestSyncCommit unit test and the end-to-end namespace-isolation
 # checks in tests/test-opa.sh.
 
