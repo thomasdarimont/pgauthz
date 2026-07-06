@@ -542,6 +542,12 @@ A malformed/forged token — or the feature disabled — is rejected with `400`
 primary always answers `fresh` (it is authoritative). See
 [ADR 0009](../docs/adr/0009-freshness-tokens.md).
 
+**Paginated reads** (`list-objects` / `list-subjects` and AuthZEN
+`search/subject|resource`) bind the freshness floor **into** the `next_token`
+cursor, so a scan started under `at_least_as_fresh` keeps every later page at
+least as fresh as the first — a client can't drop the floor mid-scan, and a
+lagging replica reached on page 2+ still returns `409 + X-PGAuthz-Stale`.
+
 Roadmap: `/pgauthz/v1/audit` (time-travel), `/pgauthz/v1/models` +
 `/pgauthz/v1/stores` (inspection), and model publish/apply on the `full`
 profile.

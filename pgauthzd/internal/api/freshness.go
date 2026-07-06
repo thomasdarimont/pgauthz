@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -34,13 +36,21 @@ func (h *Handler) freshnessOK(w http.ResponseWriter, r *http.Request) bool {
 	if !strings.EqualFold(mode, consistencyAtLeastAsFresh) || token == "" {
 		return true // minimize_latency / fully_consistent / absent → routing, not this guard
 	}
+	return h.checkFreshToken(w, r, token)
+}
+
+// checkFreshToken verifies a token's signature and asserts that THIS node
+// satisfies it. Returns false (having written 400/409/500/501) when the read
+// must not proceed. Shared by the header guard (freshnessOK) and the
+// cursor-bound pagination floor (pageFreshness).
+func (h *Handler) checkFreshToken(w http.ResponseWriter, r *http.Request, token string) bool {
 	if !h.cfg.FreshnessEnabled() {
 		writeBadRequest(w, "freshness tokens are not enabled on this instance (set FRESHNESS_TOKEN_KEY)")
 		return false
 	}
 	epoch, lsn, err := authz.DecodeFreshnessToken([]byte(h.cfg.FreshnessKey), token)
 	if err != nil {
-		writeBadRequest(w, "invalid "+RevisionHeader+": "+err.Error())
+		writeBadRequest(w, "invalid freshness token: "+err.Error())
 		return false
 	}
 	fc, ok := h.raw.(authz.FreshnessChecker)
@@ -95,4 +105,79 @@ func (h *Handler) mintRevision(w http.ResponseWriter, r *http.Request) string {
 	tok := authz.EncodeFreshnessToken([]byte(h.cfg.FreshnessKey), epoch, lsn)
 	w.Header().Set(RevisionHeader, tok)
 	return tok
+}
+
+// ── Freshness-bound pagination cursors (ADR 0009) ───────────────────────────
+//
+// A paginated search under `at_least_as_fresh` must not silently mix pre- and
+// post-revoke states across pages: once page 1 is served fresh, page 2 must be
+// at least as fresh. We enforce that by binding the freshness floor INTO the
+// cursor, so it travels with pagination and a client cannot drop it mid-scan
+// (nor can a load balancer route a later page to a laggier replica undetected).
+//
+// A bound cursor is `f1.<base64url(json{c: <keyset cursor>, r: <freshness token>})>`.
+// The `f1.` prefix (containing a '.', which RawURLEncoding never emits) makes it
+// unambiguous from a plain keyset cursor.
+
+const boundCursorPrefix = "f1."
+
+type boundCursor struct {
+	C string `json:"c"` // inner keyset cursor (the engine's next_token)
+	R string `json:"r"` // freshness token (the floor)
+}
+
+// bindCursor wraps a keyset cursor with a freshness floor. freshTok=="" (or an
+// empty cursor) returns the cursor unchanged, so non-freshness pagination and
+// last pages are untouched.
+func bindCursor(cursor, freshTok string) string {
+	if freshTok == "" || cursor == "" {
+		return cursor
+	}
+	b, _ := json.Marshal(boundCursor{C: cursor, R: freshTok})
+	return boundCursorPrefix + base64.RawURLEncoding.EncodeToString(b)
+}
+
+// unbindCursor splits a possibly-bound cursor into its inner keyset cursor and
+// freshness floor (""=plain, unbound cursor). A malformed bound cursor degrades
+// to raw so the keyset decoder can reject it.
+func unbindCursor(s string) (cursor, freshTok string) {
+	rest, ok := strings.CutPrefix(s, boundCursorPrefix)
+	if !ok {
+		return s, ""
+	}
+	data, err := base64.RawURLEncoding.DecodeString(rest)
+	if err != nil {
+		return s, ""
+	}
+	var bc boundCursor
+	if json.Unmarshal(data, &bc) != nil {
+		return s, ""
+	}
+	return bc.C, bc.R
+}
+
+// pageFreshness resolves and enforces the freshness floor for a paginated read,
+// and returns the floor to bind onto the NEXT page's cursor. It rewrites
+// p.Token in place to the inner keyset cursor so the normal page decoder is
+// unchanged. Returns ok=false (response already written) when a cursor-bound
+// floor is not satisfied. A no-op (returns "", true) when freshness is unused.
+func (h *Handler) pageFreshness(w http.ResponseWriter, r *http.Request, p *PageToken) (freshTok string, ok bool) {
+	var cursorTok string
+	if p != nil && p.Token != "" {
+		p.Token, cursorTok = unbindCursor(p.Token)
+	}
+	if cursorTok != "" {
+		// Continuation of a fresh scan: enforce the floor the cursor carries and
+		// keep binding it onto subsequent pages, regardless of request headers.
+		if !h.checkFreshToken(w, r, cursorTok) {
+			return "", false
+		}
+		return cursorTok, true
+	}
+	// First page: the header guard (readGuard → freshnessOK) already enforced the
+	// header token; carry it forward so page 2+ stay pinned to it.
+	if strings.EqualFold(r.Header.Get(ConsistencyHeader), consistencyAtLeastAsFresh) {
+		return r.Header.Get(RevisionHeader), true
+	}
+	return "", true
 }

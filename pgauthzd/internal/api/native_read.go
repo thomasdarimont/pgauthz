@@ -245,13 +245,17 @@ func (h *Handler) NativeListObjects(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	freshTok, ok := h.pageFreshness(w, r, req.Page)
+	if !ok {
+		return
+	}
 	objects, pageResp, err := h.raw.ListResources(r.Context(), store,
 		subjectType, subjectID, req.Action.Name, req.Resource.Type, req.Context, req.pageReq())
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, listResponse("objects", objects, pageResp))
+	writeJSON(w, http.StatusOK, listResponse("objects", objects, pageResp, freshTok))
 }
 
 type nativeListSubjectsBody struct {
@@ -288,13 +292,17 @@ func (h *Handler) NativeListSubjects(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	freshTok, ok := h.pageFreshness(w, r, req.Page)
+	if !ok {
+		return
+	}
 	subjects, pageResp, err := h.raw.ListSubjects(r.Context(), store,
 		req.Subject.Type, req.Action.Name, req.Resource.Type, req.Resource.ID, req.Context, req.pageReq())
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, listResponse("subjects", subjects, pageResp))
+	writeJSON(w, http.StatusOK, listResponse("subjects", subjects, pageResp, freshTok))
 }
 
 type nativeListActionsBody struct {
@@ -337,10 +345,12 @@ func (h *Handler) NativeListActions(w http.ResponseWriter, r *http.Request) {
 }
 
 // listResponse builds a native list response: {<key>: [...], next_token?: "..."}.
-func listResponse(key string, ids []string, page *authz.PageResponse) map[string]any {
+// freshTok binds the freshness floor onto the next-page cursor (ADR 0009); "" =
+// no binding (pagination without at_least_as_fresh).
+func listResponse(key string, ids []string, page *authz.PageResponse, freshTok string) map[string]any {
 	out := map[string]any{key: ids}
 	if page != nil && page.HasMore {
-		out["next_token"] = page.NextToken
+		out["next_token"] = bindCursor(page.NextToken, freshTok)
 	}
 	return out
 }

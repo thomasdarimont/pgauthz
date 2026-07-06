@@ -19,7 +19,9 @@ pre-1.0, minor versions may include breaking changes.
   position, never the lagging control file). Engine primitives
   `authz.freshness_token()` / `authz.assert_fresh()`; enabled by
   `FRESHNESS_TOKEN_KEY` (same value on writer + readers; empty = off, fail
-  closed). No PostgreSQL 19 dependency.
+  closed). No PostgreSQL 19 dependency. Paginated searches bind the freshness
+  floor into the `next_token` cursor, so a scan can't mix pre/post-revoke states
+  across pages.
 - **Proprietary HTTP headers are namespaced `X-PGAuthz-*`** (was the generic,
   collision-prone `X-Authz-*`): `X-PGAuthz-Role` / `-Detail` / `-Consistency` /
   `-Revision` / `-Stale` / `-Store` (the last also fixes a casing slip).

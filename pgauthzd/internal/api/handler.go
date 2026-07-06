@@ -502,6 +502,10 @@ func (h *Handler) SearchSubject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	freshTok, ok := h.pageFreshness(w, r, req.Page)
+	if !ok {
+		return
+	}
 	page := decodePage(req.Page)
 
 	store, ok := h.storeChecked(w, r)
@@ -523,7 +527,7 @@ func (h *Handler) SearchSubject(w http.ResponseWriter, r *http.Request) {
 		resp.Results[i] = SubjectResult{Subject: Subject{Type: req.Subject.Type, ID: id}}
 	}
 	if pageResp != nil && pageResp.HasMore {
-		resp.Page = &PageResult{NextToken: pageResp.NextToken}
+		resp.Page = &PageResult{NextToken: bindCursor(pageResp.NextToken, freshTok)}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -554,6 +558,10 @@ func (h *Handler) SearchResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	freshTok, ok := h.pageFreshness(w, r, req.Page)
+	if !ok {
+		return
+	}
 	page := decodePage(req.Page)
 
 	store, ok := h.storeChecked(w, r)
@@ -575,7 +583,7 @@ func (h *Handler) SearchResource(w http.ResponseWriter, r *http.Request) {
 		resp.Results[i] = ResourceResult{Resource: Resource{Type: req.Resource.Type, ID: id}}
 	}
 	if pageResp != nil && pageResp.HasMore {
-		resp.Page = &PageResult{NextToken: pageResp.NextToken}
+		resp.Page = &PageResult{NextToken: bindCursor(pageResp.NextToken, freshTok)}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
