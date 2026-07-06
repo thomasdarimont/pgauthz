@@ -36,9 +36,9 @@ func TestBindUnbindCursor(t *testing.T) {
 }
 
 func TestPageFreshnessBoundCursorStale(t *testing.T) {
-	tok := authz.EncodeFreshnessToken([]byte(testFreshKey), 1, "0/50")
+	tok := authz.EncodeFreshnessToken(testKeyring[0], 1, "0/50")
 	b := &freshStub{verdict: "stale"}
-	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileDecisionOnly, FreshnessKey: testFreshKey})
+	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileDecisionOnly, FreshnessKeys: testFreshKeys})
 
 	w := httptest.NewRecorder()
 	p := &PageToken{Token: bindCursor("keyset-xyz", tok)}
@@ -55,9 +55,9 @@ func TestPageFreshnessBoundCursorStale(t *testing.T) {
 }
 
 func TestPageFreshnessBoundCursorFresh(t *testing.T) {
-	tok := authz.EncodeFreshnessToken([]byte(testFreshKey), 1, "0/50")
+	tok := authz.EncodeFreshnessToken(testKeyring[0], 1, "0/50")
 	b := &freshStub{verdict: "fresh"}
-	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileDecisionOnly, FreshnessKey: testFreshKey})
+	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileDecisionOnly, FreshnessKeys: testFreshKeys})
 
 	// bound cursor, fresh → ok, floor propagated for the next page, cursor unwrapped
 	p := &PageToken{Token: bindCursor("keyset-2", tok)}

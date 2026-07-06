@@ -344,9 +344,32 @@ a write returns a signed LSN-watermark token, and a later read presents it with
 `X-PGAuthz-Consistency: at_least_as_fresh`. A replica that hasn't replayed to the
 token answers `409 + X-PGAuthz-Stale` so the caller retries against the primary —
 so the primary hop happens only when the replica is *actually* behind, instead of
-unconditionally. Enable by setting `FRESHNESS_TOKEN_KEY` (the same value on the
+unconditionally. Enable by setting `FRESHNESS_TOKEN_KEYS` (the same list on the
 writer and the readers). This complements `remote_apply` (write-side durability)
 with a read-side freshness handle; it needs no PostgreSQL 19 primitives.
+
+**Rotating the freshness key** is a zero-downtime overlap. `FRESHNESS_TOKEN_KEYS`
+is ordered — the **first** key mints, **every** key verifies — and each token
+embeds a key id derived from its secret, so the verifier picks the right key.
+Because writers mint and readers verify (and instances restart at different
+times), a reader must accept a key *before* any writer mints with it — hence
+three rollouts, each safe under mid-rollout skew:
+
+1. `FRESHNESS_TOKEN_KEYS="old,new"` on **all** instances — everyone learns the
+   new key; minting stays on the old one.
+2. `FRESHNESS_TOKEN_KEYS="new,old"` on **all** instances — minting flips to the
+   new key; outstanding old-key tokens (including freshness-bound pagination
+   cursors mid-scan) still verify.
+3. `FRESHNESS_TOKEN_KEYS="new"` — once the old key's
+   `pgauthzd_freshness_key_verifications_total{kid=…}` series has flatlined.
+   A straggler token then fails `400` (fail closed) and the client re-mints
+   with its next write.
+
+A token grants nothing (it is a freshness assertion, not a capability), so a
+compromised key at worst forges a *future* WAL position — a self-inflicted
+stale-deny / extra primary hop, never an allow. Rotate on suspicion without
+ceremony; step 3 immediately (skipping the overlap) only costs in-flight
+`at_least_as_fresh` reads a `400`.
 
 Optionally, set `FRESHNESS_PRIMARY_URL` (a reader-role DSN to the primary) on a
 decision-only reader for **transparent fallback**: instead of the `409`, the

@@ -7,6 +7,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 // Issuer describes one trusted token issuer and where to find its signing keys.
@@ -134,12 +135,16 @@ type Config struct {
 	SubjectIDClaim     string
 	SubjectIDFallback  string
 
-	// FreshnessKey is the HMAC secret for signing/verifying freshness tokens
-	// (ADR 0009 read-your-writes). Empty disables the feature: writes mint no
-	// token, and a read presenting `X-PGAuthz-Consistency: at_least_as_fresh` is
-	// rejected (400) rather than served as if fresh (fail closed). Env
-	// FRESHNESS_TOKEN_KEY.
-	FreshnessKey string
+	// FreshnessKeys are the ordered HMAC secrets for signing/verifying freshness
+	// tokens (ADR 0009 read-your-writes): the FIRST key mints, EVERY key
+	// verifies — which is what makes key rotation a zero-downtime overlap
+	// ("old,new" → "new,old" → "new"; see PRODUCTION.md). Empty disables the
+	// feature: writes mint no token, and a read presenting
+	// `X-PGAuthz-Consistency: at_least_as_fresh` is rejected (400) rather than
+	// served as if fresh (fail closed). Env FRESHNESS_TOKEN_KEYS
+	// (comma-separated; secrets must not contain commas), or the single-key
+	// alias FRESHNESS_TOKEN_KEY — setting both is a startup error.
+	FreshnessKeys []string
 	// FreshnessPrimaryURL, when set on a decision-only reader, is a reader-role
 	// DSN to the PRIMARY used for TRANSPARENT freshness fallback (ADR 0009): an
 	// at_least_as_fresh read the local replica can't satisfy is transparently
@@ -244,7 +249,6 @@ func Load() (*Config, error) {
 		SubjectTypeDefault:           env("SUBJECT_TYPE_DEFAULT", "internal_user"),
 		SubjectIDClaim:               env("SUBJECT_ID_CLAIM", "preferred_username"),
 		SubjectIDFallback:            env("SUBJECT_ID_FALLBACK_CLAIM", "sub"),
-		FreshnessKey:                 env("FRESHNESS_TOKEN_KEY", ""),
 		FreshnessPrimaryURL:          env("FRESHNESS_PRIMARY_URL", ""),
 		FreshnessPrimaryPoolMax:      envInt("FRESHNESS_PRIMARY_POOL_MAX", 10),
 		MetricsListenAddr:            env("METRICS_LISTEN_ADDR", ""),
@@ -263,6 +267,29 @@ func Load() (*Config, error) {
 		OPAPackage:                   env("OPA_PACKAGE", "authz"),
 		ForwardTokenToOPA:            envBool("FORWARD_TOKEN_TO_OPA", false),
 		LogLevel:                     env("LOG_LEVEL", "info"),
+	}
+
+	// Freshness keyring: FRESHNESS_TOKEN_KEYS (ordered, comma-separated — first
+	// mints, all verify) or the single-key alias FRESHNESS_TOKEN_KEY. Both set
+	// is ambiguous (which one mints?) → refuse to start rather than guess.
+	keysRaw, keyRaw := os.Getenv("FRESHNESS_TOKEN_KEYS"), os.Getenv("FRESHNESS_TOKEN_KEY")
+	if keysRaw != "" && keyRaw != "" {
+		return nil, fmt.Errorf("set FRESHNESS_TOKEN_KEYS or FRESHNESS_TOKEN_KEY, not both")
+	}
+	if keysRaw == "" {
+		keysRaw = keyRaw
+	}
+	seen := map[string]bool{}
+	for _, k := range strings.Split(keysRaw, ",") {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		if seen[k] {
+			return nil, fmt.Errorf("FRESHNESS_TOKEN_KEYS: duplicate key entry")
+		}
+		seen[k] = true
+		c.FreshnessKeys = append(c.FreshnessKeys, k)
 	}
 
 	// Build the trusted-issuer list. The legacy single JWKS_URL/JWKS_FILE/
@@ -391,8 +418,8 @@ func (c *Config) Writable() bool {
 }
 
 // FreshnessEnabled reports whether freshness tokens (ADR 0009) are configured
-// (an HMAC key is set). When false, writes mint no token and reads reject an
-// at_least_as_fresh request (fail closed).
+// (at least one HMAC key is set). When false, writes mint no token and reads
+// reject an at_least_as_fresh request (fail closed).
 func (c *Config) FreshnessEnabled() bool {
-	return c.FreshnessKey != ""
+	return len(c.FreshnessKeys) > 0
 }

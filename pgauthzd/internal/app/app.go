@@ -40,6 +40,9 @@ func Run(name, version string) error {
 	fallbackEnabled := cfg.FreshnessPrimaryURL != "" && cfg.Profile == config.ProfileDecisionOnly && !cfg.UsesOPA()
 	metrics.SetBuildInfo(version, buildCommit(), runtime.Version(), string(cfg.Profile),
 		cfg.UsesOPA(), cfg.FreshnessEnabled(), fallbackEnabled)
+	// Pre-init the per-kid rotation-drain series so a retiring key exports 0
+	// (not "missing") from startup.
+	metrics.InitFreshnessKeyIDs(authz.NewKeyring(cfg.FreshnessKeys).KIDs())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -1495,7 +1495,7 @@ Getting the consistency you need:
 > (retry the primary). The token is a **post-commit** WAL position
 > (`pg_current_wal_insert_lsn()` after the write commits — an LSN captured inside
 > the write transaction is pre-commit and unsound), tagged with the WAL timeline
-> to stay sound across failover. Enable with `FRESHNESS_TOKEN_KEY`. See
+> to stay sound across failover. Enable with `FRESHNESS_TOKEN_KEYS`. See
 > [ADR 0009](docs/adr/0009-freshness-tokens.md) /
 > [ARCHITECTURE.md → Read-your-writes](docs/ARCHITECTURE.md).
 

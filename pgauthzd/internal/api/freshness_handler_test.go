@@ -47,9 +47,9 @@ func (b *freshStub) AssertFresh(context.Context, int32, string) (string, error) 
 // Replica stale + the PRIMARY confirms fresh ⇒ transparent fallback proceeds,
 // marked in the context and the X-PGAuthz-Served-By header.
 func TestFreshnessTransparentFallback(t *testing.T) {
-	tok := authz.EncodeFreshnessToken([]byte(testFreshKey), 1, "0/50")
+	tok := authz.EncodeFreshnessToken(testKeyring[0], 1, "0/50")
 	b := &freshStub{verdict: "stale", fallback: true, primaryVerdict: "fresh"}
-	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileDecisionOnly, FreshnessKey: testFreshKey})
+	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileDecisionOnly, FreshnessKeys: testFreshKeys})
 	w := httptest.NewRecorder()
 	r := freshGuardReq("at_least_as_fresh", tok)
 	if ok := h.freshnessOK(w, r); !ok {
@@ -67,9 +67,9 @@ func TestFreshnessTransparentFallback(t *testing.T) {
 // the token (e.g. a promoted primary on a new timeline → wrong_epoch), the guard
 // fails closed (409) instead of blindly serving from it (ADR 0009 #2).
 func TestFreshnessFallbackPrimaryAlsoStale(t *testing.T) {
-	tok := authz.EncodeFreshnessToken([]byte(testFreshKey), 1, "0/50")
+	tok := authz.EncodeFreshnessToken(testKeyring[0], 1, "0/50")
 	b := &freshStub{verdict: "stale", fallback: true, primaryVerdict: "wrong_epoch"}
-	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileDecisionOnly, FreshnessKey: testFreshKey})
+	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileDecisionOnly, FreshnessKeys: testFreshKeys})
 	w := httptest.NewRecorder()
 	r := freshGuardReq("at_least_as_fresh", tok)
 	if ok := h.freshnessOK(w, r); ok {
@@ -90,7 +90,7 @@ func TestFreshnessFallbackPrimaryAlsoStale(t *testing.T) {
 // downgrade to a low-latency read (ADR 0009 #3).
 func TestFreshnessMissingTokenIs400(t *testing.T) {
 	b := &freshStub{}
-	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileDecisionOnly, FreshnessKey: testFreshKey})
+	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileDecisionOnly, FreshnessKeys: testFreshKeys})
 	w := httptest.NewRecorder()
 	if ok := h.freshnessOK(w, freshGuardReq("at_least_as_fresh", "")); ok {
 		t.Fatal("at_least_as_fresh without a token must not proceed")
@@ -102,11 +102,16 @@ func TestFreshnessMissingTokenIs400(t *testing.T) {
 
 const testFreshKey = "unit-test-key"
 
+var (
+	testFreshKeys = []string{testFreshKey}
+	testKeyring   = authz.NewKeyring(testFreshKeys)
+)
+
 // A successful write with freshness enabled mints a token in both the
 // X-PGAuthz-Revision header and the response body, decodable to the minted value.
 func TestWriteMintsRevision(t *testing.T) {
 	b := &freshStub{epoch: 1, lsn: "0/ABC"}
-	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo", FreshnessKey: testFreshKey})
+	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo", FreshnessKeys: testFreshKeys})
 	w := httptest.NewRecorder()
 	h.WriteTuples(w, writeReq())
 	if w.Code != http.StatusOK {
@@ -119,9 +124,55 @@ func TestWriteMintsRevision(t *testing.T) {
 	if !strings.Contains(w.Body.String(), `"revision"`) {
 		t.Fatalf("expected revision in body: %s", w.Body.String())
 	}
-	e, l, err := authz.DecodeFreshnessToken([]byte(testFreshKey), tok)
-	if err != nil || e != 1 || l != "0/ABC" {
-		t.Fatalf("decode header token: {%d,%s} err=%v", e, l, err)
+	e, l, kid, err := authz.DecodeFreshnessToken(testKeyring, tok)
+	if err != nil || e != 1 || l != "0/ABC" || kid != testKeyring[0].KID {
+		t.Fatalf("decode header token: {%d,%s,%s} err=%v", e, l, kid, err)
+	}
+}
+
+// Key rotation at the guard: a token minted under the retiring key still passes
+// while that key is anywhere in the keyring (any order), and 400s once removed.
+func TestFreshnessGuardKeyRotation(t *testing.T) {
+	oldRing := authz.NewKeyring([]string{"old-secret"})
+	tok := authz.EncodeFreshnessToken(oldRing[0], 1, "0/50") // minted pre-rotation
+
+	cases := []struct {
+		name   string
+		keys   []string
+		wantOK bool
+	}{
+		{"accept-before-mint (old,new)", []string{"old-secret", "new-secret"}, true},
+		{"flipped (new,old)", []string{"new-secret", "old-secret"}, true},
+		{"old key removed", []string{"new-secret"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &freshStub{verdict: "fresh"}
+			h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileDecisionOnly, FreshnessKeys: tc.keys})
+			w := httptest.NewRecorder()
+			ok := h.freshnessOK(w, freshGuardReq("at_least_as_fresh", tok))
+			if ok != tc.wantOK {
+				t.Fatalf("ok=%v want %v (code=%d body=%s)", ok, tc.wantOK, w.Code, w.Body.String())
+			}
+			if !tc.wantOK && w.Code != http.StatusBadRequest {
+				t.Fatalf("retired-key token should be 400, got %d", w.Code)
+			}
+		})
+	}
+}
+
+// Mint always uses the FIRST keyring entry (post-flip, new tokens carry the new
+// kid even while the old key still verifies).
+func TestWriteMintsWithFirstKey(t *testing.T) {
+	keys := []string{"new-secret", "old-secret"}
+	ringOf := authz.NewKeyring(keys)
+	b := &freshStub{epoch: 2, lsn: "1/DEF"}
+	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo", FreshnessKeys: keys})
+	w := httptest.NewRecorder()
+	h.WriteTuples(w, writeReq())
+	_, _, kid, err := authz.DecodeFreshnessToken(ringOf, w.Header().Get(RevisionHeader))
+	if err != nil || kid != ringOf[0].KID {
+		t.Fatalf("mint must use the first key: kid=%s want %s err=%v", kid, ringOf[0].KID, err)
 	}
 }
 
@@ -148,29 +199,29 @@ func freshGuardReq(mode, token string) *http.Request {
 }
 
 func TestFreshnessGuard(t *testing.T) {
-	validTok := authz.EncodeFreshnessToken([]byte(testFreshKey), 1, "0/50")
+	validTok := authz.EncodeFreshnessToken(testKeyring[0], 1, "0/50")
 	tests := []struct {
 		name     string
-		cfgKey   string
+		cfgKeys  []string
 		mode     string
 		token    string
 		verdict  string
 		wantOK   bool
 		wantCode int
 	}{
-		{"no header proceeds", testFreshKey, "", "", "fresh", true, 0},
-		{"minimize_latency proceeds", testFreshKey, "minimize_latency", validTok, "stale", true, 0},
-		{"fresh proceeds", testFreshKey, "at_least_as_fresh", validTok, "fresh", true, 0},
-		{"stale is 409", testFreshKey, "at_least_as_fresh", validTok, "stale", false, http.StatusConflict},
-		{"wrong_epoch is 409", testFreshKey, "at_least_as_fresh", validTok, "wrong_epoch", false, http.StatusConflict},
-		{"unknown is 409", testFreshKey, "at_least_as_fresh", validTok, "unknown", false, http.StatusConflict},
-		{"bad token is 400", testFreshKey, "at_least_as_fresh", "garbage", "fresh", false, http.StatusBadRequest},
-		{"disabled+token is 400", "", "at_least_as_fresh", validTok, "fresh", false, http.StatusBadRequest},
+		{"no header proceeds", testFreshKeys, "", "", "fresh", true, 0},
+		{"minimize_latency proceeds", testFreshKeys, "minimize_latency", validTok, "stale", true, 0},
+		{"fresh proceeds", testFreshKeys, "at_least_as_fresh", validTok, "fresh", true, 0},
+		{"stale is 409", testFreshKeys, "at_least_as_fresh", validTok, "stale", false, http.StatusConflict},
+		{"wrong_epoch is 409", testFreshKeys, "at_least_as_fresh", validTok, "wrong_epoch", false, http.StatusConflict},
+		{"unknown is 409", testFreshKeys, "at_least_as_fresh", validTok, "unknown", false, http.StatusConflict},
+		{"bad token is 400", testFreshKeys, "at_least_as_fresh", "garbage", "fresh", false, http.StatusBadRequest},
+		{"disabled+token is 400", nil, "at_least_as_fresh", validTok, "fresh", false, http.StatusBadRequest},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			b := &freshStub{verdict: tc.verdict}
-			h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileDecisionOnly, FreshnessKey: tc.cfgKey})
+			h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileDecisionOnly, FreshnessKeys: tc.cfgKeys})
 			w := httptest.NewRecorder()
 			ok := h.freshnessOK(w, freshGuardReq(tc.mode, tc.token))
 			if ok != tc.wantOK {

@@ -7,6 +7,22 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Freshness-token key rotation** ([ADR 0009](docs/adr/0009-freshness-tokens.md)).
+  The signing config is now an ordered keyring, `FRESHNESS_TOKEN_KEYS`
+  (comma-separated): the **first** key mints, **every** key verifies, enabling a
+  zero-downtime three-phase rotation (`"old,new"` → `"new,old"` → `"new"`;
+  runbook in [PRODUCTION.md](docs/PRODUCTION.md)). Tokens embed a key id derived
+  from the secret (`base64url(sha256(secret)[:4])`, MAC-covered), so verification
+  picks the right key during the overlap; an unknown/retired kid fails with the
+  same opaque error as a forgery (fail closed). New per-kid drain metric
+  `pgauthzd_freshness_key_verifications_total{kid}` shows when the old key is
+  safe to drop. `FRESHNESS_TOKEN_KEY` remains as a single-key alias (setting
+  both is a startup error). **Breaking:** the token wire format now carries the
+  kid — tokens minted by v0.8.0 fail with `400` after the upgrade (clients
+  re-mint on their next write); closes audit finding F13.
+
 ### Fixed
 
 - **Freshness tokens: a promoted primary no longer accepts stale tokens**

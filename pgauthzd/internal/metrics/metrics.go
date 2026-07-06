@@ -42,6 +42,16 @@ var (
 		Help: "Reads transparently re-run on the primary due to insufficient replica freshness (ADR 0009).",
 	})
 
+	// FreshnessKeyVerified is the key-rotation DRAIN signal: which keyring entry
+	// verified each presented token. Remove the retiring key once its kid
+	// flatlines. Label values come only from the configured keyring (a token
+	// with an unknown kid is rejected before counting), so cardinality is
+	// bounded by keyring size.
+	FreshnessKeyVerified = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "pgauthzd_freshness_key_verifications_total",
+		Help: "Successful freshness-token signature verifications by key id (rotation drain signal).",
+	}, []string{"kid"})
+
 	buildInfo = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "pgauthzd_build_info",
 		Help: "Build/runtime info; value is always 1, the labels carry the data.",
@@ -141,6 +151,17 @@ func yn(v bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+// InitFreshnessKeyIDs pre-initializes the per-kid verification series so every
+// configured key exports a 0 immediately — the rotation runbook's "old kid has
+// flatlined" check needs the series to exist even before its first hit. (The
+// kid set is config-time data, so this can't live in init() like the fixed
+// enums below.)
+func InitFreshnessKeyIDs(kids []string) {
+	for _, kid := range kids {
+		FreshnessKeyVerified.WithLabelValues(kid)
+	}
 }
 
 // PoolStat is the subset of *pgxpool.Stat this package reads, so metrics doesn't

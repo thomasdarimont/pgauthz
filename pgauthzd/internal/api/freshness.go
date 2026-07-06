@@ -56,14 +56,19 @@ func (h *Handler) freshnessOK(w http.ResponseWriter, r *http.Request) bool {
 // cursor-bound pagination floor (pageFreshness).
 func (h *Handler) checkFreshToken(w http.ResponseWriter, r *http.Request, token string) bool {
 	if !h.cfg.FreshnessEnabled() {
-		writeBadRequest(w, "freshness tokens are not enabled on this instance (set FRESHNESS_TOKEN_KEY)")
+		writeBadRequest(w, "freshness tokens are not enabled on this instance (set FRESHNESS_TOKEN_KEYS)")
 		return false
 	}
-	epoch, lsn, err := authz.DecodeFreshnessToken([]byte(h.cfg.FreshnessKey), token)
+	epoch, lsn, kid, err := authz.DecodeFreshnessToken(h.freshKeys, token)
 	if err != nil {
 		writeBadRequest(w, "invalid freshness token: "+err.Error())
 		return false
 	}
+	// Rotation drain signal: which keyring entry verified this token. The old
+	// key is safe to drop once its kid flatlines. kid values come from the
+	// configured keyring only (never attacker-controlled), so the label is
+	// bounded.
+	metrics.FreshnessKeyVerified.WithLabelValues(kid).Inc()
 	fc, ok := h.raw.(authz.FreshnessChecker)
 	if !ok {
 		writeError(w, http.StatusNotImplemented, "freshness checks require the direct pgx backend")
@@ -132,7 +137,7 @@ func (h *Handler) mintRevision(w http.ResponseWriter, r *http.Request) string {
 	if err != nil {
 		return ""
 	}
-	tok := authz.EncodeFreshnessToken([]byte(h.cfg.FreshnessKey), epoch, lsn)
+	tok := authz.EncodeFreshnessToken(h.freshKeys[0], epoch, lsn)
 	w.Header().Set(RevisionHeader, tok)
 	return tok
 }

@@ -1,9 +1,14 @@
 package authz
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func ring(secrets ...string) Keyring { return NewKeyring(secrets) }
 
 func TestFreshnessTokenRoundTrip(t *testing.T) {
-	key := []byte("test-hmac-key")
+	r := ring("test-hmac-key")
 	cases := []struct {
 		epoch int32
 		lsn   string
@@ -13,42 +18,109 @@ func TestFreshnessTokenRoundTrip(t *testing.T) {
 		{42, "0/0"},
 	}
 	for _, c := range cases {
-		tok := EncodeFreshnessToken(key, c.epoch, c.lsn)
-		epoch, lsn, err := DecodeFreshnessToken(key, tok)
+		tok := EncodeFreshnessToken(r[0], c.epoch, c.lsn)
+		epoch, lsn, kid, err := DecodeFreshnessToken(r, tok)
 		if err != nil {
 			t.Fatalf("decode(%q): unexpected error %v", tok, err)
 		}
-		if epoch != c.epoch || lsn != c.lsn {
-			t.Fatalf("round trip: got {%d,%s}, want {%d,%s}", epoch, lsn, c.epoch, c.lsn)
+		if epoch != c.epoch || lsn != c.lsn || kid != r[0].KID {
+			t.Fatalf("round trip: got {%d,%s,%s}, want {%d,%s,%s}", epoch, lsn, kid, c.epoch, c.lsn, r[0].KID)
 		}
 	}
 }
 
 func TestFreshnessTokenRejectsTamper(t *testing.T) {
-	key := []byte("test-hmac-key")
-	tok := EncodeFreshnessToken(key, 1, "0/3000F78")
+	r := ring("test-hmac-key")
+	tok := EncodeFreshnessToken(r[0], 1, "0/3000F78")
 
 	// Flip the last character of the payload segment (before the "." ) so the
 	// signature no longer matches.
 	bad := []byte(tok)
 	bad[0] ^= 0x01
-	if _, _, err := DecodeFreshnessToken(key, string(bad)); err != ErrBadToken {
+	if _, _, _, err := DecodeFreshnessToken(r, string(bad)); err != ErrBadToken {
 		t.Fatalf("tampered token: got err %v, want ErrBadToken", err)
 	}
 }
 
 func TestFreshnessTokenRejectsWrongKey(t *testing.T) {
-	tok := EncodeFreshnessToken([]byte("key-a"), 7, "0/100")
-	if _, _, err := DecodeFreshnessToken([]byte("key-b"), tok); err != ErrBadToken {
+	tok := EncodeFreshnessToken(ring("key-a")[0], 7, "0/100")
+	if _, _, _, err := DecodeFreshnessToken(ring("key-b"), tok); err != ErrBadToken {
 		t.Fatalf("wrong key: got err %v, want ErrBadToken", err)
 	}
 }
 
 func TestFreshnessTokenRejectsMalformed(t *testing.T) {
-	key := []byte("k")
+	r := ring("k")
 	for _, bad := range []string{"", "no-dot", ".", "!!!.###", "abc.def"} {
-		if _, _, err := DecodeFreshnessToken(key, bad); err != ErrBadToken {
+		if _, _, _, err := DecodeFreshnessToken(r, bad); err != ErrBadToken {
 			t.Fatalf("malformed %q: got err %v, want ErrBadToken", bad, err)
 		}
+	}
+}
+
+// Rotation overlap: a token minted under the OLD key verifies against a keyring
+// that now mints with the NEW key — and vice versa (the accept-before-mint
+// phase, where a not-yet-flipped writer still mints old).
+func TestFreshnessKeyringRotationOverlap(t *testing.T) {
+	oldKey, newKey := ring("old-secret")[0], ring("new-secret")[0]
+	phases := []struct {
+		name string
+		ring Keyring
+	}{
+		{"accept-before-mint (old,new)", NewKeyring([]string{"old-secret", "new-secret"})},
+		{"flipped (new,old)", NewKeyring([]string{"new-secret", "old-secret"})},
+	}
+	for _, p := range phases {
+		for _, mintKey := range []Key{oldKey, newKey} {
+			tok := EncodeFreshnessToken(mintKey, 3, "1/AB")
+			epoch, lsn, kid, err := DecodeFreshnessToken(p.ring, tok)
+			if err != nil || epoch != 3 || lsn != "1/AB" || kid != mintKey.KID {
+				t.Fatalf("%s / mint kid=%s: got {%d,%s,%s} err=%v", p.name, mintKey.KID, epoch, lsn, kid, err)
+			}
+		}
+	}
+}
+
+// A token whose key has been rotated OUT of the keyring is rejected with the
+// same opaque error as a forgery.
+func TestFreshnessKeyringRejectsRetiredKey(t *testing.T) {
+	tok := EncodeFreshnessToken(ring("retired-secret")[0], 1, "0/50")
+	if _, _, _, err := DecodeFreshnessToken(ring("current-secret"), tok); err != ErrBadToken {
+		t.Fatalf("retired key: got err %v, want ErrBadToken", err)
+	}
+}
+
+// A forged kid must not smuggle a payload past verification: the MAC covers the
+// kid, so re-labelling a token to another keyring entry fails.
+func TestFreshnessKeyringRejectsKIDSwap(t *testing.T) {
+	r := NewKeyring([]string{"secret-one", "secret-two"})
+	// Mint under key 1, then re-encode the payload claiming key 0's kid while
+	// keeping key 1's MAC.
+	tok := EncodeFreshnessToken(r[1], 9, "2/FF")
+	payload := r[0].KID + ":9:2/FF"
+	_, encMAC, _ := strings.Cut(tok, ".")
+	forged := freshnessB64.EncodeToString([]byte(payload)) + "." + encMAC
+	if _, _, _, err := DecodeFreshnessToken(r, forged); err != ErrBadToken {
+		t.Fatalf("kid-swapped token: got err %v, want ErrBadToken", err)
+	}
+}
+
+func TestKeyringDerivation(t *testing.T) {
+	r := NewKeyring([]string{"a", "", "b"}) // empties skipped
+	if len(r) != 2 {
+		t.Fatalf("expected 2 keys, got %d", len(r))
+	}
+	if r[0].KID == r[1].KID {
+		t.Fatalf("distinct secrets must derive distinct kids")
+	}
+	// kid is a pure function of the secret (stable across processes/restarts)
+	if again := NewKeyring([]string{"a"}); again[0].KID != r[0].KID {
+		t.Fatalf("kid not stable: %s vs %s", again[0].KID, r[0].KID)
+	}
+	if got := r.KIDs(); len(got) != 2 || got[0] != r[0].KID || got[1] != r[1].KID {
+		t.Fatalf("KIDs() mismatch: %v", got)
+	}
+	if _, ok := r.byKID("nope"); ok {
+		t.Fatal("unknown kid must not resolve")
 	}
 }

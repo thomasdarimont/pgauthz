@@ -90,7 +90,7 @@ writer and enforced by pgauthzd readers. No PostgreSQL version dependency.
 An opaque, integrity-protected value:
 
 ```
-token = { epoch: <timeline_id>, lsn: <pg_lsn> }   -- HMAC-signed, base64url
+token = { kid, epoch: <timeline_id>, lsn: <pg_lsn> }   -- HMAC-signed, base64url
 ```
 
 - **Global**, not per-store — a replica replayed to LSN L has replayed *everything*
@@ -100,6 +100,17 @@ token = { epoch: <timeline_id>, lsn: <pg_lsn> }   -- HMAC-signed, base64url
 - **HMAC-signed** with a server-side key so clients cannot forge a future position;
   readers reject a bad signature (fail closed). The token is a freshness assertion,
   not a capability — it grants nothing on its own.
+- **Key-rotation-ready.** The signing config is an ordered keyring
+  (`FRESHNESS_TOKEN_KEYS`): the **first** key mints, **every** key verifies. Each
+  token embeds a key id (`kid = base64url(sha256(secret)[:4])` — derived, never
+  configured) so the verifier picks the right key during an overlap; an unknown
+  kid is rejected with the same opaque error as a forgery. Rotation is three
+  rollouts, each safe under mid-rollout instance skew — a reader must accept a
+  key *before* any writer mints with it: `"old,new"` → `"new,old"` → `"new"`,
+  dropping the old key once its per-kid verification metric
+  (`pgauthzd_freshness_key_verifications_total`) drains. A plain `KEY` +
+  `KEY_PREVIOUS` pair was rejected because it cannot express the
+  accept-before-mint phase.
 
 ### Mint (writer)
 

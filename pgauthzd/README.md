@@ -325,7 +325,8 @@ All configuration is via environment variables.
 | `STORE_HEADER` | `X-PGAuthz-Store` | HTTP header for store selection |
 | `REQUIRE_STORE_BINDING` | `false` | Refuse to start unless **every** trusted issuer has a `stores` binding (recommended `true` for multi-tenant deployments); off = unbound issuers are unrestricted, with a startup warning when several issuers are configured |
 | `REQUIRE_DB_ROLE_BINDING` | `false` | When role derivation is configured (`DB_ROLE_CLAIM` / `CLIENT_DB_ROLES`): refuse to start unless every issuer has a `db_roles` or `client_db_roles` binding (recommended `true` for multi-tenant deployments) |
-| `FRESHNESS_TOKEN_KEY` | *empty* | HMAC secret enabling freshness tokens ([ADR 0009](../docs/adr/0009-freshness-tokens.md) read-your-writes). Set the **same** value on the writer (mints) and the readers (verify). Empty = feature off: writes mint no token and an `at_least_as_fresh` read is rejected (`400`, fail closed) |
+| `FRESHNESS_TOKEN_KEYS` | *empty* | Ordered, comma-separated HMAC secrets enabling freshness tokens ([ADR 0009](../docs/adr/0009-freshness-tokens.md) read-your-writes): the **first** key mints, **every** key verifies — which is what makes key rotation a zero-downtime overlap (`old,new` → `new,old` → `new`; runbook in [PRODUCTION.md](../docs/PRODUCTION.md)). Set the **same** list on the writer and the readers. Empty = feature off: writes mint no token and an `at_least_as_fresh` read is rejected (`400`, fail closed) |
+| `FRESHNESS_TOKEN_KEY` | *empty* | Single-key alias for `FRESHNESS_TOKEN_KEYS` (setting both is a startup error) |
 | `METRICS_LISTEN_ADDR` | *empty* | When set (e.g. `:9090`), serves Prometheus `/metrics` on a **separate** listener ([ADR 0010](../docs/adr/0010-metrics-observability.md)). Bind to the pod/mesh network — **never** the public client listener. Empty = metrics disabled |
 | `METRICS_SAMPLE_INTERVAL_SECONDS` | `30` | Interval for the engine/tenant gauge sampler (per-store tuple counts). Only runs when metrics are exposed; `0` disables it |
 | `METRICS_MAX_STORES` | `100` | Cap on per-store series (top-N by tuple count); `pgauthzd_stores_total` still reports the true count |
@@ -522,7 +523,7 @@ scope exactly as it does for reads. `consistency` maps per-transaction to
 
 #### Read-your-writes: freshness tokens (ADR 0009)
 
-Set `FRESHNESS_TOKEN_KEY` (the **same** value on the writer and the readers) to
+Set `FRESHNESS_TOKEN_KEYS` (the **same** list on the writer and the readers) to
 turn on LSN-watermark freshness tokens. A write then returns a signed token — in
 the `X-PGAuthz-Revision` response header and a `"revision"` body field:
 
@@ -537,15 +538,25 @@ X-PGAuthz-Consistency: at_least_as_fresh
 X-PGAuthz-Revision:    <token from the write>
 ```
 
-The reader checks whether its (possibly replica) connection has replayed to the
-token's WAL position **on the token's timeline**. Satisfied → the read is served
-normally. Not satisfied → **`409`** with `X-PGAuthz-Stale: <stale|wrong_epoch|
-unknown>`, telling the caller to retry against the primary. Without the header
-pair a read uses the default (`minimize_latency`, answer from the local replica).
-A malformed/forged token — or the feature disabled — is rejected with `400`
-(fail closed: a freshness request is never silently served as if fresh). The
-primary always answers `fresh` (it is authoritative). See
+The reader checks whether its connection has replayed to the token's WAL
+position **on the token's timeline** — the same verdict logic on a replica and
+on a primary, so a promoted primary rejects a cross-timeline token
+(`wrong_epoch`) instead of confirming a write a lossy failover lost. Satisfied →
+the read is served normally. Not satisfied → **`409`** with `X-PGAuthz-Stale:
+<stale|wrong_epoch|unknown>`, telling the caller to retry against the primary.
+Without the header pair a read uses the default (`minimize_latency`, answer from
+the local replica). A malformed/forged token, a token minted under a key no
+longer in the keyring, or the feature disabled — all rejected with `400` (fail
+closed: a freshness request is never silently served as if fresh). See
 [ADR 0009](../docs/adr/0009-freshness-tokens.md).
+
+**Key rotation.** Tokens embed a key id derived from the secret
+(`base64url(sha256(secret)[:4])`), so the verifier picks the right keyring entry
+during an overlap. Rotate with three rollouts, each safe under instance skew:
+`FRESHNESS_TOKEN_KEYS="old,new"` everywhere (readers learn the new key before
+anyone mints with it) → `"new,old"` everywhere (mint flips; outstanding old
+tokens still verify) → `"new"` once the old key's
+`pgauthzd_freshness_key_verifications_total{kid=…}` series flatlines.
 
 **Paginated reads** (`list-objects` / `list-subjects` and AuthZEN
 `search/subject|resource`) bind the freshness floor **into** the `next_token`

@@ -44,10 +44,15 @@ type Handler struct {
 	// OPA's asserted X-PGAuthz-Role instead of a JWT role claim.
 	requireWriterRole bool
 	cfg               *config.Config
+	// freshKeys is the freshness-token keyring derived once from
+	// cfg.FreshnessKeys: freshKeys[0] mints, every entry verifies (rotation
+	// overlap, ADR 0009). Empty = feature disabled.
+	freshKeys authz.Keyring
 }
 
 func NewHandler(backend, raw, rawWrite authz.Backend, cfg *config.Config) *Handler {
-	h := &Handler{backend: backend, raw: raw, rawWrite: rawWrite, cfg: cfg, issuerStores: map[string][]*regexp.Regexp{}}
+	h := &Handler{backend: backend, raw: raw, rawWrite: rawWrite, cfg: cfg, issuerStores: map[string][]*regexp.Regexp{},
+		freshKeys: authz.NewKeyring(cfg.FreshnessKeys)}
 	for _, iss := range cfg.Issuers {
 		if iss.Issuer == "" || len(iss.Stores) == 0 {
 			continue

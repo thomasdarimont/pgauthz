@@ -95,3 +95,65 @@ func TestDBRoleCacheTTLDefault(t *testing.T) {
 		t.Fatalf("expected default DB_ROLE_CACHE_TTL_SECONDS=60, got %d", c.DBRoleCacheTTLSeconds)
 	}
 }
+
+// ── Freshness keyring (FRESHNESS_TOKEN_KEYS / FRESHNESS_TOKEN_KEY) ──────────
+
+func setMinimalIssuer(t *testing.T) {
+	t.Helper()
+	setIssuers(t, `[{"issuer":"https://a","jwks_file":"/keys/a.json"}]`)
+}
+
+func TestFreshnessKeysParsing(t *testing.T) {
+	setMinimalIssuer(t)
+	t.Setenv("FRESHNESS_TOKEN_KEYS", " new-secret , old-secret ,")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(c.FreshnessKeys) != 2 || c.FreshnessKeys[0] != "new-secret" || c.FreshnessKeys[1] != "old-secret" {
+		t.Fatalf("expected trimmed ordered keys [new-secret old-secret], got %v", c.FreshnessKeys)
+	}
+	if !c.FreshnessEnabled() {
+		t.Fatal("keys set → freshness enabled")
+	}
+}
+
+func TestFreshnessSingleKeyAlias(t *testing.T) {
+	setMinimalIssuer(t)
+	t.Setenv("FRESHNESS_TOKEN_KEY", "solo-secret")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(c.FreshnessKeys) != 1 || c.FreshnessKeys[0] != "solo-secret" {
+		t.Fatalf("alias should yield a single-entry keyring, got %v", c.FreshnessKeys)
+	}
+}
+
+func TestFreshnessBothKeyVarsRejected(t *testing.T) {
+	setMinimalIssuer(t)
+	t.Setenv("FRESHNESS_TOKEN_KEYS", "a,b")
+	t.Setenv("FRESHNESS_TOKEN_KEY", "c")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("expected both-set error, got %v", err)
+	}
+}
+
+func TestFreshnessDuplicateKeysRejected(t *testing.T) {
+	setMinimalIssuer(t)
+	t.Setenv("FRESHNESS_TOKEN_KEYS", "same,same")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("expected duplicate-key error, got %v", err)
+	}
+}
+
+func TestFreshnessDisabledByDefault(t *testing.T) {
+	setMinimalIssuer(t)
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if c.FreshnessEnabled() || len(c.FreshnessKeys) != 0 {
+		t.Fatalf("no key env → disabled, got %v", c.FreshnessKeys)
+	}
+}
