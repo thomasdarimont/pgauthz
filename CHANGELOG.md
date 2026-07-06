@@ -7,6 +7,8 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-07
+
 ### Changed
 
 - **`wrong_epoch` recovery guidance is now reconcile-first** (review #6). The
@@ -1006,7 +1008,8 @@ PL/pgSQL.
 - PostgreSQL 18.x (developed/tested on 18.4). PostgREST, OPA, the AuthZEN
   services, and `pg_cel` are optional components of the reference deployment.
 
-[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.7.3...v0.8.0
