@@ -118,22 +118,30 @@ func withMiddleware(mux *http.ServeMux, jwtMW *JWTMiddleware) http.Handler {
 
 // registerAuthZEN wires the spec-compliant AuthZEN surface + tenant discovery.
 func registerAuthZEN(mux *http.ServeMux, h *Handler) {
-	mux.HandleFunc("POST /access/v1/evaluation", h.Evaluation)
-	mux.HandleFunc("POST /access/v1/evaluations", h.Evaluations)
-	mux.HandleFunc("POST /access/v1/search/subject", h.SearchSubject)
-	mux.HandleFunc("POST /access/v1/search/resource", h.SearchResource)
-	mux.HandleFunc("POST /access/v1/search/action", h.SearchAction)
+	// Read routes carry the freshness guard (ADR 0009): a no-op unless the caller
+	// sends X-Authz-Consistency: at_least_as_fresh + a token.
+	eval := h.readGuard(h.Evaluation)
+	evals := h.readGuard(h.Evaluations)
+	searchSub := h.readGuard(h.SearchSubject)
+	searchRes := h.readGuard(h.SearchResource)
+	searchAct := h.readGuard(h.SearchAction)
+
+	mux.HandleFunc("POST /access/v1/evaluation", eval)
+	mux.HandleFunc("POST /access/v1/evaluations", evals)
+	mux.HandleFunc("POST /access/v1/search/subject", searchSub)
+	mux.HandleFunc("POST /access/v1/search/resource", searchRes)
+	mux.HandleFunc("POST /access/v1/search/action", searchAct)
 	mux.HandleFunc("GET /.well-known/authzen-configuration", h.WellKnown)
 
 	// Store-scoped variants (OpenFGA-style): the path segment selects the
 	// pgauthz store, so each store presents as its own AuthZEN PDP with its
 	// own discovery document. Path beats the store header, which beats
 	// DEFAULT_STORE — see store().
-	mux.HandleFunc("POST /stores/{store}/access/v1/evaluation", h.Evaluation)
-	mux.HandleFunc("POST /stores/{store}/access/v1/evaluations", h.Evaluations)
-	mux.HandleFunc("POST /stores/{store}/access/v1/search/subject", h.SearchSubject)
-	mux.HandleFunc("POST /stores/{store}/access/v1/search/resource", h.SearchResource)
-	mux.HandleFunc("POST /stores/{store}/access/v1/search/action", h.SearchAction)
+	mux.HandleFunc("POST /stores/{store}/access/v1/evaluation", eval)
+	mux.HandleFunc("POST /stores/{store}/access/v1/evaluations", evals)
+	mux.HandleFunc("POST /stores/{store}/access/v1/search/subject", searchSub)
+	mux.HandleFunc("POST /stores/{store}/access/v1/search/resource", searchRes)
+	mux.HandleFunc("POST /stores/{store}/access/v1/search/action", searchAct)
 	mux.HandleFunc("GET /stores/{store}/.well-known/authzen-configuration", h.WellKnown)
 	// AuthZEN 1.0 §9.2 tenant model: the well-known URI is INSERTED between
 	// host and the tenant path, so discovery for the PDP identified by
@@ -145,21 +153,30 @@ func registerAuthZEN(mux *http.ServeMux, h *Handler) {
 // surface. Policy-free (served by the direct `raw` backend); 501 if raw is not
 // a direct backend.
 func registerNativeRead(mux *http.ServeMux, h *Handler) {
-	mux.HandleFunc("POST /pgauthz/v1/explain", h.Explain)
+	// Freshness guard (ADR 0009) on the point-read routes; not on watch (a
+	// cursor-based changefeed, not a read-your-writes point query).
+	explain := h.readGuard(h.Explain)
+	check := h.readGuard(h.NativeCheck)
+	checkBatch := h.readGuard(h.NativeCheckBatch)
+	listObjects := h.readGuard(h.NativeListObjects)
+	listSubjects := h.readGuard(h.NativeListSubjects)
+	listActions := h.readGuard(h.NativeListActions)
+
+	mux.HandleFunc("POST /pgauthz/v1/explain", explain)
 	mux.HandleFunc("POST /pgauthz/v1/watch", h.Watch)
-	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/explain", h.Explain)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/explain", explain)
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/watch", h.Watch)
 
-	mux.HandleFunc("POST /pgauthz/v1/check", h.NativeCheck)
-	mux.HandleFunc("POST /pgauthz/v1/check-batch", h.NativeCheckBatch)
-	mux.HandleFunc("POST /pgauthz/v1/list-objects", h.NativeListObjects)
-	mux.HandleFunc("POST /pgauthz/v1/list-subjects", h.NativeListSubjects)
-	mux.HandleFunc("POST /pgauthz/v1/list-actions", h.NativeListActions)
-	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/check", h.NativeCheck)
-	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/check-batch", h.NativeCheckBatch)
-	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/list-objects", h.NativeListObjects)
-	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/list-subjects", h.NativeListSubjects)
-	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/list-actions", h.NativeListActions)
+	mux.HandleFunc("POST /pgauthz/v1/check", check)
+	mux.HandleFunc("POST /pgauthz/v1/check-batch", checkBatch)
+	mux.HandleFunc("POST /pgauthz/v1/list-objects", listObjects)
+	mux.HandleFunc("POST /pgauthz/v1/list-subjects", listSubjects)
+	mux.HandleFunc("POST /pgauthz/v1/list-actions", listActions)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/check", check)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/check-batch", checkBatch)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/list-objects", listObjects)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/list-subjects", listSubjects)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/list-actions", listActions)
 }
 
 // registerNativeWrite wires the native write path (full profile only; 403 on

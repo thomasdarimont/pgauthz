@@ -224,6 +224,34 @@ func syncCommit(consistency string) (value string, ok bool) {
 	}
 }
 
+// FreshnessToken mints a freshness token on the primary (ADR 0009). It is taken
+// on a pooled connection AFTER the write committed, not inside the write tx:
+// pg_current_wal_insert_lsn() is monotonic, so a token read just after a commit
+// is >= that write's LSN (sound — never behind, at worst a hair ahead). Errors
+// if this instance is a standby (authz.freshness_token raises there).
+func (b *Backend) FreshnessToken(ctx context.Context) (int32, string, error) {
+	var epoch int32
+	var lsn string
+	if err := b.pool.QueryRow(ctx,
+		"SELECT epoch, lsn::text FROM authz.freshness_token()").Scan(&epoch, &lsn); err != nil {
+		return 0, "", fmt.Errorf("minting freshness token: %w", err)
+	}
+	return epoch, lsn, nil
+}
+
+// AssertFresh reports whether THIS node satisfies a freshness token (ADR 0009):
+// fresh | stale | wrong_epoch | unknown. On the primary it is always 'fresh';
+// on a standby it compares the token's timeline+LSN to the replica's replay
+// position (fail-closed to 'unknown' when the timeline is unreadable).
+func (b *Backend) AssertFresh(ctx context.Context, epoch int32, lsn string) (string, error) {
+	var verdict string
+	if err := b.pool.QueryRow(ctx,
+		"SELECT authz.assert_fresh($1, $2::pg_lsn)", epoch, lsn).Scan(&verdict); err != nil {
+		return "", fmt.Errorf("asserting freshness: %w", err)
+	}
+	return verdict, nil
+}
+
 // WriteTuples implements authz.NativeWriter.WriteTuples via
 // authz.write_tuples_jsonb, recording performed_by = the authenticated subject.
 func (b *Backend) WriteTuples(ctx context.Context, req authz.WriteRequest) (int, error) {

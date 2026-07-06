@@ -134,6 +134,13 @@ type Config struct {
 	SubjectIDClaim     string
 	SubjectIDFallback  string
 
+	// FreshnessKey is the HMAC secret for signing/verifying freshness tokens
+	// (ADR 0009 read-your-writes). Empty disables the feature: writes mint no
+	// token, and a read presenting `X-Authz-Consistency: at_least_as_fresh` is
+	// rejected (400) rather than served as if fresh (fail closed). Env
+	// FRESHNESS_TOKEN_KEY.
+	FreshnessKey string
+
 	DefaultStore string
 	StoreHeader  string
 
@@ -209,6 +216,7 @@ func Load() (*Config, error) {
 		SubjectTypeDefault:    env("SUBJECT_TYPE_DEFAULT", "internal_user"),
 		SubjectIDClaim:        env("SUBJECT_ID_CLAIM", "preferred_username"),
 		SubjectIDFallback:     env("SUBJECT_ID_FALLBACK_CLAIM", "sub"),
+		FreshnessKey:          env("FRESHNESS_TOKEN_KEY", ""),
 		DefaultStore:          env("DEFAULT_STORE", "demo"),
 		StoreHeader:           env("STORE_HEADER", "X-AuthZ-Store"),
 		RequireStoreBinding:   envBool("REQUIRE_STORE_BINDING", false),
@@ -347,4 +355,11 @@ func (c *Config) UsesOPA() bool {
 // capability (drives the read-only startup assertion + the native write API).
 func (c *Config) Writable() bool {
 	return c.Profile == ProfileFull
+}
+
+// FreshnessEnabled reports whether freshness tokens (ADR 0009) are configured
+// (an HMAC key is set). When false, writes mint no token and reads reject an
+// at_least_as_fresh request (fail closed).
+func (c *Config) FreshnessEnabled() bool {
+	return c.FreshnessKey != ""
 }

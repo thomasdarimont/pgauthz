@@ -126,7 +126,11 @@ func (h *Handler) WriteTuples(w http.ResponseWriter, r *http.Request) {
 		writeWriteError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"store": store, "written": n})
+	resp := map[string]any{"store": store, "written": n}
+	if rev := h.mintRevision(w, r); rev != "" {
+		resp["revision"] = rev
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // DeleteTuples — POST /pgauthz/v1/delete: batch-delete tuples. Same authoring
@@ -157,7 +161,11 @@ func (h *Handler) DeleteTuples(w http.ResponseWriter, r *http.Request) {
 		writeWriteError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"store": store, "deleted": n})
+	resp := map[string]any{"store": store, "deleted": n}
+	if rev := h.mintRevision(w, r); rev != "" {
+		resp["revision"] = rev
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type deleteUserBody struct {
@@ -198,7 +206,11 @@ func (h *Handler) DeleteUserTuples(w http.ResponseWriter, r *http.Request) {
 		writeWriteError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"store": store, "deleted": n})
+	resp := map[string]any{"store": store, "deleted": n}
+	if rev := h.mintRevision(w, r); rev != "" {
+		resp["revision"] = rev
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type checkedWriteBody struct {
@@ -237,6 +249,8 @@ func (h *Handler) WriteTuplesChecked(w http.ResponseWriter, r *http.Request) {
 		writeWriteError(w, err)
 		return
 	}
+	// Raw engine JSON body → the token rides the X-Authz-Revision header only.
+	h.mintRevision(w, r)
 	writeRawJSON(w, http.StatusOK, out)
 }
 
