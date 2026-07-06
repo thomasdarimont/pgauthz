@@ -7,11 +7,12 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
-### The pgauthzd front door — PostgREST removed, OPA internalized
+### The pgauthzd front door — PostgREST removed, OPA now opt-in
 
 A large architectural consolidation: **pgauthzd** (one Go daemon) is now the
 external front door for reads *and* writes, PostgREST is gone entirely, and OPA
-is an internal policy sidecar reachable only by pgauthzd.
+is demoted to an **opt-in** internal policy sidecar — the default stack is
+OPA-free, answering directly from PostgreSQL.
 
 ### Changed
 
@@ -37,9 +38,20 @@ is an internal policy sidecar reachable only by pgauthzd.
   services are collapsed into pgauthzd profiles; reader/writer separation is a
   deployment topology (a `decision-only` reader instance + a `full` writer
   instance), not a per-process split.
+- **OPA is opt-in; the default stack is OPA-free**
+  ([ADR 0008](docs/adr/0008-opa-is-opt-in.md)). pgauthzd answers
+  `/access/v1` and `/pgauthz/v1` directly from PostgreSQL (with conditions for
+  ABAC); OPA + the OPA-fronted pgauthzd gateway are an opt-in overlay:
+  `./start.sh --opa` (or `PGAUTHZ_OPA=1`) for compose, `authzen.opa.enabled`
+  (default `false`) for Helm. The `--keycloak` / `--playground` overlays imply it.
+  Fronting OPA stays the orthogonal `OPA_URL` flag; this only flips the DEFAULT
+  from on to off. One fewer moving part, one JWT validation, lower latency by
+  default; policy-as-code Rego remains a first-class opt-in.
 - Helm: the ingress front door routes to pgauthzd (not OPA); OPA's NetworkPolicy
   is tightened to gateway-only. The `examples/keycloak` demo now routes through
   pgauthzd (AuthZEN) via the gateway instead of hitting OPA's data API directly.
+- Docs: the inline ADRs in `docs/ARCHITECTURE.md` §9 are consolidated into the
+  `docs/adr/` log (ADRs 0002–0008); §9 is now an index into that log.
 
 ### Removed
 

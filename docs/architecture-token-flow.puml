@@ -45,17 +45,15 @@ group Policy read (OPA_URL set) — pgauthzd consults OPA
   opa --> pgd : decision
 end
 
-group Write — pgauthzd fronts, consults OPA to authorize
+group Write — pgauthzd fronts and authorizes
   app -> pgd : POST /pgauthz/v1/write\n{ tuple }  Authorization: Bearer <jwt>
   note right of pgd
     **pgauthzd validates the JWT and
-    requires the writer role**
-    (WRITER_ROLE in JWT_ROLES_CLAIM).
-    (Write-authz delegation is the pending
-    pgauthzd-fronted-writes increment.)
+    requires the writer role itself**
+    (WRITER_ROLE in JWT_ROLES_CLAIM) —
+    no OPA on the write path.
+    Then applies the write natively.
   end note
-  pgd -> opa : authorize write (writer role)
-  opa -> pgd : authorized
   pgd -> pg : write_tuples_jsonb(...) via pgx
 end
 

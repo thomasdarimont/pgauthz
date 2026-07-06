@@ -146,12 +146,11 @@ sources next to this file (regenerate with
    HTTP write front door, plus the read front door (AuthZEN + native API).
    The diagram shows all three ways writes reach the primary:
    **A** — the **pgauthzd-fronted write API**: pgauthzd verifies the JWT
-   and — via its OPA sidecar — the writer role (`WRITER_ROLE` in
-   `JWT_ROLES_CLAIM`), records the subject as audit author, then applies
+   and the writer role (`WRITER_ROLE` in `JWT_ROLES_CLAIM`) itself — no OPA
+   on the write path — records the subject as audit author, then applies
    the write natively via pgx (per-app namespace isolation via a
-   `DB_ROLE_CLAIM` → per-app DB role). Write-authz delegation to OPA is
-   the **pending** pgauthzd-fronted-writes increment — today the OPA
-   `write.rego` policy still fronts the write *decision*; **B** — direct
+   `DB_ROLE_CLAIM` → per-app DB role). (With the opt-in OPA overlay, the
+   equivalent write policy-as-code is OPA's `write.rego`.) **B** — direct
    SQL (`write_tuple` / `write_tuples_checked` under an
    `authz_writer`-granted role); **C** — co-located, where the business
    write and the tuple write commit in one transaction. All three land in
@@ -250,8 +249,8 @@ after a revoke) must bypass it or key entries by model revision.
 **PDP control plane.** Three administration channels, deliberately
 separate: **policies** are git-versioned Rego distributed as bundles (to
 the Authorization OPA *and* the gateway-co-located OPA alike); **tuples**
-change through the pgauthzd write front door (which consults OPA to authorize
-the write) or by invoking the protected SQL API functions
+change through the pgauthzd write front door (which verifies the writer role
+itself) or by invoking the protected SQL API functions
 under an authz_writer role, but never through direct table writes; 
 **models, namespaces, and conditions** change only
 through the dedicated `authz_admin` channel — never raw table writes.
@@ -277,7 +276,7 @@ matters).
 | Condition sandboxing via `authz_eval` | Security | User-defined SQL expressions run under a role with zero grants (no table/file/function access). Bounded in time by a `statement_timeout` on the service roles (timeout fails closed); `pg_sleep` revoked from PUBLIC. Evaluation errors fail closed (deny). |
 | Multi-store isolation | Operability | Independent authorization namespaces enable blue-green model deployment, test environments, and parallel experiments. |
 | Immutable audit trail | Auditability | Trigger-based capture of every tuple change. Monthly RANGE partitioning for retention. Time-travel queries reconstruct past permission states. |
-| pgauthzd is the front door; OPA is an internal sidecar | Security | pgauthzd validates the JWT for both reads and writes and is the single entry point (so `jwks_uri` / `JWT_ISSUERS` rotation lives in one place). The writer (`full` profile) runs as a fixed `authz_writer` role with no host port and applies writes natively via pgx; it verifies the JWT + writer role — today via its OPA sidecar (`write.rego`), with full write-authz delegation the **pending** pgauthzd-fronted-writes increment. OPA is reachable only by pgauthzd (shared service token, no host port) and only pgauthzd calls it. |
+| pgauthzd is the front door; OPA is an opt-in sidecar | Security | pgauthzd validates the JWT for both reads and writes and is the single entry point (so `jwks_uri` / `JWT_ISSUERS` rotation lives in one place). The writer (`full` profile) runs as a fixed `authz_writer` role with no host port and applies writes natively via pgx; it verifies the JWT + writer role (`WRITER_ROLE` claim) itself, with no OPA on the write path. OPA is opt-in (the default stack is OPA-free); when enabled it is reachable only by pgauthzd (shared service token, no host port) and only pgauthzd calls it. |
 
 ### Technology Choices
 
@@ -329,9 +328,9 @@ is the only backend ([ADR 0007](adr/0007-pgauthzd-front-door.md)).
 | Component | Responsibility |
 |---|---|
 | **pgauthzd (front door)** | **The client-facing entry point.** Standard AuthZEN 1.0 (`/access/v1/*`) + native `/pgauthz/v1/*` HTTP endpoints, served by the one pgauthzd binary. Capability profiles: `pgauthzd-decision` (`decision-only`, Go→PG) and `pgauthzd-opa` (OPA-fronted via `OPA_URL`, consults OPA). **Validates the JWT** — **multi-issuer** via `JWT_ISSUERS` (the token's `iss` selects the validator; legacy single-issuer envs still work). Reverse-search endpoints optionally role-gated (`SEARCH_REQUIRED_ROLE` + `JWT_ROLES_CLAIM`). `pgauthzd-opa` forwards the verified token to OPA (`FORWARD_TOKEN_TO_OPA`) so OPA re-validates it — defense in depth. |
-| **OPA (internal sidecar)** | Reachable **only by pgauthzd** (shared service token, no host port); the sole caller of OPA is pgauthzd. Policy-as-code (Rego) evaluation, JWT re-validation, response caching, endpoint security. Calls **back** into pgauthzd's native callback for graph data — no independent path to the database. |
+| **OPA (opt-in sidecar)** | Opt-in (the default stack is OPA-free); when enabled, reachable **only by pgauthzd** (shared service token, no host port) — the sole caller of OPA is pgauthzd. Policy-as-code (Rego) evaluation, JWT re-validation, response caching, endpoint security. Calls **back** into pgauthzd's native callback for graph data — no independent path to the database. |
 | **pgauthzd (decision-only)** | Serves the reads that OPA calls **back** for, via the native `/pgauthz/v1` callback. Connects with a read-only DB role (inherits `authz_reader`), verified read-only at startup. Internal only — no host port. |
-| **pgauthzd (full)** | Serves OPA-forwarded tuple writes via the native callback. Connects with a fixed `authz_writer` role and applies the write natively via pgx; does **no** JWT verification of its own — it trusts OPA's asserted subject + `X-Authz-Role`, gated by the shared service token. Internal only — no host port. (Full write-authz delegation to OPA is the pending pgauthzd-fronted-writes increment.) |
+| **pgauthzd (full)** | The write front door: in the default stack it validates the JWT + writer role (`WRITER_ROLE` claim) itself and applies the write natively via pgx under a fixed `authz_writer` role — no OPA on the write path. In the opt-in OPA overlay it *also* serves OPA-forwarded writes via the native callback (trusting OPA's asserted subject + `X-Authz-Role`, gated by the shared service token, no JWT verification of its own). |
 | **PostgreSQL** | The authorization engine. All logic in PL/pgSQL functions within the `authz` schema. |
 
 ### Level 2: PostgreSQL `authz` Schema
@@ -535,13 +534,12 @@ Application     pgauthzd (full)          OPA              PostgreSQL
 ```
 
 **pgauthzd is the write front door**: it validates the JWT, requires the
-writer role (`WRITER_ROLE` in `JWT_ROLES_CLAIM`), records the subject as the
-audit author, and applies the write natively via pgx under a fixed
-`authz_writer` role. The write-authz decision is delegated to the OPA sidecar
-(`write.rego`, writer-role policy). Fully moving that decision into pgauthzd
-is the **pending pgauthzd-fronted-writes increment** — today OPA still fronts
-the write *decision*, but pgauthzd is already the HTTP front door and the
-component that applies the write.
+writer role (`WRITER_ROLE` in `JWT_ROLES_CLAIM`) itself, records the subject as
+the audit author, and applies the write natively via pgx under a fixed
+`authz_writer` role. There is no OPA on the write path in the default stack.
+With the opt-in OPA overlay, the equivalent write policy-as-code is OPA's
+`write.rego` (which verifies the writer role and forwards to the writer's
+native callback).
 
 ### Scenario 4: Time-Travel Query
 
@@ -837,7 +835,7 @@ approximation, with strict reads pinned to the guaranteed tier.)
 Four independent security layers protect the authorization data:
 
 ```
-Layer 1: Network         pgauthzd — the front door (reads + writes); OPA an internal sidecar reachable only by pgauthzd; callback listeners internal-only (service-token / optional mTLS)
+Layer 1: Network         pgauthzd — the front door (reads + writes); OPA an opt-in sidecar reachable only by pgauthzd; callback listeners internal-only (service-token / optional mTLS)
 Layer 2: Authentication  JWT validation in pgauthzd (re-validated by OPA when policy enrichment is enabled)
 Layer 3: Authorization   PostgreSQL GRANT/REVOKE on functions (reader vs writer roles)
 Layer 4: Data isolation  SECURITY DEFINER — no direct table access
@@ -966,7 +964,7 @@ Quality
 │   ├── No direct table access (SECURITY DEFINER)
 │   ├── Condition sandboxing (authz_eval role)
 │   ├── Namespace isolation (per-type, per-role)
-│   ├── pgauthzd front door (validates reads + writes); OPA internal sidecar
+│   ├── pgauthzd front door (validates reads + writes); OPA opt-in sidecar
 │   └── Fail-closed on all errors
 ├── Performance
 │   ├── Sub-millisecond check_access (typical graphs)

@@ -956,7 +956,7 @@ pgauthzd-full:
     INTERNAL_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
     # JWT_ROLES_CLAIM: "roles"         # default; WRITER_ROLE default authz_writer
 
-# compose.yml — OPA. NATIVE_WRITE_URL enables ONLY the OPA data-API write
+# compose-opa.yml — OPA (opt-in overlay). NATIVE_WRITE_URL enables ONLY the OPA data-API write
 # alternative (write.rego forwards to the writer's callback). It is NOT on the
 # native write path above; unset it and native writes still work.
 opa:

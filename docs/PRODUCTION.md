@@ -224,11 +224,10 @@ internal **write callback** trusts OPA over the shared service token, doing
 **no** JWT verification of its own — there is one place that handles tokens and
 `jwks_uri` rotation.
 
-**Write authorization.** pgauthzd's writer is the front door (it validates the
-JWT + writer role and applies the write via pgx); the write-authz **decision** is
-today delegated to the OPA `write.rego` policy the writer consults — fully moving
-it into pgauthzd is the **pending pgauthzd-fronted-writes increment**. The
-role-claim model is configurable for any issuer:
+**Write authorization.** pgauthzd's writer is the front door: it validates the
+JWT + writer role itself and applies the write via pgx — no OPA on the write
+path. (With the opt-in OPA overlay, the equivalent write policy-as-code is OPA's
+`write.rego`.) The role-claim model is configurable for any issuer:
 
 - `JWT_ROLES_CLAIM` — comma-separated list of dotted paths to roles arrays;
   roles are aggregated (set-union) across all of them, default `roles`. For

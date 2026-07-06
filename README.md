@@ -1277,7 +1277,7 @@ pattern:
 Most deployments are the **central** one: a single authorization database
 populated by many applications, each calling pgauthzd over HTTP or AuthZEN for
 checks and `list_*` queries and writing tuples through the **pgauthzd writer**
-front door (which consults OPA to authorize the write today). The other
+front door (which verifies the writer role itself; no OPA on the write path). The other
 three put authorization data *inside* an application's database, only when it
 genuinely needs that — e.g. to filter large result sets in a single query.
 

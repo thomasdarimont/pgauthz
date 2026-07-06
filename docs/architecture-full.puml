@@ -16,42 +16,38 @@ component "Load Balancer" as lb #Plum
 
 node "VM 1 (read)" as vm1 {
     component "pgauthzd\n(decision-only,\n± OPA_URL)" as pgd_a #PaleGreen
-    component "OPA\n(sidecar)" as opa_a #LightBlue
+    component "OPA sidecar\n(opt-in)" as opa_a #LightBlue
     database "PG Replica" as pgr_a #LightYellow
 }
 
 node "VM 2 (read)" as vm2 {
     component "pgauthzd\n(decision-only,\n± OPA_URL)" as pgd_b #PaleGreen
-    component "OPA\n(sidecar)" as opa_b #LightBlue
+    component "OPA sidecar\n(opt-in)" as opa_b #LightBlue
     database "PG Replica" as pgr_b #LightYellow
 }
 
 node "VM 0 (primary)" as vm0 {
     component "pgauthzd\n(full / writer)" as pgd_w #Salmon
-    component "OPA\n(sidecar)" as opa_w #LightBlue
     database "PG Primary" as pgp #Orange
 }
 
-' Read path — pgauthzd is the ONLY front door. It answers directly from the
-' graph (decision-only), or consults its OPA sidecar for Rego policy
-' (OPA_URL set) — and only pgauthzd ever calls OPA; OPA calls back into the same
-' pgauthzd's native listener for the graph data.
+' Read path — pgauthzd is the ONLY front door. By default it answers directly
+' from the graph (decision-only, OPA-free); OPA is an OPT-IN policy sidecar —
+' set OPA_URL and pgauthzd consults it for Rego, and only pgauthzd ever calls
+' OPA, which calls back into the same pgauthzd's native listener for the graph.
 app -down-> lb : "authz checks"
 lb -down-> pgd_a : "AuthZEN + native API"
 lb -down-> pgd_b
-pgd_a -right-> opa_a : "consult policy"
-opa_a -left-> pgd_a : "native callback"
-pgd_b -right-> opa_b
-opa_b -left-> pgd_b
+pgd_a ..> opa_a : "consult policy\n(if OPA_URL set)"
+opa_a ..> pgd_a : "native callback"
+pgd_b ..> opa_b
+opa_b ..> pgd_b
 pgd_a -down-> pgr_a : "SQL (pgx)"
 pgd_b -down-> pgr_b
 
-' Write path — pgauthzd (full) is the front door; it consults OPA to authorize
-' the write (writer role), then applies it natively. (Write-authz delegation is
-' the pending pgauthzd-fronted-writes increment; today write.rego fronts it.)
+' Write path — pgauthzd (full) is the front door; it verifies the writer role
+' (WRITER_ROLE claim) itself and applies the write natively. No OPA on writes.
 app -down-> pgd_w : "writes\n(JWT: writer role)"
-pgd_w -right-> opa_w : "authorize write"
-opa_w -left-> pgd_w : "authorized"
 pgd_w -down-> pgp : "SQL (pgx, authz_writer)"
 
 ' Replication
@@ -60,9 +56,9 @@ pgp -right-> pgr_b : "  WAL  "
 
 legend bottom left
   |= Color |= Component |
-  | <#PaleGreen> | pgauthzd (reader) — the front door; AuthZEN + native API; consults OPA (OPA_URL set) or answers direct (decision-only) |
-  | <#Salmon> | pgauthzd (writer) — full profile; applies authorized writes to the primary |
-  | <#LightBlue> | OPA — internal Rego policy sidecar; ONLY pgauthzd calls it |
+  | <#PaleGreen> | pgauthzd (reader) — the front door; AuthZEN + native API; answers direct (decision-only) or consults OPA (OPA_URL set) |
+  | <#Salmon> | pgauthzd (writer) — full profile; verifies the writer role, applies the write to the primary |
+  | <#LightBlue> | OPA — opt-in Rego policy sidecar; ONLY pgauthzd calls it |
   | <#Orange> | PostgreSQL primary — read-write |
   | <#LightYellow> | PostgreSQL replica — read-only (WAL) |
   | <#Plum> | Load Balancer — distributes reads |
