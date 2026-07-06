@@ -1,3 +1,5 @@
+{{- /* OPA policy ConfigMap — only when the OPA overlay is enabled. */ -}}
+{{- if .Values.authzen.opa.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -10,6 +12,9 @@ data:
 {{ $.Files.Get $path | indent 4 }}
   {{- end }}
 ---
+{{- end }}
+# JWKS ConfigMap — mounted by OPA (when enabled) AND by every pgauthzd instance
+# for its own JWT verification (JWKS_FILE), so it is NOT gated on OPA.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -17,7 +22,7 @@ metadata:
   labels: {{- include "pgauthz.labels" . | nindent 4 }}
 data:
   # JWKS for JWT verification. Override opa.jwks with your IdP's keys, or point
-  # OPA's authn at a JWKS URL instead. Defaults to the chart's demo keys.
+  # pgauthzd/OPA's authn at a JWKS URL instead. Defaults to the chart's demo keys.
   jwks.json: |-
 {{- if .Values.opa.jwks }}
 {{ .Values.opa.jwks | indent 4 }}

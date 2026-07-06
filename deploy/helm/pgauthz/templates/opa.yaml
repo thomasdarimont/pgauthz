@@ -1,3 +1,6 @@
+{{- /* OPA is OPT-IN: deployed only when the OPA-fronted gateway is enabled.
+       The default stack is OPA-free (the direct reader is the front door). */ -}}
+{{- if .Values.authzen.opa.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -116,4 +119,5 @@ spec:
       resource:
         name: cpu
         target: { type: Utilization, averageUtilization: {{ .Values.opa.autoscaling.targetCPUUtilizationPercentage }} }
+{{- end }}
 {{- end }}

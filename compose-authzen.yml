@@ -5,9 +5,11 @@
 # to the profile — set OPA_URL and pgauthzd consults OPA for the AuthZEN
 # /access/v1 surface; the native /pgauthz/v1 surface stays direct pgx.
 #
-#   pgauthzd-decision : decision-only            — AuthZEN + native reads, no OPA
-#   pgauthzd-opa      : decision-only + OPA_URL  — AuthZEN via OPA; hosts the OPA read callback
-#   pgauthzd-full     : full (writer role)       — native write front door; hosts the OPA write callback
+#   pgauthzd-decision : decision-only      — AuthZEN + native reads (the default front door)
+#   pgauthzd-full     : full (writer role) — native write front door; hosts the OPA write callback
+#
+# The default stack is OPA-FREE. The OPA-fronted gateway (pgauthzd-opa) + the OPA
+# sidecar are the OPT-IN overlay compose-opa.yml — enable with ./start.sh --opa.
 
 x-pgauthzd-build: &pgauthzd-build
   context: ./pgauthzd
@@ -89,60 +91,5 @@ services:
       authz-db:
         condition: service_healthy
 
-  # decision-only + OPA_URL: fronts OPA for policy enrichment on /access/v1, AND
-  # hosts the OPA read callback (its internal listener, read-only role) that OPA
-  # calls back into for the graph data — the pgauthzd-fronted-with-OPA topology.
-  # (Fronting OPA is orthogonal to the profile; this instance is read-only.)
-  pgauthzd-opa:
-    build: *pgauthzd-build
-    ports:
-      - "8091:8080"
-      # Internal native-callback listener. In production DO NOT publish this —
-      # bind it to the OPA sidecar network only. Published here for the tests.
-      - "8093:8081"
-    environment:
-      LISTEN_ADDR: ":8080"
-      PGAUTHORIZER_PROFILE: "decision-only"
-      # Internal listener for the policy-FREE native raw endpoints the OPA
-      # sidecar calls back into. Read-only role.
-      INTERNAL_LISTEN_ADDR: ":8081"
-      # Shared service credential the internal listener requires — must match
-      # the OPA service's NATIVE_SERVICE_TOKEN. Override in production.
-      INTERNAL_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
-      # Optional mTLS on the internal listener (all three together → HTTPS +
-      # RequireAndVerifyClientCert, so only OPA's client cert is accepted).
-      # Prefer mesh-provided mTLS where available.
-      # INTERNAL_TLS_CERT:  "/tls/internal-server.crt"
-      # INTERNAL_TLS_KEY:   "/tls/internal-server.key"
-      # INTERNAL_CLIENT_CA: "/tls/ca.crt"
-      DATABASE_URL: "postgres://authzen_direct:${AUTHZEN_DIRECT_PASSWORD:-authz}@authz-db:5432/authz"
-      # authzen_direct may be granted per-app roles (WITH INHERIT FALSE) to SET
-      # ROLE for namespace isolation. A read with no db_role must NOT run as
-      # authzen_direct directly (its SET-ROLE memberships would leak into
-      # membership-keyed namespace checks) — always SET ROLE to a namespace-free
-      # reader default.
-      DEFAULT_DB_ROLE: "authz_reader"
-      DB_POOL_MAX: "10"
-      OPA_URL: "http://opa:8181"
-      OPA_PACKAGE: "${OPA_PACKAGE:-authz}"
-      JWKS_FILE: "/jwks/jwks.json"
-      JWT_ISSUER: "${JWT_ISSUER:-https://auth.example.com}"
-      JWT_AUDIENCE: "${JWT_AUDIENCE:-authz-api}"
-      # REQUIRED_SCOPE: "authz:read"  # If set, JWT must contain this scope
-      DEFAULT_STORE: "${DEFAULT_STORE:-demo}"
-      # SECURITY: token-only by default (see pgauthzd-decision above). The
-      # demo/test stack opts into trusted-PEP mode via env.sh, not this file.
-      ALLOW_SUBJECT_OVERRIDE: "${ALLOW_SUBJECT_OVERRIDE:-false}"
-      LOG_LEVEL: "${LOG_LEVEL:-info}"
-    # Keep retrying until roles.sql has run: on a fresh DB the startup read-only
-    # assertion references authz_writer, which init.sh creates AFTER the stack is
-    # up — the instance crash-loops until then, then recovers (like the reader/
-    # writer above).
-    restart: unless-stopped
-    volumes:
-      - ./opa/data:/jwks:ro
-    depends_on:
-      opa:
-        condition: service_started
-      authz-db:
-        condition: service_healthy
+  # NOTE: pgauthzd-opa (the OPA-fronted AuthZEN gateway) is OPT-IN and lives in
+  # compose-opa.yml — the default stack is OPA-free. Enable with ./start.sh --opa.

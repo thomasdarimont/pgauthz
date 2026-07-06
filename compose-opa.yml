@@ -1,0 +1,125 @@
+# OPA overlay (OPT-IN). The DEFAULT stack (compose.yml + compose-authzen.yml) is
+# OPA-FREE: pgauthzd answers directly from PostgreSQL (decision-only / full) and
+# the engine's conditions (SQL / optional CEL) cover ABAC. Enable this overlay
+# only when you want policy-as-code (Rego) in front of the AuthZEN surface:
+#
+#   ./start.sh --opa                 (or PGAUTHZ_OPA=1 ./bootstrap.sh)
+#
+# It adds the OPA policy sidecar and an OPA-fronted pgauthzd gateway
+# (pgauthzd-opa). Topology when enabled: client → pgauthzd-opa (AuthZEN front
+# door — validates the JWT, consults OPA) → OPA (Rego) → pgauthzd's native
+# callback → PostgreSQL. The --keycloak / --playground overlays imply --opa.
+#
+# YAML anchors are file-scoped, so this overlay re-declares the pgauthzd build.
+x-pgauthzd-build: &pgauthzd-build
+  context: ./pgauthzd
+  args:
+    VERSION: ${VERSION:-dev}
+
+services:
+
+  # OPA policy sidecar — internal; reached only by pgauthzd-opa. Publishes :8181
+  # for the OPA-data-API demo + test-opa.sh; production keeps it unpublished.
+  opa:
+    image: openpolicyagent/opa:1.18.2
+    command: run --server --watch --addr :8181 --authentication=token --authorization=basic /policies /data
+    environment:
+      OPA_ADMIN_TOKEN: "${OPA_ADMIN_TOKEN:-change-me-in-production}"
+      JWT_ISSUER: "${JWT_ISSUER:-https://auth.example.com}"
+      JWT_AUDIENCE: "${JWT_AUDIENCE:-authz-api}"
+      DEFAULT_STORE: "${DEFAULT_STORE:-demo}"
+      # SECURITY: token-only reads by default. Explicit-subject reads
+      # (input.subject with no JWT) are rejected unless this is set false, which
+      # is ONLY safe behind a trusted PEP. The demo opts into false via env.sh.
+      REQUIRE_TOKEN_FOR_READS: "${REQUIRE_TOKEN_FOR_READS:-true}"
+      # pgauthzd native callback: OPA's read/decision data client calls back into
+      # the OPA-fronted instance's INTERNAL listener (pgauthzd-opa:8081); the
+      # shared service token must match its INTERNAL_SERVICE_TOKEN.
+      NATIVE_URL: "${NATIVE_URL:-http://pgauthzd-opa:8081}"
+      NATIVE_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
+      # Authorized writes go to a WRITER instance's callback (full profile),
+      # separate from NATIVE_URL so reads and writes target different (read-only
+      # vs full) deployments — the reader/writer separation.
+      NATIVE_WRITE_URL: "${NATIVE_WRITE_URL:-http://pgauthzd-full:8081}"
+      # Optional mTLS to the native listener (transport-layer caller auth, under
+      # the service token). Point NATIVE_URL at https://... and mount the certs.
+      # Prefer mesh-provided mTLS where available.
+      # NATIVE_TLS_CLIENT_CERT: "/tls/opa-client.crt"
+      # NATIVE_TLS_CLIENT_KEY:  "/tls/opa-client.key"
+      # NATIVE_TLS_CA_CERT:     "/tls/ca.crt"
+      DEFAULT_CACHE_TTL_SECONDS: "${DEFAULT_CACHE_TTL_SECONDS:-1}"
+      # CACHE_TTL_SECONDS: '{"demo":{"_default":5,"document":10}}'
+      # JWT role mapping for writes — match your issuer's claim shape.
+      # JWT_ROLES_CLAIM is a comma-separated list of dotted paths; roles are
+      # aggregated across all of them (default "roles"). For Keycloak:
+      #   JWT_ROLES_CLAIM: "realm_access.roles,resource_access.authz-api.roles"
+      #   WRITER_ROLE:     "authz_writer"         # required role value (in any path)
+      # Per-app namespace isolation (optional): JWT claim carrying the caller's
+      # app DB role, forwarded to the native callback as X-Authz-Role.
+      #   DB_ROLE_CLAIM: "db_role"
+    ports:
+      - "8181:8181"
+    volumes:
+      - ./opa/policies:/policies:ro
+      - ./opa/data:/data:ro
+    depends_on:
+      authz-db:
+        condition: service_healthy
+
+  # decision-only + OPA_URL: fronts OPA for policy enrichment on /access/v1, AND
+  # hosts the OPA read callback (its internal listener, read-only role) that OPA
+  # calls back into for the graph data — the pgauthzd-fronted-with-OPA topology.
+  # (Fronting OPA is orthogonal to the profile; this instance is read-only.)
+  pgauthzd-opa:
+    build: *pgauthzd-build
+    ports:
+      - "8091:8080"
+      # Internal native-callback listener. In production DO NOT publish this —
+      # bind it to the OPA sidecar network only. Published here for the tests.
+      - "8093:8081"
+    environment:
+      LISTEN_ADDR: ":8080"
+      PGAUTHORIZER_PROFILE: "decision-only"
+      # Internal listener for the policy-FREE native raw endpoints the OPA
+      # sidecar calls back into. Read-only role.
+      INTERNAL_LISTEN_ADDR: ":8081"
+      # Shared service credential the internal listener requires — must match
+      # the OPA service's NATIVE_SERVICE_TOKEN. Override in production.
+      INTERNAL_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
+      # Optional mTLS on the internal listener (all three together → HTTPS +
+      # RequireAndVerifyClientCert, so only OPA's client cert is accepted).
+      # Prefer mesh-provided mTLS where available.
+      # INTERNAL_TLS_CERT:  "/tls/internal-server.crt"
+      # INTERNAL_TLS_KEY:   "/tls/internal-server.key"
+      # INTERNAL_CLIENT_CA: "/tls/ca.crt"
+      DATABASE_URL: "postgres://authzen_direct:${AUTHZEN_DIRECT_PASSWORD:-authz}@authz-db:5432/authz"
+      # authzen_direct may be granted per-app roles (WITH INHERIT FALSE) to SET
+      # ROLE for namespace isolation. A read with no db_role must NOT run as
+      # authzen_direct directly (its SET-ROLE memberships would leak into
+      # membership-keyed namespace checks) — always SET ROLE to a namespace-free
+      # reader default.
+      DEFAULT_DB_ROLE: "authz_reader"
+      DB_POOL_MAX: "10"
+      OPA_URL: "http://opa:8181"
+      OPA_PACKAGE: "${OPA_PACKAGE:-authz}"
+      JWKS_FILE: "/jwks/jwks.json"
+      JWT_ISSUER: "${JWT_ISSUER:-https://auth.example.com}"
+      JWT_AUDIENCE: "${JWT_AUDIENCE:-authz-api}"
+      # REQUIRED_SCOPE: "authz:read"  # If set, JWT must contain this scope
+      DEFAULT_STORE: "${DEFAULT_STORE:-demo}"
+      # SECURITY: token-only by default (see pgauthzd-decision). The demo/test
+      # stack opts into trusted-PEP mode via env.sh, not this file.
+      ALLOW_SUBJECT_OVERRIDE: "${ALLOW_SUBJECT_OVERRIDE:-false}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+    # Keep retrying until roles.sql has run: on a fresh DB the startup read-only
+    # assertion references authz_writer, which init.sh creates AFTER the stack is
+    # up — the instance crash-loops until then, then recovers (like the reader/
+    # writer).
+    restart: unless-stopped
+    volumes:
+      - ./opa/data:/jwks:ro
+    depends_on:
+      opa:
+        condition: service_started
+      authz-db:
+        condition: service_healthy

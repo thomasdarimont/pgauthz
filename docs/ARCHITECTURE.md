@@ -949,6 +949,7 @@ sequentially; status flows Proposed → Accepted → Superseded. The log:
 | [0005](adr/0005-list-partition-by-object-type.md) | LIST partitioning by object type | Accepted |
 | [0006](adr/0006-models-as-data.md) | Models as data, not schema | Accepted |
 | [0007](adr/0007-pgauthzd-front-door.md) | pgauthzd is the front door; OPA is an internal policy sidecar | Accepted |
+| [0008](adr/0008-opa-is-opt-in.md) | OPA is opt-in; the default stack is OPA-free | Accepted |
 
 To add one: create `docs/adr/NNNN-*.md` (for decisions on authorization
 semantics, security boundaries, or operational contracts) and a row here.

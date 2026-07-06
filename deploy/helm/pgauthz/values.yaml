@@ -208,11 +208,13 @@ authzen:
   # reader pods' :8080 AuthZEN/JWT listener. Scales with reader.replicas.
   direct:
     enabled: true
-  # opa — a DB-less pgauthzd instance (decision-only + OPA_URL) that fronts OPA
-  # on /access/v1 (policy-enriched AuthZEN). When enabled it is the ingress front
-  # door (path /); OPA itself stays internal.
+  # opa — OPT-IN policy-as-code. When enabled, deploys the OPA sidecar + a DB-less
+  # pgauthzd gateway (decision-only + OPA_URL) that fronts OPA on /access/v1, and
+  # the gateway becomes the ingress front door (path /). Default OFF: the stack is
+  # OPA-free and the direct reader (authzen.direct) is the front door; the engine's
+  # conditions (SQL/CEL) cover ABAC. Enable only for Rego policy-as-code.
   opa:
-    enabled: true
+    enabled: false
     replicas: 2
   # Deprecated/no-op: the ingress `/` now always routes to the pgauthzd AuthZEN
   # front door (the OPA-fronted gateway when authzen.opa.enabled, else the direct
@@ -220,7 +222,8 @@ authzen:
   exposeViaIngress: false
 
 # ── Ingress ──────────────────────────────────────────────────────────────────
-# Only OPA (and optionally AuthZEN) are ever exposed. pgauthzd + Postgres never.
+# Only the pgauthzd AuthZEN front door is exposed (the direct reader by default,
+# or the OPA-fronted gateway when authzen.opa.enabled). OPA + Postgres never.
 ingress:
   enabled: true
   className: ""                # "traefik" on k3d

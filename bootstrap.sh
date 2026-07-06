@@ -28,5 +28,10 @@ if [ "${PGAUTHZ_CEL:-0}" != "0" ]; then
   echo "==> CEL enabled (pg_cel will be built into the Postgres image)"
 fi
 
+# The default stack is OPA-free, but the OPA + AuthZEN-OPA integration suites
+# need OPA — so bootstrap enables it by default. Run PGAUTHZ_OPA=0 ./bootstrap.sh
+# to exercise the OPA-free suite (those two suites then skip).
+export PGAUTHZ_OPA="${PGAUTHZ_OPA:-1}"
+
 "$SCRIPT_DIR/init.sh"
 "$SCRIPT_DIR/tests/test-all.sh"

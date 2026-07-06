@@ -46,10 +46,11 @@ spec:
     - from:
         - podSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: opa } }
       ports: [{ port: 8081 }]
+{{- if .Values.authzen.opa.enabled }}
 ---
 # OPA is an INTERNAL policy sidecar: only the pgauthzd OPA-fronted AuthZEN
 # gateway may reach it (:8181). OPA is NOT the ingress front door — the ingress
-# controller reaches pgauthzd, never OPA directly.
+# controller reaches pgauthzd, never OPA directly. (OPA is opt-in.)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -63,6 +64,7 @@ spec:
     - from:
         - podSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: pgauthzd-opa } }
       ports: [{ port: 8181 }]
+{{- end }}
 {{- if .Values.authzen.direct.enabled }}
 ---
 # AuthZEN direct API: the decision-only reader pods' :8080 listener. The reader's

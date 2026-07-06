@@ -404,9 +404,23 @@ run_tests() {
 }
 
 # --- Run tests for both services ---
+#
+# The OPA-fronted gateway (pgauthzd-opa, :8091) is part of the OPT-IN OPA overlay
+# (compose-opa.yml). On an OPA-free stack it isn't running, so probe it and skip
+# the OPA-fronted checks when absent.
+OPA_UP=0
+for _ in $(seq 1 5); do
+  if curl -sf "$OPA_URL/healthz" >/dev/null 2>&1; then OPA_UP=1; break; fi
+  sleep 1
+done
 
 run_tests "$DIRECT_URL" "pgauthzd-decision"
-run_tests "$OPA_URL" "pgauthzd-opa"
+if [ "$OPA_UP" = 1 ]; then
+  run_tests "$OPA_URL" "pgauthzd-opa"
+else
+  echo ""
+  echo "  NOTE: OPA-fronted gateway ($OPA_URL) not running (OPA-free stack) — skipping OPA-fronted checks."
+fi
 
 # --- Native pgauthz API (/pgauthz/v1/*) — direct backend only ---
 # explain (the "why") + watch (changefeed HTTP transport). The direct backend
@@ -437,11 +451,13 @@ check_json "watch: page carries a composite next_cursor" \
 
 # The OPA-fronted PUBLIC listener does not expose the native surface (it lives on
 # the internal callback listener); the route is simply absent here → 404.
-check_http "native explain is not on the OPA-compat public listener (404)" \
+if [ "$OPA_UP" = 1 ]; then
+check_http "native explain is not on the OPA-fronted public listener (404)" \
     "404" \
     -X POST "$OPA_URL/pgauthz/v1/explain" \
     -H "Content-Type: application/json" -H "$AUTH_ALICE" \
     -d '{"subject":{"type":"internal_user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}'
+fi
 
 # --- Native raw decision + search (/pgauthz/v1/check, /list-*) ---
 # Policy-FREE graph answers on the direct backend — what an OPA sidecar calls
@@ -481,11 +497,13 @@ check_json "list-actions: returns an array" \
     '{"subject":{"type":"internal_user","id":"alice"},"resource":{"type":"document","id":"doc_payroll_001"}}' \
     '(.actions | type)' "array"
 
-check_http "native check is not on the OPA-compat public listener (404)" \
+if [ "$OPA_UP" = 1 ]; then
+check_http "native check is not on the OPA-fronted public listener (404)" \
     "404" \
     -X POST "$OPA_URL/pgauthz/v1/check" \
     -H "Content-Type: application/json" -H "$AUTH_ALICE" \
     -d '{"subject":{"type":"internal_user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}'
+fi
 
 # --- Native write path (/pgauthz/v1/write, /delete) — FULL profile only ---
 # pgauthzd is the write front door and authorizes writes itself: the public
@@ -533,10 +551,12 @@ check_http "write is 403 on the read-only decision-only instance" \
     -X POST "$DIRECT_URL/pgauthz/v1/write" \
     -H "Content-Type: application/json" -H "$AUTH_WP" -d "$WP_BODY"
 
+if [ "$OPA_UP" = 1 ]; then
 check_http "write is not on the OPA-fronted public listener (404)" \
     "404" \
     -X POST "$OPA_URL/pgauthz/v1/write" \
     -H "Content-Type: application/json" -H "$AUTH_WP" -d "$WP_BODY"
+fi
 
 # --- Cache-Control: no-cache → fresh decision (pgauthzd-opa) ---
 # The standard freshness header maps to OPA's input.no_cache (0-second
@@ -544,11 +564,16 @@ check_http "write is not on the OPA-fronted public listener (404)" \
 # tuple in the DB, then re-evaluate WITH the header inside the TTL window —
 # the revoke must be visible. (pgauthzd-decision has no decision cache, so the
 # header is trivially satisfied there.)
+# DB container (shared by the no-cache + X-Authz-Detail sections below).
+DB_CONTAINER=$(docker ps --format '{{.Names}}' | grep -E 'authz-db|authz-primary' | head -1)
+
+# no-cache freshness is an OPA decision-cache property (pgauthzd-decision has no
+# decision cache), so it only runs on the OPA-fronted gateway.
+if [ "$OPA_UP" = 1 ]; then
 echo ""
 echo "==> Cache-Control: no-cache freshness (pgauthzd-opa)..."
 echo ""
 
-DB_CONTAINER=$(docker ps --format '{{.Names}}' | grep -E 'authz-db|authz-primary' | head -1)
 TOKEN_CACHE=$(make_token "cache_probe" "internal_user")
 EVAL_BODY='{"subject":{"type":"internal_user","id":"cache_probe"},"action":{"name":"viewer"},"resource":{"type":"document","id":"doc_cache_az1"}}'
 
@@ -578,6 +603,7 @@ else
     fail_count=$((fail_count + 1))
     echo "    FAIL  Cache-Control: no-cache sees the revoke immediately  (expected=false, got=$result)"
 fi
+fi
 
 # --- X-Authz-Detail → rich decision context (both services) ---
 # The header opts into the AuthZEN response context field carrying
@@ -596,7 +622,9 @@ SQL
 TOKEN_DET=$(make_token "det_az" "internal_user")
 DET_BODY='{"subject":{"type":"internal_user","id":"det_az"},"action":{"name":"viewer"},"resource":{"type":"document","id":"doc_det_az1"}}'
 
-for svc_url in "$DIRECT_URL" "$OPA_URL"; do
+det_urls=("$DIRECT_URL")
+[ "$OPA_UP" = 1 ] && det_urls+=("$OPA_URL")
+for svc_url in "${det_urls[@]}"; do
     svc_name=$([ "$svc_url" = "$DIRECT_URL" ] && echo pgauthzd-decision || echo pgauthzd-opa)
 
     total=$((total + 1))

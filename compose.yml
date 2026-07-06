@@ -40,58 +40,13 @@ services:
       # is missing; roles.sql — run later by init.sh — adds the grants).
       - ./db/security/initdb:/docker-entrypoint-initdb.d:ro
 
-  # NOTE: PostgREST (reader + writer) has been removed. OPA calls back into
-  # pgauthzd's native API for both reads and writes (NATIVE_URL /
-  # NATIVE_WRITE_URL below): the read callback is pgauthzd-opa's internal
-  # listener (read-only role) and the write callback is pgauthzd-full's
-  # (writer role). Both live in compose-authzen.yml, which start.sh always
-  # includes.
-
-  opa:
-    image: openpolicyagent/opa:1.18.2
-    command: run --server --watch --addr :8181 --authentication=token --authorization=basic /policies /data
-    environment:
-      OPA_ADMIN_TOKEN: "${OPA_ADMIN_TOKEN:-change-me-in-production}"
-      JWT_ISSUER: "${JWT_ISSUER:-https://auth.example.com}"
-      JWT_AUDIENCE: "${JWT_AUDIENCE:-authz-api}"
-      DEFAULT_STORE: "${DEFAULT_STORE:-demo}"
-      # SECURITY: token-only reads by default. Explicit-subject reads
-      # (input.subject with no JWT) are rejected unless this is set false, which
-      # is ONLY safe behind a trusted PEP. The demo opts into false via env.sh.
-      REQUIRE_TOKEN_FOR_READS: "${REQUIRE_TOKEN_FOR_READS:-true}"
-      # pgauthzd native callback: OPA's read/decision data client calls back into
-      # the OPA-fronted instance's INTERNAL listener (pgauthzd-opa:8081); the
-      # shared service token must match its INTERNAL_SERVICE_TOKEN.
-      NATIVE_URL: "${NATIVE_URL:-http://pgauthzd-opa:8081}"
-      NATIVE_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
-      # Authorized writes go to a WRITER instance's callback (full profile),
-      # separate from NATIVE_URL so reads and writes target different (read-only
-      # vs full) deployments — the reader/writer separation.
-      NATIVE_WRITE_URL: "${NATIVE_WRITE_URL:-http://pgauthzd-full:8081}"
-      # Optional mTLS to the native listener (transport-layer caller auth, under
-      # the service token). Point NATIVE_URL at https://... and mount the certs.
-      # Prefer mesh-provided mTLS where available.
-      # NATIVE_TLS_CLIENT_CERT: "/tls/opa-client.crt"
-      # NATIVE_TLS_CLIENT_KEY:  "/tls/opa-client.key"
-      # NATIVE_TLS_CA_CERT:     "/tls/ca.crt"
-      DEFAULT_CACHE_TTL_SECONDS: "${DEFAULT_CACHE_TTL_SECONDS:-1}"
-      # CACHE_TTL_SECONDS: '{"demo":{"_default":5,"document":10}}'
-      # JWT role mapping for writes — match your issuer's claim shape.
-      # JWT_ROLES_CLAIM is a comma-separated list of dotted paths; roles are
-      # aggregated across all of them (default "roles"). For Keycloak:
-      #   JWT_ROLES_CLAIM: "realm_access.roles,resource_access.authz-api.roles"
-      #   WRITER_ROLE:     "authz_writer"         # required role value (in any path)
-      # Per-app namespace isolation (optional): JWT claim carrying the caller's
-      # app DB role, forwarded to the native callback as X-Authz-Role.
-      #   DB_ROLE_CLAIM: "db_role"
-    ports:
-      - "8181:8181"
-    volumes:
-      - ./opa/policies:/policies:ro
-      - ./opa/data:/data:ro
-    depends_on:
-      authz-db:
-        condition: service_healthy
+  # OPA is OPT-IN — not part of the default stack. The default is OPA-free:
+  # pgauthzd answers directly from PostgreSQL (compose-authzen.yml — the
+  # decision-only reader + full writer) with the engine's conditions (SQL /
+  # optional CEL) for ABAC. To add policy-as-code (Rego), enable the OPA overlay:
+  #   ./start.sh --opa           (compose-opa.yml: OPA sidecar + OPA-fronted gateway)
+  # PostgREST has been removed entirely — OPA, when enabled, calls back into
+  # pgauthzd's native /pgauthz/v1 API, never PostgREST.
 
 volumes:
   authz-db-data:

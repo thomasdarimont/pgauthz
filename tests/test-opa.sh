@@ -150,12 +150,20 @@ check_jq() {
 }
 
 echo "==> Waiting for OPA..."
+opa_up=0
 for i in $(seq 1 30); do
     if curl -sf "$OPA_URL/health" > /dev/null 2>&1; then
+        opa_up=1
         break
     fi
     sleep 1
 done
+if [ "$opa_up" = 0 ]; then
+    echo ""
+    echo "==> SKIP: OPA is not running at $OPA_URL — the default stack is OPA-free."
+    echo "    Enable it with ./start.sh --opa (or PGAUTHZ_OPA=1 ./bootstrap.sh)."
+    exit 0
+fi
 
 echo "==> Waiting for a warm PostgREST schema cache (via OPA)..."
 # PostgREST is not exposed to the host. On a freshly started stack it may have
