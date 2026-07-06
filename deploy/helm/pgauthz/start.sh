@@ -108,5 +108,6 @@ echo ""
 echo "==> Deployed. Status:"
 kubectl -n "$NAMESPACE" get cluster,pods 2>/dev/null | grep -vE "Completed" || true
 echo ""
-echo "==> OPA is the front door. Port-forward to reach it:"
-echo "      kubectl -n $NAMESPACE port-forward svc/${RELEASE}-opa 8181:8181"
+echo "==> pgauthzd is the front door (AuthZEN 1.0). Port-forward to reach it:"
+echo "      kubectl -n $NAMESPACE port-forward svc/${RELEASE}-pgauthzd-opa 8080:8080"
+echo "    (OPA is internal — reached only by the pgauthzd gateway.)"

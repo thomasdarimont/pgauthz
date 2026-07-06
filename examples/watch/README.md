@@ -124,5 +124,7 @@ Other knobs: `WATCH_FROM_BEGINNING=true` replays the whole audit log on start;
   `db/engine/watch.sql`. For strict exactly-once streaming, use logical
   replication on `tuples_audit` instead.
 - **Privilege.** The consumer `SET ROLE authz_auditor` (the watch functions are
-  granted to the auditor). Give your real consumer a login role that is a member
-  of `authz_auditor`, not a superuser.
+  granted to the auditor). The demo connects as `authz_watcher` — a dedicated
+  read-only LOGIN role granted `authz_auditor` (created by
+  `db/security/roles.sql`), never a superuser. Point your real consumer at a
+  login role that is a member of `authz_auditor`.

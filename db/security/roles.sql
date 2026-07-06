@@ -151,6 +151,20 @@ $$;
 GRANT authz_reader TO authz_metadata;
 GRANT SELECT ON authz.stores, authz.types, authz.relations, authz.conditions, authz.tuples TO authz_metadata;
 
+-- Watch/changefeed consumer role: a dedicated read-only LOGIN role for the
+-- watch-API example (examples/watch). Granted authz_auditor (which INHERITs
+-- authz_reader) so the consumer can SET ROLE authz_auditor and read the
+-- changefeed (authz.watch_changes) — least privilege, never a superuser.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authz_watcher') THEN
+        -- Dev password — override in production deployments.
+        CREATE ROLE authz_watcher LOGIN PASSWORD 'authz';
+    END IF;
+END
+$$;
+GRANT authz_auditor TO authz_watcher;
+
 -- ── Condition-evaluation hardening ──────────────────────────────────
 -- Condition expressions are arbitrary SQL evaluated in a sandbox
 -- (_exec_condition runs as the zero-privilege authz_eval role). That role
@@ -170,6 +184,7 @@ GRANT SELECT ON authz.stores, authz.types, authz.relations, authz.conditions, au
 ALTER ROLE authzen_direct      SET statement_timeout = '60s';
 ALTER ROLE pgauthzd_rw         SET statement_timeout = '60s';
 ALTER ROLE authz_metadata      SET statement_timeout = '60s';
+ALTER ROLE authz_watcher       SET statement_timeout = '60s';
 
 -- 2. Capability — pg_sleep is a PUBLIC builtin and the one obvious
 --    hang-via-DoS primitive reachable from the sandbox; revoke it (and its

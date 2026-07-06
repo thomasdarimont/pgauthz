@@ -24,10 +24,11 @@ services:
   watch-consumer:
     image: python:3.12-slim
     environment:
-      # The watcher SET ROLEs to authz_auditor (see consumer.py), so for the demo
-      # it connects as the bootstrap superuser (which can SET ROLE to any role).
-      # In production use a dedicated login role granted authz_auditor instead.
-      DATABASE_URL: "postgres://authz:${PG_PASSWORD:-authz}@authz-db:5432/authz"
+      # Connects as authz_watcher — a dedicated read-only LOGIN role granted
+      # authz_auditor (created by db/security/roles.sql). The watcher SET ROLEs
+      # to authz_auditor (see consumer.py) and reads the changefeed; least
+      # privilege, never a superuser. Override AUTHZ_WATCHER_PASSWORD in prod.
+      DATABASE_URL: "postgres://authz_watcher:${AUTHZ_WATCHER_PASSWORD:-authz}@authz-db:5432/authz"
       WATCH_STORE: "${WATCH_STORE:-demo}"
       # Single watch — optional filters (comma-separated; unset = all):
       # WATCH_OBJECT_TYPES: "document,folder"
