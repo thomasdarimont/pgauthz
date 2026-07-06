@@ -160,40 +160,30 @@ GRANT authz_contextual_reader TO <your_trusted_backend_role>;
   `{"allowed": false, "error": "writes_disabled"}`.
 - See [ARCHITECTURE.md → Deployment View](ARCHITECTURE.md#7-deployment-view).
 
-### Edge proxy / mTLS
+### Edge TLS / mTLS
 
-In the default topology **pgauthzd is the front door** and OPA is an internal
-sidecar — clients never reach OPA directly, so **stop publishing OPA's port to
-the host** and keep it on an internal network. Front **pgauthzd** with a
-TLS-terminating reverse proxy / load balancer for transport security at the edge.
+**pgauthzd is the front door** and OPA is an internal sidecar — clients never
+reach OPA directly, so **never publish OPA's port** (the compose overlays and
+the Helm chart already keep it internal; a `NetworkPolicy` restricts it to
+pgauthzd). Transport security splits across the hops:
 
-The proxy template below (in `gateway/`) is for the optional/legacy topology that
-exposes OPA's decision API directly: OPA serves plain HTTP and its `/v1/data` API
-reads the JWT from the request **body** (`input.token`) — it does not consume the
-`Authorization` header or any TLS client identity (that header feeds only OPA's
-own admin gating). The same TLS / mTLS pattern also protects the internal
-pgauthzd↔OPA↔callback hops (prefer mesh-provided mTLS, or the callback listeners'
-built-in `INTERNAL_TLS_*` options, where available).
+- **Edge (client → pgauthzd):** terminate TLS in any ordinary reverse proxy /
+  load balancer / ingress in front of pgauthzd (the Helm chart ships an ingress
+  template). Nothing pgauthz-specific is needed at the edge — pgauthzd
+  authenticates end users itself via the JWT. This is also the place for rate
+  limiting and IP allow-lists.
+- **Internal hops (pgauthzd → OPA → native callback):** prefer mesh-provided
+  mTLS where available; without a mesh, the callback listener has built-in
+  mTLS — set `INTERNAL_TLS_CERT` / `INTERNAL_TLS_KEY` / `INTERNAL_CLIENT_CA`
+  and it serves HTTPS and **requires + verifies** a client certificate chained
+  to the pinned CA, layered under the `INTERNAL_SERVICE_TOKEN` gate.
+- **OPA's management surface** (`/v1/policies`, `/v1/config`, raw `/v1/data`,
+  `/v1/data/system`) is gated in-policy by `system_authz.rego` and by network
+  isolation — with no external callers there is no OPA edge to protect.
 
-This cleanly separates two concerns:
-
-- **Transport / caller authentication at the edge** — TLS, and optionally
-  **X.509 client certificates (mTLS)** to gate *which callers* (trusted
-  PEPs/backends) may reach OPA at all. Also the place for rate limiting and IP
-  allow-lists.
-- **Per-user authorization in OPA** — the application JWT in the body
-  (`input.token`) identifies the end user; OPA's policy decides what they may do.
-
-A ready template is in [`gateway/nginx.conf`](../gateway/nginx.conf) (TLS +
-optional mTLS → `opa:8181`). It is **default-deny**: only `/health` and the
-application decision API (`POST /v1/data/authz/*`) are forwarded, so OPA's
-management surface (`/v1/policies`, `/v1/config`, raw `/v1/data`,
-`/v1/data/system`, `/v1/data/keys`) is unreachable through the edge — a second
-layer on top of `system_authz.rego`. It is intentionally **not** wired into the
-default compose — supply `server.crt`/`server.key` and a `client-ca.crt`, mount
-them at `/certs`, run it in front of OPA, and remove OPA's host port. Note that
-mTLS authenticates the caller, not the end user — the JWT still does per-user
-authz.
+> A standalone nginx "OPA edge proxy" template used to live in `gateway/` for
+> the legacy expose-OPA-directly topology; it was removed with that topology
+> (git history: `gateway/nginx.conf`).
 
 ## Secrets, passwords, and JWT
 

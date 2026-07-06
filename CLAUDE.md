@@ -19,7 +19,6 @@ With OPA overlay: Application → pgauthzd (validates JWT) → OPA (Rego policy-
 - **pgauthzd** — Single Go daemon exposing the engine over HTTP (native `/pgauthz/v1` API + AuthZEN 1.0), capability-scoped by **profile** (DB capability only): `decision-only` (read-only DB role), `full` (read+write, writer role). Fronting an OPA policy sidecar is orthogonal to the profile, controlled by the `OPA_URL` env var (not a third profile): with `OPA_URL` set, pgauthzd consults OPA for the AuthZEN `/access/v1` surface (forwarding the token); the native `/pgauthz/v1` surface stays direct pgx and is exposed on the public listener only when NOT fronting OPA. pgauthzd also authorizes writes itself via a `WRITER_ROLE` claim gate (default role `authz_writer`; `JWT_ROLES_CLAIM` defaults to `roles`). Replaces PostgREST as the read/write bridge. OPA's Rego calls **back** into pgauthzd's native `/pgauthz/v1` API for both reads and writes — reads to a `decision-only` instance, writes to a `full` instance (reader/writer separation follows the instance's profile/DB role). The callback listener is authenticated by a shared service token (`INTERNAL_SERVICE_TOKEN` on pgauthzd / `NATIVE_SERVICE_TOKEN` on OPA) and optional mTLS; it trusts OPA's asserted subject + per-app role (`X-PGAuthz-Role`) and does **not** re-verify the end-user JWT (pgauthzd is the external front door; the callback listener trusts OPA, its upstream policy sidecar). PostgREST has been removed entirely — the OPA policy and every deployment (compose, scaling, Helm) use the native callback
 - **OPA 1.18.2** — **OPT-IN** policy sidecar (the default stack is OPA-free — pgauthzd answers directly from PostgreSQL, with conditions for ABAC; see [ADR 0008](docs/adr/0008-opa-is-opt-in.md)). Enable with `./start.sh --opa` (compose) or `authzen.opa.enabled` (Helm). When enabled it is internal — reachable only by pgauthzd (the sole external caller of OPA); a pgauthzd instance with `OPA_URL` set forwards the verified token to it for policy-as-code Rego (re-validating the JWT — defense in depth), and OPA calls **back** into pgauthzd's native callback for graph reads and writes
 - **Go AuthZEN API** — AuthZEN 1.0 services, now instances of `pgauthzd`: `authzen-direct` (Go→PostgreSQL, `decision-only`, port 8090) and `authzen-opa` (Go→OPA→pgauthzd native callback→PostgreSQL, `decision-only` + `OPA_URL` set, port 8091)
-- **Nginx gateway** (`gateway/`) — Optional OPA edge proxy (TLS termination / optional mTLS / endpoint allowlist); not wired into the default compose
 
 ## Common Commands
 
@@ -56,10 +55,9 @@ With OPA overlay: Application → pgauthzd (validates JWT) → OPA (Rego policy-
 
 SQL tests use helper assertions defined in `tests/sql/tests_helpers.sql`. Individual test files can be run via psql against the running database (source `env.sh` first for the `$PSQL` alias).
 
-### Build AuthZEN Go Services
+### Build pgauthzd
 ```bash
-cd authzen && go build ./cmd/authzen-direct
-cd authzen && go build ./cmd/authzen-opa
+cd pgauthzd && go build ./... && go test ./...
 ```
 
 ## Key Directories
@@ -73,9 +71,8 @@ cd authzen && go build ./cmd/authzen-opa
 - `db/security/` — PostgreSQL role definitions (authz_reader, authz_writer, authz_admin, authz_auditor)
 - `db/openfga/` — Import functions for existing OpenFGA JSON models/tuples
 - `db/replication/` — Logical replication and materialized permissions patterns
-- `authzen/` — Go AuthZEN 1.0 HTTP API (cmd/, internal/api/, internal/pgbackend/, internal/opabackend/)
+- `pgauthzd/` — The Go daemon (cmd/, internal/api/, internal/app/, internal/authz/, internal/config/, internal/metrics/, internal/pgbackend/, internal/opabackend/)
 - `opa/policies/` — Rego policies (pgauthz client, application policy, JWT authn, system authz)
-- `gateway/` — Nginx OPA edge-proxy template (TLS / optional mTLS); optional, not wired into the default compose
 
 ## SQL Engine Conventions
 

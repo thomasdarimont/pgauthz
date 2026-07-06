@@ -27,6 +27,19 @@ pre-1.0, minor versions may include breaking changes.
   silently shadow one key at verification; `config.Load` now rejects the keyring
   deterministically at startup.
 
+### Removed
+
+- **`gateway/` (the nginx "OPA edge proxy" template).** It existed for the
+  legacy topology that exposed OPA's decision API directly to clients — a
+  topology gone since the pgauthzd consolidation ([ADR 0008](docs/adr/0008-opa-is-opt-in.md)):
+  OPA is now internal-only (pgauthzd is its sole caller), edge TLS belongs on
+  any ordinary proxy/ingress in front of pgauthzd, the internal callback hop
+  has built-in mTLS (`INTERNAL_TLS_*`), and OPA's management surface is gated
+  by `system_authz.rego` + network isolation. Keeping the template suggested
+  OPA was meant to be externally exposed — exactly the mistake the current
+  architecture removes. PRODUCTION.md's "Edge TLS / mTLS" section now
+  documents the per-hop guidance; the template remains in git history.
+
 ### Changed
 
 - **Bad-token 400s are opaque by design.** The freshness guard returns one fixed
