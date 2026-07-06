@@ -1,0 +1,13 @@
+# Grafana dashboard provider (demo metrics overlay, ADR 0010): auto-loads the
+# provisioned pgauthzd dashboard from the mounted JSON directory.
+apiVersion: 1
+providers:
+  - name: pgauthz
+    orgId: 1
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards/json
+      foldersFromFilesStructure: false

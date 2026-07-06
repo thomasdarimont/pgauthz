@@ -28,6 +28,8 @@ services:
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
     volumes:
       - ./deploy/metrics/grafana-datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+      - ./deploy/metrics/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/pgauthz.yml:ro
+      - ./deploy/metrics/dashboards:/etc/grafana/provisioning/dashboards/json:ro
     depends_on:
       - prometheus
     restart: unless-stopped

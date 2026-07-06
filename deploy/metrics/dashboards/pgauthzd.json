@@ -1,0 +1,192 @@
+{
+  "uid": "pgauthzd",
+  "title": "pgauthzd",
+  "tags": ["pgauthz"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "type": "row", "title": "Traffic (RED)", "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "timeseries", "title": "Request rate by route",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (route) (rate(pgauthzd_http_requests_total[$__rate_interval]))",
+          "legendFormat": "{{route}}" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Request latency p95 by route",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(pgauthzd_http_request_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{route}}" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Errors (4xx/5xx) by route",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (route, status) (rate(pgauthzd_http_requests_total{status=~\"4..|5..\"}[$__rate_interval]))",
+          "legendFormat": "{{route}} {{status}}" }
+      ]
+    },
+    {
+      "type": "row", "title": "Decisions", "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 }
+    },
+    {
+      "type": "timeseries", "title": "Decisions by outcome",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (decision) (rate(pgauthzd_check_decisions_total[$__rate_interval]))",
+          "legendFormat": "{{decision}}" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Decisions by store",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (store) (rate(pgauthzd_check_decisions_total[$__rate_interval]))",
+          "legendFormat": "{{store}}" }
+      ]
+    },
+    {
+      "type": "row", "title": "Freshness & replica health (ADR 0009)", "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 }
+    },
+    {
+      "type": "timeseries", "title": "Freshness verdicts",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (verdict) (rate(pgauthzd_freshness_verdicts_total[$__rate_interval]))",
+          "legendFormat": "{{verdict}}" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Transparent primary fallbacks",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 27 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(pgauthzd_freshness_fallback_total[$__rate_interval]))",
+          "legendFormat": "fallback" }
+      ]
+    },
+    {
+      "type": "row", "title": "Backend latency & saturation", "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 35 }
+    },
+    {
+      "type": "timeseries", "title": "DB query latency (avg) by op / pool",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (op, pool) (rate(pgauthzd_db_query_duration_seconds_sum[$__rate_interval])) / sum by (op, pool) (rate(pgauthzd_db_query_duration_seconds_count[$__rate_interval]))",
+          "legendFormat": "{{op}} / {{pool}}" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "OPA request latency (avg)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(pgauthzd_opa_request_duration_seconds_sum[$__rate_interval])) / sum(rate(pgauthzd_opa_request_duration_seconds_count[$__rate_interval]))",
+          "legendFormat": "opa" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "DB pool connections",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 44 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "max by (pool, state) (pgauthzd_db_pool_connections)",
+          "legendFormat": "{{pool}} {{state}}" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Auth failures (JWT + denied)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 44 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (reason) (rate(pgauthzd_jwt_validation_failures_total[$__rate_interval]))",
+          "legendFormat": "jwt:{{reason}}" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (reason) (rate(pgauthzd_authz_denied_total[$__rate_interval]))",
+          "legendFormat": "denied:{{reason}}" }
+      ]
+    },
+    {
+      "type": "row", "title": "Tenants & build", "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 52 }
+    },
+    {
+      "type": "timeseries", "title": "Tuples per store",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 53 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "max by (store) (pgauthzd_store_tuples)",
+          "legendFormat": "{{store}}" }
+      ]
+    },
+    {
+      "type": "stat", "title": "Stores (tenants)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 4, "x": 12, "y": 53 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "max(pgauthzd_stores_total)", "legendFormat": "stores" }
+      ]
+    },
+    {
+      "type": "table", "title": "Build info",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 53 },
+      "options": { "showHeader": true },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "pgauthzd_build_info", "format": "table", "instant": true }
+      ],
+      "transformations": [
+        { "id": "organize", "options": { "excludeByName": { "Time": true, "Value": true, "__name__": true } } }
+      ]
+    }
+  ]
+}
