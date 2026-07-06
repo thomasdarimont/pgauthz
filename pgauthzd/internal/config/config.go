@@ -140,6 +140,18 @@ type Config struct {
 	// rejected (400) rather than served as if fresh (fail closed). Env
 	// FRESHNESS_TOKEN_KEY.
 	FreshnessKey string
+	// FreshnessPrimaryURL, when set on a decision-only reader, is a reader-role
+	// DSN to the PRIMARY used for TRANSPARENT freshness fallback (ADR 0009): an
+	// at_least_as_fresh read the local replica can't satisfy is transparently
+	// re-run on the primary (authoritative) instead of returning 409. Empty = the
+	// 409 + X-PGAuthz-Stale behavior (caller retries the primary). Env
+	// FRESHNESS_PRIMARY_URL. Note: this gives readers a network path to the
+	// primary — it trades isolation/load-visibility for client convenience.
+	FreshnessPrimaryURL string
+	// FreshnessPrimaryPoolMax bounds the fallback pool so a fallback storm can't
+	// exhaust the primary's connections (keep it small). Env
+	// FRESHNESS_PRIMARY_POOL_MAX, default 10.
+	FreshnessPrimaryPoolMax int
 
 	DefaultStore string
 	StoreHeader  string
@@ -195,41 +207,43 @@ type Config struct {
 
 func Load() (*Config, error) {
 	c := &Config{
-		Profile:               Profile(env("PGAUTHORIZER_PROFILE", "")),
-		ListenAddr:            env("LISTEN_ADDR", ":8080"),
-		InternalListenAddr:    env("INTERNAL_LISTEN_ADDR", ""),
-		InternalServiceToken:  env("INTERNAL_SERVICE_TOKEN", ""),
-		InternalTLSCert:       env("INTERNAL_TLS_CERT", ""),
-		InternalTLSKey:        env("INTERNAL_TLS_KEY", ""),
-		InternalClientCA:      env("INTERNAL_CLIENT_CA", ""),
-		BaseURL:               env("BASE_URL", ""),
-		JWKSURL:               env("JWKS_URL", ""),
-		JWKSFile:              env("JWKS_FILE", ""),
-		JWTIssuer:             env("JWT_ISSUER", ""),
-		JWTAudience:           env("JWT_AUDIENCE", ""),
-		RequiredScope:         env("REQUIRED_SCOPE", ""),
-		RolesClaims:           env("JWT_ROLES_CLAIM", "roles"),
-		SearchRequiredRole:    env("SEARCH_REQUIRED_ROLE", ""),
-		WriterRole:            env("WRITER_ROLE", "authz_writer"),
-		DBRoleClaim:           env("DB_ROLE_CLAIM", ""),
-		SubjectTypeClaim:      env("SUBJECT_TYPE_CLAIM", "subject_type"),
-		SubjectTypeDefault:    env("SUBJECT_TYPE_DEFAULT", "internal_user"),
-		SubjectIDClaim:        env("SUBJECT_ID_CLAIM", "preferred_username"),
-		SubjectIDFallback:     env("SUBJECT_ID_FALLBACK_CLAIM", "sub"),
-		FreshnessKey:          env("FRESHNESS_TOKEN_KEY", ""),
-		DefaultStore:          env("DEFAULT_STORE", "demo"),
-		StoreHeader:           env("STORE_HEADER", "X-PGAuthz-Store"),
-		RequireStoreBinding:   envBool("REQUIRE_STORE_BINDING", false),
-		RequireDBRoleBinding:  envBool("REQUIRE_DB_ROLE_BINDING", false),
-		AllowSubjectOverride:  envBool("ALLOW_SUBJECT_OVERRIDE", false),
-		DatabaseURL:           env("DATABASE_URL", ""),
-		DBPoolMax:             envInt("DB_POOL_MAX", 25),
-		DefaultDBRole:         env("DEFAULT_DB_ROLE", ""),
-		DBRoleCacheTTLSeconds: envInt("DB_ROLE_CACHE_TTL_SECONDS", 60),
-		OPAURL:                env("OPA_URL", ""),
-		OPAPackage:            env("OPA_PACKAGE", "authz"),
-		ForwardTokenToOPA:     envBool("FORWARD_TOKEN_TO_OPA", false),
-		LogLevel:              env("LOG_LEVEL", "info"),
+		Profile:                 Profile(env("PGAUTHORIZER_PROFILE", "")),
+		ListenAddr:              env("LISTEN_ADDR", ":8080"),
+		InternalListenAddr:      env("INTERNAL_LISTEN_ADDR", ""),
+		InternalServiceToken:    env("INTERNAL_SERVICE_TOKEN", ""),
+		InternalTLSCert:         env("INTERNAL_TLS_CERT", ""),
+		InternalTLSKey:          env("INTERNAL_TLS_KEY", ""),
+		InternalClientCA:        env("INTERNAL_CLIENT_CA", ""),
+		BaseURL:                 env("BASE_URL", ""),
+		JWKSURL:                 env("JWKS_URL", ""),
+		JWKSFile:                env("JWKS_FILE", ""),
+		JWTIssuer:               env("JWT_ISSUER", ""),
+		JWTAudience:             env("JWT_AUDIENCE", ""),
+		RequiredScope:           env("REQUIRED_SCOPE", ""),
+		RolesClaims:             env("JWT_ROLES_CLAIM", "roles"),
+		SearchRequiredRole:      env("SEARCH_REQUIRED_ROLE", ""),
+		WriterRole:              env("WRITER_ROLE", "authz_writer"),
+		DBRoleClaim:             env("DB_ROLE_CLAIM", ""),
+		SubjectTypeClaim:        env("SUBJECT_TYPE_CLAIM", "subject_type"),
+		SubjectTypeDefault:      env("SUBJECT_TYPE_DEFAULT", "internal_user"),
+		SubjectIDClaim:          env("SUBJECT_ID_CLAIM", "preferred_username"),
+		SubjectIDFallback:       env("SUBJECT_ID_FALLBACK_CLAIM", "sub"),
+		FreshnessKey:            env("FRESHNESS_TOKEN_KEY", ""),
+		FreshnessPrimaryURL:     env("FRESHNESS_PRIMARY_URL", ""),
+		FreshnessPrimaryPoolMax: envInt("FRESHNESS_PRIMARY_POOL_MAX", 10),
+		DefaultStore:            env("DEFAULT_STORE", "demo"),
+		StoreHeader:             env("STORE_HEADER", "X-PGAuthz-Store"),
+		RequireStoreBinding:     envBool("REQUIRE_STORE_BINDING", false),
+		RequireDBRoleBinding:    envBool("REQUIRE_DB_ROLE_BINDING", false),
+		AllowSubjectOverride:    envBool("ALLOW_SUBJECT_OVERRIDE", false),
+		DatabaseURL:             env("DATABASE_URL", ""),
+		DBPoolMax:               envInt("DB_POOL_MAX", 25),
+		DefaultDBRole:           env("DEFAULT_DB_ROLE", ""),
+		DBRoleCacheTTLSeconds:   envInt("DB_ROLE_CACHE_TTL_SECONDS", 60),
+		OPAURL:                  env("OPA_URL", ""),
+		OPAPackage:              env("OPA_PACKAGE", "authz"),
+		ForwardTokenToOPA:       envBool("FORWARD_TOKEN_TO_OPA", false),
+		LogLevel:                env("LOG_LEVEL", "info"),
 	}
 
 	// Build the trusted-issuer list. The legacy single JWKS_URL/JWKS_FILE/

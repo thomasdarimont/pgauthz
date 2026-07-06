@@ -56,11 +56,11 @@ func Run(name string) error {
 		backend = newOPABackend(ctx, cfg)
 		slog.Info("DB-less OPA-AuthZEN gateway (native surface disabled)", "opa", cfg.OPAURL)
 	} else {
-		pgb, pool, perr := newPGBackend(ctx, cfg)
+		pgb, cleanup, perr := newPGBackend(ctx, cfg)
 		if perr != nil {
 			return perr
 		}
-		defer pool.Close()
+		defer cleanup()
 		raw = pgb
 		if cfg.Profile == config.ProfileDecisionOnly {
 			// Fail-closed: a decision-only instance must sit on a read-only role.
@@ -228,23 +228,53 @@ func newOPABackend(ctx context.Context, cfg *config.Config) authz.Backend {
 	return opab
 }
 
-// newPGBackend builds a direct pgx backend + its pool from cfg.DatabaseURL.
-// Caller owns closing the returned pool.
-func newPGBackend(ctx context.Context, cfg *config.Config) (*pgbackend.Backend, *pgxpool.Pool, error) {
-	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+// newPGBackend builds a direct pgx backend from cfg.DatabaseURL, plus (for a
+// decision-only reader, off in OPA mode) an optional primary-fallback pool for
+// transparent freshness fallback (ADR 0009). Returns a cleanup that closes every
+// pool the caller must defer.
+func newPGBackend(ctx context.Context, cfg *config.Config) (*pgbackend.Backend, func(), error) {
+	pool, err := newPool(ctx, cfg.DatabaseURL, cfg.DBPoolMax)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parsing DATABASE_URL: %w", err)
+		return nil, nil, fmt.Errorf("DATABASE_URL: %w", err)
 	}
-	poolCfg.MaxConns = int32(cfg.DBPoolMax)
+	var primaryPool *pgxpool.Pool
+	// Transparent freshness fallback: a decision-only reader may hold a small
+	// reader-role pool to the primary. Disabled in OPA mode — the AuthZEN read
+	// runs through OPA, which would not honor the primary-route context flag, so
+	// enabling it there could serve a stale answer. There the guard keeps the 409.
+	if cfg.Profile == config.ProfileDecisionOnly && !cfg.UsesOPA() && cfg.FreshnessPrimaryURL != "" {
+		primaryPool, err = newPool(ctx, cfg.FreshnessPrimaryURL, cfg.FreshnessPrimaryPoolMax)
+		if err != nil {
+			pool.Close()
+			return nil, nil, fmt.Errorf("FRESHNESS_PRIMARY_URL: %w", err)
+		}
+		slog.Info("freshness: transparent primary fallback enabled", "pool_max", cfg.FreshnessPrimaryPoolMax)
+	}
+	cleanup := func() {
+		pool.Close()
+		if primaryPool != nil {
+			primaryPool.Close()
+		}
+	}
+	return pgbackend.New(pool, primaryPool, time.Duration(cfg.DBRoleCacheTTLSeconds)*time.Second, cfg.DefaultDBRole), cleanup, nil
+}
+
+// newPool builds and pings a pgx pool bounded to maxConns.
+func newPool(ctx context.Context, dsn string, maxConns int) (*pgxpool.Pool, error) {
+	poolCfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parsing DSN: %w", err)
+	}
+	poolCfg.MaxConns = int32(maxConns)
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("creating connection pool: %w", err)
+		return nil, fmt.Errorf("creating connection pool: %w", err)
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, nil, fmt.Errorf("connecting to database: %w", err)
+		return nil, fmt.Errorf("connecting: %w", err)
 	}
-	return pgbackend.New(pool, time.Duration(cfg.DBRoleCacheTTLSeconds)*time.Second, cfg.DefaultDBRole), pool, nil
+	return pool, nil
 }
 
 func setupLogging(level string) {

@@ -21,7 +21,9 @@ pre-1.0, minor versions may include breaking changes.
   `FRESHNESS_TOKEN_KEY` (same value on writer + readers; empty = off, fail
   closed). No PostgreSQL 19 dependency. Paginated searches bind the freshness
   floor into the `next_token` cursor, so a scan can't mix pre/post-revoke states
-  across pages.
+  across pages. Optional **transparent primary fallback** (`FRESHNESS_PRIMARY_URL`
+  on a decision-only reader): a not-fresh-enough read is re-run on the primary
+  (marked `X-PGAuthz-Served-By: primary`) instead of returning 409.
 - **Proprietary HTTP headers are namespaced `X-PGAuthz-*`** (was the generic,
   collision-prone `X-Authz-*`): `X-PGAuthz-Role` / `-Detail` / `-Consistency` /
   `-Revision` / `-Stale` / `-Store` (the last also fixes a casing slip).

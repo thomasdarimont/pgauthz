@@ -348,6 +348,14 @@ unconditionally. Enable by setting `FRESHNESS_TOKEN_KEY` (the same value on the
 writer and the readers). This complements `remote_apply` (write-side durability)
 with a read-side freshness handle; it needs no PostgreSQL 19 primitives.
 
+Optionally, set `FRESHNESS_PRIMARY_URL` (a reader-role DSN to the primary) on a
+decision-only reader for **transparent fallback**: instead of the `409`, the
+reader re-runs a not-fresh-enough read on the primary itself and returns the
+answer (marked `X-PGAuthz-Served-By: primary`). This removes client retry logic,
+but gives readers a network path to the primary and can shift load there when
+replicas lag — keep `FRESHNESS_PRIMARY_POOL_MAX` small and watch the fallback
+rate. Off in OPA mode (the AuthZEN read runs through OPA).
+
 ### Strict revocation: synchronous apply on the write path
 
 The pgauthzd `full`/writer instance connects with

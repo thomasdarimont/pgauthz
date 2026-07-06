@@ -20,7 +20,10 @@ type freshStub struct {
 	lsn       string
 	verdict   string
 	assertErr error
+	fallback  bool
 }
+
+func (b *freshStub) HasPrimaryFallback() bool { return b.fallback }
 
 func (b *freshStub) WriteTuples(context.Context, authz.WriteRequest) (int, error)  { return 1, nil }
 func (b *freshStub) DeleteTuples(context.Context, authz.WriteRequest) (int, error) { return 1, nil }
@@ -35,6 +38,25 @@ func (b *freshStub) FreshnessToken(context.Context) (int32, string, error) {
 }
 func (b *freshStub) AssertFresh(context.Context, int32, string) (string, error) {
 	return b.verdict, b.assertErr
+}
+
+// With a primary fallback configured, a not-fresh read proceeds (served from the
+// primary) instead of 409 — marked in the context and the X-PGAuthz-Served-By header.
+func TestFreshnessTransparentFallback(t *testing.T) {
+	tok := authz.EncodeFreshnessToken([]byte(testFreshKey), 1, "0/50")
+	b := &freshStub{verdict: "stale", fallback: true}
+	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileDecisionOnly, FreshnessKey: testFreshKey})
+	w := httptest.NewRecorder()
+	r := freshGuardReq("at_least_as_fresh", tok)
+	if ok := h.freshnessOK(w, r); !ok {
+		t.Fatalf("with fallback, a stale read should proceed; code=%d body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get(ServedByHeader); got != "primary" {
+		t.Fatalf("expected X-PGAuthz-Served-By: primary, got %q", got)
+	}
+	if !authz.PrimaryFallback(r.Context()) {
+		t.Fatal("request context should be marked for primary fallback")
+	}
 }
 
 const testFreshKey = "unit-test-key"

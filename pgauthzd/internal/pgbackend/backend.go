@@ -17,6 +17,11 @@ import (
 // Backend implements authz.Backend using direct PostgreSQL calls.
 type Backend struct {
 	pool *pgxpool.Pool
+	// primaryPool, when non-nil, is a reader-role pool to the PRIMARY for
+	// TRANSPARENT freshness fallback (ADR 0009): reads on a context marked
+	// authz.WithPrimaryFallback route here (the primary is authoritative)
+	// instead of the guard returning 409. nil = fallback off (409 behavior).
+	primaryPool *pgxpool.Pool
 	// roleOK caches per-role validation results (member of authz_reader and
 	// not admin-capable) with a bounded TTL: a dropped role or revoked
 	// membership takes effect within roleCacheTTL, not at the next restart.
@@ -38,10 +43,27 @@ type roleCacheEntry struct {
 // New creates a Backend. roleCacheTTL bounds how long a role-validation
 // result (allowed OR denied) may be reused; 0 disables caching entirely
 // (every request re-validates against pg_has_role). defaultRole is the trusted
-// fallback read role (empty = run as the connection role).
-func New(pool *pgxpool.Pool, roleCacheTTL time.Duration, defaultRole string) *Backend {
-	return &Backend{pool: pool, roleCacheTTL: roleCacheTTL, defaultRole: defaultRole}
+// fallback read role (empty = run as the connection role). primaryPool, when
+// non-nil, enables transparent freshness fallback (ADR 0009) — reads on a
+// context marked authz.WithPrimaryFallback route to it; pass nil to disable.
+func New(pool, primaryPool *pgxpool.Pool, roleCacheTTL time.Duration, defaultRole string) *Backend {
+	return &Backend{pool: pool, primaryPool: primaryPool, roleCacheTTL: roleCacheTTL, defaultRole: defaultRole}
 }
+
+// readPool returns the pool a read should run on: the PRIMARY fallback pool when
+// the request context is marked (ADR 0009) and one is configured, else the local
+// (replica) pool. Fail-safe: without a primary pool it always uses the local
+// pool — the guard never marks the context for fallback in that case.
+func (b *Backend) readPool(ctx context.Context) *pgxpool.Pool {
+	if b.primaryPool != nil && authz.PrimaryFallback(ctx) {
+		return b.primaryPool
+	}
+	return b.pool
+}
+
+// HasPrimaryFallback implements authz.FreshnessFallback: whether transparent
+// primary fallback is configured on this backend.
+func (b *Backend) HasPrimaryFallback() bool { return b.primaryPool != nil }
 
 // querier is the subset of pgx query methods shared by the pool and a
 // transaction, so request handlers can run either directly on the pool or
@@ -64,7 +86,7 @@ func (b *Backend) withRole(ctx context.Context, fn func(q querier) error) error 
 		// SET ROLE so the connection role's SET-ROLE memberships never leak),
 		// or run as the connection role when no default is set.
 		if b.defaultRole == "" {
-			return fn(b.pool)
+			return fn(b.readPool(ctx))
 		}
 		return b.withFixedRole(ctx, b.defaultRole, fn)
 	}
@@ -77,7 +99,7 @@ func (b *Backend) withRole(ctx context.Context, fn func(q querier) error) error 
 // withFixedRole runs fn in a transaction that SET LOCAL ROLEs to role (already
 // validated or operator-trusted).
 func (b *Backend) withFixedRole(ctx context.Context, role string, fn func(q querier) error) error {
-	tx, err := b.pool.Begin(ctx)
+	tx, err := b.readPool(ctx).Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin role-scoped tx: %w", err)
 	}

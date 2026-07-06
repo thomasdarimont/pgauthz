@@ -23,6 +23,9 @@ const (
 	ConsistencyHeader = "X-PGAuthz-Consistency"
 	RevisionHeader    = "X-PGAuthz-Revision"
 	StaleHeader       = "X-PGAuthz-Stale"
+	// ServedByHeader reports "primary" when a read was transparently served from
+	// the primary fallback pool because the local replica wasn't fresh enough.
+	ServedByHeader = "X-PGAuthz-Served-By"
 
 	consistencyAtLeastAsFresh = "at_least_as_fresh"
 )
@@ -66,8 +69,15 @@ func (h *Handler) checkFreshToken(w http.ResponseWriter, r *http.Request, token 
 	if verdict == "fresh" {
 		return true
 	}
-	// This replica cannot satisfy the token (stale/wrong_epoch/unknown) → tell the
-	// caller to retry against the primary. Retryable, not a server fault.
+	// Not fresh (stale/wrong_epoch/unknown). With transparent fallback configured,
+	// mark this request so the backend re-runs its reads on the PRIMARY (which is
+	// authoritative) and proceed; otherwise tell the caller to retry the primary
+	// itself (409, retryable — not a server fault).
+	if fb, ok := h.raw.(authz.FreshnessFallback); ok && fb.HasPrimaryFallback() {
+		*r = *r.WithContext(authz.WithPrimaryFallback(r.Context()))
+		w.Header().Set(ServedByHeader, "primary")
+		return true
+	}
 	w.Header().Set(StaleHeader, verdict)
 	writeError(w, http.StatusConflict,
 		"replica cannot satisfy the freshness token ("+verdict+"); retry against the primary")

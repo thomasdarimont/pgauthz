@@ -335,6 +335,8 @@ All configuration is via environment variables.
 | `DATABASE_URL` | *required* | PostgreSQL connection string |
 | `DB_POOL_MAX` | `25` | Connection pool size |
 | `DB_ROLE_CACHE_TTL_SECONDS` | `60` | How long a per-app DB role validation result (allowed *or* denied) is cached before re-checking `pg_has_role`; `0` disables caching (re-validate every request) |
+| `FRESHNESS_PRIMARY_URL` | *empty* | Reader-role DSN to the **primary** for transparent freshness fallback ([ADR 0009](../docs/adr/0009-freshness-tokens.md)): a not-fresh-enough `at_least_as_fresh` read is re-run on the primary (marked `X-PGAuthz-Served-By: primary`) instead of `409`. Off in OPA mode. Empty = the `409` behavior |
+| `FRESHNESS_PRIMARY_POOL_MAX` | `10` | Max connections in the primary-fallback pool (kept small so a fallback storm can't exhaust the primary) |
 
 ### pgauthzd-opa (OPA-fronted — `OPA_URL` set) only
 
