@@ -10,6 +10,7 @@ import (
 
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 	"thomasdarimont.de/authz/pgauthzd/internal/config"
+	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
 )
 
 var (
@@ -213,6 +214,7 @@ func (h *Handler) storeChecked(w http.ResponseWriter, r *http.Request) (string, 
 			return store, true
 		}
 	}
+	metrics.AuthzDenied.WithLabelValues("store_binding").Inc()
 	writeForbidden(w, "issuer is not allowed to access store '"+store+"'")
 	return "", false
 }
@@ -287,6 +289,7 @@ func (h *Handler) requireSearchRole(w http.ResponseWriter, r *http.Request) bool
 			return true
 		}
 	}
+	metrics.AuthzDenied.WithLabelValues("search_role").Inc()
 	writeForbidden(w, "search requires the '"+h.cfg.SearchRequiredRole+"' role")
 	return false
 }
@@ -306,6 +309,7 @@ func (h *Handler) requireWriter(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		}
 	}
+	metrics.AuthzDenied.WithLabelValues("writer_role").Inc()
 	writeForbidden(w, "writes require the '"+h.cfg.WriterRole+"' role")
 	return false
 }
@@ -314,6 +318,7 @@ func (h *Handler) requireWriter(w http.ResponseWriter, r *http.Request) bool {
 // 403 for a rejected override attempt, 400 for a missing subject.
 func writeSubjectError(w http.ResponseWriter, err error) {
 	if errors.Is(err, errSubjectForbidden) {
+		metrics.AuthzDenied.WithLabelValues("subject_override").Inc()
 		writeForbidden(w, err.Error())
 		return
 	}
@@ -360,6 +365,7 @@ func (h *Handler) Evaluation(w http.ResponseWriter, r *http.Request) {
 	// state/missing_context/model for the AuthZEN response context field.
 	if dc, ok := h.backend.(authz.DetailedChecker); ok && DetailFromContext(r.Context()) {
 		decision, detail, err := dc.CheckAccessDetailed(r.Context(), evalReq)
+		recordDecisionDetail(store, metrics.APIAuthZEN, detail, err)
 		if err != nil {
 			writeInternalError(w, err)
 			return
@@ -369,6 +375,7 @@ func (h *Handler) Evaluation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	decision, err := h.backend.CheckAccess(r.Context(), evalReq)
+	recordDecision(store, metrics.APIAuthZEN, decision, err)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -515,6 +522,7 @@ func (h *Handler) SearchSubject(w http.ResponseWriter, r *http.Request) {
 	subjects, pageResp, err := h.backend.ListSubjects(r.Context(), store,
 		req.Subject.Type, req.Action.Name, req.Resource.Type, req.Resource.ID,
 		req.Context, page)
+	recordSearch(store, "subjects", len(subjects), err)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -571,6 +579,7 @@ func (h *Handler) SearchResource(w http.ResponseWriter, r *http.Request) {
 	resources, pageResp, err := h.backend.ListResources(r.Context(), store,
 		subjectType, subjectID, req.Action.Name, req.Resource.Type,
 		req.Context, page)
+	recordSearch(store, "objects", len(resources), err)
 	if err != nil {
 		writeInternalError(w, err)
 		return

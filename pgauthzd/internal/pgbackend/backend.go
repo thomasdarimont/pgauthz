@@ -12,7 +12,21 @@ import (
 
 	"thomasdarimont.de/authz/pgauthzd/internal/api"
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
+	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
 )
+
+// observe times a DB operation and records duration + errors by op and pool
+// (ADR 0010). op ∈ read|write|freshness; pool from poolLabel(ctx).
+func (b *Backend) observe(ctx context.Context, op string, fn func() error) error {
+	start := time.Now()
+	err := fn()
+	pool := b.poolLabel(ctx)
+	metrics.DBQueryDuration.WithLabelValues(op, pool).Observe(time.Since(start).Seconds())
+	if err != nil {
+		metrics.DBErrors.WithLabelValues(op, pool).Inc()
+	}
+	return err
+}
 
 // Backend implements authz.Backend using direct PostgreSQL calls.
 type Backend struct {
@@ -33,6 +47,10 @@ type Backend struct {
 	// the raw connection role (whose SET-ROLE memberships would otherwise leak
 	// into membership-keyed checks). See config.DefaultDBRole.
 	defaultRole string
+	// localPool is the metrics label for this backend's own pool ("replica" on a
+	// decision-only reader, "primary" on a full writer); the fallback pool is
+	// labelled "fallback". Matches the pool-stats names (ADR 0010).
+	localPool string
 }
 
 type roleCacheEntry struct {
@@ -46,8 +64,20 @@ type roleCacheEntry struct {
 // fallback read role (empty = run as the connection role). primaryPool, when
 // non-nil, enables transparent freshness fallback (ADR 0009) — reads on a
 // context marked authz.WithPrimaryFallback route to it; pass nil to disable.
-func New(pool, primaryPool *pgxpool.Pool, roleCacheTTL time.Duration, defaultRole string) *Backend {
-	return &Backend{pool: pool, primaryPool: primaryPool, roleCacheTTL: roleCacheTTL, defaultRole: defaultRole}
+func New(pool, primaryPool *pgxpool.Pool, roleCacheTTL time.Duration, defaultRole, localPool string) *Backend {
+	if localPool == "" {
+		localPool = "local"
+	}
+	return &Backend{pool: pool, primaryPool: primaryPool, roleCacheTTL: roleCacheTTL, defaultRole: defaultRole, localPool: localPool}
+}
+
+// poolLabel is the metrics pool name for a request: "fallback" when routed to
+// the primary fallback pool, else this backend's local pool name (ADR 0010).
+func (b *Backend) poolLabel(ctx context.Context) string {
+	if b.primaryPool != nil && authz.PrimaryFallback(ctx) {
+		return "fallback"
+	}
+	return b.localPool
 }
 
 // readPool returns the pool a read should run on: the PRIMARY fallback pool when
@@ -80,6 +110,10 @@ type querier interface {
 // the caller's app role instead of the service's connection role. Fail closed:
 // an unknown, non-reader, or admin-capable role is rejected.
 func (b *Backend) withRole(ctx context.Context, fn func(q querier) error) error {
+	return b.observe(ctx, "read", func() error { return b.withRoleInner(ctx, fn) })
+}
+
+func (b *Backend) withRoleInner(ctx context.Context, fn func(q querier) error) error {
 	role := api.DBRoleFromContext(ctx)
 	if role == "" {
 		// No per-app role: fall back to the configured trusted default (always
@@ -158,6 +192,10 @@ func (b *Backend) checkRole(ctx context.Context, role string) error {
 // synchronous_commit (strict-revocation lives here, per-tx, as it did on the
 // writer connection URI).
 func (b *Backend) writeWithRole(ctx context.Context, consistency string, fn func(q querier) error) error {
+	return b.observe(ctx, "write", func() error { return b.writeWithRoleInner(ctx, consistency, fn) })
+}
+
+func (b *Backend) writeWithRoleInner(ctx context.Context, consistency string, fn func(q querier) error) error {
 	role := api.DBRoleFromContext(ctx)
 	tx, err := b.pool.Begin(ctx)
 	if err != nil {
@@ -254,8 +292,9 @@ func syncCommit(consistency string) (value string, ok bool) {
 func (b *Backend) FreshnessToken(ctx context.Context) (int32, string, error) {
 	var epoch int32
 	var lsn string
-	if err := b.pool.QueryRow(ctx,
-		"SELECT epoch, lsn::text FROM authz.freshness_token()").Scan(&epoch, &lsn); err != nil {
+	if err := b.observe(ctx, "freshness", func() error {
+		return b.pool.QueryRow(ctx, "SELECT epoch, lsn::text FROM authz.freshness_token()").Scan(&epoch, &lsn)
+	}); err != nil {
 		return 0, "", fmt.Errorf("minting freshness token: %w", err)
 	}
 	return epoch, lsn, nil
@@ -267,8 +306,9 @@ func (b *Backend) FreshnessToken(ctx context.Context) (int32, string, error) {
 // position (fail-closed to 'unknown' when the timeline is unreadable).
 func (b *Backend) AssertFresh(ctx context.Context, epoch int32, lsn string) (string, error) {
 	var verdict string
-	if err := b.pool.QueryRow(ctx,
-		"SELECT authz.assert_fresh($1, $2::pg_lsn)", epoch, lsn).Scan(&verdict); err != nil {
+	if err := b.observe(ctx, "freshness", func() error {
+		return b.pool.QueryRow(ctx, "SELECT authz.assert_fresh($1, $2::pg_lsn)", epoch, lsn).Scan(&verdict)
+	}); err != nil {
 		return "", fmt.Errorf("asserting freshness: %w", err)
 	}
 	return verdict, nil

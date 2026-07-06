@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
 )
 
 // InternalRoleHeader is the header OPA forwards the caller's per-app DB role in
@@ -249,12 +251,14 @@ func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
+			metrics.JWTFailures.WithLabelValues("missing").Inc()
 			writeUnauthorized(w)
 			return
 		}
 
 		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 		if tokenStr == authHeader {
+			metrics.JWTFailures.WithLabelValues("malformed").Inc()
 			writeUnauthorized(w)
 			return
 		}
@@ -262,6 +266,7 @@ func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 		claims, err := m.verifyToken(tokenStr)
 		if err != nil {
 			slog.Debug("JWT verification failed", "error", err)
+			metrics.JWTFailures.WithLabelValues("invalid_token").Inc()
 			writeUnauthorized(w)
 			return
 		}
@@ -321,6 +326,7 @@ func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 			// downgraded to the fixed connection role, which could widen access).
 			if !m.dbRoleAllowed(iss, dbRole) {
 				slog.Debug("issuer not allowed to yield db role", "role", dbRole)
+				metrics.AuthzDenied.WithLabelValues("db_role_binding").Inc()
 				writeForbidden(w, "issuer is not allowed to yield db role '"+dbRole+"'")
 				return
 			}

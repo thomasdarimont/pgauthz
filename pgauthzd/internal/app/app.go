@@ -280,7 +280,7 @@ func newPGBackend(ctx context.Context, cfg *config.Config) (*pgbackend.Backend, 
 			primaryPool.Close()
 		}
 	}
-	return pgbackend.New(pool, primaryPool, time.Duration(cfg.DBRoleCacheTTLSeconds)*time.Second, cfg.DefaultDBRole), cleanup, nil
+	return pgbackend.New(pool, primaryPool, time.Duration(cfg.DBRoleCacheTTLSeconds)*time.Second, cfg.DefaultDBRole, localPoolName), cleanup, nil
 }
 
 // newPool builds and pings a pgx pool bounded to maxConns.

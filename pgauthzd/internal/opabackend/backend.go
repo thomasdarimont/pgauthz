@@ -8,9 +8,11 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"thomasdarimont.de/authz/pgauthzd/internal/api"
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
+	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
 )
 
 // Backend implements authz.Backend by calling OPA HTTP endpoints.
@@ -267,7 +269,17 @@ func (b *Backend) Healthz(ctx context.Context) error {
 }
 
 // query calls OPA's /v1/data/{pkg}/{rule} and unwraps the result.
-func (b *Backend) query(ctx context.Context, rule string, input any, dest any) error {
+func (b *Backend) query(ctx context.Context, rule string, input any, dest any) (err error) {
+	// OPA request latency + result (ADR 0010) — single chokepoint for every rule.
+	start := time.Now()
+	defer func() {
+		metrics.OPARequestDuration.Observe(time.Since(start).Seconds())
+		result := "ok"
+		if err != nil {
+			result = "error"
+		}
+		metrics.OPARequests.WithLabelValues(result).Inc()
+	}()
 	// Forward the verified token so OPA can re-validate it (input.token path),
 	// rather than trusting the forwarded subject. Applied at this single chokepoint
 	// so every rule (allow, evaluations, accessible_*, permitted_actions) benefits.

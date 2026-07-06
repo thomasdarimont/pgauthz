@@ -22,6 +22,7 @@ import (
 	"net/http"
 
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
+	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
 )
 
 type nativeCheckBody struct {
@@ -77,6 +78,7 @@ func (h *Handler) NativeCheck(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		decision, err := cc.CheckWithContextualTuples(r.Context(), evalReq, req.ContextualTuples)
+		recordDecision(store, metrics.APINative, decision, err)
 		if err != nil {
 			writeInternalError(w, err)
 			return
@@ -87,6 +89,7 @@ func (h *Handler) NativeCheck(w http.ResponseWriter, r *http.Request) {
 	if req.Detail {
 		if dc, ok := h.raw.(authz.DetailedChecker); ok {
 			decision, detail, err := dc.CheckAccessDetailed(r.Context(), evalReq)
+			recordDecisionDetail(store, metrics.APINative, detail, err)
 			if err != nil {
 				writeInternalError(w, err)
 				return
@@ -97,6 +100,7 @@ func (h *Handler) NativeCheck(w http.ResponseWriter, r *http.Request) {
 		// detail requested but unsupported → fall through to the plain answer
 	}
 	decision, err := h.raw.CheckAccess(r.Context(), evalReq)
+	recordDecision(store, metrics.APINative, decision, err)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -251,6 +255,7 @@ func (h *Handler) NativeListObjects(w http.ResponseWriter, r *http.Request) {
 	}
 	objects, pageResp, err := h.raw.ListResources(r.Context(), store,
 		subjectType, subjectID, req.Action.Name, req.Resource.Type, req.Context, req.pageReq())
+	recordSearch(store, "objects", len(objects), err)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -298,6 +303,7 @@ func (h *Handler) NativeListSubjects(w http.ResponseWriter, r *http.Request) {
 	}
 	subjects, pageResp, err := h.raw.ListSubjects(r.Context(), store,
 		req.Subject.Type, req.Action.Name, req.Resource.Type, req.Resource.ID, req.Context, req.pageReq())
+	recordSearch(store, "subjects", len(subjects), err)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -337,6 +343,7 @@ func (h *Handler) NativeListActions(w http.ResponseWriter, r *http.Request) {
 	}
 	actions, err := h.raw.ListActions(r.Context(), store,
 		subjectType, subjectID, req.Resource.Type, req.Resource.ID, req.Context)
+	recordSearch(store, "actions", len(actions), err)
 	if err != nil {
 		writeInternalError(w, err)
 		return

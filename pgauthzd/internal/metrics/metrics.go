@@ -46,6 +46,68 @@ var (
 		Name: "pgauthzd_build_info",
 		Help: "Build/runtime info; value is always 1, the labels carry the data.",
 	}, []string{"version", "commit", "go_version", "profile", "opa_enabled", "freshness_enabled", "fallback_enabled"})
+
+	// ── Slice 2 ─────────────────────────────────────────────────────────────
+	// Decisions. `api` ∈ native|authzen (client surface); OPA-fronting is an
+	// instance property (build_info.opa_enabled), not a per-request label.
+	// NOTE: `store` is per-tenant — bounded in practice, but bucket the long tail
+	// into "other" if you run very many tenants (ADR 0010 cardinality policy).
+	CheckDecisions = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "pgauthzd_check_decisions_total",
+		Help: "Access-check decisions by store, decision (allow|deny|conditional|error), and api.",
+	}, []string{"store", "decision", "api"})
+
+	// Search / graph enumeration.
+	SearchRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "pgauthzd_search_requests_total",
+		Help: "Search requests by store, kind (objects|subjects|actions), and result (ok|error).",
+	}, []string{"store", "kind", "result"})
+
+	SearchResultSize = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "pgauthzd_search_result_size",
+		Help:    "Search result-set size by kind.",
+		Buckets: []float64{0, 1, 5, 10, 50, 100, 500, 1000, 5000},
+	}, []string{"kind"})
+
+	// Auth / security signals.
+	JWTFailures = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "pgauthzd_jwt_validation_failures_total",
+		Help: "JWT validation failures by reason (bad_signature|expired|unknown_issuer|audience|scope|missing|malformed).",
+	}, []string{"reason"})
+
+	AuthzDenied = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "pgauthzd_authz_denied_total",
+		Help: "Request-layer authorization denials by reason (writer_role|search_role|subject_override|store_binding|db_role_binding|forbidden_role).",
+	}, []string{"reason"})
+
+	// Backend latency.
+	DBQueryDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "pgauthzd_db_query_duration_seconds",
+		Help:    "PostgreSQL query duration by op (check|list|explain|write|freshness) and pool (primary|replica|fallback).",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"op", "pool"})
+
+	DBErrors = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "pgauthzd_db_errors_total",
+		Help: "PostgreSQL query errors by op and pool.",
+	}, []string{"op", "pool"})
+
+	OPARequestDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "pgauthzd_opa_request_duration_seconds",
+		Help:    "OPA policy request duration (only when fronting OPA).",
+		Buckets: prometheus.DefBuckets,
+	})
+
+	OPARequests = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "pgauthzd_opa_requests_total",
+		Help: "OPA policy requests by result (ok|error).",
+	}, []string{"result"})
+)
+
+// Decision label helpers keep the label vocabulary in one place.
+const (
+	APINative  = "native"
+	APIAuthZEN = "authzen"
 )
 
 // SetBuildInfo records the process's build + config labels (value 1).
@@ -113,6 +175,17 @@ func init() {
 	// rather than a clean 0. (Only fixed enums; route/status are unbounded.)
 	for _, v := range []string{"fresh", "stale", "wrong_epoch", "unknown"} {
 		FreshnessVerdicts.WithLabelValues(v)
+	}
+	// Slice-2 fixed-enum, store-independent series (store/pool-labelled ones are
+	// left to first observation — they'd otherwise need unbounded pre-init).
+	for _, r := range []string{"missing", "malformed", "invalid_token"} {
+		JWTFailures.WithLabelValues(r)
+	}
+	for _, r := range []string{"writer_role", "search_role", "store_binding", "db_role_binding", "subject_override"} {
+		AuthzDenied.WithLabelValues(r)
+	}
+	for _, r := range []string{"ok", "error"} {
+		OPARequests.WithLabelValues(r)
 	}
 }
 

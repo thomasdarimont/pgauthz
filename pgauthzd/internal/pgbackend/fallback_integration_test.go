@@ -40,7 +40,7 @@ func TestFallbackRouting(t *testing.T) {
 	defer replica.Close()
 
 	// The reader's "local" pool is the replica; the fallback pool is the primary.
-	b := New(replica, primary, 0, "")
+	b := New(replica, primary, 0, "", "replica")
 
 	// read runs a scalar SELECT through the backend's read path (withRole with no
 	// per-app role → readPool(ctx)), so the pool selection is exactly production's.

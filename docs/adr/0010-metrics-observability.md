@@ -200,7 +200,12 @@ not left to callers.
    `freshness_verdicts/fallback` + `build_info` + `db_pool_connections`, on the
    opt-in `METRICS_LISTEN_ADDR` listener. Answers lagging-replica, failover,
    error/deny-rate, saturation, what's-deployed.
-2. **Slice 2:** per-store decisions + search, `jwt_validation_failures`,
-   `authz_denied`, `condition_eval`, DB/OPA latency histograms.
+2. **Slice 2 — SHIPPED** (except `condition_eval`, which needs engine-side
+   signals — deferred): per-store decisions (`check_decisions_total{store,
+   decision,api}`) + search (`search_requests_total`, `search_result_size`),
+   `jwt_validation_failures_total{reason}`, `authz_denied_total{reason}`, and
+   backend latency (`db_query_duration_seconds{op,pool}`, `db_errors_total`,
+   `opa_request_duration_seconds`, `opa_requests_total`). Follow-up: per-result
+   decisions for the batch endpoints (check-batch / evaluations).
 3. **Slice 3:** engine/tenant gauges (tuple counts, model version, expiry
    backlog) — periodic sampling, with the `store` bucketing rule.
