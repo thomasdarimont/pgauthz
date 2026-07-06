@@ -101,6 +101,25 @@ spec:
         - namespaceSelector: {}
       ports: [{ port: 8080 }]
 {{- end }}
+{{- if .Values.metrics.enabled }}
+---
+# Prometheus metrics (:metrics.port) — additive allow so a scraper (e.g. the
+# Prometheus Operator) can reach every pgauthzd pod's /metrics without opening
+# any other port. Metrics are non-sensitive ops data; allowed from any namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $full }}-metrics-ingress
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: {{ $name }} }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {}
+      ports: [{ port: {{ .Values.metrics.port }} }]
+{{- end }}
 {{- end }}
 {{- if .Values.database.networkPolicy.enabled }}
 {{- $name := include "pgauthz.name" . }}

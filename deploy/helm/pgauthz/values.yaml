@@ -221,6 +221,18 @@ authzen:
   # reader). Kept for backwards compatibility with existing values overrides.
   exposeViaIngress: false
 
+# ── Metrics (ADR 0010) ───────────────────────────────────────────────────────
+# When enabled, each pgauthzd (reader + writer) serves Prometheus /metrics on a
+# dedicated container port + Service port (never the client/ingress path). A
+# ServiceMonitor (Prometheus Operator) can then scrape it.
+metrics:
+  enabled: false
+  port: 9090
+  serviceMonitor:
+    enabled: false            # requires the Prometheus Operator CRD
+    interval: 30s
+    labels: {}                # extra labels so your Prometheus's serviceMonitorSelector matches
+
 # ── Ingress ──────────────────────────────────────────────────────────────────
 # Only the pgauthzd AuthZEN front door is exposed (the direct reader by default,
 # or the OPA-fronted gateway when authzen.opa.enabled). OPA + Postgres never.

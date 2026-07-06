@@ -1,0 +1,33 @@
+# Opt-in metrics overlay (ADR 0010, Slice 1): a Prometheus that scrapes the
+# pgauthzd instances' /metrics (:9090) + a Grafana wired to it, so the demo
+# actually collects and visualizes the metrics. Enable with:
+#
+#   ./start.sh --metrics        (or PGAUTHZ_METRICS=1)
+#
+# The pgauthzd instances always expose /metrics (METRICS_LISTEN_ADDR=:9090 in
+# compose-authzen.yml / compose-opa.yml); this overlay only adds the scraper +
+# dashboards. UIs: Prometheus http://localhost:9095, Grafana http://localhost:9096.
+
+services:
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    ports:
+      - "9095:9090"          # Prometheus UI
+    volumes:
+      - ./deploy/metrics/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    ports:
+      - "9096:3000"          # Grafana UI (anonymous admin — demo only)
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./deploy/metrics/grafana-datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped

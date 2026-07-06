@@ -14,6 +14,8 @@
 #   --playground  Also start the playground (Lit SPA + Go BFF) at
 #                 https://app.pgauthz.test. Implies --keycloak; run terraform
 #                 apply afterwards to provision the playground-bff client.
+#   --metrics   Also start Prometheus + Grafana scraping the pgauthzd /metrics
+#               (compose-metrics.yml). UIs: :9095 (Prometheus) / :9096 (Grafana).
 #
 set -euo pipefail
 
@@ -22,13 +24,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OPA=0
 KEYCLOAK=0
 PLAYGROUND=0
+METRICS=0
 for arg in "$@"; do
   case "$arg" in
     --cel)        export PGAUTHZ_CEL=1 ;;
     --opa)        OPA=1 ;;
     --keycloak)   KEYCLOAK=1 ;;
     --playground) PLAYGROUND=1 ;;
-    -h|--help)    sed -n '2,17p' "$0"; exit 0 ;;
+    --metrics)    METRICS=1 ;;
+    -h|--help)    sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "Unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -49,6 +53,7 @@ if [ "$KEYCLOAK" = 1 ]; then OPA=1; fi
   echo "export PGAUTHZ_OPA=\"\${PGAUTHZ_OPA:-$OPA}\""
   echo "export PGAUTHZ_KEYCLOAK=\"\${PGAUTHZ_KEYCLOAK:-$KEYCLOAK}\""
   echo "export PGAUTHZ_PLAYGROUND=\"\${PGAUTHZ_PLAYGROUND:-$PLAYGROUND}\""
+  echo "export PGAUTHZ_METRICS=\"\${PGAUTHZ_METRICS:-$METRICS}\""
 } > "$SCRIPT_DIR/.pgauthz-overlays"
 
 # Compose files — base stack + optional authzen overlay
@@ -90,6 +95,12 @@ if [ "$PLAYGROUND" = 1 ]; then
   echo "==> Playground enabled (compose-playground.yml)"
 fi
 
+# Optional metrics overlay (Prometheus + Grafana scraping pgauthzd /metrics).
+if [ "$METRICS" = 1 ]; then
+  COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-metrics.yml")
+  echo "==> Metrics enabled (compose-metrics.yml: Prometheus + Grafana)"
+fi
+
 echo "==> Starting pgauthz stack..."
 docker compose "${COMPOSE_FILES[@]}" up -d --build --wait
 
@@ -101,6 +112,11 @@ if [ "$KEYCLOAK" = 1 ]; then
   echo "==> Keycloak issuer: https://id.pgauthz.test   admin: https://admin.pgauthz.test"
   echo "    Provision realm:  (cd keycloak/terraform && terraform init && terraform apply)"
   echo "    Get a token:      eval \"\$(./keycloak/get-token.sh bob)\""
+fi
+
+if [ "$METRICS" = 1 ]; then
+  echo ""
+  echo "==> Prometheus: http://localhost:9095   Grafana: http://localhost:9096 (anonymous admin)"
 fi
 
 if [ "$PLAYGROUND" = 1 ]; then

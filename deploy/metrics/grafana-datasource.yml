@@ -1,0 +1,10 @@
+# Grafana datasource provisioning for the demo metrics overlay (ADR 0010):
+# points Grafana at the overlay's Prometheus. Anonymous admin is enabled on the
+# Grafana service, so the demo needs no login.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true

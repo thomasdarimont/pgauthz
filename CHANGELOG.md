@@ -15,7 +15,10 @@ pre-1.0, minor versions may include breaking changes.
   freshness verdict/fallback counters (`pgauthzd_freshness_verdicts_total{verdict}`,
   `pgauthzd_freshness_fallback_total` — lagging-replica + failover signals),
   `pgauthzd_build_info`, and pgx pool stats (`pgauthzd_db_pool_connections{pool,state}`),
-  plus the default Go/process collectors.
+  plus the default Go/process collectors. Demo wiring: `./start.sh --metrics`
+  brings up a Prometheus + Grafana that scrape it (compose-metrics.yml, UIs on
+  :9095/:9096); Helm exposes it via `metrics.enabled` + a `ServiceMonitor`
+  (`metrics.serviceMonitor.enabled`).
 - **Freshness tokens for read-your-writes across replicas** ([ADR 0009](docs/adr/0009-freshness-tokens.md)).
   An opt-in, HMAC-signed LSN-watermark token (`{epoch=timeline, lsn}`): a write
   mints one (`X-PGAuthz-Revision` header + `"revision"` body), and a read can

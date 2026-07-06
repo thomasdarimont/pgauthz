@@ -77,8 +77,10 @@ services:
       # Internal native-callback listener. In production DO NOT publish this —
       # bind it to the OPA sidecar network only. Published here for the tests.
       - "8093:8081"
+      - "9092:9090"   # Prometheus /metrics (ADR 0010)
     environment:
       LISTEN_ADDR: ":8080"
+      METRICS_LISTEN_ADDR: ":9090"
       PGAUTHORIZER_PROFILE: "decision-only"
       # Internal listener for the policy-FREE native raw endpoints the OPA
       # sidecar calls back into. Read-only role.

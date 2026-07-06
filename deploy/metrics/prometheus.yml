@@ -1,0 +1,19 @@
+# Prometheus scrape config for the demo metrics overlay (ADR 0010). Scrapes each
+# pgauthzd instance's /metrics (:9090). pgauthzd-opa is only up with --opa; a
+# down target simply shows as down on the Targets page.
+global:
+  scrape_interval: 10s
+
+scrape_configs:
+  - job_name: pgauthzd
+    static_configs:
+      - targets:
+          - pgauthzd-decision:9090
+          - pgauthzd-full:9090
+          - pgauthzd-opa:9090
+    relabel_configs:
+      # instance = the service name (drop the :9090) for readable labels.
+      - source_labels: [__address__]
+        regex: '([^:]+):.*'
+        target_label: instance
+        replacement: '$1'

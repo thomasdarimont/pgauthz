@@ -24,8 +24,10 @@ services:
     build: *pgauthzd-build
     ports:
       - "8090:8080"
+      - "9090:9090"   # Prometheus /metrics (ADR 0010) — demo convenience; don't host-expose in prod
     environment:
       LISTEN_ADDR: ":8080"
+      METRICS_LISTEN_ADDR: ":9090"
       PGAUTHORIZER_PROFILE: "decision-only"
       # Dedicated non-superuser, read-only role (inherits authz_reader),
       # created by db/security/initdb on first init. Never use the authz
@@ -67,8 +69,10 @@ services:
       # OPA forwards authorized writes here. Published for the tests only — in
       # production bind to the OPA sidecar network.
       - "8094:8081"
+      - "9091:9090"   # Prometheus /metrics (ADR 0010)
     environment:
       LISTEN_ADDR: ":8080"
+      METRICS_LISTEN_ADDR: ":9090"
       PGAUTHORIZER_PROFILE: "full"
       # Writer-capable non-superuser role (inherits authz_writer), created by
       # db/security/roles.sql. This is the ONLY instance that can write.

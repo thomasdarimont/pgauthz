@@ -1,0 +1,24 @@
+{{- /* Prometheus Operator ServiceMonitor for pgauthzd /metrics (ADR 0010).
+Selects the reader + writer Services; only Services that carry a `metrics`
+port (added when metrics.enabled) are scraped for that endpoint. */ -}}
+{{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "pgauthz.fullname" . }}
+  labels:
+    {{- include "pgauthz.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames: [{{ .Release.Namespace }}]
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "pgauthz.name" . }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+{{- end }}

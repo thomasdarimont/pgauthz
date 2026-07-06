@@ -70,9 +70,15 @@ spec:
             - { name: JWT_AUDIENCE,  value: {{ .Values.opa.jwtAudience | quote }} }
             - { name: DEFAULT_STORE, value: {{ .Values.opa.defaultStore | quote }} }
             - { name: ALLOW_SUBJECT_OVERRIDE, value: "false" }
+            {{- if .Values.metrics.enabled }}
+            - { name: METRICS_LISTEN_ADDR, value: ":{{ .Values.metrics.port }}" }
+            {{- end }}
           ports:
             - { name: jwt,      containerPort: 8080 }
             - { name: callback, containerPort: 8081 }
+            {{- if .Values.metrics.enabled }}
+            - { name: metrics,  containerPort: {{ .Values.metrics.port }} }
+            {{- end }}
           readinessProbe: { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 5 }
           livenessProbe:  { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 10 }
           resources: {{- toYaml .Values.reader.resources | nindent 12 }}
@@ -92,7 +98,11 @@ spec:
     app.kubernetes.io/name: {{ include "pgauthz.name" . }}
     app.kubernetes.io/component: pgauthzd-reader
   # Only the callback listener is exposed; OPA's NATIVE_URL points here.
-  ports: [{ name: callback, port: 8081, targetPort: 8081 }]
+  ports:
+    - { name: callback, port: 8081, targetPort: 8081 }
+    {{- if .Values.metrics.enabled }}
+    - { name: metrics, port: {{ .Values.metrics.port }}, targetPort: metrics }
+    {{- end }}
 {{- if .Values.reader.autoscaling.enabled }}
 ---
 apiVersion: autoscaling/v2
@@ -158,9 +168,15 @@ spec:
             - { name: JWT_AUDIENCE,  value: {{ .Values.opa.jwtAudience | quote }} }
             - { name: DEFAULT_STORE, value: {{ .Values.opa.defaultStore | quote }} }
             - { name: ALLOW_SUBJECT_OVERRIDE, value: "false" }
+            {{- if .Values.metrics.enabled }}
+            - { name: METRICS_LISTEN_ADDR, value: ":{{ .Values.metrics.port }}" }
+            {{- end }}
           ports:
             - { name: jwt,      containerPort: 8080 }
             - { name: callback, containerPort: 8081 }
+            {{- if .Values.metrics.enabled }}
+            - { name: metrics,  containerPort: {{ .Values.metrics.port }} }
+            {{- end }}
           readinessProbe: { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 5 }
           livenessProbe:  { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 10 }
           resources: {{- toYaml .Values.writer.resources | nindent 12 }}
@@ -180,4 +196,8 @@ spec:
     app.kubernetes.io/name: {{ include "pgauthz.name" . }}
     app.kubernetes.io/component: pgauthzd-writer
   # Only the callback listener is exposed; OPA's NATIVE_WRITE_URL points here.
-  ports: [{ name: callback, port: 8081, targetPort: 8081 }]
+  ports:
+    - { name: callback, port: 8081, targetPort: 8081 }
+    {{- if .Values.metrics.enabled }}
+    - { name: metrics, port: {{ .Values.metrics.port }}, targetPort: metrics }
+    {{- end }}
