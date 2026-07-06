@@ -102,7 +102,28 @@ var (
 		Name: "pgauthzd_opa_requests_total",
 		Help: "OPA policy requests by result (ok|error).",
 	}, []string{"result"})
+
+	// ── Slice 3: engine/tenant gauges (periodically sampled) ────────────────
+	StoresTotal = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "pgauthzd_stores_total",
+		Help: "Number of stores (tenants) in the engine.",
+	})
+	storeTuples = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "pgauthzd_store_tuples",
+		Help: "Tuple count per store (top-N by count; sampled — see ADR 0010).",
+	}, []string{"store"})
 )
+
+// SetStoreStats refreshes the engine/tenant gauges from a periodic sample. It
+// resets the per-store gauge first so a store dropped from the top-N (or
+// retired) does not linger as a stale series.
+func SetStoreStats(tuplesByStore map[string]float64, storesTotal float64) {
+	storeTuples.Reset()
+	for store, n := range tuplesByStore {
+		storeTuples.WithLabelValues(store).Set(n)
+	}
+	StoresTotal.Set(storesTotal)
+}
 
 // Decision label helpers keep the label vocabulary in one place.
 const (

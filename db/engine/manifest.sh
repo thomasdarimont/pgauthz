@@ -30,6 +30,7 @@ ENGINE_MANIFEST=(
   "access.sql:read"
   "explain.sql:read"
   "consistency.sql:read"
+  "stats.sql:read"
   "store.sql:write"
   "tuples.sql:write"
   "maintenance.sql:write"

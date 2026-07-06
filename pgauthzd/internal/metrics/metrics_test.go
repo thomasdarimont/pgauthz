@@ -4,7 +4,24 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
+
+func TestSetStoreStats(t *testing.T) {
+	SetStoreStats(map[string]float64{"demo": 44, "todo": 17}, 2)
+	if got := testutil.ToFloat64(StoresTotal); got != 2 {
+		t.Fatalf("stores_total = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(storeTuples.WithLabelValues("demo")); got != 44 {
+		t.Fatalf("store_tuples{demo} = %v, want 44", got)
+	}
+	// A later sample must reset stale series: todo drops out → back to 0.
+	SetStoreStats(map[string]float64{"demo": 45}, 1)
+	if got := testutil.ToFloat64(storeTuples.WithLabelValues("todo")); got != 0 {
+		t.Fatalf("store_tuples{todo} should reset to 0, got %v", got)
+	}
+}
 
 type fakeStat struct{}
 

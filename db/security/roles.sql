@@ -247,6 +247,8 @@ GRANT EXECUTE ON FUNCTION authz.list_model_versions(text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.plan_model_apply(text, text, integer) TO authz_reader;
 -- Freshness token (ADR 0009): the reader-side guard for at_least_as_fresh reads.
 GRANT EXECUTE ON FUNCTION authz.assert_fresh(int, pg_lsn) TO authz_reader;
+-- Engine/tenant stats (ADR 0010): pgauthzd samples this for per-store gauges.
+GRANT EXECUTE ON FUNCTION authz.store_stats(int) TO authz_reader;
 
 ------------------------------------------------------------------------
 -- authz_writer: tuple management (inherits reader grants above)
@@ -330,6 +332,7 @@ ALTER FUNCTION authz.check_access_detailed(text, text, text, text, text, text, j
 -- pg_read_all_stats below so assert_fresh can read pg_stat_wal_receiver.
 ALTER FUNCTION authz.freshness_token() SECURITY DEFINER;
 ALTER FUNCTION authz.assert_fresh(int, pg_lsn) SECURITY DEFINER;
+ALTER FUNCTION authz.store_stats(int) SECURITY DEFINER;
 ALTER FUNCTION authz.describe_model(text) SECURITY DEFINER;
 ALTER FUNCTION authz.write_tuple(text, text, text, text, text, text, text, text, jsonb, text, timestamptz) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_tuple(text, text, text, text, text, text, text, text) SECURITY DEFINER;

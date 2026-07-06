@@ -95,6 +95,28 @@ func (b *Backend) readPool(ctx context.Context) *pgxpool.Pool {
 // primary fallback is configured on this backend.
 func (b *Backend) HasPrimaryFallback() bool { return b.primaryPool != nil }
 
+// StoreStats implements authz.StoreStatser (ADR 0010, Slice 3): top-N stores by
+// tuple count + the total store count, via the SECURITY DEFINER authz.store_stats.
+func (b *Backend) StoreStats(ctx context.Context, limit int) ([]authz.StoreStat, int64, error) {
+	rows, err := b.pool.Query(ctx, "SELECT store, tuples, stores_total FROM authz.store_stats($1)", limit)
+	if err != nil {
+		return nil, 0, fmt.Errorf("store_stats: %w", err)
+	}
+	defer rows.Close()
+	var (
+		stats []authz.StoreStat
+		total int64
+	)
+	for rows.Next() {
+		var s authz.StoreStat
+		if err := rows.Scan(&s.Store, &s.Tuples, &total); err != nil {
+			return nil, 0, err
+		}
+		stats = append(stats, s)
+	}
+	return stats, total, rows.Err()
+}
+
 // querier is the subset of pgx query methods shared by the pool and a
 // transaction, so request handlers can run either directly on the pool or
 // inside a role-scoped transaction.

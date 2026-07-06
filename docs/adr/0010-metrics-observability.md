@@ -207,5 +207,10 @@ not left to callers.
    backend latency (`db_query_duration_seconds{op,pool}`, `db_errors_total`,
    `opa_request_duration_seconds`, `opa_requests_total`). Follow-up: per-result
    decisions for the batch endpoints (check-batch / evaluations).
-3. **Slice 3:** engine/tenant gauges (tuple counts, model version, expiry
-   backlog) — periodic sampling, with the `store` bucketing rule.
+3. **Slice 3 — SHIPPED (first cut):** engine/tenant gauges via a periodic DB
+   sampler (`METRICS_SAMPLE_INTERVAL_SECONDS`, default 30; only when metrics are
+   exposed) — `pgauthzd_store_tuples{store}` (top-N by count, capped by
+   `METRICS_MAX_STORES`) + `pgauthzd_stores_total`, read through the SECURITY
+   DEFINER `authz.store_stats`. Deferred: model-version (registry uses content
+   hashes, not a plain version column) and expired-tuple backlog (RLS-hidden from
+   the reader role — needs the bypass path).

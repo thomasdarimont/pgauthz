@@ -327,6 +327,8 @@ All configuration is via environment variables.
 | `REQUIRE_DB_ROLE_BINDING` | `false` | When role derivation is configured (`DB_ROLE_CLAIM` / `CLIENT_DB_ROLES`): refuse to start unless every issuer has a `db_roles` or `client_db_roles` binding (recommended `true` for multi-tenant deployments) |
 | `FRESHNESS_TOKEN_KEY` | *empty* | HMAC secret enabling freshness tokens ([ADR 0009](../docs/adr/0009-freshness-tokens.md) read-your-writes). Set the **same** value on the writer (mints) and the readers (verify). Empty = feature off: writes mint no token and an `at_least_as_fresh` read is rejected (`400`, fail closed) |
 | `METRICS_LISTEN_ADDR` | *empty* | When set (e.g. `:9090`), serves Prometheus `/metrics` on a **separate** listener ([ADR 0010](../docs/adr/0010-metrics-observability.md)). Bind to the pod/mesh network — **never** the public client listener. Empty = metrics disabled |
+| `METRICS_SAMPLE_INTERVAL_SECONDS` | `30` | Interval for the engine/tenant gauge sampler (per-store tuple counts). Only runs when metrics are exposed; `0` disables it |
+| `METRICS_MAX_STORES` | `100` | Cap on per-store series (top-N by tuple count); `pgauthzd_stores_total` still reports the true count |
 | `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
 
 ### pgauthzd-decision (`decision-only`) only

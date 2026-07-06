@@ -23,7 +23,9 @@ pre-1.0, minor versions may include breaking changes.
   (`pgauthzd_search_requests_total` / `_result_size`), auth signals
   (`pgauthzd_jwt_validation_failures_total`, `pgauthzd_authz_denied_total`), and
   backend latency (`pgauthzd_db_query_duration_seconds{op,pool}`,
-  `pgauthzd_opa_request_duration_seconds`).
+  `pgauthzd_opa_request_duration_seconds`). **Slice 3** adds periodically-sampled
+  engine/tenant gauges — `pgauthzd_store_tuples{store}` (top-N, capped by
+  `METRICS_MAX_STORES`) + `pgauthzd_stores_total` (`METRICS_SAMPLE_INTERVAL_SECONDS`).
 - **Freshness tokens for read-your-writes across replicas** ([ADR 0009](docs/adr/0009-freshness-tokens.md)).
   An opt-in, HMAC-signed LSN-watermark token (`{epoch=timeline, lsn}`): a write
   mints one (`X-PGAuthz-Revision` header + `"revision"` body), and a read can

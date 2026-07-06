@@ -94,6 +94,15 @@ func Run(name, version string) error {
 			backend = pgb
 		}
 		slog.Info("connected to PostgreSQL", "profile", cfg.Profile, "opa", cfg.UsesOPA())
+
+		// Engine/tenant gauge sampler (ADR 0010 Slice 3) — only when metrics are
+		// exposed, so we never add DB load no one scrapes.
+		if cfg.MetricsListenAddr != "" && cfg.MetricsSampleIntervalSeconds > 0 {
+			if ss, ok := raw.(authz.StoreStatser); ok {
+				startStoreSampler(ctx, ss, time.Duration(cfg.MetricsSampleIntervalSeconds)*time.Second, cfg.MetricsMaxStores)
+				slog.Info("metrics: store-stats sampler started", "interval_s", cfg.MetricsSampleIntervalSeconds)
+			}
+		}
 	}
 
 	var issuers []api.IssuerConfig
@@ -299,6 +308,38 @@ func newPool(ctx context.Context, dsn string, maxConns int) (*pgxpool.Pool, erro
 		return nil, fmt.Errorf("connecting: %w", err)
 	}
 	return pool, nil
+}
+
+// startStoreSampler periodically samples per-store engine stats and publishes
+// them as gauges (ADR 0010 Slice 3). Runs until ctx is cancelled.
+func startStoreSampler(ctx context.Context, ss authz.StoreStatser, interval time.Duration, limit int) {
+	sample := func() {
+		sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		stats, total, err := ss.StoreStats(sctx, limit)
+		if err != nil {
+			slog.Warn("metrics: store-stats sample failed", "error", err)
+			return
+		}
+		byStore := make(map[string]float64, len(stats))
+		for _, s := range stats {
+			byStore[s.Store] = float64(s.Tuples)
+		}
+		metrics.SetStoreStats(byStore, float64(total))
+	}
+	go func() {
+		sample() // publish once immediately, then on each tick
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				sample()
+			}
+		}
+	}()
 }
 
 // buildCommit returns the short VCS revision embedded by the Go toolchain, or ""
