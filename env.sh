@@ -132,9 +132,14 @@ export REQUIRE_TOKEN_FOR_READS="${REQUIRE_TOKEN_FOR_READS:-false}"
 # Ensure containers are running. COMPOSE_NO_BUILD=1 skips the implicit --build
 # and reuses already-present images (e.g. CI pre-builds the pg_cel image with a
 # cached buildx step, then brings the stack up without rebuilding it).
+# --remove-orphans clears containers from services that were renamed/removed
+# (e.g. the old authzen-direct/postgrest services during the in-place upgrade
+# test, and stale overlay containers when switching overlays) — they would
+# otherwise linger and hold published ports (e.g. :8090). authz-db keeps its
+# name, so its volume/data survive.
 COMPOSE_BUILD_FLAG="--build"
 [ "${COMPOSE_NO_BUILD:-}" = "1" ] && COMPOSE_BUILD_FLAG=""
-docker compose "${COMPOSE_FILES[@]}" up -d $COMPOSE_BUILD_FLAG --wait
+docker compose "${COMPOSE_FILES[@]}" up -d $COMPOSE_BUILD_FLAG --remove-orphans --wait
 
 # Resolve the database container. The default stack names it authz-db; the
 # streaming-replication topology (compose-scaling.yml) names the writable
