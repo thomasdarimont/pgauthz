@@ -51,6 +51,16 @@ pre-1.0, minor versions may include breaking changes.
   architecture removes. PRODUCTION.md's "Edge TLS / mTLS" section now
   documents the per-hop guidance; the template remains in git history.
 
+### Added (docs / examples)
+
+- **README "A complete example first"** — the full lifecycle in one
+  copy-pasteable psql session at the top of the API section (store → model →
+  `describe_model` → `write_tuple` → `check_access` → `explain_access` →
+  `list_objects`/`list_subjects` → revoke), with real outputs; validated live.
+  The same example ships as loadable files under
+  **`examples/models/helloworld/`** (`model.sql`, `seed.sql`, `demo.sql`) —
+  the smallest useful model, now the first row of the Example Models table.
+
 ### Changed
 
 - **Bad-token 400s are opaque by design.** The freshness guard returns one fixed

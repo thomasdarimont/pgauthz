@@ -181,6 +181,94 @@ denotes a **userset** — the set of all subjects that have the specified relati
 (in this case, all members of the payroll team). This is documentation shorthand only; the API
 always uses explicit separate parameters for type, ID, and relation.
 
+### A complete example first
+
+The full lifecycle in one copy-pasteable psql session — store, model, write,
+check, explain, search, revoke. It is self-contained (creates its own store; no
+demo fixture needed), so a fresh `./init.sh` stack is enough — connect as shown
+in [Connecting](#connecting). The same example ships as loadable files under
+[`examples/models/helloworld/`](examples/models/helloworld/)
+(`model.sql`, `seed.sql`, `demo.sql`). The tour deletes its store at the end;
+if a `helloworld` store already exists (e.g. from those files), drop it first:
+`SELECT authz.delete_store('helloworld', p_purge_audit => true);`
+
+```sql
+-- 1. A store: an isolated authorization namespace (tenant, app, or experiment).
+SELECT authz.create_store('helloworld');
+
+-- 2. A minimal model: documents have editors and viewers; both may read,
+--    only editors may write.
+SELECT authz.model_register_type('helloworld', 'user');
+SELECT authz.model_register_type('helloworld', 'document');
+SELECT authz.model_register_relation('helloworld', 'viewer');
+SELECT authz.model_register_relation('helloworld', 'editor');
+SELECT authz.model_register_relation('helloworld', 'can_read');
+SELECT authz.model_register_relation('helloworld', 'can_write');
+
+SELECT authz.model_add_rule('helloworld', 'document', 'viewer',    'direct');              -- granted by tuple
+SELECT authz.model_add_rule('helloworld', 'document', 'editor',    'direct');              -- granted by tuple
+SELECT authz.model_add_rule('helloworld', 'document', 'can_read',  'computed', 'viewer');  -- viewers can read
+SELECT authz.model_add_rule('helloworld', 'document', 'can_read',  'computed', 'editor');  -- editors can read
+SELECT authz.model_add_rule('helloworld', 'document', 'can_write', 'computed', 'editor');  -- editors can write
+
+-- Render what we just built as OpenFGA-style DSL text:
+SELECT authz.describe_model('helloworld');
+--  store: helloworld
+--
+--  type document
+--    relations
+--      define can_read: viewer or editor
+--      define can_write: editor
+--      define editor: [any]
+--      define viewer: [any]
+--
+--  type user
+
+-- 3. Write relationship tuples: alice edits, bob views.
+SELECT authz.write_tuple('helloworld', 'user', 'alice', 'editor', 'document', 'readme');
+SELECT authz.write_tuple('helloworld', 'user', 'bob',   'viewer', 'document', 'readme');
+
+-- 4. Check access.
+SELECT authz.check_access('helloworld', 'user', 'alice', 'can_write', 'document', 'readme');
+-- => true   (editor → can_write)
+SELECT authz.check_access('helloworld', 'user', 'bob',   'can_read',  'document', 'readme');
+-- => true   (viewer → can_read)
+SELECT authz.check_access('helloworld', 'user', 'bob',   'can_write', 'document', 'readme');
+-- => false  (viewers don't write)
+
+-- 5. Explain WHY (full trace tree in the JSON; 'summary' is the short form).
+SELECT authz.explain_access('helloworld', 'user', 'bob', 'can_read', 'document', 'readme')->>'summary';
+--  user:bob → can_read → document:readme = ALLOWED (computed)
+--    ✓ [direct_tuple] viewer on document:readme — tuple found (0.8 ms)
+--  ✓ [computed] can_read on document:readme — can_read ← viewer (1.2 ms)
+
+-- 6. Search in both directions.
+SELECT * FROM authz.list_objects('helloworld', 'user', 'alice', 'can_read', 'document');
+--  object_id | is_wildcard          ("which documents can alice read?")
+--  readme    | f
+SELECT * FROM authz.list_subjects('helloworld', 'user', 'can_read', 'document', 'readme');
+--  subject_id | is_wildcard         ("who can read readme?")
+--  alice      | f
+--  bob        | f
+
+-- 7. Revoke: delete the tuple, and the permission is gone.
+SELECT authz.delete_tuple('helloworld', 'user', 'bob', 'viewer', 'document', 'readme');
+SELECT authz.check_access('helloworld', 'user', 'bob', 'can_read', 'document', 'readme');
+-- => false
+
+-- 8. Clean up the tour store (audit history included — it's a sandbox).
+SELECT authz.delete_store('helloworld', p_purge_audit => true);
+```
+
+That's the whole engine in miniature: **models** define which relations exist
+and how they compose (`direct` = granted by a tuple, `computed` = implied by
+another relation; [`ttu`](#how-check_access-resolves-permissions) walks
+object-to-object references like folder→parent), **tuples** are the data, and
+every read answers from the same recursive resolution. The sections below
+document each function — including group/userset subjects, contextual tuples,
+conditions/ABAC, batch writes, and time travel — and richer models live in
+[`examples/models/`](examples/models/) ([Example Models](#example-models)).
+
 ### check_access — "Can user X do Y on object Z?"
 
 ```sql
@@ -1590,6 +1678,7 @@ the watch/changefeed consumer live alongside under
 
 | Example | Models | Files |
 |---|---|---|
+| `examples/models/helloworld/` | The smallest useful model (documents with editors/viewers, computed `can_read`/`can_write`) — the README's [complete example](#a-complete-example-first) as loadable files | `model.sql`, `seed.sql`, `demo.sql` |
 | `examples/models/demo/` | Professional-services engagements: internal/client users, teams, data spaces, documents, conditions, audit | `model.sql`, `seed.sql`, `tests.sql`, `demo.sql` |
 | `examples/models/gdrive/` | Google-Drive-style hierarchical folders and documents (deep TTU nesting) | `model.sql`, `seed.sql`, `demo.sql` |
 | `examples/models/github/` | GitHub repo roles (`admin → maintainer → writer → triager → reader`), imported from an OpenFGA JSON model | `model.sql`, `seed.sql`, `demo.sql` |
@@ -1627,9 +1716,9 @@ default store is `demo`).
 | `db/security/` | Role definitions and GRANT/SECURITY DEFINER setup |
 | `db/openfga/` | OpenFGA JSON model and tuple import |
 | `tests/sql/` | Test suites (API, search, namespace, wildcards, contextual, intersection, etc.) |
-| `examples/models/` | Example authorization models (demo, gdrive, github) — **not** part of the deployable engine; see [Example Models](#example-models) |
+| `examples/models/` | Example authorization models (helloworld, demo, gdrive, github, todo) — **not** part of the deployable engine; see [Example Models](#example-models) |
 | `examples/watch/` | Runnable setup example for the watch/changefeed feature (compose overlay + Python consumer) |
-| `authzen/` | Go AuthZEN 1.0 HTTP API layer ([see authzen/README.md](authzen/README.md)) |
+| `pgauthzd/` | The Go daemon: native `/pgauthz/v1` + AuthZEN 1.0 HTTP APIs ([see pgauthzd/README.md](pgauthzd/README.md)) |
 | `playground/` | Web UI: Go BFF + Lit SPA for exploring stores and visualizing `explain_access` ([see playground/README.md](playground/README.md)) |
 | `opa/` | Rego policies for JWT authn + Zanzibar authz via the pgauthzd native callback |
 | `docs/` | Design documents, development guide, model design, OPA integration |
