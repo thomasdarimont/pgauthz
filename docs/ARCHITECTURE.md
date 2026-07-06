@@ -929,6 +929,7 @@ sequentially; status flows Proposed → Accepted → Superseded. The log:
 | [0007](adr/0007-pgauthzd-front-door.md) | pgauthzd is the front door; OPA is an internal policy sidecar | Accepted |
 | [0008](adr/0008-opa-is-opt-in.md) | OPA is opt-in; the default stack is OPA-free | Accepted |
 | [0009](adr/0009-freshness-tokens.md) | Freshness tokens for read-your-writes (LSN watermark) | Proposed |
+| [0010](adr/0010-metrics-observability.md) | Metrics & observability (Prometheus) | Proposed |
 
 To add one: create `docs/adr/NNNN-*.md` (for decisions on authorization
 semantics, security boundaries, or operational contracts) and a row here.
