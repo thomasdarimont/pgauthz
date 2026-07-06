@@ -12,9 +12,12 @@
 /opa/policies/                              @thomasdarimont
 /deploy/helm/pgauthz/files/opa/policies/    @thomasdarimont
 
-# Token validation / issuer bindings / role switching in the services
-/authzen/internal/api/      @thomasdarimont
-/authzen/internal/config/   @thomasdarimont
+# pgauthzd front door: JWT validation, issuer bindings, role switching,
+# the native callback listener, and freshness-token signing/verification
+/pgauthzd/internal/api/       @thomasdarimont
+/pgauthzd/internal/config/    @thomasdarimont
+/pgauthzd/internal/authz/     @thomasdarimont
+/pgauthzd/internal/app/       @thomasdarimont
 
 # CI and release machinery
 /.github/           @thomasdarimont

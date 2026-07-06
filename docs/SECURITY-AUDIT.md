@@ -23,7 +23,19 @@ one — no independent party has attested to these claims.
 - **Date / version:** engine passes 2026-06-29 (~v0.1.4); refresh 2026-07-05
   (~v0.6); **v0.7 delta 2026-07-05** (rich decisions, native expiry, cache
   bypass, pgauthzctl) — found one High fail-open (F11), **fixed** in migration 0006 — the first
-  non-Info engine finding, found and closed within the same delta.
+  non-Info engine finding, found and closed within the same delta; **v0.8/v0.9
+  delta 2026-07-06** (pgauthzd consolidation — the native `/pgauthz/v1` callback
+  listener behind a service token + optional mTLS; freshness tokens with HMAC
+  signing + transparent primary fallback; the `:9090` metrics listener) — found
+  one Medium freshness fail-open (F12, a promoted-primary false-allow after a
+  lossy failover), **fixed** in the same delta by timeline-guarding the reader
+  guard on the primary too.
+- **Independence.** Still a **first-party** review — no independent party has
+  attested to these claims; it remains preparation for an external review, not a
+  substitute. It is now *informed by* external reviews of the v0.6–v0.8 tree
+  (competitive / architecture passes, and a v0.8.0 freshness review that surfaced
+  F12), but those are design and roadmap critiques, **not** a security
+  attestation. The "for an external auditor" section below is the standing ask.
 - **Companion docs:** [`SECURITY.md`](../SECURITY.md) (reporting / supported
   line), [`PRODUCTION.md`](PRODUCTION.md) (hardening), [`ARCHITECTURE.md`](ARCHITECTURE.md)
   (defense-in-depth).
@@ -163,6 +175,44 @@ Defense-in-depth, each layer checked against the source:
     `authz_admin`-only (`export_model`/status are reader). Propagated condition
     expressions still run in the zero-privilege sandbox at eval time (mechanism 4).
 
+### pgauthzd consolidation / freshness surface (v0.8/v0.9)
+
+14. **The native callback listener is dual-authenticated + non-public.** OPA calls
+    back into pgauthzd's native `/pgauthz/v1` API on a **separate listener**
+    (`INTERNAL_LISTEN_ADDR`, no host port), gated by a shared service token
+    (`INTERNAL_SERVICE_TOKEN` on pgauthzd / `NATIVE_SERVICE_TOKEN` on OPA) and,
+    when configured, **mTLS** (`tls.Config{ClientAuth: RequireAndVerifyClientCert}`
+    against a pinned client CA). It deliberately does **not** re-verify the
+    end-user JWT — pgauthzd is the front door; the callback trusts its OPA
+    upstream (see the trust-boundary note). Reader vs. writer capability is the
+    connecting **DB role** (`decision-only` → reader, `full` → writer), not a Go
+    flag. The public native surface is exposed only when *not* fronting OPA.
+15. **Freshness tokens are signed assertions, fail-closed, and grant nothing.**
+    A freshness token is `{epoch=timeline, lsn}` **HMAC-SHA256 signed** (server
+    key, base64url; authz/freshness.go) — it is a read-your-writes *assertion*,
+    not a capability, so the signature exists only to stop a client fabricating a
+    future WAL position. Every guard path fail-closes: a bad/tampered signature or
+    an `at_least_as_fresh` request with **no** token → **400** (never a silent
+    downgrade to a low-latency read); `stale`/`wrong_epoch`/`unknown` → **409**
+    (or transparent primary re-check, mechanism 16). The reader guard derives
+    **this node's** own `(timeline, position)` and applies the same verdict on a
+    standby *and* a promoted primary — there is no "primary is always fresh"
+    shortcut (that shortcut was F12, now removed): a promoted primary on a new
+    timeline returns `wrong_epoch`, closing the lossy-failover false-allow.
+16. **Transparent primary fallback re-validates, never assumes.** With
+    `FRESHNESS_PRIMARY_URL` set (decision-only + non-OPA only), a reader holds a
+    **second pgx pool to the primary** as the *same reader role* (no privilege
+    change — read-only DSN). On a not-fresh replica verdict it **re-runs
+    `assert_fresh` against the primary** and routes the read there only on a
+    `fresh` verdict (`X-PGAuthz-Served-By: primary`); any other primary verdict
+    fails closed to 409. The fallback cannot serve a write role or a lost write.
+17. **The metrics listener is non-public and content-free.** Prometheus metrics
+    are served on a separate `METRICS_LISTEN_ADDR` (`:9090`, no host port in
+    compose/chart). Labels are **fixed-cardinality** (bucketed store tail;
+    `api ∈ {native, authzen}`; pool `∈ {primary, replica, fallback}`) — no
+    model-defined type/action and no tuple/subject content — so the surface
+    exposes rates, latencies, and gauges, never authorization data.
+
 ## Findings
 
 Severities reflect **code-verified** impact. (Note: an initial pass over-rated the
@@ -239,6 +289,27 @@ but set `PLAYGROUND_EXPLORE_ROLE` before exposing it beyond a dev box (it stays
 read-only via `authz_metadata` regardless). Don't copy `compose-playground.yml`
 to production.
 
+### Delta findings (2026-07, v0.8/v0.9 — pgauthzd consolidation, freshness, metrics)
+
+An adversarial pass over the surface added by the pgauthzd consolidation — the
+native `/pgauthz/v1` callback listener, freshness tokens (HMAC mint + reader
+guard + transparent primary fallback), and the metrics listener — surfaced one
+Medium fail-open in the freshness guard (found by an external v0.8.0 review),
+fixed in the same delta.
+
+| # | Sev | Finding | Status |
+|---|---|---|---|
+| F12 | **Medium** | **Promoted-primary freshness false-allow (fail-open, narrow).** v0.8.0's reader guard shortcut treated *any* primary as unconditionally `fresh` — `assert_fresh` returned `'fresh'` without deriving the node's own timeline. After a **lossy failover**, a node promoted onto a **new** timeline would confirm a token minted on the **old** timeline whose write it had lost — a stale *allow* (the "new enemy" the token exists to prevent). Reachable only when freshness tokens are enabled (`FRESHNESS_TOKEN_KEY` set) *and* a lossy promotion has occurred *and* a caller replays an old-timeline `at_least_as_fresh` token; the default `minimize_latency` path is unaffected. **Fixed (v0.9.0):** `assert_fresh` now derives the node's own `(timeline, position)` on the primary too — `pg_walfile_name(pg_current_wal_insert_lsn())` for the timeline (never `pg_control_checkpoint().timeline_id`, which lags promotion until a checkpoint → a second false-allow window the prototype reproduced) — and applies the same `_freshness_verdict` as a standby, so a cross-timeline token yields `wrong_epoch` → 409. The transparent fallback was hardened in the same change: it **re-runs the verdict on the primary** and serves only on `fresh`, so it can't paper over the gap. Verified: `tests_freshness.sql` 12/12 (incl. `primary_wrong_epoch`, `primary_future_lsn_stale`), and Go guard/fallback tests (`TestFreshnessFallbackPrimaryAlsoStale`, `TestFreshnessMissingTokenIs400`). | ✅ **Fixed** |
+| F13 | Info | **Single freshness HMAC key, no rotation yet.** The token signature uses one server-side key (`FRESHNESS_TOKEN_KEY`); there is no `kid` / `FRESHNESS_TOKEN_KEY_PREVIOUS` overlap window, so rotating the key invalidates every outstanding token at once (in-flight `at_least_as_fresh` reads 400 → clients re-mint on their next write). Because a token is a freshness assertion that **grants nothing**, a leaked key lets an attacker at most forge a *future* position (a self-inflicted stale-deny / extra primary hop), never an allow — impact is availability, not authorization. Keyed rotation-with-overlap is a planned enhancement. | Accepted (bounded; rotation planned) |
+| F14 | Info | **Primary-fallback pool widens reader reach, not privilege.** `FRESHNESS_PRIMARY_URL` gives a decision-only reader a second pool to the primary. It connects as the **same read-only role** and re-validates freshness before serving, so it grants no new capability — but it does make the primary reachable from a reader tier that otherwise only touched a replica. Point it at a **reader-role DSN** (never the writer), keep it reader→primary-network-scoped, and it stays gated to `decision-only` + non-OPA instances. | Accepted (operational; reader DSN only) |
+| F15 | Info | **Metrics endpoint is unauthenticated (by design).** The `:9090` metrics listener has no auth (standard Prometheus scrape model). It exposes no authorization content — labels are fixed-cardinality (bucketed store tail, `api`/`pool` enums), values are rates/latencies/gauges — but store-activity *volumes* and pool health are observable. Keep it on a non-public address / scrape-only network (compose & chart give it no host port); a `NetworkPolicy` restricts ingress to the Prometheus scraper. | Accepted (operational; keep non-public) |
+
+No High/Critical **code** findings in this delta. The one fail-open (F12) was
+found and closed in the same release; the callback listener adds a service-token
++ optional-mTLS gate on a non-public address; freshness tokens are signed,
+grant nothing, and fail closed on every ambiguous verdict; the metrics surface
+is content-free. The remaining v0.8/v0.9 items are operational controls.
+
 ### Operational / deployment
 
 These are where real compromise would come from — they are assumptions the engine
@@ -249,6 +320,10 @@ These are where real compromise would come from — they are assumptions the eng
 | Internal tiers exposed (pgauthzd's internal callback / Postgres reachable beyond the front door) | The callback listener does not re-verify the end-user JWT (it trusts the OPA sidecar); exposure = tuple disclosure | Network isolation / no host ports (compose & chart already do this); verify in your env |
 | `X-PGAuthz-Role` header is **trusted, not signed** (read *and* write) | Both pgauthzd callback instances (reader + writer) assume only OPA sets it; pgauthzd validates the role is a member of the tier role and not admin (in Go, then `SET LOCAL ROLE`), but cannot prove OPA's authority | Keep both pgauthzd callback listeners reachable only by OPA; service token + mTLS/network policy |
 | `input.db_role` honored in trusted-PEP mode | With `REQUIRE_TOKEN_FOR_READS=false`, a caller can assert the read role (bounded to reader-only, non-admin, granted roles — see F8) | Keep the default `REQUIRE_TOKEN_FOR_READS=true`, or keep OPA reachable only by a trusted PEP |
+| Native callback service token / mTLS not set | The callback listener trusts its OPA upstream and does not re-verify the JWT; without the token (and ideally mTLS) anyone who reaches it can assert `X-PGAuthz-Role` (F14/mechanism 14) | Set `INTERNAL_SERVICE_TOKEN`/`NATIVE_SERVICE_TOKEN`; enable mTLS in untrusted networks; keep the internal listener non-public |
+| Freshness HMAC key weak / shared / unrotated | A leaked `FRESHNESS_TOKEN_KEY` lets an attacker forge a *future* position (stale-deny / extra primary hop — never an allow, F13) | Set a strong per-deployment key; rotate on suspicion (invalidates outstanding tokens; clients re-mint) |
+| Primary-fallback DSN points at the writer | `FRESHNESS_PRIMARY_URL` as a writer DSN would give a reader tier write reach (F14) | Use a **reader-role** DSN; scope reader→primary network; gated to decision-only + non-OPA |
+| Metrics endpoint exposed publicly | `:9090` is unauthenticated; leaks store-activity volumes / pool health (no authz content, F15) | Keep `METRICS_LISTEN_ADDR` non-public; scrape-only network / `NetworkPolicy` (chart ships one) |
 | Issuer without a `stores` / `db_roles` binding | An unbound issuer's tokens can reach every store / claim any reader role | Set per-issuer bindings; enable `REQUIRE_STORE_BINDING` / `REQUIRE_DB_ROLE_BINDING` (startup error on an unbound issuer) |
 | Model-registry authoring store is fleet-privileged | An admin on the authoring store can push models + conditions to every tenant store (F7) | Restrict `authz_admin` on the authoring store; review `models_audit` + registry versions |
 | OPA compromise / wrong policy | OPA is the PEP — a bad policy or breach bypasses authn/authz. Team-added Rego packages need an explicit line in the `system_authz` public-path allowlist, so that file is the governance chokepoint | Review Rego; pin/version OPA; gate `system_authz.rego` edits in CI/CODEOWNERS; treat policies as security-critical |
@@ -262,6 +337,9 @@ These are where real compromise would come from — they are assumptions the eng
 Deploy-time (most are in [`PRODUCTION.md`](PRODUCTION.md) — this cross-checks them):
 
 - [ ] pgauthzd's internal callback listeners (read + write) and Postgres have **no host ports**; only OPA reaches the callback, and only pgauthzd reaches OPA.
+- [ ] Native callback authenticated: `INTERNAL_SERVICE_TOKEN`/`NATIVE_SERVICE_TOKEN` set; mTLS enabled where the callback network isn't fully trusted.
+- [ ] **Freshness (if enabled):** strong per-deployment `FRESHNESS_TOKEN_KEY`; `FRESHNESS_PRIMARY_URL` (if used) is a **reader-role** DSN, decision-only + non-OPA.
+- [ ] **Metrics:** `METRICS_LISTEN_ADDR` non-public; scrape restricted to Prometheus (chart `NetworkPolicy` / no host port).
 - [ ] Every secret overridden; `opa.requireTokenForReads=true` unless a trusted PEP fronts reads.
 - [ ] `authz_contextual_reader` granted only to trusted services (and only if used).
 - [ ] JWT verified against your IdP's JWKS; role claim (`DB_ROLE_CLAIM`) mapping reviewed.
@@ -275,8 +353,10 @@ Deploy-time (most are in [`PRODUCTION.md`](PRODUCTION.md) — this cross-checks 
 - [ ] Playground overlay **not** deployed to production; if used elsewhere, `PLAYGROUND_EXPLORE_ROLE` set.
 
 Code hardening F1/F2 (uniform `SECURITY DEFINER`), F3 (`%I` in partition DDL),
-and F5 (256 KiB context-size cap) are **done**. F4/F6 and the refresh findings
-F7/F8/F9/F10 are accepted as-is (operational controls, not code fixes).
+F5 (256 KiB context-size cap), F11 (expiry RLS escape, migration 0006), and F12
+(promoted-primary freshness guard, v0.9.0) are **done**. F4/F6, the refresh
+findings F7/F8/F9/F10, and the v0.8/v0.9 findings F13/F14/F15 are accepted as-is
+(operational controls, not code fixes).
 
 ## For an external auditor
 
@@ -295,6 +375,13 @@ BYPASSRLS-owned helper; look for others — index-only scans, `COPY`, partition-
 DML); (7) the **model registry** — make
 `apply_model` land a model whose live checksum differs from the registry
 (defeating the self-check), or propagate a condition that escapes the sandbox on
-a target store. The SQL test suites (`tests/sql/`, incl. `tests_model_registry`),
-pgauthzd's role-validation Go tests (`pgauthzd/internal/pgbackend/`), and `bench/`
-model fixtures are useful starting corpora.
+a target store; (8) **freshness tokens** — forge or replay a token to obtain a
+stale *allow* (F12 closed the promoted-primary path; probe others — a clean
+promotion, a timeline derived from the control file, a fallback that serves a
+non-`fresh` primary verdict, or a paginated cursor that mixes pre-/post-revoke
+pages); (9) the **native callback trust boundary** — reach `/pgauthz/v1` without
+the service token / past mTLS, or assert `X-PGAuthz-Role` as a non-OPA caller.
+The SQL test suites (`tests/sql/`, incl. `tests_model_registry` and
+`tests_freshness`), pgauthzd's Go tests (`pgauthzd/internal/pgbackend/`,
+`internal/api/` freshness guard/fallback), and `bench/` model fixtures are useful
+starting corpora.
