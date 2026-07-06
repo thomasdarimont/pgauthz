@@ -164,7 +164,7 @@ diag_cause := "signature invalid / JWKS does not match the issuer's keys" if {
 diag_cause := "token is valid" if token_is_valid
 
 # Per-app DB role from the verified token (authn_config.db_role_claim_path —
-# the DB_ROLE_CLAIM env var). Forwarded as X-Authz-Role on both the write and
+# the DB_ROLE_CLAIM env var). Forwarded as X-PGAuthz-Role on both the write and
 # read native callbacks for per-application namespace isolation; pgauthzd
 # validates it and SET LOCAL ROLEs to it. Derived
 # from CLAIMS only — never from raw input — so a caller cannot pick another

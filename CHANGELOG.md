@@ -198,7 +198,7 @@ OPA-free, answering directly from PostgreSQL.
   from a genuine deny; the boolean APIs keep collapsing it to deny (fail
   closed, unchanged). Exposed as the OPA rule `authz/allow_detailed`
   (allowlisted in system_authz; uncached by design) and on both AuthZEN
-  services via the `X-Authz-Detail` request header, which populates the
+  services via the `X-PGAuthz-Detail` request header, which populates the
   AuthZEN response `context` field. Runs the explain machinery — a
   per-decision opt-in, not a hot-path default. 10 SQL tests + e2e on OPA and
   both AuthZEN services; demo walkthrough section 9g.
@@ -268,7 +268,7 @@ OPA-free, answering directly from PostgreSQL.
 - **Per-app namespace isolation on READS over OPA (slice B).** The OPA read
   path now gets the same database-enforced per-application isolation the
   write path has had: OPA forwards the caller's per-app DB role as
-  `X-Authz-Role` on every PostgREST read call, and the reader's new
+  `X-PGAuthz-Role` on every PostgREST read call, and the reader's new
   `PGRST_DB_PRE_REQUEST` hook (`authz._pre_request_reader`) validates it —
   member of `authz_reader`, **not** admin-capable, fail closed — and
   `SET LOCAL ROLE`s to it, so the engine's read-side namespace checks key on
@@ -351,7 +351,7 @@ OPA-free, answering directly from PostgreSQL.
 - **AuthZEN: store selection via URL path.** Every `access/v1` endpoint (and
   the discovery document) is also served store-scoped under
   `/stores/{store}/…` (OpenFGA-style), so each pgauthz store presents as its
-  own AuthZEN PDP. Resolution order: path → `X-AuthZ-Store` header →
+  own AuthZEN PDP. Resolution order: path → `X-PGAuthz-Store` header →
   `DEFAULT_STORE`.
 - **AuthZEN: per-app namespace enforcement (authzen-direct).** The direct
   backend can derive a per-app DB role from the verified token —
@@ -395,7 +395,7 @@ OPA-free, answering directly from PostgreSQL.
   regression-tested in the scaling suite (revoke ack → immediate replica
   check must deny, 10× cycles). **Per-write consistency modes:** the write
   API accepts `consistency: applied | durable | eventual` (forwarded as
-  `X-Authz-Consistency`; the writer's `_pre_request()` maps it to a
+  `X-PGAuthz-Consistency`; the writer's `_pre_request()` maps it to a
   transaction-local `synchronous_commit`, failing closed on unknown values) —
   the connection default is the policy, individual writes opt up or down;
   direct-SQL callers use `SET LOCAL synchronous_commit` in their own

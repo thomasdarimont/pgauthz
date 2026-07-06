@@ -943,7 +943,7 @@ SELECT authz.explain_access('demo',
 -- so a PEP can react to CONDITIONAL (supply the keys / step up and re-check)
 -- instead of treating it as a final deny. Same engine walk as explain, minus
 -- the trace. Over HTTP: OPA rule authz/allow_detailed; AuthZEN services via
--- the X-Authz-Detail request header (detail lands in the response context).
+-- the X-PGAuthz-Detail request header (detail lands in the response context).
 
 -- Without the required request context → CONDITIONAL, naming what's missing:
 SELECT authz.check_access_detailed('demo',

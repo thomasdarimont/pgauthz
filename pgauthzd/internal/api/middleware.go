@@ -24,14 +24,14 @@ import (
 )
 
 // InternalRoleHeader is the header OPA forwards the caller's per-app DB role in
-// when calling the native callback surface (matches the Rego's X-Authz-Role).
-const InternalRoleHeader = "X-Authz-Role"
+// when calling the native callback surface (matches the Rego's X-PGAuthz-Role).
+const InternalRoleHeader = "X-PGAuthz-Role"
 
 // ServiceAuthMiddleware guards the internal native-callback listener with a
 // shared SERVICE credential — NOT the end-user JWT. It verifies
 // Authorization: Bearer <token> (constant-time) proving the call came from the
 // trusted OPA sidecar, then trusts OPA's asserted per-app DB role
-// (X-Authz-Role header) and subject (request body) — the trusted-backend role
+// (X-PGAuthz-Role header) and subject (request body) — the trusted-backend role
 // PostgREST plays today. /healthz is exempt so liveness probes need no
 // credential. app.Run refuses to start the internal listener without a token,
 // so this never runs open.
@@ -101,7 +101,7 @@ func NoCacheFromContext(ctx context.Context) bool {
 }
 
 // DetailFromContext reports whether the caller asked for the rich decision
-// result (X-Authz-Detail header): state allow|deny|conditional plus missing
+// result (X-PGAuthz-Detail header): state allow|deny|conditional plus missing
 // condition-context keys in the AuthZEN response context field.
 func DetailFromContext(ctx context.Context) bool {
 	v, ok := ctx.Value(ctxDetail).(bool)
@@ -307,8 +307,8 @@ func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 		}
 
 		// Opt-in rich decision result (state/missing_context in the response
-		// context field). Header-based like X-AuthZ-Store / Cache-Control.
-		if v := r.Header.Get("X-Authz-Detail"); v != "" && !strings.EqualFold(v, "false") {
+		// context field). Header-based like X-PGAuthz-Store / Cache-Control.
+		if v := r.Header.Get("X-PGAuthz-Detail"); v != "" && !strings.EqualFold(v, "false") {
 			ctx = context.WithValue(ctx, ctxDetail, true)
 		}
 

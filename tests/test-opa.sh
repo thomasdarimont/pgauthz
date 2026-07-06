@@ -582,7 +582,7 @@ echo "==> Running per-app read namespace isolation checks..."
 echo ""
 
 # End-to-end slice-B proof: a namespaced type is readable only when the
-# caller's per-app DB role is forwarded (input.db_role → OPA X-Authz-Role →
+# caller's per-app DB role is forwarded (input.db_role → OPA X-PGAuthz-Role →
 # pgauthzd reader → SET LOCAL ROLE → _check_namespace_access).
 # Uses the trusted-PEP role source (input.db_role, honored because the demo
 # runs REQUIRE_TOKEN_FOR_READS=false); the token-claim source

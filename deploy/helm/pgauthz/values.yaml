@@ -156,7 +156,7 @@ opa:
   writerRole: ""               # e.g. "authz_writer"
   jwtRolesClaim: ""            # e.g. "realm_access.roles,resource_access.authz-api.roles"
   dbRoleClaim: ""              # e.g. "db_role" — per-app namespace isolation
-                               # (X-Authz-Role on writer AND reader calls)
+                               # (X-PGAuthz-Role on writer AND reader calls)
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits:   { memory: 256Mi }

@@ -43,7 +43,7 @@ OPA reaches the callbacks via `NATIVE_URL` (reader) and `NATIVE_WRITE_URL`
 instance's `INTERNAL_SERVICE_TOKEN`). For this internal callback OPA is the
 trusted upstream policy sidecar — the external front door (the OPA-fronted pgauthzd)
 already validated the JWT — so the callback listener does **not** re-verify it;
-it trusts OPA's asserted subject (body) + per-app role (`X-Authz-Role`), and is
+it trusts OPA's asserted subject (body) + per-app role (`X-PGAuthz-Role`), and is
 service-token guarded and reachable only by OPA.
 
 ## Prerequisites

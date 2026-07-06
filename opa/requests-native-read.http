@@ -106,7 +106,7 @@ Content-Type: application/json
 ###
 
 ### Store-scoped (tenant) variant — the /stores/{store} path selects the store.
-### Same body, minus any need for the X-AuthZ-Store header / DEFAULT_STORE.
+### Same body, minus any need for the X-PGAuthz-Store header / DEFAULT_STORE.
 POST {{baseUrl}}/stores/demo/pgauthz/v1/check
 Authorization: Bearer {{token}}
 Content-Type: application/json
@@ -337,11 +337,11 @@ Content-Type: application/json
 
 ###
 
-### Rich decision context — opt in with the X-Authz-Detail header.
+### Rich decision context — opt in with the X-PGAuthz-Detail header.
 ### Response gains a "context" object (state, missing_context, ...).
 POST {{baseUrl}}/access/v1/evaluation
 Authorization: Bearer {{token}}
-X-Authz-Detail: true
+X-PGAuthz-Detail: true
 Content-Type: application/json
 
 {

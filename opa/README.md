@@ -165,7 +165,7 @@ authenticated with a shared service token — pgauthzd reads it from
 `INTERNAL_SERVICE_TOKEN`, OPA sends it as `Authorization: Bearer <token>` from
 its `NATIVE_SERVICE_TOKEN` — and can optionally require mTLS on top. It trusts
 OPA's asserted subject (in the request body) plus the per-app role header
-`X-Authz-Role`; it does **not** re-verify the end-user JWT. For this internal
+`X-PGAuthz-Role`; it does **not** re-verify the end-user JWT. For this internal
 callback OPA is the trusted upstream policy sidecar — the OPA-fronted pgauthzd (`OPA_URL` set) is
 the external front door that already validated the JWT — so the callback
 listener need not re-verify it.
@@ -385,7 +385,7 @@ context was not supplied — the caller can provide it (or step up) and
 re-check, instead of treating the deny as final. Backed by the engine's
 `check_access_detailed` (explain machinery, no trace) — heavier than `allow`,
 so use it per-decision, not as the default. The AuthZEN services expose it
-via the `X-Authz-Detail` request header (detail lands in the response
+via the `X-PGAuthz-Detail` request header (detail lands in the response
 `context` field).
 
 **`accessible_objects`** — returns the set of object IDs the subject can access:

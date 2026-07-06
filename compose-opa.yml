@@ -55,7 +55,7 @@ services:
       #   JWT_ROLES_CLAIM: "realm_access.roles,resource_access.authz-api.roles"
       #   WRITER_ROLE:     "authz_writer"         # required role value (in any path)
       # Per-app namespace isolation (optional): JWT claim carrying the caller's
-      # app DB role, forwarded to the native callback as X-Authz-Role.
+      # app DB role, forwarded to the native callback as X-PGAuthz-Role.
       #   DB_ROLE_CLAIM: "db_role"
     ports:
       - "8181:8181"

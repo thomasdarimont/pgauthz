@@ -249,7 +249,7 @@ func (h *Handler) WriteTuplesChecked(w http.ResponseWriter, r *http.Request) {
 		writeWriteError(w, err)
 		return
 	}
-	// Raw engine JSON body → the token rides the X-Authz-Revision header only.
+	// Raw engine JSON body → the token rides the X-PGAuthz-Revision header only.
 	h.mintRevision(w, r)
 	writeRawJSON(w, http.StatusOK, out)
 }

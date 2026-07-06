@@ -86,7 +86,7 @@ _forward := pgauthz.write_tuples_checked(
 ) if input.operation == "write_checked"
 
 # Headers forwarded to the writer: JSON content type, plus the caller's per-app
-# DB role as X-Authz-Role when a db-role claim is configured and present in the
+# DB role as X-PGAuthz-Role when a db-role claim is configured and present in the
 # token. pgauthzd on the writer validates it and SET LOCAL ROLEs to it for
 # namespace isolation. Absent claim → no header → the writer stays authz_writer.
 _headers := object.union(
@@ -94,12 +94,12 @@ _headers := object.union(
 	_consistency_header,
 )
 
-_role_header := {"X-Authz-Role": _db_role} if _db_role
+_role_header := {"X-PGAuthz-Role": _db_role} if _db_role
 
 _role_header := {} if not _db_role
 
 # Per-write consistency mode, forwarded to pgauthzd on the writer
-# (X-Authz-Consistency → SET LOCAL synchronous_commit). Vocabulary:
+# (X-PGAuthz-Consistency → SET LOCAL synchronous_commit). Vocabulary:
 #   applied  — ack only after every synchronous standby APPLIED the write
 #              (strict revocation); durable — flushed on sync standbys;
 #   eventual — primary-only durability. Absent → the writer connection's
@@ -108,7 +108,7 @@ _role_header := {} if not _db_role
 # Forwarded verbatim — pgauthzd is the single validator and
 # FAILS CLOSED with a clear error on unknown values (a silently dropped mode
 # here would downgrade the guarantee instead).
-_consistency_header := {"X-Authz-Consistency": input.consistency} if input.consistency
+_consistency_header := {"X-PGAuthz-Consistency": input.consistency} if input.consistency
 
 _consistency_header := {} if not input.consistency
 

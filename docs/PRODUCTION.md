@@ -71,7 +71,7 @@ by `init.sh` on every run.
       on reads: `pgauthzd-decision` assumes the derived role itself
       (`DB_ROLE_CLAIM` / `CLIENT_DB_ROLES` → `SET LOCAL ROLE`), and
       `pgauthzd-opa` forwards it to OPA (`input.db_role`), which passes it to
-      the pgauthzd read callback as `X-Authz-Role`; pgauthzd validates it and
+      the pgauthzd read callback as `X-PGAuthz-Role`; pgauthzd validates it and
       `SET LOCAL ROLE`s to it for the request. For the OPA path, also set
       `DB_ROLE_CLAIM` on the **OPA**
       service so token-mode requests derive the role from verified claims.
@@ -128,7 +128,7 @@ created and granted in `db/security/roles.sql`.
 |---|---|---|---|
 | pgauthzd-decision (Go, :8090, `decision-only`) | `authzen_direct` | inherits `authz_reader` (optional `SET LOCAL ROLE` to a per-app role) | Read-only front door; direct pgx, no OPA. Dedicated non-superuser login. |
 | pgauthzd-opa (Go, :8091, OPA-fronted — `OPA_URL` set) | `authzen_direct` | `authz_reader` default (`SET LOCAL ROLE` per-app) | Front door that consults its OPA sidecar; also hosts the internal read callback OPA calls back into for the graph. |
-| pgauthzd-full write callback (internal, `full`) | `pgauthzd_rw` | inherits `authz_writer` (per-app `SET LOCAL ROLE`) | Writer instance; applies writes natively via pgx (no authenticator / `SET ROLE` dance — it connects directly as its writer role). The **callback listener** does no JWT verification of its own — it trusts OPA (its upstream policy sidecar) over the shared service token + `X-Authz-Role`. Internal-only, no host port. (pgauthzd is the external front door; its `/pgauthz/v1/write` API validates the JWT + writer role.) |
+| pgauthzd-full write callback (internal, `full`) | `pgauthzd_rw` | inherits `authz_writer` (per-app `SET LOCAL ROLE`) | Writer instance; applies writes natively via pgx (no authenticator / `SET ROLE` dance — it connects directly as its writer role). The **callback listener** does no JWT verification of its own — it trusts OPA (its upstream policy sidecar) over the shared service token + `X-PGAuthz-Role`. Internal-only, no host port. (pgauthzd is the external front door; its `/pgauthz/v1/write` API validates the JWT + writer role.) |
 | Backend writers (your app) | a login role granted `authz_writer` (or the writer API with a `role=authz_writer` JWT) | `authz_writer` | |
 | Admin tooling | a login role granted `authz_admin` | `authz_admin` | Store/model/namespace changes. |
 

@@ -40,7 +40,7 @@ type Handler struct {
 	// requireWriterRole gates the native write endpoints behind the WRITER_ROLE
 	// claim. Set on the PUBLIC (JWT) router — pgauthzd authorizes writes itself.
 	// Left false on the service-token CALLBACK router, which trusts the upstream
-	// OPA's asserted X-Authz-Role instead of a JWT role claim.
+	// OPA's asserted X-PGAuthz-Role instead of a JWT role claim.
 	requireWriterRole bool
 	cfg               *config.Config
 }
@@ -119,7 +119,7 @@ func withMiddleware(mux *http.ServeMux, jwtMW *JWTMiddleware) http.Handler {
 // registerAuthZEN wires the spec-compliant AuthZEN surface + tenant discovery.
 func registerAuthZEN(mux *http.ServeMux, h *Handler) {
 	// Read routes carry the freshness guard (ADR 0009): a no-op unless the caller
-	// sends X-Authz-Consistency: at_least_as_fresh + a token.
+	// sends X-PGAuthz-Consistency: at_least_as_fresh + a token.
 	eval := h.readGuard(h.Evaluation)
 	evals := h.readGuard(h.Evaluations)
 	searchSub := h.readGuard(h.SearchSubject)
@@ -193,7 +193,7 @@ func registerNativeWrite(mux *http.ServeMux, h *Handler) {
 }
 
 // store resolves the pgauthz store for a request: the /stores/{store} path
-// segment wins, then the store header (X-AuthZ-Store), then DEFAULT_STORE.
+// segment wins, then the store header (X-PGAuthz-Store), then DEFAULT_STORE.
 // NOTE: store selection is caller-controlled — per-store access control (who
 // may query which store) is a policy concern; SEARCH_REQUIRED_ROLE gates the
 // search endpoints globally, not per store.
@@ -296,7 +296,7 @@ func (h *Handler) requireSearchRole(w http.ResponseWriter, r *http.Request) bool
 // and authorizes writes itself (no OPA needed). Returns false and writes 403
 // when the caller lacks the role. On the service-token CALLBACK listener the
 // gate is disabled (requireWriterRole=false) — that path trusts the upstream
-// OPA's asserted X-Authz-Role, which pgbackend validates against the DB role.
+// OPA's asserted X-PGAuthz-Role, which pgbackend validates against the DB role.
 func (h *Handler) requireWriter(w http.ResponseWriter, r *http.Request) bool {
 	if !h.requireWriterRole || h.cfg.WriterRole == "" {
 		return true
@@ -356,7 +356,7 @@ func (h *Handler) Evaluation(w http.ResponseWriter, r *http.Request) {
 		Context:     req.Context,
 	}
 
-	// Opt-in rich result (X-Authz-Detail): backends that support it return
+	// Opt-in rich result (X-PGAuthz-Detail): backends that support it return
 	// state/missing_context/model for the AuthZEN response context field.
 	if dc, ok := h.backend.(authz.DetailedChecker); ok && DetailFromContext(r.Context()) {
 		decision, detail, err := dc.CheckAccessDetailed(r.Context(), evalReq)

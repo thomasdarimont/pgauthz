@@ -43,9 +43,9 @@ the worst outcome).
                   the JWT)        policy)   upstream    │        ┌──────────┴─────────────┐
                                             of the      │        │ base tables (no direct │
                                             callback;   │        │ grant to app roles)    │
-                                            X-Authz-Role│        └────────────────────────┘
+                                            X-PGAuthz-Role│        └────────────────────────┘
                                             reader/writer)│
-                  pgauthzd validates the forwarded X-Authz-Role: tier member, not admin
+                  pgauthzd validates the forwarded X-PGAuthz-Role: tier member, not admin
  condition expr ───────────────────────────▶ authz_eval (zero-privilege sandbox)
 ```
 
@@ -54,12 +54,12 @@ the worst outcome).
 > is now the external **front door** (validates the JWT), and OPA is an internal
 > policy sidecar that calls **back** into pgauthzd's native `/pgauthz/v1`
 > callback (service-token gated, optional mTLS). The trust boundary keeps the
-> same shape: a bridge OPA calls, still asserting `X-Authz-Role`. The old
+> same shape: a bridge OPA calls, still asserting `X-PGAuthz-Role`. The old
 > PostgREST authenticator-role + `SET ROLE` dance **and** the SQL
 > `_pre_request` / `_pre_request_reader` hooks are gone — pgauthzd connects
 > directly as its reader/writer role and now validates the forwarded
-> `X-Authz-Role` (tier member, not admin) and applies `SET LOCAL ROLE` in Go
-> (per-app role via `X-Authz-Role` / `DB_ROLE_CLAIM`). The findings below are
+> `X-PGAuthz-Role` (tier member, not admin) and applies `SET LOCAL ROLE` in Go
+> (per-app role via `X-PGAuthz-Role` / `DB_ROLE_CLAIM`). The findings below are
 > preserved as recorded.
 
 **Actors & assumed capabilities.**
@@ -135,7 +135,7 @@ Defense-in-depth, each layer checked against the source:
 ### Multi-tenant / front-door surface (2026-07 refresh)
 
 10. **Symmetric per-app role switching, both read and write, fail-closed.** OPA
-    forwards the caller's per-app DB role as `X-Authz-Role`; the writer's
+    forwards the caller's per-app DB role as `X-PGAuthz-Role`; the writer's
     `_pre_request` and the reader's `_pre_request_reader` (core_internal.sql)
     each validate it — the role must exist, be a member of the tier role
     (`authz_writer` / `authz_reader`), and **not** be admin-capable — then
@@ -183,7 +183,7 @@ they only delegate, so it is Low — recorded here for transparency.)
 | # | Sev | Finding | Status |
 |---|---|---|---|
 | F7 | Info | **Model registry amplifies admin trust.** `apply_model` lets an admin push a model — including SQL/CEL **condition expressions** — from an authoring store to many tenant stores in one call. This grants no capability beyond `authz_admin` (publish/apply are admin-only, propagation is validated + audited + checksum-verified, and expressions still run in the zero-privilege sandbox), but the *blast radius* of a malicious or compromised admin is now fleet-wide. Treat authoring-store admin as a fleet-privileged role; immutable versions + `models_audit` give the forensic trail. | Accepted (by design; documented) |
-| F8 | Info | **Trusted-PEP mode extends to `input.db_role`.** In `REQUIRE_TOKEN_FOR_READS=false` (trusted-PEP) mode, OPA honors a request-body `input.db_role` for the read role switch (pgauthz.rego:33-36) — the same trust already extended to `input.subject` in that mode. A caller reaching OPA directly could then assert any DB role, but the reader hook still fail-closes to reader-only, non-admin roles that are `GRANT`ed to the authenticator, so it cannot escalate — at most it selects another *reader* namespace. The default `REQUIRE_TOKEN_FOR_READS=true` derives the role from verified claims and ignores `input.db_role`. Keep OPA reachable only by a trusted PEP whenever this mode is on. | Accepted (mirrors `X-Authz-Role`; operational control) |
+| F8 | Info | **Trusted-PEP mode extends to `input.db_role`.** In `REQUIRE_TOKEN_FOR_READS=false` (trusted-PEP) mode, OPA honors a request-body `input.db_role` for the read role switch (pgauthz.rego:33-36) — the same trust already extended to `input.subject` in that mode. A caller reaching OPA directly could then assert any DB role, but the reader hook still fail-closes to reader-only, non-admin roles that are `GRANT`ed to the authenticator, so it cannot escalate — at most it selects another *reader* namespace. The default `REQUIRE_TOKEN_FOR_READS=true` derives the role from verified claims and ignores `input.db_role`. Keep OPA reachable only by a trusted PEP whenever this mode is on. | Accepted (mirrors `X-PGAuthz-Role`; operational control) |
 | F9 | Low | **403s echo the attempted store/role name.** The issuer-binding rejections include the requested store / DB role in the error string (handler.go, middleware.go). The caller already knows the value it sent, so this leaks nothing to *that* caller; the minor concern is these strings reaching shared logs. Optional: drop the value from the message. | Won't fix (low value) |
 | F10 | Info | **Negative role-validation cache in pgauthzd-decision.** `checkRole` caches *denied* as well as allowed results for `DB_ROLE_CACHE_TTL_SECONDS` (default 60; pgbackend/backend.go). A role newly granted its membership is not honored until the entry expires — a fail-*closed* staleness (availability, not a security gap). Unknown-role lookups are never cached. Set the TTL to `0` to re-validate every request. | Accepted (bounded; documented) |
 
@@ -214,7 +214,7 @@ reads lack. The other v0.7 additions reviewed clean:
 - **`check_access_detailed` / `allow_detailed`** run `SECURITY DEFINER`,
   reader-granted, and expose only what `explain_access` already does
   (decision reason + missing condition-context keys) — no tuple/subject
-  identifiers beyond the caller's own query. The AuthZEN `X-Authz-Detail`
+  identifiers beyond the caller's own query. The AuthZEN `X-PGAuthz-Detail`
   path is opt-in and additive; without the header the response is the plain
   boolean.
 - **`no_cache` / `Cache-Control: no-cache`** only shortens a cache TTL for
@@ -247,7 +247,7 @@ These are where real compromise would come from — they are assumptions the eng
 | Risk | Why it matters | Control |
 |---|---|---|
 | Internal tiers exposed (pgauthzd's internal callback / Postgres reachable beyond the front door) | The callback listener does not re-verify the end-user JWT (it trusts the OPA sidecar); exposure = tuple disclosure | Network isolation / no host ports (compose & chart already do this); verify in your env |
-| `X-Authz-Role` header is **trusted, not signed** (read *and* write) | Both pgauthzd callback instances (reader + writer) assume only OPA sets it; pgauthzd validates the role is a member of the tier role and not admin (in Go, then `SET LOCAL ROLE`), but cannot prove OPA's authority | Keep both pgauthzd callback listeners reachable only by OPA; service token + mTLS/network policy |
+| `X-PGAuthz-Role` header is **trusted, not signed** (read *and* write) | Both pgauthzd callback instances (reader + writer) assume only OPA sets it; pgauthzd validates the role is a member of the tier role and not admin (in Go, then `SET LOCAL ROLE`), but cannot prove OPA's authority | Keep both pgauthzd callback listeners reachable only by OPA; service token + mTLS/network policy |
 | `input.db_role` honored in trusted-PEP mode | With `REQUIRE_TOKEN_FOR_READS=false`, a caller can assert the read role (bounded to reader-only, non-admin, granted roles — see F8) | Keep the default `REQUIRE_TOKEN_FOR_READS=true`, or keep OPA reachable only by a trusted PEP |
 | Issuer without a `stores` / `db_roles` binding | An unbound issuer's tokens can reach every store / claim any reader role | Set per-issuer bindings; enable `REQUIRE_STORE_BINDING` / `REQUIRE_DB_ROLE_BINDING` (startup error on an unbound issuer) |
 | Model-registry authoring store is fleet-privileged | An admin on the authoring store can push models + conditions to every tenant store (F7) | Restrict `authz_admin` on the authoring store; review `models_audit` + registry versions |
@@ -286,9 +286,9 @@ SQL/CEL condition read data, call a function, or escape `authz_eval`; (2)
 store's tuples, a namespace bypass, or a way for one issuer's token to reach
 another issuer's stores/DB roles despite the anchored bindings; (3) **fail-open**
 — any error/NULL/timeout path that yields *allow*; (4) the **OPA→pgauthzd callback
-trust boundary** — forge or replay `X-Authz-Role` on the reader *or* writer, or smuggle
+trust boundary** — forge or replay `X-PGAuthz-Role` on the reader *or* writer, or smuggle
 `input.db_role` past `REQUIRE_TOKEN_FOR_READS`; (5) **pgauthzd's role
-validation** — find a role that passes pgauthzd's `X-Authz-Role` check (Go:
+validation** — find a role that passes pgauthzd's `X-PGAuthz-Role` check (Go:
 member of the tier role, not admin) yet is admin-capable or not
 GRANT-restricted; (6) **tuple expiry** — bypass the RLS `SELECT` policy (F11, the escape-GUC path, is now fixed via a
 BYPASSRLS-owned helper; look for others — index-only scans, `COPY`, partition-direct

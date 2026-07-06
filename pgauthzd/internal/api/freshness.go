@@ -11,16 +11,16 @@ import (
 // opt into read-your-writes with a header pair, so the guard applies uniformly
 // across every read endpoint without per-body plumbing:
 //
-//	X-Authz-Consistency: at_least_as_fresh   (read mode; else minimize_latency)
-//	X-Authz-Revision:    <token>             (the token returned by the write)
+//	X-PGAuthz-Consistency: at_least_as_fresh   (read mode; else minimize_latency)
+//	X-PGAuthz-Revision:    <token>             (the token returned by the write)
 //
-// A write echoes X-Authz-Revision (and a "revision" body field where the
+// A write echoes X-PGAuthz-Revision (and a "revision" body field where the
 // response is a JSON object). A read that a replica cannot satisfy gets 409 with
-// X-Authz-Stale: <verdict> so the caller can retry against the primary.
+// X-PGAuthz-Stale: <verdict> so the caller can retry against the primary.
 const (
-	ConsistencyHeader = "X-Authz-Consistency"
-	RevisionHeader    = "X-Authz-Revision"
-	StaleHeader       = "X-Authz-Stale"
+	ConsistencyHeader = "X-PGAuthz-Consistency"
+	RevisionHeader    = "X-PGAuthz-Revision"
+	StaleHeader       = "X-PGAuthz-Stale"
 
 	consistencyAtLeastAsFresh = "at_least_as_fresh"
 )
@@ -76,7 +76,7 @@ func (h *Handler) readGuard(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // mintRevision mints a freshness token for a just-completed write and sets the
-// X-Authz-Revision response header, returning the token (or "" when disabled /
+// X-PGAuthz-Revision response header, returning the token (or "" when disabled /
 // unsupported / on a soft mint failure). Minting is best-effort: the write has
 // already committed, so a mint error must not fail the request — the client
 // simply gets no token for it.

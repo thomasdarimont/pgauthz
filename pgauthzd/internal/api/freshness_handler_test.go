@@ -40,7 +40,7 @@ func (b *freshStub) AssertFresh(context.Context, int32, string) (string, error) 
 const testFreshKey = "unit-test-key"
 
 // A successful write with freshness enabled mints a token in both the
-// X-Authz-Revision header and the response body, decodable to the minted value.
+// X-PGAuthz-Revision header and the response body, decodable to the minted value.
 func TestWriteMintsRevision(t *testing.T) {
 	b := &freshStub{epoch: 1, lsn: "0/ABC"}
 	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo", FreshnessKey: testFreshKey})
@@ -51,7 +51,7 @@ func TestWriteMintsRevision(t *testing.T) {
 	}
 	tok := w.Header().Get(RevisionHeader)
 	if tok == "" {
-		t.Fatal("expected X-Authz-Revision header")
+		t.Fatal("expected X-PGAuthz-Revision header")
 	}
 	if !strings.Contains(w.Body.String(), `"revision"`) {
 		t.Fatalf("expected revision in body: %s", w.Body.String())
@@ -118,7 +118,7 @@ func TestFreshnessGuard(t *testing.T) {
 					t.Fatalf("code=%d want %d body=%s", w.Code, tc.wantCode, w.Body.String())
 				}
 				if tc.wantCode == http.StatusConflict && w.Header().Get(StaleHeader) != tc.verdict {
-					t.Fatalf("X-Authz-Stale=%q want %q", w.Header().Get(StaleHeader), tc.verdict)
+					t.Fatalf("X-PGAuthz-Stale=%q want %q", w.Header().Get(StaleHeader), tc.verdict)
 				}
 			}
 		})

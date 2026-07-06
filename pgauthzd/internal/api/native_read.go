@@ -30,7 +30,7 @@ type nativeCheckBody struct {
 	Resource Resource       `json:"resource"`
 	Context  map[string]any `json:"context,omitempty"`
 	// Detail opts into the rich result (state/missing_context/conditions/model)
-	// when the backend supports it — the native equivalent of X-Authz-Detail.
+	// when the backend supports it — the native equivalent of X-PGAuthz-Detail.
 	Detail bool `json:"detail,omitempty"`
 	// ContextualTuples, when present, are evaluated as ephemeral tuples
 	// alongside the stored graph (never persisted). JSONB array in the

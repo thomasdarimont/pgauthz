@@ -25,7 +25,7 @@ _effective_cache_ttl(store, object_type) := 0 if input.no_cache
 
 _effective_cache_ttl(store, object_type) := _cache_ttl(store, object_type) if not input.no_cache
 
-# Per-app DB role forwarded on READ calls as X-Authz-Role, which pgauthzd
+# Per-app DB role forwarded on READ calls as X-PGAuthz-Role, which pgauthzd
 # validates and SET LOCAL ROLEs to so the engine's read-side namespace checks
 # key on the calling application, not the reader's fixed connection role
 # (authz_reader). Trust ladder mirrors subject resolution:
@@ -45,12 +45,12 @@ _read_db_role := input.db_role if {
 	input.db_role != ""
 }
 
-_read_role_header := {"X-Authz-Role": _read_db_role} if _read_db_role
+_read_role_header := {"X-PGAuthz-Role": _read_db_role} if _read_db_role
 
 _read_role_header := {} if not _read_db_role
 
 # Native callback headers: the shared SERVICE credential (proves this is our
-# OPA) plus the per-app role (X-Authz-Role) the internal listener trusts, plus
+# OPA) plus the per-app role (X-PGAuthz-Role) the internal listener trusts, plus
 # Content-Type. The internal listener does NOT verify the end-user JWT — OPA
 # already authenticated the caller and asserts the subject (in the body).
 _native_auth := {"Authorization": concat(" ", ["Bearer", config.native_service_token])} if config.native_service_token
@@ -354,7 +354,7 @@ write_tuples_checked(store, preconditions, deletes, writes, performed_by, header
 
 # _native_write POSTs an authorized write to the writer instance's callback
 # listener (store-scoped path). Forwards the service credential + the per-app
-# role (X-Authz-Role) and consistency (from write.rego's _headers → body).
+# role (X-PGAuthz-Role) and consistency (from write.rego's _headers → body).
 # Returns {status, body}.
 _native_write(store, suffix, body, headers) := {"status": resp.status_code, "body": resp.body} if {
 	resp := http.send(object.union(
@@ -374,13 +374,13 @@ _native_write_headers(headers) := object.union(
 	_native_forward_role(headers),
 )
 
-_native_forward_role(headers) := {"X-Authz-Role": headers["X-Authz-Role"]} if headers["X-Authz-Role"]
+_native_forward_role(headers) := {"X-PGAuthz-Role": headers["X-PGAuthz-Role"]} if headers["X-PGAuthz-Role"]
 
-_native_forward_role(headers) := {} if not headers["X-Authz-Role"]
+_native_forward_role(headers) := {} if not headers["X-PGAuthz-Role"]
 
-_native_consistency(headers) := {"consistency": headers["X-Authz-Consistency"]} if headers["X-Authz-Consistency"]
+_native_consistency(headers) := {"consistency": headers["X-PGAuthz-Consistency"]} if headers["X-PGAuthz-Consistency"]
 
-_native_consistency(headers) := {} if not headers["X-Authz-Consistency"]
+_native_consistency(headers) := {} if not headers["X-PGAuthz-Consistency"]
 
 # list_actions with request context.
 list_actions_with_context(store, subject_type, subject_id, object_type, object_id, ctx) := actions if {

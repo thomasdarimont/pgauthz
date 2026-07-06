@@ -17,7 +17,7 @@ type EvalResponseBody struct {
 	// Context carries the optional rich decision detail (AuthZEN's response
 	// context field): state allow|deny|conditional, missing_context,
 	// conditions, reason, model. Populated only when the caller opts in via
-	// the X-Authz-Detail header and the backend supports it.
+	// the X-PGAuthz-Detail header and the backend supports it.
 	Context map[string]any `json:"context,omitempty"`
 }
 

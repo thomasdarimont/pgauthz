@@ -74,7 +74,7 @@ type Config struct {
 	// InternalServiceToken is the shared SERVICE credential the internal
 	// listener requires (Authorization: Bearer <token>) — it proves the call
 	// came from the trusted OPA sidecar. The listener then trusts OPA's asserted
-	// subject (body) + per-app role (X-Authz-Role), the trusted-backend role
+	// subject (body) + per-app role (X-PGAuthz-Role), the trusted-backend role
 	// the native `/pgauthz/v1` callback plays. REQUIRED when InternalListenAddr is set (fail
 	// closed: no unauthenticated internal listener). Env INTERNAL_SERVICE_TOKEN.
 	InternalServiceToken string
@@ -117,7 +117,7 @@ type Config struct {
 	// the native write endpoints on the PUBLIC listener — pgauthzd is the write
 	// front door and authorizes writes itself (no OPA needed on the write path).
 	// Default "authz_writer". The service-token callback listener does NOT apply
-	// this gate (it trusts the upstream OPA's asserted X-Authz-Role). Env
+	// this gate (it trusts the upstream OPA's asserted X-PGAuthz-Role). Env
 	// WRITER_ROLE.
 	WriterRole string
 
@@ -136,7 +136,7 @@ type Config struct {
 
 	// FreshnessKey is the HMAC secret for signing/verifying freshness tokens
 	// (ADR 0009 read-your-writes). Empty disables the feature: writes mint no
-	// token, and a read presenting `X-Authz-Consistency: at_least_as_fresh` is
+	// token, and a read presenting `X-PGAuthz-Consistency: at_least_as_fresh` is
 	// rejected (400) rather than served as if fresh (fail closed). Env
 	// FRESHNESS_TOKEN_KEY.
 	FreshnessKey string
@@ -218,7 +218,7 @@ func Load() (*Config, error) {
 		SubjectIDFallback:     env("SUBJECT_ID_FALLBACK_CLAIM", "sub"),
 		FreshnessKey:          env("FRESHNESS_TOKEN_KEY", ""),
 		DefaultStore:          env("DEFAULT_STORE", "demo"),
-		StoreHeader:           env("STORE_HEADER", "X-AuthZ-Store"),
+		StoreHeader:           env("STORE_HEADER", "X-PGAuthz-Store"),
 		RequireStoreBinding:   envBool("REQUIRE_STORE_BINDING", false),
 		RequireDBRoleBinding:  envBool("REQUIRE_DB_ROLE_BINDING", false),
 		AllowSubjectOverride:  envBool("ALLOW_SUBJECT_OVERRIDE", false),

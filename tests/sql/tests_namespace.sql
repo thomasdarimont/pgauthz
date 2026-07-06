@@ -386,7 +386,7 @@ SELECT * FROM _test_teardown_ns_write();
 -- Per-app role assumption + namespace isolation.
 --
 -- pgauthzd conveys the caller's app role (from the verified token / OPA's
--- X-Authz-Role) and — after validating it (member of authz_writer, NOT admin;
+-- X-PGAuthz-Role) and — after validating it (member of authz_writer, NOT admin;
 -- see pgauthzd's checkWriterRole, covered end to end by tests/test-opa.sh) —
 -- SET LOCAL ROLEs to it. Here we assume the role directly (the transaction-local
 -- `role` GUC the engine reads via _effective_role, the same effect as SET LOCAL

@@ -123,7 +123,7 @@ through it would fail closed.
 To restore per-app isolation over HTTP, the caller's app role is conveyed and the
 writer assumes it per request. On the external front door pgauthzd derives the
 role from the verified token (`DB_ROLE_CLAIM`); on the internal callback the OPA
-sidecar forwards it as the `X-Authz-Role` header (from OPA's own
+sidecar forwards it as the `X-PGAuthz-Role` header (from OPA's own
 `DB_ROLE_CLAIM`). Either way pgauthzd validates it and `SET LOCAL ROLE`s to it:
 
 1. **Issue per-app DB roles** and wire them up (the role must be a member of
@@ -148,13 +148,13 @@ sidecar forwards it as the `X-Authz-Role` header (from OPA's own
 
 The role is trustworthy because pgauthzd derives it from the verified token (or,
 on the internal callback, the writer is reachable only by OPA, which sets
-`X-Authz-Role` from the verified JWT). `SET LOCAL ROLE` is transaction-scoped, so
+`X-PGAuthz-Role` from the verified JWT). `SET LOCAL ROLE` is transaction-scoped, so
 the role never leaks across pooled connections. With `DB_ROLE_CLAIM` unset (the
 default) no role is conveyed and the writer stays `authz_writer`.
 
 > **Reads:** the read path gets the same treatment. pgauthzd derives the per-app
 > role from the token (or, on the OPA read callback, from the forwarded
-> `X-Authz-Role`), validates it — member of `authz_reader`, **not** admin-capable,
+> `X-PGAuthz-Role`), validates it — member of `authz_reader`, **not** admin-capable,
 > fail closed — and `SET LOCAL ROLE`s to it in the read transaction, so the
 > read-side namespace checks (`_check_namespace_access(..., 'can_read')`) key on
 > the calling app instead of the fixed reader default. Wire the app role for
@@ -805,7 +805,7 @@ writes (with the default config):
 
 Writes go to the pgauthzd `full` instance (dev: `http://localhost:8092`) with
 `Authorization: Bearer <JWT>`. The store is selected by the
-`/stores/{store}/pgauthz/v1/…` path prefix, the `X-AuthZ-Store` header, or the
+`/stores/{store}/pgauthz/v1/…` path prefix, the `X-PGAuthz-Store` header, or the
 instance's `DEFAULT_STORE` — **not** a `store` body field. The authenticated
 subject is recorded as the audit author (`performed_by`); an explicit
 `performed_by` in the body overrides it.
@@ -888,7 +888,7 @@ Race-free **ownership transfer** — make Bob the owner only if Alice still is:
 ```bash
 curl -sX POST http://localhost:8092/pgauthz/v1/write-checked \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -H "X-AuthZ-Store: acme" \
+  -H "X-PGAuthz-Store: acme" \
   -d '{"preconditions":[{"match":"exists","user_type":"user","user_id":"alice",
                          "relation":"owner","object_type":"document","object_id":"d1"}],
        "deletes":[{"user_type":"user","user_id":"alice","relation":"owner",
@@ -1079,7 +1079,7 @@ validates the JWT and writer role) or direct SQL.
 `full` instance with an `Authorization: Bearer <JWT>` header and a native
 `{"tuples":[...]}` body. The caller's JWT roles claim must contain the writer
 role; the authenticated subject is recorded as the audit author. The store is
-selected by the `X-AuthZ-Store` header (or the instance's `DEFAULT_STORE`).
+selected by the `X-PGAuthz-Store` header (or the instance's `DEFAULT_STORE`).
 
 ```java
 @Component
@@ -1127,7 +1127,7 @@ public class AuthZWriter {
         return rest.post()
             .uri(path)
             .header("Authorization", "Bearer " + token)
-            .header("X-AuthZ-Store", store)
+            .header("X-PGAuthz-Store", store)
             .body(body)
             .retrieve()   // non-2xx (401/403/400) throws — the write was refused
             .body(WriteResponse.class);

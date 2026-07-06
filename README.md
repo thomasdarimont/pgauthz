@@ -1102,7 +1102,7 @@ one application from accidentally modifying or querying another's authorization 
 - Types with `namespace = NULL` are **unrestricted** — any role can read and write them.
 - Types with a non-NULL namespace require the **effective request role** to be a member of a
   granted role. The effective role is the `SET ROLE` identity (what pgauthzd switches to
-  per request, from the forwarded `X-Authz-Role`), falling back to the session user for direct connections.
+  per request, from the forwarded `X-PGAuthz-Role`), falling back to the session user for direct connections.
 - **Read and write access** is controlled via `authz.namespace_access` using `can_read` and `can_write` flags.
 
 ```sql
@@ -1351,7 +1351,7 @@ with no OPA hop. Reads route to a **decision-only** pgauthzd instance
 via `NATIVE_URL` (reads), `NATIVE_WRITE_URL` (writes), and `NATIVE_SERVICE_TOKEN`.
 
 > **Trust boundary:** the callback listener trusts OPA's asserted subject and the
-> per-app role header `X-Authz-Role`; it does **not** re-verify the end-user JWT —
+> per-app role header `X-PGAuthz-Role`; it does **not** re-verify the end-user JWT —
 > for this internal hop OPA is the trusted upstream caller, and pgauthzd is the
 > external front door that already validated the JWT. The
 > listener is authenticated with a shared service token (pgauthzd

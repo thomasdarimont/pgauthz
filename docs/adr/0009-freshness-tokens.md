@@ -111,11 +111,11 @@ SELECT pg_current_wal_insert_lsn(),
 ```
 
 One extra cheap round trip. The writer returns the signed token in the native
-write response (and an `X-Authz-Revision` header on AuthZEN writes).
+write response (and an `X-PGAuthz-Revision` header on AuthZEN writes).
 
 ### Read modes
 
-A read carries an optional consistency mode (native field / `X-Authz-Consistency`
+A read carries an optional consistency mode (native field / `X-PGAuthz-Consistency`
 already exists for writes; extended to reads):
 
 - `minimize_latency` (default) — answer from the local replica, today's behavior.
@@ -181,7 +181,7 @@ pinning all sensitive reads to the primary. A deployment can use either or both.
 **Stale-read routing shape** — when a replica cannot satisfy an
 `at_least_as_fresh` token:
 
-- **(a) Retryable signal** — return `409` + `X-Authz-Stale` and let the
+- **(a) Retryable signal** — return `409` + `X-PGAuthz-Stale` and let the
   gateway/client retry against the primary-connected instance. Single pool, small
   change; turns "route sensitive reads to primary" from *always* into
   *only-when-actually-stale*.

@@ -12,7 +12,7 @@ import (
 func testHandler(issuers []config.Issuer) *Handler {
 	return NewHandler(nil, nil, nil, &config.Config{
 		DefaultStore: "demo",
-		StoreHeader:  "X-AuthZ-Store",
+		StoreHeader:  "X-PGAuthz-Store",
 		Issuers:      issuers,
 	})
 }
@@ -27,7 +27,7 @@ func TestStoreResolution(t *testing.T) {
 	}
 
 	// header beats default
-	r.Header.Set("X-AuthZ-Store", "hdr")
+	r.Header.Set("X-PGAuthz-Store", "hdr")
 	if got := h.store(r); got != "hdr" {
 		t.Errorf("header: got %q, want hdr", got)
 	}

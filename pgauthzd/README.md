@@ -179,7 +179,7 @@ every decision is fresh by construction. See
 [`opa/README.md`](../opa/README.md) for the cache model and the end-to-end
 staleness bound.
 
-**Rich decisions (`X-Authz-Detail`).** Send the `X-Authz-Detail: true`
+**Rich decisions (`X-PGAuthz-Detail`).** Send the `X-PGAuthz-Detail: true`
 header on `access/v1/evaluation` to receive the AuthZEN response `context`
 field alongside the boolean: `state` (`allow | deny | conditional`),
 `missing_context` (condition keys the caller failed to supply, namespaced
@@ -219,7 +219,7 @@ Requests are scoped to an authorization store. The store is selected via
    `GET /.well-known/authzen-configuration/stores/{store}`. The
    path-appending form `GET /stores/{store}/.well-known/authzen-configuration`
    is also served (OpenFGA-style) and returns the identical document.
-2. The `X-AuthZ-Store` HTTP header (configurable name)
+2. The `X-PGAuthz-Store` HTTP header (configurable name)
 3. The `DEFAULT_STORE` environment variable (default: `demo`)
 
 **Per-issuer store binding.** In multi-tenant setups, bind each trusted
@@ -288,7 +288,7 @@ fixed connection role applies).
 > derives the role identically (claim → issuer map → global map, validated
 > against the issuer's `db_roles` binding) and forwards it to OPA as
 > `input.db_role`; OPA passes it back to the pgauthzd reader (native
-> `/pgauthz/v1` callback) as `X-Authz-Role`,
+> `/pgauthz/v1` callback) as `X-PGAuthz-Role`,
 > where the pgauthzd reader validates it (member of `authz_reader`,
 > not admin-capable, fail closed) and `SET LOCAL ROLE`s to it in Go. In token-mode
 > OPA deployments (`FORWARD_TOKEN_TO_OPA=true` + OPA `DB_ROLE_CLAIM`), OPA
@@ -322,7 +322,7 @@ All configuration is via environment variables.
 | `SUBJECT_TYPE_DEFAULT` | `internal_user` | Default subject type if claim missing |
 | `ALLOW_SUBJECT_OVERRIDE` | `false` | Allow a request-body subject to override the JWT subject (trusted PEP/PDP mode). Default false = token-only; a mismatched body subject is rejected with `403` |
 | `DEFAULT_STORE` | `demo` | Default authorization store |
-| `STORE_HEADER` | `X-AuthZ-Store` | HTTP header for store selection |
+| `STORE_HEADER` | `X-PGAuthz-Store` | HTTP header for store selection |
 | `REQUIRE_STORE_BINDING` | `false` | Refuse to start unless **every** trusted issuer has a `stores` binding (recommended `true` for multi-tenant deployments); off = unbound issuers are unrestricted, with a startup warning when several issuers are configured |
 | `REQUIRE_DB_ROLE_BINDING` | `false` | When role derivation is configured (`DB_ROLE_CLAIM` / `CLIENT_DB_ROLES`): refuse to start unless every issuer has a `db_roles` or `client_db_roles` binding (recommended `true` for multi-tenant deployments) |
 | `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
@@ -344,7 +344,7 @@ All configuration is via environment variables.
 | `FORWARD_TOKEN_TO_OPA` | `false` | Forward the verified bearer token to OPA as `input.token` so OPA re-validates it — lets OPA run token-only (`REQUIRE_TOKEN_FOR_READS=true`) instead of trusting the forwarded subject. Leave off for trusted-PEP setups that check arbitrary subjects |
 | `DATABASE_URL` | *empty* | Optional. A **read-only** DSN enables the native raw callback surface (`/pgauthz/v1/check`, `list-*`) an OPA sidecar calls back into (replacing the former PostgREST reader). Asserted read-only at startup |
 | `INTERNAL_LISTEN_ADDR` | *empty* | Address for the internal listener serving that native raw surface (e.g. `:8081`). **Do not publish it** — bind to the OPA sidecar network. Empty = raw surface not served |
-| `INTERNAL_SERVICE_TOKEN` | *empty* | Shared service credential the internal listener requires (`Authorization: Bearer`), proving the call came from the OPA sidecar. Must match OPA's `NATIVE_SERVICE_TOKEN`. **Required** when `INTERNAL_LISTEN_ADDR` is set — startup fails closed without it. The listener then trusts OPA's asserted subject (body) + role (`X-Authz-Role`), not the end-user JWT |
+| `INTERNAL_SERVICE_TOKEN` | *empty* | Shared service credential the internal listener requires (`Authorization: Bearer`), proving the call came from the OPA sidecar. Must match OPA's `NATIVE_SERVICE_TOKEN`. **Required** when `INTERNAL_LISTEN_ADDR` is set — startup fails closed without it. The listener then trusts OPA's asserted subject (body) + role (`X-PGAuthz-Role`), not the end-user JWT |
 | `INTERNAL_TLS_CERT` / `INTERNAL_TLS_KEY` / `INTERNAL_CLIENT_CA` | *empty* | Optional mTLS on the internal listener (transport-layer caller auth, layered under the service token). Set all three → the listener serves HTTPS and **requires + verifies a client cert** chained to `INTERNAL_CLIENT_CA` (only the OPA sidecar's cert is accepted). Empty = plain HTTP (fine for same-pod/localhost). Prefer mesh-provided mTLS where available |
 
 ## Architecture
