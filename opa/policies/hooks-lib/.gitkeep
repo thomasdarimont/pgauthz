@@ -1,0 +1,4 @@
+Mountpoint for OPERATOR EXTENSION LIBRARIES (authz.hooks.lib.v1.ext.*, ADR
+0011) — kept in-tree so a nested read-only bind mount into the read-only
+/policies parent works. Mount your validated library dir here, or drop
+.rego files directly into this directory.

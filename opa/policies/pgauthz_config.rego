@@ -76,3 +76,27 @@ allow_unfiltered_enumeration if _env.ALLOW_UNFILTERED_ENUMERATION_WITH_HOOKS == 
 # OPEN on the unconfigured value. Set ALLOW_UNKNOWN_DEPLOYMENT_ENVIRONMENT=true
 # ONLY when every mounted hook is genuinely environment-independent.
 allow_unknown_environment if _env.ALLOW_UNKNOWN_DEPLOYMENT_ENVIRONMENT == "true"
+
+# Hook-FILTERED enumeration (ADR 0011): evaluate the applicable decision hooks
+# per enumeration candidate and drop denied ones — results then match what
+# per-object checks would allow, so enumeration is safe to serve with hooks
+# loaded. Takes precedence over ALLOW_UNFILTERED_ENUMERATION_WITH_HOOKS.
+# Costs O(candidates × applicable hooks) per query — see the candidate cap.
+hook_filtered_enumeration if _env.HOOK_FILTERED_ENUMERATION == "true"
+
+# Fail-closed cost bound for filtered enumeration: a raw candidate set larger
+# than this is REFUSED (never partially filtered). Bounded by OPA_REQUEST_TIMEOUT
+# regardless. STRICT parsing: digits only, range 1..100000 — a malformed or
+# out-of-range value leaves this UNDEFINED, which disables the filtering mode
+# entirely (enumeration falls back to the refusal), rather than silently
+# applying an unexpected bound. (OPA reads env at query time; there is no
+# startup phase to fail, so fail-closed-at-use is the enforceable semantics.)
+hook_filter_max_candidates := n if {
+	raw := _env.HOOK_FILTER_MAX_CANDIDATES
+	regex.match(`^[0-9]+$`, raw)
+	n := to_number(raw)
+	n >= 1
+	n <= 100000
+}
+
+hook_filter_max_candidates := 1000 if not _env.HOOK_FILTER_MAX_CANDIDATES

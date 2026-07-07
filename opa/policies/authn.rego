@@ -87,11 +87,50 @@ subject_type := authn_config.default_subject_type if {
 # (authn_config.roles_claim_paths, default [["roles"]]). A token's roles may be
 # split across claims (e.g. Keycloak's realm_access.roles + resource_access.
 # <client>.roles); a missing claim contributes nothing.
-roles := {r |
+roles := {out |
 	some path in authn_config.roles_claim_paths
 	some r in object.get(claims, path, [])
+	out := _role_name(path, r)
 } if {
 	token_is_valid
+}
+
+# Operator-selected verified-token claims, copied VERBATIM (HOOK_ACTOR_CLAIMS;
+# defaults to Keycloak's realm_access + resource_access — same names, same
+# shapes as in the token, so Keycloak's documentation applies unchanged, and
+# client_ids stay map KEYS: URI-shaped SAML entity IDs need no separator
+# convention). Missing claims are absent from the map, never null-filled —
+# non-Keycloak tokens simply yield {}.
+actor_claims := {name: v |
+	some name in authn_config.actor_claims
+	v := claims[name]
+} if {
+	token_is_valid
+}
+
+# With JWT_ROLES_SOURCE_PREFIX=true, roles carry their provenance:
+# resource_access.<client>.roles → "<client>::<role>", realm_access.roles →
+# "realm::<role>"; custom claim paths stay bare. "::" (not ".") because
+# client_ids may be URIs. Off (default) = the released flat behavior.
+_client_role_path(path) if {
+	authn_config.source_prefix_roles
+	count(path) == 3
+	path[0] == "resource_access"
+	path[2] == "roles"
+}
+
+_realm_role_path(path) if {
+	authn_config.source_prefix_roles
+	path == ["realm_access", "roles"]
+}
+
+_role_name(path, r) := sprintf("%s::%s", [path[1], r]) if _client_role_path(path)
+
+_role_name(path, r) := sprintf("realm::%s", [r]) if _realm_role_path(path)
+
+_role_name(path, r) := r if {
+	not _client_role_path(path)
+	not _realm_role_path(path)
 }
 
 # ── Token diagnostics (opt-in: TOKEN_DEBUG=true) ──────────────────────────────

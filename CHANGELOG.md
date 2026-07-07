@@ -141,7 +141,71 @@ pre-1.0, minor versions may include breaking changes.
   (review + contract tests; not statically checkable), with the
   platform-HTTP-helper model documented as deferred v2 hardening;
   `platform_policy_compatibility` enforcement named (publish pipeline +
-  activation monitor). Onboarding pass: the dev compose stack now sets
+  activation monitor).
+- **Hook-filtered enumeration + verified actor roles (ADR 0011 follow-up).**
+  `HOOK_FILTERED_ENUMERATION=true` (Helm: `opa.hookFilteredEnumeration`)
+  evaluates the applicable decision hooks per enumeration candidate and drops
+  denied ids — listings then match per-object checks, replacing the blanket
+  refusal. Guardrails: `HOOK_FILTER_MAX_CANDIDATES` (1000) refuses over-cap
+  queries outright (`enumeration_refused_too_many_candidates`, typed 403);
+  refused while the environment guard is active; paginated results switch to
+  a raw-keyset protocol (`{hook_filtered, ids, has_more, cursor}`) so pages
+  that filter below the limit never end pagination early (short/empty pages
+  with a next_token are normal). And the hook ABI now carries the verified
+  caller as `actor{id, roles}` on decisions AND writes (roles =
+  `JWT_ROLES_CLAIM` aggregation, e.g. Keycloak realm + client roles) —
+  role-based exemptions (`not "auditor" in input.actor.roles`) are
+  expressible and stay veto-only. `examples/opa-hooks-filtering/` ships the
+  reference hook + 14 contract tests, wired into `pre-release.sh`. Review
+  hardening: strict cap parsing (digits-only, 1..100000; malformed ⇒ refusal,
+  never a silent default), **sealed filtered-page cursors** (AES-GCM via
+  `CURSOR_SEAL_KEY` — the raw-keyset cursor may name a hook-hidden id; failed
+  unseal = 400), the per-page consistency claim qualified, `http.send` request
+  fields moved to an explicit allowlist (cross-query cache controls
+  forbidden), and the flat role namespace documented (use globally unambiguous
+  exemption role names). Precedence pinned: with BOTH mode flags set, filtering
+  wins, and a configured-but-inoperable filtering state (env guard, malformed
+  cap) refuses — never degrades to the superset. `CURSOR_SEAL_KEY` is a
+  comma-separated keyring (first mints, all accept) so key rotation keeps
+  in-flight paginations alive. Sealed cursors are additionally **bound to
+  their query context** (AEAD AAD over operation/store/subject/action/
+  resource — cross-context replay rejected); the per-process fallback is
+  declared dev-only (startup warning without a shared key on OPA-fronted
+  instances); the cap tri-state pinned (missing → 1000, valid → value,
+  malformed → refusal); cache-field prohibition promoted into the normative
+  ADR `http.send` contract; `actor{id,roles}` additivity clarified (actor was
+  always an object). Cursor binding completed: the AAD includes `actor.id` and a
+  canonical caller-context hash (actor A's cursor is rejected for actor B);
+  the Helm chart refuses to render `opa.hookFilteredEnumeration` without
+  `authzen.opa.cursorSealKey`; the cap documented as per-request scope. Crypto
+  invariants (freeze round): fresh random nonces per cursor, strict
+  `CURSOR_SEAL_KEY` parsing (empty segments = startup error), an explicit
+  envelope format version (unknown = fail closed), and 32-byte plaintext
+  padding (token length reveals only a coarse bucket). Role provenance,
+  two mechanisms: the hook `actor` carries **verbatim claim copies** under
+  `actor.claims.<name>` (`HOOK_ACTOR_CLAIMS`, default
+  `realm_access,resource_access` — client_ids stay map keys, so URI-shaped
+  SAML entity IDs need no separator convention; the recommended way to write
+  client-scoped hook logic; the actor top level stays reserved for derived
+  identity), and
+  `JWT_ROLES_SOURCE_PREFIX=true` (opt-in) emits provenance-prefixed FLAT
+  roles — `realm::<role>` / `<client_id>::<role>` — for consumers of the flat
+  set like the writer gate (update `WRITER_ROLE` to the prefixed form when
+  enabling); flat aggregation remains the default. Custom selections
+  (`HOOK_ACTOR_CLAIMS=...`, Helm: `opa.hookActorClaims`) replace the default —
+  top-level claim names taken whole (URI-named OIDC claims work), missing
+  claims absent. **Platform hook library** `authz.hooks.lib.v1`: shared,
+  versioned helper functions — the single validator-allowlisted namespace
+  hooks may import (platform-owned, functions-only, ships with the platform
+  policy; a call to a nonexistent function fails validation). First module:
+  `keycloak.has_realm_role` / `keycloak.has_client_role` +
+  `realm_roles`/`client_roles` accessors, all fail-closed on absent claims;
+  the `claims_guard` example uses it. Operators add their OWN shared helpers
+  under the reserved `authz.hooks.lib.v1.ext.<name>` subtree
+  (`validate-hooks.sh --lib`: functions-only, always pure — no `http.send`
+  escape, since a shared lib would hand network access to network-free store
+  hooks; Helm: `opa.extraLibsConfigMap`; validator: `HOOK_EXTRA_LIBS=<dir>`
+  when validating hooks that call them; `examples/opa-hooks-lib/`). Onboarding pass: the dev compose stack now sets
   `DEPLOYMENT_ENVIRONMENT=dev` (mounting a first hook no longer trips the
   fail-closed environment guard; production still must set its own value —
   Helm: `authzen.opa.deploymentEnvironment`), `scripts/new-hook.sh` scaffolds

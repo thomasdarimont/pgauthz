@@ -24,7 +24,7 @@ spec:
         # Roll pods when policies change.
         checksum/policies: {{ .Files.Glob "files/opa/policies/*.rego" | toString | sha256sum }}
     spec:
-      {{- if or .Values.opa.extraPoliciesConfigMap .Values.opa.storePoliciesConfigMaps }}
+      {{- if or .Values.opa.extraPoliciesConfigMap .Values.opa.storePoliciesConfigMaps .Values.opa.extraLibsConfigMap }}
       # Deploy-time hook gate (ADR 0011), two initContainers:
       #  1. hook PURITY — each hook dir compiled against the hooks-v1 capability
       #     allowlist, so a non-pure builtin (http.send, io.*, opa.*,
@@ -47,6 +47,9 @@ spec:
             {{- if .Values.opa.extraPoliciesConfigMap }}
             - /hooks/global
             {{- end }}
+            {{- if .Values.opa.extraLibsConfigMap }}
+            - /hooks-lib
+            {{- end }}
             {{- range $store, $cm := .Values.opa.storePoliciesConfigMaps }}
             - /hooks/stores/{{ $store }}
             {{- end }}
@@ -54,6 +57,9 @@ spec:
             - { name: hook-caps, mountPath: /caps, readOnly: true }
             {{- if .Values.opa.extraPoliciesConfigMap }}
             - { name: extra-policies, mountPath: /hooks/global, readOnly: true }
+            {{- end }}
+            {{- if .Values.opa.extraLibsConfigMap }}
+            - { name: extra-libs, mountPath: /hooks-lib, readOnly: true }
             {{- end }}
             {{- range $store, $cm := .Values.opa.storePoliciesConfigMaps }}
             - { name: {{ include "pgauthz.storeHooksVolume" $store }}, mountPath: /hooks/stores/{{ $store }}, readOnly: true }
@@ -66,6 +72,9 @@ spec:
             - { name: policies, mountPath: /policies, readOnly: true }
             {{- if .Values.opa.extraPoliciesConfigMap }}
             - { name: extra-policies, mountPath: /policies/hooks/global, readOnly: true }
+            {{- end }}
+            {{- if .Values.opa.extraLibsConfigMap }}
+            - { name: extra-libs, mountPath: /policies/hooks-lib, readOnly: true }
             {{- end }}
             {{- range $store, $cm := .Values.opa.storePoliciesConfigMaps }}
             - { name: {{ include "pgauthz.storeHooksVolume" $store }}, mountPath: /policies/hooks/stores/{{ $store }}, readOnly: true }
@@ -99,6 +108,18 @@ spec:
             - { name: JWT_AUDIENCE, value: {{ .Values.opa.jwtAudience | quote }} }
             - { name: DEFAULT_STORE, value: {{ .Values.opa.defaultStore | quote }} }
             - { name: REQUIRE_TOKEN_FOR_READS, value: {{ .Values.opa.requireTokenForReads | quote }} }
+            {{- if .Values.opa.hookFilteredEnumeration }}
+            # ADR 0011: filter enumeration per candidate through the applicable
+            # decision hooks (supersedes the refusal AND the superset opt-out).
+            - { name: HOOK_FILTERED_ENUMERATION, value: "true" }
+            - { name: HOOK_FILTER_MAX_CANDIDATES, value: {{ .Values.opa.hookFilterMaxCandidates | quote }} }
+            {{- end }}
+            {{- with .Values.opa.hookActorClaims }}
+            - { name: HOOK_ACTOR_CLAIMS, value: {{ . | quote }} }
+            {{- end }}
+            {{- if .Values.opa.rolesSourcePrefix }}
+            - { name: JWT_ROLES_SOURCE_PREFIX, value: "true" }
+            {{- end }}
             {{- if .Values.opa.allowUnfilteredEnumerationWithHooks }}
             # ADR 0011: opt OUT of the secure default — with policy hooks
             # loaded, search enumeration returns graph-derived SUPERSETS that
@@ -143,6 +164,10 @@ spec:
             # that veto decisions/writes for every store.
             - { name: extra-policies, mountPath: /policies/hooks/global, readOnly: true }
             {{- end }}
+            {{- if .Values.opa.extraLibsConfigMap }}
+            # Operator extension library (authz.hooks.lib.v1.ext.*).
+            - { name: extra-libs, mountPath: /policies/hooks-lib, readOnly: true }
+            {{- end }}
             {{- range $store, $cm := .Values.opa.storePoliciesConfigMaps }}
             # Store-scoped hooks for {{ $store }} (authz.hooks.v1.stores.{{ $store }}.*).
             - { name: {{ include "pgauthz.storeHooksVolume" $store }}, mountPath: /policies/hooks/stores/{{ $store }}, readOnly: true }
@@ -160,11 +185,15 @@ spec:
         - name: extra-policies
           configMap: { name: {{ .Values.opa.extraPoliciesConfigMap }} }
         {{- end }}
+        {{- if .Values.opa.extraLibsConfigMap }}
+        - name: extra-libs
+          configMap: { name: {{ .Values.opa.extraLibsConfigMap }} }
+        {{- end }}
         {{- range $store, $cm := .Values.opa.storePoliciesConfigMaps }}
         - name: {{ include "pgauthz.storeHooksVolume" $store }}
           configMap: { name: {{ $cm }} }
         {{- end }}
-        {{- if or .Values.opa.extraPoliciesConfigMap .Values.opa.storePoliciesConfigMaps }}
+        {{- if or .Values.opa.extraPoliciesConfigMap .Values.opa.storePoliciesConfigMaps .Values.opa.extraLibsConfigMap }}
         - name: hook-caps
           configMap: { name: {{ include "pgauthz.fullname" . }}-opa-hook-caps }
         {{- end }}

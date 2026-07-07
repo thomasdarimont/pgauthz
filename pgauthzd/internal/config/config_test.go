@@ -173,3 +173,19 @@ func TestDeploymentEnvironmentValidAccepted(t *testing.T) {
 		t.Fatalf("valid env rejected: %v", err)
 	}
 }
+
+func TestCursorSealKeyRejectsEmptySegments(t *testing.T) {
+	setMinimalIssuer(t)
+	t.Setenv("CURSOR_SEAL_KEY", "new-key,")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CURSOR_SEAL_KEY") {
+		t.Fatalf("expected empty-segment error, got %v", err)
+	}
+}
+
+func TestCursorSealKeyringAccepted(t *testing.T) {
+	setMinimalIssuer(t)
+	t.Setenv("CURSOR_SEAL_KEY", "new-key, old-key")
+	if c, err := Load(); err != nil || c.CursorSealKey == "" {
+		t.Fatalf("valid keyring rejected: %v", err)
+	}
+}

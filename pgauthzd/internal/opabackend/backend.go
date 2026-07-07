@@ -182,23 +182,62 @@ func (b *Backend) CheckAccessBatch(ctx context.Context, store string, reqs []aut
 	return out, nil
 }
 
-// decodeIDs unmarshals a search-rule result that is either an ID array or the
-// enumeration-refusal object (ADR 0011: hooks loaded + unfiltered enumeration
-// not enabled → {"error": "enumeration_refused_with_hooks"}).
-func decodeIDs(raw json.RawMessage) ([]string, error) {
+// filteredPage is the paginated-search protocol object returned when
+// hook-FILTERED enumeration is active (ADR 0011): ids are post-filter, but
+// has_more and the keyset cursor are derived from the RAW page, so pagination
+// traverses the full raw keyset space and never terminates early just because
+// a page filtered below the client limit.
+type filteredPage struct {
+	HookFiltered bool     `json:"hook_filtered"`
+	IDs          []string `json:"ids"`
+	HasMore      bool     `json:"has_more"`
+	Cursor       string   `json:"cursor"`
+}
+
+// decodeIDs unmarshals a search-rule result: an ID array, the filtered-page
+// protocol object, or an enumeration-refusal object. The returned *filteredPage
+// is non-nil only for the protocol shape.
+func decodeIDs(raw json.RawMessage) ([]string, *filteredPage, error) {
 	var refusal struct {
 		Error string `json:"error"`
 	}
-	if err := json.Unmarshal(raw, &refusal); err == nil && refusal.Error == "enumeration_refused_with_hooks" {
-		return nil, authz.ErrEnumerationRefused
+	if err := json.Unmarshal(raw, &refusal); err == nil {
+		switch refusal.Error {
+		case "enumeration_refused_with_hooks":
+			return nil, nil, authz.ErrEnumerationRefused
+		case "enumeration_refused_too_many_candidates":
+			return nil, nil, authz.ErrEnumerationCapExceeded
+		}
+	}
+	var fp filteredPage
+	if err := json.Unmarshal(raw, &fp); err == nil && fp.HookFiltered {
+		if fp.IDs == nil {
+			fp.IDs = []string{}
+		}
+		return fp.IDs, &fp, nil
 	}
 	var ids []string
 	if len(raw) > 0 && string(raw) != "null" {
 		if err := json.Unmarshal(raw, &ids); err != nil {
-			return nil, fmt.Errorf("unexpected search result shape: %w", err)
+			return nil, nil, fmt.Errorf("unexpected search result shape: %w", err)
 		}
 	}
-	return ids, nil
+	return ids, nil, nil
+}
+
+// pageFromFiltered maps the protocol object to the page response. The cursor
+// is the last RAW consumed id — possibly one the hooks removed from the
+// results — so it is SEALED (AES-GCM): opaque and integrity-protected, no
+// existence leak through pagination metadata.
+func pageFromFiltered(fp *filteredPage, aad string) *authz.PageResponse {
+	if !fp.HasMore {
+		return nil
+	}
+	tok := api.EncodeSealedPageAfter(fp.Cursor, aad)
+	if tok == "" {
+		return nil // no usable cipher: end pagination rather than leak
+	}
+	return &authz.PageResponse{HasMore: true, NextToken: tok}
 }
 
 func (b *Backend) ListResources(ctx context.Context, store string,
@@ -227,9 +266,15 @@ func (b *Backend) ListResources(ctx context.Context, store string,
 		if err := b.query(ctx, "accessible_objects_page", input, &raw); err != nil {
 			return nil, nil, err
 		}
-		ids, err := decodeIDs(raw)
+		ids, fp, err := decodeIDs(raw)
 		if err != nil {
 			return nil, nil, err
+		}
+		if fp != nil {
+			_, actorID := api.SubjectFromContext(ctx)
+			return ids, pageFromFiltered(fp, api.SealedCursorAAD("objects", store, actorID,
+				subjectType, subjectID, action, objectType, "",
+				api.CanonicalContextHash(reqContext))), nil
 		}
 
 		return buildPage(ids, page.Limit)
@@ -240,7 +285,7 @@ func (b *Backend) ListResources(ctx context.Context, store string,
 	if err := b.query(ctx, "accessible_objects", input, &raw); err != nil {
 		return nil, nil, err
 	}
-	ids, err := decodeIDs(raw)
+	ids, _, err := decodeIDs(raw)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -276,9 +321,15 @@ func (b *Backend) ListSubjects(ctx context.Context, store string,
 		if err := b.query(ctx, "accessible_subjects_page", input, &raw); err != nil {
 			return nil, nil, err
 		}
-		ids, err := decodeIDs(raw)
+		ids, fp, err := decodeIDs(raw)
 		if err != nil {
 			return nil, nil, err
+		}
+		if fp != nil {
+			_, actorID := api.SubjectFromContext(ctx)
+			return ids, pageFromFiltered(fp, api.SealedCursorAAD("subjects", store, actorID,
+				subjectType, "", action, objectType, objectID,
+				api.CanonicalContextHash(reqContext))), nil
 		}
 
 		return buildPage(ids, page.Limit)
@@ -288,7 +339,7 @@ func (b *Backend) ListSubjects(ctx context.Context, store string,
 	if err := b.query(ctx, "accessible_subjects", input, &raw); err != nil {
 		return nil, nil, err
 	}
-	ids, err := decodeIDs(raw)
+	ids, _, err := decodeIDs(raw)
 	if err != nil {
 		return nil, nil, err
 	}

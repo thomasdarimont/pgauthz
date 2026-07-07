@@ -404,3 +404,94 @@ test_config_flags_exact_true_only if {
 	not data.authz.pgauthz.config.allow_unfiltered_enumeration with opa.runtime as {"env": {"ALLOW_UNFILTERED_ENUMERATION_WITH_HOOKS": "yes"}}
 	not data.authz.pgauthz.config.allow_unfiltered_enumeration with opa.runtime as {"env": {}}
 }
+
+# ── claims_guard: actor.claims patterns (verbatim + custom claims) ──────────
+
+_export_input := {
+	"store": "demo",
+	"deployment": {"environment": "test"},
+	"token": "t",
+	"subject": {"type": "internal_user", "id": "alice"},
+	"action": "can_export",
+	"resource": {"type": "document", "id": "report_1"},
+}
+
+_doc_api_exporter := {"resource_access": {"document-api": {"roles": ["exporter"]}}}
+
+test_export_allowed_with_client_role if {
+	count([d | some d in data.authz.hook_denials with input as _export_input
+		with data.authn.token_is_valid as true
+		with data.authn.subject_type as "internal_user"
+		with data.authn.subject_id as "alice"
+		with data.authn.roles as set()
+		with data.authn.actor_claims as _doc_api_exporter
+		with time.now_ns as business_time
+	; d.hook == "claims_guard"]) == 0
+}
+
+# The SAME role name on a DIFFERENT client does not qualify — that's the
+# point of reading the verbatim structure instead of the flat set.
+test_export_denied_with_other_clients_role if {
+	some d in data.authz.hook_denials with input as _export_input
+		with data.authn.token_is_valid as true
+		with data.authn.subject_type as "internal_user"
+		with data.authn.subject_id as "alice"
+		with data.authn.roles as set()
+		with data.authn.actor_claims as {"resource_access": {"billing-api": {"roles": ["exporter"]}}}
+		with time.now_ns as business_time
+	d.code == "export_requires_client_role"
+}
+
+# Tokenless caller: actor.claims == {} → exemption can't match → denial.
+test_export_denied_without_token if {
+	inp := object.remove(_export_input, ["token"])
+	some d in data.authz.hook_denials with input as inp
+		with time.now_ns as business_time
+	d.code == "export_requires_client_role"
+}
+
+# Custom claim (groups, via HOOK_ACTOR_CLAIMS): membership exempts; a missing
+# claim is most-restrictive.
+test_restricted_needs_compliance_group if {
+	inp := object.union(_export_input, {"action": "can_read", "resource": {"type": "document", "id": "restricted_7"}})
+	some d in data.authz.hook_denials with input as inp
+		with data.authn.token_is_valid as true
+		with data.authn.subject_type as "internal_user"
+		with data.authn.subject_id as "alice"
+		with data.authn.roles as set()
+		with data.authn.actor_claims as _doc_api_exporter # groups claim absent
+		with time.now_ns as business_time
+	d.code == "restricted_requires_compliance_group"
+
+	count([d2 | some d2 in data.authz.hook_denials with input as inp
+		with data.authn.token_is_valid as true
+		with data.authn.subject_type as "internal_user"
+		with data.authn.subject_id as "alice"
+		with data.authn.roles as set()
+		with data.authn.actor_claims as {"groups": ["compliance"]}
+		with time.now_ns as business_time
+	; d2.hook == "claims_guard"]) == 0
+}
+
+# Realm-wide role gate: realm_access is the realm-scope counterpart to the
+# client-scoped resource_access check.
+test_delete_needs_realm_role if {
+	inp := object.union(_export_input, {"action": "can_delete"})
+	some d in data.authz.hook_denials with input as inp
+		with data.authn.token_is_valid as true
+		with data.authn.subject_type as "internal_user"
+		with data.authn.subject_id as "alice"
+		with data.authn.roles as set()
+		with data.authn.actor_claims as _doc_api_exporter # no realm role
+		with time.now_ns as business_time
+	d.code == "delete_requires_realm_role"
+
+	count([d2 | some d2 in data.authz.hook_denials with input as inp
+		with data.authn.token_is_valid as true
+		with data.authn.subject_type as "internal_user"
+		with data.authn.subject_id as "alice"
+		with data.authn.roles as set()
+		with data.authn.actor_claims as {"realm_access": {"roles": ["records_officer"]}}
+		with time.now_ns as business_time
+	; d2.hook == "claims_guard"]) == 0
+}

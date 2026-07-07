@@ -71,6 +71,13 @@ spec:
             # input.deployment.environment for policy hooks (ADR 0011).
             - { name: DEPLOYMENT_ENVIRONMENT, value: {{ . | quote }} }
             {{- end }}
+            {{- if .Values.opa.hookFilteredEnumeration }}
+            {{- if not .Values.authzen.opa.cursorSealKey }}
+            {{- fail "opa.hookFilteredEnumeration requires authzen.opa.cursorSealKey: filtered-page cursors must unseal across replicas/restarts (the per-process fallback is dev-only)" }}
+            {{- end }}
+            # Seals filtered-enumeration cursors (ADR 0011); shared across replicas.
+            - { name: CURSOR_SEAL_KEY, value: {{ .Values.authzen.opa.cursorSealKey | quote }} }
+            {{- end }}
           ports: [{ name: http, containerPort: 8080 }]
           readinessProbe: { httpGet: { path: /readyz, port: 8080 }, initialDelaySeconds: 5 }
           livenessProbe:  { httpGet: { path: /livez, port: 8080 }, initialDelaySeconds: 10 }

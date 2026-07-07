@@ -144,3 +144,45 @@ func TestEnumerationRefusalSurfacesTyped(t *testing.T) {
 		t.Fatalf("ListResources paged: want ErrEnumerationRefused, got %v", err)
 	}
 }
+
+// Hook-FILTERED enumeration (ADR 0011): the paginated search rules return a
+// protocol object {hook_filtered, ids, has_more, cursor} — ids are filtered
+// but pagination stays in RAW keyset space, so a page that filters below the
+// client limit must NOT read as exhausted.
+func TestFilteredEnumerationPageProtocol(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"result": {"hook_filtered": true, "ids": ["doc_a"], "has_more": true, "cursor": "doc_b"}}`))
+	}))
+	defer srv.Close()
+	b := New(srv.URL, "authz", false, 5*time.Second, false, "", true)
+
+	ids, pageResp, err := b.ListResources(context.Background(), "demo", "u", "alice", "r", "d", nil, &authz.PageRequest{Limit: 2})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "doc_a" {
+		t.Fatalf("ids = %v, want [doc_a]", ids)
+	}
+	// One filtered id on a limit-2 page — WITHOUT the protocol this would look
+	// exhausted; the raw-space peek says there is more, cursor = last RAW id.
+	if pageResp == nil || !pageResp.HasMore {
+		t.Fatalf("pagination must continue in raw keyset space: %+v", pageResp)
+	}
+	if pageResp.NextToken == "" {
+		t.Fatal("expected a raw-space keyset cursor")
+	}
+}
+
+// The fail-closed candidate cap surfaces as its own typed 403, never a
+// partial result.
+func TestFilteredEnumerationCapExceeded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"result": {"error": "enumeration_refused_too_many_candidates"}}`))
+	}))
+	defer srv.Close()
+	b := New(srv.URL, "authz", false, 5*time.Second, false, "", true)
+
+	if _, _, err := b.ListResources(context.Background(), "demo", "u", "a", "r", "d", nil, nil); !errors.Is(err, authz.ErrEnumerationCapExceeded) {
+		t.Fatalf("want ErrEnumerationCapExceeded, got %v", err)
+	}
+}

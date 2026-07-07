@@ -96,6 +96,12 @@ if ./scripts/validate-hooks.sh --global examples/opa-hooks/global >/dev/null \
       ./scripts/validate-hooks.sh --global --allow-http examples/opa-hooks-http >/dev/null \
    && docker run --rm -v "$ROOT/opa/policies:/p:ro" -v "$ROOT/examples/opa-hooks-http:/h:ro" \
       "${OPA_IMAGE:-openpolicyagent/opa:1.18.2}" test /p /h >/dev/null \
+   && ./scripts/validate-hooks.sh --lib examples/opa-hooks-lib >/dev/null \
+   && docker run --rm -v "$ROOT/opa/policies:/p:ro" -v "$ROOT/examples/opa-hooks-lib:/l:ro" \
+      "${OPA_IMAGE:-openpolicyagent/opa:1.18.2}" test /p /l >/dev/null \
+   && ./scripts/validate-hooks.sh --global examples/opa-hooks-filtering >/dev/null \
+   && docker run --rm -v "$ROOT/opa/policies:/p:ro" -v "$ROOT/examples/opa-hooks-filtering:/f:ro" \
+      "${OPA_IMAGE:-openpolicyagent/opa:1.18.2}" test /p /f >/dev/null \
    && docker run --rm -v "$ROOT/opa/policies:/p:ro" -v "$ROOT/examples/opa-hooks:/e:ro" \
         "${OPA_IMAGE:-openpolicyagent/opa:1.18.2}" test /p /e >/dev/null 2>&1; then
     echo "    hooks valid + contract suite green"

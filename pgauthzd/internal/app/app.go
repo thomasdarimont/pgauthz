@@ -36,6 +36,16 @@ func Run(name, version string) error {
 	}
 	setupLogging(cfg.LogLevel)
 
+	// Sealed page cursors (filtered enumeration, ADR 0011): derive the AEAD
+	// keyring once. The per-process fallback is DEVELOPMENT-ONLY — on an
+	// OPA-fronted instance every restart/replica-hop then 400s in-flight
+	// filtered paginations, so production sets a shared key.
+	api.InitCursorSeal(cfg.CursorSealKey)
+	if cfg.CursorSealKey == "" && cfg.UsesOPA() {
+		slog.Warn("CURSOR_SEAL_KEY is not set: filtered-enumeration page cursors use a per-process key " +
+			"(dev-only — they will not survive restarts or replica hops; set a shared CURSOR_SEAL_KEY in production)")
+	}
+
 	// build_info (ADR 0010): value 1, labels carry version/commit/profile/features.
 	fallbackEnabled := cfg.FreshnessPrimaryURL != "" && cfg.Profile == config.ProfileDecisionOnly && !cfg.UsesOPA()
 	metrics.SetBuildInfo(version, buildCommit(), runtime.Version(), string(cfg.Profile),

@@ -211,7 +211,11 @@ func (p nativePage) pageReq() *authz.PageRequest {
 	if p.Limit > 0 {
 		return &authz.PageRequest{Limit: p.Limit, Offset: p.Offset, After: p.After}
 	}
-	return decodePage(p.Page)
+	// Native lists run on the direct backend — sealed (filtered-enumeration)
+	// cursors are never minted here, so none should arrive: an empty AAD makes
+	// any sealed token fail to the invalid sentinel (matches nothing in SQL)
+	// rather than ever being interpreted as an id.
+	return decodePage(p.Page, "")
 }
 
 type nativeListObjectsBody struct {

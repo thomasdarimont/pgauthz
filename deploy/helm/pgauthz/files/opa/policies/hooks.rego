@@ -51,17 +51,20 @@
 # Hot-reload (--watch) / bundle-activation error → OPA KEEPS the
 # last-known-good set and logs; monitor activation revision.
 #
-# ENUMERATION (v1, secure by default): accessible_objects/accessible_subjects
-# are graph-derived SUPERSETS that decision hooks do not filter — with any
-# hook loaded those queries are REFUSED unless the operator sets
-# ALLOW_UNFILTERED_ENUMERATION_WITH_HOOKS=true (explicit superset opt-in).
-# permitted_actions IS hook-filtered per action.
+# ENUMERATION (secure by default): with any applicable hook loaded,
+# accessible_objects/accessible_subjects are REFUSED unless the operator picks
+# a mode — HOOK_FILTERED_ENUMERATION=true evaluates the applicable decision
+# hooks PER CANDIDATE and drops denied ids (listings then match per-object
+# checks; capped by HOOK_FILTER_MAX_CANDIDATES, over-cap = refused, never
+# partially filtered), or ALLOW_UNFILTERED_ENUMERATION_WITH_HOOKS=true serves
+# the raw graph superset. permitted_actions IS hook-filtered per action.
 # ─────────────────────────────────────────────────────────────────────────────
 package authz
 
 import future.keywords.if
 import future.keywords.in
 
+import data.authn
 import data.authz.pgauthz.config
 
 # The hook names APPLICABLE to this request: every global hook, plus this
@@ -95,6 +98,55 @@ default _hook_actor_id := ""
 
 _hook_actor_id := _performed_by
 
+# The authenticated CALLER's verified roles — the aggregation authn.roles
+# already builds from the configured claim paths (JWT_ROLES_CLAIM; for
+# Keycloak that typically includes realm_access.roles and app-specific client
+# roles under resource_access.<client>.roles). PLATFORM-derived: hooks never
+# see or parse the token. Empty without a valid token (trusted-PEP mode).
+# Role-based EXEMPTIONS stay veto-only: `not "x" in input.actor.roles` can
+# only narrow a denial's scope — the graph answer still has to pass.
+default _hook_actor_roles := []
+
+_hook_actor_roles := sort([r | some r in authn.roles]) if {
+	input.token
+	authn.token_is_valid
+}
+
+# Verified-token claims copied VERBATIM under actor.claims.<name>
+# (HOOK_ACTOR_CLAIMS; defaults to Keycloak's realm_access + resource_access).
+# Namespaced under .claims so operator selections can never collide with the
+# reserved, platform-DERIVED actor fields (id, roles). Absent claims are
+# absent — treat absence as most-restrictive. The undefined-safe client-
+# scoped exemption:
+#   ra := object.get(input.actor.claims, "resource_access", {})
+#   some r in object.get(ra, "document-api", {}).roles
+#   r == "admin"
+default _hook_actor_claims := {}
+
+_hook_actor_claims := authn.actor_claims if {
+	input.token
+	authn.token_is_valid
+}
+
+# Decision-path actor: the verified caller identity + roles. Distinct from
+# `subject` — under ALLOW_SUBJECT_OVERRIDE / batch items / candidate
+# filtering, subject is who is being CHECKED; actor stays who is ASKING.
+_hook_decision_actor := {
+	"id": authn.subject_id,
+	"roles": _hook_actor_roles,
+	"claims": _hook_actor_claims,
+} if {
+	input.token
+	authn.token_is_valid
+}
+
+_hook_decision_actor := {"id": "", "roles": [], "claims": {}} if not _hook_decision_actor_from_token
+
+_hook_decision_actor_from_token if {
+	input.token
+	authn.token_is_valid
+}
+
 # Trust sources (a hook MUST NOT trust caller-supplied fields for security
 # gates): api_version/operation/evaluated_at are SERVER-derived; store and
 # subject are PLATFORM-derived from the verified token / validated request;
@@ -118,6 +170,7 @@ _decision_hook_input := {
 	"deployment": _deployment,
 	"store": store,
 	"subject": _hook_subject,
+	"actor": _hook_decision_actor,
 	"action": object.get(input, "action", ""),
 	"resource": object.get(input, "resource", {}),
 	"context": object.get(input, "context", {}),
@@ -133,7 +186,11 @@ _write_hook_input := {
 	"evaluated_at": _evaluated_at,
 	"deployment": _deployment,
 	"store": _store,
-	"actor": {"id": _hook_actor_id},
+	"actor": {
+		"id": _hook_actor_id,
+		"roles": _hook_actor_roles,
+		"claims": _hook_actor_claims,
+	},
 	"tuple": object.get(input, "tuple", {}),
 	"tuples": object.get(input, "tuples", []),
 	"writes": object.get(input, "writes", []),
@@ -298,6 +355,48 @@ _action_hook_denied(action) if {
 
 _action_hook_denied(action) if {
 	hi := object.union(_decision_hook_input, {"action": action})
+	some name, _ in data.authz.hooks.v1.stores[store]
+	some _ in data.authz.hooks.v1.stores[store][name].deny with input as hi
+}
+
+# Per-candidate denial checks for hook-FILTERED enumeration (mirrors
+# _action_hook_denied): the candidate object id (or subject id) is substituted
+# into the decision ABI, and every applicable hook gets a veto — a filtered
+# listing therefore contains exactly the ids a per-object check would allow.
+_candidate_object_denied(id) if {
+	hi := object.union(_decision_hook_input, {"resource": {
+		"type": object.get(object.get(input, "resource", {}), "type", ""),
+		"id": id,
+	}})
+	some name, _ in data.authz.hooks.v1.global
+	some _ in data.authz.hooks.v1.global[name].deny with input as hi
+}
+
+_candidate_object_denied(id) if {
+	hi := object.union(_decision_hook_input, {"resource": {
+		"type": object.get(object.get(input, "resource", {}), "type", ""),
+		"id": id,
+	}})
+	some name, _ in data.authz.hooks.v1.stores[store]
+	some _ in data.authz.hooks.v1.stores[store][name].deny with input as hi
+}
+
+# Subject search filters on the CANDIDATE subject (like a batch item's
+# subject), not the authenticated caller.
+_candidate_subject_denied(id) if {
+	hi := object.union(_decision_hook_input, {"subject": {
+		"type": object.get(input, "subject_type", ""),
+		"id": id,
+	}})
+	some name, _ in data.authz.hooks.v1.global
+	some _ in data.authz.hooks.v1.global[name].deny with input as hi
+}
+
+_candidate_subject_denied(id) if {
+	hi := object.union(_decision_hook_input, {"subject": {
+		"type": object.get(input, "subject_type", ""),
+		"id": id,
+	}})
 	some name, _ in data.authz.hooks.v1.stores[store]
 	some _ in data.authz.hooks.v1.stores[store][name].deny with input as hi
 }

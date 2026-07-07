@@ -155,6 +155,23 @@ opa:
   # REFUSED by default (hooks don't filter graph-derived supersets — ADR 0011).
   # true = explicitly accept superset semantics and keep enumeration enabled.
   allowUnfilteredEnumerationWithHooks: false
+  # Hook-FILTERED enumeration: evaluate the applicable decision hooks per
+  # candidate and drop denied ones — listings then match per-object checks.
+  # Takes precedence over allowUnfilteredEnumerationWithHooks. Costs
+  # O(candidates x hooks) per query, bounded by the candidate cap below
+  # (over-cap queries are refused, never partially filtered).
+  hookFilteredEnumeration: false
+  hookFilterMaxCandidates: 1000
+  # Verified-token claims copied verbatim into the hook actor as
+  # input.actor.claims.<name> (comma-separated top-level claim names; ADR
+  # 0011). Copied claims are visible to every applicable hook — avoid PII you
+  # don't need. Empty = none.
+  hookActorClaims: ""
+  # Provenance-prefixed FLAT roles (realm::<role> / <client_id>::<role>) for
+  # flat-set consumers like the writer gate; update opa.writerRole to the
+  # prefixed form when enabling. Hooks should prefer the verbatim claim
+  # copies under actor.claims (realm_access / resource_access) instead.
+  rolesSourcePrefix: false
   # DEV ONLY: log every OPA decision with its FULL INPUT (including forwarded
   # bearer JWTs) to the container console. Useful when authoring policy hooks
   # (see examples/opa-hooks); never enable where logs are shipped/retained.
@@ -185,6 +202,12 @@ opa:
   #     tenant-a: hooks-tenant-a
   #     tenant-b: hooks-tenant-b
   storePoliciesConfigMaps: {}
+  # Operator EXTENSION library for hooks (ADR 0011): a ConfigMap of .rego
+  # files under authz.hooks.lib.v1.ext.<name> — shared helper FUNCTIONS your
+  # hooks may import. Validate with scripts/validate-hooks.sh --lib (functions
+  # only, pure builtins — never http.send: a shared lib with network access
+  # would hand it to network-free store hooks).
+  extraLibsConfigMap: ""
 
 # ── pgauthzd reader — native decision path (internal only, fronted by OPA) ────
 # decision-only profile: read-only DB role (authzen_direct → authz_reader).
@@ -241,6 +264,11 @@ authzen:
     # REQUIRED (e.g. "production") when hooks are mounted — unset trips the
     # fail-closed platform environment guard and denies every request.
     deploymentEnvironment: ""
+    # Seals filtered-enumeration page cursors (ADR 0011). REQUIRED when
+    # opa.hookFilteredEnumeration is true — the chart refuses to render
+    # without it (cursors must unseal across replicas/restarts). Rotation:
+    # comma-separated keyring, first mints, all accept.
+    cursorSealKey: ""
   # Deprecated/no-op: the ingress `/` now always routes to the pgauthzd AuthZEN
   # front door (the OPA-fronted gateway when authzen.opa.enabled, else the direct
   # reader). Kept for backwards compatibility with existing values overrides.

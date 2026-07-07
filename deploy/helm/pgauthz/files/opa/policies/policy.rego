@@ -385,9 +385,108 @@ _batch_checks := [check |
 # loaded nothing changes. permitted_actions is NOT affected — it IS
 # hook-filtered per action.
 # -----------------------------------------------------------------------
+# Hook-FILTERED enumeration (HOOK_FILTERED_ENUMERATION=true): each candidate
+# is evaluated through the applicable decision hooks and denied ones are
+# dropped, so listings match per-object checks — takes precedence over the
+# refusal AND over the unfiltered opt-out. While the platform environment
+# guard is active (config-error state), filtering stays REFUSED: the guard
+# denies every check, so any non-empty listing would be a superset again.
+_enumeration_filtering if {
+	count(hooks_loaded) > 0
+	config.hook_filtered_enumeration
+	count(_env_guard_denials) == 0
+	# a malformed/out-of-range HOOK_FILTER_MAX_CANDIDATES leaves the cap
+	# undefined — filtering then stays OFF and enumeration is refused.
+	config.hook_filter_max_candidates
+}
+
 enumeration_refused if {
 	count(hooks_loaded) > 0
 	not config.allow_unfiltered_enumeration
+	not _enumeration_filtering
+}
+
+# Filtering CONFIGURED but inoperable (env guard active, malformed cap) must
+# REFUSE — even when the superset opt-out is ALSO set. "Filtered" is the
+# stronger promise; degrading it silently to the raw superset on a config
+# error would leak exactly what filtering was enabled to hide. With both
+# flags healthy, filtering simply wins.
+enumeration_refused if {
+	count(hooks_loaded) > 0
+	config.hook_filtered_enumeration
+	not _enumeration_filtering
+}
+
+# Fail-closed cost bound: a raw candidate set beyond the cap is refused
+# outright — NEVER partially filtered (a truncated-but-filtered list would
+# read as complete).
+_too_many := {"error": "enumeration_refused_too_many_candidates"}
+
+_filter_objects(raw) := raw if not _enumeration_filtering
+
+_filter_objects(raw) := _too_many if {
+	_enumeration_filtering
+	count(raw) > config.hook_filter_max_candidates
+}
+
+_filter_objects(raw) := sort([id | some id in raw; not _candidate_object_denied(id)]) if {
+	_enumeration_filtering
+	count(raw) <= config.hook_filter_max_candidates
+}
+
+_filter_subjects(raw) := raw if not _enumeration_filtering
+
+_filter_subjects(raw) := _too_many if {
+	_enumeration_filtering
+	count(raw) > config.hook_filter_max_candidates
+}
+
+_filter_subjects(raw) := sort([id | some id in raw; not _candidate_subject_denied(id)]) if {
+	_enumeration_filtering
+	count(raw) <= config.hook_filter_max_candidates
+}
+
+# Paginated variant: pgauthzd requests limit+1 (peek) and derives has_more +
+# the keyset cursor from the RAW page — filtering after that peek would end
+# pagination early whenever a full raw page filters below the client limit.
+# So a filtered page returns an explicit protocol object: ids (filtered),
+# has_more (raw peek), cursor (last RAW consumed id, so the next page resumes
+# in raw keyset space and skipped candidates are never lost).
+_cursor_of(arr) := {"cursor": arr[count(arr) - 1]} if count(arr) > 0
+
+_cursor_of(arr) := {} if count(arr) == 0
+
+_filter_page(raw, denied_fn_result) := object.union(
+	{"hook_filtered": true, "ids": denied_fn_result, "has_more": count(raw) >= input.page.limit},
+	_cursor_of(array.slice(raw, 0, input.page.limit - 1)),
+)
+
+_filter_objects_page(raw) := raw if not _enumeration_filtering
+
+_filter_objects_page(raw) := _too_many if {
+	_enumeration_filtering
+	count(raw) > config.hook_filter_max_candidates
+}
+
+_filter_objects_page(raw) := _filter_page(raw, ids) if {
+	_enumeration_filtering
+	count(raw) <= config.hook_filter_max_candidates
+	consumed := array.slice(raw, 0, input.page.limit - 1)
+	ids := [id | some id in consumed; not _candidate_object_denied(id)]
+}
+
+_filter_subjects_page(raw) := raw if not _enumeration_filtering
+
+_filter_subjects_page(raw) := _too_many if {
+	_enumeration_filtering
+	count(raw) > config.hook_filter_max_candidates
+}
+
+_filter_subjects_page(raw) := _filter_page(raw, ids) if {
+	_enumeration_filtering
+	count(raw) <= config.hook_filter_max_candidates
+	consumed := array.slice(raw, 0, input.page.limit - 1)
+	ids := [id | some id in consumed; not _candidate_subject_denied(id)]
 }
 
 _enumeration_refusal := {"error": "enumeration_refused_with_hooks"}
@@ -403,26 +502,26 @@ accessible_subjects_page := _enumeration_refusal if enumeration_refused
 # -----------------------------------------------------------------------
 # Resource search: which objects can the subject access?
 # -----------------------------------------------------------------------
-accessible_objects := pgauthz.list_objects_with_context(
+accessible_objects := _filter_objects(pgauthz.list_objects_with_context(
 	store,
 	subject_type,
 	subject_id,
 	input.action,
 	input.resource.type,
 	input.context,
-) if {
+)) if {
 	not enumeration_refused
 	_subject_valid
 	input.context
 }
 
-accessible_objects := pgauthz.list_objects(
+accessible_objects := _filter_objects(pgauthz.list_objects(
 	store,
 	subject_type,
 	subject_id,
 	input.action,
 	input.resource.type,
-) if {
+)) if {
 	not enumeration_refused
 	_subject_valid
 	not input.context
@@ -436,7 +535,7 @@ accessible_objects := pgauthz.list_objects(
 # rules are mutually exclusive on (context?, after?) so the complete rule never
 # has two matching bodies.
 # -----------------------------------------------------------------------
-accessible_objects_page := pgauthz.list_objects_page_with_context(
+accessible_objects_page := _filter_objects_page(pgauthz.list_objects_page_with_context(
 	store,
 	subject_type,
 	subject_id,
@@ -445,7 +544,7 @@ accessible_objects_page := pgauthz.list_objects_page_with_context(
 	input.context,
 	input.page.limit,
 	input.page.offset,
-) if {
+)) if {
 	not enumeration_refused
 	_subject_valid
 	input.page
@@ -453,7 +552,7 @@ accessible_objects_page := pgauthz.list_objects_page_with_context(
 	not input.page.after
 }
 
-accessible_objects_page := pgauthz.list_objects_page(
+accessible_objects_page := _filter_objects_page(pgauthz.list_objects_page(
 	store,
 	subject_type,
 	subject_id,
@@ -461,7 +560,7 @@ accessible_objects_page := pgauthz.list_objects_page(
 	input.resource.type,
 	input.page.limit,
 	input.page.offset,
-) if {
+)) if {
 	not enumeration_refused
 	_subject_valid
 	input.page
@@ -469,7 +568,7 @@ accessible_objects_page := pgauthz.list_objects_page(
 	not input.page.after
 }
 
-accessible_objects_page := pgauthz.list_objects_page_after_with_context(
+accessible_objects_page := _filter_objects_page(pgauthz.list_objects_page_after_with_context(
 	store,
 	subject_type,
 	subject_id,
@@ -478,7 +577,7 @@ accessible_objects_page := pgauthz.list_objects_page_after_with_context(
 	input.context,
 	input.page.limit,
 	input.page.after,
-) if {
+)) if {
 	not enumeration_refused
 	_subject_valid
 	input.page
@@ -486,7 +585,7 @@ accessible_objects_page := pgauthz.list_objects_page_after_with_context(
 	input.page.after
 }
 
-accessible_objects_page := pgauthz.list_objects_page_after(
+accessible_objects_page := _filter_objects_page(pgauthz.list_objects_page_after(
 	store,
 	subject_type,
 	subject_id,
@@ -494,7 +593,7 @@ accessible_objects_page := pgauthz.list_objects_page_after(
 	input.resource.type,
 	input.page.limit,
 	input.page.after,
-) if {
+)) if {
 	not enumeration_refused
 	_subject_valid
 	input.page
@@ -505,13 +604,13 @@ accessible_objects_page := pgauthz.list_objects_page_after(
 # -----------------------------------------------------------------------
 # Subject search: who has access to this resource?
 # -----------------------------------------------------------------------
-accessible_subjects := pgauthz.list_subjects(
+accessible_subjects := _filter_subjects(pgauthz.list_subjects(
 	store,
 	input.subject_type,
 	input.action,
 	input.resource.type,
 	input.resource.id,
-) if {
+)) if {
 	not enumeration_refused
 	_subject_search_valid
 }
@@ -520,7 +619,7 @@ accessible_subjects := pgauthz.list_subjects(
 # Subject search (paginated): ordered page of subject IDs.
 # Input: { ..., "page": {"limit": 10, "offset": 0} }
 # -----------------------------------------------------------------------
-accessible_subjects_page := pgauthz.list_subjects_page(
+accessible_subjects_page := _filter_subjects_page(pgauthz.list_subjects_page(
 	store,
 	input.subject_type,
 	input.action,
@@ -528,14 +627,14 @@ accessible_subjects_page := pgauthz.list_subjects_page(
 	input.resource.id,
 	input.page.limit,
 	input.page.offset,
-) if {
+)) if {
 	not enumeration_refused
 	_subject_search_valid
 	input.page
 	not input.page.after
 }
 
-accessible_subjects_page := pgauthz.list_subjects_page_after(
+accessible_subjects_page := _filter_subjects_page(pgauthz.list_subjects_page_after(
 	store,
 	input.subject_type,
 	input.action,
@@ -543,7 +642,7 @@ accessible_subjects_page := pgauthz.list_subjects_page_after(
 	input.resource.id,
 	input.page.limit,
 	input.page.after,
-) if {
+)) if {
 	not enumeration_refused
 	_subject_search_valid
 	input.page

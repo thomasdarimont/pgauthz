@@ -11,7 +11,14 @@
 # Tiers (pick one per directory so ownership maps to scope):
 #   --global        every package must be  authz.hooks.v1.global.<name>
 #   --store <name>  every package must be  authz.hooks.v1.stores.<name>.<hook>
-#   (default)       either tier is accepted (mixed dir)
+#   --lib           operator EXTENSION LIBRARY: authz.hooks.lib.v1.ext.<name>
+#                   — shared helper FUNCTIONS hooks may import. Functions
+#                   only (no plain rules = shared ambient state) and always
+#                   pure: --allow-http is rejected, a shared lib with
+#                   http.send would hand network access to network-free
+#                   store hooks. Point HOOK_EXTRA_LIBS=<dir> at your libs
+#                   when validating hooks that call them.
+#   (default)       either hook tier is accepted (mixed dir)
 #
 # Also enforces (all tiers):
 #   - no two files may claim the same hook name (ambiguous attribution)
@@ -26,7 +33,7 @@
 #
 # *_test.rego files are skipped (they may live in any package).
 #
-# Usage: scripts/validate-hooks.sh [--global | --store <name>] [--allow-http] <hooks-dir>
+# Usage: scripts/validate-hooks.sh [--global | --store <name> | --lib] [--allow-http] <hooks-dir>
 set -euo pipefail
 
 OPA_IMAGE="${OPA_IMAGE:-openpolicyagent/opa:1.18.2}"
@@ -38,13 +45,14 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --allow-http) ALLOW_HTTP=1 ;;
         --global)     TIER="global" ;;
+        --lib)        TIER="lib" ;;
         --store)      TIER="store"; STORE="${2:-}"; shift ;;
-        -h|--help)    sed -n '2,29p' "$0"; exit 0 ;;
+        -h|--help)    sed -n '2,36p' "$0"; exit 0 ;;
         *)            DIR="$1" ;;
     esac
     shift
 done
-[ -n "$DIR" ] && [ -d "$DIR" ] || { echo "usage: $0 [--global | --store <name>] [--allow-http] <hooks-dir>" >&2; exit 2; }
+[ -n "$DIR" ] && [ -d "$DIR" ] || { echo "usage: $0 [--global | --store <name> | --lib] [--allow-http] <hooks-dir>" >&2; exit 2; }
 [ "$TIER" = "store" ] && [ -z "$STORE" ] && { echo "--store requires a store name" >&2; exit 2; }
 # Delegated (store) hooks are tenant-authored code — they may NEVER use
 # network-capable builtins in v1. http.send is a platform-governance option for
@@ -53,12 +61,17 @@ if [ "$TIER" = "store" ] && [ "$ALLOW_HTTP" = 1 ]; then
     echo "--allow-http is not permitted for store hooks (delegated tenant tier; network builtins are forbidden in v1)" >&2
     exit 2
 fi
+if [ "$TIER" = "lib" ] && [ "$ALLOW_HTTP" = 1 ]; then
+    echo "--allow-http is not permitted for shared libraries: a lib with http.send would hand network access to every caller, including network-free store hooks" >&2
+    exit 2
+fi
 ABS_DIR="$(cd "$DIR" && pwd)"
 
 # Per-tier package regex (anchored).
 case "$TIER" in
     global) want='^data\.authz\.hooks\.v1\.global\.[a-zA-Z_][a-zA-Z0-9_]*$'; desc="authz.hooks.v1.global.<name>" ;;
     store)  want="^data\\.authz\\.hooks\\.v1\\.stores\\.${STORE//./\\.}\\.[a-zA-Z_][a-zA-Z0-9_]*\$"; desc="authz.hooks.v1.stores.${STORE}.<name>" ;;
+    lib)    want='^data\.authz\.hooks\.lib\.v1\.ext\.[a-zA-Z_][a-zA-Z0-9_]*$'; desc="authz.hooks.lib.v1.ext.<name> (operator shared library)" ;;
     *)      want='^data\.authz\.hooks\.v1\.(global\.[a-zA-Z_][a-zA-Z0-9_]*|stores\.[a-zA-Z_][a-zA-Z0-9_-]*\.[a-zA-Z_][a-zA-Z0-9_]*)$'; desc="authz.hooks.v1.{global|stores.<store>}.<name>" ;;
 esac
 
@@ -85,7 +98,28 @@ CAPS_ABS="$(cd "$(dirname "$CAPS")" && pwd)/$(basename "$CAPS")"
 HTTP_CAPS="${HOOK_HTTP_CAPABILITIES:-$SCRIPT_DIR/../opa/hooks-v1-http-capabilities.json}"
 HTTP_CAPS_ABS="$(cd "$(dirname "$HTTP_CAPS")" && pwd)/$(basename "$HTTP_CAPS")"
 
-opa_run() { docker run --rm -v "$ABS_DIR:/hooks:ro" -v "$CAPS_ABS:/caps.json:ro" -v "$HTTP_CAPS_ABS:/caps-http.json:ro" "$OPA_IMAGE" "$@"; }
+# The platform hook LIBRARY (authz.hooks.lib.v1.*) is the one namespace a
+# hook may reference besides its own package — mounted into the compile
+# checks (calls into an absent library are compile errors), pure by the same
+# capability set.
+LIB_MOUNTS=()
+LIB_PATHS=()
+for f in "$SCRIPT_DIR"/../opa/policies/hooks_lib*.rego; do
+    [ -e "$f" ] || continue
+    case "$f" in *_test.rego) continue ;; esac
+    fabs="$(cd "$(dirname "$f")" && pwd)/$(basename "$f")"
+    LIB_MOUNTS+=(-v "$fabs:/hooklib/$(basename "$f"):ro")
+    LIB_PATHS+=("/hooklib/$(basename "$f")")
+done
+# Operator EXTENSION libraries (authz.hooks.lib.v1.ext.*): point
+# HOOK_EXTRA_LIBS at their directory so hooks that call them compile.
+if [ -n "${HOOK_EXTRA_LIBS:-}" ] && [ -d "$HOOK_EXTRA_LIBS" ] && [ "$(cd "$HOOK_EXTRA_LIBS" && pwd)" != "$ABS_DIR" ]; then
+    EXTRA_ABS="$(cd "$HOOK_EXTRA_LIBS" && pwd)"
+    LIB_MOUNTS+=(-v "$EXTRA_ABS:/hooklib-ext:ro")
+    LIB_PATHS+=("--ignore=*_test.rego" "/hooklib-ext")
+fi
+
+opa_run() { docker run --rm -v "$ABS_DIR:/hooks:ro" -v "$CAPS_ABS:/caps.json:ro" -v "$HTTP_CAPS_ABS:/caps-http.json:ro" ${LIB_MOUNTS[@]+"${LIB_MOUNTS[@]}"} "$OPA_IMAGE" "$@"; }
 
 fail=0
 declare -a seen_names=()
@@ -96,14 +130,14 @@ echo "==> Validating policy hooks in $DIR (contract: ADR 0011 / $desc)..."
 # only). --allow-http relaxes only the http.send ban via the full-capability
 # check (governed external calls). Rejects http.send/opa.runtime/etc. here.
 if [ "$ALLOW_HTTP" = 0 ]; then
-    if ! opa_run check --capabilities=/caps.json /hooks >/dev/null 2>&1; then
+    if ! opa_run check --ignore='*_test.rego' --capabilities=/caps.json /hooks ${LIB_PATHS[@]+"${LIB_PATHS[@]}"} >/dev/null 2>&1; then
         echo "    FAIL  directory does not compile under the hooks-v1 capability set (non-pure builtin, or a type/syntax error):"
-        opa_run check --capabilities=/caps.json /hooks 2>&1 | sed 's/^/          /'
+        opa_run check --ignore='*_test.rego' --capabilities=/caps.json /hooks ${LIB_PATHS[@]+"${LIB_PATHS[@]}"} 2>&1 | sed 's/^/          /'
         exit 1
     fi
-elif ! opa_run check --capabilities=/caps-http.json /hooks >/dev/null 2>&1; then
+elif ! opa_run check --ignore='*_test.rego' --capabilities=/caps-http.json /hooks ${LIB_PATHS[@]+"${LIB_PATHS[@]}"} >/dev/null 2>&1; then
     echo "    FAIL  directory does not compile under the hooks-v1 HTTP capability set (only http.send is added over the pure set):"
-    opa_run check --capabilities=/caps-http.json /hooks 2>&1 | sed 's/^/          /'
+    opa_run check --ignore='*_test.rego' --capabilities=/caps-http.json /hooks ${LIB_PATHS[@]+"${LIB_PATHS[@]}"} 2>&1 | sed 's/^/          /'
     exit 1
 fi
 
@@ -122,6 +156,17 @@ for f in "$ABS_DIR"/*.rego; do
         continue
     fi
     name="${pkg##*.}"
+
+    # LIB tier: a shared library must export FUNCTIONS ONLY — a plain rule
+    # would be shared ambient state evaluated in every caller's context.
+    if [ "$TIER" = "lib" ]; then
+        nonfns=$(echo "$ast" | jq -r '[.rules[]? | select(has("head")) | select((.head.args? // []) | length == 0) | (.head.name // (.head.ref[0].value // "?"))] | unique | .[]' 2>/dev/null)
+        if [ -n "$nonfns" ]; then
+            echo "    FAIL  $base: shared libraries may export functions only; non-function rule(s): $(echo "$nonfns" | tr '\n' ' ')"
+            fail=1
+            continue
+        fi
+    fi
 
     # 1a. The hook <name> segment follows the same rules as store names
     # (identifier syntax is already enforced by the namespace regex): no Rego
@@ -143,9 +188,14 @@ for f in "$ABS_DIR"/*.rego; do
     # `import data.other.pkg as x` would surface in the body as `x.*` (not
     # `data.*`), evading the isolation check below — so reject any import whose
     # path roots at `data` or `input` (parsed from the AST, not text).
-    bad_imports=$(echo "$ast" | jq -r '[.imports[]?.path.value[0].value] | map(select(. != "future" and . != "rego")) | .[]' 2>/dev/null | sort -u)
+    bad_imports=$(echo "$ast" | jq -r '
+        [.imports[]? | [.path.value[] | .value | tostring] | join(".")]
+        | map(select(
+            (startswith("future") or startswith("rego")
+             or . == "data.authz.hooks.lib.v1" or startswith("data.authz.hooks.lib.v1.")) | not))
+        | .[]' 2>/dev/null | sort -u)
     if [ -n "$bad_imports" ]; then
-        echo "    FAIL  $base: disallowed import(s) rooted at: $(echo "$bad_imports" | tr '\n' ' ')(only future.keywords / rego.v1 permitted — data/input imports could alias across packages)"
+        echo "    FAIL  $base: disallowed import(s): $(echo "$bad_imports" | tr '\n' ' ')(only future.keywords / rego.v1 / the platform library data.authz.hooks.lib.v1 permitted)"
         fail=1
         continue
     fi
@@ -183,7 +233,10 @@ for f in "$ABS_DIR"/*.rego; do
           | select(.value[0]?.type == "var" and .value[0]?.value == "data")
           | { dyn: (([.value[1:][] | select(.type == "var")] | length) > 0),
               path: ([.value[1:][] | select(.type == "string") | .value] | join(".")) } ]
-        | map(select(.dyn or (.path | startswith($own) | not)))
+        | map(select(.dyn or ((
+              (.path | startswith($own))
+              or (.path == "authz.hooks.lib.v1") or (.path | startswith("authz.hooks.lib.v1."))
+          ) | not)))
         | map(if .dyn then "data[<dynamic>]" else "data." + .path end)
         | unique | .[]' 2>/dev/null)
     if [ -n "$escapes" ]; then
@@ -225,6 +278,23 @@ for f in "$ABS_DIR"/*.rego; do
                       | select(. != null)
                       | select((.[1].type == "boolean" and .[1].value == false) | not)
                       | "tls_insecure_skip_verify must be false/absent" ),
+                    # Explicit request-field ALLOWLIST: hooks execute fresh
+                    # on every decision, so the cross-query cache controls
+                    # (cache, force_cache, force_cache_duration_seconds,
+                    # caching_mode, cache_ignored_headers) are forbidden — a
+                    # cached result would decide a later, different request.
+                    # An allowlist (not a denylist) also keeps future OPA
+                    # request options out of the approved profile implicitly.
+                    ( [ $req.value[]
+                        | .[0].value as $k
+                        | select(($k | type) == "string")
+                        | select(["url", "method", "headers", "timeout",
+                                  "raise_error", "enable_redirect",
+                                  "tls_insecure_skip_verify",
+                                  "max_retry_attempts"]
+                                 | index($k) | . == null)
+                        | "request field [" + $k + "] is not in the hooks-v1 http.send allowlist (cross-query caching and unreviewed options are forbidden)" ]
+                      | .[] ),
                     # READ-ONLY network lookup: http.send must not produce
                     # external side effects (OPA gives no exactly-once
                     # semantics — caching/retries can repeat requests).

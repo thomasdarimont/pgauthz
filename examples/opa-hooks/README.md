@@ -106,9 +106,21 @@ return graph-derived supersets). `permitted_actions` **is** hook-filtered.
   hook: finance documents only during business hours (reads `evaluated_at`).
 - [`global/tuple_rules.rego`](global/tuple_rules.rego) — global write
   governance: no wildcard subjects, no `owner` grants via the API.
+- [`global/claims_guard.rego`](global/claims_guard.rego) — global decision
+  hook on **verified claims**: client-scoped and realm-wide role gates via
+  the platform hook library (`import data.authz.hooks.lib.v1.keycloak` →
+  `keycloak.has_client_role(input.actor, "document-api", "exporter")` /
+  `keycloak.has_realm_role(input.actor, "records_officer")`), and a group
+  gate reading a custom claim from `input.actor.claims` directly (needs
+  `groups` in `HOOK_ACTOR_CLAIMS`) — all fail closed on absent claims. The
+  library is the ONE shared namespace hooks may import; everything else
+  stays isolated to the hook's own package.
 - [`stores/demo/tenant_guard.rego`](stores/demo/tenant_guard.rego) —
   store-scoped hook for the `demo` store only.
 - [`hooks_test.rego`](hooks_test.rego) — the contract test suite.
+- [`../opa-hooks-lib/`](../opa-hooks-lib/README.md) — **operator extension
+  library** example (`authz.hooks.lib.v1.ext.acme`): shared helper functions
+  your hooks may import.
 
 ## Mounting
 
@@ -220,6 +232,38 @@ production pgauthzd forwards both on every request. The ABI is versioned;
 fields not in the document (tokens, transport headers) are structurally
 invisible to hooks, in dev and production alike.
 
+## Sharing helpers across your hooks (extension libraries)
+
+Common logic (time windows, org-specific role conventions) goes into an
+**operator extension library** under the reserved namespace
+`authz.hooks.lib.v1.ext.<name>` — the only shared namespace hooks may import
+besides the platform modules (`keycloak`, …):
+
+```rego
+package authz.hooks.lib.v1.ext.acme
+import future.keywords.if
+within_utc_hours(evaluated_at_ns, from_h, to_h) if { ... }
+```
+
+```rego
+# in any of your hooks:
+import data.authz.hooks.lib.v1.ext.acme
+deny contains {"code": "quiet_hours"} if { not acme.within_utc_hours(input.evaluated_at, 6, 22) }
+```
+
+Rules of the road, validator-enforced (`scripts/validate-hooks.sh --lib <dir>`):
+**functions only** (no plain rules — that would be shared ambient state),
+pure builtins with **no `http.send` exception** (a shared lib with network
+access would hand it to network-free store hooks), and libs may compose the
+platform modules. Deploy: compose — mount the dir into `/policies`
+(e.g. `/policies/hooks-lib`); Helm — `opa.extraLibsConfigMap`. When
+validating hooks that use your libs, point the validator at them:
+`HOOK_EXTRA_LIBS=./my-libs scripts/validate-hooks.sh --global ./hooks/global`
+(a call into an absent or misspelled library function fails validation).
+Shared code runs inside every consumer's evaluation, so ext libraries are
+operator-trust: review them like platform policy. See
+[`examples/opa-hooks-lib/`](../opa-hooks-lib/).
+
 ## Testing your hooks
 
 Run against the *real* platform policies (exactly what the sidecar loads):
@@ -288,19 +332,83 @@ In production, a global hook using `http.send` **must be deployed through the
 signed immutable bundle path** (see ADR 0011) — mutable ConfigMap/`--watch`
 mounts are for development or network-free global hooks only.
 
-## Enumeration is refused while hooks are loaded (secure by default)
+## Enumeration while hooks are loaded: refused, filtered, or superset
 
-`accessible_objects` / `accessible_subjects` return **graph-derived supersets**
-— your decision hooks do NOT filter them, so a hook-vetoed object would still
-be listed. With any hook loaded those queries are refused
-(`403 enumeration_refused_with_hooks`). If your hooks are advisory (not
-confidentiality rules), opt into superset semantics explicitly:
+Raw `accessible_objects` / `accessible_subjects` are **graph-derived
+supersets** — decision hooks don't filter them by themselves, so with any
+applicable hook loaded those queries are refused by default
+(`403 enumeration_refused_with_hooks`). Pick a mode (env on the OPA
+container):
 
 ```
-ALLOW_UNFILTERED_ENUMERATION_WITH_HOOKS=true    # env on the OPA container
+HOOK_FILTERED_ENUMERATION=true            # evaluate hooks PER CANDIDATE and drop
+                                          # denied ids — listings match checks.
+                                          # Cap: HOOK_FILTER_MAX_CANDIDATES (1000);
+                                          # over-cap queries are refused, never
+                                          # partially filtered.
+ALLOW_UNFILTERED_ENUMERATION_WITH_HOOKS=true   # serve the raw superset (only for
+                                               # advisory, non-confidentiality hooks)
 ```
 
-`permitted_actions` is unaffected — it IS hook-filtered per action.
+With filtering, paginated results may return **short (even empty) pages with a
+next_token** — pagination walks the raw keyset space so filtered-out
+candidates never end it early. Those cursors are **sealed** (they may name a
+hidden id): set a shared `CURSOR_SEAL_KEY` on pgauthzd when running multiple
+replicas (comma-separated keyring for rotation — first mints, all accept).
+Setting both mode flags is allowed: filtering wins, and if filtering becomes
+inoperable (env guard, bad cap) enumeration REFUSES rather than degrading to
+the superset. `permitted_actions` is always hook-filtered
+per action. `examples/opa-hooks-filtering/` is the runnable reference.
+
+## Role-based exemptions (e.g. a Keycloak client role that must NOT deny)
+
+Hooks see the **verified caller** as `input.actor = {id, roles}` — roles come
+from the platform's `JWT_ROLES_CLAIM` aggregation (for Keycloak, point it at
+`realm_access.roles` and your app client's `resource_access.<client>.roles`).
+An exemption is just a condition on your own denial, so it stays veto-only —
+it can never grant what the graph denies:
+
+```rego
+deny contains {"code": "classified"} if {
+    startswith(input.resource.id, "classified_")
+    not "auditor" in input.actor.roles   # app role ⇒ this hook does not deny
+}
+```
+
+This composes with filtered enumeration: an auditor's listings keep the
+classified ids, everyone else's drop them. Note the roles are ONE flat
+namespace by default — a role aggregated from `realm_access.roles` is
+indistinguishable from the same string under another client's
+`resource_access` — so either use globally unambiguous role names and
+aggregate only the claim paths you need, or — recommended for
+client-scoped hooks — use the **verbatim claim copies** under
+`input.actor.claims`: by default the Keycloak structures `realm_access` and
+`resource_access`, exactly as they appear in the token (client_ids stay map
+keys, so URI-shaped SAML entity IDs need no separator convention):
+
+```rego
+deny contains {"code": "classified"} if {
+    startswith(input.resource.id, "classified_")
+    ra := object.get(input.actor.claims, "resource_access", {})
+    not "auditor" in object.get(ra, "document-api", {"roles": []}).roles
+}
+```
+
+Need more than the default pair — groups, entitlements, a namespaced OIDC
+claim? Set `HOOK_ACTOR_CLAIMS=realm_access,resource_access,groups,https://example.com/entitlements`
+(OPA env; Helm: `opa.hookActorClaims`; setting it replaces the default, so
+re-list the Keycloak pair if you still want it). Selected verified-token
+claims arrive verbatim under `input.actor.claims.<name>` (missing claims are
+absent — treat absence as most-restrictive; avoid selecting PII you don't
+need).
+
+For the writer gate (which consumes the flat set), `JWT_ROLES_SOURCE_PREFIX=true`
+(OPA env) emits provenance-prefixed flat roles instead: `realm::<role>` /
+`<client_id>::<role>` — update `WRITER_ROLE` to the prefixed form in the same
+change. `actor` is the authenticated
+caller even when `subject` is someone else (batch items, subject search,
+ALLOW_SUBJECT_OVERRIDE); without a token (trusted-PEP mode) `actor` is empty
+and exemptions simply never match.
 
 ## Environment gates: allowlist-style, "unknown" is restrictive
 

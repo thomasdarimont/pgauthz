@@ -52,6 +52,37 @@ roles_claim_paths := [split(trim(p, " "), ".") | some p in split(_env.JWT_ROLES_
 
 roles_claim_paths := [["roles"]] if not _env.JWT_ROLES_CLAIM
 
+# Source-prefixed roles: disambiguate identically named roles by provenance —
+# realm roles become "realm::<role>", client roles "<client_id>::<role>"
+# ("document-api::admin" vs "billing-api::admin"). The separator is "::"
+# because client_ids may be URIs (SAML entity IDs): "." appears in every
+# hostname, while "::" never occurs in URI scheme/host/path components (only
+# inside bracketed IPv6 literals — document your naming if you have those).
+# Applies to realm_access.roles / resource_access.<client>.roles paths;
+# custom claim paths (e.g. a plain "roles") stay bare. OPT-IN — the flat
+# aggregation is released behavior, and enabling this changes every consumer
+# of the role set: update WRITER_ROLE (e.g. "authz-api::authz_writer") and
+# hook exemptions (input.actor.roles) in the same change. (Theoretical edge:
+# a client literally named "realm" would collide with the realm prefix —
+# don't name a client "realm".)
+source_prefix_roles if _env.JWT_ROLES_SOURCE_PREFIX == "true"
+
+# Additional VERIFIED-token claims to copy verbatim into the hook actor
+# (input.actor.claims.<name>), as a comma-separated list of TOP-LEVEL claim
+# names — names are taken verbatim, never path-split, so namespaced OIDC
+# claim names containing dots ("https://example.com/groups") work unchanged.
+# The values are copied as-is from the verified token: platform-derived, the
+# caller cannot influence them beyond what the IdP issued. Choose
+# deliberately — copied claims are visible to every applicable hook (and to
+# dev-only console decision logs); avoid PII you don't need. Missing claims
+# are simply absent: hooks must treat absence as most-restrictive.
+# Defaults to the Keycloak role structures (setting the variable REPLACES the
+# default — include them explicitly if you still want them).
+#   HOOK_ACTOR_CLAIMS=realm_access,resource_access,groups,department
+actor_claims := [c | some raw in split(_env.HOOK_ACTOR_CLAIMS, ","); c := trim(raw, " "); c != ""] if _env.HOOK_ACTOR_CLAIMS
+
+actor_claims := ["realm_access", "resource_access"] if not _env.HOOK_ACTOR_CLAIMS
+
 # Role value (within the roles claim) that authorizes tuple writes.
 # Defaults to "authz_writer"; set WRITER_ROLE to your issuer's role name.
 writer_role := _env.WRITER_ROLE if _env.WRITER_ROLE

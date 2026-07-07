@@ -1,7 +1,7 @@
 # ADR 0011 — OPA policy hooks (user veto rules in the standard pipeline)
 
-- **Status:** Accepted (amended across sixteen 2026-07-07 external review
-  rounds — see [Amendment history](#amendment-history))
+- **Status:** Accepted (FROZEN) — amended across twenty-three 2026-07-07
+  review and implementation rounds (see [Amendment history](#amendment-history))
 - **Date:** 2026-07-07
 - **Deciders:** maintainers
 - **Relates to:** [0008](0008-opa-is-opt-in.md) (OPA is the opt-in policy
@@ -41,7 +41,9 @@ policy aggregates (`opa/policies/hooks.rego`):
   (`data.authz.hooks.v1.stores.other…`), a platform rule, or a dynamic
   `data[…]` lookup. `validate-hooks.sh` rejects any hook that references `data`
   outside its own package (and dynamic `data[var]`), so a store hook touches
-  only `input` + its own rules + pure builtins — it cannot read across tenants
+  only `input` + its own rules + pure builtins + the **platform hook library**
+  (`authz.hooks.lib.v1`, the single allowlisted shared namespace — see below)
+  — it cannot read across tenants
   or into platform state, and the per-store pinning stops it authoring under
   another store (a cross-tenant DoS, since hooks only deny). Hook authors remain
   trusted code; the validator makes the isolation an *enforced* contract, not a
@@ -73,7 +75,7 @@ Users add hooks by **mounting `.rego` files** — compose: volume onto
 
 | Rule | Vetoes | Consulted by |
 |---|---|---|
-| `deny contains d` | a decision | `allow`, `allow_detailed`, `evaluations`, and per-action filtering of `permitted_actions` |
+| `deny contains d` | a decision | `allow`, `allow_detailed`, `evaluations`, per-action filtering of `permitted_actions`, and — with `HOOK_FILTERED_ENUMERATION` — per-candidate filtering of `accessible_objects`/`accessible_subjects` |
 | `deny_write contains d` | a write | `write` (every operation shape) |
 
 - **Normalized input ABI, classified by trust source.** Hooks are evaluated
@@ -106,11 +108,56 @@ Users add hooks by **mounting `.rego` files** — compose: volume onto
     lives where the hooks are.) Environment-sensitive hooks should still be
     written allowlist-style. Time- and environment-gated hooks read these,
     **never** caller `context.*`.
-  - **platform-derived:** `store`, `subject` (decisions), and — on writes —
-    **`actor`** (the authenticated caller), resolved from the verified token.
-    On a write, `actor` is deliberately distinct from the subject(s) inside
-    `tuple`/`tuples`/`writes` who *receive* the grant, so a write-governance
-    hook never has to guess which "subject" it's looking at.
+  - **platform-derived:** `store`, `subject`, and **`actor`** — the
+    authenticated caller, now on BOTH ABIs as `{id, roles}`. `actor.roles` is
+    the platform-verified role set (`authn.roles`, aggregated from the
+    configured `JWT_ROLES_CLAIM` paths — for Keycloak typically
+    `realm_access.roles` plus an app client's `resource_access.<client>.roles`),
+    empty without a valid token (trusted-PEP mode). By default all configured role claim
+    paths share ONE flat namespace — a role aggregated from
+    `realm_access.roles` is indistinguishable from the same string under
+    another client's `resource_access.<client>.roles` — so either use
+    globally unambiguous exemption role names and aggregate only the claim
+    paths you need, or — the RECOMMENDED
+    mechanism for client-scoped hook logic — read the **verbatim claim
+    copies** under `actor.claims.<name>`: by default the Keycloak role
+    structures `realm_access` and `resource_access`, same names and shapes as
+    in the token (`ra := object.get(input.actor.claims, "resource_access",
+    {}); some r in object.get(ra, "document-api", {}).roles; r == "admin"`).
+    Client_ids stay map keys, so URI-shaped SAML entity IDs need no separator
+    convention, and Keycloak's own token documentation applies unchanged;
+    `claims` is `{}` without a token or when the selected claims are absent. The selection is **`HOOK_ACTOR_CLAIMS`** (default:
+    `realm_access,resource_access`; setting it REPLACES the default) — the
+    actor top level stays reserved for platform-DERIVED identity (`id`,
+    `roles`), while `.claims` holds verbatim copies, so operator picks can
+    never collide with reserved fields. Entries are top-level claim NAMES
+    taken whole — never path-split, so namespaced OIDC claim names containing
+    dots work; missing claims are absent, and hooks must treat absence as
+    most-restrictive. Copied claims are platform-derived (the verified token)
+    but visible to every applicable hook — select deliberately, avoid PII you
+    don't need. For the WRITER GATE (which consumes the flat set),
+    enable **`JWT_ROLES_SOURCE_PREFIX=true`**:
+    roles are then emitted with their provenance — `realm::<role>` for realm
+    roles, `<client_id>::<role>` for client roles — making
+    `"document-api::admin"` and `"billing-api::admin"` distinct. The
+    separator is `::` (not `.`) because client_ids may be URIs (SAML entity
+    IDs), where a dot is ambiguous; `::` does not occur in URI
+    scheme/host/path components. Opt-in because the flat aggregation is
+    released behavior — enabling it changes every consumer of the role set
+    (`WRITER_ROLE`, e.g. `authz-api::authz_writer`, and hook exemptions must
+    switch to prefixed names in the same change). This enables
+    **role-based exemptions** that stay veto-only: `not "auditor" in input.actor.roles`
+    narrows a hook's own denial and can never grant what the graph denies —
+    and it composes with filtered enumeration (an exempt caller's listings
+    keep the ids the hook would otherwise hide). `actor` is deliberately
+    distinct from `subject`: under `ALLOW_SUBJECT_OVERRIDE`, batch items, or
+    candidate filtering, `subject` is who is being *checked*; `actor` stays
+    who is *asking*. On writes it is distinct from the tuple subjects who
+    *receive* the grant. **Compatibility:** the write-side `actor` has been an
+    OBJECT (`{id}`) since its introduction (amendment 3) — adding `roles` to
+    it, and adding `actor` to the decision ABI, are both additive within
+    `pgauthz.hooks/v1`. (v1 has also never been externally released; it ships
+    for the first time with this feature branch.)
   - **caller-supplied:** `action`, `resource`, `context` (decisions) /
     `tuple`/`tuples`/`writes`/`user` (writes).
   Bearer & service tokens and transport fields are structurally invisible.
@@ -159,7 +206,7 @@ Users add hooks by **mounting `.rego` files** — compose: volume onto
 - **`permitted_actions` is hook-filtered per action** (clients read it as
   "what can the user actually do" — advertising an action a hook will veto is
   misleading).
-- **Enumeration is refused with hooks — secure by default (v1).**
+- **Enumeration with hooks: refuse by default, FILTER on opt-in (v1).**
   `accessible_objects`/`accessible_subjects` are **graph-derived supersets**
   that decision hooks do not filter: a hook-vetoed object would still be
   *listed*, leaking existence/confidentiality. So when any **applicable** hook
@@ -171,9 +218,72 @@ Users add hooks by **mounting `.rego` files** — compose: volume onto
   operator opts into superset semantics explicitly with
   `ALLOW_UNFILTERED_ENUMERATION_WITH_HOOKS=true` when hooks are
   advisory/time-gating rather than confidentiality rules (see *Platform
-  configuration flags*). With no hooks
-  loaded, enumeration is unchanged. (Actually *filtering* enumeration through
-  decision hooks — per-candidate hook evaluation — remains future work.)
+  configuration flags*). With no hooks loaded, enumeration is unchanged.
+
+  **Per-candidate FILTERING is implemented** (`HOOK_FILTERED_ENUMERATION=true`,
+  precedence over both refusal and the superset opt-out — and once filtering
+  is *configured*, an inoperable state (env guard, malformed cap) **refuses
+  even if the superset opt-out is also set**: a config error must not
+  downgrade "listings match checks" to "listings leak hidden objects"): every candidate id
+  is evaluated through the applicable decision hooks with the same ABI a
+  per-object check would see (subject search substitutes the CANDIDATE
+  subject, like a batch item), and denied candidates are dropped. Precisely:
+  **every returned candidate passed the applicable hooks using the normalized
+  input for that enumeration-page request** — same action, actor, context,
+  `evaluated_at`, and policy revision. A later direct check with different
+  context or time may legitimately differ, and **no snapshot consistency
+  across pages is implied**. Guardrails: cost is O(candidates × applicable
+  hooks), so a raw candidate set beyond `HOOK_FILTER_MAX_CANDIDATES`
+  is **refused outright** (`enumeration_refused_too_many_candidates`;
+  cap semantics: *missing* → 1000, *valid integer 1..100000* → that value,
+  *malformed/out-of-range* → invalid configuration, filtering off ⇒ refusal —
+  a real default for the common case, fail-closed for operator mistakes) — never partially filtered, since a truncated-but-filtered
+  list would read as complete; filtering stays refused while the platform
+  environment guard is active (the config-error state); and **pagination
+  keeps raw keyset space**: pgauthzd peeks limit+1 on the raw page, so
+  filtered pages return an explicit `{hook_filtered, ids, has_more, cursor}`
+  protocol object where `has_more`/`cursor` come from the RAW page — a page
+  that filters below the client limit does not end pagination, and short
+  (even empty) pages with a next token are normal. The raw cursor is the last
+  **consumed** candidate (never the limit+1 peek item) and may be an id the
+  hooks deliberately hid — so pgauthzd **seals filtered cursors with AES-GCM**
+  (`CURSOR_SEAL_KEY` — a comma-separated keyring like the freshness keys:
+  first key mints, all accept, so rotation is prepend-roll-drop with no
+  broken in-flight paginations): opaque, integrity-protected — **no direct
+  disclosure of hook-hidden identifiers through pagination metadata** (the
+  plaintext is padded to a 32-byte multiple, so the token length reveals only
+  a coarse length bucket, not the id length). Cryptographic invariants:
+  every cursor uses a fresh 96-bit nonce from the CSPRNG, generated
+  independently of the raw key and query context (never derived, never
+  repeated under a key); keys are KDF'd to exactly 32 bytes (AES-256 by
+  construction) and keyring parsing rejects malformed values at startup
+  (empty segments are an error, never silently skipped); the envelope carries
+  `{format version, nonce, ciphertext, auth tag}` with the same version also
+  bound into the AAD. The seal is **bound to the query
+  context AND the caller** via AEAD additional-authenticated-data — payload:
+  `{last_consumed_raw_key}`; AAD: `{cursor-format version, operation, store,
+  actor.id, subject/resource query dimensions, action, canonical
+  caller-context hash}`. The version component is the **cursor-format
+  contract version** (`pgauthz-cursor-v1`) — NOT the pgauthzd release or the
+  authorization-model version: bumping it deliberately invalidates all
+  outstanding cursors when the binding layout changes, while deploys and
+  model publishes leave in-flight paginations untouched (model drift between
+  pages is the documented no-cross-page-snapshot case) — a cursor minted for one store/query/caller is
+  rejected for any other (filtered results are actor-dependent through role
+  exemptions, so actor A's cursor must not position actor B's pagination).
+  The actor's ROLE SET is deliberately not bound: role changes between pages
+  fall under the no-cross-page-snapshot semantics. The per-process key
+  fallback (unset `CURSOR_SEAL_KEY`) is **development-only**: in production
+  with filtered enumeration, a shared key is required — otherwise load
+  balancing, restart, or failover turns valid cursors into 400s (an
+  availability issue, not an authorization one). Enforcement boundary, stated
+  honestly: pgauthzd cannot infer whether a deployment is production or
+  multi-replica, so **the Helm chart refuses to render**
+  `opa.hookFilteredEnumeration` without `authzen.opa.cursorSealKey`, while
+  pgauthzd itself only warns at startup and falls back to the per-process
+  development key. A cursor that fails to
+  unseal (replica without the shared key, tampering) is a 400 — never
+  interpreted as an id.
 - **Attribution:** `allow_detailed` carries `hooks_loaded` — **the global and
   target-store hook packages *applicable to this request*** (not every module
   loaded into the OPA instance; other stores' hooks are structurally absent),
@@ -240,8 +350,17 @@ independent controls** (capabilities are a *build/check-time* validation —
    URLs are forced static, the validator **enforces the allowlist itself**:
    each destination host must be a member of the profile's `allow_net`
    (`opa check` alone does not inspect hosts — `allow_net` is otherwise
-   evaluation-time, `opa eval/test --capabilities`). The full **static request
-   contract** (each field absent or a safe literal; computed values rejected):
+   evaluation-time, `opa eval/test --capabilities`). The request object is validated
+   against an explicit **field allowlist** — only `url`, `method`, `headers`,
+   `timeout`, `raise_error`, `enable_redirect`, `tls_insecure_skip_verify`,
+   and `max_retry_attempts` are admitted; **every other field is rejected**,
+   in particular ALL cross-query cache controls (`cache`, `force_cache`,
+   `force_cache_duration_seconds`, `caching_mode`, `cache_ignored_headers`):
+   network hooks execute **fresh on every decision** — a cached response
+   would decide a later, different request. Unlisted future OPA options
+   cannot enter the profile implicitly. The full **static request
+   contract** (each admitted field absent or a safe literal; computed values
+   rejected):
    `enable_redirect` must stay `false` (OPA's default — verified — so an
    approved literal URL can't bounce to an unapproved destination);
    `raise_error` must stay `true` (setting it `false` converts a failed call
@@ -406,6 +525,42 @@ Renaming a store therefore orphans its store-scoped hooks (they must be
 re-packaged under the new name) and changes the `store` value hooks see — treat
 a store rename as a policy migration, not a cosmetic change.
 
+### The platform hook library (`authz.hooks.lib.v1`)
+
+Shared helper functions hooks may call — the ONE namespace besides its own
+package a hook may reference (imports and refs allowlisted by the validator;
+everything else stays rejected). Why this is not an isolation hole: the
+library is **platform-owned** and ships/signs **with the platform policy**
+(never tenant-mounted); it lives **outside the aggregated namespace**
+(`authz.hooks.lib.v1`, not `authz.hooks.v1` — the aggregator never iterates
+it, and the tier regex prevents a hook claiming it); and it contains **pure
+functions over their arguments only** — no rules over request or tenant
+state. Versioned like the input ABI: additive within v1, breaking changes
+become `lib.v2`. The validator loads the library into its compile checks, so
+a call to a nonexistent library function is a validation error, not a
+runtime surprise. First module: `keycloak` —
+`keycloak.has_realm_role(input.actor, role)`,
+`keycloak.has_client_role(input.actor, client, role)`, plus the raw
+`realm_roles`/`client_roles` accessors, all undefined-safe (absent claims
+fail closed).
+
+**Operator extension libraries** live under the reserved
+`authz.hooks.lib.v1.ext.<name>` subtree — deployments add their own shared
+helpers there (compose: mount into `/policies`; Helm:
+`opa.extraLibsConfigMap`), validated by **`validate-hooks.sh --lib`**:
+namespace pinned to `ext.*`, **functions only** (a plain rule would be
+shared ambient state), pure builtins with **no `--allow-http` escape** — a
+shared library with `http.send` would hand network access to every caller,
+including network-free store hooks. Ext libs may compose the platform
+modules (e.g. call `keycloak.*`); hooks reference them through the same
+`authz.hooks.lib.v1` allowlist with zero validator changes. Since shared
+code executes inside every consumer's evaluation, ext libraries are
+**operator-trust tier** by construction — a tenant cannot mount one (store
+ConfigMaps are pinned to the store namespace). `HOOK_EXTRA_LIBS=<dir>`
+points the validator at ext libs when validating hooks that call them (a
+call into an absent library fails compile). `examples/opa-hooks-lib/` is
+the reference.
+
 ### Platform configuration flags
 
 Rego has no ambient access to process environment variables; the two hook
@@ -420,11 +575,21 @@ cannot read the environment (or these flags) directly — they see only the
 platform's decision; and the config module is platform policy, shipped and
 signed with it. A deployment without process env (WASM, data-only bundles)
 injects the same values as trusted data under the config package instead —
-the aggregator reads `config.allow_*`, not the environment. Parsing is
-**fail-closed by construction**: the flag rules match exactly the string
-`"true"` — missing, malformed, or any other value leaves the rule undefined,
-and every consumer gates on `not config.allow_*`, so anything but an exact
-`"true"` means the protection stays active (regression-tested).
+the aggregator reads `config.allow_*`, not the environment. The same
+contract covers the enumeration-filtering flags: `HOOK_FILTERED_ENUMERATION`
+(exact `"true"` enables, like the others) and `HOOK_FILTER_MAX_CANDIDATES`
+(exact tri-state: **missing → 1000**; **valid integer 1..100000 → that
+value**; **malformed/out-of-range → invalid configuration**, filtering OFF,
+enumeration refuses — a real default for the common case, fail-closed for
+operator mistakes, never a silently applied unexpected bound. OPA reads env
+at query time, so "fail startup" isn't expressible; fail-closed-at-use is the
+enforceable equivalent, regression-tested. Scope: the cap limits the raw
+candidates evaluated by hooks in ONE enumeration request — the page, for
+paginated queries — NOT the total result set across pages). Boolean parsing is **fail-closed by
+construction**: the flag rules match exactly the string `"true"` — missing,
+malformed, or any other value leaves the rule undefined, and every consumer
+gates on `not config.allow_*` / requires the rule defined, so anything but an
+exact `"true"` means the protection stays active (regression-tested).
 
 ### Failure semantics (stated honestly)
 
@@ -500,9 +665,11 @@ policy revision.
 
 - ~~Enumeration confidentiality~~ — **SHIPPED in v1** (secure-by-default
   refusal, `ALLOW_UNFILTERED_ENUMERATION_WITH_HOOKS` opt-out; see Decision).
-  Still deferred from it: full **per-result filtering** (evaluating decision
-  hooks per enumeration candidate), and surfacing
-  `{result_semantics: "graph_derived_superset"}` on opted-out responses.
+  ~~Full per-result filtering~~ — **also shipped** (amendment 17:
+  `HOOK_FILTERED_ENUMERATION`, per-candidate evaluation with fail-closed cap
+  + raw-keyset paginated protocol). Still open from the original item:
+  surfacing `{result_semantics: "graph_derived_superset"}` on
+  explicitly-opted-out unfiltered responses.
 - **Hook observability.** Per-hook/-code veto counters, hook evaluation
   latency, and runtime-error counters; **policy/bundle revision as an
   observable field** in decision logs and readiness/activation metrics (so a
@@ -512,7 +679,9 @@ policy revision.
 - **Malformed denial = hard failure.** Today a malformed denial value is
   normalized defensively; making it a `policy_evaluation_failed` instead
   (paired with a validator lint on `deny`/`deny_write` shapes) is a tightening.
-- **Fuller principal ABI** (`principal{issuer, client_id, roles}`) as a v2 ABI.
+- **Fuller principal ABI** (`principal{issuer, client_id, …}`) as a v2 ABI —
+  partially delivered: verified `actor{id, roles}` is in the v1 ABI (additive);
+  issuer/client_id remain v2.
 - **Remote signed bundles** for fleet distribution (per-store bundle `roots`
   give a third isolation layer under the validator + veto-only).
 
@@ -541,7 +710,7 @@ policy revision.
 
 ## Amendment history
 
-Sixteen external review rounds on 2026-07-07, each amending this ADR (and the
+Twenty-three rounds on 2026-07-07 (external reviews + the implementation deliveries of the deferred enumeration filtering and its hardening), each amending this ADR (and the
 implementation) in place:
 
 (1) versioned namespace, normalized ABI, structured denials, batch rejection,
@@ -634,4 +803,58 @@ implementation) in place:
   guarantee; the platform-HTTP-helper alternative documented as the v2
   hardening (deferred: schema fail-closed stays author-side regardless);
   `platform_policy_compatibility` given named enforcement owners (publish
-  pipeline pre-activation, activation monitor post-activation).
+  pipeline pre-activation, activation monitor post-activation);
+  (17 — implementation phase) **per-candidate hook-FILTERED enumeration
+  shipped** (`HOOK_FILTERED_ENUMERATION`, candidate cap with fail-closed
+  refusal, raw-keyset paginated protocol `{hook_filtered, ids, has_more,
+  cursor}`, refused while the env guard is active), and the v1 ABI gained the
+  verified **`actor{id, roles}`** on both operations (Keycloak client-role
+  exemptions expressible, veto-only preserved; `examples/opa-hooks-filtering/`
+  covers both with a 14-test suite);
+  (18) filtering review hardening — the new flags joined the trusted
+  configuration contract (strict digits-only 1..100000 cap parsing;
+  malformed/out-of-range ⇒ filtering off ⇒ refusal), **filtered-page cursors
+  sealed with AES-GCM** (`CURSOR_SEAL_KEY`; the raw-keyset cursor may name a
+  hook-hidden id — opaque + integrity-protected, failed unseal = 400), the
+  consistency claim qualified (per-page normalized input, no cross-page
+  snapshot), `http.send` request fields moved to an explicit **allowlist**
+  (cross-query cache controls forbidden — hooks execute fresh per decision),
+  and the flat role namespace made explicit (exemptions need globally
+  unambiguous role names);
+  (19) both-flags precedence pinned (filtering wins; CONFIGURED-but-inoperable
+  filtering refuses even with the superset opt-out set) and `CURSOR_SEAL_KEY`
+  became a rotation keyring (first mints, all accept);
+  (20) consistency fixes — the write-side `actor` was always an object, so
+  `roles` is additive within v1 (stated; v1 also never externally released);
+  sealed cursors **bound to the query context** via AEAD AAD with the
+  per-process key fallback declared development-only (startup warning on
+  OPA-fronted instances without `CURSOR_SEAL_KEY`); the cap tri-state pinned
+  (missing → 1000, valid → value, malformed → refusal); and the cache-field
+  prohibition promoted from the amendment history into the normative
+  `http.send` contract;
+  (21) cursor binding completed — the AAD now includes **`actor.id`** and a
+  **canonical caller-context hash** (actor A's cursor is rejected for actor
+  B; the role set deliberately unbound per no-cross-page-snapshot), the Helm
+  chart **refuses to render** filtered enumeration without
+  `authzen.opa.cursorSealKey` (the stated production requirement is now
+  enforced where production is knowable), the cap's per-request scope stated,
+  and the amendment numbering/status line repaired;
+  (22 — freeze) cryptographic invariants stated and enforced — fresh random
+  96-bit nonces per cursor, strict keyring parsing (empty segments = startup
+  error, closing the silent `CURSOR_SEAL_KEY=","` fallback), an explicit
+  envelope format version (unknown versions fail closed), plaintext padding
+  to 32-byte buckets (length side-channel reduced to a coarse bucket), and
+  the disclosure claim reworded honestly. Out of iterative architectural
+  review; validation continues via mutation, multi-replica pagination,
+  key-rotation, and end-to-end tests;
+  (23 — implementation phase) the verified **actor** landed in its final
+  shape `{id, roles, claims}` (verbatim claim copies under `actor.claims`,
+  `HOOK_ACTOR_CLAIMS` defaulting to Keycloak's `realm_access` +
+  `resource_access`; opt-in `JWT_ROLES_SOURCE_PREFIX` for flat-set
+  consumers), and the **platform hook library** `authz.hooks.lib.v1` was
+  introduced — the single validator-allowlisted shared namespace
+  (platform-owned, functions-only, ships with the platform policy), first
+  module `keycloak` (`has_realm_role` / `has_client_role`), with the
+  reserved `ext.*` subtree for **operator extension libraries**
+  (`validate-hooks.sh --lib`: functions-only, always pure, never
+  tenant-mountable).

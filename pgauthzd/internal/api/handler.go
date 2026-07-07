@@ -575,10 +575,18 @@ func (h *Handler) SearchSubject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	page := decodePage(req.Page)
-
 	store, ok := h.storeChecked(w, r)
 	if !ok {
+		return
+	}
+	// Sealed cursors are bound to the query context INCLUDING the verified
+	// actor — the AAD here must mirror the minting side (opabackend.ListSubjects).
+	_, actorID := SubjectFromContext(r.Context())
+	page := decodePage(req.Page, SealedCursorAAD("subjects", store, actorID,
+		req.Subject.Type, "", req.Action.Name, req.Resource.Type, req.Resource.ID,
+		CanonicalContextHash(req.Context)))
+	if page != nil && page.After == invalidCursorSentinel {
+		writeBadRequest(w, "invalid page token: sealed cursor failed verification (wrong query context, or replicas without a shared CURSOR_SEAL_KEY)")
 		return
 	}
 	subjects, pageResp, err := h.backend.ListSubjects(r.Context(), store,
@@ -632,10 +640,17 @@ func (h *Handler) SearchResource(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	page := decodePage(req.Page)
-
 	store, ok := h.storeChecked(w, r)
 	if !ok {
+		return
+	}
+	// AAD mirrors the minting side (opabackend.ListResources), actor included.
+	_, actorID := SubjectFromContext(r.Context())
+	page := decodePage(req.Page, SealedCursorAAD("objects", store, actorID,
+		subjectType, subjectID, req.Action.Name, req.Resource.Type, "",
+		CanonicalContextHash(req.Context)))
+	if page != nil && page.After == invalidCursorSentinel {
+		writeBadRequest(w, "invalid page token: sealed cursor failed verification (wrong query context, or replicas without a shared CURSOR_SEAL_KEY)")
 		return
 	}
 	resources, pageResp, err := h.backend.ListResources(r.Context(), store,
@@ -790,9 +805,24 @@ func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
 type pageState struct {
 	A string `json:"a,omitempty"`
 	O int    `json:"o,omitempty"`
+	// S is a SEALED keyset cursor (filtered enumeration): AES-GCM over the
+	// (padded) raw id, since that id may be one the hooks removed from the
+	// results. V is the envelope's cursor-format version (1) — the same
+	// version is bound into the AAD; the envelope copy enables a future
+	// multi-format migration window.
+	S string `json:"s,omitempty"`
+	V int    `json:"v,omitempty"`
 }
 
-func decodePage(p *PageToken) *authz.PageRequest {
+// jsonMarshal indirection so cursorseal.go stays import-light.
+var jsonMarshal = json.Marshal
+
+// invalidCursorSentinel flags a sealed cursor that failed to unseal (wrong
+// replica key, tampering); the search handlers turn it into a 400. Contains a
+// NUL so it can never collide with a real id.
+const invalidCursorSentinel = "\x00invalid-sealed-cursor"
+
+func decodePage(p *PageToken, aad string) *authz.PageRequest {
 	if p == nil {
 		return nil
 	}
@@ -806,6 +836,19 @@ func decodePage(p *PageToken) *authz.PageRequest {
 		if err == nil {
 			_ = json.Unmarshal(data, &state)
 		}
+	}
+	if state.S != "" {
+		if state.V != 1 {
+			// unknown envelope format — fail closed, never guess
+			return &authz.PageRequest{Limit: size, After: invalidCursorSentinel}
+		}
+		// Sealed (filtered-enumeration) cursor: unseal or fail — never fall
+		// back to treating sealed bytes as a plain id.
+		after, err := unsealCursorValue(state.S, aad)
+		if err != nil {
+			return &authz.PageRequest{Limit: size, After: invalidCursorSentinel}
+		}
+		return &authz.PageRequest{Limit: size, After: after}
 	}
 	return &authz.PageRequest{Limit: size, Offset: state.O, After: state.A}
 }

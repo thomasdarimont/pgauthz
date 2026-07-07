@@ -176,6 +176,12 @@ type Config struct {
 	// instead of a caller-supplied context field, which they must not trust.
 	// Empty = the field is still present but "".
 	DeploymentEnvironment string
+	// CursorSealKey seals filtered-enumeration page cursors (they carry raw
+	// keyset ids that hooks may have removed from results — ADR 0011).
+	// Comma-separated keyring: first mints, all accept (rotate by prepending,
+	// then dropping the old key). Unset = random per-process key (opaque but
+	// not portable across replicas/restarts).
+	CursorSealKey string
 
 	// MetricsListenAddr, when set, serves the Prometheus `/metrics` endpoint on a
 	// SEPARATE listener (ADR 0010). Bind it to the pod/mesh network — never the
@@ -312,6 +318,7 @@ func Load() (*Config, error) {
 		FreshnessPrimaryPoolMax:      envInt("FRESHNESS_PRIMARY_POOL_MAX", 10),
 		OpenAPIEnabled:               envBool("OPENAPI_ENABLED", true),
 		DeploymentEnvironment:        env("DEPLOYMENT_ENVIRONMENT", ""),
+		CursorSealKey:                env("CURSOR_SEAL_KEY", ""),
 		MetricsListenAddr:            env("METRICS_LISTEN_ADDR", ""),
 		MetricsSampleIntervalSeconds: envInt("METRICS_SAMPLE_INTERVAL_SECONDS", 30),
 		MetricsMaxStores:             envInt("METRICS_MAX_STORES", 100),
@@ -363,6 +370,18 @@ func Load() (*Config, error) {
 	// deterministic startup error instead.
 	if err := authz.NewKeyring(c.FreshnessKeys).Validate(); err != nil {
 		return nil, err
+	}
+
+	// CURSOR_SEAL_KEY keyring parsing is strict: a set-but-malformed value
+	// (empty segments, e.g. a stray comma) must be a startup error — silently
+	// skipping entries or falling back to the random per-process key would
+	// break cursor continuity invisibly.
+	if c.CursorSealKey != "" {
+		for _, seg := range strings.Split(c.CursorSealKey, ",") {
+			if strings.TrimSpace(seg) == "" {
+				return nil, fmt.Errorf("CURSOR_SEAL_KEY contains an empty key segment (stray comma?)")
+			}
+		}
 	}
 
 	// DEPLOYMENT_ENVIRONMENT is forwarded verbatim to policy hooks

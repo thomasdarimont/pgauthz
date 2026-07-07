@@ -38,7 +38,12 @@ func writeForbidden(w http.ResponseWriter, msg string) {
 func writeSearchError(w http.ResponseWriter, err error) {
 	if errors.Is(err, authz.ErrEnumerationRefused) {
 		writeError(w, http.StatusForbidden,
-			"enumeration_refused_with_hooks: policy hooks are loaded and search results are graph-derived supersets that hooks do not filter; set ALLOW_UNFILTERED_ENUMERATION_WITH_HOOKS=true on OPA to accept superset semantics")
+			"enumeration_refused_with_hooks: policy hooks are loaded and search results are graph-derived supersets that hooks do not filter; enable per-candidate filtering with HOOK_FILTERED_ENUMERATION=true, or accept superset semantics with ALLOW_UNFILTERED_ENUMERATION_WITH_HOOKS=true (both on OPA)")
+		return
+	}
+	if errors.Is(err, authz.ErrEnumerationCapExceeded) {
+		writeError(w, http.StatusForbidden,
+			"enumeration_refused_too_many_candidates: the candidate set exceeds HOOK_FILTER_MAX_CANDIDATES for hook-filtered enumeration; narrow the query (pagination/type) or raise the cap on OPA")
 		return
 	}
 	writeInternalError(w, err)

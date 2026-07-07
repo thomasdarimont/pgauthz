@@ -9,7 +9,7 @@ import "testing"
 func TestDecodePageKeyset(t *testing.T) {
 	// Keyset token round-trips into After (offset stays zero).
 	tok := EncodePageAfter("doc_042")
-	got := decodePage(&PageToken{Token: tok, Size: 10})
+	got := decodePage(&PageToken{Token: tok, Size: 10}, "")
 	if got == nil {
 		t.Fatal("decodePage returned nil")
 	}
@@ -27,7 +27,7 @@ func TestDecodePageKeyset(t *testing.T) {
 func TestDecodePageLegacyOffset(t *testing.T) {
 	// A pre-keyset token (offset-encoded) must still decode for back-compat.
 	tok := EncodePage(20)
-	got := decodePage(&PageToken{Token: tok, Size: 5})
+	got := decodePage(&PageToken{Token: tok, Size: 5}, "")
 	if got.Offset != 20 {
 		t.Fatalf("Offset: want 20, got %d", got.Offset)
 	}
@@ -37,14 +37,14 @@ func TestDecodePageLegacyOffset(t *testing.T) {
 }
 
 func TestDecodePageEmpty(t *testing.T) {
-	got := decodePage(&PageToken{Size: 7})
+	got := decodePage(&PageToken{Size: 7}, "")
 	if got.After != "" || got.Offset != 0 {
 		t.Fatalf("want empty cursor, got After=%q Offset=%d", got.After, got.Offset)
 	}
 	if got.Limit != 7 {
 		t.Fatalf("Limit: want 7, got %d", got.Limit)
 	}
-	if decodePage(nil) != nil {
+	if decodePage(nil, "") != nil {
 		t.Fatal("decodePage(nil) should be nil")
 	}
 }

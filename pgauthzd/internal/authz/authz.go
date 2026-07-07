@@ -32,6 +32,12 @@ func (e *PolicyHookDeniedError) Error() string { return "denied by policy hook" 
 // out. Maps to 403, not 500 — it is a policy refusal, not a fault.
 var ErrEnumerationRefused = errors.New("enumeration refused: policy hooks are loaded and unfiltered enumeration is not enabled")
 
+// ErrEnumerationCapExceeded: hook-filtered enumeration refused because the
+// raw candidate set exceeded HOOK_FILTER_MAX_CANDIDATES — fail closed rather
+// than partially filter (a truncated-but-filtered list would read as
+// complete). Narrow the query (pagination/type) or raise the cap.
+var ErrEnumerationCapExceeded = errors.New("enumeration refused: candidate set exceeds the hook-filter cap")
+
 // ErrInvalidConsistency is returned when a write requests an unrecognized
 // consistency mode. Fails closed (rejects the write) rather than silently
 // downgrading the durability guarantee — maps to 400 Bad Request.

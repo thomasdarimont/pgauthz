@@ -35,6 +35,17 @@ services:
       # (input.subject with no JWT) are rejected unless this is set false, which
       # is ONLY safe behind a trusted PEP. The demo opts into false via env.sh.
       REQUIRE_TOKEN_FOR_READS: "${REQUIRE_TOKEN_FOR_READS:-true}"
+      # Enumeration with policy hooks loaded (ADR 0011): default = refused;
+      # HOOK_FILTERED_ENUMERATION=true evaluates hooks per candidate (listings
+      # then match per-object checks); ALLOW_UNFILTERED_ENUMERATION_WITH_HOOKS
+      # =true serves the raw graph superset instead.
+      HOOK_FILTERED_ENUMERATION: "${HOOK_FILTERED_ENUMERATION:-}"
+      HOOK_FILTER_MAX_CANDIDATES: "${HOOK_FILTER_MAX_CANDIDATES:-}"
+      ALLOW_UNFILTERED_ENUMERATION_WITH_HOOKS: "${ALLOW_UNFILTERED_ENUMERATION_WITH_HOOKS:-}"
+      # Verified-token claims copied verbatim into the hook actor
+      # (input.actor.claims.<name>) + provenance-prefixed flat roles (ADR 0011).
+      HOOK_ACTOR_CLAIMS: "${HOOK_ACTOR_CLAIMS:-}"
+      JWT_ROLES_SOURCE_PREFIX: "${JWT_ROLES_SOURCE_PREFIX:-}"
       # pgauthzd native callback: OPA's read/decision data client calls back into
       # the OPA-fronted instance's INTERNAL listener (pgauthzd-opa:8081); the
       # shared service token must match its INTERNAL_SERVICE_TOKEN.
@@ -65,6 +76,10 @@ services:
     volumes:
       - ./opa/policies:/policies:ro
       - ./opa/data:/data:ro
+      # Your policy hooks / shared extension libraries (ADR 0011) — validate
+      # with scripts/validate-hooks.sh (--global / --store <s> / --lib) first:
+      # - ./my-hooks/global:/policies/hooks/global:ro
+      # - ./my-libs:/policies/hooks-lib:ro
     depends_on:
       authz-db:
         condition: service_healthy
