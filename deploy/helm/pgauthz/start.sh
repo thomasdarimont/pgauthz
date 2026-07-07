@@ -16,7 +16,7 @@
 #   K3D_CLUSTER   k3d cluster name to import images into       (pgauthz-demo)
 #   RELEASE       helm release name                             (pgauthz)
 #   NAMESPACE     kubernetes namespace                          (default)
-#   IMAGE_TAG     tag for the locally built images             (0.13.0)
+#   IMAGE_TAG     tag for the locally built images             (0.14.0)
 #   CNPG_VERSION  CloudNativePG version ("" = latest release)  (auto)
 #   VALUES        space-separated helm values file(s)          (values-k3d.yaml)
 #   HA            set to 1 to append values-ha.yaml (sync replication, RPO 0)
@@ -29,7 +29,7 @@ REPO_ROOT="$(cd "$CHART_DIR/../../.." && pwd)"
 K3D_CLUSTER="${K3D_CLUSTER:-pgauthz-demo}"
 RELEASE="${RELEASE:-pgauthz}"
 NAMESPACE="${NAMESPACE:-default}"
-IMAGE_TAG="${IMAGE_TAG:-0.13.0}"
+IMAGE_TAG="${IMAGE_TAG:-0.14.0}"
 VALUES="${VALUES:-$CHART_DIR/values-k3d.yaml}"
 # HA=1 appends the synchronous-replication overlay (zero-RPO failover). Layered
 # last so its sync settings win; it carries no instance count, inheriting it
