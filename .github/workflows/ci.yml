@@ -93,8 +93,18 @@ jobs:
       - name: Initialize database and bring up the stack WITH OPA
         run: PGAUTHZ_OPA=1 ./init.sh
 
+      # init.sh installs the engine but NOT the demo model/seed — that is a
+      # test fixture loaded by test.sh (which test-all.sh runs before the OPA
+      # suite). Load it here so test-opa.sh queries a populated demo store
+      # instead of an empty one (which would deny everything).
+      - name: Load the demo fixture + SQL suite
+        run: PGAUTHZ_OPA=1 ./tests/test.sh
+
       - name: OPA integration suite (fail if OPA is absent)
         run: PGAUTHZ_OPA=1 PGAUTHZ_CI=1 ./tests/test-opa.sh
+
+      - name: AuthZEN suite (watch role gate, native surface)
+        run: PGAUTHZ_OPA=1 PGAUTHZ_CI=1 ./tests/test-authzen.sh
 
       - name: Hook contract suites (validator + opa test, all example dirs)
         run: |
