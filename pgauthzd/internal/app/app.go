@@ -139,13 +139,13 @@ func Run(name, version string) error {
 	//    into. Its capability follows the instance's role — read-only instances
 	//    serve read callbacks, a full instance serves read+write.
 	var servers []*http.Server
-	servers = append(servers, &http.Server{Addr: cfg.ListenAddr, Handler: api.NewRouter(backend, raw, rawWrite, cfg, jwtMW)})
+	servers = append(servers, newServer(cfg, cfg.ListenAddr, api.NewRouter(backend, raw, rawWrite, cfg, jwtMW)))
 
 	// Prometheus metrics on a SEPARATE, non-public listener (ADR 0010).
 	if cfg.MetricsListenAddr != "" {
 		mmux := http.NewServeMux()
 		mmux.Handle("GET /metrics", metrics.Handler())
-		servers = append(servers, &http.Server{Addr: cfg.MetricsListenAddr, Handler: mmux})
+		servers = append(servers, newServer(cfg, cfg.MetricsListenAddr, mmux))
 		slog.Info("metrics listener", "addr", cfg.MetricsListenAddr)
 	}
 
@@ -163,7 +163,7 @@ func Run(name, version string) error {
 			return terr
 		}
 		hCb := api.NewHandler(nil, raw, rawWrite, cfg)
-		cbSrv := &http.Server{Addr: cfg.InternalListenAddr, Handler: api.NewCallbackRouter(hCb, cfg.InternalServiceToken)}
+		cbSrv := newServer(cfg, cfg.InternalListenAddr, api.NewCallbackRouter(hCb, cfg.InternalServiceToken))
 		if tlsCfg != nil {
 			cbSrv.TLSConfig = tlsCfg
 		}
@@ -246,11 +246,28 @@ func internalTLSConfig(cfg *config.Config) (*tls.Config, error) {
 	}, nil
 }
 
+// newServer builds a listener with the shared hardening limits (review #9):
+// header/idle timeouts against slow-header (slowloris) and idle-connection
+// exhaustion. Deliberately NO WriteTimeout — long-running search/explain/watch
+// responses must not be killed mid-write.
+func newServer(cfg *config.Config, addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
+		IdleTimeout:       cfg.HTTPIdleTimeout,
+	}
+}
+
 // newOPABackend builds the OPA-fronted AuthZEN backend and logs a startup
-// health probe (non-fatal — OPA may still be coming up).
+// health probe (non-fatal — OPA may still be coming up; bounded by its own
+// deadline so a black-holed OPA can't block startup, review #9).
 func newOPABackend(ctx context.Context, cfg *config.Config) authz.Backend {
-	opab := opabackend.New(cfg.OPAURL, cfg.OPAPackage, cfg.ForwardTokenToOPA)
-	if herr := opab.Healthz(ctx); herr != nil {
+	opab := opabackend.New(cfg.OPAURL, cfg.OPAPackage, cfg.ForwardTokenToOPA,
+		cfg.OPARequestTimeout, cfg.OPADeepReadinessRequired)
+	pctx, cancel := context.WithTimeout(ctx, cfg.OPARequestTimeout)
+	defer cancel()
+	if herr := opab.Healthz(pctx); herr != nil {
 		slog.Warn("OPA health check failed on startup (will retry)", "error", herr)
 	} else {
 		slog.Info("connected to OPA", "url", cfg.OPAURL)

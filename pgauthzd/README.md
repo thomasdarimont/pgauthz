@@ -367,6 +367,9 @@ All configuration is via environment variables.
 | `METRICS_LISTEN_ADDR` | *empty* | When set (e.g. `:9090`), serves Prometheus `/metrics` on a **separate** listener ([ADR 0010](../docs/adr/0010-metrics-observability.md)). Bind to the pod/mesh network — **never** the public client listener. Empty = metrics disabled |
 | `METRICS_SAMPLE_INTERVAL_SECONDS` | `30` | Interval for the engine/tenant gauge sampler (per-store tuple counts). Only runs when metrics are exposed; `0` disables it |
 | `METRICS_MAX_STORES` | `100` | Cap on per-store series (top-N by tuple count); `pgauthzd_stores_total` still reports the true count |
+| `HTTP_READ_HEADER_TIMEOUT` | `5s` | Max time to read request headers on every listener (slowloris hardening) |
+| `HTTP_IDLE_TIMEOUT` | `60s` | Max keep-alive idle time on every listener |
+| `HTTP_MAX_BODY_BYTES` | `10485760` (10 MiB) | Request-body cap (`http.MaxBytesReader`); generous — batch writes are legitimately large. `0` disables |
 | `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
 
 ### pgauthzd-decision (`decision-only`) only
@@ -386,6 +389,8 @@ All configuration is via environment variables.
 | `OPA_URL` | *required* | OPA server base URL (e.g. `http://opa:8181`) |
 | `OPA_PACKAGE` | `authz` | OPA Rego package name |
 | `FORWARD_TOKEN_TO_OPA` | `false` | Forward the verified bearer token to OPA as `input.token` so OPA re-validates it — lets OPA run token-only (`REQUIRE_TOKEN_FOR_READS=true`) instead of trusting the forwarded subject. Leave off for trusted-PEP setups that check arbitrary subjects |
+| `OPA_REQUEST_TIMEOUT` | `10s` | Bounds every OPA HTTP call (decisions, searches, readiness) — a black-holed OPA can't hang requests or startup |
+| `OPA_DEEP_READINESS_REQUIRED` | `false` | Fail `/readyz` when the loaded policy set lacks the `callback_healthy` rule, instead of silently degrading to the shallow OPA-`/health`-only check. The active mode is exported as `pgauthzd_opa_readiness_mode{mode}` either way |
 | `DATABASE_URL` | *empty* | Optional. A **read-only** DSN enables the native raw callback surface (`/pgauthz/v1/check`, `list-*`) an OPA sidecar calls back into (replacing the former PostgREST reader). Asserted read-only at startup |
 | `INTERNAL_LISTEN_ADDR` | *empty* | Address for the internal listener serving that native raw surface (e.g. `:8081`). **Do not publish it** — bind to the OPA sidecar network. Empty = raw surface not served |
 | `INTERNAL_SERVICE_TOKEN` | *empty* | Shared service credential the internal listener requires (`Authorization: Bearer`), proving the call came from the OPA sidecar. Must match OPA's `NATIVE_SERVICE_TOKEN`. **Required** when `INTERNAL_LISTEN_ADDR` is set — startup fails closed without it. The listener then trusts OPA's asserted subject (body) + role (`X-PGAuthz-Role`), not the end-user JWT |

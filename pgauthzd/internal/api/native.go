@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 )
@@ -100,8 +101,20 @@ type writeTuplesBody struct {
 //     guard, any authorized writer could stamp another user into the immutable
 //     audit trail.
 //
+// maxPerformedByLen bounds the audit-actor string: long enough for any real
+// subject identifier (UUIDs, emails, SPIFFE IDs), short enough that the
+// immutable audit trail can't be stuffed with junk (review #9).
+const maxPerformedByLen = 256
+
 // Returns ok=false with the 403/400 already written.
 func (h *Handler) resolvePerformedBy(w http.ResponseWriter, r *http.Request, bodyValue string) (string, bool) {
+	// A whitespace-only value must not satisfy the non-empty requirement — it
+	// would be an operationally useless audit attribution (review #9).
+	bodyValue = strings.TrimSpace(bodyValue)
+	if len(bodyValue) > maxPerformedByLen {
+		writeBadRequest(w, "performed_by exceeds the maximum length")
+		return "", false
+	}
 	_, jwtSubject := SubjectFromContext(r.Context())
 	switch {
 	case bodyValue == "":

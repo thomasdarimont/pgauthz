@@ -85,6 +85,7 @@ enumerations / scraping.
 | `pgauthzd_freshness_tokens_minted_total` | counter | — | writes opting into read-your-writes |
 | `pgauthzd_freshness_mint_failures_total` | counter | — | committed writes that lost their token (`X-PGAuthz-Revision-Status: unavailable`) |
 | `pgauthzd_freshness_key_verifications_total` | counter | `kid` | key-rotation drain signal — drop the retiring key when its kid flatlines (kid set = configured keyring, bounded) |
+| `pgauthzd_opa_readiness_mode` | gauge | `mode` | which readiness an OPA-fronted instance actually runs: `deep` (end-to-end via `callback_healthy`) vs `shallow` (OPA `/health` only) — alert on a silent downgrade |
 
 `verdict` ∈ `fresh \| stale \| wrong_epoch \| unknown`. **Caveat (per ADR 0009):**
 `replica_replay_lag_bytes` reads ~0 for a *disconnected* standby, so always pair

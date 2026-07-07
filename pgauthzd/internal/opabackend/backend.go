@@ -22,14 +22,27 @@ type Backend struct {
 	pkg          string // e.g. "authz"
 	client       *http.Client
 	forwardToken bool // add the verified bearer token to OPA input as input.token
+	// deepReadinessRequired: fail readiness when the policy set lacks the
+	// callback_healthy rule (OPA_DEEP_READINESS_REQUIRED, review #9).
+	deepReadinessRequired bool
 }
 
-func New(baseURL, pkg string, forwardToken bool) *Backend {
+// New builds an OPA backend. timeout bounds EVERY OPA HTTP call — Go's zero
+// client timeout is unlimited, so a black-holed OPA would otherwise hang
+// requests and startup (review #9); <=0 falls back to 10s rather than
+// unlimited (fail bounded). deepReadinessRequired makes a policy set WITHOUT
+// the callback_healthy rule fail readiness instead of degrading to the
+// shallow OPA-/health-only check.
+func New(baseURL, pkg string, forwardToken bool, timeout time.Duration, deepReadinessRequired bool) *Backend {
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
 	return &Backend{
-		baseURL:      strings.TrimRight(baseURL, "/"),
-		pkg:          pkg,
-		client:       &http.Client{},
-		forwardToken: forwardToken,
+		baseURL:               strings.TrimRight(baseURL, "/"),
+		pkg:                   pkg,
+		client:                &http.Client{Timeout: timeout},
+		forwardToken:          forwardToken,
+		deepReadinessRequired: deepReadinessRequired,
 	}
 }
 
@@ -300,10 +313,18 @@ func (b *Backend) callbackHealthy(ctx context.Context) error {
 		return fmt.Errorf("OPA deep-readiness response: %w", err)
 	}
 	if out.Result == nil {
-		// Rule not defined in the loaded policy set — shallow health only.
-		slog.Debug("OPA policy set has no pgauthz.callback_healthy rule; readiness is OPA-shallow")
+		// Rule not defined in the loaded policy set. In strict mode
+		// (OPA_DEEP_READINESS_REQUIRED) that FAILS readiness — an operator must
+		// not believe end-to-end readiness is active when it isn't (review #9);
+		// otherwise degrade to the shallow check, visibly (mode metric + log).
+		metrics.SetOPAReadinessMode(false)
+		if b.deepReadinessRequired {
+			return fmt.Errorf("OPA_DEEP_READINESS_REQUIRED: the loaded policy set has no authz.pgauthz.callback_healthy rule")
+		}
+		slog.Debug("OPA policy set has no callback_healthy rule; readiness is OPA-shallow")
 		return nil
 	}
+	metrics.SetOPAReadinessMode(true)
 	if !*out.Result {
 		return fmt.Errorf("authorization path unhealthy: OPA cannot reach the native callback (or its PostgreSQL)")
 	}

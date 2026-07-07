@@ -153,6 +153,41 @@ func TestWritePerformedByAttribution(t *testing.T) {
 	}
 }
 
+// Whitespace-only and oversized actors are rejected: "   " would satisfy a
+// naive non-empty check while being useless as audit attribution, and the
+// immutable trail must not be stuffable with junk (review #9).
+func TestWritePerformedByNormalization(t *testing.T) {
+	cases := []struct {
+		name        string
+		performedBy string
+		wantCode    int
+	}{
+		{"whitespace-only is 400 (empty after trim)", "   ", http.StatusBadRequest},
+		{"oversized is 400", strings.Repeat("x", 300), http.StatusBadRequest},
+		{"trimmed value matching subject ok", "  alice  ", http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &writeStubBackend{written: 1}
+			h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo"})
+			h.requireWriterRole = false // callback semantics: body value is trusted
+			w := httptest.NewRecorder()
+			// no subject ctx: on the callback listener the body value is all there is
+			body := `{"tuples":[{"user_type":"user","user_id":"a","relation":"viewer","object_type":"doc","object_id":"d"}],"performed_by":` + strconvQuote(tc.performedBy) + `}`
+			r := httptest.NewRequest(http.MethodPost, "/pgauthz/v1/write", strings.NewReader(body))
+			h.WriteTuples(w, r)
+			if w.Code != tc.wantCode {
+				t.Fatalf("got %d, want %d; body=%s", w.Code, tc.wantCode, w.Body.String())
+			}
+		})
+	}
+}
+
+func strconvQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
 // The callback listener has no JWT subject to fall back to: an omitted
 // performed_by must be a 400, never an EMPTY audit attribution (review #8).
 func TestWriteCallbackEmptyActorIs400(t *testing.T) {
@@ -165,5 +200,30 @@ func TestWriteCallbackEmptyActorIs400(t *testing.T) {
 	h.WriteTuples(w, r)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("empty audit actor: got %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+}
+
+// The body-cap middleware (HTTP_MAX_BODY_BYTES) must stop an oversized payload
+// at the decode boundary instead of buffering it without bound (review #9).
+func TestMaxBodyCapsOversizedWrite(t *testing.T) {
+	b := &writeStubBackend{written: 1}
+	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo"})
+	mux := newPublicMux(h, false)
+	handler := MaxBody(1024)(mux)
+
+	big := `{"tuples":[{"user_type":"user","user_id":"` + strings.Repeat("a", 4096) + `","relation":"viewer","object_type":"doc","object_id":"d"}],"performed_by":"tester"}`
+	r := httptest.NewRequest(http.MethodPost, "/pgauthz/v1/write", strings.NewReader(big))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("oversized body: got %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+
+	small := `{"tuples":[{"user_type":"user","user_id":"a","relation":"viewer","object_type":"doc","object_id":"d"}],"performed_by":"tester"}`
+	r = httptest.NewRequest(http.MethodPost, "/pgauthz/v1/write", strings.NewReader(small))
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("in-limit body must pass: got %d body=%s", w.Code, w.Body.String())
 	}
 }

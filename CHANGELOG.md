@@ -7,6 +7,34 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **HTTP availability hardening** (review #9). Go's zero timeouts are
+  *unlimited*, so a black-holed dependency or a slow client could previously
+  hang requests, probes, or startup:
+  - `OPA_REQUEST_TIMEOUT` (default `10s`) bounds every OPA HTTP call; the
+    startup health probe runs under its own deadline.
+  - Every listener now sets `ReadHeaderTimeout` (`HTTP_READ_HEADER_TIMEOUT`,
+    default `5s`, slowloris hardening) and `IdleTimeout` (`HTTP_IDLE_TIMEOUT`,
+    default `60s`) — deliberately **no** `WriteTimeout`, so long-running
+    search/explain/watch responses are never killed mid-write.
+  - `HTTP_MAX_BODY_BYTES` (default 10 MiB, `0` disables) caps request bodies
+    via `http.MaxBytesReader` on both the public and callback listeners.
+  - `/readyz`'s backend ping is bounded server-side (5s), so a black-holed
+    database fails the probe promptly instead of hanging it.
+- **Strict deep-readiness mode** (review #9). `OPA_DEEP_READINESS_REQUIRED`
+  (default `false`): when set, a policy set without the `callback_healthy`
+  rule **fails** readiness instead of silently degrading to the shallow
+  OPA-`/health`-only check. Either way the active mode is now observable as
+  `pgauthzd_opa_readiness_mode{mode="deep|shallow"}`.
+
+### Fixed
+
+- **Whitespace-only audit actors rejected** (review #9). `performed_by` is
+  trimmed before the non-empty check (`"   "` no longer passes) and capped at
+  256 characters, so the immutable audit trail can't carry blank or junk
+  attribution.
+
 ## [0.13.0] - 2026-07-07
 
 ### Security

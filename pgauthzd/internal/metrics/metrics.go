@@ -65,6 +65,16 @@ var (
 		Help: "Writes that committed but could not mint a freshness token (caller got X-PGAuthz-Revision-Status: unavailable).",
 	})
 
+	// OPAReadinessMode reports which readiness check an OPA-fronted instance is
+	// actually running (review #9): deep = the callback_healthy rule (OPA eval →
+	// callback → PostgreSQL), shallow = OPA /health only (rule absent from the
+	// policy set). A silent downgrade to shallow is visible here even without
+	// OPA_DEEP_READINESS_REQUIRED.
+	OPAReadinessMode = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "pgauthzd_opa_readiness_mode",
+		Help: "Active OPA readiness mode (1 = active): deep (end-to-end via callback_healthy) or shallow (OPA /health only).",
+	}, []string{"mode"})
+
 	buildInfo = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "pgauthzd_build_info",
 		Help: "Build/runtime info; value is always 1, the labels carry the data.",
@@ -164,6 +174,21 @@ func yn(v bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+// SetOPAReadinessMode records the active readiness mode as a one-hot gauge
+// pair (deep=1/shallow=0 or the inverse), so dashboards can alert on a
+// shallow downgrade.
+func SetOPAReadinessMode(deep bool) {
+	OPAReadinessMode.WithLabelValues("deep").Set(b2f(deep))
+	OPAReadinessMode.WithLabelValues("shallow").Set(b2f(!deep))
+}
+
+func b2f(v bool) float64 {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 // InitFreshnessKeyIDs pre-initializes the per-kid verification series so every

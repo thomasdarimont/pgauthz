@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"time"
 
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 	"thomasdarimont.de/authz/pgauthzd/internal/config"
@@ -81,7 +83,7 @@ func NewHandler(backend, raw, rawWrite authz.Backend, cfg *config.Config) *Handl
 func NewRouter(backend, raw, rawWrite authz.Backend, cfg *config.Config, jwtMW *JWTMiddleware) http.Handler {
 	h := NewHandler(backend, raw, rawWrite, cfg)
 	h.requireWriterRole = true
-	return withMiddleware(newPublicMux(h, cfg.UsesOPA()), jwtMW)
+	return withMiddleware(newPublicMux(h, cfg.UsesOPA()), jwtMW, cfg.HTTPMaxBodyBytes)
 }
 
 // newPublicMux wires the PUBLIC listener's route set. Kept as its own function
@@ -126,6 +128,7 @@ func NewCallbackRouter(h *Handler, serviceToken string) http.Handler {
 	mux.HandleFunc("GET /livez", h.Livez)
 	mux.HandleFunc("GET /readyz", h.Readyz)
 	var handler http.Handler = mux
+	handler = MaxBody(h.cfg.HTTPMaxBodyBytes)(handler)
 	handler = ServiceAuthMiddleware(serviceToken)(handler)
 	handler = RequestID(handler)
 	handler = Logging(handler)
@@ -133,13 +136,28 @@ func NewCallbackRouter(h *Handler, serviceToken string) http.Handler {
 	return Metrics(mux, handler)
 }
 
-func withMiddleware(mux *http.ServeMux, jwtMW *JWTMiddleware) http.Handler {
+func withMiddleware(mux *http.ServeMux, jwtMW *JWTMiddleware, maxBodyBytes int64) http.Handler {
 	var handler http.Handler = mux
+	handler = MaxBody(maxBodyBytes)(handler)
 	handler = jwtMW.Middleware(handler)
 	handler = RequestID(handler)
 	handler = Logging(handler)
 	handler = Recovery(handler)
 	return Metrics(mux, handler)
+}
+
+// MaxBody caps request bodies via http.MaxBytesReader (review #9): an
+// oversized body fails the handler's JSON decode with a clear error instead of
+// buffering without bound. n <= 0 disables the cap.
+func MaxBody(n int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if n > 0 && r.Body != nil {
+				r.Body = http.MaxBytesReader(w, r.Body, n)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // registerAuthZEN wires the spec-compliant AuthZEN surface + tenant discovery.
@@ -706,6 +724,11 @@ func (h *Handler) Livez(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// readyzProbeTimeout bounds the readiness backend ping server-side: a
+// black-holed dependency must fail the probe promptly, not hang it until the
+// kubelet's own timeout (review #9).
+const readyzProbeTimeout = 5 * time.Second
+
 // Readyz — GET /readyz: readiness — the backend (PostgreSQL, or OPA on an
 // OPA-fronted instance) must be reachable and answering.
 func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
@@ -719,7 +742,9 @@ func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
 		b = h.rawWrite
 	}
 	if b != nil {
-		if err := b.Healthz(r.Context()); err != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), readyzProbeTimeout)
+		defer cancel()
+		if err := b.Healthz(ctx); err != nil {
 			// The probe endpoints are UNAUTHENTICATED — backend error text can
 			// carry hostnames/DSN fragments, so the caller gets a generic body
 			// (review #8) and the cause goes to the server log only.

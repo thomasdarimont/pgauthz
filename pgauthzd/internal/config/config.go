@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 )
@@ -224,9 +225,39 @@ type Config struct {
 	// revoked membership takes effect within this window.
 	DBRoleCacheTTLSeconds int
 
+	// HTTP hardening (review #9). Applied to EVERY listener: a slow-header
+	// (slowloris) or idle-connection flood must not exhaust the front door.
+	// Deliberately NO WriteTimeout — long-running search/explain/watch
+	// responses must not be killed mid-write.
+	//
+	// HTTPReadHeaderTimeout: max time to read request headers. Env
+	// HTTP_READ_HEADER_TIMEOUT (Go duration), default 5s.
+	HTTPReadHeaderTimeout time.Duration
+	// HTTPIdleTimeout: max keep-alive idle time. Env HTTP_IDLE_TIMEOUT,
+	// default 60s.
+	HTTPIdleTimeout time.Duration
+	// HTTPMaxBodyBytes caps request bodies (http.MaxBytesReader). Generous by
+	// default — batch writes/offboarding payloads are legitimately large.
+	// Env HTTP_MAX_BODY_BYTES, default 10 MiB; 0 disables the cap.
+	HTTPMaxBodyBytes int64
+
 	// opabackend only
 	OPAURL     string
 	OPAPackage string
+	// OPARequestTimeout bounds every OPA HTTP call (decisions, searches, the
+	// readiness query). Go's zero client timeout is UNLIMITED — a black-holed
+	// OPA would otherwise hang requests and startup (review #9). Env
+	// OPA_REQUEST_TIMEOUT (Go duration), default 10s (decisions are fast, but
+	// OPA-fronted searches can be slower).
+	OPARequestTimeout time.Duration
+	// OPADeepReadinessRequired (OPA_DEEP_READINESS_REQUIRED, default false):
+	// when true, a policy set WITHOUT the data.authz.pgauthz.callback_healthy
+	// rule FAILS readiness instead of silently degrading to the shallow
+	// OPA-/health-only check — so an operator can't believe end-to-end
+	// readiness is active when it isn't (review #9). Leave false only when a
+	// custom Rego bundle deliberately omits the rule; either way the active
+	// mode is exported as pgauthzd_opa_readiness_mode{mode}.
+	OPADeepReadinessRequired bool
 	// ForwardTokenToOPA: forward the verified bearer token to OPA as input.token so
 	// OPA re-validates it (secure token path), instead of forwarding only the
 	// resolved subject (which needs OPA's REQUIRE_TOKEN_FOR_READS=false). Enable in
@@ -275,8 +306,13 @@ func Load() (*Config, error) {
 		DBPoolMax:                    envInt("DB_POOL_MAX", 25),
 		DefaultDBRole:                env("DEFAULT_DB_ROLE", ""),
 		DBRoleCacheTTLSeconds:        envInt("DB_ROLE_CACHE_TTL_SECONDS", 60),
+		HTTPReadHeaderTimeout:        envDuration("HTTP_READ_HEADER_TIMEOUT", 5*time.Second),
+		HTTPIdleTimeout:              envDuration("HTTP_IDLE_TIMEOUT", 60*time.Second),
+		HTTPMaxBodyBytes:             int64(envInt("HTTP_MAX_BODY_BYTES", 10<<20)),
 		OPAURL:                       env("OPA_URL", ""),
 		OPAPackage:                   env("OPA_PACKAGE", "authz"),
+		OPARequestTimeout:            envDuration("OPA_REQUEST_TIMEOUT", 10*time.Second),
+		OPADeepReadinessRequired:     envBool("OPA_DEEP_READINESS_REQUIRED", false),
 		ForwardTokenToOPA:            envBool("FORWARD_TOKEN_TO_OPA", false),
 		LogLevel:                     env("LOG_LEVEL", "info"),
 	}
@@ -409,6 +445,15 @@ func envInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return fallback
+}
+
+func envDuration(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
 		}
 	}
 	return fallback
