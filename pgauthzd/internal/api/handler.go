@@ -93,7 +93,9 @@ func newPublicMux(h *Handler, usesOPA bool) *http.ServeMux {
 		registerNativeRead(mux, h)
 		registerNativeWrite(mux, h)
 	}
-	mux.HandleFunc("GET /healthz", h.Healthz)
+	mux.HandleFunc("GET /healthz", h.Healthz) // deprecated alias of /readyz
+	mux.HandleFunc("GET /livez", h.Livez)
+	mux.HandleFunc("GET /readyz", h.Readyz)
 	// The API contract, served unauthenticated (exempted in the JWT
 	// middleware) and INSTANCE-ACCURATE (an OPA-fronted instance's copy omits
 	// the native paths its public listener does not register). OPENAPI_ENABLED
@@ -119,7 +121,9 @@ func NewCallbackRouter(h *Handler, serviceToken string) http.Handler {
 	if h.rawWrite != nil {
 		registerNativeWrite(mux, h)
 	}
-	mux.HandleFunc("GET /healthz", h.Healthz)
+	mux.HandleFunc("GET /healthz", h.Healthz) // deprecated alias of /readyz
+	mux.HandleFunc("GET /livez", h.Livez)
+	mux.HandleFunc("GET /readyz", h.Readyz)
 	var handler http.Handler = mux
 	handler = ServiceAuthMiddleware(serviceToken)(handler)
 	handler = RequestID(handler)
@@ -693,7 +697,17 @@ func (h *Handler) WellKnown(w http.ResponseWriter, r *http.Request) {
 }
 
 // Healthz handles GET /healthz
-func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
+// Livez — GET /livez: process liveness ONLY, no dependency checks (review #7).
+// A PostgreSQL/OPA outage must NOT make Kubernetes restart healthy pgauthzd
+// processes in a loop — dependency health is readiness's job (/readyz), which
+// takes the instance out of rotation without killing it.
+func (h *Handler) Livez(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// Readyz — GET /readyz: readiness — the backend (PostgreSQL, or OPA on an
+// OPA-fronted instance) must be reachable and answering.
+func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
 	// The callback listener's handler has a nil AuthZEN backend (it only serves
 	// the native surface), so fall back to whichever backend is present.
 	b := h.backend
@@ -710,6 +724,13 @@ func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// Healthz — GET /healthz: DEPRECATED alias of /readyz, kept for existing
+// deployments/probes. Use /livez for livenessProbe and /readyz for
+// readinessProbe.
+func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
+	h.Readyz(w, r)
 }
 
 // --- Pagination helpers ---

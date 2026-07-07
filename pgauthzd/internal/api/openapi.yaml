@@ -9,8 +9,11 @@
 # versa).
 #
 # Availability by deployment mode (THIS FILE describes the full surface; the
-# SERVED document is instance-accurate — an OPA-fronted instance omits the
-# native paths its public listener does not register):
+# SERVED document is TOPOLOGY-accurate — it lists exactly the routes the
+# instance registers: an OPA-fronted instance omits the native paths its
+# public listener does not register. It is deliberately not capability-pruned:
+# a decision-only instance registers the write routes and answers a documented
+# 403, so they stay in its document):
 #   - AuthZEN /access/v1: always on the public listener.
 #   - Native /pgauthz/v1 reads: public listener only when NOT fronting OPA
 #     (no OPA_URL); always on the internal callback listener.
@@ -798,11 +801,46 @@ paths:
         '501': { $ref: '#/components/responses/NotImplemented' }
 
   # ── Meta ───────────────────────────────────────────────────────────────────
+  /livez:
+    get:
+      tags: [meta]
+      operationId: livez
+      summary: Liveness — process alive, NO dependency checks
+      description: >
+        Always 200 while the process serves requests. Use for livenessProbe: a
+        PostgreSQL/OPA outage must not restart healthy pgauthzd processes —
+        that is readiness's job.
+      security: []
+      responses:
+        '200':
+          description: Process alive.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+  /readyz:
+    get:
+      tags: [meta]
+      operationId: readyz
+      summary: Readiness — backend (PostgreSQL/OPA) reachable
+      description: Use for readinessProbe.
+      security: []
+      responses:
+        '200':
+          description: Ready.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+        '503':
+          description: Backend unhealthy — out of rotation, not restarted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
   /healthz:
     get:
       tags: [meta]
       operationId: healthz
-      summary: Liveness/readiness — pings the backend
+      summary: Deprecated alias of /readyz
+      deprecated: true
       security: []
       responses:
         '200':
@@ -855,7 +893,8 @@ components:
       type: http
       scheme: bearer
       description: >
-        INTERNAL callback listener only: the shared service credential
+        INTERNAL callback listener only — sent to the PUBLIC listener it is
+        rejected (401, it is not a JWT). The shared service credential
         (Authorization: Bearer <INTERNAL_SERVICE_TOKEN>), optionally layered
         under mTLS. The listener trusts its OPA upstream — it does NOT
         re-verify the end-user JWT, and honors the X-PGAuthz-Role header
@@ -1531,6 +1570,15 @@ components:
         context: { $ref: '#/components/schemas/Context' }
         expires_at: { type: string, format: date-time }
       required: [user_type, user_id, relation, object_type, object_id]
+    PerformedBy:
+      type: string
+      description: >
+        Audit author (the immutable trail's performed_by). PUBLIC listener:
+        the authenticated JWT subject is authoritative — omit this field or
+        send the same value; a DIFFERING value is rejected (403) unless
+        ALLOW_SUBJECT_OVERRIDE is enabled (trusted-PEP deployments asserting
+        on-behalf-of actors). INTERNAL callback listener: the trusted OPA
+        upstream passes the subject it authenticated here.
     Consistency:
       type: string
       enum: [applied, durable, eventual]
@@ -1546,12 +1594,7 @@ components:
           items: { $ref: '#/components/schemas/TupleInput' }
           minItems: 1
         consistency: { $ref: '#/components/schemas/Consistency' }
-        performed_by:
-          type: string
-          description: >
-            Audit author. Public listener: defaults to the JWT subject.
-            Internal callback listener: OPA passes the authenticated subject
-            explicitly.
+        performed_by: { $ref: '#/components/schemas/PerformedBy' }
       required: [tuples]
     WriteResponse:
       type: object
@@ -1574,7 +1617,7 @@ components:
       properties:
         user: { $ref: '#/components/schemas/Subject' }
         consistency: { $ref: '#/components/schemas/Consistency' }
-        performed_by: { type: string }
+        performed_by: { $ref: '#/components/schemas/PerformedBy' }
       required: [user]
     WriteCheckedRequest:
       type: object
@@ -1594,7 +1637,7 @@ components:
           type: array
           items: { $ref: '#/components/schemas/TupleInput' }
         consistency: { $ref: '#/components/schemas/Consistency' }
-        performed_by: { type: string }
+        performed_by: { $ref: '#/components/schemas/PerformedBy' }
     WriteCheckedResponse:
       type: object
       additionalProperties: true

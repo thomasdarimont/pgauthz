@@ -19,7 +19,9 @@ Both expose identical endpoints and require a valid JWT (ES256/RS256).
 | POST | `/access/v1/search/resource` | What can a subject access? |
 | POST | `/access/v1/search/action` | What actions can a subject perform? |
 | GET | `/.well-known/authzen-configuration` | PDP discovery (no auth) |
-| GET | `/healthz` | Health check (no auth) |
+| GET | `/livez` | Liveness — process alive, **no dependency checks** (no auth). Use for `livenessProbe` |
+| GET | `/readyz` | Readiness — backend (PostgreSQL/OPA) reachable (no auth). Use for `readinessProbe` |
+| GET | `/healthz` | Deprecated alias of `/readyz` (no auth) |
 | GET | `/pgauthz/v1/openapi.json` / `.yaml` | This server's OpenAPI description (no auth) |
 
 Every `access/v1` endpoint (and the discovery document) is also available
@@ -47,10 +49,13 @@ the production router, every registered route must be documented) and validates
 real handler responses against the schemas — `go test` (and the pre-release
 check) fail on any mismatch.
 
-The **served** document is **instance-accurate**: an OPA-fronted instance
-(whose public listener does not register the native routes) serves a copy with
-the native paths omitted, so a generated client can't be misled into calling
-operations that instance rejects. The source file describes the full surface,
+The **served** document is **topology-accurate** — it describes exactly the
+routes the instance registers: an OPA-fronted instance (whose public listener
+does not register the native routes) serves a copy with the native paths
+omitted. It is deliberately **not capability-pruned**: a `decision-only`
+instance still registers the write routes and answers a documented `403`, so
+they stay in its document (pruning them would claim a route doesn't exist
+while it demonstrably responds). The source file describes the full surface,
 and native operations carry a machine-readable **`x-pgauthz-availability`**
 extension (`listeners`, `public_listener: not-when-opa-fronted`, `profile:
 full` on writes) for generators and scanners. Set `OPENAPI_ENABLED=false` to

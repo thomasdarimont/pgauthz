@@ -1,10 +1,13 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 	"thomasdarimont.de/authz/pgauthzd/internal/config"
 )
 
@@ -56,5 +59,32 @@ func TestCallbackHealthzNilBackend(t *testing.T) {
 	h.Healthz(w, httptest.NewRequest("GET", "/healthz", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("nil-backend healthz: got %d, want 200", w.Code)
+	}
+}
+
+// unhealthyBackend fails its health ping (DB down).
+type unhealthyBackend struct{ authz.Backend }
+
+func (unhealthyBackend) Healthz(context.Context) error {
+	return errors.New("connection refused")
+}
+
+// Liveness must NOT depend on the backend (review #7): a DB outage takes the
+// instance out of rotation via /readyz (503) but must not make Kubernetes
+// restart the healthy process via /livez.
+func TestLivezIgnoresBackendReadyzReports(t *testing.T) {
+	b := &unhealthyBackend{}
+	h := NewHandler(b, b, b, &config.Config{})
+
+	w := httptest.NewRecorder()
+	h.Livez(w, httptest.NewRequest("GET", "/livez", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("livez with a dead backend: got %d, want 200 (liveness has no dependencies)", w.Code)
+	}
+
+	w = httptest.NewRecorder()
+	h.Readyz(w, httptest.NewRequest("GET", "/readyz", nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz with a dead backend: got %d, want 503", w.Code)
 	}
 }

@@ -87,14 +87,34 @@ type writeTuplesBody struct {
 	PerformedBy string `json:"performed_by,omitempty"`
 }
 
-// performedBy resolves the audit author: an explicit body value (the OPA
-// callback path) wins, else the authenticated JWT subject.
-func (h *Handler) writePerformedBy(r *http.Request, body writeTuplesBody) string {
-	if body.PerformedBy != "" {
-		return body.PerformedBy
+// resolvePerformedBy resolves the audit author for a native write, protecting
+// the audit trail from caller-controlled attribution (review #7):
+//
+//   - service-token CALLBACK listener (requireWriterRole == false): the body
+//     value IS the trusted upstream's (OPA's) assertion of the subject it
+//     authenticated — that is the field's purpose there; body wins.
+//   - PUBLIC (JWT) listener: the authenticated subject is authoritative. A
+//     body value equal to it is harmless; a DIFFERING value is rejected (403)
+//     unless ALLOW_SUBJECT_OVERRIDE — the flag that already means "callers are
+//     trusted PEPs asserting other subjects" on the decision path. Without the
+//     guard, any authorized writer could stamp another user into the immutable
+//     audit trail.
+//
+// Returns ok=false with the 403 already written.
+func (h *Handler) resolvePerformedBy(w http.ResponseWriter, r *http.Request, bodyValue string) (string, bool) {
+	_, jwtSubject := SubjectFromContext(r.Context())
+	switch {
+	case bodyValue == "":
+		return jwtSubject, true
+	case !h.requireWriterRole: // internal callback listener (trusted PEP upstream)
+		return bodyValue, true
+	case bodyValue == jwtSubject || h.cfg.AllowSubjectOverride:
+		return bodyValue, true
+	default:
+		writeForbidden(w, "performed_by differs from the authenticated subject; "+
+			"audit attribution is token-derived (ALLOW_SUBJECT_OVERRIDE enables trusted-PEP assertion)")
+		return "", false
 	}
-	_, id := SubjectFromContext(r.Context())
-	return id
 }
 
 // WriteTuples — POST /pgauthz/v1/write: batch-upsert tuples. The audit author
@@ -118,7 +138,10 @@ func (h *Handler) WriteTuples(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	performedBy := h.writePerformedBy(r, req)
+	performedBy, ok := h.resolvePerformedBy(w, r, req.PerformedBy)
+	if !ok {
+		return
+	}
 	n, err := nw.WriteTuples(r.Context(), authz.WriteRequest{
 		Store: store, Tuples: req.Tuples, PerformedBy: performedBy, Consistency: req.Consistency,
 	})
@@ -153,7 +176,10 @@ func (h *Handler) DeleteTuples(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	performedBy := h.writePerformedBy(r, req)
+	performedBy, ok := h.resolvePerformedBy(w, r, req.PerformedBy)
+	if !ok {
+		return
+	}
 	n, err := nw.DeleteTuples(r.Context(), authz.WriteRequest{
 		Store: store, Tuples: req.Tuples, PerformedBy: performedBy, Consistency: req.Consistency,
 	})
@@ -194,9 +220,9 @@ func (h *Handler) DeleteUserTuples(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	performedBy := req.PerformedBy
-	if performedBy == "" {
-		_, performedBy = SubjectFromContext(r.Context())
+	performedBy, ok := h.resolvePerformedBy(w, r, req.PerformedBy)
+	if !ok {
+		return
 	}
 	n, err := nw.DeleteUserTuples(r.Context(), authz.DeleteUserRequest{
 		Store: store, UserType: req.User.Type, UserID: req.User.ID,
@@ -237,9 +263,9 @@ func (h *Handler) WriteTuplesChecked(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	performedBy := req.PerformedBy
-	if performedBy == "" {
-		_, performedBy = SubjectFromContext(r.Context())
+	performedBy, ok := h.resolvePerformedBy(w, r, req.PerformedBy)
+	if !ok {
+		return
 	}
 	out, err := nw.WriteTuplesChecked(r.Context(), authz.CheckedWriteRequest{
 		Store: store, Preconditions: req.Preconditions, Deletes: req.Deletes, Writes: req.Writes,

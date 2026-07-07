@@ -94,3 +94,55 @@ func TestWriteNonWriterBackendIs501(t *testing.T) {
 
 // opaishBackend implements authz.Backend but NOT authz.NativeWriter.
 type opaishBackend struct{ authz.Backend }
+
+// ── performed_by attribution guard (review #7) ───────────────────────────────
+
+// writeReqAs builds a write request carrying an authenticated JWT subject and
+// an optional body performed_by.
+func writeReqAs(jwtSubject, performedBy string) *http.Request {
+	body := `{"tuples":[{"user_type":"user","user_id":"a","relation":"viewer","object_type":"doc","object_id":"d"}]`
+	if performedBy != "" {
+		body += `,"performed_by":"` + performedBy + `"`
+	}
+	body += `}`
+	r := httptest.NewRequest(http.MethodPost, "/pgauthz/v1/write", strings.NewReader(body))
+	ctx := context.WithValue(r.Context(), ctxSubjectType, "user")
+	ctx = context.WithValue(ctx, ctxSubjectID, jwtSubject)
+	return r.WithContext(ctx)
+}
+
+// On the PUBLIC listener the audit author is token-derived: a body
+// performed_by that differs from the authenticated subject is 403 (audit
+// actor spoofing), unless ALLOW_SUBJECT_OVERRIDE (trusted-PEP mode). The
+// service-token CALLBACK listener keeps trusting the body value — it is the
+// upstream OPA's assertion of the subject it authenticated.
+func TestWritePerformedByAttribution(t *testing.T) {
+	cases := []struct {
+		name           string
+		publicListener bool
+		override       bool
+		performedBy    string
+		wantCode       int
+	}{
+		{"public: no body value → JWT subject", true, false, "", http.StatusOK},
+		{"public: matching value ok", true, false, "alice", http.StatusOK},
+		{"public: DIFFERING value is 403", true, false, "mallory-as-bob", http.StatusForbidden},
+		{"public + ALLOW_SUBJECT_OVERRIDE: differing value ok (trusted PEP)", true, true, "bob", http.StatusOK},
+		{"callback: differing value ok (trusted OPA assertion)", false, false, "bob", http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &writeStubBackend{written: 1}
+			h := NewHandler(b, b, b, &config.Config{
+				Profile: config.ProfileFull, DefaultStore: "demo",
+				AllowSubjectOverride: tc.override,
+			})
+			h.requireWriterRole = tc.publicListener // the listener discriminator
+			w := httptest.NewRecorder()
+			h.WriteTuples(w, writeReqAs("alice", tc.performedBy))
+			if w.Code != tc.wantCode {
+				t.Fatalf("got %d, want %d; body=%s", w.Code, tc.wantCode, w.Body.String())
+			}
+		})
+	}
+}

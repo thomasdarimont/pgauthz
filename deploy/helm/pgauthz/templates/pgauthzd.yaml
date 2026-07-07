@@ -79,8 +79,8 @@ spec:
             {{- if .Values.metrics.enabled }}
             - { name: metrics,  containerPort: {{ .Values.metrics.port }} }
             {{- end }}
-          readinessProbe: { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 5 }
-          livenessProbe:  { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 10 }
+          readinessProbe: { httpGet: { path: /readyz, port: 8080 }, initialDelaySeconds: 5 }
+          livenessProbe:  { httpGet: { path: /livez, port: 8080 }, initialDelaySeconds: 10 }
           resources: {{- toYaml .Values.reader.resources | nindent 12 }}
           volumeMounts:
             - { name: jwks, mountPath: /jwks, readOnly: true }
@@ -177,8 +177,8 @@ spec:
             {{- if .Values.metrics.enabled }}
             - { name: metrics,  containerPort: {{ .Values.metrics.port }} }
             {{- end }}
-          readinessProbe: { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 5 }
-          livenessProbe:  { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 10 }
+          readinessProbe: { httpGet: { path: /readyz, port: 8080 }, initialDelaySeconds: 5 }
+          livenessProbe:  { httpGet: { path: /livez, port: 8080 }, initialDelaySeconds: 10 }
           resources: {{- toYaml .Values.writer.resources | nindent 12 }}
           volumeMounts:
             - { name: jwks, mountPath: /jwks, readOnly: true }

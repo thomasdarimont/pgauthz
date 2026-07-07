@@ -188,7 +188,9 @@ func TestResponsesMatchOpenAPISpec(t *testing.T) {
 		req    *http.Request
 		status int
 	}{
-		{"healthz", httptest.NewRequest("GET", "/healthz", nil), 200},
+		{"healthz (deprecated alias)", httptest.NewRequest("GET", "/healthz", nil), 200},
+		{"livez", httptest.NewRequest("GET", "/livez", nil), 200},
+		{"readyz", httptest.NewRequest("GET", "/readyz", nil), 200},
 		{"openapi.json", httptest.NewRequest("GET", "/pgauthz/v1/openapi.json", nil), 200},
 		{"authzen evaluation", jsonReq("POST", "/access/v1/evaluation",
 			`{"subject":{"type":"user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"readme"}}`), 200},

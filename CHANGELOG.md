@@ -7,6 +7,37 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Security
+
+- **Audit actor spoofing closed on the public listener** (audit finding F16,
+  found by external review #7). The native write bodies' `performed_by` field
+  previously overrode the authenticated JWT subject on **both** listeners, so
+  any authorized writer could stamp another user into the immutable audit
+  trail. Now the trust contexts are split: on the **public** listener the JWT
+  subject is authoritative — a differing body value is rejected (`403`) unless
+  `ALLOW_SUBJECT_OVERRIDE` is enabled (the existing trusted-PEP switch, now
+  governing both the decision-path subject and audit attribution); the
+  internal callback listener is unchanged (the body value is the trusted OPA
+  upstream's assertion of the subject it authenticated — the field's purpose).
+
+### Added
+
+- **`/livez` and `/readyz` probes** (review #7). `/livez` is process liveness
+  with **no dependency checks**; `/readyz` pings the backend (the old
+  `/healthz` behavior, which remains as a deprecated alias). The Helm chart
+  now points `livenessProbe` at `/livez` and `readinessProbe` at `/readyz`,
+  so a PostgreSQL outage takes instances out of rotation instead of making
+  Kubernetes restart healthy pgauthzd processes in a loop.
+
+### Changed
+
+- **OpenAPI wording: the served document is *topology-accurate*, not
+  capability-pruned.** It lists exactly the routes the instance registers — a
+  `decision-only` instance keeps the write operations (they respond with a
+  documented `403`; pruning them would claim a route doesn't exist while it
+  demonstrably answers). The `serviceToken` security scheme now states
+  explicitly that it is rejected (`401`) on the public listener.
+
 ## [0.11.0] - 2026-07-07
 
 ### Changed
