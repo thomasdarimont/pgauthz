@@ -23,7 +23,7 @@ type Issuer struct {
 	// Stores restricts which pgauthz stores this issuer's tokens may access
 	// (store binding for multi-tenant setups: tenant A's IdP → tenant A's
 	// stores). Each entry is an ANCHORED regular expression (^(?:entry)$), so
-	// plain store names match exactly and patterns like "tenant-a-.*" cover
+	// plain store names match exactly and patterns like "tenant_a_.*" cover
 	// store families. Empty = no restriction (all stores).
 	Stores []string `json:"stores"`
 	// DBRoles restricts which per-app DB roles tokens from this issuer may
@@ -170,6 +170,13 @@ type Config struct {
 	// minimization).
 	OpenAPIEnabled bool
 
+	// DeploymentEnvironment (DEPLOYMENT_ENVIRONMENT, e.g. "production") is a
+	// SERVER-configured label forwarded to OPA policy hooks as
+	// input.deployment.environment (ADR 0011). Environment-gated hooks read it
+	// instead of a caller-supplied context field, which they must not trust.
+	// Empty = the field is still present but "".
+	DeploymentEnvironment string
+
 	// MetricsListenAddr, when set, serves the Prometheus `/metrics` endpoint on a
 	// SEPARATE listener (ADR 0010). Bind it to the pod/mesh network — never the
 	// public client listener (tenants must not scrape ops data). Empty = off. Env
@@ -258,6 +265,12 @@ type Config struct {
 	// custom Rego bundle deliberately omits the rule; either way the active
 	// mode is exported as pgauthzd_opa_readiness_mode{mode}.
 	OPADeepReadinessRequired bool
+	// OPAEvalMetrics adds `metrics=true` to OPA queries so pgauthzd can record
+	// OPA's own Rego evaluation time (`pgauthzd_opa_rego_eval_duration_seconds`,
+	// from timer_rego_query_eval_ns). Small per-request OPA overhead; env
+	// OPA_EVAL_METRICS, default true. Disable to shed that overhead when the
+	// isolated eval-time histogram isn't needed.
+	OPAEvalMetrics bool
 	// ForwardTokenToOPA: forward the verified bearer token to OPA as input.token so
 	// OPA re-validates it (secure token path), instead of forwarding only the
 	// resolved subject (which needs OPA's REQUIRE_TOKEN_FOR_READS=false). Enable in
@@ -267,6 +280,10 @@ type Config struct {
 
 	LogLevel string
 }
+
+// deploymentEnvRe bounds DEPLOYMENT_ENVIRONMENT to a short identifier
+// (letters/digits/_/-, ≤32), since hooks gate on it.
+var deploymentEnvRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,31}$`)
 
 func Load() (*Config, error) {
 	c := &Config{
@@ -294,6 +311,7 @@ func Load() (*Config, error) {
 		FreshnessPrimaryURL:          env("FRESHNESS_PRIMARY_URL", ""),
 		FreshnessPrimaryPoolMax:      envInt("FRESHNESS_PRIMARY_POOL_MAX", 10),
 		OpenAPIEnabled:               envBool("OPENAPI_ENABLED", true),
+		DeploymentEnvironment:        env("DEPLOYMENT_ENVIRONMENT", ""),
 		MetricsListenAddr:            env("METRICS_LISTEN_ADDR", ""),
 		MetricsSampleIntervalSeconds: envInt("METRICS_SAMPLE_INTERVAL_SECONDS", 30),
 		MetricsMaxStores:             envInt("METRICS_MAX_STORES", 100),
@@ -313,6 +331,7 @@ func Load() (*Config, error) {
 		OPAPackage:                   env("OPA_PACKAGE", "authz"),
 		OPARequestTimeout:            envDuration("OPA_REQUEST_TIMEOUT", 10*time.Second),
 		OPADeepReadinessRequired:     envBool("OPA_DEEP_READINESS_REQUIRED", false),
+		OPAEvalMetrics:               envBool("OPA_EVAL_METRICS", true),
 		ForwardTokenToOPA:            envBool("FORWARD_TOKEN_TO_OPA", false),
 		LogLevel:                     env("LOG_LEVEL", "info"),
 	}
@@ -344,6 +363,14 @@ func Load() (*Config, error) {
 	// deterministic startup error instead.
 	if err := authz.NewKeyring(c.FreshnessKeys).Validate(); err != nil {
 		return nil, err
+	}
+
+	// DEPLOYMENT_ENVIRONMENT is forwarded verbatim to policy hooks
+	// (input.deployment.environment) as a security-relevant gate value, so
+	// bound it to a small identifier set — no spaces/control chars that could
+	// confuse a hook's comparison. Empty is allowed (feature unused).
+	if c.DeploymentEnvironment != "" && !deploymentEnvRe.MatchString(c.DeploymentEnvironment) {
+		return nil, fmt.Errorf("DEPLOYMENT_ENVIRONMENT %q must match %s", c.DeploymentEnvironment, deploymentEnvRe.String())
 	}
 
 	// Build the trusted-issuer list. The legacy single JWKS_URL/JWKS_FILE/

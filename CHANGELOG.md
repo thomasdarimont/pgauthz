@@ -9,6 +9,158 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **OPA policy hooks** ([ADR 0011](docs/adr/0011-opa-policy-hooks.md)):
+  user-supplied **veto rules** riding along the standard decision pipeline —
+  no allowlist entries, no pgauthzd config, no platform-file edits. Mount
+  `.rego` files declaring packages under `authz.hooks.v1.<name>` (compose: one
+  volume line onto the shipped `/policies/hooks` mountpoint; Helm:
+  `authzen.opa.extraPoliciesConfigMap`); a hook may define
+  `deny contains msg` (vetoes `allow`/`allow_detailed`/`evaluations` — a veto
+  denies the whole batch, so `/evaluations` is not a bypass) and
+  `deny_write contains msg` (vetoes every write operation,
+  `error: denied_by_policy_hook`). Hooks can only **narrow** — the ReBAC graph
+  answer still has to pass — and are fully attributed: denials carry the hook's
+  package name, and `allow_detailed` reports `hooks_consulted` +
+  `hook_denials`, which pgauthzd returns in the AuthZEN response context under
+  `X-PGAuthz-Detail` (discarded otherwise). A deployment with no mounts is
+  bit-identical to before. Reference hooks + the contract test suite live in
+  `examples/opa-hooks/` (`opa test` against the real platform policies, wired
+  into `test-opa.sh`); validated live against a real OPA with hooks mounted. Hooks are evaluated against a versioned, normalized input ABI
+  (`pgauthz.hooks/v1` — tokens/transport invisible), declared under
+  `authz.hooks.v1.<name>`, and gated by `scripts/validate-hooks.sh`
+  (namespace/duplicate/platform-package/`http.send` checks — veto-only is a
+  contract, not a sandbox); denials are structured `{hook, code, message}`,
+  `evaluations` returns a `403 denied_by_policy_hook` on veto (not a fake
+  all-false batch), and `permitted_actions` is filtered per action. **Store-scoped hooks:** the namespace
+  is two-tier — `authz.hooks.v1.global.<name>` (every store) and
+  `authz.hooks.v1.stores.<store>.<name>` (only that store, keyed by the
+  request's store so tenants are isolated); Helm gains
+  `opa.storePoliciesConfigMaps`. `/evaluations` now evaluates hooks **per item**
+  (a veto rejects the batch with `evaluation_index`, not a fake all-false); a
+  runtime hook error **fails the request closed** (`strict-builtin-errors` →
+  `policy_evaluation_failed`, 5xx, never a phantom decision); hooks read a
+  **server-derived `evaluated_at`** (time/env gates can't trust caller context);
+  and `scripts/validate-hooks.sh` (`--global` / `--store <s>`) is a required
+  release gate (wired into `pre-release.sh`). Fourth review round:
+  **tenant isolation is now validator-ENFORCED** (a hook may reference only
+  `input`, pure builtins, and its own package — no cross-package/dynamic
+  `data[…]`), a server-derived **`deployment.environment`** joins the ABI for
+  environment gates, hook-veto **`denials` are disclosed only under
+  `X-PGAuthz-Detail`** (batch 403 + write veto), denials are ordered
+  `(tier,store,hook,code,message)` with `denials_truncated`/`denial_count`, the
+  Helm chart runs a deploy-time `opa check` initContainer over mounted hooks
+  (store volume names sanitized), and OPA's isolated Rego eval time is recorded
+  as `pgauthzd_opa_rego_eval_duration_seconds` (`OPA_EVAL_METRICS`, default on). Fifth review round:
+  hook builtin **purity is pinned by a capability allowlist**
+  (`opa/hooks-v1-capabilities.json`, reproducible ABI) enforced by the
+  validator AND a Helm `opa check --capabilities` **initContainer**; the ADR
+  now names two trust tiers (global = platform, store = delegated tenant) and
+  requires **signed immutable bundles** for delegated store hooks (a mutable
+  ConfigMap under `--watch` is not an isolation boundary); a **per-hook denial
+  cap** (16) bounds a misbehaving hook; `strict-builtin-errors` fail-closed is
+  documented + tested on every query path; and `DEPLOYMENT_ENVIRONMENT` is
+  format-validated. Sixth review round:
+  `http.send` is **forbidden for store hooks** (a global-only, platform-governed
+  option); the validator now also rejects `data`/`input` **imports** (an
+  `import data.other as x` alias would evade the body-only isolation check) —
+  all checks operate on the parsed AST; the signed-bundle topology is pinned to
+  a **single platform-controlled, platform-signed bundle** (a tenant can't sign
+  an artifact production OPA accepts); `denial_count` is defined as the total
+  **after** per-hook caps, with `denials_dropped` + `hook_output_truncated` for
+  honesty; and the readiness signals are documented as non-overlapping
+  (deploy-time validation ≠ deep readiness ≠ activation revision ≠ runtime
+  metrics). Seventh review round:
+  **enumeration refusal ships in v1, secure by default** — with any hook
+  loaded, `accessible_objects`/`accessible_subjects` are refused
+  (`403 enumeration_refused_with_hooks`) because hooks don’t filter
+  graph-derived supersets; `ALLOW_UNFILTERED_ENUMERATION_WITH_HOOKS=true`
+  (OPA env / `opa.allowUnfilteredEnumerationWithHooks` in Helm) opts into
+  superset semantics; an unset `DEPLOYMENT_ENVIRONMENT` now forwards the
+  sentinel **`unknown`** (an empty string fails *open* on equality gates —
+  env gates must be allowlist-style); bundle signing pinned to exact validated
+  bytes with unsigned/unknown-key/local-fallback rejection; per-hook denial
+  cap documented as an output bound, not a compute bound. Eighth review round:
+  enumeration refusal is **applicable-hook-scoped** (global + requested store —
+  tenant B's hooks never disable tenant A's enumeration; now regression-tested);
+  Rego **reserved words are blacklisted as store names** (migration 0009 —
+  keyword package segments parse inconsistently across Rego tooling); Helm
+  store-hook volume names get a **hash suffix**
+  (`store-hooks-<40-char sanitized>-<8-char sha256>`) fixing case-collisions
+  and the 63-char limit; bundle signing described correctly (signature covers
+  the file set + per-file hashes, not tarball bytes) with explicit `.manifest`
+  roots required; and the `"unknown"` environment sentinel is now **enforced**:
+  a platform guard denial (`deployment_environment_unknown`) fires on decisions
+  and writes when hooks are loaded without `DEPLOYMENT_ENVIRONMENT`
+  (`ALLOW_UNKNOWN_DEPLOYMENT_ENVIRONMENT=true` opts out). Ninth review round
+  (reviewer: final-quality): bundle **root narrowed to `authz/hooks/v1/stores`**
+  (the wider root would erase separately mounted global hooks on activation),
+  full `.manifest` example with `revision` + ABI metadata; **http.send
+  destinations capability-enforced** via `opa/hooks-v1-http-capabilities.json`
+  (pure set + `http.send` + deny-all `allow_net` template; runtime-enforced by
+  OPA's capabilities file, `HOOK_HTTP_CAPABILITIES` for the validator); hook
+  `<name>` segments follow the store-name rules (reserved words + ≤63,
+  validator-enforced); the amendment history moved to an ADR appendix; and the
+  hooks README gained a "see exactly what your hook receives" dev section
+  (query `_decision_hook_input`/`_write_hook_input` directly). Tenth review round
+  (final): the `allow_net` claim corrected — OPA capabilities are
+  **build/check-time** validation (`opa run` takes no capabilities file), so
+  the http.send model is three independent controls: build-time capabilities +
+  AST validation (the validator now also **rejects non-static http.send
+  destinations** — literal object + literal string `url` required), the signed
+  immutable bundle, and independent runtime egress enforcement
+  (NetworkPolicy/egress proxy; a blocked call fails closed via
+  `strict-builtin-errors`). Eleventh review round (merge verdict): the
+  config-injection mechanism is explicit (flags reach Rego only via the
+  platform config module — `opa.runtime().env`, excluded from hook
+  capabilities; data-injected where process env doesn't exist), and the
+  validator now **statically enforces the `allow_net` host allowlist** on the
+  forced-literal `http.send` destinations and **rejects
+  `enable_redirect: true`** (OPA redirects verified off by default). Twelfth
+  review round (merge): the `http.send` static contract is complete —
+  `raise_error` must stay `true` (`false` bypasses `strict-builtin-errors`
+  fail-closed via a `status_code: 0` response), `tls_insecure_skip_verify`
+  must stay `false`, `timeout` must be a static non-zero bound; computed
+  values rejected. Thirteenth review round (merge): global `http.send` hooks
+  must ship via the signed immutable artifact path in production (mutable
+  ConfigMap/`--watch` = dev or network-free globals only); platform config
+  flags documented + regression-tested as fail-closed parses (exact `"true"`
+  enables, anything else disables). Fourteenth review round: the nonexistent
+  `max_response_bytes` field removed from the ADR (OPA verifiably rejects it;
+  response size must be bounded by the endpoint or an egress proxy), and the
+  `http.send` contract tightened to **read-only lookup** — literal `GET`/`HEAD`
+  only, no `body`/`raw_body`, `max_retry_attempts` 0/absent, no `Host` header
+  (all validator-enforced, mutation-tested). Fifteenth review round: HTTP
+  4xx/5xx responses identified as a **fail-open gap** (they are successful
+  `http.send` executions — `strict-builtin-errors` never fires), so network
+  hooks must deny outside a declared success-status set;
+  `examples/opa-hooks-http/` ships the reference hook + 10 contract tests
+  (404/429/500/503, malformed/missing bodies, aggregator veto), wired into
+  `pre-release.sh`; signed global-hook topology pinned (combined
+  `authz/hooks/v1` bundle XOR separate `authz/hooks/v1/global` bundle). Sixteenth review round (ADR frozen): the HTTP status/schema contract is
+  explicitly a **governance** requirement for platform-trusted network hooks
+  (review + contract tests; not statically checkable), with the
+  platform-HTTP-helper model documented as deferred v2 hardening;
+  `platform_policy_compatibility` enforcement named (publish pipeline +
+  activation monitor). Onboarding pass: the dev compose stack now sets
+  `DEPLOYMENT_ENVIRONMENT=dev` (mounting a first hook no longer trips the
+  fail-closed environment guard; production still must set its own value —
+  Helm: `authzen.opa.deploymentEnvironment`), `scripts/new-hook.sh` scaffolds
+  a correctly-packaged hook skeleton, and the hooks README leads with a
+  5-minute quickstart (surprising secure defaults called out up front)), plus
+  `scripts/make-token.sh` (demo ES256 JWT minting, extracted from
+  test-opa.sh) so the quickstart is runnable end-to-end — which also fixed
+  the quickstart to target the OPA-fronted instance (8091, where hooks run)
+  instead of the direct reader (8090, which never consults hooks). Dev flag: OPA
+  console decision logging is now switchable — `OPA_DECISION_LOGS_CONSOLE=true`
+  (compose) / `opa.decisionLogsConsole=true` (Helm), OFF by default (the log
+  includes full inputs, i.e. forwarded bearer JWTs — dev only). Post-review hardening: **store
+  names are restricted** to a Rego-safe identifier (`^[a-zA-Z_][a-zA-Z0-9_]*$`,
+  ≤63 chars — migration 0008 + `create_store`), so a store is its hook package
+  segment directly (no scope-key hashing); `evaluated_at` is **captured once
+  by pgauthzd** and forwarded (every batch item/hook sees one timestamp); the
+  write ABI names the authenticated **`actor`** distinct from the tuple's
+  subject; and denial `code`/count are bounded.
+
 - **HTTP availability hardening** (review #9). Go's zero timeouts are
   *unlimited*, so a black-holed dependency or a slow client could previously
   hang requests, probes, or startup:
@@ -66,6 +218,11 @@ pre-1.0, minor versions may include breaking changes.
   down) and asserted in `tests/test-opa.sh`.
 
 ### Changed
+
+- **Store names are restricted to `^[a-zA-Z_][a-zA-Z0-9_]*$` (≤63 chars)**
+  (migration 0008). Enforced by a table `CHECK` and `create_store`. Required so
+  a store name can be the Rego package segment for store-scoped OPA policy
+  hooks (ADR 0011); every existing store name already complies.
 
 - **GitHub Actions bumped off the deprecated Node 20 runtime**: `checkout@v7`,
   `setup-go@v6`, `cache@v6`, `docker/setup-buildx-action@v4`,

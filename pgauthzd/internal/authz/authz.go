@@ -12,6 +12,26 @@ import (
 // not 500. Backends wrap it with %w so errors.Is recognizes it.
 var ErrForbiddenRole = errors.New("db role not authorized for this operation")
 
+// PolicyHookDeniedError: a mounted OPA policy hook vetoed the request
+// (ADR 0011). Carries the structured denials ({hook, code, message}) so the
+// handler can return them in a 403 body — a hook veto is a policy decision,
+// not a server fault.
+type PolicyHookDeniedError struct {
+	Denials   []map[string]any
+	Count     int  // denial count AFTER per-hook caps (Denials may be a slice of this)
+	Truncated bool // Denials was sliced to the response cap
+	Dropped   int  // how many the response cap dropped
+}
+
+func (e *PolicyHookDeniedError) Error() string { return "denied by policy hook" }
+
+// ErrEnumerationRefused: search enumeration was refused because policy hooks
+// are loaded and the operator has not opted into unfiltered (graph-superset)
+// enumeration (ADR 0011 — a decision-hook-vetoed object would still be listed).
+// Secure by default; ALLOW_UNFILTERED_ENUMERATION_WITH_HOOKS=true on OPA opts
+// out. Maps to 403, not 500 — it is a policy refusal, not a fault.
+var ErrEnumerationRefused = errors.New("enumeration refused: policy hooks are loaded and unfiltered enumeration is not enabled")
+
 // ErrInvalidConsistency is returned when a write requests an unrecognized
 // consistency mode. Fails closed (rejects the write) rather than silently
 // downgrading the durability guarantee — maps to 400 Bad Request.

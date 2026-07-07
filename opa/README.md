@@ -920,6 +920,32 @@ allow if {
 2. Set `default_store` in `pgauthz_config.rego`, or pass `input.store` per request
 3. No changes needed to `pgauthz.rego` — it accepts any store name
 
+### Policy hooks — veto rules inside the standard pipeline (ADR 0011)
+
+Before reaching for a team package, check whether a **hook** is enough: a
+`.rego` file in a package under `authz.hooks.v1.global.<name>` (every store) or
+`authz.hooks.v1.stores.<store>.<name>` (one store) that vetoes decisions
+(`deny contains d`) or writes (`deny_write contains d`) riding along the
+standard `data.authz.*` endpoints — no allowlist entry, no pgauthzd config, no
+platform-file edits. Hooks can only **narrow** (the graph answer still has to
+pass), compose across teams, are evaluated against a normalized, versioned
+input ABI (`pgauthz.hooks/v1` — tokens invisible, server-derived
+`evaluated_at`), and their names surface in `allow_detailed` (`hooks_loaded` /
+`hook_denials`) and write vetoes (`error: denied_by_policy_hook`) — pgauthzd
+returns that under `X-PGAuthz-Detail`, else discards it. `/evaluations` is
+evaluated per item and a runtime hook error fails the request closed
+(`strict-builtin-errors`).
+
+Mount: compose `- ./hooks/global:/policies/hooks/global:ro` and
+`- ./hooks/<store>:/policies/hooks/stores/<store>:ro`; Helm
+`opa.extraPoliciesConfigMap` (global) + `opa.storePoliciesConfigMaps.<store>`.
+**Validate every mounted source** with `scripts/validate-hooks.sh --global` /
+`--store <s>` (a required gate — veto-only is a contract, not a sandbox).
+Reference hooks, the contract, and the test recipe live in
+[`examples/opa-hooks/`](../examples/opa-hooks/); design in
+[ADR 0011](../docs/adr/0011-opa-policy-hooks.md). Search/enumeration rules
+(`accessible_*`) are not hook-gated in v1; `permitted_actions` is.
+
 ### Product-team policies (platform-engineering model)
 
 When a platform team operates pgauthz and product teams need

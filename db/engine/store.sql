@@ -19,6 +19,23 @@ LANGUAGE plpgsql AS $$
 DECLARE
     v_store_id integer;
 BEGIN
+    -- Store names are restricted to a Rego-safe identifier (migration 0008) so
+    -- they can be the package segment for store-scoped policy hooks
+    -- (authz.hooks.v1.stores.<store>.<name>, ADR 0011). Give a clear error here
+    -- before the table CHECK does.
+    IF p_name !~ '^[a-zA-Z_][a-zA-Z0-9_]*$' OR length(p_name) > 63 THEN
+        RAISE EXCEPTION 'invalid store name %: must match ^[a-zA-Z_][a-zA-Z0-9_]*$ (<=63 chars)', p_name
+            USING HINT = 'Store names are used as OPA-hook package segments; use letters, digits, and underscores only.';
+    END IF;
+    -- Rego keywords / root documents are not usable as package segments
+    -- (migration 0009).
+    IF p_name IN ('as', 'contains', 'default', 'else', 'every', 'false', 'if',
+                  'import', 'in', 'not', 'null', 'package', 'some', 'true',
+                  'with', 'input', 'data') THEN
+        RAISE EXCEPTION 'invalid store name %: reserved Rego keyword', p_name
+            USING HINT = 'Store names are used as OPA-hook package segments; Rego keywords and input/data are reserved.';
+    END IF;
+
     INSERT INTO authz.stores (name, description)
     VALUES (p_name, p_description)
     RETURNING id INTO v_store_id;

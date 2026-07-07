@@ -22,7 +22,10 @@ services:
   # for the OPA-data-API demo + test-opa.sh; production keeps it unpublished.
   opa:
     image: openpolicyagent/opa:1.18.2
-    command: run --server --watch --addr :8181 --authentication=token --authorization=basic /policies /data
+    # DEV ONLY: OPA_DECISION_LOGS_CONSOLE=true logs every decision WITH ITS
+    # FULL INPUT to stdout — including forwarded bearer JWTs (input.token) and
+    # request context. Never enable where logs are shipped/retained.
+    command: run --server --watch --addr :8181 --authentication=token --authorization=basic --set=decision_logs.console=${OPA_DECISION_LOGS_CONSOLE:-false} /policies /data
     environment:
       OPA_ADMIN_TOKEN: "${OPA_ADMIN_TOKEN:-change-me-in-production}"
       JWT_ISSUER: "${JWT_ISSUER:-https://auth.example.com}"
@@ -104,6 +107,10 @@ services:
       DB_POOL_MAX: "10"
       OPA_URL: "http://opa:8181"
       OPA_PACKAGE: "${OPA_PACKAGE:-authz}"
+      # Forwarded to policy hooks as input.deployment.environment (ADR 0011).
+      # The dev stack defaults to "dev" so mounting a hook doesn't trip the
+      # platform environment guard; PRODUCTION MUST SET ITS OWN VALUE.
+      DEPLOYMENT_ENVIRONMENT: "${DEPLOYMENT_ENVIRONMENT:-dev}"
       JWKS_FILE: "/jwks/jwks.json"
       JWT_ISSUER: "${JWT_ISSUER:-https://auth.example.com}"
       JWT_AUDIENCE: "${JWT_AUDIENCE:-authz-api}"

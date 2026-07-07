@@ -1,0 +1,2 @@
+# Mountpoint for GLOBAL policy hooks (ADR 0011): packages
+# authz.hooks.v1.global.<name>. Compose: - ./my-global-hooks:/policies/hooks/global:ro

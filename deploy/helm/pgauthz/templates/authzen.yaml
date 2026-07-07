@@ -67,6 +67,10 @@ spec:
             - { name: JWT_AUDIENCE, value: {{ .Values.opa.jwtAudience | quote }} }
             - { name: DEFAULT_STORE, value: {{ .Values.opa.defaultStore | quote }} }
             - { name: ALLOW_SUBJECT_OVERRIDE, value: "false" }
+            {{- with .Values.authzen.opa.deploymentEnvironment }}
+            # input.deployment.environment for policy hooks (ADR 0011).
+            - { name: DEPLOYMENT_ENVIRONMENT, value: {{ . | quote }} }
+            {{- end }}
           ports: [{ name: http, containerPort: 8080 }]
           readinessProbe: { httpGet: { path: /readyz, port: 8080 }, initialDelaySeconds: 5 }
           livenessProbe:  { httpGet: { path: /livez, port: 8080 }, initialDelaySeconds: 10 }

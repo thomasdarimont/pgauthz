@@ -149,6 +149,34 @@ check_jq() {
     fi
 }
 
+# Policy-hook contract suite (ADR 0011): platform policies + the example hooks
+# under a real OPA — proves hooks veto/attribute and that a hook can never
+# widen past the graph. Standalone (no stack needed), so it runs first.
+echo "==> Policy-hook contract tests (opa test)..."
+if docker run --rm \
+    -v "$SCRIPT_DIR/../opa/policies:/p:ro" -v "$SCRIPT_DIR/../examples/opa-hooks:/e:ro" \
+    openpolicyagent/opa:1.18.2 test /p /e >/dev/null 2>&1; then
+    echo "    PASS  hook contract suite (opa test opa/policies examples/opa-hooks)"
+    pass_count=$((pass_count + 1))
+else
+    echo "    FAIL  hook contract suite — run: docker run --rm -v \$PWD/opa/policies:/p:ro -v \$PWD/examples/opa-hooks:/e:ro openpolicyagent/opa:1.18.2 test /p /e -v"
+    fail_count=$((fail_count + 1))
+fi
+total=$((total + 1))
+
+# The shipped example hooks must satisfy the ADR 0011 contract validator, each
+# tier against its own scope (global vs the demo store).
+echo "==> Hook contract validator (scripts/validate-hooks.sh, per tier)..."
+if "$SCRIPT_DIR/../scripts/validate-hooks.sh" --global "$SCRIPT_DIR/../examples/opa-hooks/global" >/dev/null 2>&1 \
+   && "$SCRIPT_DIR/../scripts/validate-hooks.sh" --store demo "$SCRIPT_DIR/../examples/opa-hooks/stores/demo" >/dev/null 2>&1; then
+    echo "    PASS  example hooks pass validate-hooks.sh (global + store demo)"
+    pass_count=$((pass_count + 1))
+else
+    echo "    FAIL  example hooks fail validate-hooks.sh"
+    fail_count=$((fail_count + 1))
+fi
+total=$((total + 1))
+
 echo "==> Waiting for OPA..."
 opa_up=0
 for i in $(seq 1 30); do

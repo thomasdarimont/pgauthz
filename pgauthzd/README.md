@@ -261,10 +261,10 @@ Requests are scoped to an authorization store. The store is selected via
 **Per-issuer store binding.** In multi-tenant setups, bind each trusted
 issuer to the stores its tokens may access via the `stores` field in
 `JWT_ISSUERS` — a list of **anchored regular expressions** (plain names
-match exactly; `tenant-a-.*` covers a store family):
+match exactly; `tenant_a_.*` covers a store family):
 
 ```
-JWT_ISSUERS=[{"issuer":"https://tenant-a.idp","jwks_url":"…","stores":["tenant-a","tenant-a-.*"]}]
+JWT_ISSUERS=[{"issuer":"https://tenant-a.idp","jwks_url":"…","stores":["tenant_a","tenant_a_.*"]}]
 ```
 
 A token from that issuer selecting any other store is rejected with `403`.
@@ -300,7 +300,7 @@ each issuer may yield:
 
 ```
 JWT_ISSUERS=[{"issuer":"https://tenant-a.idp","jwks_url":"…",
-              "stores":["tenant-a-.*"],
+              "stores":["tenant_a_.*"],
               "db_roles":["app_hr","app_hr_.*"],
               "client_db_roles":{"app-hr":"app_hr"}}]
 ```
@@ -391,6 +391,8 @@ All configuration is via environment variables.
 | `FORWARD_TOKEN_TO_OPA` | `false` | Forward the verified bearer token to OPA as `input.token` so OPA re-validates it — lets OPA run token-only (`REQUIRE_TOKEN_FOR_READS=true`) instead of trusting the forwarded subject. Leave off for trusted-PEP setups that check arbitrary subjects |
 | `OPA_REQUEST_TIMEOUT` | `10s` | Bounds every OPA HTTP call (decisions, searches, readiness) — a black-holed OPA can't hang requests or startup |
 | `OPA_DEEP_READINESS_REQUIRED` | `false` | Fail `/readyz` when the loaded policy set lacks the `callback_healthy` rule, instead of silently degrading to the shallow OPA-`/health`-only check. The active mode is exported as `pgauthzd_opa_readiness_mode{mode}` either way |
+| `OPA_EVAL_METRICS` | `true` | Add `metrics=true` to OPA queries and record OPA's own Rego eval time (`pgauthzd_opa_rego_eval_duration_seconds`). Small per-request OPA overhead; disable to shed it |
+| `DEPLOYMENT_ENVIRONMENT` | *empty* | Server-configured label forwarded to OPA policy hooks as `input.deployment.environment` (ADR 0011); environment-gated hooks read it instead of caller context. Unset forwards the sentinel `unknown` (never `""`, which fails open on equality gates) — write env gates allowlist-style |
 | `DATABASE_URL` | *empty* | Optional. A **read-only** DSN enables the native raw callback surface (`/pgauthz/v1/check`, `list-*`) an OPA sidecar calls back into (replacing the former PostgREST reader). Asserted read-only at startup |
 | `INTERNAL_LISTEN_ADDR` | *empty* | Address for the internal listener serving that native raw surface (e.g. `:8081`). **Do not publish it** — bind to the OPA sidecar network. Empty = raw surface not served |
 | `INTERNAL_SERVICE_TOKEN` | *empty* | Shared service credential the internal listener requires (`Authorization: Bearer`), proving the call came from the OPA sidecar. Must match OPA's `NATIVE_SERVICE_TOKEN`. **Required** when `INTERNAL_LISTEN_ADDR` is set — startup fails closed without it. The listener then trusts OPA's asserted subject (body) + role (`X-PGAuthz-Role`), not the end-user JWT |

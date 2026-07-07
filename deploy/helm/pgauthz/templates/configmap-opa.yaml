@@ -12,6 +12,18 @@ data:
 {{ $.Files.Get $path | indent 4 }}
   {{- end }}
 ---
+# Hooks-v1 capability allowlist (ADR 0011): pins the builtin execution surface
+# so the deploy-time initContainer's `opa check --capabilities` enforces hook
+# PURITY (no http.send/io/opa.*/time.now_ns), not just syntax/types.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pgauthz.fullname" . }}-opa-hook-caps
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+data:
+  hooks-v1-capabilities.json: |-
+{{ .Files.Get "files/opa/caps/hooks-v1-capabilities.json" | indent 4 }}
+---
 {{- end }}
 # JWKS ConfigMap — mounted by OPA (when enabled) AND by every pgauthzd instance
 # for its own JWT verification (JWKS_FILE), so it is NOT gated on OPA.

@@ -1,0 +1,2 @@
+# Mountpoint parent for STORE-SCOPED hooks (ADR 0011): mount each store at
+# /policies/hooks/stores/<store> with packages authz.hooks.v1.stores.<store>.<name>.

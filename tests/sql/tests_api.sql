@@ -1750,6 +1750,58 @@ END;
 $$;
 SELECT * FROM _test_teardown_api();
 
+-- Store-name format (migration 0008): store names must be a Rego-safe
+-- identifier so they can be the OPA-hook package segment (ADR 0011).
+DO $store_name$
+DECLARE v_err text;
+BEGIN
+    BEGIN
+        PERFORM authz.create_store('bad-name.eu');
+        v_err := 'no exception raised for hyphen/dot store name';
+    EXCEPTION WHEN OTHERS THEN
+        v_err := CASE WHEN SQLERRM LIKE '%invalid store name%' THEN NULL ELSE SQLERRM END;
+    END;
+    PERFORM _test_assert_true('api_120_store_name_rejects_invalid', v_err IS NULL, v_err);
+
+    -- direct INSERT is caught by the table CHECK too
+    BEGIN
+        INSERT INTO authz.stores(name) VALUES ('also-bad');
+        v_err := 'no exception raised for direct INSERT of invalid name';
+    EXCEPTION WHEN check_violation THEN
+        v_err := NULL;
+    WHEN OTHERS THEN
+        v_err := SQLERRM;
+    END;
+    PERFORM _test_assert_true('api_121_store_name_check_constraint', v_err IS NULL, v_err);
+
+    -- a valid identifier name is accepted
+    BEGIN PERFORM authz.delete_store('test_store_ok'); EXCEPTION WHEN OTHERS THEN NULL; END;
+    PERFORM authz.create_store('test_store_ok');
+    PERFORM _test_assert_true('api_122_store_name_accepts_valid', true, '');
+    PERFORM authz.delete_store('test_store_ok');
+
+    -- Rego keywords / root documents are reserved (migration 0009): they parse
+    -- inconsistently as package segments across Rego tooling.
+    BEGIN
+        PERFORM authz.create_store('if');
+        v_err := 'no exception raised for reserved store name ''if''';
+    EXCEPTION WHEN OTHERS THEN
+        v_err := CASE WHEN SQLERRM LIKE '%reserved%' THEN NULL ELSE SQLERRM END;
+    END;
+    PERFORM _test_assert_true('api_123_store_name_rejects_reserved', v_err IS NULL, v_err);
+
+    BEGIN
+        INSERT INTO authz.stores(name) VALUES ('data');
+        v_err := 'no exception raised for direct INSERT of reserved name';
+    EXCEPTION WHEN check_violation THEN
+        v_err := NULL;
+    WHEN OTHERS THEN
+        v_err := SQLERRM;
+    END;
+    PERFORM _test_assert_true('api_124_store_name_reserved_constraint', v_err IS NULL, v_err);
+END;
+$store_name$;
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_api();
 DROP FUNCTION IF EXISTS _test_setup_api();

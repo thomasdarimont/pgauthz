@@ -25,6 +25,11 @@ type Backend struct {
 	// deepReadinessRequired: fail readiness when the policy set lacks the
 	// callback_healthy rule (OPA_DEEP_READINESS_REQUIRED, review #9).
 	deepReadinessRequired bool
+	// deploymentEnv is forwarded to policy hooks as input.deployment.environment
+	// (server-derived; ADR 0011).
+	deploymentEnv string
+	// evalMetrics adds ?metrics=true to record OPA's Rego eval time.
+	evalMetrics bool
 }
 
 // New builds an OPA backend. timeout bounds EVERY OPA HTTP call — Go's zero
@@ -33,7 +38,7 @@ type Backend struct {
 // unlimited (fail bounded). deepReadinessRequired makes a policy set WITHOUT
 // the callback_healthy rule fail readiness instead of degrading to the
 // shallow OPA-/health-only check.
-func New(baseURL, pkg string, forwardToken bool, timeout time.Duration, deepReadinessRequired bool) *Backend {
+func New(baseURL, pkg string, forwardToken bool, timeout time.Duration, deepReadinessRequired bool, deploymentEnv string, evalMetrics bool) *Backend {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
@@ -43,6 +48,8 @@ func New(baseURL, pkg string, forwardToken bool, timeout time.Duration, deepRead
 		client:                &http.Client{Timeout: timeout},
 		forwardToken:          forwardToken,
 		deepReadinessRequired: deepReadinessRequired,
+		deploymentEnv:         deploymentEnv,
+		evalMetrics:           evalMetrics,
 	}
 }
 
@@ -140,11 +147,32 @@ func (b *Backend) CheckAccessBatch(ctx context.Context, store string, reqs []aut
 		input["context"] = globalContext
 	}
 
+	var raw json.RawMessage
+	if err := b.query(ctx, "evaluations", input, &raw); err != nil {
+		return nil, err
+	}
+	// A policy-hook veto rejects the WHOLE batch with a structured error object
+	// (ADR 0011) — never a misleading all-false array. Surface it typed so the
+	// handler can map it to 403 with the denials.
+	var rejection struct {
+		Error     string           `json:"error"`
+		Denials   []map[string]any `json:"denials"`
+		Count     int              `json:"denial_count"`
+		Truncated bool             `json:"denials_truncated"`
+		Dropped   int              `json:"denials_dropped"`
+	}
+	if err := json.Unmarshal(raw, &rejection); err == nil && rejection.Error == "denied_by_policy_hook" {
+		count := rejection.Count
+		if count == 0 {
+			count = len(rejection.Denials)
+		}
+		return nil, &authz.PolicyHookDeniedError{Denials: rejection.Denials, Count: count, Truncated: rejection.Truncated, Dropped: rejection.Dropped}
+	}
 	var results []struct {
 		Decision bool `json:"decision"`
 	}
-	if err := b.query(ctx, "evaluations", input, &results); err != nil {
-		return nil, err
+	if err := json.Unmarshal(raw, &results); err != nil {
+		return nil, fmt.Errorf("unexpected evaluations result shape: %w", err)
 	}
 
 	out := make([]authz.EvalResult, len(results))
@@ -152,6 +180,25 @@ func (b *Backend) CheckAccessBatch(ctx context.Context, store string, reqs []aut
 		out[i] = authz.EvalResult{Decision: r.Decision}
 	}
 	return out, nil
+}
+
+// decodeIDs unmarshals a search-rule result that is either an ID array or the
+// enumeration-refusal object (ADR 0011: hooks loaded + unfiltered enumeration
+// not enabled → {"error": "enumeration_refused_with_hooks"}).
+func decodeIDs(raw json.RawMessage) ([]string, error) {
+	var refusal struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &refusal); err == nil && refusal.Error == "enumeration_refused_with_hooks" {
+		return nil, authz.ErrEnumerationRefused
+	}
+	var ids []string
+	if len(raw) > 0 && string(raw) != "null" {
+		if err := json.Unmarshal(raw, &ids); err != nil {
+			return nil, fmt.Errorf("unexpected search result shape: %w", err)
+		}
+	}
+	return ids, nil
 }
 
 func (b *Backend) ListResources(ctx context.Context, store string,
@@ -176,8 +223,12 @@ func (b *Backend) ListResources(ctx context.Context, store string,
 	if page != nil {
 		input["page"] = pageInput(page)
 
-		var ids []string
-		if err := b.query(ctx, "accessible_objects_page", input, &ids); err != nil {
+		var raw json.RawMessage
+		if err := b.query(ctx, "accessible_objects_page", input, &raw); err != nil {
+			return nil, nil, err
+		}
+		ids, err := decodeIDs(raw)
+		if err != nil {
 			return nil, nil, err
 		}
 
@@ -185,8 +236,12 @@ func (b *Backend) ListResources(ctx context.Context, store string,
 	}
 
 	// Unpaginated — returns a set from OPA
-	var ids []string
-	if err := b.query(ctx, "accessible_objects", input, &ids); err != nil {
+	var raw json.RawMessage
+	if err := b.query(ctx, "accessible_objects", input, &raw); err != nil {
+		return nil, nil, err
+	}
+	ids, err := decodeIDs(raw)
+	if err != nil {
 		return nil, nil, err
 	}
 	if ids == nil {
@@ -217,16 +272,24 @@ func (b *Backend) ListSubjects(ctx context.Context, store string,
 	if page != nil {
 		input["page"] = pageInput(page)
 
-		var ids []string
-		if err := b.query(ctx, "accessible_subjects_page", input, &ids); err != nil {
+		var raw json.RawMessage
+		if err := b.query(ctx, "accessible_subjects_page", input, &raw); err != nil {
+			return nil, nil, err
+		}
+		ids, err := decodeIDs(raw)
+		if err != nil {
 			return nil, nil, err
 		}
 
 		return buildPage(ids, page.Limit)
 	}
 
-	var ids []string
-	if err := b.query(ctx, "accessible_subjects", input, &ids); err != nil {
+	var raw json.RawMessage
+	if err := b.query(ctx, "accessible_subjects", input, &raw); err != nil {
+		return nil, nil, err
+	}
+	ids, err := decodeIDs(raw)
+	if err != nil {
 		return nil, nil, err
 	}
 	if ids == nil {
@@ -372,12 +435,41 @@ func (b *Backend) query(ctx context.Context, rule string, input any, dest any) (
 			m["no_cache"] = true
 		}
 	}
+	// Capture the decision timestamp ONCE and forward it (ADR 0011): every batch
+	// item and every policy hook in this request then sees the same server clock
+	// — no per-item skew, stable across INTERNAL retries of this request. Also
+	// forward the server-configured deployment environment. Hooks read these
+	// server-derived fields for time/environment gates instead of trusting
+	// caller context.
+	if m, ok := input.(map[string]any); ok {
+		m["evaluated_at"] = time.Now().UnixNano()
+		// An unset environment forwards the explicit sentinel "unknown", NOT ""
+		// — an environment-gated veto comparing equality against a real value
+		// would silently never fire on "" (fail-open). "unknown" makes the
+		// unconfigured state visible; env-gated hooks must treat it as the most
+		// restrictive environment (deny on unknown / allowlist-style gates).
+		env := b.deploymentEnv
+		if env == "" {
+			env = "unknown"
+		}
+		m["deployment"] = map[string]any{"environment": env}
+	}
 	body, err := json.Marshal(map[string]any{"input": input})
 	if err != nil {
 		return fmt.Errorf("marshaling OPA input: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/v1/data/%s/%s", b.baseURL, b.pkg, rule)
+	// strict-builtin-errors=true makes a builtin error during evaluation (a
+	// buggy hook or platform rule) FAIL the query instead of silently making
+	// the affected expression undefined — a vanished `deny` must not fail open
+	// (ADR 0011). OPA then returns HTTP 500, which the status check below turns
+	// into an error → the handler fails the request closed (5xx), never a
+	// phantom allow/deny. Our http.send calls use raise_error:false, so
+	// expected downstream non-2xx responses stay handled and don't trip this.
+	url := fmt.Sprintf("%s/v1/data/%s/%s?strict-builtin-errors=true", b.baseURL, b.pkg, rule)
+	if b.evalMetrics {
+		url += "&metrics=true"
+	}
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -396,15 +488,23 @@ func (b *Backend) query(ctx context.Context, rule string, input any, dest any) (
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("OPA %s returned %d: %s", rule, resp.StatusCode, string(respBody))
+		// Distinguishable operational failure (policy_evaluation_failed) — not a
+		// decision. The handler maps this to 5xx, never allow/deny.
+		return fmt.Errorf("policy_evaluation_failed: OPA %s returned %d: %s", rule, resp.StatusCode, string(respBody))
 	}
 
-	// OPA wraps results in {"result": ...}
+	// OPA wraps results in {"result": ...}; ?metrics=true adds a `metrics`
+	// object whose timer_rego_query_eval_ns is OPA's own evaluation time
+	// (isolated from network + OPA HTTP framing).
 	var wrapper struct {
-		Result json.RawMessage `json:"result"`
+		Result  json.RawMessage  `json:"result"`
+		Metrics map[string]int64 `json:"metrics"`
 	}
 	if err := json.Unmarshal(respBody, &wrapper); err != nil {
 		return fmt.Errorf("unmarshaling OPA response: %w", err)
+	}
+	if ns, ok := wrapper.Metrics["timer_rego_query_eval_ns"]; ok {
+		metrics.OPARegoEvalDuration.Observe(float64(ns) / 1e9)
 	}
 
 	if wrapper.Result == nil {

@@ -84,6 +84,26 @@ else
     echo "    policies in sync"
 fi
 
+# ── 2c. Policy-hook contract (ADR 0011) ──────────────────────────────────────
+# Veto-only is a CONTRACT, not a sandbox — the validator is a REQUIRED release
+# gate (a mounted module is placed by its declared package, so an unvalidated
+# hook could widen or claim another store). Run it over the shipped examples,
+# each tier against its scope, plus the hook `opa test` suite.
+step "Policy-hook contract (validate-hooks.sh + opa test)"
+if ./scripts/validate-hooks.sh --global examples/opa-hooks/global >/dev/null \
+   && ./scripts/validate-hooks.sh --store demo examples/opa-hooks/stores/demo >/dev/null \
+   && HOOK_HTTP_CAPABILITIES="$ROOT/examples/opa-hooks-http/http-caps.example.json" \
+      ./scripts/validate-hooks.sh --global --allow-http examples/opa-hooks-http >/dev/null \
+   && docker run --rm -v "$ROOT/opa/policies:/p:ro" -v "$ROOT/examples/opa-hooks-http:/h:ro" \
+      "${OPA_IMAGE:-openpolicyagent/opa:1.18.2}" test /p /h >/dev/null \
+   && docker run --rm -v "$ROOT/opa/policies:/p:ro" -v "$ROOT/examples/opa-hooks:/e:ro" \
+        "${OPA_IMAGE:-openpolicyagent/opa:1.18.2}" test /p /e >/dev/null 2>&1; then
+    echo "    hooks valid + contract suite green"
+else
+    echo "!! Policy-hook contract failed (run: ./scripts/validate-hooks.sh --global examples/opa-hooks/global; opa test opa/policies examples/opa-hooks -v)"
+    FAILED=1
+fi
+
 # ── 3. Full stack tests (CI main job) ────────────────────────────────────────
 if [ "$SKIP_STACK" = 0 ]; then
     step "Full stack: ./init.sh + ./tests/test-all.sh (demo mode: OPA on, keycloak/playground off)"

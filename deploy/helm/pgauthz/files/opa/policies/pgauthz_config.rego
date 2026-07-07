@@ -61,3 +61,18 @@ cache_ttl_seconds := {} if not _env.CACHE_TTL_SECONDS
 default require_token_for_reads := true
 
 require_token_for_reads := false if _env.REQUIRE_TOKEN_FOR_READS == "false"
+
+# Enumeration confidentiality with policy hooks (ADR 0011): accessible_objects /
+# accessible_subjects are GRAPH-derived supersets — decision hooks do not filter
+# them, so an object vetoed per-decision would still be enumerable. SECURE BY
+# DEFAULT: when any hook is loaded, enumeration is REFUSED unless the operator
+# explicitly accepts the superset semantics.
+# Set ALLOW_UNFILTERED_ENUMERATION_WITH_HOOKS=true to opt out.
+allow_unfiltered_enumeration if _env.ALLOW_UNFILTERED_ENUMERATION_WITH_HOOKS == "true"
+
+# Platform environment guard opt-out (ADR 0011): with hooks loaded and
+# DEPLOYMENT_ENVIRONMENT unset ("unknown"), the platform injects a synthetic
+# denial — an equality-style environment gate would otherwise silently fail
+# OPEN on the unconfigured value. Set ALLOW_UNKNOWN_DEPLOYMENT_ENVIRONMENT=true
+# ONLY when every mounted hook is genuinely environment-independent.
+allow_unknown_environment if _env.ALLOW_UNKNOWN_DEPLOYMENT_ENVIRONMENT == "true"

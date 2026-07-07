@@ -151,6 +151,14 @@ opa:
   defaultStore: "demo"
   # SECURITY: token-only reads. Keep true unless a trusted PEP fronts OPA.
   requireTokenForReads: true
+  # With policy hooks loaded, accessible_objects/subjects enumeration is
+  # REFUSED by default (hooks don't filter graph-derived supersets — ADR 0011).
+  # true = explicitly accept superset semantics and keep enumeration enabled.
+  allowUnfilteredEnumerationWithHooks: false
+  # DEV ONLY: log every OPA decision with its FULL INPUT (including forwarded
+  # bearer JWTs) to the container console. Useful when authoring policy hooks
+  # (see examples/opa-hooks); never enable where logs are shipped/retained.
+  decisionLogsConsole: false
   defaultCacheTtlSeconds: 1
   # JWT → writer-role mapping (see opa/policies/write.rego). Match your issuer.
   writerRole: ""               # e.g. "authz_writer"
@@ -164,6 +172,19 @@ opa:
   # JWKS for JWT verification. Replace the demo keys with your IdP's JWKS
   # (or point OPA's authn at a JWKS URL instead of this file).
   jwks: ""                     # "" = use files/opa/data/jwks.json from the chart
+  # Policy hooks (ADR 0011). Hooks are CODE — review-gate every ConfigMap like a
+  # policy change and run scripts/validate-hooks.sh in CI (veto-only is a
+  # contract, not a sandbox).
+  #
+  # GLOBAL hooks (packages authz.hooks.v1.global.<name>) — apply to every store:
+  extraPoliciesConfigMap: ""      # ConfigMap name, or "" for none
+  # STORE-SCOPED hooks (packages authz.hooks.v1.stores.<store>.<name>) — a map
+  # of store → ConfigMap, each mounted at /policies/hooks/stores/<store> and
+  # owned/validated per tenant (validate-hooks.sh --store <store>):
+  #   storePoliciesConfigMaps:
+  #     tenant-a: hooks-tenant-a
+  #     tenant-b: hooks-tenant-b
+  storePoliciesConfigMaps: {}
 
 # ── pgauthzd reader — native decision path (internal only, fronted by OPA) ────
 # decision-only profile: read-only DB role (authzen_direct → authz_reader).
@@ -216,6 +237,10 @@ authzen:
   opa:
     enabled: false
     replicas: 2
+    # Forwarded to policy hooks as input.deployment.environment (ADR 0011).
+    # REQUIRED (e.g. "production") when hooks are mounted — unset trips the
+    # fail-closed platform environment guard and denies every request.
+    deploymentEnvironment: ""
   # Deprecated/no-op: the ingress `/` now always routes to the pgauthzd AuthZEN
   # front door (the OPA-fronted gateway when authzen.opa.enabled, else the direct
   # reader). Kept for backwards compatibility with existing values overrides.

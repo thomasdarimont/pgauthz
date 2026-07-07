@@ -117,7 +117,7 @@ paths:
         '200': { $ref: '#/components/responses/EvaluationsOK' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403': { $ref: '#/components/responses/EvaluationsForbidden' }
         '409': { $ref: '#/components/responses/FreshnessConflict' }
         '500': { $ref: '#/components/responses/ServerError' }
   /stores/{store}/access/v1/evaluations:
@@ -134,7 +134,7 @@ paths:
         '200': { $ref: '#/components/responses/EvaluationsOK' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403': { $ref: '#/components/responses/EvaluationsForbidden' }
         '409': { $ref: '#/components/responses/FreshnessConflict' }
         '500': { $ref: '#/components/responses/ServerError' }
 
@@ -1192,6 +1192,18 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
+    EvaluationsForbidden:
+      description: >
+        Authorization failure — or, on an OPA-fronted instance with policy
+        hooks mounted, a hook veto of the WHOLE batch (denied_by_policy_hook
+        with structured denials; a veto is never reported as a fake all-false
+        result).
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/Error'
+              - $ref: '#/components/schemas/PolicyHookDenied'
     FreshnessConflict:
       description: >
         An at_least_as_fresh read this node cannot satisfy. The
@@ -1669,6 +1681,28 @@ components:
           description: The transparent fallback already re-checked the primary.
         message: { type: string, description: Per-verdict recovery guidance. }
       required: [status, error, verdict, primary_consulted, message]
+    PolicyHookDenied:
+      type: object
+      description: >
+        A mounted OPA policy hook (ADR 0011) vetoed the request. Denials are
+        structured and attributable; hook identities surface only through
+        authorized channels.
+      properties:
+        status: { type: integer }
+        error: { type: string, enum: [denied_by_policy_hook] }
+        denials:
+          type: array
+          items:
+            type: object
+            properties:
+              tier: { type: string, enum: [global, store], description: "Whether the hook is global or store-scoped." }
+              store: { type: string, description: "The store, when tier=store." }
+              hook: { type: string, description: "The hook's package name under authz.hooks.v1." }
+              code: { type: string, description: "Machine-readable denial code (denied for string denials)." }
+              message: { type: string }
+              evaluation_index: { type: integer, description: "Index of the offending evaluation in a batch (/evaluations) veto." }
+            required: [tier, hook, code, message]
+      required: [status, error, denials]
     Health:
       type: object
       properties:

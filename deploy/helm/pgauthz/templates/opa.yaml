@@ -24,6 +24,53 @@ spec:
         # Roll pods when policies change.
         checksum/policies: {{ .Files.Glob "files/opa/policies/*.rego" | toString | sha256sum }}
     spec:
+      {{- if or .Values.opa.extraPoliciesConfigMap .Values.opa.storePoliciesConfigMaps }}
+      # Deploy-time hook gate (ADR 0011), two initContainers:
+      #  1. hook PURITY — each hook dir compiled against the hooks-v1 capability
+      #     allowlist, so a non-pure builtin (http.send, io.*, opa.*,
+      #     time.now_ns) fails the pod, not just a syntax error.
+      #  2. assembled set — the whole /policies tree type-checks together.
+      # This is a deploy-time backstop; the FULL contract (namespace pinning,
+      # cross-package/dynamic-data isolation, duplicate names) is enforced by
+      # scripts/validate-hooks.sh in the CI / bundle build. DELEGATED tenant
+      # hooks must be delivered as a signed, pre-validated immutable bundle —
+      # see ADR 0011 (a mutable ConfigMap + --watch is not an isolation boundary).
+      initContainers:
+        - name: opa-check-hook-purity
+          image: {{ include "pgauthz.image" .Values.images.opa }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          # `opa check` takes multiple paths — check every hook dir against the
+          # capability allowlist in one shell-free invocation.
+          args:
+            - check
+            - --capabilities=/caps/hooks-v1-capabilities.json
+            {{- if .Values.opa.extraPoliciesConfigMap }}
+            - /hooks/global
+            {{- end }}
+            {{- range $store, $cm := .Values.opa.storePoliciesConfigMaps }}
+            - /hooks/stores/{{ $store }}
+            {{- end }}
+          volumeMounts:
+            - { name: hook-caps, mountPath: /caps, readOnly: true }
+            {{- if .Values.opa.extraPoliciesConfigMap }}
+            - { name: extra-policies, mountPath: /hooks/global, readOnly: true }
+            {{- end }}
+            {{- range $store, $cm := .Values.opa.storePoliciesConfigMaps }}
+            - { name: {{ include "pgauthz.storeHooksVolume" $store }}, mountPath: /hooks/stores/{{ $store }}, readOnly: true }
+            {{- end }}
+        - name: opa-check-assembled
+          image: {{ include "pgauthz.image" .Values.images.opa }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          args: ["check", "--ignore=.*", "/policies"]
+          volumeMounts:
+            - { name: policies, mountPath: /policies, readOnly: true }
+            {{- if .Values.opa.extraPoliciesConfigMap }}
+            - { name: extra-policies, mountPath: /policies/hooks/global, readOnly: true }
+            {{- end }}
+            {{- range $store, $cm := .Values.opa.storePoliciesConfigMaps }}
+            - { name: {{ include "pgauthz.storeHooksVolume" $store }}, mountPath: /policies/hooks/stores/{{ $store }}, readOnly: true }
+            {{- end }}
+      {{- end }}
       containers:
         - name: opa
           image: {{ include "pgauthz.image" .Values.images.opa }}
@@ -38,6 +85,10 @@ spec:
             # without this OPA's recursive loader double-loads every policy
             # ("multiple default rules"). Ignore dot-prefixed entries.
             - --ignore=.*
+            {{- if .Values.opa.decisionLogsConsole }}
+            # DEV ONLY (see values.yaml): logs full decision inputs incl. JWTs.
+            - --set=decision_logs.console=true
+            {{- end }}
             - /policies
             - /data
           env:
@@ -48,6 +99,13 @@ spec:
             - { name: JWT_AUDIENCE, value: {{ .Values.opa.jwtAudience | quote }} }
             - { name: DEFAULT_STORE, value: {{ .Values.opa.defaultStore | quote }} }
             - { name: REQUIRE_TOKEN_FOR_READS, value: {{ .Values.opa.requireTokenForReads | quote }} }
+            {{- if .Values.opa.allowUnfilteredEnumerationWithHooks }}
+            # ADR 0011: opt OUT of the secure default — with policy hooks
+            # loaded, search enumeration returns graph-derived SUPERSETS that
+            # hooks do not filter. Only set when hooks are advisory, not
+            # confidentiality rules.
+            - { name: ALLOW_UNFILTERED_ENUMERATION_WITH_HOOKS, value: "true" }
+            {{- end }}
             - { name: DEFAULT_CACHE_TTL_SECONDS, value: {{ .Values.opa.defaultCacheTtlSeconds | quote }} }
             # Native pgauthzd callbacks: reads → the decision-only reader's
             # callback listener, writes → the full writer's. The shared service
@@ -80,6 +138,15 @@ spec:
           resources: {{- toYaml .Values.opa.resources | nindent 12 }}
           volumeMounts:
             - { name: policies, mountPath: /policies, readOnly: true }
+            {{- if .Values.opa.extraPoliciesConfigMap }}
+            # Global policy hooks (ADR 0011): packages authz.hooks.v1.global.*
+            # that veto decisions/writes for every store.
+            - { name: extra-policies, mountPath: /policies/hooks/global, readOnly: true }
+            {{- end }}
+            {{- range $store, $cm := .Values.opa.storePoliciesConfigMaps }}
+            # Store-scoped hooks for {{ $store }} (authz.hooks.v1.stores.{{ $store }}.*).
+            - { name: {{ include "pgauthz.storeHooksVolume" $store }}, mountPath: /policies/hooks/stores/{{ $store }}, readOnly: true }
+            {{- end }}
             # subPath → a REAL file at /data/jwks.json (not a ConfigMap symlink
             # into ..data/). OPA derives a data document's path from its
             # directory, so the JWKS must sit directly in the load root for
@@ -89,6 +156,18 @@ spec:
       volumes:
         - name: policies
           configMap: { name: {{ include "pgauthz.fullname" . }}-opa-policies }
+        {{- if .Values.opa.extraPoliciesConfigMap }}
+        - name: extra-policies
+          configMap: { name: {{ .Values.opa.extraPoliciesConfigMap }} }
+        {{- end }}
+        {{- range $store, $cm := .Values.opa.storePoliciesConfigMaps }}
+        - name: {{ include "pgauthz.storeHooksVolume" $store }}
+          configMap: { name: {{ $cm }} }
+        {{- end }}
+        {{- if or .Values.opa.extraPoliciesConfigMap .Values.opa.storePoliciesConfigMaps }}
+        - name: hook-caps
+          configMap: { name: {{ include "pgauthz.fullname" . }}-opa-hook-caps }
+        {{- end }}
         - name: data
           configMap: { name: {{ include "pgauthz.fullname" . }}-opa-data }
 ---

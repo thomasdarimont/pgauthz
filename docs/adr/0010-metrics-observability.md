@@ -113,7 +113,15 @@ fallback storm exhausts — watch its `acquire_wait` p99.
 | Metric | Type | Labels |
 |---|---|---|
 | `pgauthzd_opa_request_duration_seconds` | histogram | — |
+| `pgauthzd_opa_rego_eval_duration_seconds` | histogram | — |
 | `pgauthzd_opa_requests_total` | counter | `result` |
+
+`opa_request_duration` is the full pgauthzd→OPA round trip (network + eval + the
+graph callback + PostgreSQL). `opa_rego_eval_duration` is OPA's own Rego
+evaluation time (`timer_rego_query_eval_ns`, via `?metrics=true`, gated by
+`OPA_EVAL_METRICS`, default on) — it excludes network/HTTP framing but still
+*includes* the `http.send` graph callback; subtract `db_query_duration` on the
+callback instance to isolate pure policy/hook logic.
 
 **Auth & security signals:**
 

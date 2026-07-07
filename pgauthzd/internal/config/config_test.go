@@ -157,3 +157,19 @@ func TestFreshnessDisabledByDefault(t *testing.T) {
 		t.Fatalf("no key env → disabled, got %v", c.FreshnessKeys)
 	}
 }
+
+func TestDeploymentEnvironmentValidated(t *testing.T) {
+	setMinimalIssuer(t)
+	t.Setenv("DEPLOYMENT_ENVIRONMENT", "prod uction")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "DEPLOYMENT_ENVIRONMENT") {
+		t.Fatalf("expected format error, got %v", err)
+	}
+}
+
+func TestDeploymentEnvironmentValidAccepted(t *testing.T) {
+	setMinimalIssuer(t)
+	t.Setenv("DEPLOYMENT_ENVIRONMENT", "production")
+	if c, err := Load(); err != nil || c.DeploymentEnvironment != "production" {
+		t.Fatalf("valid env rejected: %v", err)
+	}
+}

@@ -46,6 +46,7 @@ services:
       TLS_CA_FILE: /etc/pgauthz/rootCA.pem
       REDIRECT_URI: https://app.pgauthz.test/playground/auth/callback
       OPA_URL: http://opa:8181
+      DEPLOYMENT_ENVIRONMENT: "${DEPLOYMENT_ENVIRONMENT:-dev}"
       # AuthZEN console proxies to the pgauthzd-opa service (requires compose-authzen.yml
       # to be up). Set empty to hide the AuthZEN tab.
       AUTHZEN_URL: http://pgauthzd-opa:8080

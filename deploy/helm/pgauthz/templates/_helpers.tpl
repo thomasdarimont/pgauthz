@@ -50,3 +50,16 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 {{- if not $r -}}{{- fail (printf "extraRoles: access must be one of read|readwrite|audit|admin, got %q" .) -}}{{- end -}}
 {{- $r -}}
 {{- end -}}
+
+{{/*
+Volume name for a store's hook ConfigMap (ADR 0011). Sanitization alone
+collides ("Foo" and "foo" → "foo") and can exceed the 63-char k8s name limit
+("store-hooks-" + a 63-char store name). Deterministic mapping:
+  store-hooks-<first 40 chars of lower/underscore-sanitized name>-<8-char sha256 of the raw name>
+12 + 40 + 1 + 8 = 61 ≤ 63; the hash disambiguates case/truncation collisions.
+The mount PATH keeps the exact store name — this mapping never reaches the
+Rego namespace or the ABI.
+*/}}
+{{- define "pgauthz.storeHooksVolume" -}}
+store-hooks-{{ printf "%.40s" (. | lower | replace "_" "-") }}-{{ sha256sum . | trunc 8 }}
+{{- end }}

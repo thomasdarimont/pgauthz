@@ -264,7 +264,7 @@ func newServer(cfg *config.Config, addr string, h http.Handler) *http.Server {
 // deadline so a black-holed OPA can't block startup, review #9).
 func newOPABackend(ctx context.Context, cfg *config.Config) authz.Backend {
 	opab := opabackend.New(cfg.OPAURL, cfg.OPAPackage, cfg.ForwardTokenToOPA,
-		cfg.OPARequestTimeout, cfg.OPADeepReadinessRequired)
+		cfg.OPARequestTimeout, cfg.OPADeepReadinessRequired, cfg.DeploymentEnvironment, cfg.OPAEvalMetrics)
 	pctx, cancel := context.WithTimeout(ctx, cfg.OPARequestTimeout)
 	defer cancel()
 	if herr := opab.Healthz(pctx); herr != nil {

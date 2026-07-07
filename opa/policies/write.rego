@@ -58,11 +58,44 @@ write := {"allowed": false, "error": "invalid_request"} if {
 	not _valid_write_request
 }
 
-# Authorized + well-formed → dispatch to the matching writer call.
+# Vetoed by a mounted policy hook (deny_write, ADR 0011) — authorized and
+# well-formed, but a write-governance rule said no. Hook identities/reasons are
+# disclosed ONLY when the caller is authorized for detail (input.detail, set by
+# the front door from X-PGAuthz-Detail) — otherwise just the error code, same
+# rule as the decision path.
+write := object.union(
+	{"allowed": false, "error": "denied_by_policy_hook"},
+	_write_veto_detail,
+) if {
+	_writes_enabled
+	_write_authorized
+	_valid_write_request
+	not _write_hooks_pass
+}
+
+_write_veto_detail := object.union(
+	{
+		"denials": hook_write_denials,
+		"denial_count": hook_write_denial_count, # post per-hook caps
+		"hooks_loaded": hooks_loaded,
+	},
+	_write_veto_truncation,
+) if input.detail
+
+_write_veto_detail := {} if not input.detail
+
+_write_veto_truncation := {"denials_truncated": true, "denials_dropped": hook_write_denial_count - 64} if {
+	hook_write_denial_count > 64
+}
+
+_write_veto_truncation := {} if hook_write_denial_count <= 64
+
+# Authorized + well-formed + no hook veto → dispatch to the matching writer call.
 write := {"allowed": true, "result": _forward} if {
 	_writes_enabled
 	_write_authorized
 	_valid_write_request
+	_write_hooks_pass
 }
 
 # Operation dispatch — each clause is selected by input.operation.

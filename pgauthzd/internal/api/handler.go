@@ -516,6 +516,25 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 
 	results, err := h.backend.CheckAccessBatch(r.Context(), store, evals, req.Context, semantic)
 	if err != nil {
+		// A policy-hook veto (ADR 0011) rejects the whole batch: 403, never a
+		// fake all-false result. The structured `denials` disclose hook
+		// identities/reasons, so they are returned ONLY when the caller is
+		// authorized for detail (X-PGAuthz-Detail) — same rule as allow_detailed;
+		// otherwise just the error code.
+		var hookErr *authz.PolicyHookDeniedError
+		if errors.As(err, &hookErr) {
+			body := map[string]any{"status": http.StatusForbidden, "error": "denied_by_policy_hook"}
+			if DetailFromContext(r.Context()) {
+				body["denials"] = hookErr.Denials
+				body["denial_count"] = hookErr.Count // after per-hook caps
+				if hookErr.Truncated {
+					body["denials_truncated"] = true
+					body["denials_dropped"] = hookErr.Dropped
+				}
+			}
+			writeJSON(w, http.StatusForbidden, body)
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
@@ -567,7 +586,7 @@ func (h *Handler) SearchSubject(w http.ResponseWriter, r *http.Request) {
 		req.Context, page)
 	recordSearch(store, "subjects", len(subjects), err)
 	if err != nil {
-		writeInternalError(w, err)
+		writeSearchError(w, err)
 		return
 	}
 
@@ -624,7 +643,7 @@ func (h *Handler) SearchResource(w http.ResponseWriter, r *http.Request) {
 		req.Context, page)
 	recordSearch(store, "objects", len(resources), err)
 	if err != nil {
-		writeInternalError(w, err)
+		writeSearchError(w, err)
 		return
 	}
 

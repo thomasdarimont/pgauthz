@@ -152,7 +152,10 @@ services:
   # ── OPA (read-only access checks via replica) ───────────────────
   opa:
     image: openpolicyagent/opa:1.18.2
-    command: run --server --watch --addr :8181 --authentication=token --authorization=basic /policies /data
+    # DEV ONLY: OPA_DECISION_LOGS_CONSOLE=true logs every decision WITH ITS
+    # FULL INPUT to stdout — including forwarded bearer JWTs (input.token) and
+    # request context. Never enable where logs are shipped/retained.
+    command: run --server --watch --addr :8181 --authentication=token --authorization=basic --set=decision_logs.console=${OPA_DECISION_LOGS_CONSOLE:-false} /policies /data
     environment:
       OPA_ADMIN_TOKEN: "${OPA_ADMIN_TOKEN:-change-me-in-production}"
       JWT_ISSUER: "${JWT_ISSUER:-https://auth.example.com}"

@@ -2,6 +2,7 @@ package opabackend
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
+	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
 )
 
@@ -51,7 +53,7 @@ func TestHealthzDeepReadiness(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := fakeOPA(t, tc.healthStatus, tc.callbackResult)
-			b := New(srv.URL, "authz", false, 5*time.Second, tc.deepRequired)
+			b := New(srv.URL, "authz", false, 5*time.Second, tc.deepRequired, "", true)
 			err := b.Healthz(context.Background())
 			if tc.wantErr == "" {
 				if err != nil {
@@ -70,7 +72,7 @@ func TestHealthzDeepReadiness(t *testing.T) {
 // rule-absent one — a downgrade is observable even without strict mode.
 func TestOPAReadinessModeGauge(t *testing.T) {
 	srv := fakeOPA(t, 200, `{"result": true}`)
-	b := New(srv.URL, "authz", false, 5*time.Second, false)
+	b := New(srv.URL, "authz", false, 5*time.Second, false, "", true)
 	if err := b.Healthz(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -80,11 +82,65 @@ func TestOPAReadinessModeGauge(t *testing.T) {
 	}
 
 	srv2 := fakeOPA(t, 200, `{}`)
-	b2 := New(srv2.URL, "authz", false, 5*time.Second, false)
+	b2 := New(srv2.URL, "authz", false, 5*time.Second, false, "", true)
 	if err := b2.Healthz(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if testutil.ToFloat64(metrics.OPAReadinessMode.WithLabelValues("shallow")) != 1 {
 		t.Fatal("expected mode shallow=1 after a rule-absent probe")
+	}
+}
+
+// A policy evaluation error (OPA 500, e.g. a broken hook under
+// strict-builtin-errors) FAILS CLOSED on every path — the query returns an
+// error, never a phantom allow/decision (ADR 0011).
+func TestPolicyEvaluationErrorFailsClosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// OPA under strict-builtin-errors returns 500 on a runtime error.
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"code":"internal_error","message":"time.clock: eval_builtin_error"}`))
+	}))
+	defer srv.Close()
+	b := New(srv.URL, "authz", false, 5*time.Second, false, "", true)
+
+	// CheckAccess: must NOT return allow=true; must return an error.
+	if ok, err := b.CheckAccess(context.Background(), authz.EvalRequest{Store: "demo"}); ok || err == nil {
+		t.Fatalf("check must fail closed: ok=%v err=%v", ok, err)
+	} else if !strings.Contains(err.Error(), "policy_evaluation_failed") {
+		t.Fatalf("expected policy_evaluation_failed, got %v", err)
+	}
+	// Batch: same.
+	if _, err := b.CheckAccessBatch(context.Background(), "demo", []authz.EvalRequest{{}}, nil, ""); err == nil {
+		t.Fatal("batch must fail closed on eval error")
+	}
+	// Detailed / search: same.
+	if _, _, err := b.CheckAccessDetailed(context.Background(), authz.EvalRequest{Store: "demo"}); err == nil {
+		t.Fatal("allow_detailed must fail closed")
+	}
+	if _, err := b.ListActions(context.Background(), "demo", "u", "a", "d", "1", nil); err == nil {
+		t.Fatal("permitted_actions/list must fail closed")
+	}
+}
+
+// Enumeration refusal (ADR 0011): with hooks loaded and no operator opt-in,
+// the search rules return {"error": "enumeration_refused_with_hooks"} — that
+// must surface as the typed ErrEnumerationRefused (→ 403), never as a silent
+// empty result or a 500.
+func TestEnumerationRefusalSurfacesTyped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"result": {"error": "enumeration_refused_with_hooks"}}`))
+	}))
+	defer srv.Close()
+	b := New(srv.URL, "authz", false, 5*time.Second, false, "", true)
+
+	if _, _, err := b.ListResources(context.Background(), "demo", "u", "a", "r", "d", nil, nil); !errors.Is(err, authz.ErrEnumerationRefused) {
+		t.Fatalf("ListResources: want ErrEnumerationRefused, got %v", err)
+	}
+	if _, _, err := b.ListSubjects(context.Background(), "demo", "u", "r", "d", "1", nil, nil); !errors.Is(err, authz.ErrEnumerationRefused) {
+		t.Fatalf("ListSubjects: want ErrEnumerationRefused, got %v", err)
+	}
+	page := &authz.PageRequest{Limit: 10}
+	if _, _, err := b.ListResources(context.Background(), "demo", "u", "a", "r", "d", nil, page); !errors.Is(err, authz.ErrEnumerationRefused) {
+		t.Fatalf("ListResources paged: want ErrEnumerationRefused, got %v", err)
 	}
 }

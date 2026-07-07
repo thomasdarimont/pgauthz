@@ -127,7 +127,18 @@ var (
 
 	OPARequestDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "pgauthzd_opa_request_duration_seconds",
-		Help:    "OPA policy request duration (only when fronting OPA).",
+		Help:    "OPA policy request round-trip from pgauthzd (network + OPA eval + the graph callback + PostgreSQL). Only when fronting OPA.",
+		Buckets: prometheus.DefBuckets,
+	})
+
+	// OPARegoEvalDuration is OPA's own Rego query-evaluation time
+	// (timer_rego_query_eval_ns via ?metrics=true) — excludes pgauthzd↔OPA
+	// network + OPA HTTP framing, but INCLUDES the http.send graph callback +
+	// PostgreSQL (that runs inside eval). Subtract db_query_duration on the
+	// callback instance to reason about pure policy/hook logic.
+	OPARegoEvalDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "pgauthzd_opa_rego_eval_duration_seconds",
+		Help:    "OPA Rego query evaluation time (timer_rego_query_eval_ns); includes the graph callback, excludes network/HTTP framing.",
 		Buckets: prometheus.DefBuckets,
 	})
 
