@@ -15,13 +15,13 @@ images:
   pullPolicy: IfNotPresent
   postgres:   { repository: ghcr.io/cloudnative-pg/postgresql, tag: "18.4" }
   opa:        { repository: openpolicyagent/opa,               tag: "1.18.2" }
-  migrations: { repository: pgauthz-migrations,                tag: "0.12.0" }
+  migrations: { repository: pgauthz-migrations,                tag: "0.13.0" }
   # pgauthzd — the single unified daemon. Behaviour is selected per Deployment by
   # PGAUTHORIZER_PROFILE (decision-only | full) — DB capability — plus the
   # orthogonal OPA_URL flag (front OPA on /access/v1). ONE image serves the
   # decision-only reader + AuthZEN API, the full writer, and the OPA-fronted
   # AuthZEN gateway.
-  pgauthzd:   { repository: pgauthz-pgauthzd,                  tag: "0.12.0" }
+  pgauthzd:   { repository: pgauthz-pgauthzd,                  tag: "0.13.0" }
 
 # ── Database: CloudNativePG cluster ──────────────────────────────────────────
 database:
