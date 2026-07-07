@@ -471,6 +471,16 @@ check_http "GET /health allowed without token" \
     "200" \
     "$OPA_URL/health"
 
+# Deep readiness (review #8): the allowlisted callback_healthy rule proves the
+# WHOLE decision path — OPA policy eval → native callback → PostgreSQL — and
+# powers the OPA-fronted pgauthzd's /readyz (shallow OPA /health alone can be
+# green while decisions fail).
+check_jq "deep readiness: OPA → native callback → PostgreSQL healthy" \
+    "authz/pgauthz/callback_healthy" \
+    '{}' \
+    '.result' \
+    "true"
+
 # Blocked: POST to a path not in the endpoint allowlist (e.g. /v1/data/keys — would leak JWKS)
 check_http "POST /v1/data/keys blocked without token" \
     "401" \

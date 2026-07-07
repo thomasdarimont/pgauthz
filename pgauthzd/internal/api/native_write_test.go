@@ -37,7 +37,13 @@ func (b *writeStubBackend) DeleteTuples(context.Context, authz.WriteRequest) (in
 func writeReq() *http.Request {
 	r := httptest.NewRequest(http.MethodPost, "/pgauthz/v1/write",
 		strings.NewReader(`{"tuples":[{"user_type":"user","user_id":"a","relation":"viewer","object_type":"doc","object_id":"d"}]}`))
-	return r
+	// An authenticated subject is always present in reality (the JWT middleware
+	// sets it on the public listener; OPA asserts performed_by on the callback)
+	// — and some attributable actor is REQUIRED since review #8 (no empty
+	// audit attribution).
+	ctx := context.WithValue(r.Context(), ctxSubjectType, "user")
+	ctx = context.WithValue(ctx, ctxSubjectID, "tester")
+	return r.WithContext(ctx)
 }
 
 // A forbidden per-app role (reader-only token reaching the write path) must
@@ -144,5 +150,20 @@ func TestWritePerformedByAttribution(t *testing.T) {
 				t.Fatalf("got %d, want %d; body=%s", w.Code, tc.wantCode, w.Body.String())
 			}
 		})
+	}
+}
+
+// The callback listener has no JWT subject to fall back to: an omitted
+// performed_by must be a 400, never an EMPTY audit attribution (review #8).
+func TestWriteCallbackEmptyActorIs400(t *testing.T) {
+	b := &writeStubBackend{written: 1}
+	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo"})
+	// callback semantics (requireWriterRole=false) + NO subject ctx + NO body value
+	r := httptest.NewRequest(http.MethodPost, "/pgauthz/v1/write",
+		strings.NewReader(`{"tuples":[{"user_type":"user","user_id":"a","relation":"viewer","object_type":"doc","object_id":"d"}]}`))
+	w := httptest.NewRecorder()
+	h.WriteTuples(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("empty audit actor: got %d, want 400; body=%s", w.Code, w.Body.String())
 	}
 }

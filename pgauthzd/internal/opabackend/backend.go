@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -264,6 +265,47 @@ func (b *Backend) Healthz(ctx context.Context) error {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("OPA health check returned %d", resp.StatusCode)
+	}
+	// OPA's own /health proves only that OPA runs — not that a decision can
+	// succeed (review #8). The pgauthz client policy exposes a deep-readiness
+	// rule, data.pgauthz.callback_healthy, whose evaluation exercises the WHOLE
+	// path: OPA policy eval → native callback listener → PostgreSQL. Fail
+	// readiness when it reports false; a policy set without the rule (custom
+	// Rego) degrades to the shallow check above.
+	return b.callbackHealthy(ctx)
+}
+
+// callbackHealthy queries data.authz.pgauthz.callback_healthy (a bare boolean;
+// the rule is defined in opa/policies/pgauthz.rego — package authz.pgauthz —
+// and allowlisted in system_authz.rego).
+func (b *Backend) callbackHealthy(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		b.baseURL+"/v1/data/authz/pgauthz/callback_healthy", strings.NewReader(`{}`))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("OPA deep-readiness query: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("OPA deep-readiness query returned %d", resp.StatusCode)
+	}
+	var out struct {
+		Result *bool `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return fmt.Errorf("OPA deep-readiness response: %w", err)
+	}
+	if out.Result == nil {
+		// Rule not defined in the loaded policy set — shallow health only.
+		slog.Debug("OPA policy set has no pgauthz.callback_healthy rule; readiness is OPA-shallow")
+		return nil
+	}
+	if !*out.Result {
+		return fmt.Errorf("authorization path unhealthy: OPA cannot reach the native callback (or its PostgreSQL)")
 	}
 	return nil
 }

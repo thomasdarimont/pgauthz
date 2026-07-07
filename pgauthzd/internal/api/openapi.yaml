@@ -1577,8 +1577,10 @@ components:
         the authenticated JWT subject is authoritative — omit this field or
         send the same value; a DIFFERING value is rejected (403) unless
         ALLOW_SUBJECT_OVERRIDE is enabled (trusted-PEP deployments asserting
-        on-behalf-of actors). INTERNAL callback listener: the trusted OPA
-        upstream passes the subject it authenticated here.
+        on-behalf-of actors). INTERNAL callback listener: REQUIRED — the
+        trusted OPA upstream passes the subject it authenticated here; with
+        no JWT to fall back to, an omitted value is rejected (400) rather
+        than stored as an empty attribution.
     Consistency:
       type: string
       enum: [applied, durable, eventual]

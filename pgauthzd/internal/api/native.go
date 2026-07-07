@@ -100,11 +100,18 @@ type writeTuplesBody struct {
 //     guard, any authorized writer could stamp another user into the immutable
 //     audit trail.
 //
-// Returns ok=false with the 403 already written.
+// Returns ok=false with the 403/400 already written.
 func (h *Handler) resolvePerformedBy(w http.ResponseWriter, r *http.Request, bodyValue string) (string, bool) {
 	_, jwtSubject := SubjectFromContext(r.Context())
 	switch {
 	case bodyValue == "":
+		// The callback listener has NO JWT subject to fall back to — an omitted
+		// performed_by would store an EMPTY audit attribution (review #8).
+		// Require the upstream to assert the actor it authenticated.
+		if jwtSubject == "" {
+			writeBadRequest(w, "performed_by is required: this listener has no authenticated subject to attribute the write to")
+			return "", false
+		}
 		return jwtSubject, true
 	case !h.requireWriterRole: // internal callback listener (trusted PEP upstream)
 		return bodyValue, true

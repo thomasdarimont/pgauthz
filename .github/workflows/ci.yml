@@ -16,12 +16,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Host Go is used for the pgauthzd unit tests; the service images
       # themselves build inside Docker via docker compose.
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: pgauthzd/go.mod
           cache-dependency-path: pgauthzd/go.sum
@@ -45,7 +45,7 @@ jobs:
       # deploy/migrations/Dockerfile.
       - name: Cache sqlx-cli
         id: cache-sqlx
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/sqlx
           key: sqlx-cli-0.9.0-${{ runner.os }}
@@ -78,13 +78,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0          # need history + tags to check out the prior release
 
       - name: Cache sqlx-cli
         id: cache-sqlx
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/sqlx
           key: sqlx-cli-0.9.0-${{ runner.os }}
@@ -162,7 +162,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Run replication integration test
         run: ./tests/test-replication.sh
@@ -186,11 +186,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Cache sqlx-cli
         id: cache-sqlx
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/sqlx
           key: sqlx-cli-0.9.0-${{ runner.os }}
@@ -220,13 +220,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build pg_cel postgres image (cached)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: extensions/pg-cel/Dockerfile
@@ -240,7 +240,7 @@ jobs:
 
       - name: Cache sqlx-cli
         id: cache-sqlx
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/sqlx
           key: sqlx-cli-0.9.0-${{ runner.os }}

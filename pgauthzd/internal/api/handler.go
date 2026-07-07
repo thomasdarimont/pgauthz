@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 
@@ -719,7 +720,11 @@ func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
 	}
 	if b != nil {
 		if err := b.Healthz(r.Context()); err != nil {
-			writeError(w, http.StatusServiceUnavailable, "unhealthy: "+err.Error())
+			// The probe endpoints are UNAUTHENTICATED — backend error text can
+			// carry hostnames/DSN fragments, so the caller gets a generic body
+			// (review #8) and the cause goes to the server log only.
+			slog.Warn("readiness check failed", "error", err)
+			writeError(w, http.StatusServiceUnavailable, "unhealthy")
 			return
 		}
 	}

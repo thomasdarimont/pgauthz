@@ -7,6 +7,40 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Security
+
+- **`/readyz` no longer echoes backend errors** (review #8). The probe
+  endpoints are unauthenticated, and a failing backend's error text can carry
+  internal hostnames or DSN fragments; callers now get a generic
+  `{"status":503,"message":"unhealthy"}` while the cause goes to the
+  structured server log. Test pins that DSN/hostname strings never reach the
+  body.
+- **No empty audit attribution on the callback listener** (review #8,
+  F16 follow-up). The service-token callback listener has no JWT subject to
+  fall back to, so an omitted `performed_by` would have stored an *empty*
+  actor in the immutable audit trail; it is now rejected (`400`). The
+  sanctioned caller is unaffected — the OPA policy always asserts
+  `authn.subject_id`.
+
+### Added
+
+- **OPA-mode readiness is end-to-end** (review #8). An OPA-fronted instance's
+  `/readyz` previously proved only that OPA's own `/health` answered — not
+  that a decision could succeed. The pgauthz client policy now exposes
+  `data.authz.pgauthz.callback_healthy` (allowlisted in `system_authz.rego`,
+  a bare boolean; reuses the callback mTLS options, 2s timeout, never
+  cached), and `opabackend.Healthz` queries it after OPA `/health` — so
+  "ready" means **OPA policy eval → native callback → PostgreSQL** is usable.
+  A policy set without the rule (custom Rego) degrades to the shallow check.
+  Validated against a real OPA (rule true with the callback up, false with it
+  down) and asserted in `tests/test-opa.sh`.
+
+### Changed
+
+- **GitHub Actions bumped off the deprecated Node 20 runtime**: `checkout@v7`,
+  `setup-go@v6`, `cache@v6`, `docker/setup-buildx-action@v4`,
+  `docker/build-push-action@v7`.
+
 ## [0.12.0] - 2026-07-07
 
 ### Security

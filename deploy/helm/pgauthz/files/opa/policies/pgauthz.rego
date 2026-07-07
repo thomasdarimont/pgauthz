@@ -392,3 +392,25 @@ list_actions_with_context(store, subject_type, subject_id, object_type, object_i
 	response.status_code == 200
 	actions := {a | some a in response.body.actions}
 }
+
+# ── Deep readiness (review #8) ───────────────────────────────────────────────
+# TRUE only when the native callback listener answers its health endpoint —
+# which itself pings PostgreSQL (/healthz is the /readyz alias). Queried by an
+# OPA-fronted pgauthzd's /readyz, so "ready" means the WHOLE decision path
+# (OPA policy eval → native callback → PostgreSQL) is usable, not merely that
+# OPA's own /health responds. Never cached (a readiness probe must be live);
+# short timeout so a dead callback fails the probe fast instead of hanging it.
+default callback_healthy := false
+
+callback_healthy if {
+	resp := http.send(object.union(
+		{
+			"method": "GET",
+			"url": concat("", [config.native_url, "/healthz"]),
+			"timeout": "2s",
+			"raise_error": false,
+		},
+		_native_tls_opts,
+	))
+	resp.status_code == 200
+}

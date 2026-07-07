@@ -57,6 +57,10 @@ _public_eval_paths := {
 	["v1", "data", "authz", "token_debug"],
 	["v1", "data", "authz", "identity"],
 	["v1", "data", "authz", "write"],
+	# Deep-readiness probe (review #8): a bare boolean — can OPA reach the
+	# native callback (which pings PostgreSQL)? Exposes the same up/down fact
+	# an unauthenticated /readyz already reports; no data beyond it.
+	["v1", "data", "authz", "pgauthz", "callback_healthy"],
 }
 
 # POST /v1/data/authz/<endpoint> — policy evaluation (exact paths only)

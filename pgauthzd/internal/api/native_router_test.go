@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
@@ -62,11 +63,29 @@ func TestCallbackHealthzNilBackend(t *testing.T) {
 	}
 }
 
-// unhealthyBackend fails its health ping (DB down).
+// unhealthyBackend fails its health ping (DB down) with an error that carries
+// the kind of internal detail a probe response must not echo.
 type unhealthyBackend struct{ authz.Backend }
 
 func (unhealthyBackend) Healthz(context.Context) error {
-	return errors.New("connection refused")
+	return errors.New(`dial tcp: lookup authz-db.internal.corp: connection refused (dsn postgres://authz@authz-db:5432)`)
+}
+
+// /readyz is UNAUTHENTICATED — a failing backend must produce a generic body,
+// never the underlying error text (hostnames/DSN fragments) (review #8).
+func TestReadyzDoesNotLeakBackendError(t *testing.T) {
+	b := &unhealthyBackend{}
+	h := NewHandler(b, b, b, &config.Config{})
+	w := httptest.NewRecorder()
+	h.Readyz(w, httptest.NewRequest("GET", "/readyz", nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("got %d, want 503", w.Code)
+	}
+	for _, leak := range []string{"authz-db", "dsn", "dial tcp", "connection refused"} {
+		if strings.Contains(w.Body.String(), leak) {
+			t.Fatalf("readyz body leaks backend detail %q: %s", leak, w.Body.String())
+		}
+	}
 }
 
 // Liveness must NOT depend on the backend (review #7): a DB outage takes the
