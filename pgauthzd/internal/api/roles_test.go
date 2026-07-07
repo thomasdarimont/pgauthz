@@ -68,3 +68,74 @@ func TestRequireSearchRole(t *testing.T) {
 		t.Errorf("expected 403, got %d", w.Code)
 	}
 }
+
+// Watch is DENY BY DEFAULT on the public listener (review #10): the
+// changefeed exposes authorization topology, and the DB connection role holds
+// authz_auditor to serve it — HTTP decides who may ask.
+func TestWatchRoleGate(t *testing.T) {
+	withRoles := func(ctx context.Context, roles []string) context.Context {
+		return context.WithValue(ctx, ctxRoles, roles)
+	}
+	// default (unset): 403 regardless of roles
+	h := &Handler{cfg: &config.Config{}, gateDiagnostics: true}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/pgauthz/v1/watch", nil)
+	if h.requireWatchRole(w, r) || w.Code != http.StatusForbidden {
+		t.Fatalf("unset WATCH_REQUIRED_ROLE must 403 on the public listener, got %d", w.Code)
+	}
+
+	// configured role: ordinary caller 403, auditor passes
+	h = &Handler{cfg: &config.Config{WatchRequiredRole: "authz_auditor"}, gateDiagnostics: true}
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest("POST", "/pgauthz/v1/watch", nil)
+	r = r.WithContext(withRoles(r.Context(), []string{"viewer"}))
+	if h.requireWatchRole(w, r) {
+		t.Fatal("ordinary token must not watch")
+	}
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest("POST", "/pgauthz/v1/watch", nil)
+	r = r.WithContext(withRoles(r.Context(), []string{"authz_auditor"}))
+	if !h.requireWatchRole(w, r) {
+		t.Fatal("auditor token must watch")
+	}
+
+	// "*" opens explicitly
+	h = &Handler{cfg: &config.Config{WatchRequiredRole: "*"}, gateDiagnostics: true}
+	w = httptest.NewRecorder()
+	if !h.requireWatchRole(w, httptest.NewRequest("POST", "/pgauthz/v1/watch", nil)) {
+		t.Fatal(`WATCH_REQUIRED_ROLE="*" must open the route`)
+	}
+
+	// callback listener (gateDiagnostics=false): unaffected — OPA is a trusted PEP
+	h = &Handler{cfg: &config.Config{}, gateDiagnostics: false}
+	w = httptest.NewRecorder()
+	if !h.requireWatchRole(w, httptest.NewRequest("POST", "/pgauthz/v1/watch", nil)) {
+		t.Fatal("callback listener must not be gated")
+	}
+}
+
+func TestExplainRoleGate(t *testing.T) {
+	withRoles := func(ctx context.Context, roles []string) context.Context {
+		return context.WithValue(ctx, ctxRoles, roles)
+	}
+	// empty = open (back-compat)
+	h := &Handler{cfg: &config.Config{}, gateDiagnostics: true}
+	if !h.requireExplainRole(httptest.NewRecorder(), httptest.NewRequest("POST", "/pgauthz/v1/explain", nil)) {
+		t.Fatal("empty EXPLAIN_REQUIRED_ROLE keeps explain open")
+	}
+	// configured: gate on the JWT role
+	h = &Handler{cfg: &config.Config{ExplainRequiredRole: "support"}, gateDiagnostics: true}
+	r := httptest.NewRequest("POST", "/pgauthz/v1/explain", nil)
+	if h.requireExplainRole(httptest.NewRecorder(), r) {
+		t.Fatal("caller without the role must not explain")
+	}
+	r = r.WithContext(withRoles(r.Context(), []string{"support"}))
+	if !h.requireExplainRole(httptest.NewRecorder(), r) {
+		t.Fatal("caller with the role must explain")
+	}
+	// callback unaffected even when configured
+	h = &Handler{cfg: &config.Config{ExplainRequiredRole: "support"}, gateDiagnostics: false}
+	if !h.requireExplainRole(httptest.NewRecorder(), httptest.NewRequest("POST", "/pgauthz/v1/explain", nil)) {
+		t.Fatal("callback explain must stay open (trusted PEP)")
+	}
+}

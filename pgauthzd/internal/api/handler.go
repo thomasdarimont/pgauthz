@@ -46,7 +46,12 @@ type Handler struct {
 	// Left false on the service-token CALLBACK router, which trusts the upstream
 	// OPA's asserted X-PGAuthz-Role instead of a JWT role claim.
 	requireWriterRole bool
-	cfg               *config.Config
+	// gateDiagnostics applies the WATCH_REQUIRED_ROLE / EXPLAIN_REQUIRED_ROLE
+	// gates — true only on the PUBLIC listener (the callback listener is a
+	// trusted-PEP surface authenticated by service credential; OPA-mediated
+	// explain, e.g. the playground, must keep working).
+	gateDiagnostics bool
+	cfg             *config.Config
 	// freshKeys is the freshness-token keyring derived once from
 	// cfg.FreshnessKeys: freshKeys[0] mints, every entry verifies (rotation
 	// overlap, ADR 0009). Empty = feature disabled.
@@ -83,6 +88,7 @@ func NewHandler(backend, raw, rawWrite authz.Backend, cfg *config.Config) *Handl
 func NewRouter(backend, raw, rawWrite authz.Backend, cfg *config.Config, jwtMW *JWTMiddleware) http.Handler {
 	h := NewHandler(backend, raw, rawWrite, cfg)
 	h.requireWriterRole = true
+	h.gateDiagnostics = true
 	return withMiddleware(newPublicMux(h, cfg.UsesOPA()), jwtMW, cfg.HTTPMaxBodyBytes)
 }
 
@@ -334,6 +340,49 @@ func (h *Handler) requireSearchRole(w http.ResponseWriter, r *http.Request) bool
 	}
 	metrics.AuthzDenied.WithLabelValues("search_role").Inc()
 	writeForbidden(w, "search requires the '"+h.cfg.SearchRequiredRole+"' role")
+	return false
+}
+
+// requireWatchRole gates the native changefeed on the public listener —
+// DENY BY DEFAULT (review #10): the feed exposes authorization topology, and
+// the connection role's authz_auditor grant exists to serve it, so HTTP must
+// decide who may ask. Unset = 403; "*" = explicitly open; else JWT role.
+func (h *Handler) requireWatchRole(w http.ResponseWriter, r *http.Request) bool {
+	if !h.gateDiagnostics {
+		return true // trusted callback listener
+	}
+	required := h.cfg.WatchRequiredRole
+	if required == "*" {
+		return true
+	}
+	if required == "" {
+		metrics.AuthzDenied.WithLabelValues("watch_role").Inc()
+		writeForbidden(w, "the watch changefeed is disabled on this listener (set WATCH_REQUIRED_ROLE to enable it for a role, or \"*\" to open it)")
+		return false
+	}
+	for _, role := range RolesFromContext(r.Context()) {
+		if role == required {
+			return true
+		}
+	}
+	metrics.AuthzDenied.WithLabelValues("watch_role").Inc()
+	writeForbidden(w, "watch requires the '"+required+"' role")
+	return false
+}
+
+// requireExplainRole gates native explain on the public listener like search:
+// empty = open (back-compat), else the caller must hold the role.
+func (h *Handler) requireExplainRole(w http.ResponseWriter, r *http.Request) bool {
+	if !h.gateDiagnostics || h.cfg.ExplainRequiredRole == "" {
+		return true
+	}
+	for _, role := range RolesFromContext(r.Context()) {
+		if role == h.cfg.ExplainRequiredRole {
+			return true
+		}
+	}
+	metrics.AuthzDenied.WithLabelValues("explain_role").Inc()
+	writeForbidden(w, "explain requires the '"+h.cfg.ExplainRequiredRole+"' role")
 	return false
 }
 

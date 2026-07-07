@@ -53,7 +53,7 @@ func TestHealthzDeepReadiness(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := fakeOPA(t, tc.healthStatus, tc.callbackResult)
-			b := New(srv.URL, "authz", false, 5*time.Second, tc.deepRequired, "", true)
+			b := New(srv.URL, "authz", false, 5*time.Second, tc.deepRequired, "", true, 1<<20)
 			err := b.Healthz(context.Background())
 			if tc.wantErr == "" {
 				if err != nil {
@@ -72,7 +72,7 @@ func TestHealthzDeepReadiness(t *testing.T) {
 // rule-absent one — a downgrade is observable even without strict mode.
 func TestOPAReadinessModeGauge(t *testing.T) {
 	srv := fakeOPA(t, 200, `{"result": true}`)
-	b := New(srv.URL, "authz", false, 5*time.Second, false, "", true)
+	b := New(srv.URL, "authz", false, 5*time.Second, false, "", true, 1<<20)
 	if err := b.Healthz(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestOPAReadinessModeGauge(t *testing.T) {
 	}
 
 	srv2 := fakeOPA(t, 200, `{}`)
-	b2 := New(srv2.URL, "authz", false, 5*time.Second, false, "", true)
+	b2 := New(srv2.URL, "authz", false, 5*time.Second, false, "", true, 1<<20)
 	if err := b2.Healthz(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestPolicyEvaluationErrorFailsClosed(t *testing.T) {
 		w.Write([]byte(`{"code":"internal_error","message":"time.clock: eval_builtin_error"}`))
 	}))
 	defer srv.Close()
-	b := New(srv.URL, "authz", false, 5*time.Second, false, "", true)
+	b := New(srv.URL, "authz", false, 5*time.Second, false, "", true, 1<<20)
 
 	// CheckAccess: must NOT return allow=true; must return an error.
 	if ok, err := b.CheckAccess(context.Background(), authz.EvalRequest{Store: "demo"}); ok || err == nil {
@@ -131,7 +131,7 @@ func TestEnumerationRefusalSurfacesTyped(t *testing.T) {
 		w.Write([]byte(`{"result": {"error": "enumeration_refused_with_hooks"}}`))
 	}))
 	defer srv.Close()
-	b := New(srv.URL, "authz", false, 5*time.Second, false, "", true)
+	b := New(srv.URL, "authz", false, 5*time.Second, false, "", true, 1<<20)
 
 	if _, _, err := b.ListResources(context.Background(), "demo", "u", "a", "r", "d", nil, nil); !errors.Is(err, authz.ErrEnumerationRefused) {
 		t.Fatalf("ListResources: want ErrEnumerationRefused, got %v", err)
@@ -154,7 +154,7 @@ func TestFilteredEnumerationPageProtocol(t *testing.T) {
 		w.Write([]byte(`{"result": {"hook_filtered": true, "ids": ["doc_a"], "has_more": true, "cursor": "doc_b"}}`))
 	}))
 	defer srv.Close()
-	b := New(srv.URL, "authz", false, 5*time.Second, false, "", true)
+	b := New(srv.URL, "authz", false, 5*time.Second, false, "", true, 1<<20)
 
 	ids, pageResp, err := b.ListResources(context.Background(), "demo", "u", "alice", "r", "d", nil, &authz.PageRequest{Limit: 2})
 	if err != nil {
@@ -180,9 +180,27 @@ func TestFilteredEnumerationCapExceeded(t *testing.T) {
 		w.Write([]byte(`{"result": {"error": "enumeration_refused_too_many_candidates"}}`))
 	}))
 	defer srv.Close()
-	b := New(srv.URL, "authz", false, 5*time.Second, false, "", true)
+	b := New(srv.URL, "authz", false, 5*time.Second, false, "", true, 1<<20)
 
 	if _, _, err := b.ListResources(context.Background(), "demo", "u", "a", "r", "d", nil, nil); !errors.Is(err, authz.ErrEnumerationCapExceeded) {
 		t.Fatalf("want ErrEnumerationCapExceeded, got %v", err)
+	}
+}
+
+// An oversized OPA response fails closed as policy_evaluation_failed, never a
+// large allocation or a phantom decision (review #10).
+func TestOversizedOPAResponseFailsClosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"result": "` + strings.Repeat("x", 4096) + `"}`))
+	}))
+	defer srv.Close()
+	b := New(srv.URL, "authz", false, 5*time.Second, false, "", true, 1024)
+
+	ok, err := b.CheckAccess(context.Background(), authz.EvalRequest{Store: "demo"})
+	if ok || err == nil || !strings.Contains(err.Error(), "policy_evaluation_failed") {
+		t.Fatalf("oversized response must fail closed: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(err.Error(), "OPA_MAX_RESPONSE_BYTES") {
+		t.Fatalf("error should name the bound, got %v", err)
 	}
 }

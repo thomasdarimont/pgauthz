@@ -36,20 +36,26 @@ func TestRequireStoreBindingAcceptsFullyBound(t *testing.T) {
 	}
 }
 
-func TestStoreBindingNotRequiredByDefault(t *testing.T) {
+// Review #10 changed this default: unbound MULTI-issuer configurations are
+// now fatal (cross-tenant reachability) unless deliberately overridden.
+func TestStoreBindingMultiIssuerFailClosed(t *testing.T) {
 	setIssuers(t, `[
 		{"issuer":"https://a","jwks_file":"/keys/a.json"},
 		{"issuer":"https://b","jwks_file":"/keys/b.json"}
 	]`)
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "ALLOW_UNBOUND_MULTI_ISSUER") {
+		t.Fatalf("unbound multi-issuer must fail closed, got %v", err)
+	}
+	t.Setenv("ALLOW_UNBOUND_MULTI_ISSUER", "true")
 	if _, err := Load(); err != nil {
-		t.Fatalf("unbound issuers must load (warning only) with flags off, got %v", err)
+		t.Fatalf("explicit override must load (with warnings), got %v", err)
 	}
 }
 
 func TestRequireDBRoleBindingRejectsUnboundIssuer(t *testing.T) {
 	setIssuers(t, `[
-		{"issuer":"https://a","jwks_file":"/keys/a.json","db_roles":["app_a_authz"]},
-		{"issuer":"https://b","jwks_file":"/keys/b.json"}
+		{"issuer":"https://a","jwks_file":"/keys/a.json","stores":["a_*"],"db_roles":["app_a_authz"]},
+		{"issuer":"https://b","jwks_file":"/keys/b.json","stores":["b_*"]}
 	]`)
 	t.Setenv("DB_ROLE_CLAIM", "db_role") // role derivation configured
 	t.Setenv("REQUIRE_DB_ROLE_BINDING", "true")
@@ -61,8 +67,8 @@ func TestRequireDBRoleBindingRejectsUnboundIssuer(t *testing.T) {
 
 func TestRequireDBRoleBindingAcceptsClientMapAsBinding(t *testing.T) {
 	setIssuers(t, `[
-		{"issuer":"https://a","jwks_file":"/keys/a.json","db_roles":["app_a_authz"]},
-		{"issuer":"https://b","jwks_file":"/keys/b.json","client_db_roles":{"app-b":"app_b_authz"}}
+		{"issuer":"https://a","jwks_file":"/keys/a.json","stores":["a_*"],"db_roles":["app_a_authz"]},
+		{"issuer":"https://b","jwks_file":"/keys/b.json","stores":["b_*"],"client_db_roles":{"app-b":"app_b_authz"}}
 	]`)
 	t.Setenv("DB_ROLE_CLAIM", "db_role")
 	t.Setenv("REQUIRE_DB_ROLE_BINDING", "true")
@@ -75,8 +81,8 @@ func TestRequireDBRoleBindingNoopWithoutDerivation(t *testing.T) {
 	// No DB_ROLE_CLAIM / CLIENT_DB_ROLES anywhere: roles cannot be claimed at
 	// all, so the binding requirement has nothing to enforce.
 	setIssuers(t, `[
-		{"issuer":"https://a","jwks_file":"/keys/a.json"},
-		{"issuer":"https://b","jwks_file":"/keys/b.json"}
+		{"issuer":"https://a","jwks_file":"/keys/a.json","stores":["a_*"]},
+		{"issuer":"https://b","jwks_file":"/keys/b.json","stores":["b_*"]}
 	]`)
 	t.Setenv("DB_ROLE_CLAIM", "")
 	t.Setenv("REQUIRE_DB_ROLE_BINDING", "true")
@@ -187,5 +193,57 @@ func TestCursorSealKeyringAccepted(t *testing.T) {
 	t.Setenv("CURSOR_SEAL_KEY", "new-key, old-key")
 	if c, err := Load(); err != nil || c.CursorSealKey == "" {
 		t.Fatalf("valid keyring rejected: %v", err)
+	}
+}
+
+// Invalid env values are STARTUP FAILURES, never silent defaults (review #10):
+// REQUIRE_STORE_BINDING=treu must not quietly mean "false".
+func TestInvalidEnvValuesAreFatal(t *testing.T) {
+	setMinimalIssuer(t)
+	t.Setenv("REQUIRE_STORE_BINDING", "treu")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "REQUIRE_STORE_BINDING") {
+		t.Fatalf("typo'd boolean must fail startup, got %v", err)
+	}
+}
+
+func TestInvalidDurationFatal(t *testing.T) {
+	setMinimalIssuer(t)
+	t.Setenv("OPA_REQUEST_TIMEOUT", "10 seconds")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "OPA_REQUEST_TIMEOUT") {
+		t.Fatalf("invalid duration must fail startup, got %v", err)
+	}
+}
+
+func TestInvalidIntFatal(t *testing.T) {
+	setMinimalIssuer(t)
+	t.Setenv("DB_POOL_MAX", "many")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "DB_POOL_MAX") {
+		t.Fatalf("invalid int must fail startup, got %v", err)
+	}
+}
+
+// Multi-issuer deployments are fail-closed (review #10): a second issuer
+// without a stores binding is a cross-tenant hole and must stop startup.
+func TestMultiIssuerUnboundFatal(t *testing.T) {
+	setMinimalIssuer(t)
+	t.Setenv("JWT_ISSUERS", `[
+		{"issuer":"https://a.example","jwks_url":"https://a.example/jwks","audience":"x","stores":["tenant_a"]},
+		{"issuer":"https://b.example","jwks_url":"https://b.example/jwks","audience":"x"}
+	]`)
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "ALLOW_UNBOUND_MULTI_ISSUER") {
+		t.Fatalf("unbound second issuer must fail startup, got %v", err)
+	}
+
+	t.Setenv("ALLOW_UNBOUND_MULTI_ISSUER", "true")
+	if _, err := Load(); err != nil {
+		t.Fatalf("deliberate override must permit startup, got %v", err)
+	}
+}
+
+// A single issuer keeps the historical default (no bindings required).
+func TestSingleIssuerUnboundOK(t *testing.T) {
+	setMinimalIssuer(t)
+	if _, err := Load(); err != nil {
+		t.Fatalf("single unbound issuer must keep working, got %v", err)
 	}
 }

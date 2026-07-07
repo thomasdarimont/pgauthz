@@ -26,6 +26,9 @@ services:
       - "8090:8080"
       - "9090:9090"   # Prometheus /metrics (ADR 0010) — demo convenience; don't host-expose in prod
     environment:
+      # Watch is deny-by-default on the public listener (review #10); the
+      # dev/test stack opens it for auditor-role tokens.
+      WATCH_REQUIRED_ROLE: "${WATCH_REQUIRED_ROLE:-authz_auditor}"
       LISTEN_ADDR: ":8080"
       METRICS_LISTEN_ADDR: ":9090"
       PGAUTHORIZER_PROFILE: "decision-only"

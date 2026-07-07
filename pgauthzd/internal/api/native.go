@@ -315,6 +315,9 @@ func (h *Handler) Explain(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !h.requireExplainRole(w, r) {
+		return
+	}
 	var req explainRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeBadRequest(w, "invalid JSON: "+err.Error())
@@ -361,6 +364,9 @@ type watchRequestBody struct {
 func (h *Handler) Watch(w http.ResponseWriter, r *http.Request) {
 	nr, ok := h.nativeReader(w)
 	if !ok {
+		return
+	}
+	if !h.requireWatchRole(w, r) {
 		return
 	}
 	var req watchRequestBody

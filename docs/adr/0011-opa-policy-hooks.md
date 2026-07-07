@@ -263,7 +263,12 @@ Users add hooks by **mounting `.rego` files** — compose: volume onto
   context AND the caller** via AEAD additional-authenticated-data — payload:
   `{last_consumed_raw_key}`; AAD: `{cursor-format version, operation, store,
   actor.id, subject/resource query dimensions, action, canonical
-  caller-context hash}`. The version component is the **cursor-format
+  caller-context hash}`, length-prefix encoded (netstring-style) so arbitrary
+  ids containing separator characters can never make two different field
+  tuples encode identically, with the context hash as the full SHA-256
+  digest (a truncated hash would invite offline birthday collisions on
+  caller-constructed contexts); a cursor-sealing failure is a 5xx, never a
+  silently completed enumeration (review #10). The version component is the **cursor-format
   contract version** (`pgauthz-cursor-v1`) — NOT the pgauthzd release or the
   authorization-model version: bumping it deliberately invalidates all
   outstanding cursors when the binding layout changes, while deploys and

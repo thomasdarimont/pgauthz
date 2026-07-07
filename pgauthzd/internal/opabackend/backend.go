@@ -30,6 +30,8 @@ type Backend struct {
 	deploymentEnv string
 	// evalMetrics adds ?metrics=true to record OPA's Rego eval time.
 	evalMetrics bool
+	// maxResponseBytes bounds every OPA response body (review #10).
+	maxResponseBytes int64
 }
 
 // New builds an OPA backend. timeout bounds EVERY OPA HTTP call — Go's zero
@@ -38,9 +40,12 @@ type Backend struct {
 // unlimited (fail bounded). deepReadinessRequired makes a policy set WITHOUT
 // the callback_healthy rule fail readiness instead of degrading to the
 // shallow OPA-/health-only check.
-func New(baseURL, pkg string, forwardToken bool, timeout time.Duration, deepReadinessRequired bool, deploymentEnv string, evalMetrics bool) *Backend {
+func New(baseURL, pkg string, forwardToken bool, timeout time.Duration, deepReadinessRequired bool, deploymentEnv string, evalMetrics bool, maxResponseBytes int64) *Backend {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
+	}
+	if maxResponseBytes <= 0 {
+		maxResponseBytes = 10 << 20 // fail bounded, never unlimited
 	}
 	return &Backend{
 		baseURL:               strings.TrimRight(baseURL, "/"),
@@ -50,6 +55,7 @@ func New(baseURL, pkg string, forwardToken bool, timeout time.Duration, deepRead
 		deepReadinessRequired: deepReadinessRequired,
 		deploymentEnv:         deploymentEnv,
 		evalMetrics:           evalMetrics,
+		maxResponseBytes:      maxResponseBytes,
 	}
 }
 
@@ -229,15 +235,17 @@ func decodeIDs(raw json.RawMessage) ([]string, *filteredPage, error) {
 // is the last RAW consumed id — possibly one the hooks removed from the
 // results — so it is SEALED (AES-GCM): opaque and integrity-protected, no
 // existence leak through pagination metadata.
-func pageFromFiltered(fp *filteredPage, aad string) *authz.PageResponse {
+func pageFromFiltered(fp *filteredPage, aad string) (*authz.PageResponse, error) {
 	if !fp.HasMore {
-		return nil
+		return nil, nil
 	}
-	tok := api.EncodeSealedPageAfter(fp.Cursor, aad)
-	if tok == "" {
-		return nil // no usable cipher: end pagination rather than leak
+	tok, err := api.EncodeSealedPageAfter(fp.Cursor, aad)
+	if err != nil {
+		// surface as 5xx — never let a sealing failure end pagination as if
+		// the enumeration completed (review #10)
+		return nil, err
 	}
-	return &authz.PageResponse{HasMore: true, NextToken: tok}
+	return &authz.PageResponse{HasMore: true, NextToken: tok}, nil
 }
 
 func (b *Backend) ListResources(ctx context.Context, store string,
@@ -272,9 +280,13 @@ func (b *Backend) ListResources(ctx context.Context, store string,
 		}
 		if fp != nil {
 			_, actorID := api.SubjectFromContext(ctx)
-			return ids, pageFromFiltered(fp, api.SealedCursorAAD("objects", store, actorID,
+			pr, err := pageFromFiltered(fp, api.SealedCursorAAD("objects", store, actorID,
 				subjectType, subjectID, action, objectType, "",
-				api.CanonicalContextHash(reqContext))), nil
+				api.CanonicalContextHash(reqContext)))
+			if err != nil {
+				return nil, nil, err
+			}
+			return ids, pr, nil
 		}
 
 		return buildPage(ids, page.Limit)
@@ -327,9 +339,13 @@ func (b *Backend) ListSubjects(ctx context.Context, store string,
 		}
 		if fp != nil {
 			_, actorID := api.SubjectFromContext(ctx)
-			return ids, pageFromFiltered(fp, api.SealedCursorAAD("subjects", store, actorID,
+			pr, err := pageFromFiltered(fp, api.SealedCursorAAD("subjects", store, actorID,
 				subjectType, "", action, objectType, objectID,
-				api.CanonicalContextHash(reqContext))), nil
+				api.CanonicalContextHash(reqContext)))
+			if err != nil {
+				return nil, nil, err
+			}
+			return ids, pr, nil
 		}
 
 		return buildPage(ids, page.Limit)
@@ -533,15 +549,25 @@ func (b *Backend) query(ctx context.Context, rule string, input any, dest any) (
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	// Bounded read (review #10): an oversized response from a broken or
+	// compromised OPA is a clean policy failure, never a large allocation.
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, b.maxResponseBytes+1))
 	if err != nil {
 		return fmt.Errorf("reading OPA response: %w", err)
+	}
+	if int64(len(respBody)) > b.maxResponseBytes {
+		return fmt.Errorf("policy_evaluation_failed: OPA %s response exceeds OPA_MAX_RESPONSE_BYTES (%d)", rule, b.maxResponseBytes)
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		// Distinguishable operational failure (policy_evaluation_failed) — not a
-		// decision. The handler maps this to 5xx, never allow/deny.
-		return fmt.Errorf("policy_evaluation_failed: OPA %s returned %d: %s", rule, resp.StatusCode, string(respBody))
+		// decision. The handler maps this to 5xx, never allow/deny. Error-body
+		// text is truncated: it may be attacker-influenced and lands in logs.
+		msg := respBody
+		if len(msg) > 2048 {
+			msg = msg[:2048]
+		}
+		return fmt.Errorf("policy_evaluation_failed: OPA %s returned %d: %s", rule, resp.StatusCode, string(msg))
 	}
 
 	// OPA wraps results in {"result": ...}; ?metrics=true adds a `metrics`

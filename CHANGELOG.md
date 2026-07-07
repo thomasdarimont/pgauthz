@@ -7,6 +7,38 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Security (review #10 — pre-production batch)
+- **Watch/changefeed is role-gated and DENY BY DEFAULT on the public
+  listener** (`WATCH_REQUIRED_ROLE`; the feed exposes authorization topology
+  and the daemon's DB role holds `authz_auditor` to serve it — HTTP now
+  decides who may ask; `"*"` opens explicitly; the trusted callback listener
+  is unaffected). Native explain gains the analogous `EXPLAIN_REQUIRED_ROLE`
+  (empty = open, back-compat). The dev/test stack sets
+  `WATCH_REQUIRED_ROLE=authz_auditor`; the e2e suite proves ordinary 403 /
+  auditor 200.
+- **Multi-issuer is fail-closed**: with more than one trusted issuer, an
+  issuer without stores (or, with role derivation, db_roles) bindings now
+  FAILS STARTUP instead of warning past a cross-tenant hole;
+  `ALLOW_UNBOUND_MULTI_ISSUER=true` is the deliberately alarming override.
+  Single-issuer behavior unchanged.
+- **Malformed configuration is fatal**: invalid ints/durations/booleans in
+  env vars fail startup with a message naming every offender —
+  `REQUIRE_STORE_BINDING=treu` can no longer silently mean `false`. Absent
+  still means the documented default.
+- **Sealed-cursor hardening**: AAD fields are length-prefix encoded
+  (delimiter characters in ids can no longer alias field boundaries; property
+  test included), the caller-context digest is the full SHA-256, and a
+  cursor-sealing failure now surfaces as a 5xx instead of silently ending
+  pagination as if complete.
+- **OPA responses are bounded** (`OPA_MAX_RESPONSE_BYTES`, default 10 MiB):
+  oversized bodies → `policy_evaluation_failed`; error-body text is truncated
+  before logging.
+- **CI: a required OPA integration job** (`opa-test`) runs the full stack
+  with `PGAUTHZ_OPA=1`; `tests/test-opa.sh` fails (instead of skipping) when
+  OPA is absent under `PGAUTHZ_CI=1`, and all four hook example suites +
+  validator tiers run in CI.
+
+
 ## [0.14.0] - 2026-07-07
 
 ### Added

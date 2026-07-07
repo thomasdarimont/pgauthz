@@ -117,7 +117,10 @@ if [ "$SKIP_STACK" = 0 ]; then
     # test-authzen) are DEMO / trusted-PEP suites. A persisted keycloak/playground
     # overlay puts OPA in token-only mode, which those suites correctly fail
     # against. Force the canonical demo stack regardless of local overlay state.
-    export PGAUTHZ_OPA=1 PGAUTHZ_KEYCLOAK=0 PGAUTHZ_PLAYGROUND=0
+    # PGAUTHZ_CI=1 makes a missing/unhealthy OPA a hard FAILURE (test-opa.sh
+    # would otherwise skip when OPA isn't up) — a release must never pass with
+    # the OPA suite silently absent (review #10).
+    export PGAUTHZ_OPA=1 PGAUTHZ_KEYCLOAK=0 PGAUTHZ_PLAYGROUND=0 PGAUTHZ_CI=1
     ./init.sh
     ./tests/test-all.sh || die "test-all.sh failed"
 else

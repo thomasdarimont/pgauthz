@@ -349,6 +349,10 @@ All configuration is via environment variables.
 | `JWT_ISSUERS` | | Additional trusted issuers: JSON array of `{issuer, audience, jwks_url, jwks_file, stores, db_roles, client_db_roles}`; `iss` selects the validator; `stores` / `db_roles` (anchored regex lists) bind the issuer to specific stores / per-app DB roles; `client_db_roles` maps this issuer's client ids to roles |
 | `JWT_ROLES_CLAIM` | | Comma-separated dotted claim paths aggregated into the caller's roles (e.g. `realm_access.roles,resource_access.authz-api.roles`) |
 | `SEARCH_REQUIRED_ROLE` | | If set, the `search/*` endpoints require this role (`403` otherwise); empty = search open to any authenticated caller |
+| `WATCH_REQUIRED_ROLE` | *unset = watch disabled* | Gates the native changefeed on the public listener (review #10) — the feed exposes authorization topology. Unset: 403. A role name: JWT-role gate. `"*"`: explicitly open (discouraged). Callback listener unaffected |
+| `EXPLAIN_REQUIRED_ROLE` | *empty = open* | Gates native explain on the public listener like search (set a role in production — explain reveals model structure and traces) |
+| `ALLOW_UNBOUND_MULTI_ISSUER` | `false` | With >1 trusted issuers, an issuer without stores/db_roles bindings is a STARTUP FAILURE (cross-tenant risk). This deliberately alarming override restores warn-and-continue |
+| `OPA_MAX_RESPONSE_BYTES` | `10485760` | Bounds every OPA response body; oversized → `policy_evaluation_failed` (5xx), never a large allocation |
 | `DB_ROLE_CLAIM` | | Dot-separated claim path with the caller's per-app DB role for namespace enforcement (see [Per-App Namespace Enforcement](#per-app-namespace-enforcement)) |
 | `CLIENT_DB_ROLES` | | JSON map client id (`azp`) → per-app DB role; fallback when `DB_ROLE_CLAIM` is unset/absent |
 | `REQUIRED_SCOPE` | | Required scope in `scope` claim (optional) |

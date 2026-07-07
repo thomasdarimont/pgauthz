@@ -70,6 +70,53 @@ jobs:
         if: always()
         run: docker compose -f compose.yml -f compose-authzen.yml down -v || true
 
+  # The OPA overlay is opt-in, so the primary job never exercises the hook /
+  # veto / filtered-enumeration / write-through-OPA suite. This REQUIRED job
+  # runs the full stack WITH OPA and fails (PGAUTHZ_CI=1) if OPA is missing —
+  # the policy-composition surface cannot silently drop out of CI (review #10).
+  opa-test:
+    name: OPA integration (hooks, vetoes, writes)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Cache sqlx-cli
+        id: cache-sqlx
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/sqlx
+          key: sqlx-cli-0.9.0-${{ runner.os }}
+      - name: Install sqlx-cli
+        if: steps.cache-sqlx.outputs.cache-hit != 'true'
+        run: cargo install sqlx-cli --version 0.9.0 --no-default-features --features rustls,postgres --locked
+
+      - name: Initialize database and bring up the stack WITH OPA
+        run: PGAUTHZ_OPA=1 ./init.sh
+
+      - name: OPA integration suite (fail if OPA is absent)
+        run: PGAUTHZ_OPA=1 PGAUTHZ_CI=1 ./tests/test-opa.sh
+
+      - name: Hook contract suites (validator + opa test, all example dirs)
+        run: |
+          ./scripts/validate-hooks.sh --global examples/opa-hooks/global
+          ./scripts/validate-hooks.sh --store demo examples/opa-hooks/stores/demo
+          ./scripts/validate-hooks.sh --global examples/opa-hooks-filtering
+          ./scripts/validate-hooks.sh --lib examples/opa-hooks-lib
+          HOOK_HTTP_CAPABILITIES="$PWD/examples/opa-hooks-http/http-caps.example.json" \
+            ./scripts/validate-hooks.sh --global --allow-http examples/opa-hooks-http
+          for d in opa-hooks opa-hooks-http opa-hooks-filtering opa-hooks-lib; do
+            docker run --rm -v "$PWD/opa/policies:/p:ro" -v "$PWD/examples/$d:/x:ro" \
+              openpolicyagent/opa:1.18.2 test /p /x
+          done
+
+      - name: Service logs on failure
+        if: failure()
+        run: docker compose -f compose.yml -f compose-opa.yml -f compose-authzen.yml logs --no-color --tail=300 || true
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f compose.yml -f compose-opa.yml -f compose-authzen.yml down -v || true
+
   # Proves the non-destructive upgrade path (ADR 0001): install the most recent
   # release tag, seed data, then upgrade in place to HEAD and assert the data
   # survived and the engine still works. Skips cleanly until the first v* tag.

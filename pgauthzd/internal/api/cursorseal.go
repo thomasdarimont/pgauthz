@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 )
@@ -89,8 +90,17 @@ func sealAEADs() ([]cipher.AEAD, error) {
 // from the same request fields. The actor's ROLE SET is deliberately not
 // bound: role changes between pages fall under the documented no-cross-page-
 // snapshot semantics.
+// Fields are LENGTH-PREFIXED (netstring-style "<len>:<bytes>") rather than
+// delimiter-joined: actor/subject/object ids are arbitrary strings, and a
+// separator char inside one field must not let two structurally different
+// tuples encode identically (review #10).
 func SealedCursorAAD(op, store, actorID, subjectType, subjectID, action, objectType, objectID, contextHash string) string {
-	return strings.Join([]string{"pgauthz-cursor-v1", op, store, actorID, subjectType, subjectID, action, objectType, objectID, contextHash}, "|")
+	fields := []string{"pgauthz-cursor-v1", op, store, actorID, subjectType, subjectID, action, objectType, objectID, contextHash}
+	var b strings.Builder
+	for _, f := range fields {
+		fmt.Fprintf(&b, "%d:%s", len(f), f)
+	}
+	return b.String()
 }
 
 // CanonicalContextHash canonically hashes the caller-supplied context for
@@ -104,8 +114,10 @@ func CanonicalContextHash(m map[string]any) string {
 	if err != nil {
 		return "unhashable" // never matches the mint side of a valid cursor
 	}
+	// Full digest (review #10): callers construct contexts, so a truncated
+	// hash would invite offline birthday collisions.
 	sum := sha256.Sum256(b)
-	return base64.RawURLEncoding.EncodeToString(sum[:8])
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 // sealCursorValue encrypts a raw keyset id into an opaque token (primary
@@ -166,13 +178,17 @@ func unsealCursorValue(sealed, aad string) (string, error) {
 }
 
 // EncodeSealedPageAfter mints an OPAQUE keyset cursor (filtered enumeration)
-// bound to the query context (see SealedCursorAAD).
-func EncodeSealedPageAfter(after, aad string) string {
+// bound to the query context (see SealedCursorAAD). A sealing failure is an
+// ERROR the caller must surface as a 5xx (review #10): a crypto/randomness
+// failure must never make a partial enumeration read as complete.
+func EncodeSealedPageAfter(after, aad string) (string, error) {
 	sealed, err := sealCursorValue(after, aad)
 	if err != nil {
-		// no usable cipher — better no cursor (pagination ends) than a leak
-		return ""
+		return "", fmt.Errorf("sealing page cursor: %w", err)
 	}
-	data, _ := jsonMarshal(pageState{S: sealed, V: 1})
-	return base64.RawURLEncoding.EncodeToString(data)
+	data, err := jsonMarshal(pageState{S: sealed, V: 1})
+	if err != nil {
+		return "", fmt.Errorf("encoding page cursor: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(data), nil
 }

@@ -82,6 +82,7 @@ TOKEN_ALICE=$(make_token "alice" "internal_user")
 TOKEN_BOB=$(make_token "bob" "internal_user")
 TOKEN_CAROL=$(make_token "carol" "client_user")
 TOKEN_EVA=$(make_token "eva" "internal_user")
+TOKEN_AUDITOR=$(make_token "audrey" "internal_user" '["authz_auditor"]')
 
 AUTH_ALICE="Authorization: Bearer $TOKEN_ALICE"
 AUTH_BOB="Authorization: Bearer $TOKEN_BOB"
@@ -439,13 +440,22 @@ check_json "explain: alice cannot read tax doc (decision.allowed)" \
     '{"subject":{"type":"internal_user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_tax_001"}}' \
     '.decision.allowed' "false"
 
-check_json "watch: changefeed returns events" \
-    "$DIRECT_URL/pgauthz/v1/watch" "$AUTH_ALICE" \
+# Watch is role-gated on the public listener (review #10): an ordinary token
+# gets 403; the auditor role (WATCH_REQUIRED_ROLE in the dev stack) succeeds.
+AUTH_AUDITOR="Authorization: Bearer $TOKEN_AUDITOR"
+check_http "watch: ordinary token is refused (403)" \
+    "403" \
+    -X POST "$DIRECT_URL/pgauthz/v1/watch" \
+    -H "Content-Type: application/json" -H "$AUTH_ALICE" \
+    -d '{"limit":5}' 
+
+check_json "watch: auditor changefeed returns events" \
+    "$DIRECT_URL/pgauthz/v1/watch" "$AUTH_AUDITOR" \
     '{"limit":5}' \
     '(.events | length) > 0' "true"
 
 check_json "watch: page carries a composite next_cursor" \
-    "$DIRECT_URL/pgauthz/v1/watch" "$AUTH_ALICE" \
+    "$DIRECT_URL/pgauthz/v1/watch" "$AUTH_AUDITOR" \
     '{"limit":5}' \
     '(.next_cursor | has("after_at") and has("after_seq"))' "true"
 

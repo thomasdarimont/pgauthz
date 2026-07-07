@@ -187,6 +187,14 @@ for i in $(seq 1 30); do
     sleep 1
 done
 if [ "$opa_up" = 0 ]; then
+    # PGAUTHZ_CI=1 (the dedicated OPA CI job): a missing OPA is a FAILURE —
+    # the hook/veto/filtering suite must actually run, never silently skip
+    # (review #10).
+    if [ "${PGAUTHZ_CI:-0}" = "1" ]; then
+        echo ""
+        echo "==> FAIL: OPA is not running at $OPA_URL and PGAUTHZ_CI=1 requires it."
+        exit 1
+    fi
     echo ""
     echo "==> SKIP: OPA is not running at $OPA_URL — the default stack is OPA-free."
     echo "    Enable it with ./start.sh --opa (or PGAUTHZ_OPA=1 ./bootstrap.sh)."

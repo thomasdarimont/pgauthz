@@ -116,6 +116,24 @@ type Config struct {
 	// (default) leaves search open. These are graph-enumeration queries, so gate
 	// them to an auditor-style role in multi-tenant/end-user deployments.
 	SearchRequiredRole string
+	// AllowUnboundMultiIssuer: with MORE THAN ONE trusted issuer, unbound
+	// issuers (no stores / db_roles binding) are a cross-tenant risk and are
+	// FATAL at startup by default (review #10). This deliberately alarming
+	// override restores the old warn-and-continue behavior.
+	AllowUnboundMultiIssuer bool
+	// WatchRequiredRole gates the native watch/changefeed route on the PUBLIC
+	// listener (review #10): the changefeed exposes the store's authorization
+	// topology (subjects, objects, relations, mutation timing), and the
+	// daemon's DB role holds authz_auditor precisely to serve it — so the
+	// HTTP layer must decide WHO may ask. DENY BY DEFAULT: unset = the public
+	// watch route returns 403; a role name = callers holding it (JWT roles)
+	// may watch; "*" = explicitly open (discouraged). The internal callback
+	// listener is unaffected (OPA is a trusted PEP).
+	WatchRequiredRole string
+	// ExplainRequiredRole gates native explain on the public listener the same
+	// way search is gated: empty = open (back-compat; explain reveals model
+	// structure and resolution traces — set a role in production).
+	ExplainRequiredRole string
 
 	// WriterRole: the JWT role (within JWT_ROLES_CLAIM) a caller must hold to use
 	// the native write endpoints on the PUBLIC listener — pgauthzd is the write
@@ -176,6 +194,10 @@ type Config struct {
 	// instead of a caller-supplied context field, which they must not trust.
 	// Empty = the field is still present but "".
 	DeploymentEnvironment string
+	// OPAMaxResponseBytes bounds every OPA HTTP response body (review #10):
+	// a broken/misconfigured OPA must cause a clean policy_evaluation_failed,
+	// not unbounded allocation. Default 10 MiB, matching HTTP_MAX_BODY_BYTES.
+	OPAMaxResponseBytes int64
 	// CursorSealKey seals filtered-enumeration page cursors (they carry raw
 	// keyset ids that hooks may have removed from results — ADR 0011).
 	// Comma-separated keyring: first mints, all accept (rotate by prepending,
@@ -292,6 +314,7 @@ type Config struct {
 var deploymentEnvRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,31}$`)
 
 func Load() (*Config, error) {
+	envErrs = nil // fresh collection per Load (tests call it repeatedly)
 	c := &Config{
 		Profile:                      Profile(env("PGAUTHORIZER_PROFILE", "")),
 		ListenAddr:                   env("LISTEN_ADDR", ":8080"),
@@ -308,6 +331,9 @@ func Load() (*Config, error) {
 		RequiredScope:                env("REQUIRED_SCOPE", ""),
 		RolesClaims:                  env("JWT_ROLES_CLAIM", "roles"),
 		SearchRequiredRole:           env("SEARCH_REQUIRED_ROLE", ""),
+		AllowUnboundMultiIssuer:      envBool("ALLOW_UNBOUND_MULTI_ISSUER", false),
+		WatchRequiredRole:            env("WATCH_REQUIRED_ROLE", ""),
+		ExplainRequiredRole:          env("EXPLAIN_REQUIRED_ROLE", ""),
 		WriterRole:                   env("WRITER_ROLE", "authz_writer"),
 		DBRoleClaim:                  env("DB_ROLE_CLAIM", ""),
 		SubjectTypeClaim:             env("SUBJECT_TYPE_CLAIM", "subject_type"),
@@ -318,6 +344,7 @@ func Load() (*Config, error) {
 		FreshnessPrimaryPoolMax:      envInt("FRESHNESS_PRIMARY_POOL_MAX", 10),
 		OpenAPIEnabled:               envBool("OPENAPI_ENABLED", true),
 		DeploymentEnvironment:        env("DEPLOYMENT_ENVIRONMENT", ""),
+		OPAMaxResponseBytes:          int64(envInt("OPA_MAX_RESPONSE_BYTES", 10<<20)),
 		CursorSealKey:                env("CURSOR_SEAL_KEY", ""),
 		MetricsListenAddr:            env("METRICS_LISTEN_ADDR", ""),
 		MetricsSampleIntervalSeconds: envInt("METRICS_SAMPLE_INTERVAL_SECONDS", 30),
@@ -368,6 +395,12 @@ func Load() (*Config, error) {
 	// Distinct secrets deriving the SAME key id (a ~2^-31-per-pair sha256-prefix
 	// accident) would silently shadow one key at verification time — make it a
 	// deterministic startup error instead.
+	// Invalid (not merely absent) environment values are fatal — a typo in a
+	// security flag must never silently select the default (review #10).
+	if len(envErrs) > 0 {
+		return nil, fmt.Errorf("invalid configuration:\n  %s", strings.Join(envErrs, "\n  "))
+	}
+
 	if err := authz.NewKeyring(c.FreshnessKeys).Validate(); err != nil {
 		return nil, err
 	}
@@ -464,7 +497,13 @@ func Load() (*Config, error) {
 				return nil, fmt.Errorf("REQUIRE_STORE_BINDING: issuer %q has no stores binding", iss.Issuer)
 			}
 			if len(c.Issuers) > 1 {
-				log.Printf("WARNING: issuer %q has no stores binding — its tokens can access EVERY store; set stores patterns in JWT_ISSUERS (and REQUIRE_STORE_BINDING=true) for multi-tenant deployments", iss.Issuer)
+				// SECURE BY DEFAULT for multi-issuer (review #10): an unbound
+				// issuer reaches every store — fail startup instead of warning
+				// past a cross-tenant hole.
+				if !c.AllowUnboundMultiIssuer {
+					return nil, fmt.Errorf("issuer %q has no stores binding while %d issuers are trusted — its tokens could access EVERY store; add stores patterns in JWT_ISSUERS, or override deliberately with ALLOW_UNBOUND_MULTI_ISSUER=true", iss.Issuer, len(c.Issuers))
+				}
+				log.Printf("WARNING (ALLOW_UNBOUND_MULTI_ISSUER): issuer %q has no stores binding — its tokens can access EVERY store", iss.Issuer)
 			}
 		}
 		if roleDerivation && len(iss.DBRoles) == 0 && len(iss.ClientDBRoles) == 0 {
@@ -472,12 +511,25 @@ func Load() (*Config, error) {
 				return nil, fmt.Errorf("REQUIRE_DB_ROLE_BINDING: issuer %q has no db_roles or client_db_roles binding", iss.Issuer)
 			}
 			if len(c.Issuers) > 1 {
-				log.Printf("WARNING: issuer %q has no db_roles/client_db_roles binding — its tokens can claim ANY reader role; set db_roles patterns in JWT_ISSUERS (and REQUIRE_DB_ROLE_BINDING=true) for multi-tenant deployments", iss.Issuer)
+				if !c.AllowUnboundMultiIssuer {
+					return nil, fmt.Errorf("issuer %q has no db_roles/client_db_roles binding while %d issuers are trusted and DB-role derivation is active — its tokens could claim ANY reader role; add db_roles patterns in JWT_ISSUERS, or override deliberately with ALLOW_UNBOUND_MULTI_ISSUER=true", iss.Issuer, len(c.Issuers))
+				}
+				log.Printf("WARNING (ALLOW_UNBOUND_MULTI_ISSUER): issuer %q has no db_roles/client_db_roles binding — its tokens can claim ANY reader role", iss.Issuer)
 			}
 		}
 	}
 
 	return c, nil
+}
+
+// Strict environment parsing (review #10): absence means the documented
+// default, a VALID value is used, and an INVALID value is a STARTUP FAILURE —
+// never a silent fallback (REQUIRE_STORE_BINDING=treu must not quietly become
+// "false"). Helpers collect errors into envErrs; Load() fails when any exist.
+var envErrs []string
+
+func envFail(key, v, want string) {
+	envErrs = append(envErrs, fmt.Sprintf("%s=%q is invalid (%s)", key, v, want))
 }
 
 func env(key, fallback string) string {
@@ -489,27 +541,36 @@ func env(key, fallback string) string {
 
 func envInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			envFail(key, v, "expected an integer")
+			return fallback
 		}
+		return n
 	}
 	return fallback
 }
 
 func envDuration(key string, fallback time.Duration) time.Duration {
 	if v := os.Getenv(key); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			envFail(key, v, "expected a Go duration like 10s or 1m")
+			return fallback
 		}
+		return d
 	}
 	return fallback
 }
 
 func envBool(key string, fallback bool) bool {
 	if v := os.Getenv(key); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			return b
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			envFail(key, v, "expected true or false")
+			return fallback
 		}
+		return b
 	}
 	return fallback
 }
