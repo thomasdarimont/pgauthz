@@ -56,3 +56,5 @@ build/
 
 # pgauthzctl CLI binary
 pgauthzctl/pgauthzctl
+
+graphify-out/
