@@ -80,13 +80,24 @@ services:
   # The demo pgauthzd-opa (compose-authzen.yml) trusts only the static demo issuer
   # (auth.example.com), so add Keycloak as a SECOND trusted issuer here — its Go
   # middleware is now multi-issuer (selects the validator by the token's `iss`).
-  # The demo JWKS_FILE issuer stays intact, so test-authzen.sh keeps working.
-  # JWKS is fetched over the internal network (keys are the same regardless of host);
-  # the `iss` still validated is the public Keycloak URL.
+  # The demo issuer is re-declared here (same JWKS file / audience), so
+  # test-authzen.sh keeps working. JWKS for Keycloak is fetched over the internal
+  # network (keys are the same regardless of host); the `iss` still validated is
+  # the public Keycloak URL.
+  #
+  # Multi-issuer is fail-closed (review #10): every issuer MUST carry a `stores`
+  # binding or pgauthzd refuses to start. The demo issuer is pinned to the demo
+  # store; the Keycloak issuer deliberately gets ".*" — the playground lets the
+  # user pick any store in the DB. Do NOT copy that wildcard into a real
+  # multi-tenant deployment (bind each IdP to its tenant's stores).
   pgauthzd-opa:
     environment:
+      # Blank the legacy single-issuer form so it is not ALSO appended as an
+      # unbound issuer; both issuers live in JWT_ISSUERS below.
+      JWKS_FILE: ""
       JWT_ISSUERS: >-
-        [{"issuer":"https://id.pgauthz.test/realms/pgauthz","jwks_url":"http://keycloak:8080/realms/pgauthz/protocol/openid-connect/certs"}]
+        [{"issuer":"${JWT_ISSUER:-https://auth.example.com}","audience":"${JWT_AUDIENCE:-authz-api}","jwks_file":"/jwks/jwks.json","stores":["${DEFAULT_STORE:-demo}"]},
+         {"issuer":"https://id.pgauthz.test/realms/pgauthz","jwks_url":"http://keycloak:8080/realms/pgauthz/protocol/openid-connect/certs","stores":[".*"]}]
       # Reverse-search endpoints (search/subject|resource|action) enumerate the
       # access graph, so gate them behind an auditor role. Roles are read from the
       # Keycloak realm + authz-api client claims (aggregated). Alice holds
