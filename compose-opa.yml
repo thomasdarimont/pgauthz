@@ -21,7 +21,7 @@ services:
   # OPA policy sidecar — internal; reached only by pgauthzd-opa. Publishes :8181
   # for the OPA-data-API demo + test-opa.sh; production keeps it unpublished.
   opa:
-    image: openpolicyagent/opa:1.18.2
+    image: openpolicyagent/opa:1.19.1
     # DEV ONLY: OPA_DECISION_LOGS_CONSOLE=true logs every decision WITH ITS
     # FULL INPUT to stdout — including forwarded bearer JWTs (input.token) and
     # request context. Never enable where logs are shipped/retained.
