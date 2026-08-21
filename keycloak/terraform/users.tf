@@ -1,6 +1,11 @@
 # Demo subjects mirroring tests/test-authzen.sh. The subject_type attribute maps
 # to the token claim authn.rego reads; the writer role and db_role attribute
 # exercise the OPA write path (role aggregation + per-app namespace isolation).
+#
+# Every user depends_on the realm user profile: Keycloak silently DROPS user
+# attributes that the profile does not declare at creation time, so a user
+# created before the profile lands loses subject_type (token claim null → OPA
+# denies) and only a second `terraform apply` restores it.
 
 # alice — internal_user, read-only, plus the authzen_auditor role so she can use
 # the AuthZEN reverse-search endpoints (and the playground's search UI).
@@ -12,6 +17,7 @@ resource "keycloak_user" "alice" {
   first_name = "Alice"
   last_name  = "Anderson"
   attributes = { subject_type = "internal_user" }
+  depends_on = [keycloak_realm_user_profile.pgauthz]
   initial_password {
     value     = var.demo_user_password
     temporary = false
@@ -33,6 +39,7 @@ resource "keycloak_user" "bob" {
   first_name = "Bob"
   last_name  = "Brown"
   attributes = { subject_type = "internal_user" }
+  depends_on = [keycloak_realm_user_profile.pgauthz]
   initial_password {
     value     = var.demo_user_password
     temporary = false
@@ -54,6 +61,7 @@ resource "keycloak_user" "carol" {
   first_name = "Carol"
   last_name  = "Clark"
   attributes = { subject_type = "client_user" }
+  depends_on = [keycloak_realm_user_profile.pgauthz]
   initial_password {
     value     = var.demo_user_password
     temporary = false
@@ -70,6 +78,7 @@ resource "keycloak_user" "eva" {
   first_name = "Eva"
   last_name  = "Evans"
   attributes = { subject_type = "internal_user" }
+  depends_on = [keycloak_realm_user_profile.pgauthz]
   initial_password {
     value     = var.demo_user_password
     temporary = false

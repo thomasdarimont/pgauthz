@@ -268,10 +268,13 @@ JWT_ISSUERS=[{"issuer":"https://tenant-a.idp","jwks_url":"…","stores":["tenant
 ```
 
 A token from that issuer selecting any other store is rejected with `403`.
-Issuers without a `stores` list are **unrestricted** — with several issuers
-configured the service logs a startup warning for each unbound one, and
-`REQUIRE_STORE_BINDING=true` turns the gap into a startup **error** (set it in
-any multi-tenant deployment). Note that `SEARCH_REQUIRED_ROLE` gates search
+Issuers without a `stores` list are **unrestricted**. With a single issuer that
+is the default; with **several** issuers configured an unbound one is a startup
+**error** (fail-closed — its tokens could reach every store) unless you opt out
+deliberately with `ALLOW_UNBOUND_MULTI_ISSUER=true`. Bind every issuer
+explicitly (`".*"` if you really mean all stores), and set
+`REQUIRE_STORE_BINDING=true` in any multi-tenant deployment to make the gap an
+error even for a single issuer. Note that `SEARCH_REQUIRED_ROLE` gates search
 globally, not per store.
 
 ## Per-App Namespace Enforcement
