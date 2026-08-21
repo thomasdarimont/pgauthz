@@ -11,7 +11,7 @@
 services:
 
   prometheus:
-    image: prom/prometheus:v3.1.0
+    image: prom/prometheus:v3.14.0
     ports:
       - "9095:9090"          # Prometheus UI
     volumes:
