@@ -1,4 +1,4 @@
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 # Stamped into the binary (main.version), exposed via `pgauthzd -version`.
 # start.sh passes --build-arg VERSION=<image tag>; defaults to dev otherwise.
