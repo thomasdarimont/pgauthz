@@ -987,8 +987,8 @@ and will be passed as `$2` every time this tuple is evaluated:
 -- window starting at 09:00. Useful for temporary document sharing.
 SELECT authz.write_tuple('demo',
     'internal_user', 'alice', 'viewer', 'document', 'doc_temp_001',
-    'non_expired_grant',
-    '{"grant_time": "2026-03-11T09:00:00Z", "grant_duration": "2 hours"}'::jsonb
+    p_condition         => 'non_expired_grant',
+    p_condition_context => '{"grant_time": "2026-03-11T09:00:00Z", "grant_duration": "2 hours"}'::jsonb
 );
 ```
 
