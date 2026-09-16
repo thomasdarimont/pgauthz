@@ -37,7 +37,7 @@ services:
       retries: 10
 
   keycloak:
-    image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak}:${KEYCLOAK_VERSION:-26.7.2}
+    image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak}:${KEYCLOAK_VERSION:-26.7.4}
     depends_on:
       keycloak-db:
         condition: service_healthy
