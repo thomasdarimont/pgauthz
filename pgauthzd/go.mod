@@ -1,6 +1,6 @@
 module thomasdarimont.de/authz/pgauthzd
 
-go 1.27
+go 1.27.1
 
 require (
 	github.com/getkin/kin-openapi v0.140.0
