@@ -107,8 +107,8 @@ SELECT authz.explain_access('gdrive',
 -- => The trace shows: can_read → viewer from parent → wildcard tuple (*)
 
 SELECT (authz.explain_access('gdrive',
-                             'user', 'stranger', 'can_read', 'doc', 'announcement', null, true))->>'summary'
-    AS "wildcard resolution trace -> summary";
+                             'user', 'stranger', 'can_read', 'doc', 'announcement', null, true)) ->> 'summary'
+           AS "wildcard resolution trace -> summary";
 -- => The trace shows: can_read → viewer from parent → wildcard tuple (*)
 
 -- ============================================================================
@@ -116,29 +116,34 @@ SELECT (authz.explain_access('gdrive',
 -- ============================================================================
 
 -- What can Alice do on design_spec?
-SELECT * FROM authz.list_actions('gdrive', 'user', 'alice', 'doc', 'design_spec');
+SELECT *
+FROM authz.list_actions('gdrive', 'user', 'alice', 'doc', 'design_spec');
 -- => can_read, can_share, can_write
 
 -- What can Frank do on design_spec?
-SELECT * FROM authz.list_actions('gdrive', 'user', 'frank', 'doc', 'design_spec');
+SELECT *
+FROM authz.list_actions('gdrive', 'user', 'frank', 'doc', 'design_spec');
 -- => can_change_owner, can_read, can_share, can_write
 
 -- Which docs can Bob read?
-SELECT * FROM authz.list_objects('gdrive', 'user', 'bob', 'can_read', 'doc');
+SELECT *
+FROM authz.list_objects('gdrive', 'user', 'bob', 'can_read', 'doc');
 -- => design_spec
 
 -- Which docs can Alice read?
-SELECT * FROM authz.list_objects('gdrive', 'user', 'alice', 'can_read', 'doc');
+SELECT *
+FROM authz.list_objects('gdrive', 'user', 'alice', 'can_read', 'doc');
 -- => design_spec, budget, announcement
 
 -- Which docs can a stranger read?
-SELECT * FROM authz.list_objects('gdrive', 'user', 'stranger', 'can_read', 'doc');
+SELECT *
+FROM authz.list_objects('gdrive', 'user', 'stranger', 'can_read', 'doc');
 -- => announcement
 
 -- Who can read the design spec?
-SELECT * FROM authz.list_subjects('gdrive', 'user', 'can_read', 'doc', 'design_spec');
+SELECT *
+FROM authz.list_subjects('gdrive', 'user', 'can_read', 'doc', 'design_spec');
 -- => alice, bob, charlie, frank
-
 
 -- ============================================================================
 -- 7. BATCH ACCESS CHECKS — AuthZEN Evaluations API
@@ -148,12 +153,13 @@ SELECT * FROM authz.list_subjects('gdrive', 'user', 'can_read', 'doc', 'design_s
 -- Returns SETOF authz.access_check_result (one row per input check, same order).
 
 -- Check all four permissions for Alice on design_spec in one call.
-SELECT * FROM authz.check_access_batch_typed('gdrive', ARRAY[
-    ('user', 'alice', 'can_read',         'doc', 'design_spec'),
-                                             ('user', 'alice', 'can_write',        'doc', 'design_spec'),
-                                             ('user', 'alice', 'can_share',        'doc', 'design_spec'),
-                                             ('user', 'alice', 'can_change_owner', 'doc', 'design_spec')
-                                                 ]::authz.access_check[]);
+SELECT *
+FROM authz.check_access_batch_typed('gdrive', ARRAY [
+    ('user', 'alice', 'can_read', 'doc', 'design_spec'),
+    ('user', 'alice', 'can_write', 'doc', 'design_spec'),
+    ('user', 'alice', 'can_share', 'doc', 'design_spec'),
+    ('user', 'alice', 'can_change_owner', 'doc', 'design_spec')
+    ]::authz.access_check[]);
 -- => (user, alice, can_read,         doc, design_spec, t)
 --    (user, alice, can_write,        doc, design_spec, t)
 --    (user, alice, can_share,        doc, design_spec, t)
@@ -161,39 +167,43 @@ SELECT * FROM authz.check_access_batch_typed('gdrive', ARRAY[
 
 -- Compare permissions across users for the same document.
 -- Useful for rendering a sharing dialog or access audit.
-SELECT * FROM authz.check_access_batch_typed('gdrive', ARRAY[
-    ('user', 'alice',   'can_read', 'doc', 'design_spec'),
-                                             ('user', 'bob',     'can_read', 'doc', 'design_spec'),
-                                             ('user', 'charlie', 'can_read', 'doc', 'design_spec'),
-                                             ('user', 'frank',   'can_read', 'doc', 'design_spec'),
-                                             ('user', 'stranger','can_read', 'doc', 'design_spec')
-                                                 ]::authz.access_check[]);
+SELECT *
+FROM authz.check_access_batch_typed('gdrive', ARRAY [
+    ('user', 'alice', 'can_read', 'doc', 'design_spec'),
+    ('user', 'bob', 'can_read', 'doc', 'design_spec'),
+    ('user', 'charlie', 'can_read', 'doc', 'design_spec'),
+    ('user', 'frank', 'can_read', 'doc', 'design_spec'),
+    ('user', 'stranger', 'can_read', 'doc', 'design_spec')
+    ]::authz.access_check[]);
 -- => decisions: t, t, t, t, f  (everyone except stranger)
 
 -- Wildcard: check if various users can read the public announcement.
-SELECT * FROM authz.check_access_batch_typed('gdrive', ARRAY[
-    ('user', 'alice',   'can_read', 'doc', 'announcement'),
-                                             ('user', 'stranger','can_read', 'doc', 'announcement'),
-                                             ('user', 'stranger','can_write','doc', 'announcement')
-                                                 ]::authz.access_check[]);
+SELECT *
+FROM authz.check_access_batch_typed('gdrive', ARRAY [
+    ('user', 'alice', 'can_read', 'doc', 'announcement'),
+    ('user', 'stranger', 'can_read', 'doc', 'announcement'),
+    ('user', 'stranger', 'can_write', 'doc', 'announcement')
+    ]::authz.access_check[]);
 -- => decisions: t, t, f  (wildcard grants read-only, not write)
 
 -- Short-circuit: "Does the user have ALL required permissions?"
 -- deny_on_first_deny stops early when a check fails.
-SELECT * FROM authz.check_access_batch_typed('gdrive', ARRAY[
-    ('user', 'bob', 'can_read',  'doc', 'design_spec'),
-                                             ('user', 'bob', 'can_write', 'doc', 'design_spec'),
-                                             ('user', 'bob', 'can_share', 'doc', 'design_spec')
-                                                 ]::authz.access_check[], p_semantic => 'deny_on_first_deny');
+SELECT *
+FROM authz.check_access_batch_typed('gdrive', ARRAY [
+    ('user', 'bob', 'can_read', 'doc', 'design_spec'),
+    ('user', 'bob', 'can_write', 'doc', 'design_spec'),
+    ('user', 'bob', 'can_share', 'doc', 'design_spec')
+    ]::authz.access_check[], p_semantic => 'deny_on_first_deny');
 -- => decisions: t, f, NULL  (bob can read but not write — stops, never checks can_share)
 
 -- Short-circuit: "Does the user have ANY of these permissions?"
 -- permit_on_first_permit stops early when a check succeeds.
-SELECT * FROM authz.check_access_batch_typed('gdrive', ARRAY[
+SELECT *
+FROM authz.check_access_batch_typed('gdrive', ARRAY [
     ('user', 'stranger', 'can_write', 'doc', 'announcement'),
-                                             ('user', 'stranger', 'can_share', 'doc', 'announcement'),
-                                             ('user', 'stranger', 'can_read',  'doc', 'announcement')
-                                                 ]::authz.access_check[], p_semantic => 'permit_on_first_permit');
+    ('user', 'stranger', 'can_share', 'doc', 'announcement'),
+    ('user', 'stranger', 'can_read', 'doc', 'announcement')
+    ]::authz.access_check[], p_semantic => 'permit_on_first_permit');
 -- => decisions: f, f, t  (stranger can't write or share, but CAN read via wildcard)
 
 
@@ -221,19 +231,19 @@ SELECT authz.explain_access('gdrive',
 -- Full trace (all paths):
 SELECT authz.explain_access('gdrive',
                             'user', 'charlie', 'can_read', 'doc', 'design_spec') ->> 'summary'
-    AS "full trace";
+           AS "full trace";
 
 -- Successful paths only:
 SELECT authz.explain_access('gdrive',
                             'user', 'charlie', 'can_read', 'doc', 'design_spec',
                             p_successful_only => true) ->> 'summary'
-    AS "successful paths only";
+           AS "successful paths only";
 
 -- Extract just the summary text (human-readable):
 SELECT authz.explain_access('gdrive',
                             'user', 'stranger', 'can_read', 'doc', 'announcement',
                             p_successful_only => true) ->> 'summary'
-    AS "wildcard successful path";
+           AS "wildcard successful path";
 -- Shows only the chain: can_read → viewer from parent → wildcard tuple (*)
 
 
@@ -241,14 +251,13 @@ SELECT authz.explain_access('gdrive',
 -- 10. PERMISSION MATRIX
 -- ============================================================================
 
-SELECT
-    u.name AS "user",
-    bool_or(r.name = 'can_change_owner') AS change_owner,
-    bool_or(r.name = 'can_write')        AS write,
-    bool_or(r.name = 'can_share')        AS share,
-    bool_or(r.name = 'can_read')         AS read
+SELECT u.name                               AS "user",
+       bool_or(r.name = 'can_change_owner') AS change_owner,
+       bool_or(r.name = 'can_write')        AS write,
+       bool_or(r.name = 'can_share')        AS share,
+       bool_or(r.name = 'can_read')         AS read
 FROM (VALUES ('alice'), ('bob'), ('charlie'), ('frank'), ('stranger')) AS u(name)
-    CROSS JOIN (VALUES ('can_change_owner'), ('can_write'), ('can_share'), ('can_read')) AS r(name)
+         CROSS JOIN (VALUES ('can_change_owner'), ('can_write'), ('can_share'), ('can_read')) AS r(name)
 WHERE authz.check_access('gdrive', 'user', u.name, r.name, 'doc', 'design_spec')
 GROUP BY u.name
 ORDER BY u.name;
