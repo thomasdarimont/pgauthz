@@ -150,14 +150,14 @@ Versions the stack is built and tested against (the pinned versions in
 extensions on the default path, so the only hard requirement is PostgreSQL; the
 rest are the components of the reference deployment.
 
-| Component | Version | Required? | Notes |
-|---|---|---|---|
-| **PostgreSQL** | 18.4 | **required** | The engine. Uses partitioning, generated identity, and JSONB; developed and tested on 18.x. |
-| pgauthzd | — | optional | Single Go daemon exposing the engine over HTTP (native `/pgauthz/v1` + AuthZEN 1.0 API); capability profiles `decision-only` (read-only DB role) / `full` (read+write); fronting OPA is the orthogonal `OPA_URL` flag (not a third profile). OPA's Rego calls back into it for reads and writes. |
-| OPA | 1.18.2 | optional | Internal policy-as-code sidecar (Rego) that only pgauthzd calls (when `OPA_URL` is set); not a client-facing entry point. |
-| Go (pgauthzd) | 1.26 | optional | One `pgauthzd` binary; demo services `pgauthzd-decision` / `pgauthzd-opa` / `pgauthzd-full`. |
-| `sqlx-cli` | 0.9.0 | install/upgrade | Applies the structural migrations in [`db/migrations/`](db/migrations/) (tracked in `public._sqlx_migrations`). Slim Postgres-only build — `cargo install sqlx-cli --no-default-features --features rustls,postgres`. Baked into the [migration image](deploy/migrations/Dockerfile); `init*.sh` use a local install. Not needed at query time. |
-| `pg_cel` extension | pgrx 0.19.1, `cel` 0.13 | optional | Only for `lang='cel'` conditions; built per PostgreSQL major (see [`extensions/pg-cel`](extensions/pg-cel/)). |
+| Component | Version                   | Required? | Notes |
+|---|---------------------------|---|---|
+| **PostgreSQL** | 18.4                      | **required** | The engine. Uses partitioning, generated identity, and JSONB; developed and tested on 18.x. |
+| pgauthzd | —                         | optional | Single Go daemon exposing the engine over HTTP (native `/pgauthz/v1` + AuthZEN 1.0 API); capability profiles `decision-only` (read-only DB role) / `full` (read+write); fronting OPA is the orthogonal `OPA_URL` flag (not a third profile). OPA's Rego calls back into it for reads and writes. |
+| OPA | 1.18.2                    | optional | Internal policy-as-code sidecar (Rego) that only pgauthzd calls (when `OPA_URL` is set); not a client-facing entry point. |
+| Go (pgauthzd) | 1.26                      | optional | One `pgauthzd` binary; demo services `pgauthzd-decision` / `pgauthzd-opa` / `pgauthzd-full`. |
+| `sqlx-cli` | 0.9.0                     | install/upgrade | Applies the structural migrations in [`db/migrations/`](db/migrations/) (tracked in `public._sqlx_migrations`). Slim Postgres-only build — `cargo install sqlx-cli --no-default-features --features rustls,postgres`. Baked into the [migration image](deploy/migrations/Dockerfile); `init*.sh` use a local install. Not needed at query time. |
+| `pg_cel` extension | pgrx 0.19.2, `cel` 0.14.5 | optional | Only for `lang='cel'` conditions; built per PostgreSQL major (see [`extensions/pg-cel`](extensions/pg-cel/)). |
 
 Pre-1.0 — pin to a tag (latest in the [CHANGELOG](CHANGELOG.md) / Releases) or a
 specific commit for reproducible deployments; per semver, 0.x releases may carry
