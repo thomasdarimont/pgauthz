@@ -84,7 +84,7 @@ docker build -f extensions/pg-cel/Dockerfile -t pgauthz-postgres-cel:18.4 .
 ### Local extension development (cargo-pgrx)
 
 ```bash
-cargo install cargo-pgrx --version 0.19.1 --locked
+cargo install cargo-pgrx --version 0.19.2 --locked
 cd extensions/pg-cel
 cargo pgrx init --pg18 $(which pg_config)   # or: --pg18 download
 cargo pgrx run                              # interactive psql with the ext loaded
