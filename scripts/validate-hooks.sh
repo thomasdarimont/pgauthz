@@ -36,7 +36,7 @@
 # Usage: scripts/validate-hooks.sh [--global | --store <name> | --lib] [--allow-http] <hooks-dir>
 set -euo pipefail
 
-OPA_IMAGE="${OPA_IMAGE:-openpolicyagent/opa:1.18.2}"
+OPA_IMAGE="${OPA_IMAGE:-openpolicyagent/opa:1.20.2}"
 ALLOW_HTTP=0
 TIER="any"       # any | global | store
 STORE=""

@@ -116,7 +116,7 @@ jobs:
             ./scripts/validate-hooks.sh --global --allow-http examples/opa-hooks-http
           for d in opa-hooks opa-hooks-http opa-hooks-filtering opa-hooks-lib; do
             docker run --rm -v "$PWD/opa/policies:/p:ro" -v "$PWD/examples/$d:/x:ro" \
-              openpolicyagent/opa:1.18.2 test /p /x
+              openpolicyagent/opa:1.20.2 test /p /x
           done
 
       - name: Service logs on failure

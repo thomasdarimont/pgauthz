@@ -95,15 +95,15 @@ if ./scripts/validate-hooks.sh --global examples/opa-hooks/global >/dev/null \
    && HOOK_HTTP_CAPABILITIES="$ROOT/examples/opa-hooks-http/http-caps.example.json" \
       ./scripts/validate-hooks.sh --global --allow-http examples/opa-hooks-http >/dev/null \
    && docker run --rm -v "$ROOT/opa/policies:/p:ro" -v "$ROOT/examples/opa-hooks-http:/h:ro" \
-      "${OPA_IMAGE:-openpolicyagent/opa:1.18.2}" test /p /h >/dev/null \
+      "${OPA_IMAGE:-openpolicyagent/opa:1.20.2}" test /p /h >/dev/null \
    && ./scripts/validate-hooks.sh --lib examples/opa-hooks-lib >/dev/null \
    && docker run --rm -v "$ROOT/opa/policies:/p:ro" -v "$ROOT/examples/opa-hooks-lib:/l:ro" \
-      "${OPA_IMAGE:-openpolicyagent/opa:1.18.2}" test /p /l >/dev/null \
+      "${OPA_IMAGE:-openpolicyagent/opa:1.20.2}" test /p /l >/dev/null \
    && ./scripts/validate-hooks.sh --global examples/opa-hooks-filtering >/dev/null \
    && docker run --rm -v "$ROOT/opa/policies:/p:ro" -v "$ROOT/examples/opa-hooks-filtering:/f:ro" \
-      "${OPA_IMAGE:-openpolicyagent/opa:1.18.2}" test /p /f >/dev/null \
+      "${OPA_IMAGE:-openpolicyagent/opa:1.20.2}" test /p /f >/dev/null \
    && docker run --rm -v "$ROOT/opa/policies:/p:ro" -v "$ROOT/examples/opa-hooks:/e:ro" \
-        "${OPA_IMAGE:-openpolicyagent/opa:1.18.2}" test /p /e >/dev/null 2>&1; then
+        "${OPA_IMAGE:-openpolicyagent/opa:1.20.2}" test /p /e >/dev/null 2>&1; then
     echo "    hooks valid + contract suite green"
 else
     echo "!! Policy-hook contract failed (run: ./scripts/validate-hooks.sh --global examples/opa-hooks/global; opa test opa/policies examples/opa-hooks -v)"

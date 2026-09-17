@@ -151,7 +151,7 @@ services:
 
   # ── OPA (read-only access checks via replica) ───────────────────
   opa:
-    image: openpolicyagent/opa:1.18.2
+    image: openpolicyagent/opa:1.20.2
     # DEV ONLY: OPA_DECISION_LOGS_CONSOLE=true logs every decision WITH ITS
     # FULL INPUT to stdout — including forwarded bearer JWTs (input.token) and
     # request context. Never enable where logs are shipped/retained.

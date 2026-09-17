@@ -271,7 +271,7 @@ Run against the *real* platform policies (exactly what the sidecar loads):
 ```bash
 docker run --rm \
   -v "$PWD/opa/policies:/p:ro" -v "$PWD/my-hooks:/h:ro" \
-  openpolicyagent/opa:1.18.2 test /p /h -v
+  openpolicyagent/opa:1.20.2 test /p /h -v
 ```
 
 Mock the graph with `with data.authz._graph_allow as true` (single decision) or

@@ -155,11 +155,11 @@ check_jq() {
 echo "==> Policy-hook contract tests (opa test)..."
 if docker run --rm \
     -v "$SCRIPT_DIR/../opa/policies:/p:ro" -v "$SCRIPT_DIR/../examples/opa-hooks:/e:ro" \
-    openpolicyagent/opa:1.18.2 test /p /e >/dev/null 2>&1; then
+    openpolicyagent/opa:1.20.2 test /p /e >/dev/null 2>&1; then
     echo "    PASS  hook contract suite (opa test opa/policies examples/opa-hooks)"
     pass_count=$((pass_count + 1))
 else
-    echo "    FAIL  hook contract suite — run: docker run --rm -v \$PWD/opa/policies:/p:ro -v \$PWD/examples/opa-hooks:/e:ro openpolicyagent/opa:1.18.2 test /p /e -v"
+    echo "    FAIL  hook contract suite — run: docker run --rm -v \$PWD/opa/policies:/p:ro -v \$PWD/examples/opa-hooks:/e:ro openpolicyagent/opa:1.20.2 test /p /e -v"
     fail_count=$((fail_count + 1))
 fi
 total=$((total + 1))
