@@ -76,6 +76,14 @@ pre-1.0, minor versions may include breaking changes.
   hid events recorded meanwhile), and `count_within` /
   `count_distinct_within` gained `plus` (like `sum_within`) so `max: 5,
   plus: 1` means at most 5 actions *including* the one being decided.
+- **Object-scoped gate clauses** — a clause may set `"scope": "object"` to
+  count only the principal's events on the object being checked ("3 edits
+  of *this* document per hour"; separation of duties: `count_within{action:
+  submit, scope: object, max: 0}` on `approve` denies whoever submitted
+  *that* object). Subject scope stays the default. `list_objects` keeps its
+  once-per-subject fast path for subject-only gate lists and evaluates per
+  candidate when any clause is object-scoped; explain steps and
+  `reserve_event` outcomes carry `scope`.
 - **`bench/suites/gates.sql`** — a benchmark suite for the action log and
   temporal gates (gated vs ungated checks over 0 / 100 / 10k events in the
   window, containment matching, traced and two-pass paths, gated enumeration,

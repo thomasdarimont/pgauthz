@@ -360,6 +360,7 @@ BEGIN
                'reason',       t.gate_reason,
                'observed',     t.gate_observed,
                'threshold',    t.gate_threshold,
+               'scope',        t.gate_scope,
                'missing_keys', to_jsonb(t.condition_missing_keys)
            ) ORDER BY t.step), '[]'::jsonb)
       INTO v_gates

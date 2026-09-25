@@ -33,6 +33,8 @@ BEGIN
     PERFORM authz.model_register_relation('test_gates', 'viewer');
     PERFORM authz.model_register_relation('test_gates', 'editor');
     PERFORM authz.model_register_relation('test_gates', 'member');
+    PERFORM authz.model_register_relation('test_gates', 'submit');
+    PERFORM authz.model_register_relation('test_gates', 'approve_doc');
     FOREACH v_rel IN ARRAY ARRAY['transfer', 'withdraw', 'approve', 'peek', 'download', 'pay'] LOOP
         PERFORM authz.model_add_rule('test_gates', 'account', v_rel, 'direct');
         PERFORM authz.write_tuple('test_gates', 'user', 'alice', v_rel, 'account', 'acc-1');
@@ -40,6 +42,8 @@ BEGIN
     PERFORM authz.model_add_rule('test_gates', 'doc', 'viewer', 'direct');
     PERFORM authz.model_add_rule('test_gates', 'doc', 'editor', 'direct');
     PERFORM authz.model_add_rule('test_gates', 'group', 'member', 'direct');
+    PERFORM authz.model_add_rule('test_gates', 'doc', 'submit', 'direct');
+    PERFORM authz.model_add_rule('test_gates', 'doc', 'approve_doc', 'direct');
 END;
 $$;
 
@@ -276,7 +280,8 @@ DECLARE v_bad text[] := ARRAY[
     '{"all_of": [{"formerly_within": {"window": "1h", "match": {"a[0]": 1}}}]}',
     '{"all_of": [{"formerly_within": {"window": "1h", "recorded_by": []}}]}',
     '{"all_of": [{"formerly_within": {"window": "1h"}}], "extra": 1}',
-    '{"all_of": [{"formerly_within": {"window": "1h", "window2": "x"}}]}'
+    '{"all_of": [{"formerly_within": {"window": "1h", "window2": "x"}}]}',
+    '{"all_of": [{"count_within": {"window": "1h", "scope": "resource", "max": 1}}]}'
 ];
     v_spec text; v_state text; v_ok int := 0;
 BEGIN
@@ -424,6 +429,71 @@ BEGIN
     PERFORM authz.add_gate('test_gates', 'account', 'audit_note', 'vocab_only', '{"all_of": [{"count_within": {"window": "1h", "max": 1}}]}');
     v_desc := authz.describe_model('test_gates');
     PERFORM _test_assert_true('g_25_describe_ruleless_relation_prefixed', position('    # gate audit_note/vocab_only' in v_desc) > 0, v_desc);
+END;
+$$;
+
+-- ================================================================
+-- Object-scoped clauses (scope = object)
+-- ================================================================
+DO $$
+DECLARE v_objs text; v_step jsonb;
+BEGIN
+    -- alice edits doc1 via group:eng#member (g_15) and doc2 directly
+    PERFORM authz.write_tuple('test_gates', 'user', 'alice', 'editor', 'doc', 'doc2');
+    -- "at most 3 edits of THIS document per hour" (plus 1 counts the request)
+    PERFORM authz.add_gate('test_gates', 'doc', 'editor', 'per_doc_limit', '{
+        "all_of": [{"count_within": {"window": "1h", "scope": "object", "max": 3, "plus": 1}}]}');
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'editor', 'doc', 'doc1');
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'editor', 'doc', 'doc1');
+    -- g_26: 2 prior edits of doc1 → a 3rd is allowed; doc2 is untouched by them
+    PERFORM _test_assert('g_26_under_per_object_cap',
+        authz.check_access('test_gates', 'user', 'alice', 'editor', 'doc', 'doc1')::text, 'true');
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'editor', 'doc', 'doc1');
+    PERFORM _test_assert('g_26_over_per_object_cap',
+        authz.check_access('test_gates', 'user', 'alice', 'editor', 'doc', 'doc1')::text, 'false');
+    PERFORM _test_assert('g_26_other_object_unaffected',
+        authz.check_access('test_gates', 'user', 'alice', 'editor', 'doc', 'doc2')::text, 'true');
+    -- the same clause subject-scoped would count doc1's edits against doc2 too
+    PERFORM authz.add_gate('test_gates', 'doc', 'editor', 'per_doc_limit', '{
+        "all_of": [{"count_within": {"window": "1h", "max": 3, "plus": 1}}]}');
+    PERFORM _test_assert('g_26_subject_scope_contrast',
+        authz.check_access('test_gates', 'user', 'alice', 'editor', 'doc', 'doc2')::text, 'false');
+    PERFORM authz.add_gate('test_gates', 'doc', 'editor', 'per_doc_limit', '{
+        "all_of": [{"count_within": {"window": "1h", "scope": "object", "max": 3, "plus": 1}}]}');
+
+    -- g_27: explain reports the scope; list_objects evaluates per candidate
+    SELECT e INTO v_step FROM jsonb_array_elements(jsonb_path_query_array(
+        authz.explain_access('test_gates', 'user', 'alice', 'editor', 'doc', 'doc1'),
+        '$.trace[*] ? (@.rule_type == "temporal_gate")')) e LIMIT 1;
+    PERFORM _test_assert('g_27_explain_step_scope',
+        (v_step ->> 'scope') || ' ' || (v_step ->> 'reason') || ' ' || (v_step ->> 'observed'), 'object gate_denied 4');
+    SELECT string_agg(object_id, ',' ORDER BY object_id) INTO v_objs
+      FROM authz.list_objects('test_gates', 'user', 'alice', 'editor', 'doc');
+    PERFORM _test_assert('g_27_list_objects_per_candidate', v_objs, 'doc2');
+    PERFORM _test_assert('g_27_helper_detects_object_scope',
+        authz._event_gates_object_scoped(authz._event_resolve_gates(authz._s('test_gates'), authz._t('test_gates', 'doc'), authz._r('test_gates', 'editor')))::text, 'true');
+    PERFORM _test_assert('g_27_helper_subject_only',
+        authz._event_gates_object_scoped(authz._event_resolve_gates(authz._s('test_gates'), authz._t('test_gates', 'doc'), authz._r('test_gates', 'viewer')))::text, 'false');
+    PERFORM authz.drop_gate('test_gates', 'doc', 'editor', 'per_doc_limit');
+
+    -- g_28: separation of duties — whoever submitted THIS document may not approve it
+    PERFORM authz.write_tuple('test_gates', 'user', 'alice', 'approve_doc', 'doc', 'doc1');
+    PERFORM authz.write_tuple('test_gates', 'user', 'alice', 'approve_doc', 'doc', 'doc2');
+    PERFORM authz.write_tuple('test_gates', 'user', 'bob',   'approve_doc', 'doc', 'doc1');
+    PERFORM authz.add_gate('test_gates', 'doc', 'approve_doc', 'four_eyes_sod', '{
+        "description": "the submitter may not approve",
+        "all_of": [{"count_within": {"window": "30d", "action": "submit", "kind": "response", "scope": "object", "max": 0}}]}');
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'submit', 'doc', 'doc1', 'response');
+    PERFORM _test_assert('g_28_submitter_cannot_approve',
+        authz.check_access('test_gates', 'user', 'alice', 'approve_doc', 'doc', 'doc1')::text, 'false');
+    PERFORM _test_assert('g_28_other_approver_can',
+        authz.check_access('test_gates', 'user', 'bob', 'approve_doc', 'doc', 'doc1')::text, 'true');
+    PERFORM _test_assert('g_28_submitter_can_approve_other_doc',
+        authz.check_access('test_gates', 'user', 'alice', 'approve_doc', 'doc', 'doc2')::text, 'true');
+    PERFORM _test_assert_true('g_28_describe_renders_scope',
+        position('scope: "object"' in authz.describe_model('test_gates')) > 0, authz.describe_model('test_gates'));
+    PERFORM _test_assert('g_28_list_subjects_agrees',
+        (SELECT string_agg(subject_id, ',' ORDER BY subject_id) FROM authz.list_subjects('test_gates', 'user', 'approve_doc', 'doc', 'doc1')), 'bob');
 END;
 $$;
 

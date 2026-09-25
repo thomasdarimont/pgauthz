@@ -1784,6 +1784,7 @@ primitive — and a body:
 |---|---|---|---|---|---|
 | `window` | one of window / calendar | ● | ● | ● | fixed-length interval text: `10m`, `1h`, `2 days`, `PT30M`, `P1W` (no months/years) |
 | `calendar` + `tz` | ✓ | ✓ | ✓ | ✓ | `hour` / `day` / `week` / `month` / `year` with an IANA zone: the bucket containing now |
+| `scope` | ✓ | ✓ | ✓ | ✓ | `subject` (default): the principal's events on any object; `object`: only its events on the **checked** object — "3 downloads of *this* file", "the submitter of *this* object may not approve it" |
 | `action` | ✓ | ✓ | ✓ | ✓ | a relation name of the store; default: the gate's own relation |
 | `kind` | ✓ | ✓ | ✓ | ✓ | `request` (default) / `response` / `denied` |
 | `match` | ✓ | ✓ | ✓ | ✓ | `{"dotted.path": value}` — containment on the event payload; values are JSON literals or `"$request.<path>"` references (JSON type kept); `"$$x"` is the literal string `$x` |
@@ -1826,9 +1827,14 @@ for another stock cannot leak through explain.
   the walk resolves `doc#viewer` through `group:eng#member`. Gates hang on
   one seam above the graph walk (`authz._decide`), which a lint step in the
   test suite enforces for every entry point.
-- **v1 gates are subject-scoped**: a clause cannot filter by the checked
-  object ("3 downloads of *this* file per day" is a follow-up). `key:
-  object_id` counts distinct objects across the principal's actions.
+- **Scope.** By default a clause counts the principal's events on any
+  object (`key: object_id` then counts distinct objects across them). With
+  `scope: object` it counts only the events on the object being checked, so
+  the same gate bounds each document separately, and separation of duties
+  is one clause: `{"count_within": {"window": "30d", "action": "submit",
+  "scope": "object", "max": 0}}` on `doc#approve` denies whoever submitted
+  *that* document. Object-scoped clauses make `list_objects` evaluate the
+  gate per candidate object instead of once per subject.
 - **Time-travel** (`audit_check_access`, `audit_list_actions`) evaluates the
   gate definitions as of `p_at` (gate history lives in `model_gates_audit`)
   over the events that had been *recorded* by then.

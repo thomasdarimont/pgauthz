@@ -499,12 +499,21 @@ DECLARE
     v_user_type   integer := authz._t(v_store_id, p_user_type);
     v_relation    integer := authz._r(v_store_id, p_relation);
     v_object_type integer := authz._t(v_store_id, p_object_type);
+    v_gates       jsonb;
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
-    -- Temporal gates (ADR 0012) are subject-scoped: one evaluation settles
-    -- every candidate. A gate deny is an empty page — no graph work at all.
-    IF NOT authz._event_check_gates(v_store_id, v_user_type, p_user_id, v_relation, v_object_type, NULL, context) THEN
-        RETURN;
+    -- Temporal gates (ADR 0012): with subject-scoped clauses only, ONE
+    -- evaluation settles every candidate (a gate deny is an empty page — no
+    -- graph work at all) and '[]' below tells _decide they are settled. Any
+    -- object-scoped clause ("3 downloads of THIS file") depends on the
+    -- candidate, so the list is handed to _decide and evaluated per object.
+    v_gates := authz._event_resolve_gates(v_store_id, v_object_type, v_relation);
+    IF NOT authz._event_gates_object_scoped(v_gates) THEN
+        IF NOT authz._event_check_gates(v_store_id, v_user_type, p_user_id, v_relation, v_object_type, NULL, context,
+                                        p_gates => v_gates) THEN
+            RETURN;
+        END IF;
+        v_gates := '[]'::jsonb;
     END IF;
     RETURN QUERY
         WITH RECURSIVE reach (object_type, object_id, relation) AS (
@@ -575,10 +584,8 @@ BEGIN
                    -- _check_access never re-runs on earlier pages' objects.
                    AND (p_after IS NULL OR r.object_id > p_after)
                  ORDER BY r.object_id) c
-         -- Gates (ADR 0012) are subject-scoped in v1 and were evaluated ONCE
-         -- above; '[]' tells _decide they are settled for every candidate.
          WHERE authz._decide(v_store_id, v_user_type, p_user_id, v_relation, v_object_type, c.object_id, context,
-                             p_gates => '[]'::jsonb)
+                             p_gates => v_gates)
          ORDER BY c.object_id
          -- p_after (keyset) takes precedence over p_offset when supplied.
          OFFSET (CASE WHEN p_after IS NULL THEN p_offset ELSE 0 END)

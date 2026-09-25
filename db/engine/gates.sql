@@ -26,8 +26,10 @@
 --    ]}
 --
 --   Clause keys: window (fixed-length interval text) XOR calendar
---   (hour|day|week|month|year, requires tz); action (relation name, default:
---   the gate's own relation); kind (request|response|denied, default request);
+--   (hour|day|week|month|year, requires tz); scope (subject, the default:
+--   the principal's events on any object; object: only on the checked
+--   object); action (relation name, default: the gate's own relation); kind
+--   (request|response|denied, default request);
 --   match ({dotted.path: JSON literal | "$request.<path>"} — containment on
 --   the payload); recorded_by (allowlist); key (count_distinct_within:
 --   object_id | object_type | payload.<path>); field (sum_within: payload
@@ -205,7 +207,7 @@ BEGIN
             RAISE EXCEPTION '%: % takes an object', v_prefix, v_prim USING ERRCODE = 'check_violation';
         END IF;
 
-        v_allowed := ARRAY['window', 'calendar', 'tz', 'action', 'kind', 'match', 'recorded_by'];
+        v_allowed := ARRAY['window', 'calendar', 'tz', 'scope', 'action', 'kind', 'match', 'recorded_by'];
         IF v_prim = 'count_distinct_within' THEN v_allowed := v_allowed || ARRAY['key', 'plus', 'max', 'min'];
         ELSIF v_prim = 'sum_within'         THEN v_allowed := v_allowed || ARRAY['field', 'plus', 'max', 'min'];
         ELSIF v_prim = 'count_within'       THEN v_allowed := v_allowed || ARRAY['plus', 'max', 'min'];
@@ -283,6 +285,13 @@ BEGIN
         IF v_body ? 'kind' AND (jsonb_typeof(v_body -> 'kind') <> 'string'
                                 OR (v_body ->> 'kind') NOT IN ('request', 'response', 'denied')) THEN
             RAISE EXCEPTION '%: kind must be one of request | response | denied', v_prefix USING ERRCODE = 'check_violation';
+        END IF;
+        -- scope: subject (default) counts the principal's events on any object;
+        -- object narrows them to the checked object ("3 downloads of THIS file",
+        -- "the submitter of THIS object may not approve it").
+        IF v_body ? 'scope' AND (jsonb_typeof(v_body -> 'scope') <> 'string'
+                                 OR (v_body ->> 'scope') NOT IN ('subject', 'object')) THEN
+            RAISE EXCEPTION '%: scope must be subject | object', v_prefix USING ERRCODE = 'check_violation';
         END IF;
 
         -- match: non-empty {path: literal | $request.<path>}
@@ -399,6 +408,8 @@ CREATE OR REPLACE FUNCTION authz._event_matching(
     p_subject_id     text,
     p_action         integer,
     p_kind           smallint,
+    p_object_type    integer,      -- object scope: NULL = any object
+    p_object_id      text,
     p_from           timestamptz,
     p_from_inclusive boolean,
     p_to             timestamptz,
@@ -414,6 +425,8 @@ LANGUAGE sql VOLATILE AS $$
        AND e.subject_id   = p_subject_id
        AND e.action       = p_action
        AND e.kind         = p_kind
+       AND (p_object_type IS NULL OR e.object_type = p_object_type)
+       AND (p_object_id   IS NULL OR e.object_id   = p_object_id)
        AND (e.occurred_at > p_from OR (p_from_inclusive AND e.occurred_at = p_from))
        AND e.occurred_at <= p_to
        AND (p_as_of IS NULL OR e.recorded_at <= p_as_of)
@@ -423,23 +436,25 @@ $$;
 
 CREATE OR REPLACE FUNCTION authz._event_formerly_within(
     p_store_id integer, p_subject_type integer, p_subject_id text, p_action integer, p_kind smallint,
+    p_object_type integer, p_object_id text,
     p_from timestamptz, p_from_inclusive boolean, p_to timestamptz,
     p_match jsonb[], p_recorded_by text[], p_as_of timestamptz
 ) RETURNS boolean
 LANGUAGE sql VOLATILE AS $$
     SELECT EXISTS (SELECT 1 FROM authz._event_matching(
-        p_store_id, p_subject_type, p_subject_id, p_action, p_kind,
+        p_store_id, p_subject_type, p_subject_id, p_action, p_kind, p_object_type, p_object_id,
         p_from, p_from_inclusive, p_to, p_match, p_recorded_by, p_as_of))
 $$;
 
 CREATE OR REPLACE FUNCTION authz._event_count_within(
     p_store_id integer, p_subject_type integer, p_subject_id text, p_action integer, p_kind smallint,
+    p_object_type integer, p_object_id text,
     p_from timestamptz, p_from_inclusive boolean, p_to timestamptz,
     p_match jsonb[], p_recorded_by text[], p_as_of timestamptz
 ) RETURNS bigint
 LANGUAGE sql VOLATILE AS $$
     SELECT count(*) FROM authz._event_matching(
-        p_store_id, p_subject_type, p_subject_id, p_action, p_kind,
+        p_store_id, p_subject_type, p_subject_id, p_action, p_kind, p_object_type, p_object_id,
         p_from, p_from_inclusive, p_to, p_match, p_recorded_by, p_as_of)
 $$;
 
@@ -447,6 +462,7 @@ $$;
 -- is absent are not counted (DISTINCT ignores NULL).
 CREATE OR REPLACE FUNCTION authz._event_count_distinct_within(
     p_store_id integer, p_subject_type integer, p_subject_id text, p_action integer, p_kind smallint,
+    p_object_type integer, p_object_id text,
     p_from timestamptz, p_from_inclusive boolean, p_to timestamptz,
     p_match jsonb[], p_recorded_by text[], p_as_of timestamptz,
     p_key text
@@ -458,7 +474,7 @@ LANGUAGE sql VOLATILE AS $$
                               ELSE m.payload #>> string_to_array(substr(p_key, 9), '.')
                           END)
       FROM authz._event_matching(
-        p_store_id, p_subject_type, p_subject_id, p_action, p_kind,
+        p_store_id, p_subject_type, p_subject_id, p_action, p_kind, p_object_type, p_object_id,
         p_from, p_from_inclusive, p_to, p_match, p_recorded_by, p_as_of) m
 $$;
 
@@ -467,6 +483,7 @@ $$;
 -- ignoring rows would let a malformed recorder relax a cap.
 CREATE OR REPLACE FUNCTION authz._event_sum_within(
     p_store_id integer, p_subject_type integer, p_subject_id text, p_action integer, p_kind smallint,
+    p_object_type integer, p_object_id text,
     p_from timestamptz, p_from_inclusive boolean, p_to timestamptz,
     p_match jsonb[], p_recorded_by text[], p_as_of timestamptz,
     p_field text,
@@ -477,7 +494,7 @@ LANGUAGE sql VOLATILE AS $$
                         FILTER (WHERE jsonb_typeof(m.payload #> string_to_array(p_field, '.')) = 'number'), 0),
            COALESCE(bool_and(jsonb_typeof(m.payload #> string_to_array(p_field, '.')) = 'number'), true)
       FROM authz._event_matching(
-        p_store_id, p_subject_type, p_subject_id, p_action, p_kind,
+        p_store_id, p_subject_type, p_subject_id, p_action, p_kind, p_object_type, p_object_id,
         p_from, p_from_inclusive, p_to, p_match, p_recorded_by, p_as_of) m
 $$;
 
@@ -514,6 +531,22 @@ END;
 $$;
 
 ------------------------------------------------------------------------
+-- _event_gates_object_scoped: does any clause in a resolved gate list use
+-- scope = object? list_objects decides with it whether the gates can be
+-- settled ONCE for the subject (fast path) or must be evaluated per
+-- candidate object.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._event_gates_object_scoped(p_gates jsonb) RETURNS boolean
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT EXISTS (
+        SELECT 1
+          FROM jsonb_array_elements(COALESCE(p_gates, '[]'::jsonb)) g
+          CROSS JOIN LATERAL jsonb_array_elements(g -> 'spec' -> 'all_of') c
+          CROSS JOIN LATERAL jsonb_each(c) kv
+         WHERE kv.value ->> 'scope' = 'object')
+$$;
+
+------------------------------------------------------------------------
 -- _event_eval_clause: evaluate one clause for the checked principal.
 -- Returns the outcome record the evaluator traces: passed, a reason code
 -- (gate_passed | gate_denied | gate_missing_context | gate_bad_request_value
@@ -527,6 +560,8 @@ CREATE OR REPLACE FUNCTION authz._event_eval_clause(
     p_subject_type integer,
     p_subject_id   text,
     p_relation     integer,
+    p_object_type  integer,       -- the checked object (used when scope = object)
+    p_object_id    text,
     p_clause       jsonb,
     p_context      jsonb,
     p_now          timestamptz,
@@ -538,6 +573,7 @@ CREATE OR REPLACE FUNCTION authz._event_eval_clause(
     OUT threshold     numeric,
     OUT missing_keys  text[],
     OUT window_text   text,
+    OUT scope         text,       -- 'subject' | 'object'
     OUT detail        text
 ) RETURNS record
 LANGUAGE plpgsql VOLATILE AS $$
@@ -550,6 +586,8 @@ DECLARE
     v_from_incl   boolean := false;
     v_match       jsonb[];
     v_recorded_by text[];
+    v_obj_type    integer;        -- object scope filters, NULL = any
+    v_obj_id      text;
     v_key         text;
     v_val         jsonb;
     v_max         numeric;
@@ -566,6 +604,11 @@ BEGIN
 
     SELECT k INTO v_prim FROM jsonb_object_keys(p_clause) k LIMIT 1;
     v_body := p_clause -> v_prim;
+    scope  := COALESCE(v_body ->> 'scope', 'subject');
+    IF scope = 'object' THEN
+        v_obj_type := p_object_type;
+        v_obj_id   := p_object_id;
+    END IF;
 
     -- Window
     IF v_body ? 'window' THEN
@@ -646,7 +689,7 @@ BEGIN
     CASE v_prim
         WHEN 'formerly_within' THEN
             observed  := CASE WHEN authz._event_formerly_within(
-                                  p_store_id, p_subject_type, p_subject_id, v_action, v_kind,
+                                  p_store_id, p_subject_type, p_subject_id, v_action, v_kind, v_obj_type, v_obj_id,
                                   v_from, v_from_incl, p_now, v_match, v_recorded_by, p_as_of)
                               THEN 1 ELSE 0 END;
             threshold := 1;
@@ -655,20 +698,20 @@ BEGIN
             -- `plus` (typically 1) counts the request being decided, so
             -- "max: 5, plus: 1" means at most 5 actions INCLUDING this one.
             observed  := authz._event_count_within(
-                             p_store_id, p_subject_type, p_subject_id, v_action, v_kind,
+                             p_store_id, p_subject_type, p_subject_id, v_action, v_kind, v_obj_type, v_obj_id,
                              v_from, v_from_incl, p_now, v_match, v_recorded_by, p_as_of) + v_plus;
             threshold := COALESCE(v_max, v_min);
             passed    := (v_max IS NULL OR observed <= v_max) AND (v_min IS NULL OR observed >= v_min);
         WHEN 'count_distinct_within' THEN
             observed  := authz._event_count_distinct_within(
-                             p_store_id, p_subject_type, p_subject_id, v_action, v_kind,
+                             p_store_id, p_subject_type, p_subject_id, v_action, v_kind, v_obj_type, v_obj_id,
                              v_from, v_from_incl, p_now, v_match, v_recorded_by, p_as_of,
                              v_body ->> 'key') + v_plus;
             threshold := COALESCE(v_max, v_min);
             passed    := (v_max IS NULL OR observed <= v_max) AND (v_min IS NULL OR observed >= v_min);
         WHEN 'sum_within' THEN
             SELECT * INTO v_sum FROM authz._event_sum_within(
-                         p_store_id, p_subject_type, p_subject_id, v_action, v_kind,
+                         p_store_id, p_subject_type, p_subject_id, v_action, v_kind, v_obj_type, v_obj_id,
                          v_from, v_from_incl, p_now, v_match, v_recorded_by, p_as_of,
                          v_body ->> 'field');
             IF NOT v_sum.all_numeric THEN
@@ -683,7 +726,7 @@ BEGIN
 
     reason := CASE WHEN passed THEN 'gate_passed' ELSE 'gate_denied' END;
     detail := v_prim || ' observed ' || observed || ' vs ' || COALESCE(threshold::text, '-')
-              || ' in ' || window_text;
+              || ' in ' || window_text || CASE WHEN scope = 'object' THEN ' on this object' ELSE '' END;
 EXCEPTION
     WHEN query_canceled THEN
         RAISE;         -- statement_timeout / cancel aborts the check, never a silent deny
@@ -699,8 +742,10 @@ $$;
 -- for the checked principal; true when none exist or all clauses pass.
 --
 -- p_gates: a pre-resolved gate list (list_subjects hoists it once per
--- statement; list_objects passes '[]' after evaluating up front); NULL =
--- resolve here. p_as_of / p_from_snapshot: the time-travel path (windows
+-- statement; list_objects passes '[]' after evaluating subject-scoped gates
+-- up front, or the list itself when a clause is object-scoped); NULL =
+-- resolve here. p_object_type/p_object_id are the checked object — what
+-- scope = object clauses filter on. p_as_of / p_from_snapshot: the time-travel path (windows
 -- relative to p_as_of, definitions from the audit snapshot, events bounded
 -- by recorded_at <= p_as_of). With authz.trace on, one temporal_gate step
 -- per clause is written into pg_temp._access_trace (depth 0), and every
@@ -759,20 +804,20 @@ BEGIN
         FOR v_clause IN SELECT * FROM jsonb_array_elements(v_gate -> 'spec' -> 'all_of') LOOP
             v_start := clock_timestamp();
             SELECT * INTO r FROM authz._event_eval_clause(
-                     p_store_id, p_user_type, p_user_id, p_relation, v_clause,
+                     p_store_id, p_user_type, p_user_id, p_relation, p_object_type, p_object_id, v_clause,
                      p_request_context, v_now, p_as_of, v_assume);
             IF v_trace THEN
                 INSERT INTO _access_trace (
                     depth, rule_type, subject, relation, object, result, detail, duration_ms,
                     condition_missing_keys, gate_name, gate_clause, gate_window,
-                    gate_observed, gate_threshold, gate_reason)
+                    gate_observed, gate_threshold, gate_reason, gate_scope)
                 VALUES (
                     0, 'temporal_gate', v_subject, v_rel, v_object, r.passed,
                     'gate "' || (v_gate ->> 'name') || '" clause ' || v_idx || ': ' || COALESCE(r.detail, r.reason),
                     extract(epoch from clock_timestamp() - v_start) * 1000,
                     r.missing_keys, v_gate ->> 'name',
                     v_idx || ':' || (SELECT k FROM jsonb_object_keys(v_clause) k LIMIT 1),
-                    r.window_text, r.observed, r.threshold, r.reason);
+                    r.window_text, r.observed, r.threshold, r.reason, r.scope);
             END IF;
             IF NOT r.passed THEN
                 v_all := false;

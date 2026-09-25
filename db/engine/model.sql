@@ -583,7 +583,7 @@ BEGIN
         FOR v_clause IN SELECT * FROM jsonb_array_elements(g.spec -> 'all_of') LOOP
             SELECT k INTO v_prim FROM jsonb_object_keys(v_clause) k LIMIT 1;
             SELECT string_agg(kv.key || ': ' || kv.value::text, ', '
-                              ORDER BY array_position(ARRAY['window','calendar','tz','action','kind','match',
+                              ORDER BY array_position(ARRAY['window','calendar','tz','scope','action','kind','match',
                                                             'recorded_by','key','field','plus','max','min'], kv.key))
               INTO v_line
               FROM jsonb_each(v_clause -> v_prim) kv;

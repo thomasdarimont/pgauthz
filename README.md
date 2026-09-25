@@ -1155,8 +1155,10 @@ SELECT authz.explain_access(...) -> 'decision' ->> 'reason';                    
 ```
 
 Four primitives (`count_within`, `count_distinct_within`, `sum_within`,
-`formerly_within`), sliding or calendar windows, containment matching with
-`$request.*` references, `recorded_by` allowlists. A gate bounds *recorded*
+`formerly_within`), sliding or calendar windows, subject- or object-scoped
+clauses ("3 edits of *this* document per hour"; separation of duties in one
+clause), containment matching with `$request.*` references, `recorded_by`
+allowlists. A gate bounds *recorded*
 actions; when a cap must hold exactly under concurrency, the PEP calls
 `reserve_event` (or `POST /pgauthz/v1/events/reserve`) because it is about to
 act: decision and `request` record under a per-subject lock, refusals recorded

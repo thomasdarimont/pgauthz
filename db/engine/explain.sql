@@ -120,7 +120,8 @@ BEGIN
         gate_window    text,      -- normalized interval, or "calendar/tz"
         gate_observed  numeric,
         gate_threshold numeric,
-        gate_reason    text       -- gate_passed | gate_denied | gate_missing_context | ...
+        gate_reason    text,      -- gate_passed | gate_denied | gate_missing_context | ...
+        gate_scope     text       -- subject | object
     ) ON COMMIT DROP;
     TRUNCATE _access_trace RESTART IDENTITY;
     PERFORM set_config('authz.trace', 'on', true);
@@ -274,6 +275,7 @@ BEGIN
                     'window',    s.gate_window,
                     'observed',  s.gate_observed,
                     'threshold', s.gate_threshold,
+                    'scope',     s.gate_scope,
                     'missing_keys', to_jsonb(s.condition_missing_keys))
                 ELSE '{}'::jsonb END
         ORDER BY s.step
