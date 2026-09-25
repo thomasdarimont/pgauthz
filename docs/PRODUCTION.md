@@ -704,12 +704,18 @@ trail, with the same operational shape:
 - **Partitions ahead of time:** schedule `SELECT authz.ensure_event_partitions()`
   alongside `ensure_audit_partitions()` (`init.sh` and the migration runner
   call both once at install).
-- **Retention is a partition drop:** `SELECT
+- **Fleet-wide retention is a partition drop:** `SELECT
   authz.drop_event_partitions_before('2026-01-01')` drops every month whose
-  rows are all older than the date (returns the count). Once model gates
-  (phase 2) exist, keep retention **≥ the longest gate window** — a dropped
-  month under-counts, which can only *relax* a cap — and ≥ audit retention if
-  time-travel over gates is to stay exact.
+  rows are all older than the date (DDL, O(partitions); returns the count).
+- **Per-store retention is a row delete:** `SELECT
+  authz.purge_events('tenant_a', now() - interval '90 days')` removes one
+  store's events older than the timestamp (O(rows), under the sanctioned
+  maintenance window; returns the count) — for a tenant whose retention is
+  shorter than the fleet's, or an erasure request short of `delete_store`.
+  Prefer the partition drop for the fleet; reach for the purge per tenant.
+- Keep event retention **≥ the longest gate window** — a dropped month or
+  purged range under-counts, which can only *relax* a cap — and ≥ audit
+  retention if time-travel over gates is to stay exact.
 - **Bounded timestamps:** `occurred_at` is caller-asserted (queues deliver
   late) but rejected beyond `authz.event_max_future_skew` (default **5 s**)
   ahead of, or `authz.event_max_backdate` (default **24 h**) behind, the

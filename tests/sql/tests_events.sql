@@ -449,6 +449,41 @@ BEGIN
 END;
 $$;
 
+-- ev_25: per-store retention — purge_events deletes only this store's rows older than p_before
+DO $$
+DECLARE n_before int; n_after int; n_old int; v_seq bigint; v_state text;
+BEGIN
+    -- a second store must be untouched by the purge
+    BEGIN PERFORM authz.delete_store('test_events_other', p_purge_audit => true); EXCEPTION WHEN OTHERS THEN NULL; END;
+    PERFORM authz.create_store('test_events_other');
+    PERFORM authz.model_register_type('test_events_other', 'user');
+    PERFORM authz.model_register_relation('test_events_other', 'download');
+    PERFORM set_config('authz.event_max_backdate', '72 hours', true);
+    PERFORM authz.record_event('test_events_other', 'user', 'x', 'download', p_occurred_at => now() - interval '2 days');
+    PERFORM authz.record_event('test_events', 'user', 'purge_me', 'download', p_occurred_at => now() - interval '2 days');
+    PERFORM authz.record_event('test_events', 'user', 'purge_me', 'download', p_occurred_at => now() - interval '40 hours');
+    v_seq := authz.record_event('test_events', 'user', 'purge_me', 'download');   -- recent, must survive
+    PERFORM set_config('authz.event_max_backdate', '', true);
+
+    SELECT count(*) INTO n_before FROM authz.list_events('test_events');
+    PERFORM _test_assert('ev_25_purge_returns_count',
+        authz.purge_events('test_events', now() - interval '1 day')::text, '2');   -- (ev_18's partition drop already removed ev_09's backdated row)
+    SELECT count(*) INTO n_after FROM authz.list_events('test_events');
+    PERFORM _test_assert('ev_25_only_old_rows_gone', (n_before - n_after)::text, '2');
+    PERFORM _test_assert('ev_25_recent_row_survives',
+        (SELECT count(*) FROM authz.list_events('test_events', p_subject_type => 'user', p_subject_id => 'purge_me'))::text, '1');
+    PERFORM _test_assert('ev_25_other_store_untouched',
+        (SELECT count(*) FROM authz.list_events('test_events_other'))::text, '1');
+    PERFORM _test_assert('ev_25_idempotent', authz.purge_events('test_events', now() - interval '1 day')::text, '0');
+    -- append-only protection still holds outside the sanctioned window
+    v_state := NULL;
+    BEGIN DELETE FROM authz.events WHERE subject_id = 'purge_me';
+    EXCEPTION WHEN OTHERS THEN v_state := SQLERRM; END;
+    PERFORM _test_assert_true('ev_25_direct_delete_still_blocked', v_state LIKE '%append-only%', coalesce(v_state, 'no error'));
+    PERFORM authz.delete_store('test_events_other', p_purge_audit => true);
+END;
+$$;
+
 -- ev_19: delete_store erases the store's events (FKs would otherwise block it)
 DO $$
 DECLARE s integer := authz._s('test_events'); n int; v_err text;

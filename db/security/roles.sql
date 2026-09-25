@@ -304,6 +304,7 @@ GRANT EXECUTE ON FUNCTION authz.cleanup_expired_tuples(text, interval, text) TO 
 GRANT EXECUTE ON FUNCTION authz.ensure_audit_partitions(int) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.ensure_event_partitions(int) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.drop_event_partitions_before(date) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.purge_events(text, timestamptz) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.create_store(text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.retire_store(text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.delete_store(text, boolean) TO authz_admin;
@@ -387,6 +388,7 @@ ALTER FUNCTION authz.reserve_event(text, text, text, text, text, text, jsonb, js
 ALTER FUNCTION authz.list_events(text, text, text, text, text, text, text, text, timestamptz, timestamptz, timestamptz, bigint, int) SECURITY DEFINER;
 ALTER FUNCTION authz.ensure_event_partitions(int) SECURITY DEFINER;
 ALTER FUNCTION authz.drop_event_partitions_before(date) SECURITY DEFINER;
+ALTER FUNCTION authz.purge_events(text, timestamptz) SECURITY DEFINER;
 ALTER FUNCTION authz.create_store(text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.retire_store(text) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_store(text, boolean) SECURITY DEFINER;

@@ -182,9 +182,11 @@ a backstop).
   shared by both logs.
 - **Operations:** schedule `ensure_event_partitions()` next to
   `ensure_audit_partitions()`; retention via `drop_event_partitions_before`
-  (keep it ≥ the longest gate window once gates exist — a dropped month can
-  only *relax* a cap); set `authz.event_max_backdate` to the queue's
-  worst-case lag; `delete_store` purges the store's events.
+  (fleet-wide, partition drop) and `purge_events(store, before)` (per store,
+  row delete) — keep it ≥ the longest gate window once gates exist, since a
+  dropped month or purged range can only *relax* a cap; set
+  `authz.event_max_backdate` to the queue's worst-case lag; `delete_store`
+  purges the store's events.
 - **Replication:** events replicate like everything else; a read-only install
   can list them (auditor) and, in phase 2, evaluate gates, but cannot record.
   A `decision-only` instance reading a replica sees counts lagged by

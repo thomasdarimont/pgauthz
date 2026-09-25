@@ -411,7 +411,9 @@ partitioned the same way (monthly on `occurred_at`, over the shared
 `_ensure_month_partition` worker). Schedule `authz.ensure_event_partitions()`
 next to the audit call, and drop old months with
 `authz.drop_event_partitions_before('2025-02-01')` (drops every partition whose
-rows are all older; returns the count).
+rows are all older; returns the count). Per-store retention is
+`authz.purge_events('tenant_a', now() - interval '90 days')` — a row delete
+scoped to one store, for tenants whose retention differs from the fleet's.
 
 ### Suppressing the audit trail (DBA bulk operations)
 

@@ -76,6 +76,10 @@ pre-1.0, minor versions may include breaking changes.
   hid events recorded meanwhile), and `count_within` /
   `count_distinct_within` gained `plus` (like `sum_within`) so `max: 5,
   plus: 1` means at most 5 actions *including* the one being decided.
+- **Per-store event retention** — `authz.purge_events(store, before)` deletes
+  one store's events older than a timestamp (row-wise, under the sanctioned
+  maintenance window, admin-only, returns the count) — the per-tenant tool
+  next to the fleet-wide `drop_event_partitions_before` partition drop.
 - **Per-recorder action allowlists** (migration 0013): `authz.recorder_actions`
   maps a DB role to the actions it may record in a store, managed with
   `grant_recorder_actions` / `revoke_recorder_actions` (admin). Namespace

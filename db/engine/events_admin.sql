@@ -250,7 +250,9 @@ $$;
 
 ------------------------------------------------------------------------
 -- Partition maintenance — mirrors ensure_audit_partitions (audit.sql) over
--- the shared _ensure_month_partition worker.
+-- the shared _ensure_month_partition worker — and retention: fleet-wide by
+-- partition drop (drop_event_partitions_before), per-store by row delete
+-- (purge_events).
 ------------------------------------------------------------------------
 
 -- _ensure_event_partition: create authz.events_YYYY_MM (idempotent; moves
@@ -306,6 +308,38 @@ CREATE OR REPLACE FUNCTION authz.drop_event_partitions_before(
 LANGUAGE plpgsql AS $$
 BEGIN
     RETURN authz._drop_month_partitions_before('events', p_before);
+END;
+$$;
+
+-- purge_events: PER-STORE retention — delete one store's events with
+-- occurred_at before p_before. Row-wise (O(rows), audited by nothing: the
+-- log is append-only and this is sanctioned maintenance under the same
+-- authz.audit_maintenance window the partition mover and delete_store use),
+-- unlike drop_event_partitions_before, which is DDL and O(partitions) but
+-- fleet-wide. Use it for a tenant whose retention is shorter than the
+-- fleet's, or for a tenant's erasure request short of delete_store. Returns
+-- the number of rows deleted. Admin-only. The same caveat as any retention:
+-- time-travel over gates for an instant inside the purged range
+-- under-counts, which can only RELAX a cap.
+CREATE OR REPLACE FUNCTION authz.purge_events(
+    p_store  text,
+    p_before timestamptz
+) RETURNS bigint
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store, true);   -- retired stores can be purged too
+    v_count    bigint;
+BEGIN
+    IF p_before IS NULL THEN
+        RAISE EXCEPTION 'p_before is required' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    PERFORM set_config('authz.audit_maintenance', 'on', true);
+    DELETE FROM authz.events e
+     WHERE e.store_id = v_store_id
+       AND e.occurred_at < p_before;
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    PERFORM set_config('authz.audit_maintenance', '', true);
+    RETURN v_count;
 END;
 $$;
 
