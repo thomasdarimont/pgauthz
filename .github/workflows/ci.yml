@@ -80,6 +80,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      # validate-hooks.sh --allow-http canonicalises http.send destinations with
+      # pgauthzd/cmd/hookurl (go run) — the same parser OPA applies allow_net with.
+      - name: Set up Go (hook destination canonicaliser)
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: pgauthzd/go.mod
       - name: Cache sqlx-cli
         id: cache-sqlx
         uses: actions/cache@v6
@@ -114,6 +120,7 @@ jobs:
           ./scripts/validate-hooks.sh --lib examples/opa-hooks-lib
           HOOK_HTTP_CAPABILITIES="$PWD/examples/opa-hooks-http/http-caps.example.json" \
             ./scripts/validate-hooks.sh --global --allow-http examples/opa-hooks-http
+          ./tests/test-hook-validator.sh
           for d in opa-hooks opa-hooks-http opa-hooks-filtering opa-hooks-lib; do
             docker run --rm -v "$PWD/opa/policies:/p:ro" -v "$PWD/examples/$d:/x:ro" \
               openpolicyagent/opa:1.20.2 test /p /x

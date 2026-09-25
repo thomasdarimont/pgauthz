@@ -940,7 +940,11 @@ Mount: compose `- ./hooks/global:/policies/hooks/global:ro` and
 `- ./hooks/<store>:/policies/hooks/stores/<store>:ro`; Helm
 `opa.extraPoliciesConfigMap` (global) + `opa.storePoliciesConfigMaps.<store>`.
 **Validate every mounted source** with `scripts/validate-hooks.sh --global` /
-`--store <s>` (a required gate — veto-only is a contract, not a sandbox).
+`--store <s>` (a required gate — veto-only is a contract, not a sandbox). For
+network hooks (`--allow-http`) every `http.send` destination is canonicalised
+with OPA's own URL parser (`pgauthzd/cmd/hookurl`, needs the Go toolchain) and
+must be https and in the profile's `allow_net`; `--allow-plain-http` admits
+`http://` on a private network you trust (loopback needs no flag).
 Reference hooks, the contract, and the test recipe live in
 [`examples/opa-hooks/`](../examples/opa-hooks/); design in
 [ADR 0011](../docs/adr/0011-opa-policy-hooks.md). Search/enumeration rules

@@ -110,6 +110,19 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **Hook validator: `http.send` destinations are canonicalised with OPA's own
+  parser** (external review, SECURITY-AUDIT F17). `validate-hooks.sh`
+  extracted the destination host with `sed` before comparing it to
+  `allow_net`; it now calls `pgauthzd/cmd/hookurl` (Go `net/url`, the parser
+  OPA applies `allow_net` with) and additionally requires https (loopback
+  excepted; `--allow-plain-http` / `HOOK_ALLOW_PLAIN_HTTP=1` opts a trusted
+  private network in), rejects userinfo, opaque URLs and non-canonical hosts.
+  `--allow-http` validation now needs the Go toolchain.
+- **Hook validator: IPv6-literal destinations skipped the allowlist check**
+  (SECURITY-AUDIT F18, found while fixing the above). Under the script's
+  `nullglob`, an unquoted URL loop treated `https://[2001:db8::1]/…` as a
+  glob matching nothing and never checked it; URLs are now iterated by line.
+  `tests/test-hook-validator.sh` pins both fixes with negative fixtures.
 - **`list_events` scanned the whole log for a subject page** (23 ms / 191k
   buffers on a 220k-row log for 100 rows): the `(param IS NULL OR …)` filter
   shape could not become an index condition under a generic plan, and no

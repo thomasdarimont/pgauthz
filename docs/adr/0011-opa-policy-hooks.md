@@ -355,7 +355,17 @@ independent controls** (capabilities are a *build/check-time* validation —
    URLs are forced static, the validator **enforces the allowlist itself**:
    each destination host must be a member of the profile's `allow_net`
    (`opa check` alone does not inspect hosts — `allow_net` is otherwise
-   evaluation-time, `opa eval/test --capabilities`). The request object is validated
+   evaluation-time, `opa eval/test --capabilities`). The host is extracted by
+   `pgauthzd/cmd/hookurl` with Go's `net/url` — the parser OPA applies
+   `allow_net` with (`url.Parse(...).Hostname()`, compared byte-for-byte) —
+   never by shell text tools, so IPv6 literals, userinfo, ports, case and
+   percent-encoding cannot be read one way by the validator and another by
+   OPA. The helper is stricter than OPA wherever a divergence could matter:
+   **https only** (http accepted for loopback, or with
+   `--allow-plain-http` / `HOOK_ALLOW_PLAIN_HTTP=1` for a trusted private
+   network — an explicit operator choice), no userinfo, no opaque URLs, and
+   a canonical lowercase ASCII host (punycode for IDNs), so a spelling OPA
+   would not recognise cannot pass validation and fail closed at runtime. The request object is validated
    against an explicit **field allowlist** — only `url`, `method`, `headers`,
    `timeout`, `raise_error`, `enable_redirect`, `tls_insecure_skip_verify`,
    and `max_retry_attempts` are admitted; **every other field is rejected**,

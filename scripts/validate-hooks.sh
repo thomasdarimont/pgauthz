@@ -33,17 +33,38 @@
 #
 # *_test.rego files are skipped (they may live in any package).
 #
-# Usage: scripts/validate-hooks.sh [--global | --store <name> | --lib] [--allow-http] <hooks-dir>
+#   - DESTINATIONS (--allow-http): every http.send url is a literal string,
+#     canonicalised by pgauthzd/cmd/hookurl (Go net/url — the parser OPA itself
+#     applies allow_net with) and its host must be in the http profile's
+#     allow_net. https only; http is accepted for loopback (development) or
+#     with --allow-plain-http / HOOK_ALLOW_PLAIN_HTTP=1 (a trusted private
+#     network — an explicit operator choice). Requires the Go toolchain
+#     (`go run`), like building pgauthzd.
+#
+# Usage: scripts/validate-hooks.sh [--global | --store <name> | --lib] [--allow-http] [--allow-plain-http] <hooks-dir>
 set -euo pipefail
+
+# hookurl: canonical destination of a static http.send URL (see the header).
+# Compiled by `go run` on first use; the Go toolchain is a hard requirement
+# when --allow-http is used (a shell fallback would reintroduce the parser
+# mismatch this exists to remove).
+hookurl() {
+    local flags=()
+    [ "$ALLOW_PLAIN_HTTP" = "1" ] && flags+=(--allow-plain-http)
+    (cd "$SCRIPT_ROOT/pgauthzd" && go run ./cmd/hookurl ${flags[@]+"${flags[@]}"} "$1")
+}
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 OPA_IMAGE="${OPA_IMAGE:-openpolicyagent/opa:1.20.2}"
 ALLOW_HTTP=0
+ALLOW_PLAIN_HTTP="${HOOK_ALLOW_PLAIN_HTTP:-0}"   # admit http:// beyond loopback (trusted private network)
 TIER="any"       # any | global | store
 STORE=""
 DIR=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --allow-http) ALLOW_HTTP=1 ;;
+        --allow-plain-http) ALLOW_PLAIN_HTTP=1 ;;
         --global)     TIER="global" ;;
         --lib)        TIER="lib" ;;
         --store)      TIER="store"; STORE="${2:-}"; shift ;;
@@ -52,7 +73,7 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
-[ -n "$DIR" ] && [ -d "$DIR" ] || { echo "usage: $0 [--global | --store <name> | --lib] [--allow-http] <hooks-dir>" >&2; exit 2; }
+[ -n "$DIR" ] && [ -d "$DIR" ] || { echo "usage: $0 [--global | --store <name> | --lib] [--allow-http] [--allow-plain-http] <hooks-dir>" >&2; exit 2; }
 [ "$TIER" = "store" ] && [ -z "$STORE" ] && { echo "--store requires a store name" >&2; exit 2; }
 # Delegated (store) hooks are tenant-authored code — they may NEVER use
 # network-capable builtins in v1. http.send is a platform-governance option for
@@ -64,6 +85,12 @@ fi
 if [ "$TIER" = "lib" ] && [ "$ALLOW_HTTP" = 1 ]; then
     echo "--allow-http is not permitted for shared libraries: a lib with http.send would hand network access to every caller, including network-free store hooks" >&2
     exit 2
+fi
+if [ "$ALLOW_HTTP" = 1 ] && ! command -v go >/dev/null 2>&1; then
+    echo "ERROR: --allow-http needs the Go toolchain: destinations are canonicalised by" >&2
+    echo "       pgauthzd/cmd/hookurl (the parser OPA applies allow_net with). Install Go" >&2
+    echo "       (see pgauthzd/go.mod for the version) — there is deliberately no shell fallback." >&2
+    exit 1
 fi
 ABS_DIR="$(cd "$DIR" && pwd)"
 
@@ -372,14 +399,34 @@ for f in "$ABS_DIR"/*.rego; do
                       | select(. != null) | .[1]
                       | select(.type == "string") | .value)
                 | .[]' 2>/dev/null | sort -u)
-            for url in $urls; do
-                host=$(printf '%s' "$url" | sed -E 's#^[a-zA-Z+.-]+://##; s#^[^/@]*@##; s#[/?].*$##; s#:[0-9]+$##')
+            # Iterate by LINE, never by word: this script runs under nullglob (for
+            # its file loop), so an unquoted `$urls` would treat a URL containing
+            # an IPv6 literal — `https://[2001:db8::1]/…` is a bracket glob — as
+            # a pattern that matches nothing and DROP it, skipping the allowlist
+            # check for exactly that destination (found while replacing the sed
+            # parser; SECURITY-AUDIT F17).
+            url_fail=0   # per-file: the global flag would hide later files' PASS lines
+            while IFS= read -r url; do
+                [ -n "$url" ] || continue
+                # Canonicalise with the SAME parser OPA uses at evaluation time
+                # (Go net/url → Hostname()) via the hookurl helper — never shell
+                # text tools, whose reading of IPv6 literals, userinfo, ports or
+                # case could diverge from OPA's. The helper also enforces https
+                # (loopback excepted; HOOK_ALLOW_PLAIN_HTTP=1 / --allow-plain-http
+                # for a trusted private network), no userinfo, and a canonical
+                # lowercase host so the byte-exact allow_net match cannot drift.
+                if ! dest=$(hookurl "$url" 2>&1); then
+                    echo "    FAIL  $base: http.send url '$url' rejected: $dest"
+                    fail=1; url_fail=1
+                    continue
+                fi
+                host=$(printf '%s' "$dest" | jq -r '.host')
                 if ! jq -e --arg h "$host" '.allow_net | index($h) != null' "$HTTP_CAPS_ABS" >/dev/null 2>&1; then
                     echo "    FAIL  $base: http.send host '$host' is not in the allow_net allowlist ($HTTP_CAPS)"
-                    fail=1
+                    fail=1; url_fail=1
                 fi
-            done
-            [ "$fail" -ne 0 ] && continue
+            done <<< "$urls"
+            [ "$url_fail" -ne 0 ] && continue
         else
             echo "    warn  $base: http profile has no allow_net field — destination hosts are UNRESTRICTED"
         fi

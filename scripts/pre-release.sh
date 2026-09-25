@@ -97,6 +97,7 @@ if ./scripts/validate-hooks.sh --global examples/opa-hooks/global >/dev/null \
    && docker run --rm -v "$ROOT/opa/policies:/p:ro" -v "$ROOT/examples/opa-hooks-http:/h:ro" \
       "${OPA_IMAGE:-openpolicyagent/opa:1.20.2}" test /p /h >/dev/null \
    && ./scripts/validate-hooks.sh --lib examples/opa-hooks-lib >/dev/null \
+   && ./tests/test-hook-validator.sh >/dev/null \
    && docker run --rm -v "$ROOT/opa/policies:/p:ro" -v "$ROOT/examples/opa-hooks-lib:/l:ro" \
       "${OPA_IMAGE:-openpolicyagent/opa:1.20.2}" test /p /l >/dev/null \
    && ./scripts/validate-hooks.sh --global examples/opa-hooks-filtering >/dev/null \
