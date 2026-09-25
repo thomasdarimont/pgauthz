@@ -76,6 +76,12 @@ pre-1.0, minor versions may include breaking changes.
   hid events recorded meanwhile), and `count_within` /
   `count_distinct_within` gained `plus` (like `sum_within`) so `max: 5,
   plus: 1` means at most 5 actions *including* the one being decided.
+- **gdrive example: temporal gates on `doc.download`** — a new `download`
+  relation (computed from `can_read`) with a daily quota and a per-document
+  limit (object scope) over the action log; `demo.sql` §11 walks through
+  recording, the `gate_denied` explain, enumeration and `reserve_event`;
+  `tests.sql` covers the permission matrix and both gates and runs in
+  `tests/test.sh`.
 - **Per-store event retention** — `authz.purge_events(store, before)` deletes
   one store's events older than a timestamp (row-wise, under the sanctioned
   maintenance window, admin-only, returns the count) — the per-tenant tool

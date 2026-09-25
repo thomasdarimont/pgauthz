@@ -272,7 +272,58 @@ ORDER BY u.name;
 
 
 -- ============================================================================
--- 11. CLEANUP
+-- 11. TEMPORAL GATES — Download Quota (ADR 0012)
+-- ============================================================================
+--
+-- doc.download = can_read, guarded by two gates over the ACTION LOG: at most
+-- 100 downloads per UTC day per user, and at most 3 of the same document.
+-- The file service records each download after it happened; the engine
+-- never infers actions from decisions.
+
+-- Bob may download design_spec (he can read it) — no history yet.
+SELECT authz.check_access('gdrive', 'user', 'bob', 'download', 'doc', 'design_spec')
+           AS "bob may download design_spec (no history)";
+
+-- The file service records three downloads of design_spec by bob.
+SELECT authz.record_event('gdrive', 'user', 'bob', 'download', 'doc', 'design_spec', 'response',
+                          '{"output": {"bytes": 1048576}}')
+  FROM generate_series(1, 3);
+
+-- A fourth download of the SAME document is denied: 3 recorded + this one > 3.
+SELECT authz.check_access('gdrive', 'user', 'bob', 'download', 'doc', 'design_spec')
+           AS "bob may download design_spec again (after 3)";
+-- Expected: f
+
+-- Why? The graph allowed; the per-file gate vetoed (decision.reason = gate_denied).
+SELECT e->>'reason' AS reason, e->>'gate' AS gate, e->>'scope' AS scope,
+       e->>'observed' AS observed, e->>'threshold' AS threshold
+  FROM jsonb_array_elements(
+       authz.explain_access('gdrive', 'user', 'bob', 'download', 'doc', 'design_spec')->'trace') e
+ WHERE e->>'rule_type' = 'temporal_gate';
+-- Expected:
+--   gate_passed | daily_download_quota | subject | 4 | 100
+--   gate_denied | per_file_limit       | object  | 4 | 3
+
+-- The per-file limit is per OBJECT: another readable document is still fine
+-- (alice's public folder makes announcement readable by everyone).
+SELECT authz.check_access('gdrive', 'user', 'bob', 'download', 'doc', 'announcement')
+           AS "bob may download announcement";
+
+-- Enumeration agrees with the checks: design_spec is gone from bob's list.
+SELECT object_id FROM authz.list_objects('gdrive', 'user', 'bob', 'download', 'doc') ORDER BY 1;
+
+-- What did bob download today? (auditor view of the action log)
+SELECT occurred_at, action, object_type, object_id, kind, recorded_by
+  FROM authz.list_events('gdrive', p_subject_type => 'user', p_subject_id => 'bob');
+
+-- For a hard bound under concurrency the file service reserves instead of
+-- check-then-record: decision + `request` event under a per-subject lock.
+SELECT authz.reserve_event('gdrive', 'user', 'bob', 'download', 'doc', 'announcement')
+           AS "reserve a download of announcement";
+
+
+-- ============================================================================
+-- 12. CLEANUP
 -- ============================================================================
 
 SELECT authz.delete_store('gdrive');

@@ -51,6 +51,13 @@ psql_file "$PG_DB" "$PG_DIR/examples/models/todo/seed.sql"
 psql_file "$PG_DB" "$PG_DIR/examples/models/todo/tests.sql"
 
 echo ""
+echo "==> Loading gdrive model (temporal gates example) + checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/examples/models/gdrive/model.sql"
+psql_file "$PG_DB" "$PG_DIR/examples/models/gdrive/seed.sql"
+psql_file "$PG_DB" "$PG_DIR/examples/models/gdrive/tests.sql"
+
+echo ""
 echo "==> Running contextual / condition checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_contextual.sql"

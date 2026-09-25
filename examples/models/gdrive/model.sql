@@ -12,6 +12,8 @@
 --   - Usersets / group membership (group#member as viewer)
 --   - Wildcard tuples (user:* as viewer for public access)
 --   - Recursive folder hierarchy (folder.viewer from parent)
+--   - Temporal gates on doc.download (ADR 0012): a daily quota and a
+--     per-file limit over the action log the file service records to
 --
 -- OpenFGA DSL equivalent:
 --
@@ -39,6 +41,11 @@
 --       define can_read:  viewer or owner or viewer from parent
 --       define can_share: owner or can_share from parent
 --       define can_write: owner or can_write from parent
+--       define download: can_read
+--       # gate daily_download_quota: at most 100 downloads per UTC day
+--       #   count_within{calendar: "day", tz: "UTC", kind: "response", max: 100, plus: 1}
+--       # gate per_file_limit: at most 3 downloads of THIS document per UTC day
+--       #   count_within{calendar: "day", tz: "UTC", scope: "object", kind: "response", max: 3, plus: 1}
 
 -- Create the store. Dropped first so this file is idempotent — re-running
 -- it resets the store from scratch instead of failing on the existing
@@ -70,6 +77,7 @@ DECLARE
     r_can_read         smallint;
     r_can_share        smallint;
     r_can_write        smallint;
+    r_download         smallint;
 BEGIN
     -- Types
     INSERT INTO authz.types (store_id, name) VALUES
@@ -93,7 +101,8 @@ BEGIN
         (s, 'can_change_owner'),
         (s, 'can_read'),
         (s, 'can_share'),
-        (s, 'can_write');
+        (s, 'can_write'),
+        (s, 'download');
 
     -- Resolve IDs
     t_group   := authz._t(s, 'group');
@@ -109,6 +118,7 @@ BEGIN
     r_can_read         := authz._r(s, 'can_read');
     r_can_share        := authz._r(s, 'can_share');
     r_can_write        := authz._r(s, 'can_write');
+    r_download         := authz._r(s, 'download');
 
     -- ── Type Restrictions ────────────────────────────────────────
     -- Constrain which subject types can be directly assigned to
@@ -194,7 +204,26 @@ BEGIN
 
     -- define can_write: owner or can_write from parent
     (s, t_doc, r_can_write, authz._rel_computed(), r_owner, NULL, NULL),
-    (s, t_doc, r_can_write, authz._rel_ttu(),      NULL, r_parent, r_can_write)
+    (s, t_doc, r_can_write, authz._rel_ttu(),      NULL, r_parent, r_can_write),
+
+    -- define download: can_read  (the action the file service records)
+    (s, t_doc, r_download, authz._rel_computed(), r_can_read, NULL, NULL)
     ;
 END;
 $$;
+
+-- ── Temporal gates (ADR 0012) ───────────────────────────────────────────
+-- Both hang on doc#download and are evaluated after the graph allows, over
+-- the download events the file service records (authz.record_event) AFTER
+-- each download (kind = response: completed downloads count, not attempts).
+-- "plus: 1" counts the request being decided, so the caps are inclusive of
+-- it. See docs/MODEL_DESIGN.md §17.
+--
+-- A user may download at most 100 documents per UTC day.
+SELECT authz.add_gate('gdrive', 'doc', 'download', 'daily_download_quota', '{
+  "description": "at most 100 downloads per UTC day",
+  "all_of": [{"count_within": {"calendar": "day", "tz": "UTC", "kind": "response", "max": 100, "plus": 1}}]}');
+-- ... and at most 3 downloads of the SAME document per UTC day (object scope).
+SELECT authz.add_gate('gdrive', 'doc', 'download', 'per_file_limit', '{
+  "description": "at most 3 downloads of this document per UTC day",
+  "all_of": [{"count_within": {"calendar": "day", "tz": "UTC", "scope": "object", "kind": "response", "max": 3, "plus": 1}}]}');

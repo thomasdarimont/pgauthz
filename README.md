@@ -1776,7 +1776,7 @@ the watch/changefeed consumer live alongside under
 |---|---|---|
 | `examples/models/helloworld/` | The smallest useful model (documents with editors/viewers, computed `can_read`/`can_write`) — the README's [complete example](#a-complete-example-first) as loadable files | `model.sql`, `seed.sql`, `demo.sql` |
 | `examples/models/demo/` | Professional-services engagements: internal/client users, teams, data spaces, documents, conditions, audit | `model.sql`, `seed.sql`, `tests.sql`, `demo.sql` |
-| `examples/models/gdrive/` | Google-Drive-style hierarchical folders and documents (deep TTU nesting) | `model.sql`, `seed.sql`, `demo.sql` |
+| `examples/models/gdrive/` | Google-Drive-style hierarchical folders and documents (deep TTU nesting), plus temporal gates on `doc.download` (daily quota + per-file limit over the action log) | `model.sql`, `seed.sql`, `demo.sql`, `tests.sql` |
 | `examples/models/github/` | GitHub repo roles (`admin → maintainer → writer → triager → reader`), imported from an OpenFGA JSON model | `model.sql`, `seed.sql`, `demo.sql` |
 | `examples/models/todo/` | AuthZEN interop "todo" model: list/item roles, ownership, and an **intersection** (delete needs manage-on-parent *and* ownership; admin/evil_genius bypass) — ported from [openfga/authzen-interop](https://github.com/openfga/authzen-interop/tree/main/todo) with tests from its assertions | `model.sql`, `seed.sql`, `tests.sql`, `demo.sql` |
 
