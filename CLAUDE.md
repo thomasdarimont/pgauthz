@@ -92,7 +92,7 @@ cd pgauthzd && go build ./... && go test ./...
 - Model rules use rule groups supporting union (OR), intersection (AND), and exclusion (BUT NOT) semantics
 - Audit trail is immutable, monthly-partitioned, with `performed_by` tracking
 - Action log (`authz.events`, ADR 0012): what principals *actually did*, recorded by the PEP via `record_event(s)` / `POST /pgauthz/v1/events` — never by the check path; actions must be declared relations; append-only, monthly-partitioned on `occurred_at`; `event_id` idempotency requires `occurred_at`
-- Temporal gates (`authz.model_gates`, ADR 0012 phase 2): `all_of` clauses (`count_within`, `count_distinct_within`, `sum_within`, `formerly_within`) evaluated after the graph allows, for the checked principal only. **Every public decision entry point calls `authz._decide` (live) / `_decide_snapshot` (time-travel), never `_check_access` directly** — `tests/test.sh` lints this. Grammar in `docs/MODEL_DESIGN.md` §17
+- Temporal gates (`authz.model_gates`, ADR 0012 phase 2): `all_of` clauses (`count_within`, `count_distinct_within`, `sum_within`, `formerly_within`) evaluated after the graph allows, for the checked principal only. **Every public decision entry point calls `authz._decide` (live) / `_decide_snapshot` (time-travel), never `_check_access` directly** — `tests/test.sh` lints this. Grammar in `docs/MODEL_DESIGN.md` §17. The gate evaluation path is `VOLATILE` and clocked by `clock_timestamp()` on purpose (`reserve_event` evaluates after waiting for its per-subject advisory lock); write caps with `"plus": 1`
 
 ## Docker Compose Configurations
 

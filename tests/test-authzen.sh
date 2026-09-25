@@ -640,6 +640,45 @@ check_http "events is not on the OPA-fronted public listener (404)" \
     -H "Content-Type: application/json" -H "$AUTH_REC" -d "$EV_BODY"
 fi
 
+# --- Strict tier: /pgauthz/v1/events/reserve (ADR 0012 phase 3) ---
+# A cap of 2 on (document, viewer); 6 PARALLEL reserves for a fresh subject
+# must yield exactly 2 allows (the per-subject advisory lock) and record the
+# 4 refusals as `denied`. Uses the DB container directly for the fixture.
+echo ""
+echo "==> Strict tier (/pgauthz/v1/events/reserve) — parallel reserves against a cap..."
+echo ""
+RESERVE_DB=$(docker ps --format '{{.Names}}' | grep -E 'authz-db|authz-primary' | head -1)
+RSUBJ="rprobe_$(date +%s)"
+AUTH_RSV="Authorization: Bearer $(make_token "$RSUBJ" internal_user '["authz_recorder","authz_writer"]')"
+docker exec -i "$RESERVE_DB" psql -q -v ON_ERROR_STOP=1 -U authz -d authz -c "
+  SELECT authz.write_tuple('demo','internal_user','$RSUBJ','viewer','document','az_rdoc');
+  SELECT authz.add_gate('demo','document','viewer','e2e_reserve_cap','{\"all_of\": [{\"count_within\": {\"window\": \"1h\", \"max\": 2, \"plus\": 1}}]}');" >/dev/null
+RSV_BODY='{"subject":{"type":"internal_user","id":"'"$RSUBJ"'"},"action":{"name":"viewer"},"resource":{"type":"document","id":"az_rdoc"},"payload":{"input":{"n":1}}}'
+RSV_OUT="$(mktemp)"
+for i in 1 2 3 4 5 6; do
+    curl -s -X POST "$FULL_URL/pgauthz/v1/events/reserve" -H "Content-Type: application/json" -H "$AUTH_RSV" -d "$RSV_BODY" >> "$RSV_OUT" &
+done
+wait
+RSV_ALLOWED=$(grep -o '"allowed":true' "$RSV_OUT" | wc -l | tr -d ' ')
+RSV_DENIED=$(grep -o '"kind":"denied"' "$RSV_OUT" | wc -l | tr -d ' ')
+rm -f "$RSV_OUT"
+if [ "$RSV_ALLOWED" = "2" ] && [ "$RSV_DENIED" = "4" ]; then
+    echo "    PASS  reserve: 6 parallel reserves against cap 2 → exactly 2 allowed, 4 recorded as denied"
+    pass_count=$((pass_count + 1)); total=$((total + 1))
+else
+    echo "    FAIL  reserve: expected 2 allowed / 4 denied, got $RSV_ALLOWED / $RSV_DENIED"
+    fail_count=$((fail_count + 1)); total=$((total + 1))
+fi
+check_json "reserve: a later reserve is refused with reason gate_denied" \
+    "$FULL_URL/pgauthz/v1/events/reserve" "$AUTH_RSV" "$RSV_BODY" \
+    '.reason' "gate_denied"
+check_json "reserve: the refusal reports the clause outcome" \
+    "$FULL_URL/pgauthz/v1/events/reserve" "$AUTH_RSV" "$RSV_BODY" \
+    '.gates[0].reason' "gate_denied"
+docker exec -i "$RESERVE_DB" psql -q -v ON_ERROR_STOP=1 -U authz -d authz -c "
+  SELECT authz.drop_gate('demo','document','viewer','e2e_reserve_cap');
+  SELECT authz.delete_tuple('demo','internal_user','$RSUBJ','viewer','document','az_rdoc');" >/dev/null
+
 # --- Cache-Control: no-cache → fresh decision (pgauthzd-opa) ---
 # The standard freshness header maps to OPA's input.no_cache (0-second
 # decision-cache TTL). Proof: prime the OPA cache with an allow, revoke the

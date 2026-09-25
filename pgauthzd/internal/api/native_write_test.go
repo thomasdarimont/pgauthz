@@ -20,6 +20,7 @@ type writeStubBackend struct {
 	authz.Backend // embedded nil: unused methods panic if ever called
 	writeErr      error
 	written       int
+	lastReserve   authz.ReserveEventRequest
 }
 
 func (b *writeStubBackend) WriteTuples(context.Context, authz.WriteRequest) (int, error) {
@@ -42,6 +43,13 @@ func (b *writeStubBackend) RecordEvents(context.Context, authz.RecordEventsReque
 }
 
 func strconvItoa(n int) string { return strconv.Itoa(n) }
+func (b *writeStubBackend) ReserveEvent(_ context.Context, req authz.ReserveEventRequest) (json.RawMessage, error) {
+	if b.writeErr != nil {
+		return nil, b.writeErr
+	}
+	b.lastReserve = req
+	return json.RawMessage(`{"allowed": false, "seq": 9, "kind": "denied", "reason": "gate_denied", "gates": [{"gate": "cap", "clause": "0:count_within", "result": false, "reason": "gate_denied", "observed": 3, "threshold": 3}]}`), nil
+}
 
 func writeReq() *http.Request {
 	r := httptest.NewRequest(http.MethodPost, "/pgauthz/v1/write",
@@ -345,5 +353,75 @@ func TestRecordEventsRecordedByAttribution(t *testing.T) {
 		strings.NewReader(`{"recorded_by":"svc:files"}`)))
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "events is required") {
 		t.Fatalf("missing events: got %d; body=%s", w.Code, w.Body.String())
+	}
+}
+
+// --- Strict tier (POST /pgauthz/v1/events/reserve, ADR 0012 phase 3) ----------
+
+func reserveReq(roles []string, body string) *http.Request {
+	r := httptest.NewRequest(http.MethodPost, "/pgauthz/v1/events/reserve", strings.NewReader(body))
+	ctx := context.WithValue(r.Context(), ctxSubjectType, "user")
+	ctx = context.WithValue(ctx, ctxSubjectID, "alice")
+	if roles != nil {
+		ctx = context.WithValue(ctx, ctxRoles, roles)
+	}
+	return r.WithContext(ctx)
+}
+
+// The reserve shares the events endpoint's gates and passes the engine result
+// through with the store added; consistency defaults to `applied`; the JWT
+// subject is the acting subject (token-only mode).
+func TestReserveEventPassthroughAndDefaults(t *testing.T) {
+	b := &writeStubBackend{written: 1}
+	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo", RecorderRole: "authz_recorder"})
+	h.requireWriterRole = true
+	w := httptest.NewRecorder()
+	h.ReserveEvent(w, reserveReq([]string{"authz_recorder"},
+		`{"subject":{"type":"user","id":"alice"},"action":{"name":"transfer"},"resource":{"type":"account","id":"acc-1"},"context":{"amount":5},"payload":{"input":{"amount":5}}}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d; body=%s", w.Code, w.Body.String())
+	}
+	for _, want := range []string{`"allowed":false`, `"reason":"gate_denied"`, `"store":"demo"`, `"gates":[`} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Fatalf("body lacks %s: %s", want, w.Body.String())
+		}
+	}
+	if b.lastReserve.Consistency != "applied" || b.lastReserve.SubjectID != "alice" || b.lastReserve.Action != "transfer" ||
+		b.lastReserve.ObjectType != "account" || b.lastReserve.RecordedBy != "alice" {
+		t.Fatalf("request not passed through: %+v", b.lastReserve)
+	}
+}
+
+func TestReserveEventGatesAndValidation(t *testing.T) {
+	cases := []struct {
+		name     string
+		profile  config.Profile
+		roles    []string
+		body     string
+		wantCode int
+	}{
+		{"reader-only role is 403", config.ProfileFull, []string{"viewer"},
+			`{"subject":{"type":"user","id":"alice"},"action":{"name":"t"},"resource":{"type":"a","id":"1"}}`, http.StatusForbidden},
+		{"decision-only is 403", config.ProfileDecisionOnly, []string{"authz_recorder"},
+			`{"subject":{"type":"user","id":"alice"},"action":{"name":"t"},"resource":{"type":"a","id":"1"}}`, http.StatusForbidden},
+		{"missing resource id is 400", config.ProfileFull, []string{"authz_recorder"},
+			`{"subject":{"type":"user","id":"alice"},"action":{"name":"t"},"resource":{"type":"a"}}`, http.StatusBadRequest},
+		{"differing body subject is 403 in token-only mode", config.ProfileFull, []string{"authz_recorder"},
+			`{"subject":{"type":"user","id":"bob"},"action":{"name":"t"},"resource":{"type":"a","id":"1"}}`, http.StatusForbidden},
+		{"writer role passes", config.ProfileFull, []string{"authz_writer"},
+			`{"subject":{"type":"user","id":"alice"},"action":{"name":"t"},"resource":{"type":"a","id":"1"}}`, http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &writeStubBackend{written: 1}
+			h := NewHandler(b, b, b, &config.Config{Profile: tc.profile, DefaultStore: "demo",
+				WriterRole: "authz_writer", RecorderRole: "authz_recorder"})
+			h.requireWriterRole = true
+			w := httptest.NewRecorder()
+			h.ReserveEvent(w, reserveReq(tc.roles, tc.body))
+			if w.Code != tc.wantCode {
+				t.Fatalf("got %d, want %d; body=%s", w.Code, tc.wantCode, w.Body.String())
+			}
+		})
 	}
 }

@@ -975,6 +975,28 @@ the database clock and is bounded by `authz.event_max_future_skew` /
 a namespace needs that namespace's `can_write` grant (403 otherwise). Inspect
 with `authz.list_events(...)` (auditor role; SQL only for now).
 
+**Strict tier.** When a temporal gate's cap must hold exactly under
+concurrency, reserve instead of check-then-record:
+
+```bash
+curl -s -X POST http://localhost:8092/stores/demo/pgauthz/v1/events/reserve \
+  -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" -d '{
+  "subject": {"type": "internal_user", "id": "alice"},
+  "action": {"name": "transfer"},
+  "resource": {"type": "account", "id": "acc-1"},
+  "context": {"amount": 1200},
+  "payload": {"input": {"amount": 1200}}
+}'
+# → {"store":"demo","allowed":true,"seq":43,"kind":"request","reason":"allowed","gates":[...]}
+```
+
+The engine takes the full decision under an advisory lock per `(store,
+subject)` and records the `request` in the same transaction (a refusal records
+a `denied` event unless `"record_denied": false`), so N parallel reserves
+against a cap of K yield exactly K allows. Write such caps with `"plus": 1` so
+the reserved request itself counts. See
+[MODEL_DESIGN §17](MODEL_DESIGN.md#17-temporal-gates-history-dependent-rules).
+
 ### Admin / model operations
 
 Store lifecycle (`create_store`/`delete_store`), model evolution (`model_*`),
@@ -1034,6 +1056,7 @@ Each native write endpoint maps to a SQL function:
 | `POST /pgauthz/v1/delete-user` | `delete_user_tuples` | `{"deleted": n}` (count removed) |
 | `POST /pgauthz/v1/write-checked` | `write_tuples_checked` | engine JSONB, e.g. `{"written": n, "deleted": m}` (conditional/atomic) |
 | `POST /pgauthz/v1/events` | `record_events_jsonb` | `{"recorded": n, "duplicates": n, "seqs": [...]}` — the action log ([ADR 0012](adr/0012-action-log.md)); gated by `RECORDER_ROLE` (writer passes), `recorded_by` follows `performed_by`'s rules |
+| `POST /pgauthz/v1/events/reserve` | `reserve_event` | `{"allowed", "seq", "kind", "reason", "gates"}` — the strict tier: full decision + `request` record under a per-subject lock, refusals recorded as `denied`; check-shaped body (`subject`/`action`/`resource`/`context`) plus `payload`, `event_id`, `record_denied`; `consistency` defaults to `applied` |
 
 **Admin / model operations** require `authz_admin` and are **direct SQL only**
 (not exposed over the public write API):

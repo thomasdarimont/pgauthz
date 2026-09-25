@@ -117,6 +117,14 @@ BEGIN
     PERFORM _test_assert('g_04_state_deny_not_conditional', pg_temp._gstate('transfer', '{"amount": 1}'), 'deny');
     -- g_05: missing $request.amount → the sum clause lacks context, but the count clause is a hard deny → deny
     PERFORM _test_assert('g_05_missing_ctx_with_hard_deny_is_deny', pg_temp._gstate('transfer'), 'deny');
+    -- g_04b: "plus: 1" counts the request being decided — with 3 prior requests,
+    -- max 3 fails only because this request is included (3 + 1 > 3)
+    PERFORM authz.add_gate('test_gates', 'account', 'transfer', 'incl', '{"all_of": [{"count_within": {"window": "1h", "max": 3, "plus": 1}}]}');
+    PERFORM _test_assert('g_04b_plus_counts_this_request',
+        (SELECT e ->> 'observed' || '/' || (e ->> 'threshold') || ' ' || (e ->> 'reason')
+           FROM jsonb_array_elements(pg_temp._gsteps('transfer', '{"amount": 1}')) e WHERE e ->> 'gate' = 'incl'),
+        '4/3 gate_denied');
+    PERFORM authz.drop_gate('test_gates', 'account', 'transfer', 'incl');
     -- g_06: non-numeric request value → gate_bad_request_value, hard deny
     PERFORM _test_assert('g_06_bad_request_value_reason',
         (SELECT string_agg(e ->> 'reason', ',') FROM jsonb_array_elements(pg_temp._gsteps('transfer', '{"amount": "lots"}')) e),
@@ -416,6 +424,67 @@ BEGIN
     PERFORM authz.add_gate('test_gates', 'account', 'audit_note', 'vocab_only', '{"all_of": [{"count_within": {"window": "1h", "max": 1}}]}');
     v_desc := authz.describe_model('test_gates');
     PERFORM _test_assert_true('g_25_describe_ruleless_relation_prefixed', position('    # gate audit_note/vocab_only' in v_desc) > 0, v_desc);
+END;
+$$;
+
+-- ================================================================
+-- reserve_event: the strict tier (phase 3)
+-- ================================================================
+DO $$
+DECLARE r jsonb; n int; v_state text;
+BEGIN
+    PERFORM authz.write_tuple('test_gates', 'user', 'dave', 'peek', 'account', 'acc-1');
+    -- the 'peek' cooldown gate (count_within 10m max 0) is still in place
+    -- r_01: first reserve is allowed and inserts a `request` event with per-clause outcomes
+    r := authz.reserve_event('test_gates', 'user', 'dave', 'peek', 'account', 'acc-1', '{"input": {"n": 1}}');
+    PERFORM _test_assert('r_01_allowed', r ->> 'allowed', 'true');
+    PERFORM _test_assert('r_01_kind_request', r ->> 'kind', 'request');
+    PERFORM _test_assert('r_01_reason', r ->> 'reason', 'allowed');
+    PERFORM _test_assert_true('r_01_seq_present', (r ->> 'seq') IS NOT NULL, r::text);
+    PERFORM _test_assert('r_01_gate_outcomes', (r -> 'gates' -> 0 ->> 'reason') || ' ' || (r -> 'gates' -> 0 ->> 'observed'), 'gate_passed 0');
+    SELECT kind INTO v_state FROM authz.list_events('test_gates', p_subject_id => 'dave', p_action => 'peek') ORDER BY seq DESC LIMIT 1;
+    PERFORM _test_assert('r_01_request_recorded', v_state, 'request');
+
+    -- r_02: the second reserve is refused by the gate and records a `denied` event
+    r := authz.reserve_event('test_gates', 'user', 'dave', 'peek', 'account', 'acc-1');
+    PERFORM _test_assert('r_02_refused', r ->> 'allowed', 'false');
+    PERFORM _test_assert('r_02_kind_denied', r ->> 'kind', 'denied');
+    PERFORM _test_assert('r_02_reason_gate_denied', r ->> 'reason', 'gate_denied');
+    PERFORM _test_assert('r_02_gate_outcome_denied', r -> 'gates' -> 0 ->> 'reason', 'gate_denied');
+    SELECT count(*) INTO n FROM authz.list_events('test_gates', p_subject_id => 'dave', p_action => 'peek', p_kind => 'denied');
+    PERFORM _test_assert('r_02_denied_recorded', n::text, '1');
+    -- r_03: p_record_denied => false leaves no trace of the refusal
+    r := authz.reserve_event('test_gates', 'user', 'dave', 'peek', 'account', 'acc-1', p_record_denied => false);
+    PERFORM _test_assert('r_03_refused_unrecorded_kind_null', (r ->> 'allowed') || ' ' || COALESCE(r ->> 'kind', 'null') || ' ' || COALESCE(r ->> 'seq', 'null'), 'false null null');
+    SELECT count(*) INTO n FROM authz.list_events('test_gates', p_subject_id => 'dave', p_action => 'peek', p_kind => 'denied');
+    PERFORM _test_assert('r_03_no_new_denied', n::text, '1');
+
+    -- r_04: a graph deny (no tuple) is refused with reason graph_denied and recorded as denied
+    r := authz.reserve_event('test_gates', 'user', 'erin', 'peek', 'account', 'acc-1');
+    PERFORM _test_assert('r_04_graph_denied', (r ->> 'allowed') || ' ' || (r ->> 'reason') || ' ' || (r ->> 'kind'), 'false graph_denied denied');
+    PERFORM _test_assert('r_04_no_gate_outcomes', jsonb_array_length(r -> 'gates')::text, '0');
+
+    -- r_05: idempotency follows record_event — event_id requires occurred_at; a re-delivered key is seq null
+    PERFORM authz.write_tuple('test_gates', 'user', 'dave', 'transfer', 'account', 'acc-9');
+    BEGIN
+        PERFORM authz.reserve_event('test_gates', 'user', 'dave', 'transfer', 'account', 'acc-9', p_event_id => 'k1');
+        PERFORM _test_assert_true('r_05_event_id_requires_occurred_at', false, 'no error');
+    EXCEPTION WHEN invalid_parameter_value THEN
+        PERFORM _test_assert_true('r_05_event_id_requires_occurred_at', true);
+    END;
+    r := authz.reserve_event('test_gates', 'user', 'dave', 'transfer', 'account', 'acc-9', p_event_id => 'k1', p_occurred_at => now() - interval '1 minute');
+    -- (no gate remains on transfer at this point → the graph decides: allowed)
+    PERFORM _test_assert('r_05_first_delivery_allowed_seq', (r ->> 'allowed') || ' ' || ((r ->> 'seq') IS NOT NULL)::text, 'true true');
+    r := authz.reserve_event('test_gates', 'user', 'dave', 'transfer', 'account', 'acc-9', p_event_id => 'k1', p_occurred_at => now() - interval '1 minute');
+    PERFORM _test_assert('r_05_redelivery_seq_null_decision_kept', (r ->> 'allowed') || ' ' || COALESCE(r ->> 'seq', 'null'), 'true null');
+
+    -- r_06: object type/id are required
+    BEGIN
+        PERFORM authz.reserve_event('test_gates', 'user', 'dave', 'peek', NULL, NULL);
+        PERFORM _test_assert_true('r_06_object_required', false, 'no error');
+    EXCEPTION WHEN invalid_parameter_value THEN
+        PERFORM _test_assert_true('r_06_object_required', true);
+    END;
 END;
 $$;
 

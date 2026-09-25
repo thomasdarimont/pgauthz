@@ -218,6 +218,8 @@ GRANT USAGE ON SCHEMA authz TO authz_auditor, authz_reader, authz_writer, authz_
 ------------------------------------------------------------------------
 GRANT EXECUTE ON FUNCTION authz.record_event(text, text, text, text, text, text, text, jsonb, timestamptz, text, text) TO authz_recorder;
 GRANT EXECUTE ON FUNCTION authz.record_events_jsonb(text, jsonb, text) TO authz_recorder;
+-- The strict tier: decide + record under a per-subject lock (the PEP's attempt).
+GRANT EXECUTE ON FUNCTION authz.reserve_event(text, text, text, text, text, text, jsonb, jsonb, text, timestamptz, text, boolean) TO authz_recorder;
 
 ------------------------------------------------------------------------
 -- authz_auditor: audit trail and time-travel queries (compliance/security)
@@ -376,6 +378,7 @@ ALTER FUNCTION authz.ensure_audit_partitions(int) SECURITY DEFINER;
 -- Action log (ADR 0012).
 ALTER FUNCTION authz.record_event(text, text, text, text, text, text, text, jsonb, timestamptz, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.record_events_jsonb(text, jsonb, text) SECURITY DEFINER;
+ALTER FUNCTION authz.reserve_event(text, text, text, text, text, text, jsonb, jsonb, text, timestamptz, text, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.list_events(text, text, text, text, text, text, text, text, timestamptz, timestamptz, timestamptz, bigint, int) SECURITY DEFINER;
 ALTER FUNCTION authz.ensure_event_partitions(int) SECURITY DEFINER;
 ALTER FUNCTION authz.drop_event_partitions_before(date) SECURITY DEFINER;

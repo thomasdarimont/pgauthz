@@ -212,5 +212,38 @@ echo "==> Running temporal gate checks (ADR 0012 phase 2)..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_gates.sql"
 
+# reserve_event concurrency (ADR 0012 phase 3): N parallel sessions reserving
+# against a cap of K must yield EXACTLY K allows — the per-(store, subject)
+# advisory lock is the whole point of the strict tier. Separate psql
+# processes so the transactions genuinely race.
+echo ""
+echo "==> Running reserve_event concurrency check (8 parallel reserves, cap 3)..."
+echo ""
+psql_exec "$PG_DB" -q -v ON_ERROR_STOP=1 -c "
+  DO \$\$ BEGIN PERFORM authz.delete_store('test_reserve', p_purge_audit => true); EXCEPTION WHEN OTHERS THEN NULL; END \$\$;
+  SELECT authz.create_store('test_reserve');
+  SELECT authz.model_register_type('test_reserve', 'user');
+  SELECT authz.model_register_type('test_reserve', 'account');
+  SELECT authz.model_register_relation('test_reserve', 'transfer');
+  SELECT authz.model_add_rule('test_reserve', 'account', 'transfer', 'direct');
+  SELECT authz.write_tuple('test_reserve', 'user', 'alice', 'transfer', 'account', 'acc-1');
+  SELECT authz.add_gate('test_reserve', 'account', 'transfer', 'cap', '{\"all_of\": [{\"count_within\": {\"window\": \"1h\", \"max\": 3, \"plus\": 1}}]}');
+" >/dev/null
+RESERVE_OUT="$(mktemp)"
+for i in $(seq 1 8); do
+  psql_exec "$PG_DB" -qtA -c "SELECT authz.reserve_event('test_reserve','user','alice','transfer','account','acc-1') ->> 'allowed';" >> "$RESERVE_OUT" 2>&1 &
+done
+wait
+ALLOWED=$(grep -c '^true$' "$RESERVE_OUT" || true)
+DENIED=$(grep -c '^false$' "$RESERVE_OUT" || true)
+rm -f "$RESERVE_OUT"
+psql_exec "$PG_DB" -q -c "SELECT authz.delete_store('test_reserve', p_purge_audit => true);" >/dev/null
+if [ "$ALLOWED" = "3" ] && [ "$DENIED" = "5" ]; then
+  echo "    PASS  reserve_concurrency: 3 allowed, 5 denied of 8 parallel reserves"
+else
+  echo "    FAIL  reserve_concurrency: expected 3 allowed / 5 denied, got $ALLOWED / $DENIED" >&2
+  exit 1
+fi
+
 # Clean up test helpers
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_helpers_cleanup.sql"

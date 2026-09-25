@@ -27,7 +27,7 @@ that resolve relationship tuples recursively.
 - **Time-travel queries** — `audit_check_access` reconstructs permissions at any past point in time
 - **Watch / changefeed** — cursored, filterable stream of tuple changes plus a `NOTIFY` doorbell, for cache invalidation and sync
 - **Action log** — `record_event` / `list_events`: a per-store, per-principal record of what subjects *actually did* (reported by your PEP, never inferred from decisions) — see [ADR 0012](docs/adr/0012-action-log.md)
-- **Temporal gates** — history-dependent rules in the model over the action log: rate limits, spend caps, prior approval, step-up freshness, lockouts, agent guardrails (`count_within`, `sum_within`, `formerly_within`, `count_distinct_within`), applied on every check, listing, explain and time-travel path — see [MODEL_DESIGN §17](docs/MODEL_DESIGN.md#17-temporal-gates-history-dependent-rules)
+- **Temporal gates** — history-dependent rules in the model over the action log: rate limits, spend caps, prior approval, step-up freshness, lockouts, agent guardrails (`count_within`, `sum_within`, `formerly_within`, `count_distinct_within`), applied on every check, listing, explain and time-travel path; `reserve_event` for concurrency-exact caps — see [MODEL_DESIGN §17](docs/MODEL_DESIGN.md#17-temporal-gates-history-dependent-rules)
 - **Search API** — `list_objects`, `list_subjects`, `list_actions` for discovery queries
 - **OpenFGA import** — import existing OpenFGA JSON models and tuples directly
 - **Namespace-based access control** — per-application isolation of object types within a shared store, database-enforced end to end
@@ -1139,7 +1139,7 @@ after the graph allows; any failing clause denies.
 --  one must stay within 5000" — a backstop next to the relation it guards.
 SELECT authz.add_gate('demo', 'account', 'transfer', 'velocity_backstop', '{
   "all_of": [
-    {"count_within": {"window": "1h", "max": 5}},
+    {"count_within": {"window": "1h", "max": 5, "plus": 1}},
     {"sum_within":   {"window": "1h", "kind": "response", "field": "input.amount",
                       "plus": "$request.amount", "max": 5000}}
   ]}');
@@ -1156,7 +1156,11 @@ SELECT authz.explain_access(...) -> 'decision' ->> 'reason';                    
 
 Four primitives (`count_within`, `count_distinct_within`, `sum_within`,
 `formerly_within`), sliding or calendar windows, containment matching with
-`$request.*` references, `recorded_by` allowlists. Gates apply to checks,
+`$request.*` references, `recorded_by` allowlists. A gate bounds *recorded*
+actions; when a cap must hold exactly under concurrency, the PEP calls
+`reserve_event` (or `POST /pgauthz/v1/events/reserve`) because it is about to
+act: decision and `request` record under a per-subject lock, refusals recorded
+as `denied`. Gates apply to checks,
 batch checks, `list_*` (a subject a check would deny never appears in a
 listing), `explain_access` (per-clause steps with observed value and
 threshold, never payloads), `check_access_detailed` (a missing `$request` key

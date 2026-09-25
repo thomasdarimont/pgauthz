@@ -81,6 +81,60 @@ END;
 $$;
 
 ------------------------------------------------------------------------
+-- _trace_begin / _trace_end: arm the evaluation trace. The session temp
+-- table pg_temp._access_trace (ON COMMIT DROP) is what the graph walk and
+-- the gate evaluator write their steps into while authz.trace is on.
+-- explain_access reads it back for the structured explanation;
+-- reserve_event (events_admin.sql) reads the temporal_gate rows to report
+-- per-clause outcomes of the decision it just took under its lock.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._trace_begin() RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+    -- Reuse trace table within the session; ON COMMIT DROP cleans up.
+    CREATE TEMP TABLE IF NOT EXISTS _access_trace (
+        step          serial,
+        depth         int,
+        rule_type     text,
+        subject       text,
+        relation      text,
+        object        text,
+        result        boolean,
+        detail        text,
+        duration_ms   double precision,
+        -- model rule references (NULL for cycle/group-verdict steps)
+        model_rule_id integer,
+        group_id      integer,
+        group_op      integer,
+        negated       boolean,
+        -- condition explain (set only on condition_denied steps)
+        condition_name        text,
+        condition_missing_keys text[],
+        -- the exact stored tuple that granted this step, in `subject → relation →
+        -- object` form with * wildcards (NULL for non-tuple / denied steps).
+        matched_tuple text,
+        -- temporal gate steps (ADR 0012; rule_type = 'temporal_gate', depth 0):
+        -- counts and thresholds only — never matched payloads or object ids.
+        gate_name      text,
+        gate_clause    text,      -- "<index>:<primitive>"
+        gate_window    text,      -- normalized interval, or "calendar/tz"
+        gate_observed  numeric,
+        gate_threshold numeric,
+        gate_reason    text       -- gate_passed | gate_denied | gate_missing_context | ...
+    ) ON COMMIT DROP;
+    TRUNCATE _access_trace RESTART IDENTITY;
+    PERFORM set_config('authz.trace', 'on', true);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION authz._trace_end() RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM set_config('authz.trace', 'off', true);
+END;
+$$;
+
+------------------------------------------------------------------------
 -- explain_access: like check_access, but returns a structured decision
 -- explanation:
 --
@@ -145,39 +199,7 @@ DECLARE
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
 
-    -- Reuse trace table within the session; ON COMMIT DROP cleans up.
-    CREATE TEMP TABLE IF NOT EXISTS _access_trace (
-        step          serial,
-        depth         int,
-        rule_type     text,
-        subject       text,
-        relation      text,
-        object        text,
-        result        boolean,
-        detail        text,
-        duration_ms   double precision,
-        -- model rule references (NULL for cycle/group-verdict steps)
-        model_rule_id integer,
-        group_id      integer,
-        group_op      integer,
-        negated       boolean,
-        -- condition explain (set only on condition_denied steps)
-        condition_name        text,
-        condition_missing_keys text[],
-        -- the exact stored tuple that granted this step, in `subject → relation →
-        -- object` form with * wildcards (NULL for non-tuple / denied steps).
-        matched_tuple text,
-        -- temporal gate steps (ADR 0012; rule_type = 'temporal_gate', depth 0):
-        -- counts and thresholds only — never matched payloads or object ids.
-        gate_name      text,
-        gate_clause    text,      -- "<index>:<primitive>"
-        gate_window    text,      -- normalized interval, or "calendar/tz"
-        gate_observed  numeric,
-        gate_threshold numeric,
-        gate_reason    text       -- gate_passed | gate_denied | gate_missing_context | ...
-    ) ON COMMIT DROP;
-    TRUNCATE _access_trace RESTART IDENTITY;
-    PERFORM set_config('authz.trace', 'on', true);
+    PERFORM authz._trace_begin();
 
     v_result := authz._decide(
         v_store_id,
@@ -188,7 +210,7 @@ BEGIN
         p_object_id,
         context
     );
-    PERFORM set_config('authz.trace', 'off', true);
+    PERFORM authz._trace_end();
 
     -- Decision reason: minimal cause of the outcome.
     IF v_result THEN

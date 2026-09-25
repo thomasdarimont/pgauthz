@@ -244,6 +244,8 @@ func registerNativeWrite(mux *http.ServeMux, h *Handler) {
 	// connection, consistency mode, audit actor), gated by RECORDER_ROLE.
 	mux.HandleFunc("POST /pgauthz/v1/events", h.RecordEvents)
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/events", h.RecordEvents)
+	mux.HandleFunc("POST /pgauthz/v1/events/reserve", h.ReserveEvent)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/events/reserve", h.ReserveEvent)
 }
 
 // store resolves the pgauthz store for a request: the /stores/{store} path

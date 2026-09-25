@@ -56,8 +56,12 @@ DECLARE
     v_action       integer := authz._r(v_store_id, p_action);
     v_object_type  integer;
     v_kind         smallint := authz._event_kind(COALESCE(p_kind, 'request'));
-    v_now          timestamptz := statement_timestamp();
-    v_occurred_at  timestamptz := COALESCE(p_occurred_at, statement_timestamp());
+    -- clock_timestamp(): the actual instant of the insert. statement_timestamp()
+    -- would be the statement's START — for reserve_event that predates the wait
+    -- for its lock, which both misfiles occurred_at behind events recorded
+    -- meanwhile and could flag a genuinely-now occurred_at as future skew.
+    v_now          timestamptz := clock_timestamp();
+    v_occurred_at  timestamptz := COALESCE(p_occurred_at, v_now);   -- same instant as recorded_at
     v_payload      jsonb := COALESCE(p_payload, '{}'::jsonb);
     v_seq          bigint;
 BEGIN
@@ -260,5 +264,132 @@ CREATE OR REPLACE FUNCTION authz.drop_event_partitions_before(
 LANGUAGE plpgsql AS $$
 BEGIN
     RETURN authz._drop_month_partitions_before('events', p_before);
+END;
+$$;
+
+------------------------------------------------------------------------
+-- reserve_event: the STRICT tier (ADR 0012, phase 3). A gate bounds
+-- RECORDED actions: two concurrent checks can both see count = 4 and both
+-- allow a 6th transfer. A PEP that needs a hard bound calls reserve_event
+-- BECAUSE it is about to act — never as a side effect of asking:
+--
+--   advisory lock on (store, subject)  →  full decision (graph + gates, as
+--   check_access would decide)  →  allowed: insert the `request` event in
+--   the same transaction; refused: insert a `denied` event (the reserve IS
+--   the PEP's attempt — a denied reserve on record is what kind = denied is
+--   for) unless p_record_denied is false  →  return the outcome.
+--
+-- The PEP then performs the action and records the `response` (or failure)
+-- as usual. Serialization is per (store, subject) — the unit every gate
+-- counts — so N parallel reserves against a cap of K yield exactly K
+-- allows. Nothing else takes this lock (tuple writes lock
+-- store:object_type:object_id, a different keyspace).
+--
+-- Consequence to know: a SLIDING-window lockout gate (count_within over
+-- kind = denied) is extended by every refused reserve — the usual
+-- login-lockout behaviour; pass p_record_denied => false if attempts during
+-- a lockout must not count. Calendar windows are unaffected.
+--
+-- Idempotency follows record_event: p_event_id requires p_occurred_at, and
+-- a re-delivered key (the same attempt) is reported as seq = null while the
+-- decision is still returned. p_occurred_at defaults to the database clock.
+-- Object type and id are required — a reserve is a decision, and gates hang
+-- on (object_type, action).
+--
+-- Returns:
+--   {"allowed": bool, "seq": n | null, "kind": "request" | "denied" | null,
+--    "reason": "allowed" | "gate_denied" | "graph_denied",
+--    "gates": [{"gate", "clause", "result", "reason", "observed", "threshold",
+--               "missing_keys"}, ...]}     -- per-clause outcomes, no payloads
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.reserve_event(
+    p_store           text,
+    p_subject_type    text,
+    p_subject_id      text,
+    p_action          text,
+    p_object_type     text,
+    p_object_id       text,
+    p_payload         jsonb       DEFAULT '{}',
+    p_request_context jsonb       DEFAULT NULL,
+    p_event_id        text        DEFAULT NULL,
+    p_occurred_at     timestamptz DEFAULT NULL,
+    p_recorded_by     text        DEFAULT NULL,
+    p_record_denied   boolean     DEFAULT true
+) RETURNS jsonb
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id     integer := authz._s(p_store);
+    v_subject_type integer := authz._t(v_store_id, p_subject_type);
+    v_action       integer := authz._r(v_store_id, p_action);
+    v_object_type  integer;
+    v_allowed      boolean;
+    v_gates        jsonb;
+    v_reason       text;
+    v_seq          bigint;
+    v_kind         text;
+BEGIN
+    IF p_object_type IS NULL OR p_object_id IS NULL THEN
+        RAISE EXCEPTION 'reserve_event requires object_type and object_id (a reserve is a decision)'
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    IF p_event_id IS NOT NULL AND p_occurred_at IS NULL THEN
+        RAISE EXCEPTION 'event_id requires occurred_at (the idempotency key is stable only with the attempt''s own timestamp)'
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    v_object_type := authz._t(v_store_id, p_object_type);
+    -- A reserve both decides (read) and records (write) about the object.
+    PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
+    PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_write');
+
+    -- Serialize per (store, subject): every gate counts this principal's
+    -- actions, so this is the unit that must not race. hashtextextended, as
+    -- write_tuples_checked.
+    PERFORM pg_advisory_xact_lock(
+        hashtextextended(p_store || ':' || p_subject_type || ':' || p_subject_id, 0));
+
+    -- The full decision, traced so the gate clauses' outcomes can be reported.
+    PERFORM authz._trace_begin();
+    v_allowed := authz._decide(v_store_id, v_subject_type, p_subject_id, v_action,
+                               v_object_type, p_object_id, p_request_context);
+    PERFORM authz._trace_end();
+
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+               'gate',         t.gate_name,
+               'clause',       t.gate_clause,
+               'result',       t.result,
+               'reason',       t.gate_reason,
+               'observed',     t.gate_observed,
+               'threshold',    t.gate_threshold,
+               'missing_keys', to_jsonb(t.condition_missing_keys)
+           ) ORDER BY t.step), '[]'::jsonb)
+      INTO v_gates
+      FROM _access_trace t
+     WHERE t.rule_type = 'temporal_gate';
+
+    v_reason := CASE
+        WHEN v_allowed THEN 'allowed'
+        WHEN EXISTS (SELECT 1 FROM _access_trace t WHERE t.rule_type = 'temporal_gate' AND NOT t.result)
+             THEN 'gate_denied'
+        ELSE 'graph_denied'
+    END;
+
+    IF v_allowed THEN
+        v_seq  := authz.record_event(p_store, p_subject_type, p_subject_id, p_action,
+                                     p_object_type, p_object_id, 'request', p_payload,
+                                     COALESCE(p_occurred_at, clock_timestamp()), p_event_id, p_recorded_by);
+        v_kind := 'request';
+    ELSIF p_record_denied THEN
+        v_seq  := authz.record_event(p_store, p_subject_type, p_subject_id, p_action,
+                                     p_object_type, p_object_id, 'denied', p_payload,
+                                     COALESCE(p_occurred_at, clock_timestamp()), p_event_id, p_recorded_by);
+        v_kind := 'denied';
+    END IF;
+
+    RETURN jsonb_build_object(
+        'allowed', v_allowed,
+        'seq',     v_seq,
+        'kind',    v_kind,
+        'reason',  v_reason,
+        'gates',   v_gates);
 END;
 $$;

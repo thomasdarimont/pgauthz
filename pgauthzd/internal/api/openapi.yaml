@@ -858,6 +858,61 @@ paths:
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
 
+  /pgauthz/v1/events/reserve:
+    post:
+      tags: [native-write]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+        profile: full
+      operationId: reserveEvent
+      summary: Strict tier — decide and record the request under a per-subject lock
+      description: >
+        For PEPs that need a HARD bound: under an advisory lock per (store,
+        subject) the engine takes the full decision (graph + temporal gates)
+        and, if allowed, records the `request` event in the same transaction;
+        a refusal records a `denied` event unless record_denied is false. N
+        parallel reserves against a cap of K yield exactly K allows. Call it
+        because you are about to act, never as a side effect of asking; then
+        record the `response` as usual. Subject resolution and RECORDER_ROLE
+        gating follow /pgauthz/v1/check and /events. consistency defaults to
+        `applied`.
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+      requestBody: { $ref: '#/components/requestBodies/ReserveEvent' }
+      responses:
+        '200': { $ref: '#/components/responses/ReserveEventOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /stores/{store}/pgauthz/v1/events/reserve:
+    post:
+      tags: [native-write]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+        profile: full
+      operationId: reserveEventStore
+      summary: Strict-tier reserve, store-scoped
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+      requestBody: { $ref: '#/components/requestBodies/ReserveEvent' }
+      responses:
+        '200': { $ref: '#/components/responses/ReserveEventOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+
   # ── Meta ───────────────────────────────────────────────────────────────────
   /livez:
     get:
@@ -1112,6 +1167,11 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/RecordEventsRequest' }
+    ReserveEvent:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ReserveEventRequest' }
 
   responses:
     EvaluationOK:
@@ -1240,6 +1300,14 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/RecordEventsResponse' }
+    ReserveEventOK:
+      description: The decision, and what was recorded.
+      headers:
+        X-PGAuthz-Revision: { $ref: '#/components/headers/XPGAuthzRevision' }
+        X-PGAuthz-Revision-Status: { $ref: '#/components/headers/XPGAuthzRevisionStatus' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ReserveEventResponse' }
     BadRequest:
       description: >
         Malformed request — invalid JSON, missing required fields, an invalid
@@ -1792,6 +1860,46 @@ components:
           type: string
           description: Freshness token for this write (when enabled).
       required: [store, recorded, duplicates, seqs]
+    ReserveEventRequest:
+      type: object
+      properties:
+        subject: { $ref: '#/components/schemas/Subject' }
+        action: { $ref: '#/components/schemas/Action' }
+        resource: { $ref: '#/components/schemas/Resource' }
+        context: { $ref: '#/components/schemas/Context' }
+        payload:
+          type: object
+          additionalProperties: true
+          description: The projection recorded with the request event.
+        event_id:
+          type: string
+          description: Idempotency key for this attempt; requires occurred_at. A re-delivery returns the decision with seq null.
+        occurred_at: { type: string, format: date-time }
+        record_denied:
+          type: boolean
+          default: true
+          description: Record a `denied` event when refused (a sliding-window lockout gate is then extended by the attempt).
+        consistency: { $ref: '#/components/schemas/Consistency' }
+        recorded_by:
+          type: string
+          description: The asserting actor; same rules as on /pgauthz/v1/events.
+      required: [action, resource]
+    ReserveEventResponse:
+      type: object
+      properties:
+        store: { type: string }
+        allowed: { type: boolean }
+        seq: { type: integer, nullable: true, description: The recorded event (request or denied); null when nothing was recorded or the key was a re-delivery. }
+        kind: { type: string, nullable: true, enum: [request, denied, null] }
+        reason: { type: string, enum: [allowed, gate_denied, graph_denied] }
+        gates:
+          type: array
+          description: Per-clause outcomes of the temporal gates (counts and thresholds only).
+          items:
+            type: object
+            additionalProperties: true
+        revision: { type: string }
+      required: [store, allowed, reason, gates]
 
     # ── errors & meta ────────────────────────────────────────────────────────
     Error:

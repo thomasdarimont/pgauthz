@@ -394,6 +394,40 @@ func (b *Backend) RecordEvents(ctx context.Context, req authz.RecordEventsReques
 	return raw, nil
 }
 
+// ReserveEvent implements authz.EventRecorder.ReserveEvent via
+// authz.reserve_event (ADR 0012 phase 3): decision + record under the engine's
+// per-subject advisory lock, on the recorder-capable per-app role.
+func (b *Backend) ReserveEvent(ctx context.Context, req authz.ReserveEventRequest) (json.RawMessage, error) {
+	var ctxJSON []byte
+	if req.Context != nil {
+		var err error
+		if ctxJSON, err = json.Marshal(req.Context); err != nil {
+			return nil, fmt.Errorf("marshaling context: %w", err)
+		}
+	}
+	payload := req.Payload
+	if len(payload) == 0 {
+		payload = json.RawMessage(`{}`)
+	}
+	recordDenied := true
+	if req.RecordDenied != nil {
+		recordDenied = *req.RecordDenied
+	}
+	var raw []byte
+	err := b.recordWithRole(ctx, req.Consistency, func(q querier) error {
+		return q.QueryRow(ctx,
+			"SELECT authz.reserve_event($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::timestamptz,$11,$12)",
+			req.Store, req.SubjectType, req.SubjectID, req.Action, req.ObjectType, req.ObjectID,
+			[]byte(payload), ctxJSON, textOrNil(req.EventID), textOrNil(req.OccurredAt),
+			textOrNil(req.RecordedBy), recordDenied,
+		).Scan(&raw)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("reserve_event: %w", mapEngineError(err))
+	}
+	return raw, nil
+}
+
 // syncCommit maps a request consistency mode to a whitelisted synchronous_commit
 // setting. An empty mode ("") means "leave the connection default untouched" and
 // returns ("", true). An UNRECOGNIZED mode returns ok=false so the caller FAILS

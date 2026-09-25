@@ -60,6 +60,22 @@ pre-1.0, minor versions may include breaking changes.
   propagate and diff them; `describe_model` renders gates as `#` comment
   lines. Migration 0011; engine files `gates.sql` (read) / `gates_admin.sql`
   (write); `delete_store` purges a store's gates.
+- **The strict tier: `reserve_event`** ([ADR 0012](docs/adr/0012-action-log.md)
+  phase 3): a gate bounds *recorded* actions, so two concurrent checks can
+  both pass a cap; PEPs that need an exact bound call
+  `authz.reserve_event` / `POST /pgauthz/v1/events/reserve` because they are
+  about to act. Under an advisory lock per `(store, subject)` the engine takes
+  the full decision (graph + gates) and records the `request` event in the
+  same transaction; a refusal records a `denied` event (`p_record_denied`
+  opts out). Returns `{allowed, seq, kind, reason: allowed|gate_denied|
+  graph_denied, gates: [per-clause outcomes]}`. Proven by parallel-session
+  tests in both the SQL suite (8 sessions, cap 3 → exactly 3) and the e2e
+  suite (6 parallel HTTP reserves, cap 2 → exactly 2). Two fixes surfaced by
+  those tests: gate windows and recorded timestamps now use
+  `clock_timestamp()` (a statement's start time predates the lock wait and
+  hid events recorded meanwhile), and `count_within` /
+  `count_distinct_within` gained `plus` (like `sum_within`) so `max: 5,
+  plus: 1` means at most 5 actions *including* the one being decided.
 
 ## [0.15.0] - 2026-07-07
 

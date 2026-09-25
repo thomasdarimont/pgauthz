@@ -188,6 +188,31 @@ type EventRecorder interface {
 	// returns the engine's JSON result verbatim
 	// ({"recorded": n, "duplicates": n, "seqs": [...]}).
 	RecordEvents(ctx context.Context, req RecordEventsRequest) (json.RawMessage, error)
+	// ReserveEvent is the strict tier: under a per-(store, subject) lock, take
+	// the full decision (graph + gates) and record the `request` event if
+	// allowed, else a `denied` event (unless RecordDenied is false). Returns
+	// the engine's JSON verbatim ({"allowed", "seq", "kind", "reason", "gates"}).
+	ReserveEvent(ctx context.Context, req ReserveEventRequest) (json.RawMessage, error)
+}
+
+// ReserveEventRequest is a reserve: the subject is about to perform Action
+// on the object. Context is the request context for gates/conditions;
+// Payload the projection to record; EventID/OccurredAt the optional
+// idempotency key (EventID requires OccurredAt). RecordDenied nil = true.
+type ReserveEventRequest struct {
+	Store        string
+	SubjectType  string
+	SubjectID    string
+	Action       string
+	ObjectType   string
+	ObjectID     string
+	Context      map[string]any
+	Payload      json.RawMessage
+	EventID      string
+	OccurredAt   string
+	RecordedBy   string
+	RecordDenied *bool
+	Consistency  string
 }
 
 // RecordEventsRequest is a batch of recorded actions. Events is the JSONB

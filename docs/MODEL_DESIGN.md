@@ -1758,7 +1758,7 @@ SELECT authz.model_register_relation('bank', 'approve_sale');
 SELECT authz.add_gate('bank', 'account', 'transfer', 'velocity_backstop', '{
   "description": "transfer velocity backstop",
   "all_of": [
-    {"count_within": {"window": "1h", "kind": "request", "max": 5}},
+    {"count_within": {"window": "1h", "kind": "request", "max": 5, "plus": 1}},
     {"sum_within":   {"window": "1h", "kind": "response", "field": "input.amount",
                       "plus": "$request.input.amount", "max": 5000}},
     {"formerly_within": {"window": "1h", "action": "approve_sale", "kind": "response",
@@ -1769,8 +1769,8 @@ SELECT authz.add_gate('bank', 'account', 'transfer', 'velocity_backstop', '{
 
 With that gate, `check_access_with_context('bank', 'user', 'alice', 'transfer',
 'account', 'acc-1', '{"input": {"amount": 1200, "stock": "ACME"}}')` allows
-only if the graph allows **and** alice made at most 5 transfer requests in the
-last hour **and** her completed transfers plus this one stay within 5000
+only if the graph allows **and** this is at most alice's 5th transfer request
+in the last hour **and** her completed transfers plus this one stay within 5000
 **and** an approval service recorded an approved `approve_sale` for `ACME`
 within the hour.
 
@@ -1790,7 +1790,7 @@ primitive — and a body:
 | `recorded_by` | ✓ | ✓ | ✓ | ✓ | non-empty allowlist matched exactly against `events.recorded_by` |
 | `key` | – | – | ● | – | `object_id` / `object_type` / `payload.<path>` |
 | `field` | – | – | – | ● | payload path summed (must be a JSON number on every matched event) |
-| `plus` | – | – | – | ✓ | number or `$request.<path>`, added to the sum before comparing |
+| `plus` | – | ✓ | ✓ | ✓ | number or `$request.<path>`, added to the count/sum before comparing — `"plus": 1` counts the request being decided, so `max: 5, plus: 1` means at most 5 actions *including* this one |
 | `max` / `min` | – | at least one | at least one | at least one | number or `$request.<path>`; **inclusive** |
 
 Unknown keys are rejected — a typo must not silently weaken a gate. Sliding
@@ -1858,4 +1858,38 @@ documented as a backstop); and **the PEP owns the truth** — the engine bounds
 *recorded* actions, so feeding the log reliably (idempotency keys,
 dead-lettering unknown actions) is part of adopting gates. A gate cannot
 prevent two concurrent checks from both seeing `count = 4`; a hard bound needs
-the explicit `reserve_event` write (phase 3 of ADR 0012).
+the explicit reserve below.
+
+### The strict tier: `reserve_event`
+
+A check plus a later `record_event` leaves a window in which two concurrent
+requests both see `count = 4` and both proceed. When a cap must hold exactly,
+the PEP calls `reserve_event` **because it is about to act** — never as a
+side effect of asking:
+
+```sql
+SELECT authz.reserve_event('bank', 'user', 'alice', 'transfer', 'account', 'acc-1',
+    p_payload         => '{"input": {"amount": 1200}}',
+    p_request_context => '{"input": {"amount": 1200, "stock": "ACME"}}');
+-- → {"allowed": true, "seq": 42, "kind": "request", "reason": "allowed",
+--    "gates": [{"gate": "velocity_backstop", "clause": "0:count_within", "result": true,
+--               "reason": "gate_passed", "observed": 3, "threshold": 5, ...}, ...]}
+```
+
+Under an advisory lock per `(store, subject)` — the unit every gate counts —
+the engine takes the **full decision** (graph and gates, exactly as
+`check_access` would) and, if allowed, records the `request` event in the
+same transaction; a refusal records a `denied` event (the reserve *is* the
+attempt; pass `p_record_denied => false` to leave no trace). N parallel
+reserves against a cap of K yield exactly K allows. The PEP then performs
+the action and records the `response` as usual. `reason` is `allowed`,
+`gate_denied` or `graph_denied`; `gates` lists per-clause outcomes.
+Idempotency follows `record_event` (`p_event_id` requires `p_occurred_at`; a
+re-delivery returns the decision with `seq` null). Over HTTP:
+`POST /pgauthz/v1/events/reserve` on the `full` profile, with the same
+`RECORDER_ROLE` gate and subject rules as a check.
+
+Two things to know: write caps with `"plus": 1` so the request being reserved
+counts (`max: 5, plus: 1` = at most 5 in total); and a *sliding-window*
+lockout gate (`count_within` over `kind: denied`) is extended by every refused
+reserve — the usual login-lockout behaviour — while calendar windows are not.

@@ -31,7 +31,9 @@
 --   match ({dotted.path: JSON literal | "$request.<path>"} — containment on
 --   the payload); recorded_by (allowlist); key (count_distinct_within:
 --   object_id | object_type | payload.<path>); field (sum_within: payload
---   path); plus/max/min (number | "$request.<path>"; thresholds inclusive).
+--   path); plus (added to the count/sum before comparing — "plus: 1" counts
+--   the request being decided); max/min (number | "$request.<path>";
+--   thresholds inclusive).
 --   A literal string that must start with "$" is written "$$literal".
 --   Unknown keys are rejected (a typo must not silently weaken a gate).
 --
@@ -204,9 +206,9 @@ BEGIN
         END IF;
 
         v_allowed := ARRAY['window', 'calendar', 'tz', 'action', 'kind', 'match', 'recorded_by'];
-        IF v_prim = 'count_distinct_within' THEN v_allowed := v_allowed || ARRAY['key', 'max', 'min'];
+        IF v_prim = 'count_distinct_within' THEN v_allowed := v_allowed || ARRAY['key', 'plus', 'max', 'min'];
         ELSIF v_prim = 'sum_within'         THEN v_allowed := v_allowed || ARRAY['field', 'plus', 'max', 'min'];
-        ELSIF v_prim = 'count_within'       THEN v_allowed := v_allowed || ARRAY['max', 'min'];
+        ELSIF v_prim = 'count_within'       THEN v_allowed := v_allowed || ARRAY['plus', 'max', 'min'];
         END IF;
         FOR v_key IN SELECT jsonb_object_keys(v_body) LOOP
             IF NOT (v_key = ANY (v_allowed)) THEN
@@ -369,7 +371,18 @@ END;
 $$;
 
 ------------------------------------------------------------------------
--- Window primitives: plain SQL over authz.events, STABLE, internal.
+-- Window primitives: plain SQL over authz.events, internal.
+--
+-- VOLATILE, deliberately (the whole path from _event_resolve_gates down to
+-- the window queries): reserve_event takes its per-subject advisory lock
+-- INSIDE the statement that then evaluates the gates, and a STABLE function
+-- runs on the snapshot established when its calling query started — i.e.
+-- from BEFORE the lock was granted — so it would not see the event the
+-- previous lock holder just committed and the strict tier would over-admit
+-- (reproduced: 4 allows against a cap of 3 under 8 parallel reserves).
+-- VOLATILE functions take a fresh snapshot per query, which is exactly the
+-- read-after-lock the strict tier needs. The cost is only lost inlining of
+-- _event_matching into the aggregates; the queries themselves are unchanged.
 -- Subject and store are explicit parameters — the evaluator always passes
 -- the CHECKED principal, so a gate can only ask about the subject being
 -- checked, never about arbitrary subjects.
@@ -393,7 +406,7 @@ CREATE OR REPLACE FUNCTION authz._event_matching(
     p_recorded_by    text[],
     p_as_of          timestamptz
 ) RETURNS SETOF authz.events
-LANGUAGE sql STABLE AS $$
+LANGUAGE sql VOLATILE AS $$
     SELECT e.*
       FROM authz.events e
      WHERE e.store_id     = p_store_id
@@ -413,7 +426,7 @@ CREATE OR REPLACE FUNCTION authz._event_formerly_within(
     p_from timestamptz, p_from_inclusive boolean, p_to timestamptz,
     p_match jsonb[], p_recorded_by text[], p_as_of timestamptz
 ) RETURNS boolean
-LANGUAGE sql STABLE AS $$
+LANGUAGE sql VOLATILE AS $$
     SELECT EXISTS (SELECT 1 FROM authz._event_matching(
         p_store_id, p_subject_type, p_subject_id, p_action, p_kind,
         p_from, p_from_inclusive, p_to, p_match, p_recorded_by, p_as_of))
@@ -424,7 +437,7 @@ CREATE OR REPLACE FUNCTION authz._event_count_within(
     p_from timestamptz, p_from_inclusive boolean, p_to timestamptz,
     p_match jsonb[], p_recorded_by text[], p_as_of timestamptz
 ) RETURNS bigint
-LANGUAGE sql STABLE AS $$
+LANGUAGE sql VOLATILE AS $$
     SELECT count(*) FROM authz._event_matching(
         p_store_id, p_subject_type, p_subject_id, p_action, p_kind,
         p_from, p_from_inclusive, p_to, p_match, p_recorded_by, p_as_of)
@@ -438,7 +451,7 @@ CREATE OR REPLACE FUNCTION authz._event_count_distinct_within(
     p_match jsonb[], p_recorded_by text[], p_as_of timestamptz,
     p_key text
 ) RETURNS bigint
-LANGUAGE sql STABLE AS $$
+LANGUAGE sql VOLATILE AS $$
     SELECT count(DISTINCT CASE p_key
                               WHEN 'object_id'   THEN m.object_id
                               WHEN 'object_type' THEN m.object_type::text
@@ -459,7 +472,7 @@ CREATE OR REPLACE FUNCTION authz._event_sum_within(
     p_field text,
     OUT total numeric, OUT all_numeric boolean
 ) RETURNS record
-LANGUAGE sql STABLE AS $$
+LANGUAGE sql VOLATILE AS $$
     SELECT COALESCE(sum((m.payload #>> string_to_array(p_field, '.'))::numeric)
                         FILTER (WHERE jsonb_typeof(m.payload #> string_to_array(p_field, '.')) = 'number'), 0),
            COALESCE(bool_and(jsonb_typeof(m.payload #> string_to_array(p_field, '.')) = 'number'), true)
@@ -481,7 +494,7 @@ CREATE OR REPLACE FUNCTION authz._event_resolve_gates(
     p_relation      integer,
     p_from_snapshot boolean DEFAULT false
 ) RETURNS jsonb
-LANGUAGE plpgsql STABLE AS $$
+LANGUAGE plpgsql VOLATILE AS $$
 DECLARE
     v_out jsonb;
 BEGIN
@@ -527,7 +540,7 @@ CREATE OR REPLACE FUNCTION authz._event_eval_clause(
     OUT window_text   text,
     OUT detail        text
 ) RETURNS record
-LANGUAGE plpgsql STABLE AS $$
+LANGUAGE plpgsql VOLATILE AS $$
 DECLARE
     v_prim        text;
     v_body        jsonb;
@@ -639,16 +652,18 @@ BEGIN
             threshold := 1;
             passed    := observed = 1;
         WHEN 'count_within' THEN
+            -- `plus` (typically 1) counts the request being decided, so
+            -- "max: 5, plus: 1" means at most 5 actions INCLUDING this one.
             observed  := authz._event_count_within(
                              p_store_id, p_subject_type, p_subject_id, v_action, v_kind,
-                             v_from, v_from_incl, p_now, v_match, v_recorded_by, p_as_of);
+                             v_from, v_from_incl, p_now, v_match, v_recorded_by, p_as_of) + v_plus;
             threshold := COALESCE(v_max, v_min);
             passed    := (v_max IS NULL OR observed <= v_max) AND (v_min IS NULL OR observed >= v_min);
         WHEN 'count_distinct_within' THEN
             observed  := authz._event_count_distinct_within(
                              p_store_id, p_subject_type, p_subject_id, v_action, v_kind,
                              v_from, v_from_incl, p_now, v_match, v_recorded_by, p_as_of,
-                             v_body ->> 'key');
+                             v_body ->> 'key') + v_plus;
             threshold := COALESCE(v_max, v_min);
             passed    := (v_max IS NULL OR observed <= v_max) AND (v_min IS NULL OR observed >= v_min);
         WHEN 'sum_within' THEN
@@ -726,7 +741,12 @@ BEGIN
 
     v_trace  := COALESCE(current_setting('authz.trace', true), 'off') = 'on';
     v_assume := COALESCE(current_setting('authz._assume_missing_ctx', true), '') = 'on';
-    v_now    := COALESCE(p_as_of, statement_timestamp());
+    -- clock_timestamp(), not statement_timestamp(): reserve_event evaluates
+    -- gates AFTER waiting for its per-subject lock, inside the statement that
+    -- took it. The statement's start time would predate events the previous
+    -- lock holder recorded meanwhile, leaving them outside the window's upper
+    -- bound (reproduced as over-admission under parallel reserves).
+    v_now    := COALESCE(p_as_of, clock_timestamp());
 
     IF v_trace THEN
         v_subject := (SELECT name FROM authz.types     WHERE id = p_user_type)   || ':' || p_user_id;

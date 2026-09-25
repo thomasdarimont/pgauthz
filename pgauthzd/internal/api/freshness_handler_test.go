@@ -42,6 +42,9 @@ func (b *freshStub) WriteTuplesChecked(context.Context, authz.CheckedWriteReques
 func (b *freshStub) RecordEvents(context.Context, authz.RecordEventsRequest) (json.RawMessage, error) {
 	return json.RawMessage(`{"recorded": 1, "duplicates": 0, "seqs": [1]}`), nil
 }
+func (b *freshStub) ReserveEvent(context.Context, authz.ReserveEventRequest) (json.RawMessage, error) {
+	return json.RawMessage(`{"allowed": true, "seq": 2, "kind": "request", "reason": "allowed", "gates": []}`), nil
+}
 func (b *freshStub) FreshnessToken(context.Context) (int32, string, error) {
 	return b.epoch, b.lsn, b.mintErr
 }

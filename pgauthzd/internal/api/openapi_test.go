@@ -208,6 +208,8 @@ func TestResponsesMatchOpenAPISpec(t *testing.T) {
 		{"native write bad json is documented 400", jsonReq("POST", "/pgauthz/v1/write", `{`), 400},
 		{"native events (action log)", jsonReq("POST", "/pgauthz/v1/events",
 			`{"events":[{"subject_type":"user","subject_id":"alice","action":"download","kind":"request"}],"recorded_by":"contract-tester"}`), 200},
+		{"native events reserve (strict tier)", jsonReq("POST", "/pgauthz/v1/events/reserve",
+			`{"subject":{"type":"user","id":"alice"},"action":{"name":"download"},"resource":{"type":"doc","id":"d1"},"recorded_by":"contract-tester"}`), 200},
 		{"native check 501 without a direct reader", jsonReq("POST", "/pgauthz/v1/check",
 			`{"subject":{"type":"user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"readme"}}`), 501},
 		{"freshness 409 is documented", func() *http.Request {

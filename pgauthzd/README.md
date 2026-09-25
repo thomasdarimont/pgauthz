@@ -519,6 +519,7 @@ Without a configured native backend the routes return `501 Not Implemented`.
 | POST | `/pgauthz/v1/write` | **full** | Batch-upsert tuples (`write_tuples_jsonb`). |
 | POST | `/pgauthz/v1/delete` | **full** | Batch-delete tuples (`delete_tuples_jsonb`). |
 | POST | `/pgauthz/v1/events` | **full** | Record what principals *actually did* — the action log (`record_events_jsonb`, [ADR 0012](../docs/adr/0012-action-log.md)); `RECORDER_ROLE`-gated, atomic batches, `event_id` idempotency. |
+| POST | `/pgauthz/v1/events/reserve` | **full** | Strict tier: full decision + `request` record under a per-subject lock (`reserve_event`); refusals recorded as `denied`. Check-shaped body; `RECORDER_ROLE`-gated. |
 
 The `check` / `list-*` endpoints are **policy-free by construction** — they run
 straight against the direct pgx backend, never through a policy layer. That is

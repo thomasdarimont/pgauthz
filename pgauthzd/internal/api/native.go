@@ -393,6 +393,84 @@ func (h *Handler) RecordEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// reserveEventBody: the subject is ABOUT TO perform action on resource. Subject,
+// action and resource follow the check/explain shape (a reserve replaces the
+// check the PEP would otherwise make); the rest is the record.
+type reserveEventBody struct {
+	Subject      Subject         `json:"subject"`
+	Action       Action          `json:"action"`
+	Resource     Resource        `json:"resource"`
+	Context      map[string]any  `json:"context,omitempty"`
+	Payload      json.RawMessage `json:"payload,omitempty"`
+	EventID      string          `json:"event_id,omitempty"`
+	OccurredAt   string          `json:"occurred_at,omitempty"`
+	RecordDenied *bool           `json:"record_denied,omitempty"`
+	Consistency  string          `json:"consistency,omitempty"`
+	RecordedBy   string          `json:"recorded_by,omitempty"`
+}
+
+// ReserveEvent — POST /pgauthz/v1/events/reserve: the strict tier (ADR 0012
+// phase 3). Under the engine's per-(store, subject) lock: full decision, then
+// the `request` event is recorded if allowed (else a `denied` event). N
+// parallel reserves against a cap of K yield exactly K allows. Consistency
+// defaults to `applied` (a no-op without synchronous standbys) so a follow-up
+// check on a replica sees the reservation.
+func (h *Handler) ReserveEvent(w http.ResponseWriter, r *http.Request) {
+	er, ok := h.nativeRecorder(w, r)
+	if !ok {
+		return
+	}
+	var req reserveEventBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, "invalid JSON: "+err.Error())
+		return
+	}
+	subjectType, subjectID, err := h.resolveSubject(r, req.Subject)
+	if err != nil {
+		writeSubjectError(w, err)
+		return
+	}
+	if req.Action.Name == "" || req.Resource.Type == "" || req.Resource.ID == "" {
+		writeBadRequest(w, "action.name and resource.type/id are required")
+		return
+	}
+	store, ok := h.storeChecked(w, r)
+	if !ok {
+		return
+	}
+	recordedBy, ok := h.resolveActor(w, r, req.RecordedBy, "recorded_by")
+	if !ok {
+		return
+	}
+	consistency := req.Consistency
+	if consistency == "" {
+		consistency = "applied"
+	}
+	out, err := er.ReserveEvent(r.Context(), authz.ReserveEventRequest{
+		Store: store, SubjectType: subjectType, SubjectID: subjectID,
+		Action: req.Action.Name, ObjectType: req.Resource.Type, ObjectID: req.Resource.ID,
+		Context: req.Context, Payload: req.Payload, EventID: req.EventID, OccurredAt: req.OccurredAt,
+		RecordedBy: recordedBy, RecordDenied: req.RecordDenied, Consistency: consistency,
+	})
+	if err != nil {
+		writeWriteError(w, err)
+		return
+	}
+	resp := map[string]any{}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	resp["store"] = store
+	if seq, ok := resp["seq"].(float64); ok && seq > 0 {
+		metrics.EventsRecorded.WithLabelValues("recorded").Inc()
+	}
+	if rev := h.mintRevision(w, r); rev != "" {
+		resp["revision"] = rev
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 type explainRequestBody struct {
 	Subject  Subject        `json:"subject"`
 	Action   Action         `json:"action"`
