@@ -84,6 +84,16 @@ by `init.sh` on every run.
       authenticated caller.
 - [ ] **Schedule audit-partition maintenance and retention.** See
       [Audit retention](#audit-retention).
+- [ ] **Treat `authz_recorder` (and the `RECORDER_ROLE` JWT claim) as a
+      PEP-only credential.** Events are what a recorder claims happened and
+      temporal gates decide on them, so whoever can record can satisfy a
+      prior-approval gate, lock a principal out, or spend a quota. Issue the
+      role/claim to your enforcement points and ingestion services — never
+      to end-user-facing clients or tokens end users can obtain (the same
+      rule as `authz_writer`, which inherits it). Narrow each recorder with
+      `grant_recorder_actions` to the actions it owns and pin sensitive gate
+      clauses to a `recorded_by` allowlist. See
+      [ADR 0012 → trust model](adr/0012-action-log.md#3-trust-model-for-recorded-events).
 - [ ] **If you feed the action log, schedule its partitions and set the
       backdate bound.** `SELECT authz.ensure_event_partitions()` next to the
       audit partitions; `authz.event_max_backdate` (default 24 h) to your
@@ -123,7 +133,7 @@ created and granted in `db/security/roles.sql`.
 | `authz_reader` | `check_access`, `check_access_with_context`, `list_objects/subjects/actions`, batch checks, `validate_condition`, `explain_access` | — |
 | `authz_contextual_reader` | `check_access_with_contextual_tuples*` (inject ephemeral tuples) | — |
 | `authz_auditor` | `audit_check_access`, `audit_list_*`, `watch_changes`, `list_events` | `authz_reader` |
-| `authz_recorder` | `record_event` / `record_events_jsonb` — feed the action log ([ADR 0012](adr/0012-action-log.md)) and nothing else | — |
+| `authz_recorder` | `record_event` / `record_events_jsonb` / `reserve_event` — feed the action log ([ADR 0012](adr/0012-action-log.md)) and nothing else. **Security-sensitive PEP role:** recorded events drive temporal gates, so a recorder can move a gate; grant it to enforcement points and ingestion services only, never to end-user-facing clients (see the checklist) | — |
 | `authz_writer` | `write_tuple`/`delete_tuple` + batch ops | `authz_reader`, `authz_recorder` |
 | `authz_admin` | store/model/namespace management, recorder allowlists (`grant_recorder_actions`), `ensure_audit_partitions` / `ensure_event_partitions` / `drop_event_partitions_before`, `find_redundant_tuples` | `authz_writer`, `authz_auditor` |
 | `authz_owner` | owns the schema + objects (definer context) | — |

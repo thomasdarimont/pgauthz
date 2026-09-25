@@ -371,6 +371,7 @@ Deploy-time (most are in [`PRODUCTION.md`](PRODUCTION.md) — this cross-checks 
 - [ ] **Metrics:** `METRICS_LISTEN_ADDR` non-public; scrape restricted to Prometheus (chart `NetworkPolicy` / no host port).
 - [ ] Every secret overridden; `opa.requireTokenForReads=true` unless a trusted PEP fronts reads.
 - [ ] `authz_contextual_reader` granted only to trusted services (and only if used).
+- [ ] **`authz_recorder` / `RECORDER_ROLE` issued only to enforcement points and ingestion services** — never to end-user-facing clients: recorded events drive temporal gates, so a recorder can move a gate (fabricate an approval, lock a principal out, spend a quota). Per-recorder action allowlists (`grant_recorder_actions`) and `recorded_by` pins on sensitive clauses in place. (ADR 0012 §3; external review 2026-09.)
 - [ ] JWT verified against your IdP's JWKS; role claim (`DB_ROLE_CLAIM`) mapping reviewed.
 - [ ] **Multi-tenant AuthZEN:** every issuer bound to its `stores` + `db_roles`; `REQUIRE_STORE_BINDING` / `REQUIRE_DB_ROLE_BINDING` on.
 - [ ] **Per-app namespace isolation on reads:** app roles are `GRANT`ed to the reader's login role `authzen_direct` (so pgauthzd can `SET LOCAL ROLE`) and to the namespace with `can_read`.

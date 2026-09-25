@@ -92,6 +92,22 @@ never drop them — a new action goes live by publishing the model first.
   `reserve_event` and the HTTP endpoints inherit it; deployment-specific,
   so excluded from `export_model`. A per-store "allowlists required" switch
   (deny-by-default for unlisted roles) is a possible tightening, not built.
+- **`authz_recorder` is a security-sensitive PEP role — an operational
+  contract, not a code boundary.** Events are what a recorder *claims*
+  happened, and gates deny or allow on them. Whoever can record can therefore
+  move a gate: satisfy a prior-approval clause with a fabricated approval,
+  lock a principal out by recording denials, or exhaust a quota. The role
+  belongs to enforcement points and ingestion services only — **never** to
+  end-user-facing clients, browser or mobile apps, or any token an end user
+  can obtain; the same rule as for `authz_writer` (which inherits it) and
+  `authz_contextual_reader`. On the HTTP surface that means the
+  `RECORDER_ROLE` claim is issued to service identities, not user tokens.
+  Narrow further with per-recorder action allowlists (a service may record
+  only the actions it owns), `recorded_by` pins in gate specs, and per-app
+  roles. A compromised recorder has the blast radius of a compromised
+  writer: contain it the same way (rotate its credential, purge its events
+  with `purge_events` if they are known to be false, review `list_events`
+  filtered by `recorded_by`).
 - **Timestamps are bounded, not blindly trusted.** `occurred_at` is
   caller-asserted (asynchronous ingestion arrives late; the recorder already
   vouches *that* it happened, so trusting *when* adds no new trust) but

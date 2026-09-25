@@ -51,9 +51,15 @@ BEGIN
         CREATE ROLE authz_contextual_reader NOLOGIN;
     END IF;
     -- Action-log recorder (ADR 0012): may report what a principal actually did
-    -- (record_event / record_events_jsonb) and nothing else — an application
-    -- that only feeds the log never needs tuple-write rights. Granted TO
-    -- authz_writer below (a writer can record).
+    -- (record_event / record_events_jsonb / reserve_event) and nothing else —
+    -- an application that only feeds the log never needs tuple-write rights.
+    -- Granted TO authz_writer below (a writer can record).
+    --
+    -- SECURITY-SENSITIVE PEP ROLE: the log is what a recorder CLAIMS happened
+    -- and temporal gates decide on it, so a holder can move a gate (report an
+    -- approval, record denials, spend a quota). Grant it to enforcement points
+    -- and ingestion services only — never to end-user-facing clients — exactly
+    -- as authz_writer. Narrow a service with grant_recorder_actions.
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authz_recorder') THEN
         CREATE ROLE authz_recorder NOLOGIN;
     END IF;

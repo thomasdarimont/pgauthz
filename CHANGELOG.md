@@ -108,6 +108,16 @@ pre-1.0, minor versions may include breaking changes.
   recording, `reserve_event`, `list_events`); results and the `_decide` seam
   A/B against the previous engine in [BENCHMARKS.md](docs/BENCHMARKS.md).
 
+### Security (documentation)
+
+- **`authz_recorder` / `RECORDER_ROLE` is documented as a PEP-only
+  credential** (external review): recorded events drive temporal gates, so a
+  recorder can move a gate; the ADR 0012 trust model, PRODUCTION checklist and
+  role table, SECURITY-AUDIT hardening checklist, README, DEVELOPMENT,
+  pgauthzd README and `roles.sql` now state it explicitly, with containment
+  (action allowlists, `recorded_by` pins, `purge_events`, `list_events` by
+  `recorded_by`).
+
 ### Fixed
 
 - **Hook validator: `http.send` destinations are canonicalised with OPA's own

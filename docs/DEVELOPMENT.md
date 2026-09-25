@@ -977,6 +977,13 @@ the database clock and is bounded by `authz.event_max_future_skew` /
 a namespace needs that namespace's `can_write` grant (403 otherwise). Inspect
 with `authz.list_events(...)` (auditor role; SQL only for now).
 
+**Who may hold the recorder credential.** `authz_recorder` and the
+`RECORDER_ROLE` claim are for your enforcement points and ingestion services
+— the components that *know* what happened. Never issue them to end-user
+clients or to tokens end users can obtain: a recorder can move any temporal
+gate (report an approval, record denials, spend a quota), exactly as a writer
+can grant itself a tuple. Narrow each service with an allowlist (below).
+
 **Per-recorder action allowlists.** By default a recorder may record any
 declared action (it is trusted for its assertions as a writer is for its
 tuples). To narrow a service to the actions it owns — the approval service

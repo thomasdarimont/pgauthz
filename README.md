@@ -674,7 +674,12 @@ SELECT occurred_at, action, kind, object_type, object_id, payload
 ```
 
 Recording needs the `authz_recorder` role (granted to every writer; an app
-that only reports actions never needs tuple-write rights). `occurred_at` is
+that only reports actions never needs tuple-write rights). **Treat it as a
+PEP-only credential:** the log is what a recorder *claims* happened and gates
+decide on it, so grant the role — and the `RECORDER_ROLE` claim on the HTTP
+API — to enforcement points and ingestion services, never to end-user-facing
+clients; see the [ADR 0012 trust model](docs/adr/0012-action-log.md#3-trust-model-for-recorded-events).
+`occurred_at` is
 caller-supplied but bounded (`authz.event_max_future_skew`, default 5 s;
 `authz.event_max_backdate`, default 24 h); `recorded_at` and `recorded_by`
 are server-set. The log is append-only and monthly-partitioned like the audit
