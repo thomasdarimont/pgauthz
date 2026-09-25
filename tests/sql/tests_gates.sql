@@ -1,0 +1,428 @@
+-- Tests for temporal gates (ADR 0012, phase 2): declarative history-dependent
+-- clauses over the action log, evaluated after the graph allows.
+--
+-- Covers: the four primitives and their thresholds, sliding vs calendar
+-- windows and their boundaries, containment matching with $request references
+-- and recorded_by allowlists, the fail-closed table (missing context ⇒
+-- conditional, bad values ⇒ hard deny), AND composition across gates, the
+-- userset seam (gates apply to the question asked, not sub-questions),
+-- enumeration consistency (list_* agree with check), explain steps, spec
+-- validation, time-travel exactness, registry propagation, describe_model.
+--
+-- One relation per scenario on type `account` so gates do not interfere.
+
+SELECT _test_reset();
+
+DROP FUNCTION IF EXISTS _test_setup_gates();
+CREATE FUNCTION _test_setup_gates() RETURNS void LANGUAGE plpgsql AS $$
+DECLARE v_rel text;
+BEGIN
+    BEGIN PERFORM authz.delete_store('test_gates',  p_purge_audit => true); EXCEPTION WHEN OTHERS THEN NULL; END;
+    BEGIN PERFORM authz.delete_store('test_gates2', p_purge_audit => true); EXCEPTION WHEN OTHERS THEN NULL; END;
+    DELETE FROM authz.model_registry WHERE name = 'test_gates_model';
+
+    PERFORM authz.create_store('test_gates');
+    PERFORM authz.model_register_type('test_gates', 'user');
+    PERFORM authz.model_register_type('test_gates', 'account');
+    PERFORM authz.model_register_type('test_gates', 'doc');
+    PERFORM authz.model_register_type('test_gates', 'group');
+    FOREACH v_rel IN ARRAY ARRAY['transfer', 'withdraw', 'approve', 'peek', 'download', 'pay', 'audit_note'] LOOP
+        PERFORM authz.model_register_relation('test_gates', v_rel);
+    END LOOP;
+    PERFORM authz.model_register_relation('test_gates', 'approve_sale');   -- vocabulary only
+    PERFORM authz.model_register_relation('test_gates', 'viewer');
+    PERFORM authz.model_register_relation('test_gates', 'editor');
+    PERFORM authz.model_register_relation('test_gates', 'member');
+    FOREACH v_rel IN ARRAY ARRAY['transfer', 'withdraw', 'approve', 'peek', 'download', 'pay'] LOOP
+        PERFORM authz.model_add_rule('test_gates', 'account', v_rel, 'direct');
+        PERFORM authz.write_tuple('test_gates', 'user', 'alice', v_rel, 'account', 'acc-1');
+    END LOOP;
+    PERFORM authz.model_add_rule('test_gates', 'doc', 'viewer', 'direct');
+    PERFORM authz.model_add_rule('test_gates', 'doc', 'editor', 'direct');
+    PERFORM authz.model_add_rule('test_gates', 'group', 'member', 'direct');
+END;
+$$;
+
+DROP FUNCTION IF EXISTS _test_teardown_gates();
+CREATE FUNCTION _test_teardown_gates() RETURNS SETOF _test_results LANGUAGE plpgsql AS $$
+BEGIN
+    BEGIN PERFORM authz.delete_store('test_gates',  p_purge_audit => true); EXCEPTION WHEN OTHERS THEN NULL; END;
+    BEGIN PERFORM authz.delete_store('test_gates2', p_purge_audit => true); EXCEPTION WHEN OTHERS THEN NULL; END;
+    DELETE FROM authz.model_registry WHERE name = 'test_gates_model';
+    RETURN QUERY DELETE FROM _test_results RETURNING *;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION pg_temp._g(p_rel text, p_ctx jsonb DEFAULT NULL, p_user text DEFAULT 'alice') RETURNS boolean
+LANGUAGE sql AS $$
+    SELECT authz.check_access_with_context('test_gates', 'user', p_user, p_rel, 'account', 'acc-1', p_ctx);
+$$;
+CREATE OR REPLACE FUNCTION pg_temp._gstate(p_rel text, p_ctx jsonb DEFAULT NULL) RETURNS text
+LANGUAGE sql AS $$
+    SELECT authz.check_access_detailed('test_gates', 'user', 'alice', p_rel, 'account', 'acc-1', p_ctx) ->> 'state';
+$$;
+CREATE OR REPLACE FUNCTION pg_temp._greason(p_rel text, p_ctx jsonb DEFAULT NULL) RETURNS text
+LANGUAGE sql AS $$
+    SELECT authz.explain_access('test_gates', 'user', 'alice', p_rel, 'account', 'acc-1', p_ctx) -> 'decision' ->> 'reason';
+$$;
+CREATE OR REPLACE FUNCTION pg_temp._gsteps(p_rel text, p_ctx jsonb DEFAULT NULL) RETURNS jsonb
+LANGUAGE sql AS $$
+    SELECT jsonb_path_query_array(authz.explain_access('test_gates', 'user', 'alice', p_rel, 'account', 'acc-1', p_ctx),
+                                  '$.trace[*] ? (@.rule_type == "temporal_gate")');
+$$;
+
+SELECT _test_setup_gates();
+
+-- ================================================================
+-- count_within + sum_within, AND composition, explain
+-- ================================================================
+DO $$
+DECLARE v_steps jsonb;
+BEGIN
+    PERFORM authz.add_gate('test_gates', 'account', 'transfer', 'velocity', '{
+        "description": "transfer velocity backstop",
+        "all_of": [
+            {"count_within": {"window": "1h", "max": 2}},
+            {"sum_within":   {"window": "1h", "kind": "response", "field": "input.amount",
+                              "plus": "$request.amount", "max": 5000}}
+        ]}');
+
+    -- g_01: no history → allow; the graph must still allow (bob has no tuple)
+    PERFORM _test_assert('g_01_no_history_allows', pg_temp._g('transfer', '{"amount": 100}')::text, 'true');
+    PERFORM _test_assert('g_01_graph_deny_still_denies', pg_temp._g('transfer', '{"amount": 100}', 'bob')::text, 'false');
+
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'transfer', 'account', 'acc-1', 'request');
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'transfer', 'account', 'acc-1', 'response', '{"input": {"amount": 3000}}');
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'transfer', 'account', 'acc-1', 'request');
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'transfer', 'account', 'acc-1', 'response', '{"input": {"amount": 1500}}');
+
+    -- g_02: count 2 <= max 2 (inclusive); sum 4500 + 400 <= 5000 → allow
+    PERFORM _test_assert('g_02_inclusive_thresholds_allow', pg_temp._g('transfer', '{"amount": 400}')::text, 'true');
+    -- g_03: sum 4500 + 600 > 5000 → deny; explain reason gate_denied, clause 1 failed, clause 0 passed
+    PERFORM _test_assert('g_03_sum_plus_request_denies', pg_temp._g('transfer', '{"amount": 600}')::text, 'false');
+    PERFORM _test_assert('g_03_reason_gate_denied', pg_temp._greason('transfer', '{"amount": 600}'), 'gate_denied');
+    v_steps := pg_temp._gsteps('transfer', '{"amount": 600}');
+    PERFORM _test_assert('g_03_two_gate_steps', jsonb_array_length(v_steps)::text, '2');
+    PERFORM _test_assert('g_03_step0_passed', v_steps -> 0 ->> 'reason', 'gate_passed');
+    PERFORM _test_assert('g_03_step1_denied_observed_threshold',
+        (v_steps -> 1 ->> 'reason') || ' ' || (v_steps -> 1 ->> 'observed') || '/' || (v_steps -> 1 ->> 'threshold') || ' ' || (v_steps -> 1 ->> 'clause'),
+        'gate_denied 5100/5000 1:sum_within');
+    PERFORM _test_assert('g_03_step_depth_zero', v_steps -> 0 ->> 'depth', '0');
+    PERFORM _test_assert('g_03_step_no_payload_leak', (v_steps::text LIKE '%3000%' OR v_steps::text LIKE '%1500%')::text, 'false');
+
+    -- g_04: a 3rd request breaks the count clause → deny even with a tiny amount
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'transfer', 'account', 'acc-1', 'request');
+    PERFORM _test_assert('g_04_count_exceeded_denies', pg_temp._g('transfer', '{"amount": 1}')::text, 'false');
+    -- and it is a HARD deny: the count clause fails with complete context
+    PERFORM _test_assert('g_04_state_deny_not_conditional', pg_temp._gstate('transfer', '{"amount": 1}'), 'deny');
+    -- g_05: missing $request.amount → the sum clause lacks context, but the count clause is a hard deny → deny
+    PERFORM _test_assert('g_05_missing_ctx_with_hard_deny_is_deny', pg_temp._gstate('transfer'), 'deny');
+    -- g_06: non-numeric request value → gate_bad_request_value, hard deny
+    PERFORM _test_assert('g_06_bad_request_value_reason',
+        (SELECT string_agg(e ->> 'reason', ',') FROM jsonb_array_elements(pg_temp._gsteps('transfer', '{"amount": "lots"}')) e),
+        'gate_denied,gate_bad_request_value');
+END;
+$$;
+
+-- ================================================================
+-- formerly_within: match with $request reference, recorded_by, tri-state
+-- ================================================================
+DO $$
+DECLARE v_detail jsonb;
+BEGIN
+    PERFORM authz.add_gate('test_gates', 'account', 'withdraw', 'four_eyes', '{
+        "all_of": [{"formerly_within": {"window": "1h", "action": "approve_sale", "kind": "response",
+                                        "match": {"input.stock": "$request.stock", "output.approved": true},
+                                        "recorded_by": ["svc:approvals"]}}]}');
+    -- g_07: no approval → deny; state conditional? No — context is complete, so hard deny
+    PERFORM _test_assert('g_07_no_approval_denies', pg_temp._g('withdraw', '{"stock": "ACME"}')::text, 'false');
+    PERFORM _test_assert('g_07_hard_deny_with_context', pg_temp._gstate('withdraw', '{"stock": "ACME"}'), 'deny');
+
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'approve_sale', NULL, NULL, 'response',
+        '{"input": {"stock": "ACME"}, "output": {"approved": true}}', NULL, NULL, 'svc:approvals');
+    -- g_08: matching approval → allow; other stock → deny; approved:false variant → deny
+    PERFORM _test_assert('g_08_matching_approval_allows', pg_temp._g('withdraw', '{"stock": "ACME"}')::text, 'true');
+    PERFORM _test_assert('g_08_other_stock_denies', pg_temp._g('withdraw', '{"stock": "OTHER"}')::text, 'false');
+    -- g_09: missing $request.stock → the ONLY blocker is context → conditional, missing_context names it
+    v_detail := authz.check_access_detailed('test_gates', 'user', 'alice', 'withdraw', 'account', 'acc-1');
+    PERFORM _test_assert('g_09_missing_ctx_is_conditional', v_detail ->> 'state', 'conditional');
+    PERFORM _test_assert('g_09_missing_context_key', (v_detail -> 'missing_context')::text, '["request.stock"]');
+    PERFORM _test_assert('g_09_boolean_api_still_denies', pg_temp._g('withdraw')::text, 'false');
+    PERFORM _test_assert('g_09_explain_reason_missing_context',
+        pg_temp._gsteps('withdraw') -> 0 ->> 'reason', 'gate_missing_context');
+    -- g_10: an approval recorded by someone else does not satisfy the allowlist
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'approve_sale', NULL, NULL, 'response',
+        '{"input": {"stock": "ZZZ"}, "output": {"approved": true}}', NULL, NULL, 'svc:rogue');
+    PERFORM _test_assert('g_10_recorded_by_allowlist', pg_temp._g('withdraw', '{"stock": "ZZZ"}')::text, 'false');
+END;
+$$;
+
+-- ================================================================
+-- Windows: sliding boundary, calendar buckets; count_distinct; payload errors
+-- ================================================================
+DO $$
+BEGIN
+    -- g_11: sliding window is half-open — an event just outside is excluded, just inside counts
+    PERFORM authz.add_gate('test_gates', 'account', 'peek', 'cooldown', '{"all_of": [{"count_within": {"window": "10m", "max": 0}}]}');
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'peek', 'account', 'acc-1', 'request', '{}', now() - interval '11 minutes');
+    PERFORM _test_assert('g_11_event_outside_window_ignored', pg_temp._g('peek')::text, 'true');
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'peek', 'account', 'acc-1', 'request', '{}', now() - interval '9 minutes');
+    PERFORM _test_assert('g_11_event_inside_window_counts', pg_temp._g('peek')::text, 'false');
+
+    -- g_12: calendar day (UTC): yesterday's event is outside today's bucket
+    PERFORM authz.add_gate('test_gates', 'account', 'approve', 'daily_quota', '{"all_of": [{"count_within": {"calendar": "day", "tz": "UTC", "max": 1}}]}');
+    PERFORM set_config('authz.event_max_backdate', '48 hours', true);
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'approve', 'account', 'acc-1', 'request', '{}',
+        (date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') - interval '1 minute');
+    PERFORM set_config('authz.event_max_backdate', '', true);
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'approve', 'account', 'acc-1', 'request');
+    PERFORM _test_assert('g_12_calendar_excludes_yesterday', pg_temp._g('approve')::text, 'true');
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'approve', 'account', 'acc-1', 'request');
+    PERFORM _test_assert('g_12_calendar_counts_today', pg_temp._g('approve')::text, 'false');
+    PERFORM _test_assert('g_12_window_rendered_as_calendar',
+        pg_temp._gsteps('approve') -> 0 ->> 'window', 'day/UTC');
+
+    -- g_13: count_distinct_within on object_id — 2 distinct objects allowed, a 3rd denies
+    PERFORM authz.add_gate('test_gates', 'account', 'download', 'exfil_brake', '{"all_of": [{"count_distinct_within": {"window": "1h", "key": "object_id", "max": 2}}]}');
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'download', 'account', 'acc-1');
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'download', 'account', 'acc-1');
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'download', 'account', 'acc-2');
+    PERFORM _test_assert('g_13_distinct_within_cap', pg_temp._g('download')::text, 'true');
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'download', 'account', 'acc-3');
+    PERFORM _test_assert('g_13_distinct_over_cap', pg_temp._g('download')::text, 'false');
+
+    -- g_14: sum_within over a matched event lacking a numeric field is a hard deny
+    PERFORM authz.add_gate('test_gates', 'account', 'pay', 'spend_cap', '{"all_of": [{"sum_within": {"window": "1h", "field": "input.cost", "max": 100}}]}');
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'pay', 'account', 'acc-1', 'request', '{"input": {"cost": 40}}');
+    PERFORM _test_assert('g_14_sum_ok', pg_temp._g('pay')::text, 'true');
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'pay', 'account', 'acc-1', 'request', '{"input": {"cost": "forty"}}');
+    PERFORM _test_assert('g_14_non_numeric_payload_denies', pg_temp._g('pay')::text, 'false');
+    PERFORM _test_assert('g_14_reason_payload_not_numeric', pg_temp._gsteps('pay') -> 0 ->> 'reason', 'gate_payload_not_numeric');
+END;
+$$;
+
+-- ================================================================
+-- Seam: gates apply to the question asked, not to userset sub-questions;
+-- enumeration agrees with check
+-- ================================================================
+DO $$
+DECLARE n int; v_subjects text; v_actions text;
+BEGIN
+    -- g_15: a gate on group#member does not fire while resolving doc#editor through group:eng#member
+    PERFORM authz.write_tuple('test_gates', 'user', 'alice', 'member', 'group', 'eng');
+    PERFORM authz.write_tuple('test_gates', 'group', 'eng', 'editor', 'doc', 'doc1', p_user_relation => 'member');
+    PERFORM authz.add_gate('test_gates', 'group', 'member', 'needs_prior_event', '{"all_of": [{"count_within": {"window": "1h", "min": 1}}]}');
+    PERFORM _test_assert('g_15_gated_relation_denies',
+        authz.check_access('test_gates', 'user', 'alice', 'member', 'group', 'eng')::text, 'false');
+    PERFORM _test_assert('g_15_userset_resolution_not_gated',
+        authz.check_access('test_gates', 'user', 'alice', 'editor', 'doc', 'doc1')::text, 'true');
+
+    -- g_16: list_subjects / list_objects / list_actions agree with check
+    PERFORM authz.write_tuple('test_gates', 'user', 'alice', 'viewer', 'doc', 'doc1');
+    PERFORM authz.write_tuple('test_gates', 'user', 'bob',   'viewer', 'doc', 'doc1');
+    PERFORM authz.add_gate('test_gates', 'doc', 'viewer', 'lockout', '{"all_of": [{"count_within": {"window": "1h", "kind": "denied", "max": 0}}]}');
+    PERFORM authz.record_event('test_gates', 'user', 'alice', 'viewer', 'doc', 'doc1', 'denied');
+    SELECT string_agg(subject_id, ',' ORDER BY subject_id) INTO v_subjects
+      FROM authz.list_subjects('test_gates', 'user', 'viewer', 'doc', 'doc1');
+    PERFORM _test_assert('g_16_list_subjects_excludes_gated', v_subjects, 'bob');
+    SELECT count(*) INTO n FROM authz.list_objects('test_gates', 'user', 'alice', 'viewer', 'doc');
+    PERFORM _test_assert('g_16_list_objects_empty_when_gated', n::text, '0');
+    SELECT count(*) INTO n FROM authz.list_objects('test_gates', 'user', 'bob', 'viewer', 'doc');
+    PERFORM _test_assert('g_16_list_objects_other_subject_unaffected', n::text, '1');
+    SELECT string_agg(action, ',' ORDER BY action) INTO v_actions
+      FROM authz.list_actions('test_gates', 'user', 'alice', 'doc', 'doc1');
+    PERFORM _test_assert('g_16_list_actions_excludes_gated', v_actions, 'editor');
+    -- batch checks go through the same seam
+    PERFORM _test_assert('g_16_batch_agrees',
+        (authz.check_access_batch('test_gates',
+            '[{"user_type":"user","user_id":"alice","relation":"viewer","object_type":"doc","object_id":"doc1"},
+              {"user_type":"user","user_id":"bob","relation":"viewer","object_type":"doc","object_id":"doc1"}]'))::text,
+        '[{"decision": false}, {"decision": true}]');
+END;
+$$;
+
+-- ================================================================
+-- Validation
+-- ================================================================
+DO $body$
+DECLARE v_bad text[] := ARRAY[
+    '{"all_of": []}',
+    '{"all_of": [{"nope": {"window": "1h"}}]}',
+    '{"all_of": [{"count_within": {"window": "1h", "calendar": "day", "tz": "UTC", "max": 1}}]}',
+    '{"all_of": [{"count_within": {"max": 1}}]}',
+    '{"all_of": [{"count_within": {"window": "1mon", "max": 1}}]}',
+    '{"all_of": [{"count_within": {"window": "P1M", "max": 1}}]}',
+    '{"all_of": [{"count_within": {"window": "1h", "tz": "UTC", "max": 1}}]}',
+    '{"all_of": [{"count_within": {"calendar": "day", "max": 1}}]}',
+    '{"all_of": [{"count_within": {"calendar": "day", "tz": "Mars/Olympus", "max": 1}}]}',
+    '{"all_of": [{"count_within": {"window": "1h", "action": "no_such_action", "max": 1}}]}',
+    '{"all_of": [{"count_within": {"window": "1h", "kind": "started", "max": 1}}]}',
+    '{"all_of": [{"count_within": {"window": "1h"}}]}',
+    '{"all_of": [{"count_within": {"window": "1h", "min": 5, "max": 2}}]}',
+    '{"all_of": [{"count_within": {"window": "1h", "max": "$foo"}}]}',
+    '{"all_of": [{"count_within": {"window": "1h", "max": "five"}}]}',
+    '{"all_of": [{"count_within": {"window": "1h", "max": 1, "key": "object_id"}}]}',
+    '{"all_of": [{"count_distinct_within": {"window": "1h", "max": 1}}]}',
+    '{"all_of": [{"sum_within": {"window": "1h", "max": 1}}]}',
+    '{"all_of": [{"formerly_within": {"window": "1h", "match": {}}}]}',
+    '{"all_of": [{"formerly_within": {"window": "1h", "match": {"a[0]": 1}}}]}',
+    '{"all_of": [{"formerly_within": {"window": "1h", "recorded_by": []}}]}',
+    '{"all_of": [{"formerly_within": {"window": "1h"}}], "extra": 1}',
+    '{"all_of": [{"formerly_within": {"window": "1h", "window2": "x"}}]}'
+];
+    v_spec text; v_state text; v_ok int := 0;
+BEGIN
+    FOREACH v_spec IN ARRAY v_bad LOOP
+        v_state := NULL;
+        BEGIN
+            PERFORM authz.add_gate('test_gates', 'account', 'audit_note', 'bad', v_spec::jsonb);
+        EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+        IF v_state = '23514' THEN v_ok := v_ok + 1;
+        ELSE RAISE NOTICE 'g_17: spec % → SQLSTATE %', v_spec, coalesce(v_state, 'accepted');
+        END IF;
+    END LOOP;
+    PERFORM _test_assert('g_17_all_invalid_specs_rejected_check_violation', v_ok::text, array_length(v_bad, 1)::text);
+
+    -- g_18: normalization — window canonicalized, required_context derived, doubled-sigil literal, no-op re-add
+    PERFORM authz.add_gate('test_gates', 'account', 'audit_note', 'norm', '{
+        "all_of": [{"formerly_within": {"window": "PT30M", "match": {"tag": "$$literal", "who": "$request.actor.id"}}},
+                   {"count_within": {"window": "2 hours", "max": "$request.limit"}}]}');
+    PERFORM _test_assert('g_18_window_canonical',
+        (SELECT g.spec -> 'all_of' -> 0 -> 'formerly_within' ->> 'window' FROM authz.model_gates g WHERE g.name = 'norm'), '00:30:00');
+    PERFORM _test_assert('g_18_required_context_derived',
+        (SELECT (g.spec -> 'required_context')::text FROM authz.model_gates g WHERE g.name = 'norm'),
+        '{"request": ["actor", "limit"]}');
+    PERFORM _test_assert('g_18_reread_is_noop',
+        (SELECT count(*) FROM authz.model_gates_audit a WHERE a.name = 'norm' AND a.store_id = authz._s('test_gates'))::text, '1');
+    PERFORM authz.add_gate('test_gates', 'account', 'audit_note', 'norm', '{
+        "all_of": [{"formerly_within": {"window": "PT30M", "match": {"tag": "$$literal", "who": "$request.actor.id"}}},
+                   {"count_within": {"window": "2 hours", "max": "$request.limit"}}]}');
+    PERFORM _test_assert('g_18_reread_is_noop_after',
+        (SELECT count(*) FROM authz.model_gates_audit a WHERE a.name = 'norm' AND a.store_id = authz._s('test_gates'))::text, '1');
+    -- g_19: a spec change is versioned as DELETE + INSERT; drop_gate logs a DELETE
+    PERFORM authz.add_gate('test_gates', 'account', 'audit_note', 'norm', '{"all_of": [{"count_within": {"window": "1h", "max": 3}}]}');
+    PERFORM _test_assert('g_19_update_versioned',
+        (SELECT string_agg(a.action, ',' ORDER BY a.seq) FROM authz.model_gates_audit a WHERE a.name = 'norm' AND a.store_id = authz._s('test_gates')), 'INSERT,DELETE,INSERT');
+    PERFORM _test_assert('g_19_drop_returns_true', authz.drop_gate('test_gates', 'account', 'audit_note', 'norm')::text, 'true');
+    PERFORM _test_assert('g_19_drop_logged',
+        (SELECT a.action FROM authz.model_gates_audit a WHERE a.name = 'norm' AND a.store_id = authz._s('test_gates') ORDER BY a.seq DESC LIMIT 1), 'DELETE');
+    PERFORM _test_assert('g_19_drop_missing_false', authz.drop_gate('test_gates', 'account', 'audit_note', 'norm')::text, 'false');
+END;
+$body$;
+
+-- ================================================================
+-- Time-travel: definitions as of p_at, events bounded by recorded_at
+-- ================================================================
+-- tx1: a gate requiring one prior transfer request within the hour
+DO $$
+BEGIN
+    PERFORM authz.drop_gate('test_gates', 'account', 'transfer', 'velocity');
+    PERFORM authz.write_tuple('test_gates', 'user', 'carol', 'transfer', 'account', 'acc-1');
+    PERFORM authz.add_gate('test_gates', 'account', 'transfer', 'needs_request', '{"all_of": [{"count_within": {"window": "1h", "min": 1}}]}');
+    PERFORM _test_assert('g_20_live_denies_without_event',
+        authz.check_access('test_gates', 'user', 'carol', 'transfer', 'account', 'acc-1')::text, 'false');
+END;
+$$;
+SELECT set_config('test.g_t1', clock_timestamp()::text, false);
+SELECT pg_sleep(0.01);
+-- tx2: the event arrives
+DO $$
+BEGIN
+    PERFORM authz.record_event('test_gates', 'user', 'carol', 'transfer', 'account', 'acc-1', 'request');
+    PERFORM _test_assert('g_20_live_allows_with_event',
+        authz.check_access('test_gates', 'user', 'carol', 'transfer', 'account', 'acc-1')::text, 'true');
+END;
+$$;
+SELECT set_config('test.g_t2', clock_timestamp()::text, false);
+SELECT pg_sleep(0.01);
+-- tx3: a BACKDATED event (occurred before t1, recorded after t2) must not change what was knowable at t1
+DO $$
+BEGIN
+    PERFORM authz.record_event('test_gates', 'user', 'carol', 'transfer', 'account', 'acc-1', 'request', '{}', now() - interval '30 minutes');
+END;
+$$;
+DO $$
+DECLARE t1 timestamptz := current_setting('test.g_t1')::timestamptz;
+        t2 timestamptz := current_setting('test.g_t2')::timestamptz;
+BEGIN
+    PERFORM _test_assert('g_21_as_of_t1_denies_gate_existed_no_event',
+        authz.audit_check_access('test_gates', 'user', 'carol', 'transfer', 'account', 'acc-1', t1)::text, 'false');
+    PERFORM _test_assert('g_21_as_of_t2_allows',
+        authz.audit_check_access('test_gates', 'user', 'carol', 'transfer', 'account', 'acc-1', t2)::text, 'true');
+    PERFORM _test_assert('g_21_audit_list_actions_as_of_t1_excludes',
+        (SELECT count(*) FROM authz.audit_list_actions('test_gates', 'user', 'carol', 'account', 'acc-1', t1) a WHERE a.action = 'transfer')::text, '0');
+    PERFORM _test_assert('g_21_audit_list_actions_as_of_t2_includes',
+        (SELECT count(*) FROM authz.audit_list_actions('test_gates', 'user', 'carol', 'account', 'acc-1', t2) a WHERE a.action = 'transfer')::text, '1');
+END;
+$$;
+-- tx4: drop the gate; live allows regardless, t1 still denies (the gate existed then)
+DO $$
+DECLARE t1 timestamptz := current_setting('test.g_t1')::timestamptz;
+BEGIN
+    PERFORM authz.drop_gate('test_gates', 'account', 'transfer', 'needs_request');
+END;
+$$;
+DO $$
+DECLARE t1 timestamptz := current_setting('test.g_t1')::timestamptz;
+BEGIN
+    PERFORM _test_assert('g_22_live_after_drop_allows',
+        authz.check_access('test_gates', 'user', 'carol', 'transfer', 'account', 'acc-1')::text, 'true');
+    PERFORM _test_assert('g_22_as_of_t1_still_denies_after_drop',
+        authz.audit_check_access('test_gates', 'user', 'carol', 'transfer', 'account', 'acc-1', t1)::text, 'false');
+    PERFORM _test_assert('g_22_as_of_now_allows',
+        authz.audit_check_access('test_gates', 'user', 'carol', 'transfer', 'account', 'acc-1', clock_timestamp())::text, 'true');
+END;
+$$;
+
+-- ================================================================
+-- Registry propagation, checksum stability, describe_model
+-- ================================================================
+DO $$
+DECLARE v_def jsonb; v_ver int; v_sum text; v_desc text;
+BEGIN
+    v_def := authz.export_model('test_gates');
+    PERFORM _test_assert_true('g_23_export_has_gates', jsonb_array_length(v_def -> 'gates') >= 5,
+        (jsonb_array_length(v_def -> 'gates'))::text);
+    -- a gate-free store hashes as before the key existed
+    PERFORM authz.create_store('test_gates2');
+    PERFORM _test_assert('g_23_empty_gates_checksum_stable',
+        (authz._model_checksum(authz.export_model('test_gates2')) = authz._model_checksum(authz.export_model('test_gates2') - 'gates'))::text, 'true');
+    PERFORM _test_assert('g_23_nonempty_gates_change_checksum',
+        (authz._model_checksum(v_def) = authz._model_checksum(v_def - 'gates'))::text, 'false');
+
+    -- publish + apply propagates the gates and passes the post-apply self-check
+    v_ver := authz.publish_model('test_gates_model', 'test_gates');
+    PERFORM authz.apply_model('test_gates2', 'test_gates_model');
+    PERFORM _test_assert('g_24_apply_propagates_gates',
+        (SELECT count(*) FROM authz.model_gates g WHERE g.store_id = authz._s('test_gates2'))::text,
+        jsonb_array_length(v_def -> 'gates')::text);
+    PERFORM _test_assert('g_24_plan_reports_no_gate_changes',
+        (authz.plan_model_apply('test_gates2', 'test_gates_model') -> 'changes' -> 'gates')::text,
+        '{"add": [], "remove": []}');
+    -- a gate dropped at the source is removed at the target on the next version
+    PERFORM authz.drop_gate('test_gates', 'account', 'pay', 'spend_cap');
+    PERFORM authz.publish_model('test_gates_model', 'test_gates');
+    PERFORM _test_assert('g_24_plan_reports_removal',
+        jsonb_array_length(authz.plan_model_apply('test_gates2', 'test_gates_model') -> 'changes' -> 'gates' -> 'remove')::text, '1');
+    PERFORM authz.apply_model('test_gates2', 'test_gates_model');
+    PERFORM _test_assert('g_24_apply_removes_stale_gate',
+        (SELECT count(*) FROM authz.model_gates g WHERE g.store_id = authz._s('test_gates2') AND g.name = 'spend_cap')::text, '0');
+
+    -- g_25: describe_model renders gates as comment lines (relation-prefixed when rule-less)
+    v_desc := authz.describe_model('test_gates');
+    PERFORM _test_assert_true('g_25_describe_gate_header', position('    # gate four_eyes' in v_desc) > 0, v_desc);
+    PERFORM _test_assert_true('g_25_describe_clause_line',
+        position('#   formerly_within{window: "01:00:00", action: "approve_sale", kind: "response", match:' in v_desc) > 0, v_desc);
+    PERFORM authz.add_gate('test_gates', 'account', 'audit_note', 'vocab_only', '{"all_of": [{"count_within": {"window": "1h", "max": 1}}]}');
+    v_desc := authz.describe_model('test_gates');
+    PERFORM _test_assert_true('g_25_describe_ruleless_relation_prefixed', position('    # gate audit_note/vocab_only' in v_desc) > 0, v_desc);
+END;
+$$;
+
+SELECT * FROM _test_teardown_gates();
+
+-- Cleanup file-level functions
+DROP FUNCTION IF EXISTS _test_teardown_gates();
+DROP FUNCTION IF EXISTS _test_setup_gates();
+
+SELECT _test_report('temporal gate checks');

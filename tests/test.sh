@@ -9,6 +9,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PG_DIR="$SCRIPT_DIR/.."
 source "$PG_DIR/env.sh"
 
+# Lint: public decision entry points must go through authz._decide (live) /
+# authz._decide_snapshot (time-travel), never the graph walk directly — that
+# is the seam temporal gates (ADR 0012) hang on, so a new entry point cannot
+# forget them. (maintenance.sql's find_redundant_tuples asks a graph-only
+# question and is deliberately exempt.)
+echo "==> Lint: decision entry points call _decide..."
+if grep -n "authz\._check_access(" "$PG_DIR/db/engine/access.sql" "$PG_DIR/db/engine/explain.sql"; then
+  echo "FAIL: access.sql/explain.sql must call authz._decide, not authz._check_access" >&2; exit 1
+fi
+if grep -n "authz\._check_access_snapshot(" "$PG_DIR/db/engine/audit.sql"; then
+  echo "FAIL: audit.sql must call authz._decide_snapshot, not authz._check_access_snapshot" >&2; exit 1
+fi
+echo "    ok"
+
 # Load shared test helpers (_assert, _assert_true, _test_reset, _test_report)
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_helpers.sql"
 
@@ -192,6 +206,11 @@ echo ""
 echo "==> Running action log (events) checks (ADR 0012)..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_events.sql"
+
+echo ""
+echo "==> Running temporal gate checks (ADR 0012 phase 2)..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_gates.sql"
 
 # Clean up test helpers
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_helpers_cleanup.sql"

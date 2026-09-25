@@ -319,6 +319,9 @@ GRANT EXECUTE ON FUNCTION authz.create_condition(text, text, text, text, jsonb) 
 GRANT EXECUTE ON FUNCTION authz.create_condition_sql(text, text, text, jsonb) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.create_condition_cel(text, text, text, jsonb) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.delete_condition(text, text) TO authz_admin;
+-- Temporal gates (ADR 0012): model changes, admin-only.
+GRANT EXECUTE ON FUNCTION authz.add_gate(text, text, text, text, jsonb) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.drop_gate(text, text, text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.publish_model(text, text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.apply_model(text, text, integer) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.apply_model(text[], text, integer) TO authz_admin;
@@ -399,6 +402,8 @@ ALTER FUNCTION authz.create_condition(text, text, text, text, jsonb) SECURITY DE
 ALTER FUNCTION authz.create_condition_sql(text, text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.create_condition_cel(text, text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_condition(text, text) SECURITY DEFINER;
+ALTER FUNCTION authz.add_gate(text, text, text, text, jsonb) SECURITY DEFINER;
+ALTER FUNCTION authz.drop_gate(text, text, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.export_model(text) SECURITY DEFINER;
 ALTER FUNCTION authz.model_status(text) SECURITY DEFINER;
 ALTER FUNCTION authz.model_rollout_status(text) SECURITY DEFINER;

@@ -1739,3 +1739,123 @@ advisory: tuple-reference blockers reflect the moment of planning, and
 apply enforces. `plan_model_apply` is reader-callable (like `model_status`),
 so CI/CD pipelines can gate a rollout on `can_apply` and on
 `rollback.possible` without admin credentials.
+
+## 17. Temporal Gates (History-Dependent Rules)
+
+Everything above answers a point-in-time question: *given the graph and the
+request context, may X do Y on Z?* Temporal gates add a second axis — *given
+what X has already done* — over the **action log** (`authz.events`, the
+per-principal record of actions your application reports after they ran; see
+[ADR 0012](adr/0012-action-log.md) and the README's `record_event`). A gate is a
+declarative set of clauses attached to an `(object_type, relation)`; the engine
+evaluates it **after** the graph allows, for the checked principal, and any
+failing clause denies. Gates never grant.
+
+```sql
+-- Declare the action vocabulary (an action is a relation of the store).
+SELECT authz.model_register_relation('bank', 'approve_sale');
+
+SELECT authz.add_gate('bank', 'account', 'transfer', 'velocity_backstop', '{
+  "description": "transfer velocity backstop",
+  "all_of": [
+    {"count_within": {"window": "1h", "kind": "request", "max": 5}},
+    {"sum_within":   {"window": "1h", "kind": "response", "field": "input.amount",
+                      "plus": "$request.input.amount", "max": 5000}},
+    {"formerly_within": {"window": "1h", "action": "approve_sale", "kind": "response",
+                         "match": {"input.stock": "$request.input.stock", "output.approved": true},
+                         "recorded_by": ["svc:approvals"]}}
+  ]}');
+```
+
+With that gate, `check_access_with_context('bank', 'user', 'alice', 'transfer',
+'account', 'acc-1', '{"input": {"amount": 1200, "stock": "ACME"}}')` allows
+only if the graph allows **and** alice made at most 5 transfer requests in the
+last hour **and** her completed transfers plus this one stay within 5000
+**and** an approval service recorded an approved `approve_sale` for `ACME`
+within the hour.
+
+### The grammar
+
+A gate object has `all_of` (1–16 clauses, AND) and an optional
+`description`. Each clause is an object with exactly one key — the
+primitive — and a body:
+
+| Key | `formerly_within` | `count_within` | `count_distinct_within` | `sum_within` | Value |
+|---|---|---|---|---|---|
+| `window` | one of window / calendar | ● | ● | ● | fixed-length interval text: `10m`, `1h`, `2 days`, `PT30M`, `P1W` (no months/years) |
+| `calendar` + `tz` | ✓ | ✓ | ✓ | ✓ | `hour` / `day` / `week` / `month` / `year` with an IANA zone: the bucket containing now |
+| `action` | ✓ | ✓ | ✓ | ✓ | a relation name of the store; default: the gate's own relation |
+| `kind` | ✓ | ✓ | ✓ | ✓ | `request` (default) / `response` / `denied` |
+| `match` | ✓ | ✓ | ✓ | ✓ | `{"dotted.path": value}` — containment on the event payload; values are JSON literals or `"$request.<path>"` references (JSON type kept); `"$$x"` is the literal string `$x` |
+| `recorded_by` | ✓ | ✓ | ✓ | ✓ | non-empty allowlist matched exactly against `events.recorded_by` |
+| `key` | – | – | ● | – | `object_id` / `object_type` / `payload.<path>` |
+| `field` | – | – | – | ● | payload path summed (must be a JSON number on every matched event) |
+| `plus` | – | – | – | ✓ | number or `$request.<path>`, added to the sum before comparing |
+| `max` / `min` | – | at least one | at least one | at least one | number or `$request.<path>`; **inclusive** |
+
+Unknown keys are rejected — a typo must not silently weaken a gate. Sliding
+windows are half-open (`occurred_at > now − window AND ≤ now`); calendar
+windows are `[bucket start, now]`. `formerly_within` is an existence test;
+"must not have happened" is `count_within` with `max: 0`. All comparisons use
+the **database clock** at evaluation time over the events' `occurred_at`.
+
+### What a failing clause means
+
+| Situation | Result | `explain_access` step reason | `check_access_detailed` |
+|---|---|---|---|
+| `$request.<path>` absent or `null` | fail | `gate_missing_context` (+ `missing_keys`) | may be `conditional` — if supplying the key could flip the decision |
+| `$request` threshold present but not numeric | fail | `gate_bad_request_value` | `deny` |
+| a matched event's `field` missing / non-numeric | fail | `gate_payload_not_numeric` | `deny` (skipping rows would let a malformed recorder relax a cap) |
+| any other evaluation error | fail | `gate_error` | `deny` |
+| clause holds / fails with complete context | pass / fail | `gate_passed` / `gate_denied` | `allow` / `deny` |
+
+`decision.reason` is `gate_denied` when the graph allowed but a gate vetoed.
+Gate steps in the trace carry the gate name, clause, window, **observed value
+and threshold only** — never matched payloads or object ids, so an approval
+for another stock cannot leak through explain.
+
+### Where gates apply — and where they do not
+
+- Every decision entry point: `check_access*`, batch checks, contextual-tuple
+  checks (the ephemeral tuples affect the graph; gates apply as usual),
+  `explain_access`, `check_access_detailed`, and enumeration — `list_objects`
+  returns an empty page when the subject's gates deny, `list_subjects`
+  filters each candidate, `list_actions` omits gated relations. A subject a
+  check would deny never appears in a listing.
+- **Only the question asked.** A gate on `group#member` does not fire while
+  the walk resolves `doc#viewer` through `group:eng#member`. Gates hang on
+  one seam above the graph walk (`authz._decide`), which a lint step in the
+  test suite enforces for every entry point.
+- **v1 gates are subject-scoped**: a clause cannot filter by the checked
+  object ("3 downloads of *this* file per day" is a follow-up). `key:
+  object_id` counts distinct objects across the principal's actions.
+- **Time-travel** (`audit_check_access`, `audit_list_actions`) evaluates the
+  gate definitions as of `p_at` (gate history lives in `model_gates_audit`)
+  over the events that had been *recorded* by then.
+- **Registry**: gates are part of `export_model` (a `gates` array) and
+  propagate with `publish_model` / `apply_model`; `plan_model_apply` diffs
+  them; the checksum ignores an empty array, so gate-free stores are
+  unaffected. `describe_model` renders gates as `#` comment lines under the
+  relation.
+
+### What belongs in a gate
+
+A rule belongs in a gate when it is a **permission** question a security or
+compliance owner wants to define, version, audit and enforce centrally,
+independent of which code path performs the action: separation of duties,
+prior approval, step-up freshness ("an MFA event in the last 15 minutes"),
+lockout after repeated denials (`kind: denied`), quotas, exfiltration brakes,
+agent guardrails ("may write a file only if it read it in this session").
+
+A rule belongs in the application when it decides an **outcome** — which
+account to debit, what fee applies, whether to retry — or needs richer
+signals than "what did this principal do" (fraud scoring). Four rules keep
+the line visible: gates are veto-only and non-programmable (four fixed
+primitives, AND, containment); the PEP records a **minimal payload
+projection** (`input.amount`, `input.stock`), never its domain object; every
+limit has **one owner** (a gate replaces an application check, or is
+documented as a backstop); and **the PEP owns the truth** — the engine bounds
+*recorded* actions, so feeding the log reliably (idempotency keys,
+dead-lettering unknown actions) is part of adopting gates. A gate cannot
+prevent two concurrent checks from both seeing `count = 4`; a hard bound needs
+the explicit `reserve_event` write (phase 3 of ADR 0012).

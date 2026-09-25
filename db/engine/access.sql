@@ -22,7 +22,7 @@ DECLARE
     v_object_type integer := authz._t(v_store_id, p_object_type);
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
-    RETURN authz._check_access(
+    RETURN authz._decide(
         v_store_id,
         authz._t(v_store_id, p_user_type),
         p_user_id,
@@ -51,7 +51,7 @@ DECLARE
     v_object_type integer := authz._t(v_store_id, p_object_type);
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
-    RETURN authz._check_access(
+    RETURN authz._decide(
         v_store_id,
         authz._t(v_store_id, p_user_type),
         p_user_id,
@@ -129,7 +129,8 @@ BEGIN
         v_has_ctx := true;
     END IF;
 
-    v_result := authz._check_access(
+    -- Contextual tuples only affect the graph; the gates apply as usual.
+    v_result := authz._decide(
         v_store_id, v_user_type, p_user_id, v_relation, v_object_type, p_object_id,
         context, v_has_ctx
     );
@@ -288,7 +289,7 @@ BEGIN
 
         PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
 
-        v_result := authz._check_access(
+        v_result := authz._decide(
             v_store_id, v_user_type, v_check.user_id,
             v_relation, v_object_type, v_check.object_id,
             p_context
@@ -361,7 +362,7 @@ BEGIN
 
         PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
 
-        v_result := authz._check_access(
+        v_result := authz._decide(
             v_store_id, v_user_type, v_check->>'user_id',
             v_relation, v_object_type, v_check->>'object_id',
             p_context
@@ -500,6 +501,11 @@ DECLARE
     v_object_type integer := authz._t(v_store_id, p_object_type);
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
+    -- Temporal gates (ADR 0012) are subject-scoped: one evaluation settles
+    -- every candidate. A gate deny is an empty page — no graph work at all.
+    IF NOT authz._event_check_gates(v_store_id, v_user_type, p_user_id, v_relation, v_object_type, NULL, context) THEN
+        RETURN;
+    END IF;
     RETURN QUERY
         WITH RECURSIVE reach (object_type, object_id, relation) AS (
             -- Seeds: tuples whose subject is the user, or a wildcard
@@ -569,7 +575,10 @@ BEGIN
                    -- _check_access never re-runs on earlier pages' objects.
                    AND (p_after IS NULL OR r.object_id > p_after)
                  ORDER BY r.object_id) c
-         WHERE authz._check_access(v_store_id, v_user_type, p_user_id, v_relation, v_object_type, c.object_id, context)
+         -- Gates (ADR 0012) are subject-scoped in v1 and were evaluated ONCE
+         -- above; '[]' tells _decide they are settled for every candidate.
+         WHERE authz._decide(v_store_id, v_user_type, p_user_id, v_relation, v_object_type, c.object_id, context,
+                             p_gates => '[]'::jsonb)
          ORDER BY c.object_id
          -- p_after (keyset) takes precedence over p_offset when supplied.
          OFFSET (CASE WHEN p_after IS NULL THEN p_offset ELSE 0 END)
@@ -606,8 +615,13 @@ DECLARE
     v_subject_type integer := authz._t(v_store_id, p_subject_type);
     v_relation     integer := authz._r(v_store_id, p_relation);
     v_object_type  integer := authz._t(v_store_id, p_object_type);
+    v_gates        jsonb;
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
+    -- Gate definitions (ADR 0012) are constant across candidates: resolve
+    -- once, evaluate per candidate (one indexed window query each, bounded
+    -- by the page size).
+    v_gates := authz._event_resolve_gates(v_store_id, v_object_type, v_relation);
     -- Reverse expansion (the dual of list_objects): walk UP the grant graph
     -- from the object to the candidate subjects, so the candidate set is
     -- bounded by the object's reachable subjects — not by the store-wide
@@ -675,7 +689,8 @@ BEGIN
                  -- keyset cursor: only candidates after the previous page.
                  AND (p_after IS NULL OR t.user_id > p_after)
           ) c
-         WHERE authz._check_access(v_store_id, v_subject_type, c.subject_id, v_relation, v_object_type, p_object_id, context)
+         WHERE authz._decide(v_store_id, v_subject_type, c.subject_id, v_relation, v_object_type, p_object_id, context,
+                             p_gates => v_gates)
          ORDER BY c.subject_id
          -- p_after (keyset) takes precedence over p_offset when supplied.
          OFFSET (CASE WHEN p_after IS NULL THEN p_offset ELSE 0 END)
@@ -711,7 +726,7 @@ BEGIN
                  AND mr.object_type = v_object_type
           ) dr
           JOIN authz.relations r ON r.id = dr.relation
-         WHERE authz._check_access(v_store_id, v_user_type, p_user_id, dr.relation, v_object_type, p_object_id, context);
+         WHERE authz._decide(v_store_id, v_user_type, p_user_id, dr.relation, v_object_type, p_object_id, context);
 END;
 $$;
 

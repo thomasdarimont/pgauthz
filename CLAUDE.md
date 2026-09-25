@@ -82,8 +82,8 @@ cd pgauthzd && go build ./... && go test ./...
   - **Code** (functions, views, triggers) lives in `db/engine/`, all idempotent (`CREATE OR REPLACE …`, incl. `CREATE OR REPLACE TRIGGER`), loaded **after** migrations.
 - Engine code files are grouped by **deployment profile** in `db/engine/manifest.sh` (the single source of truth for code load order, sourced by `init.sh`, `init-readonly.sh`, `deploy/migrations/run-migrations.sh`, and `db/replication/init-replication.sh`):
   - **substrate** (`core_internal.sql`, `conditions.sql`, `model_constraints.sql`, `views.sql`) — core internals, condition evaluation, model-validation trigger, base views; every deployment
-  - **read** (`access_internal.sql`, `access.sql`, `explain.sql`, `consistency.sql`, `stats.sql`, `events.sql`) — checks, search (`list_*`), explain, condition validation (dry-run), action-log inspection (`list_events`)
-  - **write** (`store.sql`, `tuples.sql`, `maintenance.sql`, `model.sql`, `conditions_admin.sql`, `model_registry.sql`, `events_admin.sql`) — tuple/model/store management, redundant-tuple cleanup, condition create/delete + write-time validation trigger, model registry, action-log recording (`record_event(s)`, event partitions/retention)
+  - **read** (`events.sql`, `gates.sql`, `access_internal.sql`, `access.sql`, `explain.sql`, `consistency.sql`, `stats.sql`) — action-log inspection (`list_events`), temporal-gate validator/primitives/evaluator, checks, search (`list_*`), explain, condition validation (dry-run)
+  - **write** (`store.sql`, `tuples.sql`, `maintenance.sql`, `model.sql`, `conditions_admin.sql`, `model_registry.sql`, `events_admin.sql`, `gates_admin.sql`) — tuple/model/store management, redundant-tuple cleanup, condition create/delete + write-time validation trigger, model registry, action-log recording (`record_event(s)`, event partitions/retention), gate management (`add_gate`/`drop_gate`)
   - **audit** (`audit_triggers.sql`, `audit_internal.sql`, `audit.sql`, `watch.sql`) — audit trigger functions/triggers, time-travel, changefeed
   - Read-only deployment = substrate + read (`init-readonly.sh`); full = all four (`init.sh`). The migrations always run (they create *all* tables incl. audit); profiles only select which **code** loads, so on a read-only install the audit tables exist but stay inert (no triggers/functions). To add an engine file, register it in the manifest with its profile.
 - Within a profile the order is internal helpers → public API (structure already exists from migrations; functions reference tables at runtime)
@@ -92,6 +92,7 @@ cd pgauthzd && go build ./... && go test ./...
 - Model rules use rule groups supporting union (OR), intersection (AND), and exclusion (BUT NOT) semantics
 - Audit trail is immutable, monthly-partitioned, with `performed_by` tracking
 - Action log (`authz.events`, ADR 0012): what principals *actually did*, recorded by the PEP via `record_event(s)` / `POST /pgauthz/v1/events` — never by the check path; actions must be declared relations; append-only, monthly-partitioned on `occurred_at`; `event_id` idempotency requires `occurred_at`
+- Temporal gates (`authz.model_gates`, ADR 0012 phase 2): `all_of` clauses (`count_within`, `count_distinct_within`, `sum_within`, `formerly_within`) evaluated after the graph allows, for the checked principal only. **Every public decision entry point calls `authz._decide` (live) / `_decide_snapshot` (time-travel), never `_check_access` directly** — `tests/test.sh` lints this. Grammar in `docs/MODEL_DESIGN.md` §17
 
 ## Docker Compose Configurations
 

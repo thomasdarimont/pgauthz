@@ -53,8 +53,12 @@ $$;
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._model_checksum(p_def jsonb) RETURNS text
 LANGUAGE sql IMMUTABLE AS $$
+    -- `gates` (ADR 0012) is dropped when empty so gate-free stores hash exactly
+    -- as before the key existed: registry versions published earlier stay in
+    -- sync and show no drift after the upgrade.
     SELECT encode(sha256(convert_to((
-        jsonb_set(p_def, '{types}', (
+        jsonb_set(CASE WHEN COALESCE(p_def->'gates', '[]'::jsonb) = '[]'::jsonb THEN p_def - 'gates' ELSE p_def END,
+                  '{types}', (
             SELECT COALESCE(jsonb_agg(t - 'hash_modulus' ORDER BY t->>'name'),
                             '[]'::jsonb)
               FROM jsonb_array_elements(COALESCE(p_def->'types', '[]'::jsonb)) t
@@ -68,7 +72,7 @@ $$;
 -- Everything is keyed by NAME (integer ids differ across stores) and every
 -- array is deterministically ordered, so equal models produce byte-equal
 -- definitions. Included: types (namespace, description, labels,
--- hash_modulus), relations, rules, type restrictions, conditions.
+-- hash_modulus), relations, rules, type restrictions, conditions, gates.
 -- Excluded: tuples (per-tenant data) and namespace_access (DB-role grants
 -- are deployment-specific, not part of the model).
 ------------------------------------------------------------------------
@@ -147,7 +151,21 @@ BEGIN
                        'required_context', c.required_context
                    ) ORDER BY c.name)
               FROM authz.conditions c
-             WHERE c.store_id = v_store_id), '[]'::jsonb)
+             WHERE c.store_id = v_store_id), '[]'::jsonb),
+        -- Temporal gates (ADR 0012): part of the model definition, propagated
+        -- with it. Always emitted (stable shape); the checksum ignores an
+        -- empty array.
+        'gates', COALESCE((
+            SELECT jsonb_agg(jsonb_build_object(
+                       'object_type', ot.name,
+                       'relation',    rl.name,
+                       'name',        g.name,
+                       'spec',        g.spec
+                   ) ORDER BY ot.name, rl.name, g.name)
+              FROM authz.model_gates g
+              JOIN authz.types     ot ON ot.id = g.object_type
+              JOIN authz.relations rl ON rl.id = g.relation
+             WHERE g.store_id = v_store_id), '[]'::jsonb)
     );
 END;
 $$;
@@ -400,6 +418,28 @@ BEGIN
         PERFORM authz.create_condition(
             p_store, v_row->>'name', v_row->>'expression',
             v_row->>'lang', v_row->'required_context');
+    END LOOP;
+
+    -- Gates (ADR 0012): drop stale, upsert desired (add_gate validates +
+    -- audits, and its no-op skip keeps unchanged gates out of the history).
+    -- A definition without a `gates` key (published before gates existed)
+    -- means "no gates" — the definition is the whole model.
+    FOR v_rel IN
+        SELECT g.name, ot.name AS object_type, rl.name AS relation
+          FROM authz.model_gates g
+          JOIN authz.types     ot ON ot.id = g.object_type
+          JOIN authz.relations rl ON rl.id = g.relation
+         WHERE g.store_id = v_store_id
+           AND NOT EXISTS (
+               SELECT 1 FROM jsonb_array_elements(COALESCE(v_def->'gates', '[]'::jsonb)) x
+                WHERE x->>'object_type' = ot.name AND x->>'relation' = rl.name AND x->>'name' = g.name)
+    LOOP
+        PERFORM authz.drop_gate(p_store, v_rel.object_type, v_rel.relation, v_rel.name);
+    END LOOP;
+    FOR v_row IN SELECT * FROM jsonb_array_elements(COALESCE(v_def->'gates', '[]'::jsonb))
+    LOOP
+        PERFORM authz.add_gate(p_store, v_row->>'object_type', v_row->>'relation',
+                               v_row->>'name', v_row->'spec');
     END LOOP;
 
     -- Record the applied state.
@@ -768,7 +808,10 @@ BEGIN
                      WHERE d.e <> l.e),
                 'remove', (SELECT COALESCE(jsonb_agg(c.e->>'name' ORDER BY c.e->>'name'), '[]'::jsonb)
                              FROM jsonb_array_elements(authz._jsonb_array_except_by_name(
-                                      v_live->'conditions', v_def->'conditions')) AS c(e)))),
+                                      v_live->'conditions', v_def->'conditions')) AS c(e))),
+            'gates', jsonb_build_object(
+                'add',    authz._jsonb_array_except(COALESCE(v_def->'gates',  '[]'::jsonb), COALESCE(v_live->'gates', '[]'::jsonb)),
+                'remove', authz._jsonb_array_except(COALESCE(v_live->'gates', '[]'::jsonb), COALESCE(v_def->'gates',  '[]'::jsonb)))),
         'rollback', v_rollback);
 END;
 $$;

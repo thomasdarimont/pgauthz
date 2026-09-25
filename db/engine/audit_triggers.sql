@@ -252,3 +252,51 @@ $$;
 CREATE OR REPLACE TRIGGER trg_events_block_dml
     BEFORE UPDATE OR DELETE ON authz.events
     FOR EACH ROW EXECUTE FUNCTION authz._event_block_dml();
+
+-- Gate history (ADR 0012, phase 2): a copy of _audit_condition for
+-- authz.model_gates — INSERT/DELETE logged, an UPDATE (spec change via
+-- add_gate upsert) split into DELETE(old) + INSERT(new) so time-travel
+-- replay (last event per gate wins) reconstructs the spec in effect at any
+-- instant. transaction_timestamp() so a whole transaction shares one instant.
+CREATE OR REPLACE FUNCTION authz._audit_gate() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_performed_by text;
+BEGIN
+    v_performed_by := COALESCE(
+        NULLIF(current_setting('authz.performed_by', true), ''),
+        authz._effective_role()
+    );
+
+    IF TG_OP = 'UPDATE' THEN
+        INSERT INTO authz.model_gates_audit (
+            action, performed_at, performed_by, gate_id, store_id, object_type, relation, name, spec
+        ) VALUES
+            ('DELETE', transaction_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.object_type, OLD.relation, OLD.name, OLD.spec),
+            ('INSERT', transaction_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.object_type, NEW.relation, NEW.name, NEW.spec);
+        RETURN NEW;
+    ELSIF TG_OP = 'INSERT' THEN
+        INSERT INTO authz.model_gates_audit (
+            action, performed_at, performed_by, gate_id, store_id, object_type, relation, name, spec
+        ) VALUES
+            ('INSERT', transaction_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.object_type, NEW.relation, NEW.name, NEW.spec);
+        RETURN NEW;
+    ELSIF TG_OP = 'DELETE' THEN
+        INSERT INTO authz.model_gates_audit (
+            action, performed_at, performed_by, gate_id, store_id, object_type, relation, name, spec
+        ) VALUES
+            ('DELETE', transaction_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.object_type, OLD.relation, OLD.name, OLD.spec);
+        RETURN OLD;
+    END IF;
+
+    RETURN NULL;
+END;
+$$;
+
+CREATE OR REPLACE TRIGGER trg_model_gates_audit
+    AFTER INSERT OR UPDATE OR DELETE ON authz.model_gates
+    FOR EACH ROW EXECUTE FUNCTION authz._audit_gate();
+
+CREATE OR REPLACE TRIGGER trg_model_gates_audit_block_dml
+    BEFORE UPDATE OR DELETE ON authz.model_gates_audit
+    FOR EACH ROW EXECUTE FUNCTION authz._audit_block_dml();

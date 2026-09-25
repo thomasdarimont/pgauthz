@@ -103,7 +103,8 @@ $$;
 --
 -- decision.reason is the minimal cause: for ALLOW, the shallowest
 -- granting step's reason (e.g. direct_tuple, wildcard_tuple, computed,
--- intersection_satisfied); for DENY, one of excluded /
+-- intersection_satisfied); for DENY, one of gate_denied (the graph allowed
+-- but a temporal gate vetoed — ADR 0012) / excluded /
 -- intersection_unsatisfied / condition_denied / no_matching_rule.
 --
 -- p_redact: safety mode for surfacing explanations to untrusted UIs —
@@ -165,12 +166,20 @@ BEGIN
         condition_missing_keys text[],
         -- the exact stored tuple that granted this step, in `subject → relation →
         -- object` form with * wildcards (NULL for non-tuple / denied steps).
-        matched_tuple text
+        matched_tuple text,
+        -- temporal gate steps (ADR 0012; rule_type = 'temporal_gate', depth 0):
+        -- counts and thresholds only — never matched payloads or object ids.
+        gate_name      text,
+        gate_clause    text,      -- "<index>:<primitive>"
+        gate_window    text,      -- normalized interval, or "calendar/tz"
+        gate_observed  numeric,
+        gate_threshold numeric,
+        gate_reason    text       -- gate_passed | gate_denied | gate_missing_context | ...
     ) ON COMMIT DROP;
     TRUNCATE _access_trace RESTART IDENTITY;
     PERFORM set_config('authz.trace', 'on', true);
 
-    v_result := authz._check_access(
+    v_result := authz._decide(
         v_store_id,
         v_user_type,
         p_user_id,
@@ -186,12 +195,16 @@ BEGIN
         SELECT authz._explain_reason(s.rule_type, s.result, s.detail)
           INTO v_decision_reason
           FROM _access_trace s
-         WHERE s.result
+         WHERE s.result AND s.rule_type <> 'temporal_gate'   -- gates only veto; the grant is a graph step
          ORDER BY s.depth ASC, s.step DESC
          LIMIT 1;
         v_decision_reason := COALESCE(v_decision_reason, 'allowed');
     ELSE
         v_decision_reason := CASE
+            -- A failed gate is the minimal cause: the graph allowed (gates only
+            -- run after an allow), so it is tested before every graph reason.
+            WHEN EXISTS (SELECT 1 FROM _access_trace s
+                          WHERE NOT s.result AND s.rule_type = 'temporal_gate')  THEN 'gate_denied'
             WHEN EXISTS (SELECT 1 FROM _access_trace s
                           WHERE NOT s.result AND s.rule_type = 'exclusion')      THEN 'excluded'
             WHEN EXISTS (SELECT 1 FROM _access_trace s
@@ -209,7 +222,8 @@ BEGIN
             'step',      s.step,
             'depth',     s.depth,
             'rule_type', s.rule_type,
-            'reason',    authz._explain_reason(s.rule_type, s.result, s.detail),
+            'reason',    CASE WHEN s.rule_type = 'temporal_gate' THEN s.gate_reason
+                              ELSE authz._explain_reason(s.rule_type, s.result, s.detail) END,
             'subject',   CASE WHEN p_redact THEN split_part(s.subject, ':', 1) || ':***' ELSE s.subject END,
             'relation',  s.relation,
             'object',    CASE WHEN p_redact THEN split_part(s.object, ':', 1) || ':***' ELSE s.object END,
@@ -229,7 +243,18 @@ BEGIN
             -- redacted along with other identifiers.
             'matched_tuple', CASE WHEN p_redact THEN NULL ELSE s.matched_tuple END,
             'duration_ms', round(s.duration_ms::numeric, 3)
-        ) ORDER BY s.step
+        )
+        -- temporal gate steps carry their gate/clause/window/observed/threshold
+        -- (structural, never redacted: they contain no identifiers)
+        || CASE WHEN s.rule_type = 'temporal_gate' THEN jsonb_build_object(
+                    'gate',      s.gate_name,
+                    'clause',    s.gate_clause,
+                    'window',    s.gate_window,
+                    'observed',  s.gate_observed,
+                    'threshold', s.gate_threshold,
+                    'missing_keys', to_jsonb(s.condition_missing_keys))
+                ELSE '{}'::jsonb END
+        ORDER BY s.step
     ), '[]'::jsonb)
     INTO v_trace
     FROM _access_trace s
@@ -254,7 +279,8 @@ BEGIN
             v_icon   := CASE WHEN t.result THEN '✓' ELSE '✗' END;
             v_line   := v_indent
                      || v_icon || ' '
-                     || '[' || authz._explain_reason(t.rule_type, t.result, t.detail) || '] '
+                     || '[' || CASE WHEN t.rule_type = 'temporal_gate' THEN t.gate_reason
+                                    ELSE authz._explain_reason(t.rule_type, t.result, t.detail) END || '] '
                      || t.relation || ' on ' || t.object
                      || ' — ' || t.detail
                      || ' (' || round(t.duration_ms::numeric, 3) || ' ms)';

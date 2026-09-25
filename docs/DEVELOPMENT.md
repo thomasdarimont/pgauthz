@@ -1045,6 +1045,7 @@ Each native write endpoint maps to a SQL function:
 | `model_add_rule` / `model_remove_rule` / `model_remove_rules` | Model-rule management |
 | `import_openfga_model` / `import_openfga_tuples` | OpenFGA import |
 | `grant_namespace_access` / `revoke_namespace_access` | Namespace access |
+| `add_gate` / `drop_gate` | Temporal gates over the action log ([MODEL_DESIGN §17](MODEL_DESIGN.md#17-temporal-gates-history-dependent-rules)) |
 | `find_redundant_tuples` / `cleanup_redundant_tuples` | Redundant-tuple maintenance |
 
 ### Integration patterns

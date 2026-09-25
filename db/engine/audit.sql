@@ -84,12 +84,16 @@ BEGIN
     PERFORM authz._build_audit_snapshot(v_store_id, p_at);
     PERFORM authz._build_model_snapshot(v_store_id, p_at);
     PERFORM authz._build_condition_snapshot(v_store_id, p_at);
+    PERFORM authz._build_gate_snapshot(v_store_id, p_at);
 
     -- Run access check against the snapshot. Caller-supplied request
-    -- context is merged in; current_time always reflects p_at.
-    v_result := authz._check_access_snapshot(
+    -- context is merged in; current_time always reflects p_at. Temporal gates
+    -- (ADR 0012) evaluate as of p_at too — their definitions from the gate
+    -- snapshot, the action log bounded by what was recorded by then.
+    v_result := authz._decide_snapshot(
         v_store_id, v_user_type, p_user_id, v_relation, v_object_type, p_object_id,
-        COALESCE(p_request_context, '{}'::jsonb) || jsonb_build_object('current_time', p_at)
+        COALESCE(p_request_context, '{}'::jsonb) || jsonb_build_object('current_time', p_at),
+        p_at
     );
 
     -- _snapshot_tuples has ON COMMIT DROP — no explicit cleanup needed.
@@ -124,6 +128,7 @@ BEGIN
     PERFORM authz._build_audit_snapshot(v_store_id, p_at);
     PERFORM authz._build_model_snapshot(v_store_id, p_at);
     PERFORM authz._build_condition_snapshot(v_store_id, p_at);
+    PERFORM authz._build_gate_snapshot(v_store_id, p_at);
 
     -- Candidate relations come from the model AS OF p_at (the snapshot),
     -- not the current model, so a relation whose rule was added later is
@@ -137,9 +142,10 @@ BEGIN
                  AND sm.object_type = $2
           ) dr
           JOIN authz.relations r ON r.id = dr.relation
-         WHERE authz._check_access_snapshot($1, $3, $4, dr.relation, $2, $5, $6)'
+         WHERE authz._decide_snapshot($1, $3, $4, dr.relation, $2, $5, $6, $7)'
     USING v_store_id, v_object_type, v_user_type, p_user_id, p_object_id,
-          COALESCE(p_request_context, '{}'::jsonb) || jsonb_build_object('current_time', p_at);
+          COALESCE(p_request_context, '{}'::jsonb) || jsonb_build_object('current_time', p_at),
+          p_at;
 END;
 $$;
 

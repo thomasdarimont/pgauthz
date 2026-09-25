@@ -1046,3 +1046,44 @@ BEGIN
     RETURN v_result;
 END;
 $$;
+
+------------------------------------------------------------------------
+-- _decide: the ONE seam every public decision entry point goes through
+-- (ADR 0012): the memoized graph walk, then — only if the graph allows —
+-- the temporal gates on (object_type, relation) for the checked principal.
+-- Gates live here, above _check_access, because the walk calls ITSELF to
+-- resolve usersets: resolving group#member on the way to doc#viewer must
+-- not be gated by member's gates. Gates apply to the question asked.
+--
+-- Rule (enforced by a lint step in tests/test.sh): public entry points in
+-- access.sql / explain.sql call _decide, never _check_access directly. A new
+-- entry point therefore cannot forget gates.
+--
+-- p_gates: a pre-resolved gate list for callers that evaluate many
+-- candidates against one (object_type, relation) — list_subjects hoists it;
+-- list_objects, whose gates are subject-scoped, evaluates them once up
+-- front and passes '[]' here. NULL = resolve per call (one index probe).
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._decide(
+    p_store_id        integer,
+    p_user_type       integer,
+    p_user_id         text,
+    p_relation        integer,
+    p_object_type     integer,
+    p_object_id       text,
+    p_request_context jsonb DEFAULT NULL,
+    p_has_ctx_tuples  boolean DEFAULT false,
+    p_gates           jsonb DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NOT authz._check_access(
+            p_store_id, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
+            p_request_context, p_has_ctx_tuples) THEN
+        RETURN false;   -- no graph allow ⇒ no gate work
+    END IF;
+    RETURN authz._event_check_gates(
+        p_store_id, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
+        p_request_context, NULL, false, p_gates);
+END;
+$$;

@@ -1,6 +1,6 @@
 # ADR 0012 — The action log: history-dependent authorization over recorded actions
 
-- **Status:** Accepted (phase 1 shipped; phases 2–3 designed, not built)
+- **Status:** Accepted (phases 1–2 shipped; phase 3 — `reserve_event` — designed, not built)
 - **Date:** 2026-09-25
 - **Deciders:** maintainers
 - **Relates to:** [0004](0004-integer-type-relation-ids.md) (integer ids),
@@ -108,7 +108,7 @@ never drop them — a new action goes live by publishing the model first.
   `authz.audit_maintenance` window the audit tables use for the partition row
   move and `delete_store` erasure. Retention is a partition drop.
 
-### 4. Gates (phase 2) and the strict tier (phase 3) — designed, not built
+### 4. Gates (phase 2, shipped) and the strict tier (phase 3, designed)
 
 Gates are declarative `all_of` clauses over four fixed window primitives
 (`formerly_within`, `count_within`, `count_distinct_within`, `sum_within`),
@@ -125,9 +125,12 @@ payloads), to `check_access_detailed` (missing `$request.*` keys ⇒
 conditions precedent; events need no snapshot — the as-of filter is
 `occurred_at <= p_at AND recorded_at <= p_at`), and to the model registry
 (`export_model` gains `gates`; the checksum drops the key when empty so
-gate-free stores do not drift). The spec grammar, failure semantics and
-wiring seam are fixed in `scratch/notes/temporal-conditions-v2.md` and move
-into `docs/MODEL_DESIGN.md` when phase 2 lands.
+gate-free stores do not drift). The spec grammar and failure semantics are
+documented in `docs/MODEL_DESIGN.md` §17; the `_decide` seam is enforced by
+a lint step in `tests/test.sh`. Phase 3, `reserve_event` (an explicit
+advisory-locked "evaluate gates, then record the request" write for PEPs
+that need a hard bound), refuses by recording a `denied` event and stays
+designed in `scratch/notes/temporal-conditions-v2.md`.
 
 **What belongs in a gate:** a *permission* question ("may X do Y now?") that a
 security or compliance owner wants to define, version, audit and enforce
@@ -142,7 +145,13 @@ a backstop).
 
 ## Consequences
 
-- **New surface:** table `authz.events`; SQL `record_event`,
+- **New surface (phase 2):** tables `authz.model_gates` +
+  `model_gates_audit` (migration 0011); SQL `add_gate` / `drop_gate`
+  (admin), the internal `_decide` / `_decide_snapshot` seam,
+  `_event_check_gates` and the `_event_*` window primitives; `export_model`
+  `gates` key; `explain_access` `temporal_gate` steps and the `gate_denied`
+  reason. No pgauthzd change: gates are inside the check.
+- **New surface (phase 1):** table `authz.events`; SQL `record_event`,
   `record_events_jsonb`, `list_events`, `ensure_event_partitions`,
   `drop_event_partitions_before`; role `authz_recorder` (granted to
   `authz_writer`); pgauthzd `POST /pgauthz/v1/events` + `RECORDER_ROLE`;

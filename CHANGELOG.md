@@ -35,7 +35,31 @@ pre-1.0, minor versions may include breaking changes.
   `pgauthzd_events_recorded_total{result}`. Phase 2 (model gates:
   `count_within`, `sum_within`, `formerly_within`, `count_distinct_within`
   evaluated after the graph) and phase 3 (`reserve_event` strict tier) are
-  designed in the ADR, not built.
+  designed in the ADR; phase 2 ships below, phase 3 is not built.
+- **Temporal gates** ([ADR 0012](docs/adr/0012-action-log.md) phase 2,
+  [MODEL_DESIGN §17](docs/MODEL_DESIGN.md#17-temporal-gates-history-dependent-rules)):
+  history-dependent rules in the model, evaluated by engine code after the
+  graph allows — `authz.add_gate` / `drop_gate` attach an `all_of` of
+  `count_within` / `count_distinct_within` / `sum_within` / `formerly_within`
+  clauses (sliding or calendar windows, containment `match` with
+  `$request.*` references, `recorded_by` allowlists, inclusive `max`/`min`)
+  to an `(object_type, relation)`; the spec is validated and normalized at
+  write time (unknown keys rejected; a derived `required_context`). Gates
+  apply on every decision path through one new seam, `authz._decide`
+  (lint-enforced: entry points may no longer call `_check_access` directly),
+  and only to the question asked — never to userset sub-resolution.
+  Enumeration agrees with check (`list_objects` empty page on a gate deny,
+  `list_subjects` / `list_actions` filter); `explain_access` emits
+  `temporal_gate` steps (gate, clause, window, observed, threshold — never
+  payloads) and `decision.reason = gate_denied`; `check_access_detailed`
+  reports a missing `$request` key as `conditional` through the existing
+  compositional pass; time-travel evaluates gate definitions as of `p_at`
+  (`model_gates_audit` + snapshot) over events recorded by then;
+  `export_model` gains `gates` (checksum ignores an empty array, so existing
+  registry versions show no drift), `apply_model` / `plan_model_apply`
+  propagate and diff them; `describe_model` renders gates as `#` comment
+  lines. Migration 0011; engine files `gates.sql` (read) / `gates_admin.sql`
+  (write); `delete_store` purges a store's gates.
 
 ## [0.15.0] - 2026-07-07
 

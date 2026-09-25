@@ -26,7 +26,8 @@ that resolve relationship tuples recursively.
 - **Full audit trail** — immutable, monthly-partitioned audit log with application user tracking (`performed_by`)
 - **Time-travel queries** — `audit_check_access` reconstructs permissions at any past point in time
 - **Watch / changefeed** — cursored, filterable stream of tuple changes plus a `NOTIFY` doorbell, for cache invalidation and sync
-- **Action log** — `record_event` / `list_events`: a per-store, per-principal record of what subjects *actually did* (reported by your PEP, never inferred from decisions), the substrate for history-dependent gates such as rate limits and prior-approval rules — see [ADR 0012](docs/adr/0012-action-log.md)
+- **Action log** — `record_event` / `list_events`: a per-store, per-principal record of what subjects *actually did* (reported by your PEP, never inferred from decisions) — see [ADR 0012](docs/adr/0012-action-log.md)
+- **Temporal gates** — history-dependent rules in the model over the action log: rate limits, spend caps, prior approval, step-up freshness, lockouts, agent guardrails (`count_within`, `sum_within`, `formerly_within`, `count_distinct_within`), applied on every check, listing, explain and time-travel path — see [MODEL_DESIGN §17](docs/MODEL_DESIGN.md#17-temporal-gates-history-dependent-rules)
 - **Search API** — `list_objects`, `list_subjects`, `list_actions` for discovery queries
 - **OpenFGA import** — import existing OpenFGA JSON models and tuples directly
 - **Namespace-based access control** — per-application isolation of object types within a shared store, database-enforced end to end
@@ -1125,6 +1126,43 @@ The engine dispatches languages in one place (`authz._eval_condition_expr`), so
 adding cedar/rego later is additive. See
 [`extensions/pg-cel/README.md`](extensions/pg-cel/README.md) for the build and
 the SQL-vs-CEL trade-offs (e.g. IP-range conditions stay `lang='sql'`).
+
+## Temporal Gates (History-Dependent Rules)
+
+Conditions look at the request; gates look at the **past** — what the
+principal already did, as recorded in the [action log](#record_event--list_events--the-action-log).
+A gate is attached to an `(object_type, relation)` in the model and evaluated
+after the graph allows; any failing clause denies.
+
+```sql
+-- "At most 5 transfer requests per hour, and completed transfers plus this
+--  one must stay within 5000" — a backstop next to the relation it guards.
+SELECT authz.add_gate('demo', 'account', 'transfer', 'velocity_backstop', '{
+  "all_of": [
+    {"count_within": {"window": "1h", "max": 5}},
+    {"sum_within":   {"window": "1h", "kind": "response", "field": "input.amount",
+                      "plus": "$request.amount", "max": 5000}}
+  ]}');
+
+-- Your PEP records what actually happened (after the action ran) ...
+SELECT authz.record_event('demo', 'internal_user', 'alice', 'transfer', 'account', 'acc-1',
+                          'response', '{"input": {"amount": 3000}}');
+
+-- ... and every decision path honours the gate:
+SELECT authz.check_access_with_context('demo', 'internal_user', 'alice', 'transfer',
+                                       'account', 'acc-1', '{"amount": 2500}');   -- false
+SELECT authz.explain_access(...) -> 'decision' ->> 'reason';                       -- gate_denied
+```
+
+Four primitives (`count_within`, `count_distinct_within`, `sum_within`,
+`formerly_within`), sliding or calendar windows, containment matching with
+`$request.*` references, `recorded_by` allowlists. Gates apply to checks,
+batch checks, `list_*` (a subject a check would deny never appears in a
+listing), `explain_access` (per-clause steps with observed value and
+threshold, never payloads), `check_access_detailed` (a missing `$request` key
+is `conditional`), time-travel, and the model registry. Grammar, failure
+semantics and the "what belongs in a gate" guidance:
+[MODEL_DESIGN §17](docs/MODEL_DESIGN.md#17-temporal-gates-history-dependent-rules).
 
 ## Audit Trail and Time Travel
 

@@ -177,6 +177,13 @@ BEGIN
         DELETE FROM authz.conditions_audit WHERE store_id = v_store_id;
         PERFORM set_config('authz.audit_maintenance', '', true);
     END IF;
+    -- Temporal gates (ADR 0012) reference the store's types/relations.
+    DELETE FROM authz.model_gates       WHERE store_id = v_store_id;
+    IF p_purge_audit THEN
+        PERFORM set_config('authz.audit_maintenance', 'on', true);
+        DELETE FROM authz.model_gates_audit WHERE store_id = v_store_id;
+        PERFORM set_config('authz.audit_maintenance', '', true);
+    END IF;
     DELETE FROM authz.namespace_access  WHERE store_id = v_store_id;
     -- The action log (ADR 0012) references the store's types/relations; it is
     -- append-only, so purge it under the maintenance window. Always — unlike

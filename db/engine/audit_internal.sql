@@ -644,3 +644,69 @@ BEGIN
     RETURN v_result;
 END;
 $$;
+
+------------------------------------------------------------------------
+-- _build_gate_snapshot: (re)builds pg_temp._snapshot_gates with each gate's
+-- SPEC as of p_at by replaying model_gates_audit (last event per gate id
+-- wins, ties broken by seq, INSERT survives) — byte-for-byte the
+-- _build_condition_snapshot shape. The events themselves need no snapshot:
+-- the action log is append-only, so the evaluator's as-of filter
+-- (occurred_at <= p_at AND recorded_at <= p_at) reproduces what the engine
+-- could have known at p_at. (ADR 0012)
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._build_gate_snapshot(
+    p_store_id integer,
+    p_at       timestamptz
+) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+    CREATE TEMP TABLE IF NOT EXISTS _snapshot_gates (
+        id          integer,
+        object_type integer,
+        relation    integer,
+        name        text,
+        spec        jsonb
+    ) ON COMMIT DROP;
+
+    TRUNCATE _snapshot_gates;
+
+    INSERT INTO _snapshot_gates
+    SELECT sub.gate_id, sub.object_type, sub.relation, sub.name, sub.spec
+      FROM (
+        SELECT DISTINCT ON (a.gate_id) a.*
+          FROM authz.model_gates_audit a
+         WHERE a.store_id = p_store_id
+           AND a.performed_at <= p_at
+         ORDER BY a.gate_id, a.performed_at DESC, a.seq DESC
+      ) sub
+     WHERE sub.action = 'INSERT';
+END;
+$$;
+
+------------------------------------------------------------------------
+-- _decide_snapshot: _decide for the time-travel path — the snapshot graph
+-- walk, then the gates AS OF p_at (definitions from _snapshot_gates, windows
+-- relative to p_at, events bounded by recorded_at <= p_at).
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._decide_snapshot(
+    p_store_id        integer,
+    p_user_type       integer,
+    p_user_id         text,
+    p_relation        integer,
+    p_object_type     integer,
+    p_object_id       text,
+    p_request_context jsonb,
+    p_at              timestamptz
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NOT authz._check_access_snapshot(
+            p_store_id, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
+            p_request_context) THEN
+        RETURN false;
+    END IF;
+    RETURN authz._event_check_gates(
+        p_store_id, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
+        p_request_context, p_at, true, NULL);
+END;
+$$;

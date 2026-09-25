@@ -558,6 +558,42 @@ BEGIN
 END;
 $$;
 
+-- Temporal gates (ADR 0012) render as `#` comment lines under the relation's
+-- define line — one header per gate, one line per clause, keys in the
+-- grammar's order, values as compact JSON — so the OpenFGA parser ignores
+-- them. Display only: the round-trip carrier for gates is export_model.
+CREATE OR REPLACE FUNCTION authz._describe_gates(
+    p_store_id integer, p_object_type integer, p_relation integer, p_prefix_relation boolean
+) RETURNS text LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_out    text := '';
+    g        record;
+    v_clause jsonb;
+    v_prim   text;
+    v_line   text;
+BEGIN
+    FOR g IN
+        SELECT mg.name, mg.spec, rl.name AS relation
+          FROM authz.model_gates mg JOIN authz.relations rl ON rl.id = mg.relation
+         WHERE mg.store_id = p_store_id AND mg.object_type = p_object_type AND mg.relation = p_relation
+         ORDER BY mg.name
+    LOOP
+        v_out := v_out || '    # gate ' || CASE WHEN p_prefix_relation THEN g.relation || '/' ELSE '' END || g.name
+                 || COALESCE(': ' || (g.spec ->> 'description'), '') || E'\n';
+        FOR v_clause IN SELECT * FROM jsonb_array_elements(g.spec -> 'all_of') LOOP
+            SELECT k INTO v_prim FROM jsonb_object_keys(v_clause) k LIMIT 1;
+            SELECT string_agg(kv.key || ': ' || kv.value::text, ', '
+                              ORDER BY array_position(ARRAY['window','calendar','tz','action','kind','match',
+                                                            'recorded_by','key','field','plus','max','min'], kv.key))
+              INTO v_line
+              FROM jsonb_each(v_clause -> v_prim) kv;
+            v_out := v_out || '    #   ' || v_prim || '{' || COALESCE(v_line, '') || '}' || E'\n';
+        END LOOP;
+    END LOOP;
+    RETURN v_out;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION authz.describe_model(p_store text)
 RETURNS text LANGUAGE plpgsql STABLE AS $$
 DECLARE
@@ -609,9 +645,23 @@ BEGIN
                     END IF;
                     v_expr := CASE WHEN v_expr IS NULL THEN v_group ELSE v_expr || ' or ' || v_group END;
                 END LOOP;
-                v_out := v_out || '    define ' || v_rel.name || ': ' || v_expr || E'\n';
+                v_out := v_out || '    define ' || v_rel.name || ': ' || v_expr || E'\n'
+                         || authz._describe_gates(v_store_id, v_type.id, v_rel.id, false);
             END LOOP;
         END IF;
+        -- Gates on relations that have no rules on this type (declared-vocabulary
+        -- relations) have no define line to hang on: list them with the
+        -- relation name so nothing is silently dropped.
+        FOR v_rel IN
+            SELECT DISTINCT g.relation AS id
+              FROM authz.model_gates g
+             WHERE g.store_id = v_store_id AND g.object_type = v_type.id
+               AND NOT EXISTS (SELECT 1 FROM authz.models m
+                                WHERE m.store_id = v_store_id AND m.object_type = v_type.id AND m.relation = g.relation)
+             ORDER BY 1
+        LOOP
+            v_out := v_out || authz._describe_gates(v_store_id, v_type.id, v_rel.id, true);
+        END LOOP;
     END LOOP;
     RETURN v_out;
 END;
