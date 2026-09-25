@@ -84,8 +84,10 @@ CREATE OR REPLACE FUNCTION authz._event_max_backdate() RETURNS interval
 -- list_events: inspect a store's action log — "what did X do?" — keyset
 -- paginated like watch_changes: (occurred_at, seq) ascending, the caller
 -- feeds the last row's pair back as (p_after_at, p_after_seq). Every filter
--- is optional (NULL = any); p_since/p_until bound occurred_at inclusively
--- (p_since also drives partition pruning). Unknown filter names yield an
+-- is optional (NULL = any) except that p_subject_id needs p_subject_type (a
+-- subject is a pair, and idx_events_subject_list is keyed on both);
+-- p_since/p_until bound occurred_at inclusively (p_since also drives
+-- partition pruning). Unknown filter names yield an
 -- empty result rather than an error — a filter is a filter, not a lookup.
 --
 -- Payload is returned as-is (the auditor's data, like audit_list_*'s
@@ -130,9 +132,15 @@ DECLARE
     v_action       integer;
     v_object_type  integer;
     v_kind         smallint;
+    v_sql          text;
 BEGIN
     IF p_limit IS NULL OR p_limit < 0 THEN
         RAISE EXCEPTION 'p_limit must be >= 0' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    -- A subject is a (type, id) pair; the listing index is keyed on both, and an
+    -- id-only filter would degrade to a scan of the whole log.
+    IF p_subject_id IS NOT NULL AND p_subject_type IS NULL THEN
+        RAISE EXCEPTION 'p_subject_id requires p_subject_type' USING ERRCODE = 'invalid_parameter_value';
     END IF;
 
     -- Filters resolve by direct lookup (no _t/_r: those raise on unknown
@@ -162,36 +170,36 @@ BEGIN
         END;
     END IF;
 
-    RETURN QUERY
-    SELECT e.seq,
-           e.event_id,
-           st.name,
-           e.subject_id,
-           r.name,
-           ot.name,
-           e.object_id,
-           authz._event_kind_name(e.kind),
-           e.payload,
-           e.occurred_at,
-           e.recorded_at,
-           e.recorded_by
-      FROM authz.events e
-      -- LEFT JOIN: a purged dictionary (delete_store) must not hide history.
-      LEFT JOIN authz.types     st ON st.id = e.subject_type
-      LEFT JOIN authz.relations r  ON r.id  = e.action
-      LEFT JOIN authz.types     ot ON ot.id = e.object_type
-     WHERE e.store_id = v_store_id
-       AND (v_subject_type IS NULL OR e.subject_type = v_subject_type)
-       AND (p_subject_id   IS NULL OR e.subject_id   = p_subject_id)
-       AND (v_action       IS NULL OR e.action       = v_action)
-       AND (v_kind         IS NULL OR e.kind         = v_kind)
-       AND (v_object_type  IS NULL OR e.object_type  = v_object_type)
-       AND (p_object_id    IS NULL OR e.object_id    = p_object_id)
-       AND (p_recorded_by  IS NULL OR e.recorded_by  = p_recorded_by)
-       AND (p_since        IS NULL OR e.occurred_at >= p_since)
-       AND (p_until        IS NULL OR e.occurred_at <= p_until)
-       AND (e.occurred_at, e.seq) > (p_after_at, p_after_seq)
-     ORDER BY e.occurred_at, e.seq
-     LIMIT p_limit;
+    -- Dynamic SQL, deliberately: written as `(param IS NULL OR col = param)`,
+    -- the generic plan a plpgsql function settles on after a few calls cannot
+    -- fold the NULL checks, so no filter ever becomes an index condition and a
+    -- subject listing degrades to an ordered scan of the whole log (measured:
+    -- 23 ms and 191k buffers for a 100-row page on a 220k-row log — the
+    -- realistic case being a recently active subject whose events all sit at
+    -- the end of the time order). Only the filters actually supplied become
+    -- predicates, so each call gets the plan its filters deserve
+    -- (idx_events_subject_list serves the by-subject case). Values are passed
+    -- as parameters, never interpolated.
+    v_sql := 'SELECT e.seq, e.event_id, st.name, e.subject_id, r.name, ot.name, e.object_id,
+                     authz._event_kind_name(e.kind), e.payload, e.occurred_at, e.recorded_at, e.recorded_by
+                FROM authz.events e
+                LEFT JOIN authz.types     st ON st.id = e.subject_type   -- LEFT: a purged dictionary must not hide history
+                LEFT JOIN authz.relations r  ON r.id  = e.action
+                LEFT JOIN authz.types     ot ON ot.id = e.object_type
+               WHERE e.store_id = $1
+                 AND (e.occurred_at, e.seq) > ($2, $3)'
+          || CASE WHEN v_subject_type IS NOT NULL THEN ' AND e.subject_type = $4'  ELSE '' END
+          || CASE WHEN p_subject_id   IS NOT NULL THEN ' AND e.subject_id = $5'    ELSE '' END
+          || CASE WHEN v_action       IS NOT NULL THEN ' AND e.action = $6'        ELSE '' END
+          || CASE WHEN v_kind         IS NOT NULL THEN ' AND e.kind = $7'          ELSE '' END
+          || CASE WHEN v_object_type  IS NOT NULL THEN ' AND e.object_type = $8'   ELSE '' END
+          || CASE WHEN p_object_id    IS NOT NULL THEN ' AND e.object_id = $9'     ELSE '' END
+          || CASE WHEN p_recorded_by  IS NOT NULL THEN ' AND e.recorded_by = $10'  ELSE '' END
+          || CASE WHEN p_since        IS NOT NULL THEN ' AND e.occurred_at >= $11' ELSE '' END
+          || CASE WHEN p_until        IS NOT NULL THEN ' AND e.occurred_at <= $12' ELSE '' END
+          || ' ORDER BY e.occurred_at, e.seq LIMIT $13';
+    RETURN QUERY EXECUTE v_sql
+        USING v_store_id, p_after_at, p_after_seq, v_subject_type, p_subject_id, v_action, v_kind,
+              v_object_type, p_object_id, p_recorded_by, p_since, p_until, p_limit;
 END;
 $$;

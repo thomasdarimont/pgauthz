@@ -16,7 +16,7 @@ model and dataset and times each operation in a loop (after warm-up), reporting
 group count, folder depth) are constants at the top of the suite's
 data-generation block.
 
-Three suites ship today, each a different model shape so the numbers cover
+Five suites ship today, each a different model shape so the numbers cover
 different resolution paths:
 
 | Suite | Shape | Exercises |
@@ -25,6 +25,7 @@ different resolution paths:
 | **`github`** | Orgs / teams / repos, role hierarchy | multi-level computed role chain, TTU to the parent org, **nested teams** (userset-of-userset) |
 | **`rules`** | Synthetic rule-combination model | **intersection** (AND), **exclusion** (BUT NOT), **conditions** (ABAC) |
 | **`adversarial`** | Diamond / converging graphs | stress for cross-branch re-evaluation — `2^depth` paths, collapsed to ~linear by the **per-check memo** (toggle with `authz.memoize`) |
+| **`gates`** | Action log + temporal gates ([ADR 0012](adr/0012-action-log.md)) | what a gate adds to a check as a function of the events in its window (0 / 100 / 10k), containment matching, traced and two-pass paths, **gated enumeration**, recording, `reserve_event`, `list_events` |
 
 Adding another — e.g. the demo's tax-advisor chain — is just another file in
 `bench/suites/`.
@@ -56,6 +57,15 @@ via `parent_org` (TTU), and a 10-deep **nested-team** chain feeds one repo
 with 500 subjects. `can_access = assigned AND cleared` (intersection),
 `can_edit = editor BUT NOT banned` (exclusion), and `viewer` grants carry a
 time-window **condition**. ~54 k tuples.
+
+**`gates` dataset** — 2,000 users with tuples on one account; **220,100
+events** bulk-loaded into the action log: 200 k background events of those
+users spread over a day, plus one "heavy" principal with 10,000 `pay`
+requests and 10,000 `approve_sale` responses inside the last hour and a
+"mid" principal with 100. Two gates: a two-clause velocity gate
+(`count_within` + `sum_within` keyed on the request) on `pay`, and a
+`formerly_within` with payload `match` and a `recorded_by` allowlist on
+`withdraw`. An ungated relation on the same store is the baseline.
 
 **`adversarial` dataset** — tiny (~1 k tuples) but pathological. A `node` model
 with `can_view = viewer OR parent_a→can_view OR parent_b→can_view`, and **diamond
@@ -144,6 +154,28 @@ depth-28 diamond (2^28 ≈ 270 M paths) resolves in ~12 ms and stays flat with
 depth. **Un-memoized** (`SET authz.memoize = 'off'`) the same checks are
 exponential — depth 14 ≈ 3 s, depth 16 ≈ 12 s, depth 18 exceeds 30 s.
 
+### `gates` — action log + temporal gates (220,100 events)
+
+| Operation | ms/op | Bounded by |
+|---|--:|---|
+| `check_access` — ungated relation (baseline) | **0.15** | one index probe |
+| `check_access` — gated, 0 events in window | **0.24** | gate lookup + one empty window probe per clause |
+| `check_access` — gated, 100 events in window | **0.34** | events in the window |
+| `check_access` — gated, 10,000 events in window (count + sum) | **10.9** | events in the window (sum reads each payload) |
+| `check_access` — `formerly_within` + `match` over 10,000 events | **3.6** | events in the window (containment scan) |
+| `check_access` — gated DENY on a missing `$request` key | **0.24** | fails before any window query |
+| `explain_access` — gated (traced, 2 clauses) | **0.73** | trace + every clause evaluated |
+| `check_access_detailed` — `conditional` (two passes) | **0.78** | two evaluations |
+| `list_subjects` — ungated (2,000 candidates) | **277** | the object's reachable subjects |
+| `list_subjects` — gated (2,000 candidates, a window query each) | **485** | + ~0.1 ms per candidate |
+| `list_objects` — gated (evaluated once up front) | **13.5** | one gate evaluation + the walk |
+| `list_actions` — 3 relations, 2 gated | **0.73** | one gate lookup per relation |
+| `audit_check_access` — gated (time-travel) | **3.8** | snapshot replay + as-of window |
+| `record_event` — single | **0.054** | three btree inserts |
+| `record_events_jsonb` — batch of 100 | **5.3** | ≈ 0.05 per event |
+| `reserve_event` — decision + record under the per-subject lock | **0.83** | check + insert |
+| `list_events` — page of 100 for a subject | **0.26** | `idx_events_subject_list` (was 23 ms — see addendum) |
+
 ## Takeaways
 
 - **`check_access` is sub-millisecond** for typical direct/userset/wildcard
@@ -171,6 +203,12 @@ exponential — depth 14 ≈ 3 s, depth 16 ≈ 12 s, depth 18 exceeds 30 s.
   combine operators and the zero-privilege condition sandbox are not where time
   goes; reachable-set size still dominates the `list_*` variants.
 - **Converging graphs are memoized — `O(2^depth)` → linear** (`adversarial`).
+- **A gate costs a fixed ~0.1 ms plus the events in its window** (`gates`):
+  0.24 ms for an empty window against a 0.15 ms ungated check, then ~1 µs per
+  event for a count and ~3× that for a sum (each payload is read). Keep windows
+  and event volumes per principal in the thousands, not millions, or use
+  calendar buckets. Enumeration pays the gate per candidate (`list_subjects`)
+  or once (`list_objects`, subject-scoped gates).
   The evaluator prunes *cycles* (a path array stops a node already on the current
   path); without memoization a node reachable via many distinct acyclic paths is
   re-evaluated once per path, so a **diamond** graph (each link doubled) costs
@@ -287,3 +325,41 @@ DENY 3.4 · wildcard 0.15 · list_objects sparse 4.6 · list_subjects shared
 table on deep checks / list_subjects is environmental (audit-log growth,
 expiry-RLS overhead, machine state) — to be re-baselined properly in the
 production-scale benchmark milestone.
+
+## Addendum: 2026-09-26 (action log + temporal gates, ADR 0012)
+
+**1. The `_decide` seam on gate-free stores — A/B against `main` on the same
+machine, both after a fresh install:** every existing suite is within
+run-to-run noise. The cheapest allow paths move a few percent (drive
+shallow 0.137 → 0.141, wildcard 0.146 → 0.152, rules intersection ALLOW
+0.154 → 0.161 ms/op) and `list_actions` ~10% (drive 3.01 → 3.36; it now
+performs one gate lookup per relation), while several DENY and deep paths
+came out marginally *faster* (drive DENY 2.50 → 2.27, github nested-team
+0.82 → 0.80). A first run right after `docker compose --build` and on a
+test-bloated database had shown +50–200% across the board — environmental
+(concurrent image build, index bloat), reproduced neither way after the
+reinstall. Relations without gates pay one probe on the
+`model_gates (store_id, object_type, relation, name)` index and nothing
+else.
+
+**2. `list_events` — FOUND AND FIXED.** A page of 100 events for one subject
+took **23 ms and 191k buffers** on a 220k-row log: the filters were written
+as `(param IS NULL OR col = param)`, which the generic plan a plpgsql function
+settles on cannot fold into index conditions, and the only usable index
+carried `action` before `occurred_at`, so the planner walked the time-ordered
+primary key until it had found a page of that subject's rows — the whole log
+when the subject's events sit at the end of the time order (a recently
+active subject). Two changes, needed *together* (each alone measured no
+gain): `list_events` builds its predicate list dynamically from the filters
+supplied, and migration 0012 adds `idx_events_subject_list (store_id,
+subject_type, subject_id, occurred_at, seq)`. Result **0.26 ms**;
+`record_event` pays the extra btree (0.050 → 0.054 ms). Because the index is
+keyed on the pair, `p_subject_id` now requires `p_subject_type` (a subject
+*is* a pair). Listing by `action` alone still walks the primary key
+(24 ms here); bound it with `p_since` or a cursor, or ask for an index if it
+becomes a workload.
+
+**3. A `kind`-inclusive window index was measured and rejected:** it turned
+the raw count into an index-only scan (2.2 → 1.6 ms over 10k events) but the
+gated check moved only 9.6 → 8.9 ms — the sum clause's payload reads
+dominate, and the index would not help those.

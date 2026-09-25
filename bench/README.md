@@ -12,6 +12,7 @@ bench/
     github.sql      # GitHub-shaped model (orgs/teams/repos, role hierarchy, nested teams)
     rules.sql       # Rule-combination model (intersection, exclusion, conditions)
     adversarial.sql # Diamond/converging graphs — exponential worst case (no memoization)
+    gates.sql       # Action log + temporal gates (window scans, gated enumeration, reserve_event)
 ```
 
 ## Running

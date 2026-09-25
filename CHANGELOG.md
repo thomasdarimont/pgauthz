@@ -76,6 +76,21 @@ pre-1.0, minor versions may include breaking changes.
   hid events recorded meanwhile), and `count_within` /
   `count_distinct_within` gained `plus` (like `sum_within`) so `max: 5,
   plus: 1` means at most 5 actions *including* the one being decided.
+- **`bench/suites/gates.sql`** — a benchmark suite for the action log and
+  temporal gates (gated vs ungated checks over 0 / 100 / 10k events in the
+  window, containment matching, traced and two-pass paths, gated enumeration,
+  recording, `reserve_event`, `list_events`); results and the `_decide` seam
+  A/B against the previous engine in [BENCHMARKS.md](docs/BENCHMARKS.md).
+
+### Fixed
+
+- **`list_events` scanned the whole log for a subject page** (23 ms / 191k
+  buffers on a 220k-row log for 100 rows): the `(param IS NULL OR …)` filter
+  shape could not become an index condition under a generic plan, and no
+  index ordered a subject's events by time. `list_events` now builds its
+  predicates from the filters supplied, and migration 0012 adds
+  `idx_events_subject_list`; a subject page is 0.26 ms. `p_subject_id` now
+  requires `p_subject_type` (the indexed pair).
 
 ## [0.15.0] - 2026-07-07
 

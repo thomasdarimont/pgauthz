@@ -79,7 +79,7 @@ BEGIN
     -- ev_04: idempotency — the same event_id is recorded once; the retry returns NULL
     v_seq  := authz.record_event('test_events', 'user', 'bob', 'download', p_event_id => 'req-1/request', p_occurred_at => now() - interval '1 minute');
     v_seq2 := authz.record_event('test_events', 'user', 'bob', 'download', p_event_id => 'req-1/request', p_occurred_at => now() - interval '1 minute');
-    SELECT count(*) INTO n FROM authz.list_events('test_events', p_subject_id => 'bob');
+    SELECT count(*) INTO n FROM authz.list_events('test_events', p_subject_type => 'user', p_subject_id => 'bob');
     PERFORM _test_assert_true('ev_04_duplicate_returns_null', v_seq IS NOT NULL AND v_seq2 IS NULL,
         format('first=%s second=%s', v_seq, v_seq2));
     PERFORM _test_assert('ev_04_duplicate_not_inserted', n::text, '1');
@@ -117,7 +117,7 @@ BEGIN
          AND jsonb_typeof(v_out -> 'seqs' -> 0) = 'number'
          AND jsonb_typeof(v_out -> 'seqs' -> 1) = 'null'
          AND jsonb_typeof(v_out -> 'seqs' -> 2) = 'number')::text, 'true');
-    SELECT count(*) INTO n FROM authz.list_events('test_events', p_subject_id => 'carol', p_recorded_by => 'svc:bank');
+    SELECT count(*) INTO n FROM authz.list_events('test_events', p_subject_type => 'user', p_subject_id => 'carol', p_recorded_by => 'svc:bank');
     PERFORM _test_assert('ev_05_batch_rows', n::text, '2');
 END;
 $$;
@@ -212,13 +212,13 @@ BEGIN
     PERFORM _test_assert_true('ev_12_batch_unknown_key_rejected', v_err LIKE '%unknown key "kindd"%', coalesce(v_err, 'no error'));
 
     -- Atomic: a bad second element means the good first one is not recorded either.
-    SELECT count(*) INTO n_before FROM authz.list_events('test_events', p_subject_id => 'atomic');
+    SELECT count(*) INTO n_before FROM authz.list_events('test_events', p_subject_type => 'user', p_subject_id => 'atomic');
     BEGIN PERFORM authz.record_events_jsonb('test_events', '[
         {"subject_type": "user", "subject_id": "atomic", "action": "download"},
         {"subject_type": "user", "subject_id": "atomic", "action": "nope"}
     ]'::jsonb);
     EXCEPTION WHEN OTHERS THEN NULL; END;
-    SELECT count(*) INTO n_after FROM authz.list_events('test_events', p_subject_id => 'atomic');
+    SELECT count(*) INTO n_after FROM authz.list_events('test_events', p_subject_type => 'user', p_subject_id => 'atomic');
     PERFORM _test_assert('ev_12_batch_is_atomic', (n_after - n_before)::text, '0');
 END;
 $$;
@@ -294,6 +294,12 @@ BEGIN
     PERFORM _test_assert('ev_15_filter_object', n::text, '2');
     SELECT count(*) INTO n FROM authz.list_events('test_events', p_subject_type => 'user', p_subject_id => 'carol');
     PERFORM _test_assert('ev_15_filter_subject', n::text, '2');
+    BEGIN
+        PERFORM count(*) FROM authz.list_events('test_events', p_subject_id => 'carol');
+        PERFORM _test_assert_true('ev_15_subject_id_requires_type', false, 'no error');
+    EXCEPTION WHEN invalid_parameter_value THEN
+        PERFORM _test_assert_true('ev_15_subject_id_requires_type', true);
+    END;
     SELECT count(*) INTO n FROM authz.list_events('test_events', p_action => 'no_such_action');
     PERFORM _test_assert('ev_15_unknown_filter_name_is_empty_not_error', n::text, '0');
     SELECT count(*) INTO n FROM authz.list_events('test_events', p_kind => 'bogus');
@@ -362,7 +368,7 @@ BEGIN
     PERFORM _test_assert('ev_18_partition_gone',
         (SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace ns ON ns.oid = c.relnamespace
           WHERE ns.nspname = 'authz' AND c.relname = 'events_2031_01')::text, '0');
-    SELECT count(*) INTO n FROM authz.list_events('test_events', p_subject_id => 'zed');
+    SELECT count(*) INTO n FROM authz.list_events('test_events', p_subject_type => 'user', p_subject_id => 'zed');
     PERFORM _test_assert('ev_18_dropped_rows_gone', n::text, '0');
     PERFORM _test_assert_true('ev_18_ensure_current_months_recreates', authz.ensure_event_partitions(1) >= 1);
 END;

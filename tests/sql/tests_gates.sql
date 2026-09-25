@@ -442,7 +442,7 @@ BEGIN
     PERFORM _test_assert('r_01_reason', r ->> 'reason', 'allowed');
     PERFORM _test_assert_true('r_01_seq_present', (r ->> 'seq') IS NOT NULL, r::text);
     PERFORM _test_assert('r_01_gate_outcomes', (r -> 'gates' -> 0 ->> 'reason') || ' ' || (r -> 'gates' -> 0 ->> 'observed'), 'gate_passed 0');
-    SELECT kind INTO v_state FROM authz.list_events('test_gates', p_subject_id => 'dave', p_action => 'peek') ORDER BY seq DESC LIMIT 1;
+    SELECT kind INTO v_state FROM authz.list_events('test_gates', p_subject_type => 'user', p_subject_id => 'dave', p_action => 'peek') ORDER BY seq DESC LIMIT 1;
     PERFORM _test_assert('r_01_request_recorded', v_state, 'request');
 
     -- r_02: the second reserve is refused by the gate and records a `denied` event
@@ -451,12 +451,12 @@ BEGIN
     PERFORM _test_assert('r_02_kind_denied', r ->> 'kind', 'denied');
     PERFORM _test_assert('r_02_reason_gate_denied', r ->> 'reason', 'gate_denied');
     PERFORM _test_assert('r_02_gate_outcome_denied', r -> 'gates' -> 0 ->> 'reason', 'gate_denied');
-    SELECT count(*) INTO n FROM authz.list_events('test_gates', p_subject_id => 'dave', p_action => 'peek', p_kind => 'denied');
+    SELECT count(*) INTO n FROM authz.list_events('test_gates', p_subject_type => 'user', p_subject_id => 'dave', p_action => 'peek', p_kind => 'denied');
     PERFORM _test_assert('r_02_denied_recorded', n::text, '1');
     -- r_03: p_record_denied => false leaves no trace of the refusal
     r := authz.reserve_event('test_gates', 'user', 'dave', 'peek', 'account', 'acc-1', p_record_denied => false);
     PERFORM _test_assert('r_03_refused_unrecorded_kind_null', (r ->> 'allowed') || ' ' || COALESCE(r ->> 'kind', 'null') || ' ' || COALESCE(r ->> 'seq', 'null'), 'false null null');
-    SELECT count(*) INTO n FROM authz.list_events('test_gates', p_subject_id => 'dave', p_action => 'peek', p_kind => 'denied');
+    SELECT count(*) INTO n FROM authz.list_events('test_gates', p_subject_type => 'user', p_subject_id => 'dave', p_action => 'peek', p_kind => 'denied');
     PERFORM _test_assert('r_03_no_new_denied', n::text, '1');
 
     -- r_04: a graph deny (no tuple) is refused with reason graph_denied and recorded as denied
