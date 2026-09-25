@@ -84,6 +84,12 @@ by `init.sh` on every run.
       authenticated caller.
 - [ ] **Schedule audit-partition maintenance and retention.** See
       [Audit retention](#audit-retention).
+- [ ] **If you feed the action log, schedule its partitions and set the
+      backdate bound.** `SELECT authz.ensure_event_partitions()` next to the
+      audit partitions; `authz.event_max_backdate` (default 24 h) to your
+      queue's worst-case delivery lag; retention via
+      `drop_event_partitions_before` — keep it ≥ the longest gate window once
+      gates exist. See [Action log retention](#action-log-retention).
 - [ ] **Schedule `cleanup_expired_tuples` if you use tuple expiry.** Expired
       grants stop granting instantly (RLS-enforced) but occupy storage until
       garbage-collected; the cleanup is audited and time-travel stays exact.
@@ -116,9 +122,10 @@ created and granted in `db/security/roles.sql`.
 |---|---|---|
 | `authz_reader` | `check_access`, `check_access_with_context`, `list_objects/subjects/actions`, batch checks, `validate_condition`, `explain_access` | — |
 | `authz_contextual_reader` | `check_access_with_contextual_tuples*` (inject ephemeral tuples) | — |
-| `authz_auditor` | `audit_check_access`, `audit_list_*` | `authz_reader` |
-| `authz_writer` | `write_tuple`/`delete_tuple` + batch ops | `authz_reader` |
-| `authz_admin` | store/model/namespace management, `ensure_audit_partitions`, `find_redundant_tuples` | `authz_writer`, `authz_auditor` |
+| `authz_auditor` | `audit_check_access`, `audit_list_*`, `watch_changes`, `list_events` | `authz_reader` |
+| `authz_recorder` | `record_event` / `record_events_jsonb` — feed the action log ([ADR 0012](adr/0012-action-log.md)) and nothing else | — |
+| `authz_writer` | `write_tuple`/`delete_tuple` + batch ops | `authz_reader`, `authz_recorder` |
+| `authz_admin` | store/model/namespace management, `ensure_audit_partitions` / `ensure_event_partitions` / `drop_event_partitions_before`, `find_redundant_tuples` | `authz_writer`, `authz_auditor` |
 | `authz_owner` | owns the schema + objects (definer context) | — |
 | `authz_eval` | **zero grants** — the condition-evaluation sandbox | — |
 
@@ -687,6 +694,34 @@ condition history (`models_audit`, `conditions_audit`) are append-only logs.
   window expires.
 
 See [DEVELOPMENT.md → Audit partition maintenance](DEVELOPMENT.md#audit-partition-maintenance).
+
+### Action log retention
+
+The action log (`authz.events`, [ADR 0012](adr/0012-action-log.md)) is
+monthly `RANGE`-partitioned on `occurred_at` and append-only like the audit
+trail, with the same operational shape:
+
+- **Partitions ahead of time:** schedule `SELECT authz.ensure_event_partitions()`
+  alongside `ensure_audit_partitions()` (`init.sh` and the migration runner
+  call both once at install).
+- **Retention is a partition drop:** `SELECT
+  authz.drop_event_partitions_before('2026-01-01')` drops every month whose
+  rows are all older than the date (returns the count). Once model gates
+  (phase 2) exist, keep retention **≥ the longest gate window** — a dropped
+  month under-counts, which can only *relax* a cap — and ≥ audit retention if
+  time-travel over gates is to stay exact.
+- **Bounded timestamps:** `occurred_at` is caller-asserted (queues deliver
+  late) but rejected beyond `authz.event_max_future_skew` (default **5 s**)
+  ahead of, or `authz.event_max_backdate` (default **24 h**) behind, the
+  database clock. Set the backdate bound to your ingestion path's worst-case
+  lag: `ALTER DATABASE authz SET authz.event_max_backdate = '72 hours';`.
+- **Payloads** are capped by `authz.max_context_bytes` like condition
+  context; a batch is atomic; `delete_store` purges the store's events (they
+  are the store's data, not graph history, so there is no keep option).
+- **Replica lag:** a `decision-only` instance reading a replica sees counts
+  lagged by replication (the same stale-allow class as
+  [Replica consistency](#replica-consistency)); a recorder that writes with
+  `consistency: applied` removes its own read-after-write gap.
 
 ## Scale & supported limits
 

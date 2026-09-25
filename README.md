@@ -26,6 +26,7 @@ that resolve relationship tuples recursively.
 - **Full audit trail** — immutable, monthly-partitioned audit log with application user tracking (`performed_by`)
 - **Time-travel queries** — `audit_check_access` reconstructs permissions at any past point in time
 - **Watch / changefeed** — cursored, filterable stream of tuple changes plus a `NOTIFY` doorbell, for cache invalidation and sync
+- **Action log** — `record_event` / `list_events`: a per-store, per-principal record of what subjects *actually did* (reported by your PEP, never inferred from decisions), the substrate for history-dependent gates such as rate limits and prior-approval rules — see [ADR 0012](docs/adr/0012-action-log.md)
 - **Search API** — `list_objects`, `list_subjects`, `list_actions` for discovery queries
 - **OpenFGA import** — import existing OpenFGA JSON models and tuples directly
 - **Namespace-based access control** — per-application isolation of object types within a shared store, database-enforced end to end
@@ -630,6 +631,53 @@ SELECT * FROM authz.audit_list_object('demo', 'document', 'doc_payroll_001');
 
 Returns columns: `action` (INSERT/DELETE), `performed_at`, `performed_by`,
 `relation`, `object_type`, `object_id`, `condition_name`, `condition_context`.
+
+### record_event / list_events — The action log
+
+The audit trail records how the *graph* changed. The action log records what
+subjects **actually did** — reported by your application/PEP *after* the
+action ran, never inferred from a decision (an "allow" is not an action). It
+is the substrate for history-dependent rules ("at most 5 transfers per hour",
+"only if an approver approved this within the hour") and, on its own, a
+per-store, per-principal action trail next to the graph. See
+[ADR 0012](docs/adr/0012-action-log.md).
+
+```sql
+-- Declare the action once: an action is a relation of the store (the model is
+-- the action vocabulary — a typo fails loud at record time).
+SELECT authz.model_register_relation('demo', 'transfer');
+
+-- Record that alice transferred from acc-1 (the PEP calls this after the
+-- action ran). kind: request | response | denied. The payload is the
+-- authz-relevant projection, not your domain object.
+SELECT authz.record_event('demo', 'internal_user', 'alice', 'transfer',
+    p_object_type => 'account', p_object_id => 'acc-1',
+    p_kind        => 'response',
+    p_payload     => '{"input": {"amount": 1200}, "output": {"status": "ok"}}',
+    p_occurred_at => '2026-09-17T10:15:02Z',      -- required with an event_id
+    p_event_id    => 'req-7f3a/response');        -- idempotency key: re-delivery = duplicate, not a row
+
+-- Batch form (what pgauthzd's POST /pgauthz/v1/events calls); atomic.
+SELECT authz.record_events_jsonb('demo', '[
+  {"subject_type": "internal_user", "subject_id": "alice", "action": "transfer",
+   "object_type": "account", "object_id": "acc-1", "kind": "request",
+   "payload": {"input": {"amount": 1200}}}
+]');
+-- → {"recorded": 1, "duplicates": 0, "seqs": [42]}
+
+-- What did alice do in the last hour? (auditor role; every filter optional;
+-- keyset cursor over (occurred_at, seq) like watch_changes)
+SELECT occurred_at, action, kind, object_type, object_id, payload
+  FROM authz.list_events('demo', p_subject_type => 'internal_user',
+                         p_subject_id => 'alice', p_since => now() - interval '1 hour');
+```
+
+Recording needs the `authz_recorder` role (granted to every writer; an app
+that only reports actions never needs tuple-write rights). `occurred_at` is
+caller-supplied but bounded (`authz.event_max_future_skew`, default 5 s;
+`authz.event_max_backdate`, default 24 h); `recorded_at` and `recorded_by`
+are server-set. The log is append-only and monthly-partitioned like the audit
+trail (`ensure_event_partitions`, `drop_event_partitions_before`).
 
 ## Authorization as a JOIN (data filtering)
 

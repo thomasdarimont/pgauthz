@@ -178,6 +178,13 @@ BEGIN
         PERFORM set_config('authz.audit_maintenance', '', true);
     END IF;
     DELETE FROM authz.namespace_access  WHERE store_id = v_store_id;
+    -- The action log (ADR 0012) references the store's types/relations; it is
+    -- append-only, so purge it under the maintenance window. Always — unlike
+    -- the *_audit tables it records application behaviour, not graph history,
+    -- and an erased store's actions are part of the erasure.
+    PERFORM set_config('authz.audit_maintenance', 'on', true);
+    DELETE FROM authz.events            WHERE store_id = v_store_id;
+    PERFORM set_config('authz.audit_maintenance', '', true);
 
     -- Drop tuple partitions for this store's types
     PERFORM authz._drop_store_tuple_partitions(v_store_id, p_store);

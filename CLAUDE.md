@@ -68,7 +68,7 @@ cd pgauthzd && go build ./... && go test ./...
 - `tests/sql/` — SQL test suites (API, search, contextual tuples, namespaces, intersections, wildcards, type restrictions)
 - `examples/models/` — Example authorization models (helloworld, demo, gdrive, github, todo), each with model.sql, seed.sql, demo.sql; demo and todo also have tests.sql, demo additionally demo_cel.sql (CEL-condition showcase, needs the pg_cel extension). helloworld is the README "complete example" as loadable files. Not part of the deployable engine — `init.sh` does not load them; `test.sh`/`bootstrap.sh` load the demo model as a test fixture
 - `examples/watch/` — Runnable setup example for the watch/changefeed feature (compose overlay + Python consumer)
-- `db/security/` — PostgreSQL role definitions (authz_reader, authz_writer, authz_admin, authz_auditor)
+- `db/security/` — PostgreSQL role definitions (authz_reader, authz_writer, authz_admin, authz_auditor, authz_recorder)
 - `db/openfga/` — Import functions for existing OpenFGA JSON models/tuples
 - `db/replication/` — Logical replication and materialized permissions patterns
 - `pgauthzd/` — The Go daemon (cmd/, internal/api/, internal/app/, internal/authz/, internal/config/, internal/metrics/, internal/pgbackend/, internal/opabackend/)
@@ -82,8 +82,8 @@ cd pgauthzd && go build ./... && go test ./...
   - **Code** (functions, views, triggers) lives in `db/engine/`, all idempotent (`CREATE OR REPLACE …`, incl. `CREATE OR REPLACE TRIGGER`), loaded **after** migrations.
 - Engine code files are grouped by **deployment profile** in `db/engine/manifest.sh` (the single source of truth for code load order, sourced by `init.sh`, `init-readonly.sh`, `deploy/migrations/run-migrations.sh`, and `db/replication/init-replication.sh`):
   - **substrate** (`core_internal.sql`, `conditions.sql`, `model_constraints.sql`, `views.sql`) — core internals, condition evaluation, model-validation trigger, base views; every deployment
-  - **read** (`access_internal.sql`, `access.sql`, `explain.sql`) — checks, search (`list_*`), explain, condition validation (dry-run)
-  - **write** (`store.sql`, `tuples.sql`, `maintenance.sql`, `model.sql`, `conditions_admin.sql`) — tuple/model/store management, redundant-tuple cleanup, condition create/delete + write-time validation trigger
+  - **read** (`access_internal.sql`, `access.sql`, `explain.sql`, `consistency.sql`, `stats.sql`, `events.sql`) — checks, search (`list_*`), explain, condition validation (dry-run), action-log inspection (`list_events`)
+  - **write** (`store.sql`, `tuples.sql`, `maintenance.sql`, `model.sql`, `conditions_admin.sql`, `model_registry.sql`, `events_admin.sql`) — tuple/model/store management, redundant-tuple cleanup, condition create/delete + write-time validation trigger, model registry, action-log recording (`record_event(s)`, event partitions/retention)
   - **audit** (`audit_triggers.sql`, `audit_internal.sql`, `audit.sql`, `watch.sql`) — audit trigger functions/triggers, time-travel, changefeed
   - Read-only deployment = substrate + read (`init-readonly.sh`); full = all four (`init.sh`). The migrations always run (they create *all* tables incl. audit); profiles only select which **code** loads, so on a read-only install the audit tables exist but stay inert (no triggers/functions). To add an engine file, register it in the manifest with its profile.
 - Within a profile the order is internal helpers → public API (structure already exists from migrations; functions reference tables at runtime)
@@ -91,6 +91,7 @@ cd pgauthzd && go build ./... && go test ./...
 - Tuples are the core data: `(store_id, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, context)`
 - Model rules use rule groups supporting union (OR), intersection (AND), and exclusion (BUT NOT) semantics
 - Audit trail is immutable, monthly-partitioned, with `performed_by` tracking
+- Action log (`authz.events`, ADR 0012): what principals *actually did*, recorded by the PEP via `record_event(s)` / `POST /pgauthz/v1/events` — never by the check path; actions must be declared relations; append-only, monthly-partitioned on `occurred_at`; `event_id` idempotency requires `occurred_at`
 
 ## Docker Compose Configurations
 

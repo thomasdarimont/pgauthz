@@ -7,6 +7,36 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **The action log** ([ADR 0012](docs/adr/0012-action-log.md), temporal gates
+  phase 1): `authz.events` — a store-scoped, append-only record of what a
+  principal *actually did*, reported by the application/PEP after the action
+  ran (never by the check path; a PDP "allow" is not an action). SQL:
+  `authz.record_event` / `record_events_jsonb` (atomic batches, `event_id`
+  idempotency — re-deliveries are reported as duplicates, never inserted),
+  `authz.list_events` (auditor inspection, `(occurred_at, seq)` keyset
+  cursor), `ensure_event_partitions` / `drop_event_partitions_before`
+  (monthly partitions + retention, sharing a generalized month-partition
+  worker with the audit log). A new `authz_recorder` role (EXECUTE on the two
+  record functions only; granted to `authz_writer`) lets an app feed the log
+  without tuple-write rights. Actions must be **declared relations** of the
+  store (the model is the action vocabulary — unknown actions fail loud);
+  subjects are concrete principals; recording *about* a namespaced object type
+  needs the namespace's `can_write` grant. `occurred_at` is caller-asserted
+  but bounded (`authz.event_max_future_skew`, default 5s;
+  `authz.event_max_backdate`, default 24h — set it to the queue's worst-case
+  lag), `recorded_at`/`recorded_by` are server-set. Append-only by trigger;
+  `delete_store` purges a store's events. pgauthzd: `POST /pgauthz/v1/events`
+  (full profile; public listener gated by the new `RECORDER_ROLE` claim,
+  default `authz_recorder` — `WRITER_ROLE` passes too; `recorded_by` follows
+  `performed_by`'s attribution rules; engine content rejections map to 400,
+  namespace refusals to 403), OpenAPI-documented, metric
+  `pgauthzd_events_recorded_total{result}`. Phase 2 (model gates:
+  `count_within`, `sum_within`, `formerly_within`, `count_distinct_within`
+  evaluated after the graph) and phase 3 (`reserve_event` strict tier) are
+  designed in the ADR, not built.
+
 ## [0.15.0] - 2026-07-07
 
 ### Security (review #10 — pre-production batch)

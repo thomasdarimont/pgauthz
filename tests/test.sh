@@ -188,5 +188,10 @@ echo "==> Running freshness-token checks (ADR 0009)..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_freshness.sql"
 
+echo ""
+echo "==> Running action log (events) checks (ADR 0012)..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_events.sql"
+
 # Clean up test helpers
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_helpers_cleanup.sql"

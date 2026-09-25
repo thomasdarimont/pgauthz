@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
+	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
 )
 
 // writeWriteError maps a native-write backend error to a status: a forbidden
@@ -22,7 +23,7 @@ func writeWriteError(w http.ResponseWriter, err error) {
 		writeForbidden(w, err.Error())
 		return
 	}
-	if errors.Is(err, authz.ErrInvalidConsistency) {
+	if errors.Is(err, authz.ErrInvalidConsistency) || errors.Is(err, authz.ErrInvalidRequest) {
 		writeBadRequest(w, err.Error())
 		return
 	}
@@ -108,11 +109,18 @@ const maxPerformedByLen = 256
 
 // Returns ok=false with the 403/400 already written.
 func (h *Handler) resolvePerformedBy(w http.ResponseWriter, r *http.Request, bodyValue string) (string, bool) {
+	return h.resolveActor(w, r, bodyValue, "performed_by")
+}
+
+// resolveActor is resolvePerformedBy parameterized by the body field name, so
+// the action log's recorded_by (ADR 0012) shares the exact same trust rules —
+// the recorder's identity is as audit-critical as a tuple write's author.
+func (h *Handler) resolveActor(w http.ResponseWriter, r *http.Request, bodyValue, field string) (string, bool) {
 	// A whitespace-only value must not satisfy the non-empty requirement — it
 	// would be an operationally useless audit attribution (review #9).
 	bodyValue = strings.TrimSpace(bodyValue)
 	if len(bodyValue) > maxPerformedByLen {
-		writeBadRequest(w, "performed_by exceeds the maximum length")
+		writeBadRequest(w, field+" exceeds the maximum length")
 		return "", false
 	}
 	_, jwtSubject := SubjectFromContext(r.Context())
@@ -122,7 +130,7 @@ func (h *Handler) resolvePerformedBy(w http.ResponseWriter, r *http.Request, bod
 		// performed_by would store an EMPTY audit attribution (review #8).
 		// Require the upstream to assert the actor it authenticated.
 		if jwtSubject == "" {
-			writeBadRequest(w, "performed_by is required: this listener has no authenticated subject to attribute the write to")
+			writeBadRequest(w, field+" is required: this listener has no authenticated subject to attribute the write to")
 			return "", false
 		}
 		return jwtSubject, true
@@ -131,7 +139,7 @@ func (h *Handler) resolvePerformedBy(w http.ResponseWriter, r *http.Request, bod
 	case bodyValue == jwtSubject || h.cfg.AllowSubjectOverride:
 		return bodyValue, true
 	default:
-		writeForbidden(w, "performed_by differs from the authenticated subject; "+
+		writeForbidden(w, field+" differs from the authenticated subject; "+
 			"audit attribution is token-derived (ALLOW_SUBJECT_OVERRIDE enables trusted-PEP assertion)")
 		return "", false
 	}
@@ -298,6 +306,91 @@ func (h *Handler) WriteTuplesChecked(w http.ResponseWriter, r *http.Request) {
 	// Raw engine JSON body → the token rides the X-PGAuthz-Revision header only.
 	h.mintRevision(w, r)
 	writeRawJSON(w, http.StatusOK, out)
+}
+
+// nativeRecorder is nativeWriter for the action log (ADR 0012): the same
+// read-only/capability gates, then the RECORDER_ROLE gate (writer passes too)
+// instead of the writer gate.
+func (h *Handler) nativeRecorder(w http.ResponseWriter, r *http.Request) (authz.EventRecorder, bool) {
+	if !h.cfg.Writable() {
+		writeError(w, http.StatusForbidden,
+			"this instance is read-only (decision-only profile); "+
+				"recording events requires the full profile")
+		return nil, false
+	}
+	er, ok := h.rawWrite.(authz.EventRecorder)
+	if !ok {
+		writeError(w, http.StatusNotImplemented,
+			"the pgauthz events API requires the full profile (writer DB role)")
+		return nil, false
+	}
+	if !h.requireRecorder(w, r) {
+		return nil, false
+	}
+	return er, true
+}
+
+// recordEventsBody is the native action-log request. Events is a JSONB array
+// in the record_events_jsonb shape (flat keys, like tuples on /write).
+type recordEventsBody struct {
+	Events      json.RawMessage `json:"events"`
+	Consistency string          `json:"consistency,omitempty"`
+	// RecordedBy is the asserting actor — same trust rules as performed_by on
+	// the write endpoints (token-derived on the public listener, required and
+	// trusted on the callback listener).
+	RecordedBy string `json:"recorded_by,omitempty"`
+}
+
+// RecordEvents — POST /pgauthz/v1/events: record what principals actually did
+// (the action log, ADR 0012). Atomic per batch; duplicate event_ids are
+// reported, not re-inserted. The engine result is returned with the store
+// added; the freshness token rides along like any write so a follow-up
+// at_least_as_fresh check on a replica sees the recorded events.
+func (h *Handler) RecordEvents(w http.ResponseWriter, r *http.Request) {
+	er, ok := h.nativeRecorder(w, r)
+	if !ok {
+		return
+	}
+	var req recordEventsBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, "invalid JSON: "+err.Error())
+		return
+	}
+	if len(req.Events) == 0 {
+		writeBadRequest(w, "events is required")
+		return
+	}
+	store, ok := h.storeChecked(w, r)
+	if !ok {
+		return
+	}
+	recordedBy, ok := h.resolveActor(w, r, req.RecordedBy, "recorded_by")
+	if !ok {
+		return
+	}
+	out, err := er.RecordEvents(r.Context(), authz.RecordEventsRequest{
+		Store: store, Events: req.Events, RecordedBy: recordedBy, Consistency: req.Consistency,
+	})
+	if err != nil {
+		writeWriteError(w, err)
+		return
+	}
+	resp := map[string]any{"store": store}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	resp["store"] = store
+	if n, ok := resp["recorded"].(float64); ok {
+		metrics.EventsRecorded.WithLabelValues("recorded").Add(n)
+	}
+	if n, ok := resp["duplicates"].(float64); ok {
+		metrics.EventsRecorded.WithLabelValues("duplicate").Add(n)
+	}
+	if rev := h.mintRevision(w, r); rev != "" {
+		resp["revision"] = rev
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type explainRequestBody struct {

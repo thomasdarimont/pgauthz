@@ -43,6 +43,12 @@ var ErrEnumerationCapExceeded = errors.New("enumeration refused: candidate set e
 // downgrading the durability guarantee — maps to 400 Bad Request.
 var ErrInvalidConsistency = errors.New("unknown consistency mode")
 
+// ErrInvalidRequest: the engine rejected the request's CONTENT — an undeclared
+// action/type, an out-of-bounds occurred_at, a malformed payload or batch
+// element. A caller error (400), not a server fault. Backends wrap the
+// engine's message with %w so the handler can surface it.
+var ErrInvalidRequest = errors.New("invalid request")
+
 // PageRequest holds pagination parameters. After is a keyset cursor (the last
 // id of the previous page); when set it takes precedence over Offset, so paging
 // never re-runs the per-candidate access check on earlier pages. Offset is kept
@@ -169,6 +175,30 @@ type CheckedWriteRequest struct {
 	Writes        json.RawMessage
 	PerformedBy   string
 	Consistency   string
+}
+
+// EventRecorder is an optional backend capability: feeding the ACTION LOG
+// (authz.events, ADR 0012) over the direct pgx connection — the `full`
+// profile, like NativeWriter, but a separate capability with its own DB role
+// check: the per-app role must be a member of authz_recorder (which every
+// authz_writer is), so an application that only reports what its principals
+// did needs no tuple-write rights.
+type EventRecorder interface {
+	// RecordEvents records a batch atomically via authz.record_events_jsonb and
+	// returns the engine's JSON result verbatim
+	// ({"recorded": n, "duplicates": n, "seqs": [...]}).
+	RecordEvents(ctx context.Context, req RecordEventsRequest) (json.RawMessage, error)
+}
+
+// RecordEventsRequest is a batch of recorded actions. Events is the JSONB
+// array in the record_events_jsonb shape (flat keys: subject_type, subject_id,
+// action, object_type, object_id, kind, payload, occurred_at, event_id).
+// RecordedBy is the asserting actor (the authenticated subject).
+type RecordEventsRequest struct {
+	Store       string
+	Events      json.RawMessage
+	RecordedBy  string
+	Consistency string
 }
 
 // DetailedChecker is an optional backend capability: a check that also

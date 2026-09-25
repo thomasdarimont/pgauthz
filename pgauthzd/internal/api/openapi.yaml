@@ -19,6 +19,9 @@
 #     (no OPA_URL); always on the internal callback listener.
 #   - Native /pgauthz/v1 writes: full profile only (decision-only → 403);
 #     on the public listener additionally gated by the WRITER_ROLE claim.
+#   - Native /pgauthz/v1/events (the action log, ADR 0012): full profile
+#     only, like writes; on the public listener gated by the RECORDER_ROLE
+#     claim (WRITER_ROLE passes too).
 #   - The internal callback listener authenticates with the shared service
 #     token (and optional mTLS), not the end-user JWT, and additionally
 #     honors the X-PGAuthz-Role header from its trusted OPA upstream.
@@ -800,6 +803,61 @@ paths:
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
 
+  # ── Action log (full profile, ADR 0012) ───────────────────────────────────
+  /pgauthz/v1/events:
+    post:
+      tags: [native-write]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+        profile: full
+      operationId: recordEvents
+      summary: Record what principals actually did (the action log)
+      description: >
+        Feeds authz.events, the store-scoped, append-only action log a PEP
+        reports to AFTER (or around) an action ran — independent of any
+        decision pgauthz made. Atomic per batch; a re-delivered event_id is
+        counted as a duplicate, never inserted twice. Public listener: the
+        caller must hold RECORDER_ROLE (or WRITER_ROLE) and recorded_by is
+        token-derived; callback listener: recorded_by is required and trusted.
+        An undeclared action (not a relation of the store), an out-of-bounds
+        occurred_at, or a malformed element is a 400; a namespace refusal 403.
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+      requestBody: { $ref: '#/components/requestBodies/RecordEvents' }
+      responses:
+        '200': { $ref: '#/components/responses/RecordEventsOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /stores/{store}/pgauthz/v1/events:
+    post:
+      tags: [native-write]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+        profile: full
+      operationId: recordEventsStore
+      summary: Record actions, store-scoped
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+      requestBody: { $ref: '#/components/requestBodies/RecordEvents' }
+      responses:
+        '200': { $ref: '#/components/responses/RecordEventsOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+
   # ── Meta ───────────────────────────────────────────────────────────────────
   /livez:
     get:
@@ -1049,6 +1107,11 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/WriteCheckedRequest' }
+    RecordEvents:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/RecordEventsRequest' }
 
   responses:
     EvaluationOK:
@@ -1169,6 +1232,14 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/WriteCheckedResponse' }
+    RecordEventsOK:
+      description: Events recorded.
+      headers:
+        X-PGAuthz-Revision: { $ref: '#/components/headers/XPGAuthzRevision' }
+        X-PGAuthz-Revision-Status: { $ref: '#/components/headers/XPGAuthzRevisionStatus' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/RecordEventsResponse' }
     BadRequest:
       description: >
         Malformed request — invalid JSON, missing required fields, an invalid
@@ -1658,6 +1729,69 @@ components:
       description: >
         authz.write_tuples_checked JSON verbatim — applied (bool), failed
         precondition detail, written/deleted counts.
+    EventInput:
+      type: object
+      description: >
+        One recorded action (record_events_jsonb element). action must be a
+        declared relation of the store (the model is the action vocabulary);
+        the subject is a concrete principal. payload is the authz-relevant
+        projection (input.* / output.*), bounded by authz.max_context_bytes.
+        occurred_at is bounded by authz.event_max_future_skew /
+        event_max_backdate and defaults to the database clock.
+      properties:
+        subject_type: { type: string }
+        subject_id: { type: string }
+        action: { type: string, description: A relation name of the store. }
+        object_type: { type: string }
+        object_id: { type: string, description: Requires object_type. }
+        kind:
+          type: string
+          enum: [request, response, denied]
+          default: request
+        payload:
+          type: object
+          additionalProperties: true
+        occurred_at: { type: string, format: date-time }
+        event_id:
+          type: string
+          description: >
+            Idempotency key, unique per store (e.g. the PEP's request id +
+            kind). A re-delivery is reported as a duplicate, not inserted.
+            Requires occurred_at (the key is stable only together with the
+            message's own timestamp); omitting it is a 400.
+      required: [subject_type, subject_id, action]
+      additionalProperties: false
+    RecordEventsRequest:
+      type: object
+      properties:
+        events:
+          type: array
+          items: { $ref: '#/components/schemas/EventInput' }
+          minItems: 1
+        consistency: { $ref: '#/components/schemas/Consistency' }
+        recorded_by:
+          type: string
+          description: >
+            The asserting actor (events.recorded_by). Same trust rules as
+            performed_by on the write endpoints: PUBLIC listener — the JWT
+            subject is authoritative (omit or send the same value; a differing
+            value is 403 unless ALLOW_SUBJECT_OVERRIDE); INTERNAL callback
+            listener — REQUIRED, the trusted upstream's assertion.
+      required: [events]
+    RecordEventsResponse:
+      type: object
+      properties:
+        store: { type: string }
+        recorded: { type: integer, description: New rows inserted. }
+        duplicates: { type: integer, description: Re-delivered event_ids skipped. }
+        seqs:
+          type: array
+          description: Positional — the seq of each element, null for a duplicate.
+          items: { type: integer, nullable: true }
+        revision:
+          type: string
+          description: Freshness token for this write (when enabled).
+      required: [store, recorded, duplicates, seqs]
 
     # ── errors & meta ────────────────────────────────────────────────────────
     Error:

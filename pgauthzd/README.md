@@ -354,6 +354,7 @@ All configuration is via environment variables.
 | `SEARCH_REQUIRED_ROLE` | | If set, the `search/*` endpoints require this role (`403` otherwise); empty = search open to any authenticated caller |
 | `WATCH_REQUIRED_ROLE` | *unset = watch disabled* | Gates the native changefeed on the public listener (review #10) — the feed exposes authorization topology. Unset: 403. A role name: JWT-role gate. `"*"`: explicitly open (discouraged). Callback listener unaffected |
 | `EXPLAIN_REQUIRED_ROLE` | *empty = open* | Gates native explain on the public listener like search (set a role in production — explain reveals model structure and traces) |
+| `RECORDER_ROLE` | `authz_recorder` | Gates `POST /pgauthz/v1/events` (the action log, [ADR 0012](../docs/adr/0012-action-log.md)) on the public listener; `WRITER_ROLE` passes too. Empty = ungated. Callback listener unaffected (its DB-role check — member of `authz_recorder` — still applies) |
 | `ALLOW_UNBOUND_MULTI_ISSUER` | `false` | With >1 trusted issuers, an issuer without stores/db_roles bindings is a STARTUP FAILURE (cross-tenant risk). This deliberately alarming override restores warn-and-continue |
 | `OPA_MAX_RESPONSE_BYTES` | `10485760` | Bounds every OPA response body; oversized → `policy_evaluation_failed` (5xx), never a large allocation |
 | `DB_ROLE_CLAIM` | | Dot-separated claim path with the caller's per-app DB role for namespace enforcement (see [Per-App Namespace Enforcement](#per-app-namespace-enforcement)) |
@@ -517,6 +518,7 @@ Without a configured native backend the routes return `501 Not Implemented`.
 | POST | `/pgauthz/v1/watch` | direct | A cursored page of the store's audit **changefeed** (HTTP transport over `authz.watch_changes`). |
 | POST | `/pgauthz/v1/write` | **full** | Batch-upsert tuples (`write_tuples_jsonb`). |
 | POST | `/pgauthz/v1/delete` | **full** | Batch-delete tuples (`delete_tuples_jsonb`). |
+| POST | `/pgauthz/v1/events` | **full** | Record what principals *actually did* — the action log (`record_events_jsonb`, [ADR 0012](../docs/adr/0012-action-log.md)); `RECORDER_ROLE`-gated, atomic batches, `event_id` idempotency. |
 
 The `check` / `list-*` endpoints are **policy-free by construction** — they run
 straight against the direct pgx backend, never through a policy layer. That is
@@ -572,6 +574,20 @@ authenticated subject; the per-app DB role from the token governs namespace
 scope exactly as it does for reads. `consistency` maps per-transaction to
 `synchronous_commit`: `applied` (= `remote_apply`, strict revocation),
 `durable` (`on`), `eventual` (`local`); omitted = the connection default.
+
+**The action log** (`POST /pgauthz/v1/events`, [ADR 0012](../docs/adr/0012-action-log.md))
+shares the write path's shape — full profile, per-app `SET LOCAL ROLE`,
+`consistency`, and `recorded_by` under the same attribution rules as
+`performed_by` — but has its own claim gate (`RECORDER_ROLE`, default
+`authz_recorder`; `WRITER_ROLE` passes too) and DB-role check (member of
+`authz_recorder`, which every `authz_writer` is), so an app that only reports
+actions needs no tuple-write rights. Body: `{ "events": [ … ], "consistency",
+"recorded_by" }` in the `record_events_jsonb` shape (`subject_type`,
+`subject_id`, `action` — a declared relation of the store — plus optional
+`object_type`/`object_id`, `kind` (`request|response|denied`), `payload`,
+`occurred_at`, `event_id`). Response: `{"store", "recorded", "duplicates",
+"seqs"}`. Engine content rejections (undeclared action, out-of-bounds
+`occurred_at`, malformed element) are `400`; a namespace refusal `403`.
 
 #### Read-your-writes: freshness tokens (ADR 0009)
 

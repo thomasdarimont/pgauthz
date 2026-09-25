@@ -1010,7 +1010,7 @@ These are intentional trade-offs, not technical debt:
 - **No gRPC / SDK ecosystem** — SQL and REST are the integration points
 - **No distributed transactions** — writes go to one PostgreSQL instance
 - **No built-in WebSocket/SSE transport** — the Watch changefeed (`watch_changes` + `NOTIFY authz_changes`) is available, but bridging it to browser push (WebSocket/SSE) is left to the deployment
-- **No built-in rate limiting** — expected to be handled at the infrastructure layer (load balancer, Nginx)
+- **No built-in request rate limiting** — expected to be handled at the infrastructure layer (load balancer, Nginx). Bounding *authorized actions per principal* ("at most 5 transfers per hour") is a policy concern: the action log ([ADR 0012](adr/0012-action-log.md), shipped) records what principals did, and model gates over it (phase 2, designed) will enforce such limits in the model
 
 ---
 

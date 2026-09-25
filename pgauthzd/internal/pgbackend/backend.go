@@ -3,11 +3,14 @@ package pgbackend
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"thomasdarimont.de/authz/pgauthzd/internal/api"
@@ -234,6 +237,21 @@ func (b *Backend) writeWithRole(ctx context.Context, consistency string, fn func
 }
 
 func (b *Backend) writeWithRoleInner(ctx context.Context, consistency string, fn func(q querier) error) error {
+	return b.writeWithRoleCheck(ctx, consistency, b.checkWriterRole, fn)
+}
+
+// recordWithRole is writeWithRole for the action log (ADR 0012): the same
+// transaction shape (per-app SET LOCAL ROLE, consistency mode), but the role
+// must be recorder-capable (member of authz_recorder — which every writer is)
+// rather than writer-capable, so a pure recorder app role passes.
+func (b *Backend) recordWithRole(ctx context.Context, consistency string, fn func(q querier) error) error {
+	return b.observe(ctx, "write", func() error {
+		return b.writeWithRoleCheck(ctx, consistency, b.checkRecorderRole, fn)
+	})
+}
+
+func (b *Backend) writeWithRoleCheck(ctx context.Context, consistency string,
+	checkRole func(context.Context, string) error, fn func(q querier) error) error {
 	role := api.DBRoleFromContext(ctx)
 	tx, err := b.pool.Begin(ctx)
 	if err != nil {
@@ -241,7 +259,7 @@ func (b *Backend) writeWithRoleInner(ctx context.Context, consistency string, fn
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
 	if role != "" {
-		if err := b.checkWriterRole(ctx, role); err != nil {
+		if err := checkRole(ctx, role); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+pgx.Identifier{role}.Sanitize()); err != nil {
@@ -297,6 +315,83 @@ func (b *Backend) checkWriterRole(ctx context.Context, role string) error {
 		return fmt.Errorf("db role %q is not an allowed writer role: %w", role, authz.ErrForbiddenRole)
 	}
 	return nil
+}
+
+// checkRecorderRole validates a per-app role before assuming it for an
+// action-log write (ADR 0012): member of authz_recorder (roles.sql grants it
+// to authz_writer, so every writer role passes too), not admin. Fail closed
+// on unknown roles. Own cache key so a reader-only role can't be cached as
+// recorder-capable and vice versa.
+func (b *Backend) checkRecorderRole(ctx context.Context, role string) error {
+	cacheKey := "e:" + role
+	if b.roleCacheTTL > 0 {
+		if v, ok := b.roleOK.Load(cacheKey); ok {
+			e := v.(roleCacheEntry)
+			if time.Since(e.checked) < b.roleCacheTTL {
+				if e.allowed {
+					return nil
+				}
+				return fmt.Errorf("db role %q is not an allowed recorder role: %w", role, authz.ErrForbiddenRole)
+			}
+		}
+	}
+	var allowed bool
+	err := b.pool.QueryRow(ctx,
+		`SELECT pg_has_role($1, 'authz_recorder', 'member')
+		    AND NOT pg_has_role($1, 'authz_admin', 'member')`, role).Scan(&allowed)
+	if err != nil {
+		return fmt.Errorf("validating recorder db role %q: %w", role, err)
+	}
+	if b.roleCacheTTL > 0 {
+		b.roleOK.Store(cacheKey, roleCacheEntry{allowed: allowed, checked: time.Now()})
+	}
+	if !allowed {
+		return fmt.Errorf("db role %q is not an allowed recorder role: %w", role, authz.ErrForbiddenRole)
+	}
+	return nil
+}
+
+// mapEngineError classifies a PostgreSQL error from an engine function into
+// the caller-error sentinels the HTTP layer maps to 4xx: an EXECUTE denial or
+// a namespace-isolation refusal is the caller's authorization problem (403);
+// a data/integrity/limit violation or an engine RAISE about the request's
+// content (unknown action, out-of-bounds occurred_at, malformed batch
+// element) is a bad request (400). Anything else stays a server fault.
+func mapEngineError(err error) error {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return err
+	}
+	switch {
+	case pgErr.Code == "42501": // insufficient_privilege (no EXECUTE on the function)
+		return fmt.Errorf("%w: %s", authz.ErrForbiddenRole, pgErr.Message)
+	case pgErr.Code == "P0001" && strings.HasPrefix(pgErr.Message, "Permission denied"):
+		// _check_namespace_access raises with the default SQLSTATE; its message
+		// prefix is the stable contract the SQL tests assert on too.
+		return fmt.Errorf("%w: %s", authz.ErrForbiddenRole, pgErr.Message)
+	case pgErr.Code == "P0001", // raise_exception (engine RAISE about the request)
+		pgErr.Code == "54000",               // program_limit_exceeded (payload over max_context_bytes)
+		strings.HasPrefix(pgErr.Code, "22"), // data exception (invalid_parameter_value, bad timestamp, ...)
+		strings.HasPrefix(pgErr.Code, "23"): // integrity constraint (FK: undeclared action/type)
+		return fmt.Errorf("%w: %s", authz.ErrInvalidRequest, pgErr.Message)
+	}
+	return err
+}
+
+// RecordEvents implements authz.EventRecorder via authz.record_events_jsonb
+// (ADR 0012): one atomic batch under the recorder-capable per-app role.
+func (b *Backend) RecordEvents(ctx context.Context, req authz.RecordEventsRequest) (json.RawMessage, error) {
+	var raw []byte
+	err := b.recordWithRole(ctx, req.Consistency, func(q querier) error {
+		return q.QueryRow(ctx,
+			"SELECT authz.record_events_jsonb($1, $2, $3)",
+			req.Store, []byte(req.Events), textOrNil(req.RecordedBy),
+		).Scan(&raw)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("record_events_jsonb: %w", mapEngineError(err))
+	}
+	return raw, nil
 }
 
 // syncCommit maps a request consistency mode to a whitelisted synchronous_commit

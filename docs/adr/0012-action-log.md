@@ -1,0 +1,193 @@
+# ADR 0012 — The action log: history-dependent authorization over recorded actions
+
+- **Status:** Accepted (phase 1 shipped; phases 2–3 designed, not built)
+- **Date:** 2026-09-25
+- **Deciders:** maintainers
+- **Relates to:** [0004](0004-integer-type-relation-ids.md) (integer ids),
+  [0006](0006-models-as-data.md) (models as data), [0011](0011-opa-policy-hooks.md)
+  (why this does not live in OPA hooks), `docs/SECURITY-AUDIT.md` F5 / F11 / F16
+
+## Context
+
+Every time notion in the engine is point-in-time: tuple expiry, a caller's
+`request.current_time`, a hook's `input.evaluated_at`, time-travel replaying
+the *graph*. What the engine cannot answer is **"may X do Y, given what X has
+already done?"** — rate limits and quotas per principal and action, prior
+approval, step-up freshness, lockout after repeated denials, agent
+guardrails ("an agent may write a file only if it read it in this session").
+Today's stand-in is the `under_quota` condition pattern where the caller passes
+`request.usage_count` — the same trust hole as `current_time`: the PEP asserts
+a counter on every check and the engine has no facts of its own.
+
+Two gaps block a real answer: there is **no action log** (`*_audit` records
+grant/revoke, pgauthzd's decision logs are not actions), and conditions cannot
+read tables by design (`_exec_condition` runs as the zero-grant `authz_eval`).
+The altitude is also wrong: tuple conditions are per-relationship ABAC, while
+"at most 5 transfers per hour" is a per-principal/action behavioural gate that
+belongs **next to the check**.
+
+AWS Dogwood's `when temporal { … }` clause (MFOTL over an agent's tool-call
+trace: `formerly within`, `count_within`, `count_distinct_within`,
+`sum_within`) is the reference for the primitive set.
+
+## Decision
+
+Three parts, shipped in phases. **Phase 1 (this ADR's shipped scope)** is the
+log and its ingestion contract; it has standalone value as a per-store,
+per-principal action trail queryable next to the graph.
+
+### 1. An action log, fed by the PEP — never by the check path
+
+`authz.events` (migration 0010) is a store-scoped, append-only record of what
+a principal **actually did**, asserted by a trusted recorder through a
+dedicated write API — `authz.record_event` / `record_events_jsonb` (SQL, new
+`authz_recorder` role) and `POST /pgauthz/v1/events` (pgauthzd `full` profile,
+`RECORDER_ROLE` claim gate). A message-queue consumer is a reference example,
+not a daemon feature.
+
+**The check path never writes.** A PDP "allow" is not an action: the PEP may
+ignore the decision, the action may fail, the check may be a dry run.
+Recording inside `check_access` would count things that never happened and put
+a write on the hot read path (replicas, memoization, `decision-only`
+instances). The v1 design's `check_and_record` was rejected for this reason;
+a PEP that needs a hard, concurrency-safe bound opts into an explicit
+`reserve_event` write (phase 3) *because* it is about to act.
+
+Consequently the engine bounds **recorded** actions. Two concurrent checks can
+both see `count = 4`; an action that was allowed but never recorded is
+invisible. That is the correct default — the PDP answers "given what I know
+happened, may this happen?", and the PEP owns the truth about what happened.
+Feeding the log reliably (idempotency keys, dead-lettering unknown actions)
+is an application responsibility a PEP takes on when it adopts gates.
+
+### 2. The model is the action vocabulary
+
+Events carry **integer ids** like tuples (ADR 0004): `subject_type` /
+`object_type` are `authz.types` ids, `action` is an `authz.relations` id. An
+action must therefore be **declared as a relation** of the store before it can
+be recorded — a typo fails loud at record time (FK → 400) instead of silently
+creating an event stream no gate ever reads; gates, `describe_model` and the
+registry validate `action` references against the model; the registry already
+snapshots relations, so publishing a model propagates the vocabulary. Types
+and relations are append-only registries, so events never dangle. The one
+operational rule: an ingestion consumer must dead-letter unknown actions,
+never drop them — a new action goes live by publishing the model first.
+
+### 3. Trust model for recorded events
+
+- **The recorder is trusted for its assertion**, exactly as a tuple writer is
+  trusted for its tuples; a compromised recorder can fabricate an approval and
+  (in phase 2) pass a gate — the same blast radius as fabricating an
+  `approver` tuple. Mitigations: `recorded_by` is server-attributed and
+  immutable (the F16 rules: the JWT subject is authoritative on the public
+  listener, the trusted upstream's assertion is required on the callback
+  listener); a gate spec may pin `recorded_by` to an allowlist; recording
+  *about* an object type in a namespace requires the same `can_write`
+  namespace grant tuple writes need, so per-app isolation extends to the log.
+- **Timestamps are bounded, not blindly trusted.** `occurred_at` is
+  caller-asserted (asynchronous ingestion arrives late; the recorder already
+  vouches *that* it happened, so trusting *when* adds no new trust) but
+  rejected beyond `authz.event_max_future_skew` (default 5 s) ahead of or
+  `authz.event_max_backdate` (default 24 h) behind the database clock, and
+  defaults to it. `recorded_at` is the database clock, authoritative for
+  audit. Windows (phase 2) evaluate over `occurred_at` on the database clock.
+  This is a different boundary from F11: F11 was an unprivileged caller
+  forging a GUC to bypass RLS; here a privileged recorder asserts a bounded
+  fact it is already trusted for.
+- **Idempotency.** `event_id` is a client key, unique per store; a
+  re-delivery is reported as a duplicate, never inserted. Because a unique
+  index on a partitioned table must include the partition key, the key is
+  stable only together with `occurred_at` — so `event_id` **requires**
+  `occurred_at` (the message's own timestamp); a retry that let it default to
+  the server clock would count twice, and the engine refuses that loudly.
+- **Bounded input.** Payloads are objects capped by `authz.max_context_bytes`
+  (F5); a batch is atomic (one bad element records nothing, like
+  `write_tuples_jsonb`); the HTTP body cap applies.
+- **Append-only.** No role holds `UPDATE`/`DELETE`; a block-DML trigger
+  (audit profile) is the defense in depth, honouring the same
+  `authz.audit_maintenance` window the audit tables use for the partition row
+  move and `delete_store` erasure. Retention is a partition drop.
+
+### 4. Gates (phase 2) and the strict tier (phase 3) — designed, not built
+
+Gates are declarative `all_of` clauses over four fixed window primitives
+(`formerly_within`, `count_within`, `count_distinct_within`, `sum_within`),
+attached to an `(object_type, relation)` in a new relational table
+`authz.model_gates` with a jsonb spec, evaluated by **engine code as
+`authz_owner`** after the graph allows — outside the `authz_eval` sandbox (no
+new grants to it) and outside OPA hooks (ADR 0011 forbids `http.send` in store
+hooks, and hooks cannot write). They apply to every public entry point through
+one `_decide` wrapper above the memoized graph walk, to enumeration
+(`list_*` — otherwise listings would be graph-derived supersets, the problem
+ADR 0011 solved), to explain (counts and thresholds only, never matched
+payloads), to `check_access_detailed` (missing `$request.*` keys ⇒
+`conditional`), to time-travel (a `model_gates_audit` following the
+conditions precedent; events need no snapshot — the as-of filter is
+`occurred_at <= p_at AND recorded_at <= p_at`), and to the model registry
+(`export_model` gains `gates`; the checksum drops the key when empty so
+gate-free stores do not drift). The spec grammar, failure semantics and
+wiring seam are fixed in `scratch/notes/temporal-conditions-v2.md` and move
+into `docs/MODEL_DESIGN.md` when phase 2 lands.
+
+**What belongs in a gate:** a *permission* question ("may X do Y now?") that a
+security or compliance owner wants to define, version, audit and enforce
+centrally — separation of duties, prior approval, step-up freshness, lockout,
+quotas, exfiltration brakes, agent guardrails. **What does not:** anything that
+decides an *outcome* (which account to debit, whether to retry, the next
+workflow state) or needs richer signals than "what did this principal do"
+(fraud scoring). Gates are veto-only and non-programmable by construction;
+the PEP records a minimal payload projection, not its domain object; every
+rule has one owner (a gate replaces an application check or is documented as
+a backstop).
+
+## Consequences
+
+- **New surface:** table `authz.events`; SQL `record_event`,
+  `record_events_jsonb`, `list_events`, `ensure_event_partitions`,
+  `drop_event_partitions_before`; role `authz_recorder` (granted to
+  `authz_writer`); pgauthzd `POST /pgauthz/v1/events` + `RECORDER_ROLE`;
+  GUCs `authz.event_max_future_skew`, `authz.event_max_backdate`; metric
+  `pgauthzd_events_recorded_total`. Engine files `events.sql` (read) and
+  `events_admin.sql` (write) in the manifest; the audit partition worker is
+  generalized into `_ensure_month_partition` / `_drop_month_partitions_before`
+  shared by both logs.
+- **Operations:** schedule `ensure_event_partitions()` next to
+  `ensure_audit_partitions()`; retention via `drop_event_partitions_before`
+  (keep it ≥ the longest gate window once gates exist — a dropped month can
+  only *relax* a cap); set `authz.event_max_backdate` to the queue's
+  worst-case lag; `delete_store` purges the store's events.
+- **Replication:** events replicate like everything else; a read-only install
+  can list them (auditor) and, in phase 2, evaluate gates, but cannot record.
+  A `decision-only` instance reading a replica sees counts lagged by
+  replication — the same stale-allow class as ADR 0009 covers; recording with
+  `consistency: applied` removes the recorder's own read-after-write gap.
+- **Not a decision log, not the audit trail.** pgauthzd never auto-records
+  decisions or denials; a PEP that wants denials on record sends
+  `kind: denied`. AuthZEN 1.0 has no "report an action" verb; the native
+  endpoint is the contract.
+- **Payload projection is a convention in v1** (documented per gate); an
+  enforced per-action payload schema needs a column on `authz.relations` and
+  is a follow-up.
+
+## Alternatives considered
+
+- **Record inside the check** (v1's `check_and_record`): rejected — counts
+  non-actions, writes on the read path (see §1).
+- **Pilot in OPA hooks via the native callback:** rejected — ADR 0011 forbids
+  `http.send` in store hooks and strips `time.now_ns`; hooks cannot write.
+- **Window helpers granted to `authz_eval`** ("one audited hole"): rejected —
+  `authz_eval` has no `USAGE` on schema `authz`, and widening it is not the
+  same shape as the `_rls_*` bypass helpers.
+- **Free-form action strings:** rejected in favour of declared relations (§2).
+- **Server clock only for `occurred_at`:** rejected — asynchronous ingestion
+  arrives late; bounded caller time is the honest model (§3).
+- **A `lang='dogwood'` condition language:** out of scope — Dogwood policies
+  are principal/action/resource + trace and do not decompose into per-tuple
+  predicates.
+
+## Non-goals
+
+Liveness ("must eventually approve"), full MFOTL (`since`/`until`, nested
+quantifiers), obligations/advice, and replacing infrastructure request
+rate-limiting: infrastructure bounds *requests*; gates (phase 2) bound
+*authorized actions per principal* — a policy concern.

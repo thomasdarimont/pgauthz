@@ -78,6 +78,7 @@ echo "==> Loading engine code (functions + roles) as role authz..."
     echo ";"
   done
   echo "SELECT authz.ensure_audit_partitions();"
+  echo "SELECT authz.ensure_event_partitions();"
   if [ -n "${CONDITION_STATEMENT_TIMEOUT:-}" ]; then
     echo "ALTER ROLE authzen_direct SET statement_timeout = '${CONDITION_STATEMENT_TIMEOUT}';"
     echo "ALTER ROLE pgauthzd_rw    SET statement_timeout = '${CONDITION_STATEMENT_TIMEOUT}';"

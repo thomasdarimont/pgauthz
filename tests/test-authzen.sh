@@ -568,6 +568,78 @@ check_http "write is not on the OPA-fronted public listener (404)" \
     -H "Content-Type: application/json" -H "$AUTH_WP" -d "$WP_BODY"
 fi
 
+# --- Action log (/pgauthz/v1/events, ADR 0012) — FULL profile only ---
+# The PEP reports what principals actually did; pgauthzd gates the endpoint by
+# the RECORDER_ROLE claim (authz_recorder; a writer passes too), attributes
+# recorded_by to the JWT subject, and maps engine rejections to 4xx.
+echo ""
+echo "==> Action log (/pgauthz/v1/events) — full profile..."
+echo ""
+
+AUTH_REC="Authorization: Bearer $(make_token eprobe internal_user '["authz_recorder"]')"
+AUTH_NOREC="Authorization: Bearer $(make_token eprobe_nr internal_user '["viewer"]')"
+EV_ID="e2e-$(date +%s%N)"
+EV_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"   # an idempotency key travels with the message's own timestamp
+EV_BODY='{"events":[{"subject_type":"internal_user","subject_id":"eprobe","action":"can_read","object_type":"document","object_id":"doc_payroll_001","kind":"request","payload":{"input":{"bytes":1}},"event_id":"'"$EV_ID"'","occurred_at":"'"$EV_AT"'"}]}'
+
+check_json "events: a recorder-role token records (recorded=1)" \
+    "$FULL_URL/pgauthz/v1/events" "$AUTH_REC" "$EV_BODY" \
+    '.recorded' "1"
+
+check_json "events: re-delivery of the same event_id is a duplicate, not a row" \
+    "$FULL_URL/pgauthz/v1/events" "$AUTH_REC" "$EV_BODY" \
+    '.duplicates' "1"
+
+check_json "events: a writer-role token may record too" \
+    "$FULL_URL/pgauthz/v1/events" "$AUTH_WP" \
+    '{"events":[{"subject_type":"internal_user","subject_id":"wprobe","action":"viewer","kind":"response"}]}' \
+    '.recorded' "1"
+
+check_http "events: 403 without the recorder role" \
+    "403" \
+    -X POST "$FULL_URL/pgauthz/v1/events" \
+    -H "Content-Type: application/json" -H "$AUTH_NOREC" -d "$EV_BODY"
+
+check_http "events: 403 on the read-only decision-only instance" \
+    "403" \
+    -X POST "$DIRECT_URL/pgauthz/v1/events" \
+    -H "Content-Type: application/json" -H "$AUTH_REC" -d "$EV_BODY"
+
+check_http "events: an undeclared action is the caller's 400" \
+    "400" \
+    -X POST "$FULL_URL/pgauthz/v1/events" \
+    -H "Content-Type: application/json" -H "$AUTH_REC" \
+    -d '{"events":[{"subject_type":"internal_user","subject_id":"eprobe","action":"no_such_action"}]}'
+
+check_http "events: an out-of-bounds occurred_at is 400" \
+    "400" \
+    -X POST "$FULL_URL/pgauthz/v1/events" \
+    -H "Content-Type: application/json" -H "$AUTH_REC" \
+    -d '{"events":[{"subject_type":"internal_user","subject_id":"eprobe","action":"can_read","occurred_at":"2099-01-01T00:00:00Z"}]}'
+
+# recorded_by follows performed_by's trust split: token-derived on the public
+# listener (a differing value is 403) unless the instance runs in trusted-PEP
+# mode (ALLOW_SUBJECT_OVERRIDE=true — the demo stack's default via env.sh),
+# where the asserted actor is accepted. Both branches are unit-tested; here we
+# assert whichever mode the stack is in.
+if [ "${ALLOW_SUBJECT_OVERRIDE:-true}" = "true" ]; then
+    EXPECT_ACTOR_STATUS=200
+else
+    EXPECT_ACTOR_STATUS=403
+fi
+check_http "events: recorded_by differing from the subject follows ALLOW_SUBJECT_OVERRIDE ($EXPECT_ACTOR_STATUS)" \
+    "$EXPECT_ACTOR_STATUS" \
+    -X POST "$FULL_URL/pgauthz/v1/events" \
+    -H "Content-Type: application/json" -H "$AUTH_REC" \
+    -d '{"events":[{"subject_type":"internal_user","subject_id":"eprobe","action":"can_read"}],"recorded_by":"someone-else"}'
+
+if [ "$OPA_UP" = 1 ]; then
+check_http "events is not on the OPA-fronted public listener (404)" \
+    "404" \
+    -X POST "$OPA_URL/pgauthz/v1/events" \
+    -H "Content-Type: application/json" -H "$AUTH_REC" -d "$EV_BODY"
+fi
+
 # --- Cache-Control: no-cache → fresh decision (pgauthzd-opa) ---
 # The standard freshness header maps to OPA's input.no_cache (0-second
 # decision-cache TTL). Proof: prime the OPA cache with an allow, revoke the

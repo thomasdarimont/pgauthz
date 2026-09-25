@@ -142,6 +142,12 @@ type Config struct {
 	// this gate (it trusts the upstream OPA's asserted X-PGAuthz-Role). Env
 	// WRITER_ROLE.
 	WriterRole string
+	// RecorderRole: the JWT role a caller must hold to feed the ACTION LOG
+	// (POST /pgauthz/v1/events, ADR 0012) on the PUBLIC listener; the
+	// WriterRole also passes (a writer can record). Default "authz_recorder".
+	// Like WriterRole it is not applied on the callback listener. Env
+	// RECORDER_ROLE.
+	RecorderRole string
 
 	// DBRoleClaim: dot-separated claim path carrying the caller's per-app DB
 	// role for pgauthz namespace enforcement on the direct backend (mirrors
@@ -335,6 +341,7 @@ func Load() (*Config, error) {
 		WatchRequiredRole:            env("WATCH_REQUIRED_ROLE", ""),
 		ExplainRequiredRole:          env("EXPLAIN_REQUIRED_ROLE", ""),
 		WriterRole:                   env("WRITER_ROLE", "authz_writer"),
+		RecorderRole:                 env("RECORDER_ROLE", "authz_recorder"),
 		DBRoleClaim:                  env("DB_ROLE_CLAIM", ""),
 		SubjectTypeClaim:             env("SUBJECT_TYPE_CLAIM", "subject_type"),
 		SubjectTypeDefault:           env("SUBJECT_TYPE_DEFAULT", "internal_user"),

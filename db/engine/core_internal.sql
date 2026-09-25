@@ -368,14 +368,44 @@ CREATE OR REPLACE FUNCTION authz._ensure_audit_partition(
     p_month int
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
+BEGIN
+    RETURN authz._ensure_month_partition('tuples_audit', 'performed_at', p_year, p_month);
+END;
+$$;
+
+------------------------------------------------------------------------
+-- _ensure_month_partition: the shared worker behind _ensure_audit_partition
+-- and _ensure_event_partition (events_admin.sql). Creates
+-- authz.<parent>_YYYY_MM covering that month of the RANGE column p_column,
+-- moving any rows of that month out of the default partition
+-- authz.<parent>_default (which is detached and re-attached around the
+-- DDL). Returns false when the partition already exists.
+--
+-- p_parent / p_column are engine-internal constants, never caller text;
+-- both are still %I-quoted (SECURITY-AUDIT F3). The row move DELETEs from
+-- the default partition under the authz.audit_maintenance window so the
+-- append-only block-DML triggers (audit_triggers.sql) let it through —
+-- the rows were copied first, so the log is preserved overall.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._ensure_month_partition(
+    p_parent text,
+    p_column text,
+    p_year   int,
+    p_month  int
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
 DECLARE
     v_table_name text;
+    v_default    text := p_parent || '_default';
     v_start      date;
     v_end        date;
 BEGIN
+    IF p_parent !~ '^[a-z_]+$' OR p_column !~ '^[a-z_]+$' THEN
+        RAISE EXCEPTION 'invalid partition parent/column: %.%', p_parent, p_column;
+    END IF;
     -- Unqualified name (integer-derived, so already safe); %I-quoted in the DDL
     -- below for consistency with the tuple partitions. See SECURITY-AUDIT F3.
-    v_table_name := format('tuples_audit_%s_%s', p_year, lpad(p_month::text, 2, '0'));
+    v_table_name := format('%s_%s_%s', p_parent, p_year, lpad(p_month::text, 2, '0'));
     v_start      := make_date(p_year, p_month, 1);
     v_end        := v_start + interval '1 month';
 
@@ -384,38 +414,84 @@ BEGIN
         SELECT 1 FROM pg_catalog.pg_class c
           JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
          WHERE n.nspname = 'authz'
-           AND c.relname = format('tuples_audit_%s_%s', p_year, lpad(p_month::text, 2, '0'))
+           AND c.relname = v_table_name
            AND c.relispartition
     ) THEN
         RETURN false;
     END IF;
 
     -- Detach default, create monthly partition, migrate rows, re-attach default
-    EXECUTE 'ALTER TABLE authz.tuples_audit DETACH PARTITION authz.tuples_audit_default';
+    EXECUTE format('ALTER TABLE authz.%I DETACH PARTITION authz.%I', p_parent, v_default);
     EXECUTE format(
-        'CREATE TABLE authz.%I PARTITION OF authz.tuples_audit FOR VALUES FROM (%L) TO (%L)',
-        v_table_name, v_start, v_end
+        'CREATE TABLE authz.%I PARTITION OF authz.%I FOR VALUES FROM (%L) TO (%L)',
+        v_table_name, p_parent, v_start, v_end
     );
 
     -- Move rows from the default partition into the new partition.
     -- OVERRIDING SYSTEM VALUE: the rows keep their original seq values
-    -- (seq is the audit event order and must survive migration).
+    -- (seq is the event order and must survive migration).
     EXECUTE format(
-        'INSERT INTO authz.%I OVERRIDING SYSTEM VALUE SELECT * FROM authz.tuples_audit_default WHERE performed_at >= %L AND performed_at < %L',
-        v_table_name, v_start, v_end
+        'INSERT INTO authz.%I OVERRIDING SYSTEM VALUE SELECT * FROM authz.%I WHERE %I >= %L AND %I < %L',
+        v_table_name, v_default, p_column, v_start, p_column, v_end
     );
     -- Sanctioned maintenance: the rows were copied above, so deleting
-    -- them from the default partition preserves the audit data overall.
+    -- them from the default partition preserves the data overall.
     PERFORM set_config('authz.audit_maintenance', 'on', true);
     EXECUTE format(
-        'DELETE FROM authz.tuples_audit_default WHERE performed_at >= %L AND performed_at < %L',
-        v_start, v_end
+        'DELETE FROM authz.%I WHERE %I >= %L AND %I < %L',
+        v_default, p_column, v_start, p_column, v_end
     );
     PERFORM set_config('authz.audit_maintenance', '', true);
 
-    EXECUTE 'ALTER TABLE authz.tuples_audit ATTACH PARTITION authz.tuples_audit_default DEFAULT';
+    EXECUTE format('ALTER TABLE authz.%I ATTACH PARTITION authz.%I DEFAULT', p_parent, v_default);
 
     RETURN true;
+END;
+$$;
+
+------------------------------------------------------------------------
+-- _drop_month_partitions_before: retention by partition drop. Drops every
+-- monthly partition authz.<parent>_YYYY_MM whose month ends on or before
+-- p_before (i.e. whose rows are ALL older than p_before) — DDL, so the
+-- append-only triggers are not involved and the cost is O(partitions).
+-- Rows in the default partition are never touched (run
+-- _ensure_month_partition ahead of time so they don't accumulate there).
+-- Returns the number of partitions dropped.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._drop_month_partitions_before(
+    p_parent text,
+    p_before date
+) RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_dropped integer := 0;
+    v_part    record;
+    v_month   date;
+BEGIN
+    IF p_parent !~ '^[a-z_]+$' THEN
+        RAISE EXCEPTION 'invalid partition parent: %', p_parent;
+    END IF;
+    FOR v_part IN
+        SELECT c.relname,
+               substring(c.relname from length(p_parent) + 2 for 4)::int AS yr,
+               substring(c.relname from length(p_parent) + 7 for 2)::int AS mo
+          FROM pg_catalog.pg_inherits i
+          JOIN pg_catalog.pg_class c  ON c.oid = i.inhrelid
+          JOIN pg_catalog.pg_class p  ON p.oid = i.inhparent
+          JOIN pg_catalog.pg_namespace n ON n.oid = p.relnamespace
+         WHERE n.nspname = 'authz'
+           AND p.relname = p_parent
+           AND c.relname ~ ('^' || p_parent || '_[0-9]{4}_[0-9]{2}$')
+         ORDER BY c.relname
+    LOOP
+        v_month := make_date(v_part.yr, v_part.mo, 1) + interval '1 month';
+        IF v_month <= p_before THEN
+            EXECUTE format('ALTER TABLE authz.%I DETACH PARTITION authz.%I', p_parent, v_part.relname);
+            EXECUTE format('DROP TABLE authz.%I', v_part.relname);
+            v_dropped := v_dropped + 1;
+        END IF;
+    END LOOP;
+    RETURN v_dropped;
 END;
 $$;
 

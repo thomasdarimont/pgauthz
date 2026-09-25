@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -33,6 +34,14 @@ func (b *writeStubBackend) WriteTuplesChecked(context.Context, authz.CheckedWrit
 func (b *writeStubBackend) DeleteTuples(context.Context, authz.WriteRequest) (int, error) {
 	return b.written, b.writeErr
 }
+func (b *writeStubBackend) RecordEvents(context.Context, authz.RecordEventsRequest) (json.RawMessage, error) {
+	if b.writeErr != nil {
+		return nil, b.writeErr
+	}
+	return json.RawMessage(`{"recorded": ` + strconvItoa(b.written) + `, "duplicates": 1, "seqs": [7, null]}`), nil
+}
+
+func strconvItoa(n int) string { return strconv.Itoa(n) }
 
 func writeReq() *http.Request {
 	r := httptest.NewRequest(http.MethodPost, "/pgauthz/v1/write",
@@ -225,5 +234,116 @@ func TestMaxBodyCapsOversizedWrite(t *testing.T) {
 	handler.ServeHTTP(w, r)
 	if w.Code != http.StatusOK {
 		t.Fatalf("in-limit body must pass: got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// --- Action log (POST /pgauthz/v1/events, ADR 0012) ---------------------------
+
+func eventsReqWithRoles(roles []string, recordedBy string) *http.Request {
+	body := `{"events":[{"subject_type":"user","subject_id":"alice","action":"download","object_type":"doc","object_id":"d","kind":"request","payload":{"input":{"bytes":1}},"event_id":"r1/request"}]`
+	if recordedBy != "" {
+		body += `,"recorded_by":` + strconvQuote(recordedBy)
+	}
+	body += `}`
+	r := httptest.NewRequest(http.MethodPost, "/pgauthz/v1/events", strings.NewReader(body))
+	ctx := context.WithValue(r.Context(), ctxSubjectType, "user")
+	ctx = context.WithValue(ctx, ctxSubjectID, "alice")
+	if roles != nil {
+		ctx = context.WithValue(ctx, ctxRoles, roles)
+	}
+	return r.WithContext(ctx)
+}
+
+// The RECORDER_ROLE gate on the public listener: the recorder role passes, the
+// writer role passes (a writer can record), anything else is 403; the callback
+// listener skips the gate like it skips the writer gate.
+func TestRecordEventsRoleGate(t *testing.T) {
+	cases := []struct {
+		name           string
+		publicListener bool
+		roles          []string
+		wantCode       int
+	}{
+		{"public: recorder role ok", true, []string{"authz_recorder"}, http.StatusOK},
+		{"public: writer role ok (a writer can record)", true, []string{"authz_writer"}, http.StatusOK},
+		{"public: reader-only is 403", true, []string{"viewer"}, http.StatusForbidden},
+		{"public: no roles is 403", true, nil, http.StatusForbidden},
+		{"callback: gate skipped", false, nil, http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &writeStubBackend{written: 1}
+			h := NewHandler(b, b, b, &config.Config{
+				Profile: config.ProfileFull, DefaultStore: "demo",
+				WriterRole: "authz_writer", RecorderRole: "authz_recorder",
+			})
+			h.requireWriterRole = tc.publicListener
+			w := httptest.NewRecorder()
+			h.RecordEvents(w, eventsReqWithRoles(tc.roles, "alice"))
+			if w.Code != tc.wantCode {
+				t.Fatalf("got %d, want %d; body=%s", w.Code, tc.wantCode, w.Body.String())
+			}
+			if tc.wantCode == http.StatusOK && !strings.Contains(w.Body.String(), `"recorded":1`) {
+				t.Fatalf("ok record: body=%s", w.Body.String())
+			}
+		})
+	}
+}
+
+// The engine's content rejections (undeclared action, out-of-bounds
+// occurred_at, malformed element) are the caller's 400; a DB-role refusal is
+// 403; a genuine fault stays 500. The decision-only profile refuses with 403.
+func TestRecordEventsErrorMapping(t *testing.T) {
+	cases := []struct {
+		name     string
+		profile  config.Profile
+		err      error
+		wantCode int
+	}{
+		{"invalid request is 400", config.ProfileFull, authz.ErrInvalidRequest, http.StatusBadRequest},
+		{"forbidden role is 403", config.ProfileFull, authz.ErrForbiddenRole, http.StatusForbidden},
+		{"backend fault is 500", config.ProfileFull, context.DeadlineExceeded, http.StatusInternalServerError},
+		{"decision-only is 403", config.ProfileDecisionOnly, nil, http.StatusForbidden},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &writeStubBackend{written: 1, writeErr: tc.err}
+			h := NewHandler(b, b, b, &config.Config{Profile: tc.profile, DefaultStore: "demo"})
+			h.requireWriterRole = false
+			w := httptest.NewRecorder()
+			h.RecordEvents(w, eventsReqWithRoles(nil, "alice"))
+			if w.Code != tc.wantCode {
+				t.Fatalf("got %d, want %d; body=%s", w.Code, tc.wantCode, w.Body.String())
+			}
+		})
+	}
+}
+
+// recorded_by shares performed_by's trust split: token-derived on the public
+// listener (a differing value is 403), required on the callback listener.
+func TestRecordEventsRecordedByAttribution(t *testing.T) {
+	b := &writeStubBackend{written: 1}
+	h := NewHandler(b, b, b, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo"})
+	h.requireWriterRole = true
+	w := httptest.NewRecorder()
+	h.RecordEvents(w, eventsReqWithRoles([]string{"authz_recorder"}, "mallory-as-bob"))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("differing recorded_by on public listener: got %d, want 403; body=%s", w.Code, w.Body.String())
+	}
+
+	h.requireWriterRole = false
+	r := httptest.NewRequest(http.MethodPost, "/pgauthz/v1/events",
+		strings.NewReader(`{"events":[{"subject_type":"user","subject_id":"a","action":"download"}]}`))
+	w = httptest.NewRecorder()
+	h.RecordEvents(w, r)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "recorded_by is required") {
+		t.Fatalf("empty recorded_by on callback listener: got %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	h.RecordEvents(w, httptest.NewRequest(http.MethodPost, "/pgauthz/v1/events",
+		strings.NewReader(`{"recorded_by":"svc:files"}`)))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "events is required") {
+		t.Fatalf("missing events: got %d; body=%s", w.Code, w.Body.String())
 	}
 }

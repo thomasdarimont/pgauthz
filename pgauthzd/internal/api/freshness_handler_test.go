@@ -39,6 +39,9 @@ func (b *freshStub) DeleteUserTuples(context.Context, authz.DeleteUserRequest) (
 func (b *freshStub) WriteTuplesChecked(context.Context, authz.CheckedWriteRequest) (json.RawMessage, error) {
 	return nil, nil
 }
+func (b *freshStub) RecordEvents(context.Context, authz.RecordEventsRequest) (json.RawMessage, error) {
+	return json.RawMessage(`{"recorded": 1, "duplicates": 0, "seqs": [1]}`), nil
+}
 func (b *freshStub) FreshnessToken(context.Context) (int32, string, error) {
 	return b.epoch, b.lsn, b.mintErr
 }

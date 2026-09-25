@@ -37,8 +37,9 @@ while IFS= read -r f; do
   psql_file "$PG_DB" "$SCRIPT_DIR/db/engine/$f"
 done < <(engine_files_for substrate read write audit)
 
-echo "==> Creating audit partitions (current + next month)..."
+echo "==> Creating audit + event partitions (current + next month)..."
 psql_exec "$PG_DB" -c "SELECT authz.ensure_audit_partitions();"
+psql_exec "$PG_DB" -c "SELECT authz.ensure_event_partitions();"
 
 echo "==> Loading OpenFGA import functions..."
 psql_file "$PG_DB" "$SCRIPT_DIR/db/openfga/functions_openfga.sql"

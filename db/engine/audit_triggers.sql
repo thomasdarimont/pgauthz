@@ -229,3 +229,26 @@ CREATE OR REPLACE TRIGGER trg_conditions_audit
 CREATE OR REPLACE TRIGGER trg_conditions_audit_block_dml
     BEFORE UPDATE OR DELETE ON authz.conditions_audit
     FOR EACH ROW EXECUTE FUNCTION authz._audit_block_dml();
+
+-- The action log (authz.events, ADR 0012) is append-only like the audit
+-- tables: no role holds UPDATE/DELETE, and this trigger is the defense in
+-- depth against a SECURITY DEFINER bug running as authz_owner. DELETE is
+-- allowed only under the same authz.audit_maintenance window the audit
+-- tables use — the partition row move in _ensure_month_partition and the
+-- store erasure in delete_store. Retention is DDL (partition drop) and
+-- unaffected. Audit-profile code, so a read-only install (which cannot
+-- record anyway) lacks it — exactly as it lacks the audit triggers.
+CREATE OR REPLACE FUNCTION authz._event_block_dml() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE'
+       AND current_setting('authz.audit_maintenance', true) = 'on' THEN
+        RETURN OLD;
+    END IF;
+    RAISE EXCEPTION 'action log is append-only: % is not allowed', TG_OP;
+END;
+$$;
+
+CREATE OR REPLACE TRIGGER trg_events_block_dml
+    BEFORE UPDATE OR DELETE ON authz.events
+    FOR EACH ROW EXECUTE FUNCTION authz._event_block_dml();

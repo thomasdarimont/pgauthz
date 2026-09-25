@@ -1,10 +1,11 @@
 -- Role setup for authorization API access control.
 --
 -- Application roles (NOLOGIN — used via SET ROLE or inheritance):
---   authz_reader  — access checks and search queries
---   authz_auditor — reader + audit trail queries (compliance/security teams)
---   authz_writer  — reader + write tuples (application backends)
---   authz_admin   — full control including store management
+--   authz_reader   — access checks and search queries
+--   authz_auditor  — reader + audit trail queries (compliance/security teams)
+--   authz_recorder — feed the action log only (record_event; ADR 0012)
+--   authz_writer   — reader + recorder + write tuples (application backends)
+--   authz_admin    — full control including store management
 --
 -- Connection roles (LOGIN) — pgauthzd connects and SET LOCAL ROLEs per request
 -- (created in db/security/initdb on first boot; re-created below on re-init):
@@ -15,6 +16,7 @@
 --
 --   authz_reader ─┬─→ authz_auditor ──┬─→ authz_admin
 --                 └─→ authz_writer ───┘
+--   authz_recorder ──→ authz_writer
 --
 -- Note: authz_eval (condition expression sandbox) is created in
 -- schema.sql because core_internal.sql depends on it at load time.
@@ -47,6 +49,13 @@ BEGIN
     -- separate from the general authz_reader and granted only to trusted PDPs.
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authz_contextual_reader') THEN
         CREATE ROLE authz_contextual_reader NOLOGIN;
+    END IF;
+    -- Action-log recorder (ADR 0012): may report what a principal actually did
+    -- (record_event / record_events_jsonb) and nothing else — an application
+    -- that only feeds the log never needs tuple-write rights. Granted TO
+    -- authz_writer below (a writer can record).
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authz_recorder') THEN
+        CREATE ROLE authz_recorder NOLOGIN;
     END IF;
     -- Non-superuser owner of the schema and its objects (see the
     -- ownership transfer at the end of this file).
@@ -86,6 +95,8 @@ GRANT authz_reader TO authz_auditor;
 GRANT authz_reader TO authz_writer;
 GRANT authz_writer TO authz_admin;
 GRANT authz_auditor TO authz_admin;
+-- A writer can record events; a pure recorder cannot write tuples.
+GRANT authz_recorder TO authz_writer;
 
 -- AuthZEN Go service (authzen-direct): connects directly and calls the
 -- read API (evaluation + search). A dedicated non-superuser LOGIN role
@@ -199,7 +210,14 @@ REVOKE EXECUTE ON FUNCTION pg_catalog.pg_sleep_for(interval)                   F
 REVOKE EXECUTE ON FUNCTION pg_catalog.pg_sleep_until(timestamp with time zone) FROM PUBLIC;
 
 -- All roles need schema access.
-GRANT USAGE ON SCHEMA authz TO authz_auditor, authz_reader, authz_writer, authz_admin, authz_contextual_reader;
+GRANT USAGE ON SCHEMA authz TO authz_auditor, authz_reader, authz_writer, authz_admin, authz_contextual_reader, authz_recorder;
+
+------------------------------------------------------------------------
+-- authz_recorder: feed the action log (ADR 0012). EXECUTE on the two record
+-- functions only — no reads, no tuple writes.
+------------------------------------------------------------------------
+GRANT EXECUTE ON FUNCTION authz.record_event(text, text, text, text, text, text, text, jsonb, timestamptz, text, text) TO authz_recorder;
+GRANT EXECUTE ON FUNCTION authz.record_events_jsonb(text, jsonb, text) TO authz_recorder;
 
 ------------------------------------------------------------------------
 -- authz_auditor: audit trail and time-travel queries (compliance/security)
@@ -211,6 +229,8 @@ GRANT EXECUTE ON FUNCTION authz.audit_list_actions(text, text, text, text, text,
 -- Watch / changefeed (reads the audit log) — auditor-level privilege.
 GRANT EXECUTE ON FUNCTION authz.watch_changes(text, timestamptz, bigint, int, interval, text[], text[], text[]) TO authz_auditor;
 GRANT EXECUTE ON FUNCTION authz.watch_cursor(text) TO authz_auditor;
+-- Action log inspection (ADR 0012) — per-principal behaviour, auditor-level.
+GRANT EXECUTE ON FUNCTION authz.list_events(text, text, text, text, text, text, text, text, timestamptz, timestamptz, timestamptz, bigint, int) TO authz_auditor;
 
 ------------------------------------------------------------------------
 -- authz_reader: access checks and search queries
@@ -277,6 +297,8 @@ GRANT EXECUTE ON FUNCTION authz.find_redundant_tuples(text, text, text, jsonb) T
 GRANT EXECUTE ON FUNCTION authz.cleanup_redundant_tuples(text, text, text, jsonb, boolean) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.cleanup_expired_tuples(text, interval, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.ensure_audit_partitions(int) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.ensure_event_partitions(int) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.drop_event_partitions_before(date) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.create_store(text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.retire_store(text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.delete_store(text, boolean) TO authz_admin;
@@ -348,6 +370,12 @@ ALTER FUNCTION authz.find_redundant_tuples(text, text, text, jsonb) SECURITY DEF
 ALTER FUNCTION authz.cleanup_redundant_tuples(text, text, text, jsonb, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.cleanup_expired_tuples(text, interval, text) SECURITY DEFINER;
 ALTER FUNCTION authz.ensure_audit_partitions(int) SECURITY DEFINER;
+-- Action log (ADR 0012).
+ALTER FUNCTION authz.record_event(text, text, text, text, text, text, text, jsonb, timestamptz, text, text) SECURITY DEFINER;
+ALTER FUNCTION authz.record_events_jsonb(text, jsonb, text) SECURITY DEFINER;
+ALTER FUNCTION authz.list_events(text, text, text, text, text, text, text, text, timestamptz, timestamptz, timestamptz, bigint, int) SECURITY DEFINER;
+ALTER FUNCTION authz.ensure_event_partitions(int) SECURITY DEFINER;
+ALTER FUNCTION authz.drop_event_partitions_before(date) SECURITY DEFINER;
 ALTER FUNCTION authz.create_store(text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.retire_store(text) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_store(text, boolean) SECURITY DEFINER;

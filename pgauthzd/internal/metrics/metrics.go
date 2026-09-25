@@ -110,8 +110,16 @@ var (
 
 	AuthzDenied = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "pgauthzd_authz_denied_total",
-		Help: "Request-layer authorization denials by reason (writer_role|search_role|subject_override|store_binding|db_role_binding|forbidden_role).",
+		Help: "Request-layer authorization denials by reason (writer_role|recorder_role|search_role|subject_override|store_binding|db_role_binding|forbidden_role).",
 	}, []string{"reason"})
+
+	// Action log (ADR 0012): events accepted by POST /pgauthz/v1/events, by
+	// outcome — recorded (a new row) or duplicate (idempotent re-delivery).
+	// Rejected batches surface as DBErrors{op="write"} + the 4xx/5xx status.
+	EventsRecorded = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "pgauthzd_events_recorded_total",
+		Help: "Action-log events accepted via the native events endpoint, by result (recorded|duplicate).",
+	}, []string{"result"})
 
 	// Backend latency.
 	DBQueryDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
@@ -272,8 +280,11 @@ func init() {
 	for _, r := range []string{"missing", "malformed", "invalid_token"} {
 		JWTFailures.WithLabelValues(r)
 	}
-	for _, r := range []string{"writer_role", "search_role", "store_binding", "db_role_binding", "subject_override"} {
+	for _, r := range []string{"writer_role", "recorder_role", "search_role", "store_binding", "db_role_binding", "subject_override"} {
 		AuthzDenied.WithLabelValues(r)
+	}
+	for _, r := range []string{"recorded", "duplicate"} {
+		EventsRecorded.WithLabelValues(r)
 	}
 	for _, r := range []string{"ok", "error"} {
 		OPARequests.WithLabelValues(r)

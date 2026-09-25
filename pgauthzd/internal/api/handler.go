@@ -240,6 +240,10 @@ func registerNativeWrite(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/delete", h.DeleteTuples)
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/delete-user", h.DeleteUserTuples)
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/write-checked", h.WriteTuplesChecked)
+	// The action log (ADR 0012): a write in every operational sense (writer DB
+	// connection, consistency mode, audit actor), gated by RECORDER_ROLE.
+	mux.HandleFunc("POST /pgauthz/v1/events", h.RecordEvents)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/events", h.RecordEvents)
 }
 
 // store resolves the pgauthz store for a request: the /stores/{store} path
@@ -403,6 +407,25 @@ func (h *Handler) requireWriter(w http.ResponseWriter, r *http.Request) bool {
 	}
 	metrics.AuthzDenied.WithLabelValues("writer_role").Inc()
 	writeForbidden(w, "writes require the '"+h.cfg.WriterRole+"' role")
+	return false
+}
+
+// requireRecorder gates the action-log endpoint (POST /pgauthz/v1/events,
+// ADR 0012) on the PUBLIC listener the way requireWriter gates tuple writes:
+// the caller must hold RECORDER_ROLE — or WRITER_ROLE, since a writer can
+// record. Skipped on the service-token callback listener, exactly like the
+// writer gate (the DB-role check in pgbackend still applies there).
+func (h *Handler) requireRecorder(w http.ResponseWriter, r *http.Request) bool {
+	if !h.requireWriterRole || h.cfg.RecorderRole == "" {
+		return true
+	}
+	for _, role := range RolesFromContext(r.Context()) {
+		if role == h.cfg.RecorderRole || (h.cfg.WriterRole != "" && role == h.cfg.WriterRole) {
+			return true
+		}
+	}
+	metrics.AuthzDenied.WithLabelValues("recorder_role").Inc()
+	writeForbidden(w, "recording events requires the '"+h.cfg.RecorderRole+"' role")
 	return false
 }
 

@@ -406,6 +406,13 @@ ALTER TABLE authz.tuples_audit DETACH PARTITION authz.tuples_audit_2025_01;
 DROP TABLE authz.tuples_audit_2025_01;
 ```
 
+The **action log** (`authz.events`, [ADR 0012](adr/0012-action-log.md)) is
+partitioned the same way (monthly on `occurred_at`, over the shared
+`_ensure_month_partition` worker). Schedule `authz.ensure_event_partitions()`
+next to the audit call, and drop old months with
+`authz.drop_event_partitions_before('2025-02-01')` (drops every partition whose
+rows are all older; returns the count).
+
 ### Suppressing the audit trail (DBA bulk operations)
 
 There is deliberately **no API-level switch** to skip audit logging: the
@@ -927,6 +934,47 @@ SELECT authz.write_tuples_checked('acme',
 > checked-writes **against each other** — for a hard invariant, route *all*
 > mutators of those tuples through `write_checked` (or add a DB constraint).
 
+### Recording actions (the action log)
+
+`POST /pgauthz/v1/events` feeds `authz.events` — what a principal **actually
+did**, reported by your PEP after the action ran (an "allow" is not an action;
+pgauthzd never records decisions on its own). It is a write in every
+operational sense (full profile, writer DB connection, `consistency`, audit
+actor) but has its own claim gate, `RECORDER_ROLE` (default `authz_recorder`;
+`WRITER_ROLE` passes too) and its own DB role check (member of
+`authz_recorder`, which every `authz_writer` is) — an app that only reports
+actions never needs tuple-write rights.
+
+```bash
+curl -s -X POST http://localhost:8092/stores/demo/pgauthz/v1/events \
+  -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" -d '{
+  "events": [
+    {"subject_type": "internal_user", "subject_id": "alice", "action": "transfer",
+     "object_type": "account", "object_id": "acc-1", "kind": "request",
+     "payload": {"input": {"amount": 1200}},
+     "occurred_at": "2026-09-17T10:15:02.113Z", "event_id": "req-7f3a/request"},
+    {"subject_type": "internal_user", "subject_id": "alice", "action": "transfer",
+     "object_type": "account", "object_id": "acc-1", "kind": "response",
+     "payload": {"output": {"status": "ok"}},
+     "occurred_at": "2026-09-17T10:15:02.611Z", "event_id": "req-7f3a/response"}
+  ],
+  "consistency": "applied"
+}'
+# → {"store":"demo","recorded":2,"duplicates":0,"seqs":[41,42]}
+```
+
+Contract: `action` must be a declared relation of the store (the model is the
+action vocabulary — unknown actions are a 400, so a queue consumer must
+dead-letter them, never drop them); `kind` is `request` (about to act),
+`response` (completed, outcome in `payload.output`) or `denied` (the PEP
+enforced a deny and wants the attempt on record); `event_id` is an
+idempotency key unique per store and **requires** `occurred_at` (re-deliveries
+are reported as `duplicates`, never inserted twice); `occurred_at` defaults to
+the database clock and is bounded by `authz.event_max_future_skew` /
+`event_max_backdate`; the batch is atomic. Recording *about* an object type in
+a namespace needs that namespace's `can_write` grant (403 otherwise). Inspect
+with `authz.list_events(...)` (auditor role; SQL only for now).
+
 ### Admin / model operations
 
 Store lifecycle (`create_store`/`delete_store`), model evolution (`model_*`),
@@ -985,6 +1033,7 @@ Each native write endpoint maps to a SQL function:
 | `POST /pgauthz/v1/delete` | `delete_tuples_jsonb` | `{"deleted": n}` (count deleted) |
 | `POST /pgauthz/v1/delete-user` | `delete_user_tuples` | `{"deleted": n}` (count removed) |
 | `POST /pgauthz/v1/write-checked` | `write_tuples_checked` | engine JSONB, e.g. `{"written": n, "deleted": m}` (conditional/atomic) |
+| `POST /pgauthz/v1/events` | `record_events_jsonb` | `{"recorded": n, "duplicates": n, "seqs": [...]}` — the action log ([ADR 0012](adr/0012-action-log.md)); gated by `RECORDER_ROLE` (writer passes), `recorded_by` follows `performed_by`'s rules |
 
 **Admin / model operations** require `authz_admin` and are **direct SQL only**
 (not exposed over the public write API):
