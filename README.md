@@ -1162,7 +1162,10 @@ allowlists. A gate bounds *recorded*
 actions; when a cap must hold exactly under concurrency, the PEP calls
 `reserve_event` (or `POST /pgauthz/v1/events/reserve`) because it is about to
 act: decision and `request` record under a per-subject lock, refusals recorded
-as `denied`. Gates apply to checks,
+as `denied`. Operations around the log — recorder roles and per-recorder
+action allowlists, partition maintenance, fleet-wide and per-store retention,
+timestamp bounds — are in [PRODUCTION.md → Action log retention](docs/PRODUCTION.md#action-log-retention)
+and [DEVELOPMENT.md → Recording actions](docs/DEVELOPMENT.md#recording-actions-the-action-log). Gates apply to checks,
 batch checks, `list_*` (a subject a check would deny never appears in a
 listing), `explain_access` (per-clause steps with observed value and
 threshold, never payloads), `check_access_detailed` (a missing `$request` key
@@ -1357,8 +1360,11 @@ authz.tuples_audit       Immutable tuple audit trail (partitioned by month)
 5. Follows computed relations (e.g., `can_read` → `viewer`)
 6. Traverses tuple-to-userset links (e.g., `can_view from in_internal_space`)
 7. Unions contextual tuples into each step (if provided)
+8. If the graph allows, evaluates the relation's [temporal gates](#temporal-gates-history-dependent-rules)
+   over the action log (only for the question asked — never for userset
+   sub-resolution); any failing clause denies
 
-These steps compose recursively. Here's the simplest real check against the
+Steps 1–7 compose recursively. Here's the simplest real check against the
 seeded **demo** store — Carol can read a document because she was granted
 `viewer` on it directly, and `can_read` is computed from `viewer`:
 
@@ -1870,7 +1876,8 @@ the caller requested.
 | Capability | Notes |
 |---|---|
 | **Full audit trail** | Immutable, monthly-partitioned log with `performed_by` tracking |
-| **Time-travel queries** | `audit_check_access` reconstructs the tuple state, **model rules, and condition expressions** at any past timestamp (all three versioned via `*_audit` logs) |
+| **Time-travel queries** | `audit_check_access` reconstructs the tuple state, **model rules, condition expressions, and gate definitions** at any past timestamp (all four versioned via `*_audit` logs) |
+| **Action log + temporal gates** | History-dependent rules *in the model*: rate limits, spend caps, prior approval, step-up freshness, lockouts, separation of duties, agent guardrails — evaluated on every check, listing, explain and time-travel path over the actions your PEP records; `reserve_event` for concurrency-exact caps. OpenFGA and SpiceDB answer only point-in-time questions — see [Temporal Gates](#temporal-gates-history-dependent-rules) |
 | **`list_actions`** | "What can user X do on object Z?" — OpenFGA has no equivalent |
 | **`explain_access`** | Structured decision explanation: resolution tree, a typed `reason` per step, a minimal `decision.reason`, and a redacted safety mode |
 | **Namespace write control** | Restrict which applications can write tuples for which object types |
@@ -1893,6 +1900,7 @@ the caller requested.
 
 - You already run PostgreSQL and want to avoid operating another service
 - You need audit trails, time-travel queries, or `explain_access` out of the box
+- You need history-dependent rules — quotas, cooldowns, prior approval, separation of duties — enforced by the authorization engine rather than scattered across services
 - You want the authorization engine co-located with your data (no network hop)
 - Your team is comfortable with SQL and prefers it over a DSL
 
