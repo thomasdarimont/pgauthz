@@ -76,6 +76,14 @@ pre-1.0, minor versions may include breaking changes.
   hid events recorded meanwhile), and `count_within` /
   `count_distinct_within` gained `plus` (like `sum_within`) so `max: 5,
   plus: 1` means at most 5 actions *including* the one being decided.
+- **Per-recorder action allowlists** (migration 0013): `authz.recorder_actions`
+  maps a DB role to the actions it may record in a store, managed with
+  `grant_recorder_actions` / `revoke_recorder_actions` (admin). Namespace
+  precedent: a role with no rows is unrestricted; once rows exist for a role
+  the caller is a member of, only the listed actions may be recorded
+  (`Permission denied` → 403; batches fail atomically). Enforced in
+  `record_event`, so `reserve_event` and the HTTP endpoints inherit it;
+  excluded from `export_model`; purged by `delete_store`.
 - **Object-scoped gate clauses** — a clause may set `"scope": "object"` to
   count only the principal's events on the object being checked ("3 edits
   of *this* document per hour"; separation of duties: `count_within{action:

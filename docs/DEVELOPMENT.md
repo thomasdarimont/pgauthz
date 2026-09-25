@@ -975,6 +975,24 @@ the database clock and is bounded by `authz.event_max_future_skew` /
 a namespace needs that namespace's `can_write` grant (403 otherwise). Inspect
 with `authz.list_events(...)` (auditor role; SQL only for now).
 
+**Per-recorder action allowlists.** By default a recorder may record any
+declared action (it is trusted for its assertions as a writer is for its
+tuples). To narrow a service to the actions it owns — the approval service
+records approvals, nothing else — grant it an allowlist per store:
+
+```sql
+SELECT authz.grant_recorder_actions('bank', 'svc_approvals', ARRAY['approve_sale']);
+SELECT authz.revoke_recorder_actions('bank', 'svc_approvals', ARRAY['approve_sale']); -- one action
+SELECT authz.revoke_recorder_actions('bank', 'svc_approvals');                        -- lift the list
+```
+
+Semantics follow namespaces: a role with no rows is unrestricted; once rows
+exist for a role the caller is a member of (`SET LOCAL ROLE` per request via
+`DB_ROLE_CLAIM`, as for writes), it may record only those actions — a
+`Permission denied` (403 over HTTP) otherwise, and the whole batch fails.
+`reserve_event` inherits the rule. Membership counts, so a list granted to a
+shared role binds all its members; grant per-app roles.
+
 **Strict tier.** When a temporal gate's cap must hold exactly under
 concurrency, reserve instead of check-then-record:
 

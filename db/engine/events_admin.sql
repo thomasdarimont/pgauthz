@@ -12,6 +12,43 @@
 -- _max_context_bytes, _ensure_month_partition), events.sql (kinds, bounds).
 
 ------------------------------------------------------------------------
+-- _check_recorder_action: per-recorder action allowlists (migration 0013).
+-- Mirrors _check_namespace_access: if the store has allowlist rows for any
+-- role the effective role is a member of, the action must be among them;
+-- roles without rows are unrestricted. Raises like the namespace check
+-- ("Permission denied: ..."), which pgauthzd maps to 403.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._check_recorder_action(
+    p_store_id integer,
+    p_action   integer
+) RETURNS void
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_role text := authz._effective_role();
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM authz.recorder_actions ra
+         WHERE ra.store_id = p_store_id
+           AND pg_has_role(v_role, ra.db_role, 'MEMBER')
+    ) THEN
+        RETURN;   -- no allowlist applies to this role: unrestricted
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM authz.recorder_actions ra
+         WHERE ra.store_id = p_store_id
+           AND ra.action   = p_action
+           AND pg_has_role(v_role, ra.db_role, 'MEMBER')
+    ) THEN
+        RETURN;
+    END IF;
+    RAISE EXCEPTION 'Permission denied: role "%" may not record action "%" in store "%" (not in its recorder allowlist)',
+        v_role,
+        (SELECT r.name FROM authz.relations r WHERE r.id = p_action),
+        (SELECT st.name FROM authz.stores st WHERE st.id = p_store_id);
+END;
+$$;
+
+------------------------------------------------------------------------
 -- record_event: record that p_subject ACTUALLY performed p_action (on
 -- p_object, if any). Returns the event's seq, or NULL when p_event_id was
 -- already recorded for this store (idempotent re-delivery: no second row).
@@ -21,6 +58,8 @@
 --   - the action must be a declared relation of the store (the model is the
 --     action vocabulary — a typo fails loud here, not silently later);
 --   - the subject is a concrete principal (no wildcard, no userset);
+--   - the action must be in the caller's recorder allowlist when the store
+--     has one for a role it is a member of (grant_recorder_actions);
 --   - object-scoped events respect namespace isolation: recording about an
 --     object type in a namespace needs the same can_write grant tuple
 --     writes need (an app records what it may manage);
@@ -76,6 +115,9 @@ BEGIN
     IF p_object_id IS NOT NULL AND p_object_type IS NULL THEN
         RAISE EXCEPTION 'object_id requires object_type' USING ERRCODE = 'invalid_parameter_value';
     END IF;
+    -- A recorder records the actions it is allowed to (per-recorder allowlist,
+    -- migration 0013; unrestricted when none applies to its role).
+    PERFORM authz._check_recorder_action(v_store_id, v_action);
     IF p_object_type IS NOT NULL THEN
         v_object_type := authz._t(v_store_id, p_object_type);
         -- An app records about the objects it may manage (namespace isolation).
@@ -392,5 +434,62 @@ BEGIN
         'kind',    v_kind,
         'reason',  v_reason,
         'gates',   v_gates);
+END;
+$$;
+
+------------------------------------------------------------------------
+-- Per-recorder action allowlists (admin). grant adds actions to a role's
+-- allowlist for a store (creating it — from then on the role is restricted
+-- to the list); revoke removes actions, or the whole list when p_actions is
+-- NULL (the role is unrestricted again). Both return the number of rows
+-- changed. Membership is what counts: a list granted to authz_recorder
+-- restricts every writer too, since roles.sql grants authz_recorder to
+-- authz_writer — grant per-app roles, as with namespaces.
+--
+--   SELECT authz.grant_recorder_actions('bank', 'svc_approvals', ARRAY['approve_sale']);
+--   SELECT authz.revoke_recorder_actions('bank', 'svc_approvals');   -- lift the list
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.grant_recorder_actions(
+    p_store   text,
+    p_db_role text,
+    p_actions text[]
+) RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store);
+    v_count    integer;
+BEGIN
+    IF p_db_role IS NULL OR p_db_role = '' THEN
+        RAISE EXCEPTION 'db_role is required' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    IF p_actions IS NULL OR array_length(p_actions, 1) IS NULL THEN
+        RAISE EXCEPTION 'actions must be a non-empty array of relation names' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    INSERT INTO authz.recorder_actions (store_id, db_role, action)
+    SELECT v_store_id, p_db_role, authz._r(v_store_id, a)   -- _r raises on an undeclared action
+      FROM unnest(p_actions) a
+    ON CONFLICT DO NOTHING;
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    RETURN v_count;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION authz.revoke_recorder_actions(
+    p_store   text,
+    p_db_role text,
+    p_actions text[] DEFAULT NULL    -- NULL: remove the role's whole allowlist
+) RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store);
+    v_count    integer;
+BEGIN
+    DELETE FROM authz.recorder_actions ra
+     WHERE ra.store_id = v_store_id
+       AND ra.db_role  = p_db_role
+       AND (p_actions IS NULL
+            OR ra.action IN (SELECT authz._r(v_store_id, a) FROM unnest(p_actions) a));
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    RETURN v_count;
 END;
 $$;

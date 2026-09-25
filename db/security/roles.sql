@@ -295,6 +295,9 @@ GRANT EXECUTE ON FUNCTION authz.freshness_token() TO authz_writer;
 -- This prevents any HTTP bridge from exposing table endpoints directly.
 GRANT EXECUTE ON FUNCTION authz.grant_namespace_access(text, text, text, boolean, boolean) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.revoke_namespace_access(text, text, text, boolean, boolean) TO authz_admin;
+-- Per-recorder action allowlists (ADR 0012, migration 0013).
+GRANT EXECUTE ON FUNCTION authz.grant_recorder_actions(text, text, text[]) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.revoke_recorder_actions(text, text, text[]) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.find_redundant_tuples(text, text, text, jsonb) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.cleanup_redundant_tuples(text, text, text, jsonb, boolean) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.cleanup_expired_tuples(text, interval, text) TO authz_admin;
@@ -371,6 +374,8 @@ ALTER FUNCTION authz.delete_user_tuples(text, text, text, text) SECURITY DEFINER
 ALTER FUNCTION authz.write_tuples_checked(text, jsonb, jsonb, jsonb, text) SECURITY DEFINER;
 ALTER FUNCTION authz.grant_namespace_access(text, text, text, boolean, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.revoke_namespace_access(text, text, text, boolean, boolean) SECURITY DEFINER;
+ALTER FUNCTION authz.grant_recorder_actions(text, text, text[]) SECURITY DEFINER;
+ALTER FUNCTION authz.revoke_recorder_actions(text, text, text[]) SECURITY DEFINER;
 ALTER FUNCTION authz.find_redundant_tuples(text, text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.cleanup_redundant_tuples(text, text, text, jsonb, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.cleanup_expired_tuples(text, interval, text) SECURITY DEFINER;

@@ -83,7 +83,15 @@ never drop them — a new action goes live by publishing the model first.
   listener, the trusted upstream's assertion is required on the callback
   listener); a gate spec may pin `recorded_by` to an allowlist; recording
   *about* an object type in a namespace requires the same `can_write`
-  namespace grant tuple writes need, so per-app isolation extends to the log.
+  namespace grant tuple writes need, so per-app isolation extends to the log;
+  and a **per-recorder action allowlist** (`authz.recorder_actions`,
+  migration 0013, `grant_recorder_actions` / `revoke_recorder_actions`)
+  narrows a role to the actions it may record — the namespace precedent:
+  unrestricted until a list exists for a role the caller is a member of,
+  then only the listed actions. Enforced in `record_event`, so
+  `reserve_event` and the HTTP endpoints inherit it; deployment-specific,
+  so excluded from `export_model`. A per-store "allowlists required" switch
+  (deny-by-default for unlisted roles) is a possible tightening, not built.
 - **Timestamps are bounded, not blindly trusted.** `occurred_at` is
   caller-asserted (asynchronous ingestion arrives late; the recorder already
   vouches *that* it happened, so trusting *when* adds no new trust) but

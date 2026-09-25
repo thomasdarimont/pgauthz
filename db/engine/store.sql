@@ -185,6 +185,7 @@ BEGIN
         PERFORM set_config('authz.audit_maintenance', '', true);
     END IF;
     DELETE FROM authz.namespace_access  WHERE store_id = v_store_id;
+    DELETE FROM authz.recorder_actions  WHERE store_id = v_store_id;   -- ADR 0012 allowlists (FK to relations)
     -- The action log (ADR 0012) references the store's types/relations; it is
     -- append-only, so purge it under the maintenance window. Always — unlike
     -- the *_audit tables it records application behaviour, not graph history,

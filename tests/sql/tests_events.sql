@@ -283,6 +283,81 @@ END;
 $$;
 
 -- ================================================================
+-- Per-recorder action allowlists (migration 0013)
+-- ================================================================
+DO $$
+DECLARE v_seq bigint; v_err text; n int; r jsonb;
+BEGIN
+    -- ev_20: no allowlist → unrestricted (the recorder records any declared action)
+    PERFORM set_config('role', 'test_ev_recorder', true);
+    v_seq := authz.record_event('test_events', 'user', 'alice', 'approve');
+    RESET ROLE;
+    PERFORM _test_assert_true('ev_20_no_allowlist_unrestricted', v_seq IS NOT NULL);
+
+    -- ev_21: grant an allowlist → only listed actions; unknown actions fail loud at grant time
+    PERFORM _test_assert('ev_21_grant_returns_rows',
+        authz.grant_recorder_actions('test_events', 'test_ev_recorder', ARRAY['download', 'transfer'])::text, '2');
+    PERFORM _test_assert('ev_21_grant_idempotent',
+        authz.grant_recorder_actions('test_events', 'test_ev_recorder', ARRAY['download'])::text, '0');
+    v_err := NULL;
+    BEGIN PERFORM authz.grant_recorder_actions('test_events', 'test_ev_recorder', ARRAY['nope']);
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert_true('ev_21_grant_unknown_action_raises', v_err LIKE '%Unknown relation%', coalesce(v_err, 'no error'));
+
+    PERFORM set_config('role', 'test_ev_recorder', true);
+    v_seq := authz.record_event('test_events', 'user', 'alice', 'download');
+    v_err := NULL;
+    BEGIN PERFORM authz.record_event('test_events', 'user', 'alice', 'approve');
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    RESET ROLE;
+    PERFORM _test_assert_true('ev_21_listed_action_allowed', v_seq IS NOT NULL);
+    PERFORM _test_assert_true('ev_21_unlisted_action_denied',
+        v_err LIKE '%Permission denied%may not record action "approve"%', coalesce(v_err, 'no error'));
+    -- the batch form fails atomically on the unlisted element
+    PERFORM set_config('role', 'test_ev_recorder', true);
+    v_err := NULL;
+    BEGIN PERFORM authz.record_events_jsonb('test_events', '[
+        {"subject_type": "user", "subject_id": "alice", "action": "download"},
+        {"subject_type": "user", "subject_id": "alice", "action": "approve"}]'::jsonb);
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    RESET ROLE;
+    PERFORM _test_assert_true('ev_21_batch_denied_atomically', v_err LIKE '%Permission denied%', coalesce(v_err, 'no error'));
+
+    -- ev_22: a role without rows stays unrestricted (the writer)
+    PERFORM set_config('role', 'test_ev_writer', true);
+    v_seq := authz.record_event('test_events', 'user', 'alice', 'approve');
+    RESET ROLE;
+    PERFORM _test_assert_true('ev_22_other_role_unrestricted', v_seq IS NOT NULL);
+
+    -- ev_23: reserve_event inherits the allowlist (it records through record_event)
+    PERFORM authz.model_add_rule('test_events', 'account', 'approve', 'direct');
+    PERFORM authz.write_tuple('test_events', 'user', 'alice', 'approve', 'account', 'acc-1');
+    PERFORM set_config('role', 'test_ev_recorder', true);
+    v_err := NULL;
+    BEGIN PERFORM authz.reserve_event('test_events', 'user', 'alice', 'approve', 'account', 'acc-1');
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    RESET ROLE;
+    PERFORM _test_assert_true('ev_23_reserve_inherits_allowlist', v_err LIKE '%Permission denied%may not record action%', coalesce(v_err, 'no error'));
+
+    -- ev_24: revoke one action, then the whole list → unrestricted again
+    PERFORM _test_assert('ev_24_revoke_one', authz.revoke_recorder_actions('test_events', 'test_ev_recorder', ARRAY['transfer'])::text, '1');
+    PERFORM set_config('role', 'test_ev_recorder', true);
+    v_err := NULL;
+    BEGIN PERFORM authz.record_event('test_events', 'user', 'alice', 'transfer');
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    RESET ROLE;
+    PERFORM _test_assert_true('ev_24_revoked_action_denied', v_err LIKE '%Permission denied%', coalesce(v_err, 'no error'));
+    PERFORM _test_assert('ev_24_revoke_all', authz.revoke_recorder_actions('test_events', 'test_ev_recorder')::text, '1');
+    PERFORM set_config('role', 'test_ev_recorder', true);
+    v_seq := authz.record_event('test_events', 'user', 'alice', 'approve');
+    RESET ROLE;
+    PERFORM _test_assert_true('ev_24_unrestricted_after_revoke_all', v_seq IS NOT NULL);
+    -- leave a row behind so ev_19 proves delete_store purges it
+    PERFORM authz.grant_recorder_actions('test_events', 'test_ev_recorder', ARRAY['download']);
+END;
+$$;
+
+-- ================================================================
 -- list_events: filters and keyset pagination
 -- ================================================================
 DO $$
@@ -383,6 +458,8 @@ BEGIN
     PERFORM _test_assert('ev_19_delete_store_succeeds', coalesce(v_err, 'ok'), 'ok');
     SELECT count(*) INTO n FROM authz.events WHERE store_id = s;
     PERFORM _test_assert('ev_19_events_purged', n::text, '0');
+    SELECT count(*) INTO n FROM authz.recorder_actions WHERE store_id = s;
+    PERFORM _test_assert('ev_19_recorder_allowlist_purged', n::text, '0');
 END;
 $$;
 

@@ -125,7 +125,7 @@ created and granted in `db/security/roles.sql`.
 | `authz_auditor` | `audit_check_access`, `audit_list_*`, `watch_changes`, `list_events` | `authz_reader` |
 | `authz_recorder` | `record_event` / `record_events_jsonb` — feed the action log ([ADR 0012](adr/0012-action-log.md)) and nothing else | — |
 | `authz_writer` | `write_tuple`/`delete_tuple` + batch ops | `authz_reader`, `authz_recorder` |
-| `authz_admin` | store/model/namespace management, `ensure_audit_partitions` / `ensure_event_partitions` / `drop_event_partitions_before`, `find_redundant_tuples` | `authz_writer`, `authz_auditor` |
+| `authz_admin` | store/model/namespace management, recorder allowlists (`grant_recorder_actions`), `ensure_audit_partitions` / `ensure_event_partitions` / `drop_event_partitions_before`, `find_redundant_tuples` | `authz_writer`, `authz_auditor` |
 | `authz_owner` | owns the schema + objects (definer context) | — |
 | `authz_eval` | **zero grants** — the condition-evaluation sandbox | — |
 
