@@ -23,6 +23,33 @@ images:
   # AuthZEN gateway.
   pgauthzd:   { repository: pgauthz-pgauthzd,                  tag: "0.15.0" }
 
+# ── Deployment profile ───────────────────────────────────────────────────────
+# deploymentEnvironment is forwarded to EVERY pgauthzd instance as
+# DEPLOYMENT_ENVIRONMENT (policy hooks read it as input.deployment.environment;
+# authzen.opa.deploymentEnvironment still overrides it for the OPA gateway).
+# "production" (or "prod") selects the PRODUCTION PROFILE: the discovery and
+# diagnostic surfaces below must be role-gated, or the chart REFUSES TO RENDER
+# (and pgauthzd refuses to start). Reverse search enumerates the access graph,
+# explain reveals model structure and resolution traces, watch streams every
+# grant/revoke — none of them belong to arbitrary authenticated callers.
+deploymentEnvironment: ""
+diagnostics:
+  # SEARCH_REQUIRED_ROLE: JWT role required for /access/v1/search/* and the
+  # native list-* endpoints. Empty = open to any authenticated caller
+  # (development only). Production profile: REQUIRED.
+  searchRequiredRole: ""            # e.g. authz_auditor
+  # EXPLAIN_REQUIRED_ROLE: JWT role required for native explain. Empty = open.
+  # Production profile: REQUIRED.
+  explainRequiredRole: ""           # e.g. authz_auditor
+  # WATCH_REQUIRED_ROLE: JWT role for the native changefeed. Empty = watch
+  # DISABLED on the public listener (deny by default); "*" = open (never in
+  # production).
+  watchRequiredRole: ""             # e.g. authz_auditor
+  # Deliberately alarming override: render/start a production profile with
+  # open surfaces anyway (sets ALLOW_OPEN_DIAGNOSTICS=true; pgauthzd warns on
+  # every start).
+  allowOpenInProduction: false
+
 # ── Database: CloudNativePG cluster ──────────────────────────────────────────
 database:
   # Pod scheduling for the DB instances (CNPG .spec.affinity passthrough).

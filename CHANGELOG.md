@@ -108,6 +108,21 @@ pre-1.0, minor versions may include breaking changes.
   recording, `reserve_event`, `list_events`); results and the `_decide` seam
   A/B against the previous engine in [BENCHMARKS.md](docs/BENCHMARKS.md).
 
+### Security
+
+- **Production profile for the diagnostic surfaces** (external review,
+  SECURITY-AUDIT F19). `DEPLOYMENT_ENVIRONMENT=production` (or `prod`) now
+  makes pgauthzd refuse to start unless `SEARCH_REQUIRED_ROLE` and
+  `EXPLAIN_REQUIRED_ROLE` are set and `WATCH_REQUIRED_ROLE` is not `"*"`
+  (reverse search enumerates the graph, explain reveals model structure and
+  traces, watch streams every change); `ALLOW_OPEN_DIAGNOSTICS=true` is the
+  deliberately alarming override. The Helm chart gains `deploymentEnvironment`
+  and a `diagnostics` block (`searchRequiredRole` / `explainRequiredRole` /
+  `watchRequiredRole` / `allowOpenInProduction`) applied to every pgauthzd
+  instance, refuses to render an open production profile, and ships
+  `values-production.yaml`. Runtime defaults outside the production label are
+  unchanged.
+
 ### Security (documentation)
 
 - **`authz_recorder` / `RECORDER_ROLE` is documented as a PEP-only

@@ -199,7 +199,19 @@ type Config struct {
 	// input.deployment.environment (ADR 0011). Environment-gated hooks read it
 	// instead of a caller-supplied context field, which they must not trust.
 	// Empty = the field is still present but "".
+	//
+	// It also selects the PRODUCTION PROFILE: with "production" (or "prod")
+	// the discovery/diagnostic surfaces must be role-gated — SEARCH_REQUIRED_ROLE
+	// and EXPLAIN_REQUIRED_ROLE set, WATCH_REQUIRED_ROLE not "*" — or startup
+	// fails (see AllowOpenDiagnostics). Reverse search enumerates the access
+	// graph and explain reveals model structure and resolution traces; the
+	// open-by-default runtime behaviour stays for development and back-compat,
+	// the production profile is deliberately opinionated (external review).
 	DeploymentEnvironment string
+	// AllowOpenDiagnostics (ALLOW_OPEN_DIAGNOSTICS) is the deliberately alarming
+	// override that lets a production-labelled instance start with an open
+	// search/explain/watch surface (logged as a WARNING on every start).
+	AllowOpenDiagnostics bool
 	// OPAMaxResponseBytes bounds every OPA HTTP response body (review #10):
 	// a broken/misconfigured OPA must cause a clean policy_evaluation_failed,
 	// not unbounded allocation. Default 10 MiB, matching HTTP_MAX_BODY_BYTES.
@@ -351,6 +363,7 @@ func Load() (*Config, error) {
 		FreshnessPrimaryPoolMax:      envInt("FRESHNESS_PRIMARY_POOL_MAX", 10),
 		OpenAPIEnabled:               envBool("OPENAPI_ENABLED", true),
 		DeploymentEnvironment:        env("DEPLOYMENT_ENVIRONMENT", ""),
+		AllowOpenDiagnostics:         envBool("ALLOW_OPEN_DIAGNOSTICS", false),
 		OPAMaxResponseBytes:          int64(envInt("OPA_MAX_RESPONSE_BYTES", 10<<20)),
 		CursorSealKey:                env("CURSOR_SEAL_KEY", ""),
 		MetricsListenAddr:            env("METRICS_LISTEN_ADDR", ""),
@@ -526,7 +539,45 @@ func Load() (*Config, error) {
 		}
 	}
 
+	// PRODUCTION PROFILE (external review): a production-labelled instance must
+	// not expose graph enumeration (search), model structure + traces (explain)
+	// or the changefeed (watch) to every authenticated caller. Fail closed at
+	// startup — a misconfiguration must not become an open surface — unless the
+	// operator overrides deliberately.
+	if c.IsProduction() {
+		if open := c.openDiagnostics(); len(open) > 0 {
+			if !c.AllowOpenDiagnostics {
+				return nil, fmt.Errorf("DEPLOYMENT_ENVIRONMENT=%s requires role-gated diagnostic surfaces, but: %s — set them (e.g. authz_auditor), or override deliberately with ALLOW_OPEN_DIAGNOSTICS=true", c.DeploymentEnvironment, strings.Join(open, "; "))
+			}
+			log.Printf("WARNING (ALLOW_OPEN_DIAGNOSTICS): production instance with open diagnostic surfaces: %s", strings.Join(open, "; "))
+		}
+	}
+
 	return c, nil
+}
+
+// IsProduction reports whether DEPLOYMENT_ENVIRONMENT selects the production
+// profile ("production" or "prod").
+func (c *Config) IsProduction() bool {
+	return c.DeploymentEnvironment == "production" || c.DeploymentEnvironment == "prod"
+}
+
+// openDiagnostics lists the diagnostic surfaces the production profile
+// considers open: search and explain ungated, or watch explicitly opened.
+// (An unset WATCH_REQUIRED_ROLE disables watch on the public listener — that
+// is closed, not open.)
+func (c *Config) openDiagnostics() []string {
+	var open []string
+	if c.SearchRequiredRole == "" || c.SearchRequiredRole == "*" {
+		open = append(open, "SEARCH_REQUIRED_ROLE is unset (reverse search enumerates the access graph)")
+	}
+	if c.ExplainRequiredRole == "" || c.ExplainRequiredRole == "*" {
+		open = append(open, "EXPLAIN_REQUIRED_ROLE is unset (explain reveals model structure and resolution traces)")
+	}
+	if c.WatchRequiredRole == "*" {
+		open = append(open, `WATCH_REQUIRED_ROLE is "*" (the changefeed is open to every caller)`)
+	}
+	return open
 }
 
 // Strict environment parsing (review #10): absence means the documented

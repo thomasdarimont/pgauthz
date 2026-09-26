@@ -63,3 +63,41 @@ Rego namespace or the ABI.
 {{- define "pgauthz.storeHooksVolume" -}}
 store-hooks-{{ printf "%.40s" (. | lower | replace "_" "-") }}-{{ sha256sum . | trunc 8 }}
 {{- end }}
+
+{{/*
+pgauthz.diagnosticsEnv — env entries for one pgauthzd container: the
+deployment label plus the role gates of the discovery/diagnostic surfaces
+(search, explain, watch). Args: (dict "root" $ "env" <DEPLOYMENT_ENVIRONMENT>).
+PRODUCTION PROFILE: when env is "production"/"prod", search and explain must be
+gated and watch must not be "*" — otherwise the chart refuses to render, unless
+diagnostics.allowOpenInProduction is set (pgauthzd enforces the same rule at
+startup via ALLOW_OPEN_DIAGNOSTICS, so a hand-edited manifest cannot slip past).
+*/}}
+{{- define "pgauthz.diagnosticsEnv" -}}
+{{- $d := .root.Values.diagnostics -}}
+{{- $env := .env | default "" -}}
+{{- if and (or (eq $env "production") (eq $env "prod")) (not $d.allowOpenInProduction) -}}
+{{- $missing := list -}}
+{{- if or (not $d.searchRequiredRole) (eq $d.searchRequiredRole "*") -}}{{- $missing = append $missing "diagnostics.searchRequiredRole (reverse search enumerates the access graph)" -}}{{- end -}}
+{{- if or (not $d.explainRequiredRole) (eq $d.explainRequiredRole "*") -}}{{- $missing = append $missing "diagnostics.explainRequiredRole (explain reveals model structure and traces)" -}}{{- end -}}
+{{- if eq $d.watchRequiredRole "*" -}}{{- $missing = append $missing "diagnostics.watchRequiredRole must not be \"*\" (open changefeed)" -}}{{- end -}}
+{{- if $missing -}}
+{{- fail (printf "deploymentEnvironment=%s (production profile) requires role-gated diagnostic surfaces: %s. Set them (e.g. authz_auditor), or set diagnostics.allowOpenInProduction=true DELIBERATELY." $env (join "; " $missing)) -}}
+{{- end -}}
+{{- end -}}
+{{- with $env }}
+- { name: DEPLOYMENT_ENVIRONMENT, value: {{ . | quote }} }
+{{- end }}
+{{- with $d.searchRequiredRole }}
+- { name: SEARCH_REQUIRED_ROLE, value: {{ . | quote }} }
+{{- end }}
+{{- with $d.explainRequiredRole }}
+- { name: EXPLAIN_REQUIRED_ROLE, value: {{ . | quote }} }
+{{- end }}
+{{- with $d.watchRequiredRole }}
+- { name: WATCH_REQUIRED_ROLE, value: {{ . | quote }} }
+{{- end }}
+{{- if $d.allowOpenInProduction }}
+- { name: ALLOW_OPEN_DIAGNOSTICS, value: "true" }
+{{- end }}
+{{- end -}}

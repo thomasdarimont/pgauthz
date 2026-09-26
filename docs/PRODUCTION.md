@@ -76,12 +76,20 @@ by `init.sh` on every run.
       `DB_ROLE_CLAIM` on the **OPA**
       service so token-mode requests derive the role from verified claims.
       With no role configured, reads run as the fixed full-reader role.
-- [ ] **Gate the AuthZEN reverse-search endpoints.**
+- [ ] **Run the production profile: gate search, explain and watch.**
       `search/subject|resource|action` enumerate the access graph ("who can
-      access X?"), which is strictly more than "can *I* access X?". Set
-      `SEARCH_REQUIRED_ROLE` (with `JWT_ROLES_CLAIM` for the claim paths) so only
-      auditor-grade callers may use them; left unset, search is open to any
-      authenticated caller.
+      access X?" — strictly more than "can *I* access X?"), native explain
+      reveals model structure and resolution traces, and watch streams every
+      grant/revoke. All three are open to any authenticated caller by default
+      (development ergonomics, back-compat). Set
+      `DEPLOYMENT_ENVIRONMENT=production` plus `SEARCH_REQUIRED_ROLE`,
+      `EXPLAIN_REQUIRED_ROLE` and `WATCH_REQUIRED_ROLE` (auditor-grade, e.g.
+      `authz_auditor`, matched through `JWT_ROLES_CLAIM`): with the production
+      label pgauthzd **refuses to start** with an open search/explain surface
+      or a `"*"` watch, and the Helm chart refuses to render it
+      (`deploymentEnvironment` + `diagnostics.*`; `values-production.yaml`).
+      `ALLOW_OPEN_DIAGNOSTICS=true` / `diagnostics.allowOpenInProduction` is
+      the deliberately alarming override.
 - [ ] **Schedule audit-partition maintenance and retention.** See
       [Audit retention](#audit-retention).
 - [ ] **Treat `authz_recorder` (and the `RECORDER_ROLE` JWT claim) as a

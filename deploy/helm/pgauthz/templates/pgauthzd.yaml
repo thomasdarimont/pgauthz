@@ -70,6 +70,8 @@ spec:
             - { name: JWT_AUDIENCE,  value: {{ .Values.opa.jwtAudience | quote }} }
             - { name: DEFAULT_STORE, value: {{ .Values.opa.defaultStore | quote }} }
             - { name: ALLOW_SUBJECT_OVERRIDE, value: "false" }
+            # Deployment label + diagnostic-surface gates (production profile).
+            {{- include "pgauthz.diagnosticsEnv" (dict "root" $ "env" .Values.deploymentEnvironment) | nindent 12 }}
             {{- if .Values.metrics.enabled }}
             - { name: METRICS_LISTEN_ADDR, value: ":{{ .Values.metrics.port }}" }
             {{- end }}
@@ -168,6 +170,8 @@ spec:
             - { name: JWT_AUDIENCE,  value: {{ .Values.opa.jwtAudience | quote }} }
             - { name: DEFAULT_STORE, value: {{ .Values.opa.defaultStore | quote }} }
             - { name: ALLOW_SUBJECT_OVERRIDE, value: "false" }
+            # Deployment label + diagnostic-surface gates (production profile).
+            {{- include "pgauthz.diagnosticsEnv" (dict "root" $ "env" .Values.deploymentEnvironment) | nindent 12 }}
             {{- if .Values.metrics.enabled }}
             - { name: METRICS_LISTEN_ADDR, value: ":{{ .Values.metrics.port }}" }
             {{- end }}

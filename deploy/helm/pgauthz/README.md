@@ -114,6 +114,27 @@ and are rotated by the operator; `roles.sql` still owns the privilege model
 `authzen_direct` (which physically cannot write and asserts so at startup), the
 writer as `pgauthzd_rw`.
 
+## Production profile
+
+`deploymentEnvironment: production` (or `prod`) is forwarded to every pgauthzd
+instance as `DEPLOYMENT_ENVIRONMENT` and switches on the **production
+profile**: the discovery/diagnostic surfaces must be role-gated or the chart
+**refuses to render** — and, as a second line, pgauthzd refuses to start —
+because reverse search enumerates the access graph, explain reveals model
+structure and resolution traces, and watch streams every grant/revoke:
+
+```yaml
+deploymentEnvironment: production
+diagnostics:
+  searchRequiredRole:  authz_auditor   # SEARCH_REQUIRED_ROLE
+  explainRequiredRole: authz_auditor   # EXPLAIN_REQUIRED_ROLE
+  watchRequiredRole:   authz_auditor   # WATCH_REQUIRED_ROLE (unset = watch disabled)
+```
+
+`values-production.yaml` is exactly this overlay. The runtime defaults stay
+open for development and back-compat; `diagnostics.allowOpenInProduction:
+true` (→ `ALLOW_OPEN_DIAGNOSTICS=true`) is the deliberately alarming override.
+
 ## Read freshness
 
 `reader.target` chooses where reads go: `pooler-ro` / `ro` (scale-out

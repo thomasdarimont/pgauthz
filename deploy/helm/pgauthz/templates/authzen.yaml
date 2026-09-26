@@ -67,10 +67,10 @@ spec:
             - { name: JWT_AUDIENCE, value: {{ .Values.opa.jwtAudience | quote }} }
             - { name: DEFAULT_STORE, value: {{ .Values.opa.defaultStore | quote }} }
             - { name: ALLOW_SUBJECT_OVERRIDE, value: "false" }
-            {{- with .Values.authzen.opa.deploymentEnvironment }}
-            # input.deployment.environment for policy hooks (ADR 0011).
-            - { name: DEPLOYMENT_ENVIRONMENT, value: {{ . | quote }} }
-            {{- end }}
+            # input.deployment.environment for policy hooks (ADR 0011) — the
+            # gateway-specific value overrides the chart-wide one — plus the
+            # diagnostic-surface gates (production profile).
+            {{- include "pgauthz.diagnosticsEnv" (dict "root" $ "env" (.Values.authzen.opa.deploymentEnvironment | default .Values.deploymentEnvironment)) | nindent 12 }}
             {{- if .Values.opa.hookFilteredEnumeration }}
             {{- if not .Values.authzen.opa.cursorSealKey }}
             {{- fail "opa.hookFilteredEnumeration requires authzen.opa.cursorSealKey: filtered-page cursors must unseal across replicas/restarts (the per-process fallback is dev-only)" }}

@@ -1,0 +1,18 @@
+# Production profile overlay (external review 2026-09): opinionated gating of
+# the discovery/diagnostic surfaces. Layer it on your values:
+#   helm install pgauthz ./deploy/helm/pgauthz -f values.yaml -f values-production.yaml [-f values-ha.yaml]
+#
+# deploymentEnvironment=production makes BOTH the chart (at render time) and
+# pgauthzd (at startup) refuse an open search / explain / watch surface:
+#   - reverse search (/access/v1/search/*, native list-*) enumerates the access
+#     graph — strictly more than "may I?";
+#   - explain reveals model structure and resolution traces;
+#   - watch streams every grant/revoke.
+# authz_auditor is the role the engine already reserves for such callers; map
+# it from your IdP with JWT_ROLES_CLAIM (opa.jwtRolesClaim). Escape hatch —
+# deliberately alarming, never the default: diagnostics.allowOpenInProduction.
+deploymentEnvironment: production
+diagnostics:
+  searchRequiredRole:  authz_auditor
+  explainRequiredRole: authz_auditor
+  watchRequiredRole:   authz_auditor

@@ -175,6 +175,9 @@ func TestDeploymentEnvironmentValidated(t *testing.T) {
 func TestDeploymentEnvironmentValidAccepted(t *testing.T) {
 	setMinimalIssuer(t)
 	t.Setenv("DEPLOYMENT_ENVIRONMENT", "production")
+	// "production" selects the production profile: diagnostic surfaces gated.
+	t.Setenv("SEARCH_REQUIRED_ROLE", "authz_auditor")
+	t.Setenv("EXPLAIN_REQUIRED_ROLE", "authz_auditor")
 	if c, err := Load(); err != nil || c.DeploymentEnvironment != "production" {
 		t.Fatalf("valid env rejected: %v", err)
 	}
@@ -246,4 +249,67 @@ func TestSingleIssuerUnboundOK(t *testing.T) {
 	if _, err := Load(); err != nil {
 		t.Fatalf("single unbound issuer must keep working, got %v", err)
 	}
+}
+
+// The production profile (DEPLOYMENT_ENVIRONMENT=production) refuses to start
+// with open diagnostic surfaces; the override warns and starts; other
+// environments keep the open-by-default runtime behaviour.
+func TestProductionProfileRequiresGatedDiagnostics(t *testing.T) {
+	base := func(t *testing.T) {
+		t.Helper()
+		t.Setenv("JWKS_FILE", "/keys/a.json")
+		t.Setenv("JWT_ISSUERS", "")
+		t.Setenv("SEARCH_REQUIRED_ROLE", "")
+		t.Setenv("EXPLAIN_REQUIRED_ROLE", "")
+		t.Setenv("WATCH_REQUIRED_ROLE", "")
+		t.Setenv("ALLOW_OPEN_DIAGNOSTICS", "")
+	}
+
+	t.Run("production with everything open fails and names each surface", func(t *testing.T) {
+		base(t)
+		t.Setenv("DEPLOYMENT_ENVIRONMENT", "production")
+		_, err := Load()
+		if err == nil {
+			t.Fatal("expected startup failure")
+		}
+		for _, want := range []string{"SEARCH_REQUIRED_ROLE", "EXPLAIN_REQUIRED_ROLE", "ALLOW_OPEN_DIAGNOSTICS"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error %q lacks %s", err, want)
+			}
+		}
+	})
+	t.Run("production with roles set starts (watch unset = disabled, fine)", func(t *testing.T) {
+		base(t)
+		t.Setenv("DEPLOYMENT_ENVIRONMENT", "prod")
+		t.Setenv("SEARCH_REQUIRED_ROLE", "authz_auditor")
+		t.Setenv("EXPLAIN_REQUIRED_ROLE", "authz_auditor")
+		if _, err := Load(); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+	})
+	t.Run(`production with watch "*" fails`, func(t *testing.T) {
+		base(t)
+		t.Setenv("DEPLOYMENT_ENVIRONMENT", "production")
+		t.Setenv("SEARCH_REQUIRED_ROLE", "authz_auditor")
+		t.Setenv("EXPLAIN_REQUIRED_ROLE", "authz_auditor")
+		t.Setenv("WATCH_REQUIRED_ROLE", "*")
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "WATCH_REQUIRED_ROLE") {
+			t.Fatalf("expected watch failure, got %v", err)
+		}
+	})
+	t.Run("override starts with open surfaces", func(t *testing.T) {
+		base(t)
+		t.Setenv("DEPLOYMENT_ENVIRONMENT", "production")
+		t.Setenv("ALLOW_OPEN_DIAGNOSTICS", "true")
+		if _, err := Load(); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+	})
+	t.Run("non-production stays open by default", func(t *testing.T) {
+		base(t)
+		t.Setenv("DEPLOYMENT_ENVIRONMENT", "staging")
+		if _, err := Load(); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+	})
 }
