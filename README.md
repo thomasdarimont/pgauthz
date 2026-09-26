@@ -27,7 +27,7 @@ that resolve relationship tuples recursively.
 - **Time-travel queries** — `audit_check_access` reconstructs permissions at any past point in time
 - **Watch / changefeed** — cursored, filterable stream of tuple changes plus a `NOTIFY` doorbell, for cache invalidation and sync
 - **Action log** — `record_event` / `list_events`: a per-store, per-principal record of what subjects *actually did* (reported by your PEP, never inferred from decisions) — see [ADR 0012](docs/adr/0012-action-log.md)
-- **Temporal gates** — history-dependent rules in the model over the action log: rate limits, spend caps, prior approval, step-up freshness, lockouts, agent guardrails (`count_within`, `sum_within`, `formerly_within`, `count_distinct_within`), applied on every check, listing, explain and time-travel path; `reserve_event` for concurrency-exact caps — see [MODEL_DESIGN §17](docs/MODEL_DESIGN.md#17-temporal-gates-history-dependent-rules)
+- **Temporal gates** — centrally managed, history-dependent veto rules over trusted recorded actions (Dogwood-inspired, not Dogwood-compatible; not a workflow engine): rate limits, spend caps, prior approval, step-up freshness, lockouts, agent guardrails (`count_within`, `sum_within`, `formerly_within`, `count_distinct_within`), applied on every check, listing, explain and time-travel path; `reserve_event` for concurrency-exact caps — see [MODEL_DESIGN §17](docs/MODEL_DESIGN.md#17-temporal-gates-history-dependent-rules)
 - **Search API** — `list_objects`, `list_subjects`, `list_actions` for discovery queries
 - **OpenFGA import** — import existing OpenFGA JSON models and tuples directly
 - **Namespace-based access control** — per-application isolation of object types within a shared store, database-enforced end to end
@@ -1133,6 +1133,13 @@ adding cedar/rego later is additive. See
 the SQL-vs-CEL trade-offs (e.g. IP-range conditions stay `lang='sql'`).
 
 ## Temporal Gates (History-Dependent Rules)
+
+Temporal gates are **centrally managed, history-dependent veto rules over
+trusted recorded actions**. They are ideal for quotas, freshness, prior
+approval, lockout, separation of duties and agent guardrails. They are **not a
+workflow engine** and **not a substitute for reliable PEP event recording**.
+Dogwood-inspired, not Dogwood-compatible: four fixed primitives, `all_of`,
+veto-only — no `since`/`until`, no nested quantifiers, no policy code.
 
 Conditions look at the request; gates look at the **past** — what the
 principal already did, as recorded in the [action log](#record_event--list_events--the-action-log).

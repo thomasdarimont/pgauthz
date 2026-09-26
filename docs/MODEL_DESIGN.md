@@ -1742,6 +1742,13 @@ so CI/CD pipelines can gate a rollout on `can_apply` and on
 
 ## 17. Temporal Gates (History-Dependent Rules)
 
+Temporal gates are **centrally managed, history-dependent veto rules over
+trusted recorded actions**. They are ideal for quotas, freshness, prior
+approval, lockout, separation of duties and agent guardrails. They are **not a
+workflow engine** and **not a substitute for reliable PEP event recording**.
+Dogwood-inspired, not Dogwood-compatible: four fixed primitives, `all_of`,
+veto-only — no `since`/`until`, no nested quantifiers, no policy code.
+
 Everything above answers a point-in-time question: *given the graph and the
 request context, may X do Y on Z?* Temporal gates add a second axis — *given
 what X has already done* — over the **action log** (`authz.events`, the

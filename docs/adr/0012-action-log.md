@@ -175,6 +175,19 @@ the PEP records a minimal payload projection, not its domain object; every
 rule has one owner (a gate replaces an application check or is documented as
 a backstop).
 
+### 5. Positioning
+
+Temporal gates are **centrally managed, history-dependent veto rules over
+trusted recorded actions**. They are ideal for quotas, freshness, prior
+approval, lockout, separation of duties and agent guardrails. They are **not a
+workflow engine** and **not a substitute for reliable PEP event recording**.
+Dogwood-inspired, not Dogwood-compatible: four fixed primitives, `all_of`,
+veto-only — no `since`/`until`, no nested quantifiers, no policy code.
+The bounded subset is the point: it fits the authorization-engine mental model
+(`graph allows AND conditions allow AND gates over recorded actions allow`)
+and stays explainable, enumerable and time-travelable, which arbitrary
+temporal policy code would not.
+
 ## Consequences
 
 - **New surface (phase 3):** SQL `reserve_event` (recorder role);

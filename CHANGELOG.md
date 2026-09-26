@@ -125,6 +125,12 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Security (documentation)
 
+- **Temporal gates positioning** (external review): the ADR, MODEL_DESIGN §17
+  and README now state that gates are centrally managed, history-dependent
+  veto rules over trusted recorded actions — not a workflow engine, not a
+  substitute for reliable PEP recording, Dogwood-inspired but not
+  Dogwood-compatible — and every shipped gate carries the
+  permission-not-outcome rule of thumb.
 - **`authz_recorder` / `RECORDER_ROLE` is documented as a PEP-only
   credential** (external review): recorded events drive temporal gates, so a
   recorder can move a gate; the ADR 0012 trust model, PRODUCTION checklist and

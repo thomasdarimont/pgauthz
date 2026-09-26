@@ -213,6 +213,13 @@ END;
 $$;
 
 -- ── Temporal gates (ADR 0012) ───────────────────────────────────────────
+-- RULE OF THUMB: a gate answers a PERMISSION question ("may this happen
+-- now, given what already happened?") that a security/compliance owner
+-- wants enforced centrally. Anything that decides an OUTCOME — which
+-- account to debit, whether to retry, the next workflow state — belongs in
+-- the application, not here. Gates are veto-only backstops, not a workflow
+-- engine, and they bound RECORDED actions: keep the recorder reliable.
+--
 -- Both hang on doc#download and are evaluated after the graph allows, over
 -- the download events the file service records (authz.record_event) AFTER
 -- each download (kind = response: completed downloads count, not attempts).

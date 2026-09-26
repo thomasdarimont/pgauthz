@@ -24,6 +24,8 @@ SELECT authz.model_register_relation('bench_gates', r)
 SELECT authz.model_add_rule('bench_gates','account', r, 'direct')
   FROM unnest(ARRAY['transfer','pay','withdraw']) r;
 
+-- (Gates answer permission questions over recorded actions — veto-only
+-- backstops, not workflow logic; see docs/MODEL_DESIGN.md §17.)
 -- pay: a velocity gate (count + sum, the sum keyed on the request context)
 SELECT authz.add_gate('bench_gates','account','pay','velocity', '{
   "all_of": [
