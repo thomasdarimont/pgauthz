@@ -1006,6 +1006,16 @@ exist for a role the caller is a member of (`SET LOCAL ROLE` per request via
 `reserve_event` inherits the rule. Membership counts, so a list granted to a
 shared role binds all its members; grant per-app roles.
 
+**Feeding the log reliably.** Gates bound *recorded* actions, so the feed
+matters as much as the gate: write gate-relevant events to an outbox in the
+same transaction as the business effect and let a consumer be the only thing
+that talks to pgauthz — at-least-once delivery with `event_id` +
+`occurred_at` idempotency, content rejections (4xx: undeclared action, bad
+payload, allowlist) dead-lettered with their reason rather than dropped,
+transport errors retried, and ingestion lag measured. The runnable reference
+is [`examples/events/`](../examples/events/README.md) (Redis Streams consumer
+group, SQL or HTTP sink, Prometheus metrics).
+
 **Strict tier.** When a temporal gate's cap must hold exactly under
 concurrency, reserve instead of check-then-record:
 

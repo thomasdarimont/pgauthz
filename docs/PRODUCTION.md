@@ -102,6 +102,13 @@ by `init.sh` on every run.
       `grant_recorder_actions` to the actions it owns and pin sensitive gate
       clauses to a `recorded_by` allowlist. See
       [ADR 0012 → trust model](adr/0012-action-log.md#3-trust-model-for-recorded-events).
+- [ ] **Feed gate-relevant events through an outbox + consumer, not fire-and-
+      forget.** A lost `response` under-counts a cap; a premature one
+      over-counts. Publish from an outbox row written in the business
+      transaction, consume with at-least-once delivery and idempotency keys,
+      dead-letter content rejections (never drop them — an undeclared action
+      means "publish the model first"), and alert on dead letters and on
+      ingestion lag. Reference: [`examples/events/`](../examples/events/README.md).
 - [ ] **If you feed the action log, schedule its partitions and set the
       backdate bound.** `SELECT authz.ensure_event_partitions()` next to the
       audit partitions; `authz.event_max_backdate` (default 24 h) to your

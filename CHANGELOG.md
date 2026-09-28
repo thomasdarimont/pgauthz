@@ -82,6 +82,14 @@ pre-1.0, minor versions may include breaking changes.
   recording, the `gate_denied` explain, enumeration and `reserve_event`;
   `tests.sql` covers the permission matrix and both gates and runs in
   `tests/test.sh`.
+- **`examples/events/` — action-log ingestion reference** (external review):
+  a compose overlay with Redis Streams, a consumer (consumer group,
+  at-least-once, batches, dead-letter stream for content rejections with the
+  engine's reason, backoff for transport errors, pending-entry reclaim,
+  Prometheus metrics incl. ingestion lag) with SQL and HTTP sinks, a demo
+  producer, and a README stating the message contract and the outbox rule. A
+  dedicated `authz_recorder_svc` login role (inherits only `authz_recorder`)
+  is the consumer's least-privilege identity.
 - **Shadow mode for temporal gates** — a gate spec may set `"mode": "shadow"`:
   it is evaluated exactly as enforcement would (same windows, same cost) but
   a failing clause never denies. The outcome is reported instead: the

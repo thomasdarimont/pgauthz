@@ -1836,6 +1836,7 @@ default store is `demo`).
 | `tests/sql/` | Test suites (API, search, namespace, wildcards, contextual, intersection, etc.) |
 | `examples/models/` | Example authorization models (helloworld, demo, gdrive, github, todo) — **not** part of the deployable engine; see [Example Models](#example-models) |
 | `examples/watch/` | Runnable setup example for the watch/changefeed feature (compose overlay + Python consumer) |
+| `examples/events/` | Action-log ingestion: outbox → queue (Redis Streams) → consumer that records into pgauthz with at-least-once delivery, idempotency, a dead-letter stream for content rejections and ingestion-lag metrics (compose overlay + Python consumer/producer) |
 | `pgauthzd/` | The Go daemon: native `/pgauthz/v1` + AuthZEN 1.0 HTTP APIs ([see pgauthzd/README.md](pgauthzd/README.md)) |
 | `playground/` | Web UI: Go BFF + Lit SPA for exploring stores and visualizing `explain_access` ([see playground/README.md](playground/README.md)) |
 | `opa/` | Rego policies for JWT authn + Zanzibar authz via the pgauthzd native callback |

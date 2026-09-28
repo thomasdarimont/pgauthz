@@ -182,6 +182,21 @@ END
 $$;
 GRANT authz_auditor TO authz_watcher;
 
+-- Action-log ingestion service role (examples/events/): a dedicated LOGIN
+-- role that INHERITs ONLY authz_recorder — it can record events and nothing
+-- else (no reads, no tuple writes). The least-privilege identity for a queue
+-- consumer / outbox relay that feeds the action log over SQL (ADR 0012);
+-- the HTTP alternative is a JWT carrying RECORDER_ROLE. PEP-only credential.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authz_recorder_svc') THEN
+        -- Dev password — override in production deployments.
+        CREATE ROLE authz_recorder_svc LOGIN PASSWORD 'authz';
+    END IF;
+END
+$$;
+GRANT authz_recorder TO authz_recorder_svc;
+
 -- ── Condition-evaluation hardening ──────────────────────────────────
 -- Condition expressions are arbitrary SQL evaluated in a sandbox
 -- (_exec_condition runs as the zero-privilege authz_eval role). That role
@@ -202,6 +217,7 @@ ALTER ROLE authzen_direct      SET statement_timeout = '60s';
 ALTER ROLE pgauthzd_rw         SET statement_timeout = '60s';
 ALTER ROLE authz_metadata      SET statement_timeout = '60s';
 ALTER ROLE authz_watcher       SET statement_timeout = '60s';
+ALTER ROLE authz_recorder_svc  SET statement_timeout = '60s';
 
 -- 2. Capability — pg_sleep is a PUBLIC builtin and the one obvious
 --    hang-via-DoS primitive reachable from the sandbox; revoke it (and its

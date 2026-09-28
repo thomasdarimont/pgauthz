@@ -1,0 +1,78 @@
+# Action-log ingestion demo (ADR 0012): an OUTBOX → queue → consumer path that
+# feeds authz.events with at-least-once delivery, idempotency, a dead-letter
+# stream for content rejections and ingestion metrics. Redis Streams stands in
+# for the broker (zero-dependency demo); the contract is broker-neutral.
+#
+# This is an OVERLAY on the main stack. From the repo root:
+#
+#   ./start.sh && ./init.sh && ./tests/test.sh        # engine + the 'demo' store
+#   dc() { docker compose -f compose.yml -f compose-authzen.yml -f examples/events/compose.yml "$@"; }
+#   dc up -d redis events-consumer && dc logs -f events-consumer
+#
+# Publish sample events (another terminal):
+#   dc run --rm events-producer --count 20                       # 20 completed downloads by alice
+#   dc run --rm events-producer --count 1 --action no_such_action  # → dead-letter stream
+#   dc exec redis redis-cli XLEN pgauthz.events.dlq
+#
+# Consumer metrics: http://localhost:9110/metrics
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  events-consumer:
+    image: python:3.12-slim
+    environment:
+      BROKER_URL: "redis://redis:6379/0"
+      EVENTS_STREAM: "pgauthz.events"
+      EVENTS_DLQ: "pgauthz.events.dlq"
+      EVENTS_GROUP: "pgauthz"
+      EVENTS_STORE: "${EVENTS_STORE:-demo}"
+      # sql (default): record via authz.record_events_jsonb as the dedicated
+      # recorder role (db/security/roles.sql: authz_recorder_svc → authz_recorder,
+      # nothing else). http: POST to pgauthzd's /pgauthz/v1/events with a JWT
+      # carrying RECORDER_ROLE — mint one with scripts/make-token.sh.
+      EVENTS_SINK: "${EVENTS_SINK:-sql}"
+      DATABASE_URL: "postgres://authz_recorder_svc:${AUTHZ_RECORDER_PASSWORD:-authz}@authz-db:5432/authz"
+      PGAUTHZD_URL: "${PGAUTHZD_URL:-http://pgauthzd-full:8080}"
+      EVENTS_TOKEN: "${EVENTS_TOKEN:-}"
+      RECORDED_BY: "${RECORDED_BY:-svc:events-consumer}"
+      BATCH_SIZE: "100"
+      BLOCK_MS: "2000"
+      CLAIM_IDLE_MS: "60000"
+      METRICS_PORT: "9110"
+    ports:
+      - "9110:9110"
+    volumes:
+      - ./examples/events/consumer.py:/app/consumer.py:ro
+    working_dir: /app
+    command: >
+      sh -c "pip install --quiet --root-user-action=ignore redis psycopg2-binary requests prometheus_client &&
+             exec python -u consumer.py"
+    depends_on:
+      redis:
+        condition: service_healthy
+      authz-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  events-producer:
+    image: python:3.12-slim
+    profiles: ["tools"]
+    environment:
+      BROKER_URL: "redis://redis:6379/0"
+      EVENTS_STREAM: "pgauthz.events"
+    volumes:
+      - ./examples/events/producer.py:/app/producer.py:ro
+    working_dir: /app
+    entrypoint: >
+      sh -c "pip install --quiet --root-user-action=ignore redis >/dev/null &&
+             exec python -u producer.py \"$$@\"" --
+    depends_on:
+      redis:
+        condition: service_healthy
