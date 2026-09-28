@@ -52,10 +52,12 @@
 --                                                  #   (type restriction enforces the convention)
 --       define task_scope: [agent]                 # the customer the agent's CURRENT task is about;
 --                                                  #   for a delegate: the scope it was explicitly given
+--       define agent_scope: agent_reader and task_scope   # an agent's effective authority here:
+--                                                  #   allowed (via its reach) AND within its task
 --   type customer_doc
 --     relations
 --       define customer: [customer]
---       define documents_read: member from customer or (agent_reader from customer and task_scope from customer)
+--       define documents_read: member from customer or agent_scope from customer
 --       define documents_search: documents_read
 --       define documents_summarize: documents_read
 --   type automation
@@ -102,6 +104,7 @@ BEGIN
     PERFORM authz.model_register_relation('agents', 'reach',               'the agent itself and, transitively, its delegates — grants are written to agent#reach');
     PERFORM authz.model_register_relation('agents', 'agent_reader',        'agents (via their reach) allowed on a customer''s documents');
     PERFORM authz.model_register_relation('agents', 'task_scope',          'the customer the agent''s current task is about (stored with expires_at, or contextual)');
+    PERFORM authz.model_register_relation('agents', 'agent_scope',         'an agent''s effective authority on a customer: agent_reader (via reach) AND task_scope');
     PERFORM authz.model_register_relation('agents', 'customer',            'customer_doc → customer');
     PERFORM authz.model_register_relation('agents', 'documents_read',      'tool documents.read');
     PERFORM authz.model_register_relation('agents', 'documents_search',    'tool documents.search');
@@ -152,6 +155,13 @@ BEGIN
     PERFORM authz.model_add_rule('agents', 'customer', 'member', 'direct');
     PERFORM authz.model_add_rule('agents', 'customer', 'agent_reader', 'direct');
     PERFORM authz.model_add_rule('agents', 'customer', 'task_scope', 'direct');
+    -- agent_scope: what an agent may actually do on this customer — allowed
+    -- through its (delegator's) reach AND within its own task. This is the
+    -- relation a sub-delegation is checked against ("may I pass this on?").
+    PERFORM authz.model_add_rule('agents', 'customer', 'agent_scope', 'computed', p_computed_relation => 'agent_reader',
+        p_group_id => 1, p_group_op => 'intersection');
+    PERFORM authz.model_add_rule('agents', 'customer', 'agent_scope', 'computed', p_computed_relation => 'task_scope',
+        p_group_id => 1, p_group_op => 'intersection');
     PERFORM authz.model_add_rule('agents', 'customer_doc', 'customer', 'direct');
     PERFORM authz.model_add_rule('agents', 'automation', 'run', 'direct');
     PERFORM authz.model_add_rule('agents', 'automation', 'create', 'direct');
@@ -165,17 +175,13 @@ BEGIN
 
     -- customer_doc: humans through the account; agents only within their task
     -- (18.3.2: "every action must remain within the scope of the current customer").
-    -- The three hops are written as TTUs directly on documents_read (no helper
-    -- relations), so list_actions returns only the tool names a planner cares
-    -- about — every relation a principal holds is an "action" to list_actions.
+    -- Both hops are TTUs directly on documents_read (no helper relations on the
+    -- doc), so list_actions returns only the tool names a planner cares about —
+    -- every relation a principal holds is an "action" to list_actions.
     PERFORM authz.model_add_rule('agents', 'customer_doc', 'documents_read', 'ttu',
         p_tupleset_relation => 'customer', p_tupleset_computed => 'member');
     PERFORM authz.model_add_rule('agents', 'customer_doc', 'documents_read', 'ttu',
-        p_tupleset_relation => 'customer', p_tupleset_computed => 'agent_reader',
-        p_group_id => 1, p_group_op => 'intersection');
-    PERFORM authz.model_add_rule('agents', 'customer_doc', 'documents_read', 'ttu',
-        p_tupleset_relation => 'customer', p_tupleset_computed => 'task_scope',
-        p_group_id => 1, p_group_op => 'intersection');
+        p_tupleset_relation => 'customer', p_tupleset_computed => 'agent_scope');
     PERFORM authz.model_add_rule('agents', 'customer_doc', 'documents_search', 'computed', p_computed_relation => 'documents_read');
     PERFORM authz.model_add_rule('agents', 'customer_doc', 'documents_summarize', 'computed', p_computed_relation => 'documents_read');
 

@@ -82,6 +82,16 @@ pre-1.0, minor versions may include breaking changes.
   recording, the `gate_denied` explain, enumeration and `reserve_event`;
   `tests.sql` covers the permission matrix and both gates and runs in
   `tests/test.sh`.
+- **Access-check preconditions for conditional writes.** `write_tuples_checked`
+  (and `POST /pgauthz/v1/write-checked`, OPA `write_checked`) accept
+  `{"match": "allowed" | "denied", user_type, user_id, relation, object_type,
+  object_id, context?}` next to the stored-tuple `exists`/`absent` filters. The
+  precondition is decided exactly as `check_access_with_context` would — graph,
+  conditions with the given context, temporal gates — inside the same
+  transaction and advisory locks, so "grant only if the granter may" (share on
+  behalf, approvals, delegation that must not exceed the delegator) is one
+  race-free call. A failed check is the usual `Write precondition failed`
+  (`check_violation`, 400 over HTTP); malformed shapes are 22023.
 - **`examples/models/agents/`** — authorization for AI agents (*Authorization
   in Action* ch. 18 / appendix C) on pgauthz: the policy-aware loop (every
   tool call a check, denial with a reason), task scope as an expiring or

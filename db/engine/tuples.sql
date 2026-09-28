@@ -694,7 +694,15 @@ $$;
 -- This is the only way to do a race-free "write X only if state Y holds" over
 -- the API (each plain-write RPC is its own transaction).
 --
---   p_preconditions: [{ "match": "exists" | "absent", <partial tuple filter> }]
+--   p_preconditions: [{ "match": "exists" | "absent", <partial tuple filter> }
+--                     | { "match": "allowed" | "denied", user_type, user_id,
+--                         relation, object_type, object_id, context? }]
+--     exists/absent match STORED tuples (only the fields present constrain).
+--     allowed/denied run a full access check — graph, conditions with the
+--     given request context, temporal gates — exactly as
+--     check_access_with_context would decide it, inside this transaction and
+--     under the same locks. "Write this grant only if the granter may X":
+--     delegation attenuated at issuance, share-on-behalf, approvals.
 --   p_deletes / p_writes: tuple arrays, same element shape as *_tuples_jsonb
 --                         (applied deletes-first, then writes).
 --   returns: {"written": n, "deleted": m}
@@ -737,12 +745,37 @@ BEGIN
             hashtextextended(p_store || ':' || v_obj.ot || ':' || v_obj.oid, 0));
     END LOOP;
 
-    -- Check preconditions (partial filters; only present fields constrain).
+    -- Check preconditions: exists/absent are partial tuple filters (only
+    -- present fields constrain); allowed/denied are access checks.
     FOR v_pc IN SELECT * FROM jsonb_array_elements(p_preconditions)
     LOOP
         v_match := coalesce(v_pc->>'match', 'exists');
-        IF v_match NOT IN ('exists', 'absent') THEN
-            RAISE EXCEPTION 'Unknown precondition match "%": expected "exists" or "absent"', v_match;
+        IF v_match NOT IN ('exists', 'absent', 'allowed', 'denied') THEN
+            RAISE EXCEPTION 'Unknown precondition match "%": expected "exists", "absent", "allowed" or "denied"', v_match;
+        END IF;
+        IF v_match IN ('allowed', 'denied') THEN
+            IF v_pc->>'user_type' IS NULL OR v_pc->>'user_id' IS NULL OR v_pc->>'relation' IS NULL
+               OR v_pc->>'object_type' IS NULL OR v_pc->>'object_id' IS NULL THEN
+                RAISE EXCEPTION 'Precondition "%" needs user_type, user_id, relation, object_type and object_id: %', v_match, v_pc
+                    USING ERRCODE = 'invalid_parameter_value';
+            END IF;
+            IF v_pc ? 'context' AND jsonb_typeof(v_pc->'context') NOT IN ('object', 'null') THEN
+                RAISE EXCEPTION 'Precondition "%": context must be a JSON object', v_match
+                    USING ERRCODE = 'invalid_parameter_value';
+            END IF;
+            -- The same decision check_access_with_context makes (the _decide
+            -- seam: graph, conditions, gates), on committed state under the
+            -- advisory locks taken above.
+            v_found := authz._decide(v_store_id,
+                authz._t(v_store_id, v_pc->>'user_type'), v_pc->>'user_id',
+                authz._r(v_store_id, v_pc->>'relation'),
+                authz._t(v_store_id, v_pc->>'object_type'), v_pc->>'object_id',
+                CASE WHEN jsonb_typeof(v_pc->'context') = 'object' THEN v_pc->'context' END);
+            IF (v_match = 'allowed' AND NOT v_found) OR (v_match = 'denied' AND v_found) THEN
+                RAISE EXCEPTION 'Write precondition failed: % %', v_match, v_pc - 'context'
+                    USING ERRCODE = 'check_violation';
+            END IF;
+            CONTINUE;
         END IF;
         v_found := authz._precondition_matches(v_store_id, v_pc);
         IF (v_match = 'exists' AND NOT v_found) OR (v_match = 'absent' AND v_found) THEN

@@ -18,7 +18,7 @@ for every tool call and records what happened afterwards.
 | Book | Cedar | pgauthz |
 |---|---|---|
 | 18.3 policy-aware loop | `is_authorized(agent, tool, resource, context)` before each tool call; deny = replan | `check_access` / AuthZEN `evaluation`; the denial carries a reason (`check_access_detailed`, `explain_access`) the planner can use. |
-| 18.3.2 task boundary | `permit … when { resource.customerId == context.customerId }` | `customer#task_scope: [agent]` — the customer the agent's **current task** is about. Stored with `expires_at` for the task's lifetime (the PEP writes it at task start), or passed as a **contextual tuple** for one request. `documents_read = member from customer OR (agent_reader from customer AND task_scope from customer)`: an agent allowed on two customers still reaches only the task's customer. |
+| 18.3.2 task boundary | `permit … when { resource.customerId == context.customerId }` | `customer#task_scope: [agent]` — the customer the agent's **current task** is about. Stored with `expires_at` for the task's lifetime (the PEP writes it at task start), or passed as a **contextual tuple** for one request. `customer#agent_scope = agent_reader AND task_scope` is the agent's effective authority on a customer, and `documents_read = member from customer OR agent_scope from customer`: an agent allowed on two customers still reaches only the task's customer. |
 | 18.4 constraint-aware planning | typed partial evaluation → residual → `permitted_actions` list | `list_actions('agents','agent','acme_assist','customer_doc','custco-briefing')` returns the set directly; `list_objects` answers "which resources for this action". Guidance ≡ enforcement: the test asserts the listed set equals the per-action checks that pass. Over HTTP: AuthZEN `search/action`, `search/resource`. |
 | 18.4 sidebar sequencing | `permit send_email when summary_status == "complete"` (a stage flag in context) | a temporal gate on `mailbox#send_email`: `formerly_within{window: 1h, action: documents_summarize, kind: response}`. The action log **is** the task state; nothing rides in the prompt or the context. The planner sees it too: `list_actions` omits `send_email` until a summary was recorded. |
 | 18.5 childproofing the control plane | `forbid(principal is Agent, action in [automation.create, …])` | `automation#create/update/delete: [user]` — no agent path exists, and the type restriction makes even *writing* such a grant an error. Absence instead of a forbid. |
@@ -36,9 +36,12 @@ for every tool call and records what happened afterwards.
   agent's `reach` userset rather than to the agent. The convention costs one
   self tuple per agent (`agent:X reach agent:X`) and is enforced by the type
   restriction on `agent_reader`. The issuance precondition is an early,
-  atomic refusal on top; it can only match the delegator's reach tuple today,
-  and a planned `"match": "allowed"` precondition would let a sub-delegator
-  (whose right is computed through the chain) be checked the same way.
+  atomic refusal on top: `"match": "exists"` on the delegator's reach tuple
+  for a first-level delegation, `"match": "allowed"` on `customer#agent_scope`
+  (a full access check inside the write's transaction) for a sub-delegator
+  whose right is computed through the chain — it may pass on CustCo, which it
+  was given, and not Globex, which its delegator holds but never gave it. See
+  the `summarizer` tests.
 - **Gates are per relation, not per principal type.** `summary_first` vetoes
   the mailbox owner too (the test shows it). Put humans on their own relation
   if they must be exempt.

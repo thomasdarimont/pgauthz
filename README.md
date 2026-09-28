@@ -20,7 +20,7 @@ that resolve relationship tuples recursively.
 - **Model registry** — named, immutable model versions shared across tenant stores: publish, canary, roll out, detect drift, dry-run applies — see [MODEL_DESIGN §16](docs/MODEL_DESIGN.md#16-sharing-one-model-across-stores-model-registry)
 - **Model-as-code toolchain (`pgauthzctl`)** — OpenFGA DSL in git, CI tests with YAML fixtures, registry publish and rollout — see [`pgauthzctl/`](pgauthzctl/README.md)
 - **Batch operations** — `write_tuples` / `delete_tuples` for bulk changes
-- **Conditional / atomic writes** — `write_tuples_checked`: preconditions plus deletes and writes in one transaction (optimistic concurrency)
+- **Conditional / atomic writes** — `write_tuples_checked`: preconditions (stored-tuple `exists`/`absent`, or an access check `allowed`/`denied`: "grant only if the granter may") plus deletes and writes in one transaction (optimistic concurrency)
 - **Strict revocation & per-write consistency** — acked revokes are applied on every synchronous replica (`remote_apply`), with per-write opt-down and a per-request cache bypass
 - **Read-your-writes freshness tokens** — opt-in signed watermark tokens: reads are served only by replicas that caught up to your write — see [ADR 0009](docs/adr/0009-freshness-tokens.md)
 - **Full audit trail** — immutable, monthly-partitioned audit log with application user tracking (`performed_by`)

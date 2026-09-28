@@ -888,7 +888,13 @@ the only race-free way to do "write X only if state Y holds" over the API (each
 plain-write RPC is its own transaction). A precondition is a partial tuple
 filter with `"match": "exists" | "absent"` (only the fields you supply are
 constrained, so `{relation, object_type, object_id}` means "any tuple with that
-relation on that object").
+relation on that object"), or an **access check** with `"match": "allowed" |
+"denied"` — `{user_type, user_id, relation, object_type, object_id, context?}`
+decided exactly as `check_access_with_context` would (graph, conditions with
+the given context, temporal gates), inside the same transaction and locks.
+That is "write this grant only if the granter may": a share-on-behalf that
+requires `can_share`, an approval that requires `approver`, a delegation that
+must not exceed the delegator (`examples/models/agents`).
 
 It's a general conditional-mutate, despite the name — pass `deletes` with no
 `writes` for a **conditional delete** ("revoke X only if Y still holds"), and
@@ -921,6 +927,16 @@ curl -sX POST http://localhost:8092/pgauthz/v1/write-checked \
 
 A failed precondition returns `400` with `"Write precondition failed: …"` and
 **nothing is written**.
+
+Grant on behalf — Bob may add a viewer only while *he* may share the document
+(a computed relation, so a stored-tuple filter could not express it):
+
+```jsonc
+// POST /pgauthz/v1/write-checked
+"preconditions":[{"match":"allowed","user_type":"user","user_id":"bob","relation":"can_share",
+                  "object_type":"document","object_id":"d1"}],
+"writes":[{"user_type":"user","user_id":"carol","relation":"viewer","object_type":"document","object_id":"d1"}]
+```
 
 Same call in **direct SQL**:
 

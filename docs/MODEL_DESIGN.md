@@ -1515,6 +1515,12 @@ Notes:
   inherits from `foo` and stops inheriting from `bar`.
 - **No `child` bookkeeping** — "child" is the implicit reverse of `parent`, derived
   by query; there's no second tuple to keep in sync.
+- **Preconditions can be access checks, too.** `"match": "allowed"` (or
+  `"denied"`) with `user_type, user_id, relation, object_type, object_id,
+  context?` decides the precondition like `check_access_with_context` —
+  computed relations, conditions, gates included — so "move only if the
+  mover may write the destination folder" is one atomic call with no
+  separate check that could race the write.
 - **No special "move" primitive is needed.** `write_tuples_checked` *is* the
   atomic multi-tuple update. A folder-aware move op would bake filesystem semantics
   into a deliberately model-agnostic relationship engine — `folder` is just a

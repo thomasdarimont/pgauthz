@@ -1781,8 +1781,11 @@ components:
             type: object
             additionalProperties: true
           description: >
-            Tuple-existence preconditions (write_tuples_checked shape); all
-            must hold or nothing is applied.
+            Preconditions (write_tuples_checked shape); all must hold or
+            nothing is applied. `match: exists|absent` filters stored tuples
+            (only the fields given constrain); `match: allowed|denied` runs a
+            full access check for {user_type, user_id, relation, object_type,
+            object_id, context?} — "write this grant only if the granter may".
         deletes:
           type: array
           items: { $ref: '#/components/schemas/TupleInput' }

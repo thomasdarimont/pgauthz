@@ -153,10 +153,25 @@ BEGIN
     PERFORM _test_assert_true('ag_deleg_direct_grant_rejected', v_err IS NOT NULL, coalesce(v_err, 'tuple was written'));
 
     -- chains: a sub-subagent delegated by research_agent sits in acme_assist's
-    -- reach transitively; cutting the middle link cuts the subtree
+    -- reach transitively; cutting the middle link cuts the subtree. The
+    -- sub-delegator's own right is COMPUTED through the chain (no direct tuple),
+    -- so its issuance check is an access-check precondition ("allowed").
     PERFORM authz.write_tuple('agents', 'agent', 'summarizer', 'reach', 'agent', 'summarizer');
-    PERFORM authz.write_tuple('agents', 'agent', 'summarizer', 'delegate', 'agent', 'research_agent');
-    PERFORM authz.write_tuple('agents', 'agent', 'summarizer', 'task_scope', 'customer', 'CustCo');
+    PERFORM authz.write_tuples_checked('agents',
+        p_preconditions => '[{"match": "allowed", "user_type": "agent", "user_id": "research_agent",
+                              "relation": "agent_scope", "object_type": "customer", "object_id": "CustCo"}]',
+        p_writes => '[{"user_type": "agent", "user_id": "summarizer", "relation": "delegate", "object_type": "agent", "object_id": "research_agent"},
+                      {"user_type": "agent", "user_id": "summarizer", "relation": "task_scope", "object_type": "customer", "object_id": "CustCo"}]',
+        p_performed_by => 'agent:research_agent');
+    -- ... and research_agent cannot sub-delegate Globex, which it was never given
+    v_err := NULL;
+    BEGIN
+        PERFORM authz.write_tuples_checked('agents',
+            p_preconditions => '[{"match": "allowed", "user_type": "agent", "user_id": "research_agent",
+                                  "relation": "agent_scope", "object_type": "customer", "object_id": "Globex"}]',
+            p_writes => '[{"user_type": "agent", "user_id": "summarizer", "relation": "task_scope", "object_type": "customer", "object_id": "Globex"}]');
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert_true('ag_deleg_subdelegation_bounded', v_err LIKE '%precondition failed: allowed%', coalesce(v_err, 'sub-delegation was written'));
     PERFORM _test_assert('ag_deleg_chain_reads',
         authz.check_access('agents', 'agent', 'summarizer', 'documents_read', 'customer_doc', 'custco-briefing')::text, 'true');
     PERFORM authz.delete_tuple('agents', 'agent', 'research_agent', 'delegate', 'agent', 'acme_assist');
