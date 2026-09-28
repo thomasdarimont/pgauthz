@@ -500,6 +500,13 @@ DECLARE
     v_relation    integer := authz._r(v_store_id, p_relation);
     v_object_type integer := authz._t(v_store_id, p_object_type);
     v_gates       jsonb;
+    -- The store's own type ids, for partition pruning of the subject-rooted
+    -- scans below (see the seed scan). An array parameter prunes at executor
+    -- start; the earlier `IN (SELECT id FROM authz.types …)` form stopped
+    -- pruning on PostgreSQL 18.4 (planned as a merge join over a Merge Append
+    -- of EVERY partition of EVERY store — 130 partitions, 40k buffers, 8x
+    -- slower; re-found by the benchmark 2026-09-29).
+    v_type_ids    integer[] := ARRAY(SELECT ty.id FROM authz.types ty WHERE ty.store_id = v_store_id);
 BEGIN
     PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
     -- Temporal gates (ADR 0012): with subject-scoped clauses only, ONE
@@ -529,10 +536,12 @@ BEGIN
                -- partition key (object_type) is otherwise unconstrained and
                -- EVERY tuple partition of EVERY store gets scanned per
                -- iteration (168 partitions from 3 stores in the dev DB —
-               -- 115x slower). The IN() is a tautology (a store's tuples
+               -- 115x slower). The predicate is a tautology (a store's tuples
                -- only reference its own types) that the executor turns into
-               -- startup-time pruning down to this store's partitions.
-               AND t.object_type   IN (SELECT ty.id FROM authz.types ty WHERE ty.store_id = v_store_id)
+               -- startup-time pruning down to this store's partitions. It
+               -- must be an ARRAY parameter: an IN (subselect) was planned as
+               -- a join on 18.4 and pruned nothing.
+               AND t.object_type   = ANY (v_type_ids)
           UNION
             -- Expansion: from each reached (object A, relation r),
             -- follow every mechanism that can grant something further.
@@ -556,7 +565,7 @@ BEGIN
                      AND t.user_type     = r.object_type
                      AND t.user_id       = r.object_id
                      AND t.user_relation = r.relation
-                     AND t.object_type   IN (SELECT ty.id FROM authz.types ty WHERE ty.store_id = v_store_id)  -- pruning (see seed scan)
+                     AND t.object_type   = ANY (v_type_ids)  -- pruning (see seed scan)
                 UNION ALL
                   -- TTU: link tuple (A)-[ts]->(B) plus a rule on B
                   -- "R from ts" whose computed relation is r
@@ -572,7 +581,7 @@ BEGIN
                      AND t.user_type     = r.object_type
                      AND t.user_id       = r.object_id
                      AND t.user_relation IS NULL
-                     AND t.object_type   IN (SELECT ty.id FROM authz.types ty WHERE ty.store_id = v_store_id)  -- pruning (see seed scan)
+                     AND t.object_type   = ANY (v_type_ids)  -- pruning (see seed scan)
               ) AS e (object_type, object_id, relation)
         )
         SELECT c.object_id, c.object_id = '*'

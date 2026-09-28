@@ -396,3 +396,47 @@ reruns — a single-sample outlier, not a regression. Not covered by this
 suite: the `allowed` precondition (a write-path check; costs one
 `check_access` inside the write's transaction) and pgauthzd's decision log
 (ADR 0013; daemon-side, one JSON encode per decision, off by default).
+
+## Addendum: 2026-09-29 (exclusion fail-closed fix, condition-bound facets — and a pruning regression re-found)
+
+**1. The F20 exclusion fix and the polarity-keyed memo cost nothing
+measurable.** A/B on the same machine state, swapping only the four
+read-path engine files between v0.16.0 (pre-fix) and HEAD over the `drive`
+and `rules` suites: every line within run-to-run noise — drive shallow
+0.201 → 0.165, deep TTU 3.57 → 3.25, DENY 3.66 → 3.77, `list_subjects` shared
+11.1 → 13.6; rules exclusion ALLOW 0.295 → 0.312 (the negated term's two
+`set_config` calls, +6 % on a 0.3 ms path), exclusion DENY 0.170 → 0.173,
+intersection ALLOW 0.174 → 0.183 ms/op. Condition-bound facets (migration
+0015) touch the write path only and are not in this suite.
+
+**2. `list_objects` partition pruning had silently regressed — FOUND AND
+FIXED (again).** The first full run showed `list_objects` 3–8× above the
+July numbers (rules intersection 96.8 vs 12, drive grant-sparse 15.7 vs 4.6,
+github 269 vs 129 ms/op) while checks and `list_subjects` were on baseline,
+and the A/B above cleared the recent engine changes. `EXPLAIN` of the
+reachability walk showed the cause: the July tautology
+`object_type IN (SELECT id FROM authz.types WHERE store_id = …)` was planned
+on 18.4 as a **merge join over a Merge Append of all 130 tuple partitions of
+every store** (40,336 buffers per call, 132 partition scans) — the exact
+defect the July fix had closed, back through a different plan shape.
+Materialising the store's type ids once into an array parameter
+(`object_type = ANY(v_type_ids)`) prunes at executor start: 434 buffers, the
+store's own two partitions. Full rerun, same machine state, before → after:
+
+| `list_objects` | before | after |
+|---|--:|--:|
+| rules — intersection (20 of 5,000 resources) | 96.8 | **3.8** |
+| drive — grant-sparse user (10 of 50,000 docs) | 15.7 | **2.5** |
+| github — org-admin repos (50 of 2,000) | 268.9 | **121.2** |
+| gates — evaluated once up front | 19.1 | **13.0** |
+
+Everything else in all five suites stayed within noise (drive shallow 0.171
+→ 0.165, gates baseline 0.161 → 0.164, adversarial fan-out 64.8 → 65.7,
+`audit_check_access` 111 → 116 ms/op). The github remainder (121 ms) is the
+real per-candidate confirmation work noted in July.
+
+Lesson recorded in the code comment: the pruning predicate must be a
+parameter or literal the executor can evaluate before scanning, never a
+subselect the planner may choose to join. A regression guard is the
+benchmark itself — the `list_objects` lines are the ones to watch after any
+PostgreSQL upgrade.

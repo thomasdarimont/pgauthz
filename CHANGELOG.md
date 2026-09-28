@@ -7,6 +7,23 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`list_objects` scanned every tuple partition of every store again**
+  (re-found by the benchmark, 2026-09-29). The July fix constrained the
+  three subject-rooted scans of the reachability walk with a tautology
+  `object_type IN (SELECT id FROM authz.types WHERE store_id = …)` so the
+  executor could prune down to the store's own partitions; on PostgreSQL 18.4
+  the planner turned that subselect into a merge join over a Merge Append of
+  all 130 partitions (40k buffers per call) and pruned nothing — rules-suite
+  intersection `list_objects` 12 → 94 ms, drive grant-sparse 4.6 → 14 ms.
+  The store's type ids are now materialised once into an array parameter
+  (`object_type = ANY(…)`), which prunes at executor start: rules
+  intersection 96.8 → 3.8 ms, drive grant-sparse 15.7 → 2.5 ms, github
+  org-admin repos 269 → 121 ms, gates 19.1 → 13.0 ms (full rerun, same
+  machine state). Checks and `list_subjects` (object-rooted) were never
+  affected. See the BENCHMARKS addendum.
+
 ### Added
 
 - **Condition-bound type restrictions** (migration 0015; OpenFGA
