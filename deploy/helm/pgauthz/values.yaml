@@ -50,6 +50,14 @@ diagnostics:
   # every start).
   allowOpenInProduction: false
 
+# ── Preflight (`helm test`) ──────────────────────────────────────────────────
+# `helm test <release>` runs `pgauthzd doctor --profile production` with the
+# reader's configuration (templates/tests/doctor.yaml): config as the daemon
+# loads it, demo secrets, diagnostic gates, issuer bindings, JWKS, DB role,
+# OPA health, decision-log sink. Fails on any failing check.
+doctor:
+  strict: false       # also fail the test on warnings (--strict)
+
 # ── Decision log (ADR 0013) ──────────────────────────────────────────────────
 # One JSON line per decision from pgauthzd (both listeners): resolved request,
 # decision/state/reason, caller, request id, latency — context KEY NAMES only.

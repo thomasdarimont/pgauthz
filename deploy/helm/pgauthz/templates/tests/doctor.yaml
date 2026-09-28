@@ -1,0 +1,49 @@
+{{- /*
+`helm test <release>` runs `pgauthzd doctor --profile production` with the
+READER deployment's configuration: the same config the daemon loads, plus
+demo-secret detection, JWKS reachability, the DB role assertion for the
+profile, OPA health and the decision-log sink. Fails the test (non-zero
+exit) on any failing check. Warnings are printed, not fatal — pass
+`--strict` via doctor.strict to fail on them too.
+*/ -}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "pgauthz.fullname" . }}-doctor
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: doctor
+      image: {{ include "pgauthz.image" .Values.images.pgauthzd }}
+      imagePullPolicy: {{ .Values.images.pullPolicy }}
+      command: ["/usr/local/bin/app", "doctor", "--profile", "production"{{ if (.Values.doctor).strict }}, "--strict"{{ end }}]
+      env:
+        - { name: PGAUTHORIZER_PROFILE, value: decision-only }
+        - { name: INTERNAL_LISTEN_ADDR, value: ":8081" }
+        - name: INTERNAL_SERVICE_TOKEN
+          valueFrom:
+            secretKeyRef: { name: {{ include "pgauthz.secretName" . }}, key: native-service-token }
+        - name: AZD_PW
+          valueFrom:
+            secretKeyRef: { name: {{ include "pgauthz.fullname" . }}-authzen-direct, key: password }
+        - name: DATABASE_URL
+          value: postgres://authzen_direct:$(AZD_PW)@{{ include "pgauthz.readerHost" . }}:5432/authz
+        - { name: DEFAULT_DB_ROLE, value: authz_reader }
+        - { name: JWKS_FILE,     value: /jwks/jwks.json }
+        - { name: JWT_ISSUER,    value: {{ .Values.opa.jwtIssuer | quote }} }
+        - { name: JWT_AUDIENCE,  value: {{ .Values.opa.jwtAudience | quote }} }
+        - { name: DEFAULT_STORE, value: {{ .Values.opa.defaultStore | quote }} }
+        - { name: ALLOW_SUBJECT_OVERRIDE, value: "false" }
+        {{- include "pgauthz.diagnosticsEnv" (dict "root" $ "env" .Values.deploymentEnvironment) | nindent 8 }}
+        {{- if .Values.metrics.enabled }}
+        - { name: METRICS_LISTEN_ADDR, value: ":{{ .Values.metrics.port }}" }
+        {{- end }}
+      volumeMounts:
+        - { name: jwks, mountPath: /jwks, readOnly: true }
+  volumes:
+    - name: jwks
+      configMap: { name: {{ include "pgauthz.fullname" . }}-opa-data }

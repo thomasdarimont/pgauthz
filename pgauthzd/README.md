@@ -335,6 +335,29 @@ fixed connection role applies).
 > the input field is honored only in trusted-PEP mode
 > (`REQUIRE_TOKEN_FOR_READS=false`).
 
+## Preflight: `pgauthzd doctor`
+
+Before promoting a configuration, ask the binary whether it would pass:
+
+```bash
+pgauthzd doctor                       # evaluate the config as set
+pgauthzd doctor --profile production  # evaluate it as a production deployment
+pgauthzd doctor --json --strict       # machine-readable; exit 2 on warnings too
+```
+
+It loads the configuration exactly as the daemon does (so the production
+profile's gate checks and every invalid value fail here first), then
+checks what the production guide otherwise asks you to verify by hand:
+demo secrets (the compose service token, demo DB passwords, the
+`auth.example.com` issuer), open diagnostic surfaces, issuer store
+bindings and JWKS reachability, `ALLOW_SUBJECT_OVERRIDE`, the cursor seal
+key on OPA-fronted instances, the database (connect, engine installed,
+role read-only or writer-capable as the profile requires), the callback
+listener and its mTLS, OPA health, the decision-log sink, and the metrics
+listener. Exit code 1 on any failure; it never serves and never writes.
+The Helm chart runs it as `helm test` with the reader's configuration
+(`doctor.strict` to fail on warnings).
+
 ## Configuration
 
 All configuration is via environment variables.

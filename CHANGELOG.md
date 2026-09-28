@@ -82,6 +82,14 @@ pre-1.0, minor versions may include breaking changes.
   recording, the `gate_denied` explain, enumeration and `reserve_event`;
   `tests.sql` covers the permission matrix and both gates and runs in
   `tests/test.sh`.
+- **`pgauthzd doctor`**: a preflight subcommand that loads the
+  configuration as the daemon does and checks demo secrets, diagnostic gates,
+  issuer store bindings, JWKS reachability, subject override, the cursor seal
+  key, database connectivity and role capability for the profile, the
+  callback listener and mTLS, OPA health, the decision-log sink and the
+  metrics listener. `--profile production` evaluates the production profile
+  regardless of `DEPLOYMENT_ENVIRONMENT`; `--json`; `--strict` exits 2 on
+  warnings. The Helm chart runs it as `helm test` (`doctor.strict`).
 - **Decision log in pgauthzd** ([ADR 0013](docs/adr/0013-decision-log.md)):
   `DECISION_LOG=off|stdout|stderr|file:<path>` writes one JSON line per
   decision — `evaluation(s)`, `check(-batch)`, `explain`, `events/reserve`,

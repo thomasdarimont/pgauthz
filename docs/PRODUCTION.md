@@ -761,6 +761,16 @@ trail, with the same operational shape:
   [Replica consistency](#replica-consistency)); a recorder that writes with
   `consistency: applied` removes its own read-after-write gap.
 
+## Preflight
+
+`pgauthzd doctor --profile production` evaluates a configuration as a
+production deployment before you promote it — the production profile's
+gates, demo secrets, issuer bindings and JWKS, the DB role for the profile,
+the callback listener, OPA and the decision-log sink — and exits non-zero on
+any failure. In Kubernetes, `helm test <release>` runs the same check with
+the reader's configuration. Wire it into the pipeline that applies the
+config; it catches the mistakes this guide lists before a pod ever starts.
+
 ## Decision log
 
 pgauthzd can write one JSON line per decision ([ADR 0013](adr/0013-decision-log.md)):
