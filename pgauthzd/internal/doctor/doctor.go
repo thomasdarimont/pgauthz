@@ -383,6 +383,35 @@ func probeDB(ctx context.Context, cfg *config.Config, timeout time.Duration, add
 			add("db role", StatusOK, "writer-capable, as a full instance requires")
 		}
 	}
+
+	// Temporal gates (review #11): for every store with gates, does the
+	// retained action log reach back the longest window? A deficit means a
+	// cap may be under-counted — relaxed, never tightened — until the log has
+	// accumulated (young deployment) or retention is widened.
+	rows, err := b.GateReadiness(cctx)
+	if err != nil {
+		add("temporal gates", StatusWarn, "events_readiness unavailable: "+redactErr(err))
+		return
+	}
+	var gated, short []string
+	for _, r := range rows {
+		if r.Gates == 0 {
+			continue
+		}
+		gated = append(gated, r.Store)
+		if !r.HistoryCoversGates && r.HistoryDeficitSecs != nil {
+			short = append(short, fmt.Sprintf("%s (%d gate(s), history short by %s, %d recorder(s) in 24h)",
+				r.Store, r.Gates, (time.Duration(*r.HistoryDeficitSecs)*time.Second).Round(time.Minute), r.Recorders24h))
+		}
+	}
+	switch {
+	case len(gated) == 0:
+		add("temporal gates", StatusSkip, "no store has gates")
+	case len(short) == 0:
+		add("temporal gates", StatusOK, fmt.Sprintf("retained history covers the longest gate window in %d gated store(s)", len(gated)))
+	default:
+		add("temporal gates", StatusWarn, "history does not yet cover the longest gate window: "+strings.Join(short, "; "))
+	}
 }
 
 // dbPassword extracts the password of a postgres:// URL without importing a

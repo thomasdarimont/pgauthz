@@ -597,6 +597,36 @@ BEGIN
 END;
 $$;
 
+-- events_readiness: the operator's "can the gates be trusted?" row (review #11)
+DO $$
+DECLARE r record; n int;
+BEGIN
+    SELECT * INTO r FROM authz.events_readiness('test_gates');
+    PERFORM _test_assert('er_01_store', r.store, 'test_gates');
+    PERFORM _test_assert_true('er_01_gates_counted', r.gates >= 5, r.gates::text);
+    PERFORM _test_assert('er_01_modes_sum', (r.gates_enforce + r.gates_shadow + r.gates_off)::text, r.gates::text);
+    PERFORM _test_assert('er_01_max_window', r.max_gate_window::text, authz.max_gate_window('test_gates')::text);
+    PERFORM _test_assert_true('er_01_history_since_set', r.history_since IS NOT NULL);
+    -- a fresh deployment has not yet accumulated the longest window: reported as a deficit, never hidden
+    PERFORM _test_assert('er_01_covers_matches_deficit', (r.history_covers_gates = (r.history_deficit IS NULL))::text, 'true');
+    PERFORM _test_assert_true('er_01_recent_activity', r.events_1h > 0 AND r.last_recorded_at IS NOT NULL, r.events_1h::text);
+    PERFORM _test_assert_true('er_01_recorders_seen', current_user = ANY (r.recorders_24h), array_to_string(r.recorders_24h, ','));
+    PERFORM _test_assert_true('er_01_delay_measured', r.max_recording_delay_1h IS NOT NULL);
+    -- a store without gates: nothing to under-count
+    BEGIN PERFORM authz.delete_store('test_gates_er', p_purge_audit => true); EXCEPTION WHEN OTHERS THEN NULL; END;
+    PERFORM authz.create_store('test_gates_er');
+    SELECT * INTO r FROM authz.events_readiness('test_gates_er');
+    PERFORM _test_assert('er_02_no_gates', r.gates::text, '0');
+    PERFORM _test_assert('er_02_no_window', coalesce(r.max_gate_window::text, 'none'), 'none');
+    PERFORM _test_assert('er_02_covers_trivially', r.history_covers_gates::text, 'true');
+    PERFORM authz.delete_store('test_gates_er', p_purge_audit => true);
+    -- fleet-wide: one row per live store, the gated store among them
+    SELECT count(*) INTO n FROM authz.events_readiness() WHERE store = 'test_gates';
+    PERFORM _test_assert('er_03_fleet_lists_store', n::text, '1');
+END;
+$$;
+
+
 -- ================================================================
 -- Shadow mode: per-gate mode = shadow and the authz.gates_mode switch
 -- ================================================================

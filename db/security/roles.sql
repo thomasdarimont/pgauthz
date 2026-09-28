@@ -310,6 +310,7 @@ GRANT EXECUTE ON FUNCTION authz.store_stats(int) TO authz_reader;
 -- Temporal gate retention requirement (ADR 0012): readiness runbooks compare it with the retention schedule.
 GRANT EXECUTE ON FUNCTION authz.gate_windows(text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.max_gate_window(text) TO authz_reader;
+GRANT EXECUTE ON FUNCTION authz.events_readiness(text) TO authz_reader;
 
 ------------------------------------------------------------------------
 -- authz_writer: tuple management (inherits reader grants above)
@@ -407,6 +408,7 @@ ALTER FUNCTION authz.assert_fresh(int, pg_lsn) SECURITY DEFINER;
 ALTER FUNCTION authz.store_stats(int) SECURITY DEFINER;
 ALTER FUNCTION authz.gate_windows(text) SECURITY DEFINER;
 ALTER FUNCTION authz.max_gate_window(text) SECURITY DEFINER;
+ALTER FUNCTION authz.events_readiness(text) SECURITY DEFINER;
 ALTER FUNCTION authz.describe_model(text) SECURITY DEFINER;
 ALTER FUNCTION authz.write_tuple(text, text, text, text, text, text, text, text, jsonb, text, timestamptz) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_tuple(text, text, text, text, text, text, text, text) SECURITY DEFINER;

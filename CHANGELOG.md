@@ -82,6 +82,17 @@ pre-1.0, minor versions may include breaking changes.
   recording, the `gate_denied` explain, enumeration and `reserve_event`;
   `tests.sql` covers the permission matrix and both gates and runs in
   `tests/test.sh`.
+- **Gate readiness** (review #11): `authz.events_readiness(store)` — one row
+  per store with gate counts by mode, the longest window, `history_since`
+  (earliest retained partition or oldest event), `history_covers_gates` and
+  `history_deficit`, events and worst occurred→recorded delay in the last
+  hour, recorder identities in the last 24 h. Reader-callable. pgauthzd samples
+  it into six per-store gauges (`pgauthzd_gates_total`,
+  `pgauthzd_gate_history_covers`, `pgauthzd_gate_history_deficit_seconds`,
+  `pgauthzd_events_last_recorded_age_seconds`,
+  `pgauthzd_events_recording_delay_max_seconds`,
+  `pgauthzd_events_recorders_24h`) and `pgauthzd doctor` warns for every
+  gated store whose retained history does not yet cover its longest window.
 - **Adversarial hook-URL regression tests** (review #11): the `hookurl`
   canonicaliser now has 20 reject cases (userinfo dressed as `host:port`,
   percent-encoded dots, control characters, broken ports and brackets,

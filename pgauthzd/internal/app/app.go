@@ -118,6 +118,9 @@ func Run(name, version string) error {
 				startStoreSampler(ctx, ss, time.Duration(cfg.MetricsSampleIntervalSeconds)*time.Second, cfg.MetricsMaxStores)
 				slog.Info("metrics: store-stats sampler started", "interval_s", cfg.MetricsSampleIntervalSeconds)
 			}
+			if gr, ok := raw.(authz.GateReadinessReporter); ok {
+				startGateSampler(ctx, gr, time.Duration(cfg.MetricsSampleIntervalSeconds)*time.Second)
+			}
 		}
 	}
 
@@ -365,6 +368,49 @@ func newPool(ctx context.Context, dsn string, maxConns int) (*pgxpool.Pool, erro
 
 // startStoreSampler periodically samples per-store engine stats and publishes
 // them as gauges (ADR 0010 Slice 3). Runs until ctx is cancelled.
+// startGateSampler publishes the temporal-gate readiness gauges (review #11)
+// on the store-stats interval: history coverage per gated store, recording
+// activity and delay, recorder identities.
+func startGateSampler(ctx context.Context, gr authz.GateReadinessReporter, interval time.Duration) {
+	sample := func() {
+		sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		rows, err := gr.GateReadiness(sctx)
+		if err != nil {
+			slog.Warn("metrics: gate-readiness sample failed", "error", err)
+			return
+		}
+		now := time.Now()
+		samples := make([]metrics.GateReadinessSample, 0, len(rows))
+		for _, r := range rows {
+			s := metrics.GateReadinessSample{Store: r.Store, Gates: float64(r.Gates), Covers: r.HistoryCoversGates,
+				Recorders24h: float64(r.Recorders24h), RecordingDelayMax: r.MaxRecordingDelay1h}
+			if r.HistoryDeficitSecs != nil {
+				s.DeficitSeconds = *r.HistoryDeficitSecs
+			}
+			if r.LastRecordedAt != nil {
+				age := now.Sub(*r.LastRecordedAt).Seconds()
+				s.LastRecordedAge = &age
+			}
+			samples = append(samples, s)
+		}
+		metrics.SetGateReadiness(samples)
+	}
+	go func() {
+		sample()
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				sample()
+			}
+		}
+	}()
+}
+
 func startStoreSampler(ctx context.Context, ss authz.StoreStatser, interval time.Duration, limit int) {
 	sample := func() {
 		sctx, cancel := context.WithTimeout(ctx, 10*time.Second)

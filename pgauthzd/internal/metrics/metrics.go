@@ -205,7 +205,79 @@ var (
 		Name: "pgauthzd_store_tuples",
 		Help: "Tuple count per store (top-N by count; sampled — see ADR 0010).",
 	}, []string{"store"})
+
+	// Temporal-gate readiness (authz.events_readiness, review #11): sampled
+	// per store that has gates. history_covers = 1 when the retained action
+	// log reaches back at least the longest gate window; deficit = how much
+	// history is missing (a young deployment or an aggressive retention
+	// under-counts, which can only relax a cap).
+	gatesTotal = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "pgauthzd_gates_total",
+		Help: "Temporal gates per store (sampled).",
+	}, []string{"store"})
+	gateHistoryCovers = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "pgauthzd_gate_history_covers",
+		Help: "1 when the retained action log covers the store's longest gate window, else 0 (sampled).",
+	}, []string{"store"})
+	gateHistoryDeficit = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "pgauthzd_gate_history_deficit_seconds",
+		Help: "History missing for the store's longest gate window, in seconds (0 when covered; sampled).",
+	}, []string{"store"})
+	eventsLastRecordedAge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "pgauthzd_events_last_recorded_age_seconds",
+		Help: "Seconds since the store's most recent recorded event (sampled; absent when nothing was ever recorded).",
+	}, []string{"store"})
+	eventsRecordingDelayMax = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "pgauthzd_events_recording_delay_max_seconds",
+		Help: "Worst occurred→recorded delay among the store's events of the last hour (ingestion-lag proxy; sampled).",
+	}, []string{"store"})
+	eventsRecorders24h = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "pgauthzd_events_recorders_24h",
+		Help: "Distinct recorder identities seen for the store in the last 24 hours (sampled).",
+	}, []string{"store"})
 )
+
+// GateReadinessSample is the per-store input for SetGateReadiness.
+type GateReadinessSample struct {
+	Store             string
+	Gates             float64
+	Covers            bool
+	DeficitSeconds    float64
+	LastRecordedAge   *float64
+	RecordingDelayMax *float64
+	Recorders24h      float64
+}
+
+// SetGateReadiness refreshes the gate-readiness gauges from a sample. Only
+// stores WITH gates are published (bounded cardinality); the vectors are
+// reset first so a store that lost its gates does not linger.
+func SetGateReadiness(samples []GateReadinessSample) {
+	gatesTotal.Reset()
+	gateHistoryCovers.Reset()
+	gateHistoryDeficit.Reset()
+	eventsLastRecordedAge.Reset()
+	eventsRecordingDelayMax.Reset()
+	eventsRecorders24h.Reset()
+	for _, s := range samples {
+		if s.Gates == 0 {
+			continue
+		}
+		gatesTotal.WithLabelValues(s.Store).Set(s.Gates)
+		covers := 0.0
+		if s.Covers {
+			covers = 1
+		}
+		gateHistoryCovers.WithLabelValues(s.Store).Set(covers)
+		gateHistoryDeficit.WithLabelValues(s.Store).Set(s.DeficitSeconds)
+		if s.LastRecordedAge != nil {
+			eventsLastRecordedAge.WithLabelValues(s.Store).Set(*s.LastRecordedAge)
+		}
+		if s.RecordingDelayMax != nil {
+			eventsRecordingDelayMax.WithLabelValues(s.Store).Set(*s.RecordingDelayMax)
+		}
+		eventsRecorders24h.WithLabelValues(s.Store).Set(s.Recorders24h)
+	}
+}
 
 // SetStoreStats refreshes the engine/tenant gauges from a periodic sample. It
 // resets the per-store gauge first so a store dropped from the top-N (or

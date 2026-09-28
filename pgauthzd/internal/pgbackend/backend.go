@@ -1023,3 +1023,31 @@ func (b *Backend) ModelVersion(ctx context.Context, store string) (authz.ModelVe
 	}
 	return mv, nil
 }
+
+// GateReadiness implements authz.GateReadinessReporter via the SECURITY
+// DEFINER authz.events_readiness (one row per live store).
+func (b *Backend) GateReadiness(ctx context.Context) ([]authz.GateReadiness, error) {
+	rows, err := b.pool.Query(ctx, `
+		SELECT store, gates,
+		       extract(epoch FROM max_gate_window)::float8,
+		       history_since, history_covers_gates,
+		       extract(epoch FROM history_deficit)::float8,
+		       last_recorded_at, events_1h,
+		       extract(epoch FROM max_recording_delay_1h)::float8,
+		       cardinality(recorders_24h)
+		  FROM authz.events_readiness()`)
+	if err != nil {
+		return nil, fmt.Errorf("events_readiness: %w", err)
+	}
+	defer rows.Close()
+	var out []authz.GateReadiness
+	for rows.Next() {
+		var g authz.GateReadiness
+		if err := rows.Scan(&g.Store, &g.Gates, &g.MaxWindowSeconds, &g.HistorySince, &g.HistoryCoversGates,
+			&g.HistoryDeficitSecs, &g.LastRecordedAt, &g.Events1h, &g.MaxRecordingDelay1h, &g.Recorders24h); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}

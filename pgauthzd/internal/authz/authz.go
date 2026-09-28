@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 )
 
 // ErrForbiddenRole signals that a caller's per-app DB role is not authorized
@@ -269,4 +270,24 @@ type PolicyProvenance struct {
 // reported with its most recent answer (requested with ?provenance=true).
 type PolicyProvenancer interface {
 	PolicyProvenance() PolicyProvenance
+}
+
+// GateReadiness is one store's temporal-gate readiness row
+// (authz.events_readiness, review #11): can the gates be trusted right now?
+type GateReadiness struct {
+	Store               string
+	Gates               int
+	MaxWindowSeconds    *float64 // nil when the store has no gates
+	HistorySince        *time.Time
+	HistoryCoversGates  bool
+	HistoryDeficitSecs  *float64 // nil when covered
+	LastRecordedAt      *time.Time
+	Events1h            int64
+	MaxRecordingDelay1h *float64 // seconds; nil when nothing was recorded in the last hour
+	Recorders24h        int
+}
+
+// GateReadinessReporter is an optional backend capability (direct backend).
+type GateReadinessReporter interface {
+	GateReadiness(ctx context.Context) ([]GateReadiness, error)
 }

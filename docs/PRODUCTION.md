@@ -748,6 +748,25 @@ trail, with the same operational shape:
   clause's effective window; a calendar `day` counts as 25 h, `month` as
   31 d). Keep retention ≥ audit retention too if time-travel over *former*
   gate definitions is to stay exact — the guard protects live gates only.
+- **Readiness in one row:** `SELECT * FROM authz.events_readiness('<store>')`
+  (or no argument for every store) answers "can the gates be trusted right
+  now?": gate counts by mode, the longest window, `history_since` (the
+  earliest retained partition, or the oldest event), whether that history
+  **covers** the longest window and by how much it falls short
+  (`history_deficit` — a young deployment or an aggressive retention
+  under-counts, which can only *relax* a cap), recording activity in the
+  last hour, the worst occurred→recorded delay in that hour (an
+  ingestion-lag proxy; queue-side lag and dead letters are the consumer's
+  own metrics, see `examples/events/`), and the recorder identities seen in
+  the last 24 hours. pgauthzd samples it into
+  `pgauthzd_gates_total`, `pgauthzd_gate_history_covers`,
+  `pgauthzd_gate_history_deficit_seconds`,
+  `pgauthzd_events_last_recorded_age_seconds`,
+  `pgauthzd_events_recording_delay_max_seconds` and
+  `pgauthzd_events_recorders_24h` (per gated store, on the store-stats
+  interval), and `pgauthzd doctor` warns for every gated store whose history
+  does not yet cover its longest window. Alert on `covers = 0` for longer
+  than the window itself, and on a recorder identity you do not expect.
 - **Bounded timestamps:** `occurred_at` is caller-asserted (queues deliver
   late) but rejected beyond `authz.event_max_future_skew` (default **5 s**)
   ahead of, or `authz.event_max_backdate` (default **24 h**) behind, the

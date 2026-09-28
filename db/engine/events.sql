@@ -375,3 +375,117 @@ BEGIN
               v_object_type, p_object_id, p_recorded_by, p_since, p_until, p_limit;
 END;
 $$;
+
+------------------------------------------------------------------------
+-- events_readiness: can the temporal gates be trusted right now? One row
+-- per store (or the given store): how many gates and in which mode, the
+-- longest window any of them looks back, how far back the retained history
+-- reaches (the earliest range partition's lower bound — partitions are
+-- fleet-wide — or the store's oldest event), whether that history covers
+-- the longest window (a young deployment or an aggressive retention
+-- under-counts, which can only RELAX a cap), recording activity in the last
+-- hour, the worst occurred→recorded delay in that hour (ingestion-lag proxy;
+-- queue-side lag and dead letters live in the consumer's own metrics), and
+-- the recorder identities seen in the last 24 hours. Reader-callable
+-- (SECURITY DEFINER); sampled by pgauthzd into metrics and checked by
+-- `pgauthzd doctor`. Review #11.
+CREATE OR REPLACE FUNCTION authz.events_readiness(p_store text DEFAULT NULL)
+RETURNS TABLE (
+    store                   text,
+    gates                   integer,
+    gates_enforce           integer,
+    gates_shadow            integer,
+    gates_off               integer,
+    max_gate_window         interval,
+    history_since           timestamptz,
+    history_covers_gates    boolean,
+    history_deficit         interval,
+    oldest_event_at         timestamptz,
+    newest_event_at         timestamptz,
+    last_recorded_at        timestamptz,
+    events_1h               bigint,
+    max_recording_delay_1h  interval,
+    recorders_24h           text[]
+)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_partition_from timestamptz;
+    v_now            timestamptz := clock_timestamp();
+BEGIN
+    -- Earliest retained RANGE partition of authz.events (the DEFAULT partition
+    -- has no lower bound and is never dropped by retention).
+    SELECT min(substring(pg_get_expr(c.relpartbound, c.oid) FROM $re$FROM \('([^']+)'\)$re$)::timestamptz)
+      INTO v_partition_from
+      FROM pg_catalog.pg_inherits i
+      JOIN pg_catalog.pg_class c ON c.oid = i.inhrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+     WHERE i.inhparent = 'authz.events'::regclass
+       AND n.nspname = 'authz'
+       AND pg_get_expr(c.relpartbound, c.oid) <> 'DEFAULT';
+
+    RETURN QUERY
+    WITH st AS (
+        SELECT s.id, s.name
+          FROM authz.stores s
+         WHERE s.deleted_at IS NULL
+           AND (p_store IS NULL OR s.name = p_store)
+    ),
+    g AS (
+        SELECT mg.store_id,
+               count(*)::int                                                          AS gates,
+               count(*) FILTER (WHERE coalesce(mg.spec ->> 'mode', 'enforce') = 'enforce')::int AS gates_enforce,
+               count(*) FILTER (WHERE mg.spec ->> 'mode' = 'shadow')::int              AS gates_shadow,
+               count(*) FILTER (WHERE mg.spec ->> 'mode' = 'off')::int                 AS gates_off
+          FROM authz.model_gates mg
+         GROUP BY mg.store_id
+    ),
+    ev AS (
+        SELECT e.store_id,
+               min(e.occurred_at)  AS oldest_event_at,
+               max(e.occurred_at)  AS newest_event_at,
+               max(e.recorded_at)  AS last_recorded_at
+          FROM authz.events e
+         GROUP BY e.store_id
+    ),
+    ev1h AS (
+        SELECT e.store_id,
+               count(*)::bigint                       AS events_1h,
+               max(e.recorded_at - e.occurred_at)     AS max_delay
+          FROM authz.events e
+         WHERE e.recorded_at > v_now - interval '1 hour'
+         GROUP BY e.store_id
+    ),
+    rec AS (
+        SELECT e.store_id, array_agg(DISTINCT e.recorded_by ORDER BY e.recorded_by) AS recorders
+          FROM authz.events e
+         WHERE e.recorded_at > v_now - interval '24 hours'
+         GROUP BY e.store_id
+    ),
+    w AS (
+        SELECT gw.store AS name, max(gw."window") AS max_window
+          FROM authz.gate_windows(p_store) gw
+         GROUP BY gw.store
+    )
+    SELECT st.name,
+           coalesce(g.gates, 0), coalesce(g.gates_enforce, 0), coalesce(g.gates_shadow, 0), coalesce(g.gates_off, 0),
+           w.max_window,
+           coalesce(v_partition_from, ev.oldest_event_at)                                   AS history_since,
+           CASE WHEN w.max_window IS NULL THEN true                                          -- no gates: nothing to under-count
+                WHEN coalesce(v_partition_from, ev.oldest_event_at) IS NULL THEN true       -- nothing retained, nothing dropped
+                ELSE coalesce(v_partition_from, ev.oldest_event_at) <= v_now - w.max_window
+           END                                                                              AS history_covers_gates,
+           CASE WHEN w.max_window IS NOT NULL
+                 AND coalesce(v_partition_from, ev.oldest_event_at) > v_now - w.max_window
+                THEN coalesce(v_partition_from, ev.oldest_event_at) - (v_now - w.max_window) END AS history_deficit,
+           ev.oldest_event_at, ev.newest_event_at, ev.last_recorded_at,
+           coalesce(ev1h.events_1h, 0), ev1h.max_delay,
+           coalesce(rec.recorders, '{}'::text[])
+      FROM st
+      LEFT JOIN g    ON g.store_id    = st.id
+      LEFT JOIN ev   ON ev.store_id   = st.id
+      LEFT JOIN ev1h ON ev1h.store_id = st.id
+      LEFT JOIN rec  ON rec.store_id  = st.id
+      LEFT JOIN w    ON w.name        = st.name
+     ORDER BY st.name;
+END;
+$$;
