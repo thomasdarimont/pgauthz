@@ -7,6 +7,28 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Condition-bound type restrictions** (migration 0015; OpenFGA
+  `[user, user:* with cond]`). A restriction facet may now require a
+  condition: `model_add_type_restriction(..., p_condition => 'cond')`. At
+  write time a tuple of that shape must carry *that* condition (`requires a
+  condition (one of: …)` / `does not allow condition "…"`); a facet without
+  one stays open and accepts unconditioned tuples and any condition, so
+  existing models behave exactly as before — to require a condition for a
+  shape, define only conditioned facets for it. `describe_model` renders
+  `with cond`, `type_restrictions_view` gains `condition`, `export_model`
+  emits `condition` on bound facets only (checksum-neutral for existing
+  registry versions), `apply_model` upserts conditions before facets and
+  diffs the binding, and `delete_condition` refuses while a facet still
+  requires the condition. **The OpenFGA import no longer drops `with
+  <cond>` silently:** the facet is bound, and a condition the store lacks is
+  created as a deny-all placeholder (`false`) and reported in `warnings` /
+  `placeholder_conditions` until defined natively (found while comparing
+  against OpenFGA 1.18.2's facet-binding fix, #3218). Signature note:
+  `model_add_type_restriction` gained a trailing `p_condition text` parameter
+  (roles.sql updated); the old overload is dropped on reload.
+
 ### Security
 
 - **pgauthzd requires an audience for every trusted issuer**

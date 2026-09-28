@@ -396,7 +396,7 @@ is the only backend ([ADR 0007](adr/0007-pgauthzd-front-door.md)).
 - `model_register_type` / `model_register_relation` — model evolution
 - `model_add_rule` / `model_remove_rule` / `model_remove_rules` — incremental model management
 - `import_openfga_model` / `import_openfga_tuples` — OpenFGA import
-- `model_add_type_restriction` / `model_remove_type_restriction` / `model_remove_type_restrictions` — type restriction management
+- `model_add_type_restriction` (optionally `p_condition` — a facet that requires a condition, OpenFGA `[user:* with cond]`) / `model_remove_type_restriction` / `model_remove_type_restrictions` — type restriction management
 - `grant_namespace_access` / `revoke_namespace_access` — namespace management
 - `find_redundant_tuples` — detect tuples covered by other rules
 - `cleanup_redundant_tuples` — remove redundant tuples (dry-run by default)

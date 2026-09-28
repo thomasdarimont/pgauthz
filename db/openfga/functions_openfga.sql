@@ -206,6 +206,9 @@ DECLARE
     v_drut_type  text;
     v_drut_rel   text;
     v_drut_wild  boolean;
+    v_drut_cond  text;
+    v_drut_cond_id integer;
+    v_placeholders text[] := '{}';
     v_type_restrictions_imported int := 0;
     v_sub        jsonb;
     v_next_group integer;
@@ -265,6 +268,34 @@ BEGIN
                             v_drut_type := v_drut_item->>'type';
                             v_drut_rel  := v_drut_item->>'relation';
                             v_drut_wild := v_drut_item ? 'wildcard';
+                            v_drut_cond := NULLIF(v_drut_item->>'condition', '');
+                            v_drut_cond_id := NULL;
+
+                            -- `with <condition>` (migration 0015): bind the facet to
+                            -- the store's condition of that name. OpenFGA condition
+                            -- BODIES are not imported (their CEL vocabulary differs
+                            -- from pgauthz CEL), so a condition that does not exist
+                            -- yet is created as a DENY-ALL placeholder: the facet's
+                            -- guarantee ("wildcard viewers must carry cond") is kept
+                            -- and tuples written with it deny until the operator
+                            -- defines the real expression (create_condition upserts
+                            -- in place, so the binding survives). Dropping the
+                            -- binding instead would silently widen the model.
+                            IF v_drut_cond IS NOT NULL THEN
+                                SELECT c.id INTO v_drut_cond_id
+                                  FROM authz.conditions c
+                                 WHERE c.store_id = v_store_id AND c.name = v_drut_cond;
+                                IF v_drut_cond_id IS NULL THEN
+                                    v_drut_cond_id := authz.create_condition(
+                                        p_store, v_drut_cond, 'false', authz._cond_lang_sql(), NULL);
+                                    IF NOT (v_drut_cond = ANY (v_placeholders)) THEN
+                                        v_placeholders := array_append(v_placeholders, v_drut_cond);
+                                        v_warnings := array_append(v_warnings, format(
+                                            'condition "%s" (used by %s#%s facet "with %s") is not defined in this store: created as a deny-all placeholder — define it with authz.create_condition_sql/create_condition_cel(''%s'', ''%s'', ...)',
+                                            v_drut_cond, v_type_name, v_rel_name, v_drut_cond, p_store, v_drut_cond));
+                                    END IF;
+                                END IF;
+                            END IF;
 
                             -- Register the allowed user type if not already known
                             INSERT INTO authz.types (store_id, name) VALUES (v_store_id, v_drut_type)
@@ -276,40 +307,43 @@ BEGIN
                                 ON CONFLICT (store_id, name) DO NOTHING;
                                 INSERT INTO authz.type_restrictions (
                                     store_id, object_type, relation,
-                                    allowed_user_type, allowed_user_relation, allow_wildcard
+                                    allowed_user_type, allowed_user_relation, allow_wildcard, condition_id
                                 ) VALUES (
                                     v_store_id,
                                     authz._t(v_store_id, v_type_name),
                                     authz._r(v_store_id, v_rel_name),
                                     authz._t(v_store_id, v_drut_type),
                                     authz._r(v_store_id, v_drut_rel),
-                                    false
+                                    false,
+                                    v_drut_cond_id
                                 ) ON CONFLICT DO NOTHING;
                             ELSIF v_drut_wild THEN
                                 -- Wildcard restriction (e.g. user:*)
                                 INSERT INTO authz.type_restrictions (
                                     store_id, object_type, relation,
-                                    allowed_user_type, allowed_user_relation, allow_wildcard
+                                    allowed_user_type, allowed_user_relation, allow_wildcard, condition_id
                                 ) VALUES (
                                     v_store_id,
                                     authz._t(v_store_id, v_type_name),
                                     authz._r(v_store_id, v_rel_name),
                                     authz._t(v_store_id, v_drut_type),
                                     NULL,
-                                    true
+                                    true,
+                                    v_drut_cond_id
                                 ) ON CONFLICT DO NOTHING;
                             ELSE
                                 -- Direct user restriction (e.g. user)
                                 INSERT INTO authz.type_restrictions (
                                     store_id, object_type, relation,
-                                    allowed_user_type, allowed_user_relation, allow_wildcard
+                                    allowed_user_type, allowed_user_relation, allow_wildcard, condition_id
                                 ) VALUES (
                                     v_store_id,
                                     authz._t(v_store_id, v_type_name),
                                     authz._r(v_store_id, v_rel_name),
                                     authz._t(v_store_id, v_drut_type),
                                     NULL,
-                                    false
+                                    false,
+                                    v_drut_cond_id
                                 ) ON CONFLICT DO NOTHING;
                             END IF;
                             v_type_restrictions_imported := v_type_restrictions_imported + 1;
@@ -376,6 +410,7 @@ BEGIN
         'rules_imported', v_rules_after,
         'rules_replaced', v_rules_before,
         'type_restrictions_imported', v_type_restrictions_imported,
+        'placeholder_conditions',     to_jsonb(v_placeholders),
         'warnings',       to_jsonb(v_warnings)
     );
 END;

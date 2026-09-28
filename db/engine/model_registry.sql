@@ -141,12 +141,19 @@ BEGIN
                        'allowed_user_type',     ut.name,
                        'allowed_user_relation', ur.name,
                        'allow_wildcard',        x.allow_wildcard
-                   ) ORDER BY ot.name, rl.name, ut.name, COALESCE(ur.name, ''), x.allow_wildcard)
+                   )
+                   -- required condition (migration 0015): emitted only when
+                   -- bound, so existing definitions and checksums do not move
+                   || CASE WHEN c.name IS NULL THEN '{}'::jsonb
+                           ELSE jsonb_build_object('condition', c.name) END
+                   ORDER BY ot.name, rl.name, ut.name, COALESCE(ur.name, ''), x.allow_wildcard,
+                            COALESCE(c.name, ''))
               FROM authz.type_restrictions x
               JOIN authz.types     ot ON ot.id = x.object_type
               JOIN authz.relations rl ON rl.id = x.relation
               JOIN authz.types     ut ON ut.id = x.allowed_user_type
               LEFT JOIN authz.relations ur ON ur.id = x.allowed_user_relation
+              LEFT JOIN authz.conditions c ON c.id = x.condition_id
              WHERE x.store_id = v_store_id), '[]'::jsonb),
         'conditions', COALESCE((
             SELECT jsonb_agg(jsonb_build_object(
@@ -236,8 +243,10 @@ $$;
 --                  rows added (via model_add_rule / model_add_type_restriction,
 --                  so validation stays engaged and models_audit records the
 --                  change for time-travel).
---   - conditions: upserted (create_condition) / removed (delete_condition —
---                  tuples referencing a removed condition deny, fail closed).
+--   - conditions: upserted (create_condition) BEFORE the type restrictions
+--                  (a facet may require one) / stale ones removed after
+--                  (delete_condition — tuples referencing a removed condition
+--                  deny, fail closed).
 --
 -- After syncing, the store's live model is re-exported and its checksum
 -- verified against the registry version — apply is self-checking; a
@@ -365,14 +374,28 @@ BEGIN
             COALESCE((v_row->>'allow_object_wildcard')::boolean, false));
     END LOOP;
 
-    -- Type restrictions: exact diff (delete stale, add all desired).
+    -- Conditions: upsert desired BEFORE the type restrictions (a facet may
+    -- require one — migration 0015). create_condition validates + audits.
+    -- Stale conditions are removed further down, once no facet references them.
+    FOR v_row IN SELECT * FROM jsonb_array_elements(v_def->'conditions')
+    LOOP
+        PERFORM authz.create_condition(
+            p_store, v_row->>'name', v_row->>'expression',
+            v_row->>'lang', v_row->'required_context');
+    END LOOP;
+
+    -- Type restrictions: exact diff (delete stale, add all desired). The
+    -- facet identity includes its required condition (by name).
     WITH want AS (
         SELECT authz._t(v_store_id, r->>'object_type')       AS object_type,
                authz._r(v_store_id, r->>'relation')          AS relation,
                authz._t(v_store_id, r->>'allowed_user_type') AS allowed_user_type,
                CASE WHEN r->>'allowed_user_relation' IS NULL THEN NULL
                     ELSE authz._r(v_store_id, r->>'allowed_user_relation') END AS allowed_user_relation,
-               COALESCE((r->>'allow_wildcard')::boolean, false) AS allow_wildcard
+               COALESCE((r->>'allow_wildcard')::boolean, false) AS allow_wildcard,
+               CASE WHEN r->>'condition' IS NULL THEN NULL
+                    ELSE (SELECT c.id FROM authz.conditions c
+                           WHERE c.store_id = v_store_id AND c.name = r->>'condition') END AS condition_id
           FROM jsonb_array_elements(v_def->'type_restrictions') r
     )
     DELETE FROM authz.type_restrictions x
@@ -383,14 +406,16 @@ BEGIN
               AND w.relation          = x.relation
               AND w.allowed_user_type = x.allowed_user_type
               AND COALESCE(w.allowed_user_relation, -1) = COALESCE(x.allowed_user_relation, -1)
-              AND w.allow_wildcard    = x.allow_wildcard);
+              AND w.allow_wildcard    = x.allow_wildcard
+              AND COALESCE(w.condition_id, -1) = COALESCE(x.condition_id, -1));
 
     FOR v_row IN SELECT * FROM jsonb_array_elements(v_def->'type_restrictions')
     LOOP
         PERFORM authz.model_add_type_restriction(
             p_store, v_row->>'object_type', v_row->>'relation',
             v_row->>'allowed_user_type', v_row->>'allowed_user_relation',
-            COALESCE((v_row->>'allow_wildcard')::boolean, false));
+            COALESCE((v_row->>'allow_wildcard')::boolean, false),
+            v_row->>'condition');
     END LOOP;
 
     -- Stale relations: removable only when nothing references them anymore.
@@ -411,20 +436,14 @@ BEGIN
         DELETE FROM authz.relations r WHERE r.id = v_rel.id;
     END LOOP;
 
-    -- Conditions: upsert desired (create_condition validates + audits),
-    -- remove stale (fail closed: tuples referencing a removed condition deny).
+    -- Conditions: remove stale (fail closed: tuples referencing a removed
+    -- condition deny). Desired ones were upserted above, before the facets.
     FOR v_rel IN
         SELECT c.name FROM authz.conditions c
          WHERE c.store_id = v_store_id
            AND c.name NOT IN (SELECT x->>'name' FROM jsonb_array_elements(v_def->'conditions') x)
     LOOP
         PERFORM authz.delete_condition(p_store, v_rel.name);
-    END LOOP;
-    FOR v_row IN SELECT * FROM jsonb_array_elements(v_def->'conditions')
-    LOOP
-        PERFORM authz.create_condition(
-            p_store, v_row->>'name', v_row->>'expression',
-            v_row->>'lang', v_row->'required_context');
     END LOOP;
 
     -- Gates (ADR 0012): drop stale, upsert desired (add_gate validates +

@@ -226,6 +226,69 @@ BEGIN
 END;
 $$;
 
+-- Condition-bound facets (migration 0015) round-trip through the registry:
+-- conditions are applied before the facets that require them.
+DO $$
+DECLARE
+    v     int;
+    v_msg text;
+    s     record;
+BEGIN
+    BEGIN PERFORM authz.delete_store('test_reg_csrc'); EXCEPTION WHEN OTHERS THEN NULL; END;
+    BEGIN PERFORM authz.delete_store('test_reg_ctgt'); EXCEPTION WHEN OTHERS THEN NULL; END;
+    DELETE FROM authz.model_registry WHERE name = 'test_reg_cond_model';
+
+    PERFORM authz.create_store('test_reg_csrc');
+    PERFORM authz.model_register_type('test_reg_csrc', 'user');
+    PERFORM authz.model_register_type('test_reg_csrc', 'doc');
+    PERFORM authz.model_register_relation('test_reg_csrc', 'viewer');
+    PERFORM authz.model_add_rule('test_reg_csrc', 'doc', 'viewer', 'direct');
+    PERFORM authz.create_condition_sql('test_reg_csrc', 'gate', 'coalesce($1->>''ok'', '''') = ''y''', '{"request":["ok"]}'::jsonb);
+    PERFORM authz.model_add_type_restriction('test_reg_csrc', 'doc', 'viewer', 'user');
+    PERFORM authz.model_add_type_restriction('test_reg_csrc', 'doc', 'viewer', 'user',
+        p_allow_wildcard => true, p_condition => 'gate');
+
+    v := authz.publish_model('test_reg_cond_model', 'test_reg_csrc');
+    PERFORM _test_assert('reg_30_publish_with_bound_facet', v::text, '1');
+
+    PERFORM authz.create_store('test_reg_ctgt');
+    v := authz.apply_model('test_reg_ctgt', 'test_reg_cond_model');
+    PERFORM _test_assert('reg_31_apply_binds_facet',
+        (SELECT count(*)::text FROM authz.type_restrictions_view
+          WHERE store = 'test_reg_ctgt' AND relation = 'viewer' AND allow_wildcard AND condition = 'gate'), '1');
+    SELECT * INTO s FROM authz.model_status('test_reg_ctgt');
+    PERFORM _test_assert('reg_32_in_sync_after_apply', s.in_sync::text, 'true');
+
+    BEGIN
+        PERFORM authz.write_tuple('test_reg_ctgt', 'user', '*', 'viewer', 'doc', 'd1');
+        v_msg := 'no error';
+    EXCEPTION WHEN OTHERS THEN v_msg := SQLERRM; END;
+    PERFORM _test_assert_true('reg_33_applied_facet_enforced',
+        v_msg LIKE '%requires a condition (one of: gate)%', v_msg);
+
+    -- plan shows the facet WITH its condition; dropping the binding upstream
+    -- and re-applying removes the bound facet and keeps the open one
+    PERFORM authz.model_remove_type_restrictions('test_reg_csrc', 'doc', 'viewer');
+    PERFORM authz.model_add_type_restriction('test_reg_csrc', 'doc', 'viewer', 'user');
+    PERFORM authz.model_add_type_restriction('test_reg_csrc', 'doc', 'viewer', 'user', p_allow_wildcard => true);
+    v := authz.publish_model('test_reg_cond_model', 'test_reg_csrc');
+    PERFORM _test_assert('reg_34_unbinding_is_a_new_version', v::text, '2');
+    PERFORM _test_assert('reg_35_plan_diff_names_condition',
+        (authz.plan_model_apply('test_reg_ctgt', 'test_reg_cond_model', 2)->'changes'->'type_restrictions'->'remove'->0->>'condition'),
+        'gate');
+    v := authz.apply_model('test_reg_ctgt', 'test_reg_cond_model', 2);
+    PERFORM _test_assert('reg_36_apply_v2_unbinds',
+        (SELECT count(*)::text FROM authz.type_restrictions_view
+          WHERE store = 'test_reg_ctgt' AND relation = 'viewer' AND allow_wildcard AND condition IS NULL), '1');
+    PERFORM _test_assert('reg_37_wildcard_now_open',
+        authz.write_tuple('test_reg_ctgt', 'user', '*', 'viewer', 'doc', 'd1')::text, 'true');
+
+    PERFORM authz.delete_store('test_reg_csrc');
+    PERFORM authz.delete_store('test_reg_ctgt');
+    DELETE FROM authz.model_registry WHERE name = 'test_reg_cond_model';
+END;
+$$;
+
 -- Cleanup (store_model_state rows cascade with the stores).
 DO $$
 BEGIN

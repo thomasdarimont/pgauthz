@@ -177,12 +177,6 @@ BEGIN
             p_relation, p_object_type;
     END IF;
 
-    -- Validate type restrictions (if any are defined for this relation)
-    PERFORM authz._check_type_restriction(
-        v_store_id, v_object_type, v_relation,
-        v_user_type, v_user_relation, p_user_id
-    );
-
     -- Resolve condition (if any) and validate stored context keys
     IF p_condition IS NOT NULL THEN
         DECLARE
@@ -215,6 +209,14 @@ BEGIN
             END IF;
         END;
     END IF;
+
+    -- Validate type restrictions (if any are defined for this relation) —
+    -- after the condition is resolved, because a facet may REQUIRE one
+    -- (migration 0015: `[user:* with cond]`).
+    PERFORM authz._check_type_restriction(
+        v_store_id, v_object_type, v_relation,
+        v_user_type, v_user_relation, p_user_id, v_condition_id
+    );
 
     -- The upsert must SEE an expired row to reactivate a re-grant, which the
     -- RLS SELECT policy hides; the bypass helper (owned by a BYPASSRLS role)
@@ -362,9 +364,14 @@ BEGIN
                           WHEN t.user_relation IS NOT NULL THEN tr.allowed_user_relation = ur.id
                           ELSE tr.allowed_user_relation IS NULL AND tr.allow_wildcard = false
                       END
+                  -- tuple_input carries no condition: only an OPEN facet matches
+                  -- (a facet that requires a condition needs write_tuple /
+                  -- write_tuples_jsonb with p_condition — migration 0015).
+                  AND tr.condition_id IS NULL
            );
     IF v_bad IS NOT NULL THEN
-        RAISE EXCEPTION 'Type restriction violation(s): %', v_bad;
+        RAISE EXCEPTION 'Type restriction violation(s): %', v_bad
+            USING HINT = 'A facet may require a condition: write those tuples with a condition (write_tuple / write_tuples_jsonb).';
     END IF;
 
     -- The set-based insert (with ON CONFLICT reactivation of expired rows)

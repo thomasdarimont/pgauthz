@@ -105,13 +105,17 @@ gated) — a superuser test database also works.
 
 ## Conditions in DSL files
 
-OpenFGA `condition` blocks are **parsed but not imported**: the OpenFGA CEL
+OpenFGA `condition` **bodies** are parsed but not imported: the OpenFGA CEL
 vocabulary (bare parameter names) differs from pgauthz CEL
 (`request.*` / `stored.*` namespaces), so an automatic translation would be
 wrong more often than right. pgauthzctl prints a warning with a
 `create_condition_cel` scaffold per condition — create them natively and
-reference them from tuples as usual. Models without DSL conditions
-round-trip cleanly.
+reference them from tuples as usual. Facet bindings (`[user:* with cond]`)
+**are** imported: the engine binds the facet and, if the store has no
+condition of that name yet, creates a deny-all placeholder so the binding is
+enforced from the first write (tuples carrying it deny until you define the
+real expression; the summary lists them under `placeholder_conditions`).
+Models without DSL conditions round-trip cleanly.
 
 ## Not in phase 1
 

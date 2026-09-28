@@ -422,14 +422,26 @@ $$;
 --   -- Allow userset (group#member):
 --   SELECT authz.model_add_type_restriction('demo', 'document', 'viewer', 'group',
 --       p_allowed_user_relation => 'member');
+--   -- Wildcard viewers MUST carry the condition (OpenFGA `[user:* with cond]`):
+--   SELECT authz.model_add_type_restriction('demo', 'document', 'viewer', 'user',
+--       p_allow_wildcard => true, p_condition => 'office_hours');
+--
+-- A facet with p_condition requires that condition on tuples of its shape;
+-- a facet without one is OPEN (unconditioned tuples, and conditioned ones
+-- with any condition, match it). To REQUIRE a condition for a shape, define
+-- only conditioned facets for it. Migration 0015.
 ------------------------------------------------------------------------
+-- Signature grew a p_condition parameter (migration 0015); drop the old
+-- overload so short calls stay unambiguous on an in-place upgrade.
+DROP FUNCTION IF EXISTS authz.model_add_type_restriction(text, text, text, text, text, boolean);
 CREATE OR REPLACE FUNCTION authz.model_add_type_restriction(
     p_store                 text,
     p_object_type           text,
     p_relation              text,
     p_allowed_user_type     text,
     p_allowed_user_relation text DEFAULT NULL,
-    p_allow_wildcard        boolean DEFAULT false
+    p_allow_wildcard        boolean DEFAULT false,
+    p_condition             text DEFAULT NULL
 ) RETURNS integer
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -438,6 +450,7 @@ DECLARE
     v_relation         integer := authz._r(v_store_id, p_relation);
     v_allowed_user_type integer := authz._t(v_store_id, p_allowed_user_type);
     v_allowed_user_rel integer;
+    v_condition_id     integer;
     v_id               integer;
 BEGIN
     -- Wildcard and user_relation are mutually exclusive
@@ -449,15 +462,26 @@ BEGIN
         v_allowed_user_rel := authz._r(v_store_id, p_allowed_user_relation);
     END IF;
 
+    IF p_condition IS NOT NULL THEN
+        SELECT c.id INTO v_condition_id
+          FROM authz.conditions c
+         WHERE c.store_id = v_store_id AND c.name = p_condition;
+        IF v_condition_id IS NULL THEN
+            RAISE EXCEPTION 'Unknown condition "%" in store "%"', p_condition, p_store
+                USING HINT = 'Create it first (authz.create_condition_sql / create_condition_cel), then bind the facet.';
+        END IF;
+    END IF;
+
     INSERT INTO authz.type_restrictions (
         store_id, object_type, relation,
-        allowed_user_type, allowed_user_relation, allow_wildcard
+        allowed_user_type, allowed_user_relation, allow_wildcard, condition_id
     ) VALUES (
         v_store_id, v_object_type, v_relation,
-        v_allowed_user_type, v_allowed_user_rel, p_allow_wildcard
+        v_allowed_user_type, v_allowed_user_rel, p_allow_wildcard, v_condition_id
     )
     ON CONFLICT (store_id, object_type, relation, allowed_user_type,
-                 COALESCE(allowed_user_relation, -1), allow_wildcard)
+                 COALESCE(allowed_user_relation, -1), allow_wildcard,
+                 COALESCE(condition_id, -1))
     DO NOTHING;
 
     -- Return the restriction ID (whether newly inserted or already existing)
@@ -467,7 +491,8 @@ BEGIN
        AND relation = v_relation
        AND allowed_user_type = v_allowed_user_type
        AND COALESCE(allowed_user_relation, -1) = COALESCE(v_allowed_user_rel, -1)
-       AND allow_wildcard = p_allow_wildcard;
+       AND allow_wildcard = p_allow_wildcard
+       AND COALESCE(condition_id, -1) = COALESCE(v_condition_id, -1);
 
     RETURN v_id;
 END;
@@ -534,11 +559,14 @@ CREATE OR REPLACE FUNCTION authz._describe_type_restrictions(
                aut.name
                || CASE WHEN tr.allow_wildcard                 THEN ':*'
                        WHEN tr.allowed_user_relation IS NOT NULL THEN '#' || aur.name
-                       ELSE '' END,
-               ', ' ORDER BY aut.name, aur.name)
+                       ELSE '' END
+               || CASE WHEN c.name IS NOT NULL THEN ' with ' || c.name ELSE '' END,
+               -- plain type, then usersets, then wildcard; open facet before bound
+               ', ' ORDER BY aut.name, tr.allow_wildcard, aur.name NULLS FIRST, c.name NULLS FIRST)
       FROM authz.type_restrictions tr
       JOIN authz.types aut          ON aut.id = tr.allowed_user_type
       LEFT JOIN authz.relations aur ON aur.id = tr.allowed_user_relation
+      LEFT JOIN authz.conditions c  ON c.id   = tr.condition_id
      WHERE tr.store_id = p_store_id AND tr.object_type = p_object_type AND tr.relation = p_relation;
 $$;
 

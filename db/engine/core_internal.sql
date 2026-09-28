@@ -260,24 +260,36 @@ CREATE OR REPLACE FUNCTION authz._combine_exclusion() RETURNS integer
 -- _check_type_restriction: validates a single tuple against type
 -- restrictions. If no restrictions exist for the (store, object_type,
 -- relation), any type is allowed (backward compatible).
--- Raises EXCEPTION on violation.
+--
+-- A restriction row is a FACET (shape + optional required condition,
+-- migration 0015). The tuple matches a facet of its shape when
+--   - it carries no condition and the facet requires none, or
+--   - it carries condition C and the facet requires none (open facet) or C.
+-- Raises EXCEPTION on violation, naming the required condition(s) when the
+-- shape itself is allowed but the condition binding is not.
 ------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS authz._check_type_restriction(integer, integer, integer, integer, integer, text);
 CREATE OR REPLACE FUNCTION authz._check_type_restriction(
     p_store_id      integer,
     p_object_type   integer,
     p_relation      integer,
     p_user_type     integer,
     p_user_relation integer,
-    p_user_id       text
+    p_user_id       text,
+    p_condition_id  integer DEFAULT NULL
 ) RETURNS void
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
     v_has_restrictions boolean;
     v_allowed          boolean;
+    v_shape_allowed    boolean;
+    v_required         text;
     v_object_type_name text;
     v_relation_name    text;
     v_user_type_name   text;
     v_user_rel_name    text;
+    v_cond_name        text;
+    v_shape            text;
 BEGIN
     -- Check if ANY restrictions exist for this (store, object_type, relation)
     SELECT EXISTS (
@@ -292,60 +304,56 @@ BEGIN
         RETURN;
     END IF;
 
-    -- Wildcard tuple (user_id = '*')
-    IF p_user_id = '*' THEN
-        SELECT EXISTS (
-            SELECT 1 FROM authz.type_restrictions
-             WHERE store_id = p_store_id
-               AND object_type = p_object_type
-               AND relation = p_relation
-               AND allowed_user_type = p_user_type
-               AND allow_wildcard = true
-        ) INTO v_allowed;
+    -- Facets of the tuple's shape, ignoring the condition binding …
+    SELECT bool_or(true),
+           bool_or(tr.condition_id IS NULL
+                   OR (p_condition_id IS NOT NULL AND tr.condition_id = p_condition_id)),
+           string_agg(c.name, ', ' ORDER BY c.name) FILTER (WHERE c.name IS NOT NULL)
+      INTO v_shape_allowed, v_allowed, v_required
+      FROM authz.type_restrictions tr
+      LEFT JOIN authz.conditions c ON c.id = tr.condition_id
+     WHERE tr.store_id = p_store_id
+       AND tr.object_type = p_object_type
+       AND tr.relation = p_relation
+       AND tr.allowed_user_type = p_user_type
+       AND CASE
+               WHEN p_user_id = '*'              THEN tr.allow_wildcard
+               WHEN p_user_relation IS NOT NULL THEN tr.allowed_user_relation = p_user_relation
+               ELSE tr.allowed_user_relation IS NULL AND NOT tr.allow_wildcard
+           END;
+    -- … then the binding: an open facet matches anything; a conditioned facet
+    -- matches only its own condition.
 
-    -- Userset tuple (user_relation IS NOT NULL)
-    ELSIF p_user_relation IS NOT NULL THEN
-        SELECT EXISTS (
-            SELECT 1 FROM authz.type_restrictions
-             WHERE store_id = p_store_id
-               AND object_type = p_object_type
-               AND relation = p_relation
-               AND allowed_user_type = p_user_type
-               AND allowed_user_relation = p_user_relation
-        ) INTO v_allowed;
-
-    -- Direct user tuple
-    ELSE
-        SELECT EXISTS (
-            SELECT 1 FROM authz.type_restrictions
-             WHERE store_id = p_store_id
-               AND object_type = p_object_type
-               AND relation = p_relation
-               AND allowed_user_type = p_user_type
-               AND allowed_user_relation IS NULL
-               AND allow_wildcard = false
-        ) INTO v_allowed;
+    IF COALESCE(v_allowed, false) THEN
+        RETURN;
     END IF;
 
-    IF NOT v_allowed THEN
-        SELECT name INTO v_object_type_name FROM authz.types WHERE id = p_object_type;
-        SELECT name INTO v_relation_name FROM authz.relations WHERE id = p_relation;
-        SELECT name INTO v_user_type_name FROM authz.types WHERE id = p_user_type;
-        IF p_user_relation IS NOT NULL THEN
-            SELECT name INTO v_user_rel_name FROM authz.relations WHERE id = p_user_relation;
-        END IF;
-
-        IF p_user_id = '*' THEN
-            RAISE EXCEPTION 'Type restriction violation: wildcard %:* is not allowed as % on %',
-                v_user_type_name, v_relation_name, v_object_type_name;
-        ELSIF p_user_relation IS NOT NULL THEN
-            RAISE EXCEPTION 'Type restriction violation: %#% is not allowed as % on %',
-                v_user_type_name, v_user_rel_name, v_relation_name, v_object_type_name;
-        ELSE
-            RAISE EXCEPTION 'Type restriction violation: % is not allowed as % on %',
-                v_user_type_name, v_relation_name, v_object_type_name;
-        END IF;
+    SELECT name INTO v_object_type_name FROM authz.types WHERE id = p_object_type;
+    SELECT name INTO v_relation_name FROM authz.relations WHERE id = p_relation;
+    SELECT name INTO v_user_type_name FROM authz.types WHERE id = p_user_type;
+    IF p_user_relation IS NOT NULL THEN
+        SELECT name INTO v_user_rel_name FROM authz.relations WHERE id = p_user_relation;
     END IF;
+    v_shape := CASE
+                   WHEN p_user_id = '*'              THEN 'wildcard ' || v_user_type_name || ':*'
+                   WHEN p_user_relation IS NOT NULL THEN v_user_type_name || '#' || v_user_rel_name
+                   ELSE v_user_type_name
+               END;
+
+    IF COALESCE(v_shape_allowed, false) THEN
+        -- The shape is allowed; the condition binding is what failed.
+        IF p_condition_id IS NULL THEN
+            RAISE EXCEPTION 'Type restriction violation: % as % on % requires a condition (one of: %)',
+                v_shape, v_relation_name, v_object_type_name, v_required
+                USING HINT = 'Write the tuple with p_condition (write_tuple / write_tuples_jsonb).';
+        END IF;
+        SELECT name INTO v_cond_name FROM authz.conditions WHERE id = p_condition_id;
+        RAISE EXCEPTION 'Type restriction violation: % as % on % does not allow condition "%" (allowed: %)',
+            v_shape, v_relation_name, v_object_type_name, v_cond_name, v_required;
+    END IF;
+
+    RAISE EXCEPTION 'Type restriction violation: % is not allowed as % on %',
+        v_shape, v_relation_name, v_object_type_name;
 END;
 $$;
 

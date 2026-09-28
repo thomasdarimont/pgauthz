@@ -659,6 +659,61 @@ never pass untrusted external identifiers as object IDs (a stray literal
 
 ---
 
+### Type restrictions and required conditions
+
+A **type restriction** lists the subject shapes that may be *directly
+assigned* to a relation — OpenFGA's `[user, team#member, user:*]`. Each row is
+a **facet**: an allowed user type, optionally a userset relation
+(`team#member`) or the wildcard (`user:*`). With no facets on a relation,
+any shape is accepted (backward compatible); with facets, a write must match
+one.
+
+```sql
+SELECT authz.model_add_type_restriction('demo', 'document', 'viewer', 'user');
+SELECT authz.model_add_type_restriction('demo', 'document', 'viewer', 'team',
+    p_allowed_user_relation => 'member');
+SELECT authz.model_add_type_restriction('demo', 'document', 'viewer', 'user',
+    p_allow_wildcard => true);
+```
+
+A facet may also **require a condition** — OpenFGA's `[user:* with cond]`:
+
+```sql
+SELECT authz.create_condition_sql('demo', 'office_hours',
+    $$extract(hour from ($1->>'current_time')::timestamptz) BETWEEN 8 AND 17$$,
+    '{"request": ["current_time"]}');
+SELECT authz.model_add_type_restriction('demo', 'document', 'viewer', 'user',
+    p_allow_wildcard => true, p_condition => 'office_hours');
+```
+
+Matching rules at write time (`write_tuple`, `write_tuples_jsonb`,
+`write_tuples_checked`; the composite-type `write_tuples` batch carries no
+conditions, so it only matches open facets):
+
+| Tuple | Open facet (no condition) | Facet `with cond` |
+|---|---|---|
+| no condition | matches | rejected: *requires a condition (one of: cond)* |
+| condition `cond` | matches | matches |
+| condition `other` | matches | rejected: *does not allow condition "other"* |
+
+So an **open facet accepts any condition** (pgauthz conditions are per
+tuple by design — this differs from OpenFGA, where `[user]` rejects a
+conditioned tuple), and to *require* a condition for a shape you define only
+conditioned facets for it. `describe_model` renders the binding
+(`define viewer: [user, user:* with office_hours]`), `type_restrictions_view`
+exposes it as `condition`, the registry exports it as `condition` on the
+facet (only when bound, so existing checksums do not move) and applies
+conditions before facets. A condition bound to a facet cannot be deleted
+until the facet is removed (`model_remove_type_restriction`).
+
+`import_openfga_model` keeps `with <cond>` facets. OpenFGA condition *bodies*
+are not imported (their CEL vocabulary differs), so a condition the store
+does not have yet is created as a **deny-all placeholder** (`false`) and
+reported in the summary's `warnings` and `placeholder_conditions`: the facet's
+guarantee holds from the first write, tuples carrying it deny until you define
+the real expression with `create_condition_sql` / `create_condition_cel`
+(an in-place upsert, so the binding survives).
+
 ## 6. Step 5 -- Write Tuples
 
 With the model in place, you grant access by writing tuples.

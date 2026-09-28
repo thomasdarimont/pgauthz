@@ -45,10 +45,12 @@ SELECT
     r.name  AS relation,
     aut.name AS allowed_user_type,
     aur.name AS allowed_user_relation,
-    tr.allow_wildcard
+    tr.allow_wildcard,
+    c.name  AS condition          -- required condition for this facet (migration 0015), or NULL
   FROM authz.type_restrictions tr
   JOIN authz.stores s     ON s.id  = tr.store_id
   JOIN authz.types ot     ON ot.id = tr.object_type
   JOIN authz.relations r  ON r.id  = tr.relation
   JOIN authz.types aut    ON aut.id = tr.allowed_user_type
-  LEFT JOIN authz.relations aur ON aur.id = tr.allowed_user_relation;
+  LEFT JOIN authz.relations aur ON aur.id = tr.allowed_user_relation
+  LEFT JOIN authz.conditions c  ON c.id   = tr.condition_id;

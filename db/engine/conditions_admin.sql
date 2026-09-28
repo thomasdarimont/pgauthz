@@ -181,10 +181,24 @@ CREATE OR REPLACE FUNCTION authz.delete_condition(
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_count int;
+    v_store_id integer := authz._s(p_store);
+    v_count    int;
+    v_refs     int;
 BEGIN
+    -- A condition bound to type-restriction facets (migration 0015) cannot be
+    -- dropped from under them: the facet would silently stop requiring it.
+    SELECT count(*) INTO v_refs
+      FROM authz.type_restrictions tr
+      JOIN authz.conditions c ON c.id = tr.condition_id
+     WHERE c.store_id = v_store_id AND c.name = p_name;
+    IF v_refs > 0 THEN
+        RAISE EXCEPTION 'condition "%" is required by % type restriction facet(s) in store "%" — remove those facets first (model_remove_type_restriction)',
+            p_name, v_refs, p_store
+            USING ERRCODE = 'foreign_key_violation';
+    END IF;
+
     DELETE FROM authz.conditions
-     WHERE store_id = authz._s(p_store)
+     WHERE store_id = v_store_id
        AND name = p_name;
 
     GET DIAGNOSTICS v_count = ROW_COUNT;

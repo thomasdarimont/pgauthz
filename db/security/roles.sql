@@ -358,7 +358,7 @@ GRANT EXECUTE ON FUNCTION authz.model_set_payload_schema(text, text, jsonb) TO a
 GRANT EXECUTE ON FUNCTION authz.model_add_rule(text, text, text, text, text, text, text, integer, text, boolean, boolean) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_remove_rule(text, integer) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_remove_rules(text, text, text) TO authz_admin;
-GRANT EXECUTE ON FUNCTION authz.model_add_type_restriction(text, text, text, text, text, boolean) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.model_add_type_restriction(text, text, text, text, text, boolean, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_remove_type_restriction(text, integer) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_remove_type_restrictions(text, text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.import_openfga_model(text, jsonb) TO authz_admin;
@@ -446,7 +446,7 @@ ALTER FUNCTION authz.model_set_payload_schema(text, text, jsonb) SECURITY DEFINE
 ALTER FUNCTION authz.model_add_rule(text, text, text, text, text, text, text, integer, text, boolean, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.model_remove_rule(text, integer) SECURITY DEFINER;
 ALTER FUNCTION authz.model_remove_rules(text, text, text) SECURITY DEFINER;
-ALTER FUNCTION authz.model_add_type_restriction(text, text, text, text, text, boolean) SECURITY DEFINER;
+ALTER FUNCTION authz.model_add_type_restriction(text, text, text, text, text, boolean, text) SECURITY DEFINER;
 ALTER FUNCTION authz.model_remove_type_restriction(text, integer) SECURITY DEFINER;
 ALTER FUNCTION authz.model_remove_type_restrictions(text, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.import_openfga_model(text, jsonb) SECURITY DEFINER;
