@@ -761,6 +761,36 @@ trail, with the same operational shape:
   [Replica consistency](#replica-consistency)); a recorder that writes with
   `consistency: applied` removes its own read-after-write gap.
 
+## Decision log
+
+pgauthzd can write one JSON line per decision ([ADR 0013](adr/0013-decision-log.md)):
+the resolved request, the answer, `state`/`reason`, the caller and issuer,
+the request id and latency. It is the record that lets you compare what
+policies were meant to do with what they decided — which reason permits most
+access, which principal keeps being denied, what changed after a model
+publish — and the index into time travel: `audit_check_access(store, …,
+p_at => ts)` re-decides any logged line with the tuples, model and gates in
+effect at that moment.
+
+```
+DECISION_LOG=stdout            # or stderr, or file:/var/log/pgauthzd/decisions.log
+DECISION_LOG_SAMPLE=0.1        # keep 10% of allows; denies/conditionals/errors always
+DECISION_LOG_DETAIL=true       # state + reason on every line (detailed evaluation, log only)
+```
+
+- Off by default; the hot path is unchanged unless enabled. With
+  `DECISION_LOG_DETAIL`, plain checks run the detailed evaluation (a second
+  pass on `conditional` outcomes) — the caller's response is not affected.
+- A file sink is opened append-only and never rotated by the daemon; use
+  copy-truncate rotation, or the container log pipeline via `stdout`.
+- Privacy: subject and resource **ids** are logged (the graph's own
+  identifiers, as in the audit trail); request-context **values**,
+  contextual tuples, event payloads and tokens are not — only context key
+  names. Treat the log like the audit trail.
+- Searches are counted (`pgauthzd_search_requests_total`), not logged.
+  `pgauthzd_decision_log_lines_total{result}` shows logged, sampled-out and
+  failed writes, so a broken sink is visible.
+
 ## Scale & supported limits
 
 pgauthz targets **bounded** relationship graphs with a fairly fixed set of

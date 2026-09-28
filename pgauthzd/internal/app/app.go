@@ -22,6 +22,7 @@ import (
 	"thomasdarimont.de/authz/pgauthzd/internal/api"
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 	"thomasdarimont.de/authz/pgauthzd/internal/config"
+	"thomasdarimont.de/authz/pgauthzd/internal/decisionlog"
 	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
 	"thomasdarimont.de/authz/pgauthzd/internal/opabackend"
 	"thomasdarimont.de/authz/pgauthzd/internal/pgbackend"
@@ -148,8 +149,20 @@ func Run(name, version string) error {
 	//    (service-auth): the native surface a co-located OPA sidecar calls back
 	//    into. Its capability follows the instance's role — read-only instances
 	//    serve read callbacks, a full instance serves read+write.
+	// Decision log (ADR 0013): off unless DECISION_LOG is set; one logger is
+	// shared by both listeners (lines carry the listener label).
+	dlog, err := decisionlog.Open(decisionlog.Config{Sink: cfg.DecisionLog, Sample: cfg.DecisionLogSample})
+	if err != nil {
+		return err
+	}
+	defer dlog.Close() //nolint:errcheck // best-effort flush on exit
+	if dlog.Enabled() {
+		slog.Info("decision log", "sink", cfg.DecisionLog, "sample", cfg.DecisionLogSample, "detail", cfg.DecisionLogDetail)
+	}
+	dlogOpt := api.WithDecisionLog(dlog)
+
 	var servers []*http.Server
-	servers = append(servers, newServer(cfg, cfg.ListenAddr, api.NewRouter(backend, raw, rawWrite, cfg, jwtMW)))
+	servers = append(servers, newServer(cfg, cfg.ListenAddr, api.NewRouter(backend, raw, rawWrite, cfg, jwtMW, dlogOpt)))
 
 	// Prometheus metrics on a SEPARATE, non-public listener (ADR 0010).
 	if cfg.MetricsListenAddr != "" {
@@ -172,7 +185,7 @@ func Run(name, version string) error {
 		if terr != nil {
 			return terr
 		}
-		hCb := api.NewHandler(nil, raw, rawWrite, cfg)
+		hCb := api.NewHandler(nil, raw, rawWrite, cfg, dlogOpt)
 		cbSrv := newServer(cfg, cfg.InternalListenAddr, api.NewCallbackRouter(hCb, cfg.InternalServiceToken))
 		if tlsCfg != nil {
 			cbSrv.TLSConfig = tlsCfg

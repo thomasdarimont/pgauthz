@@ -20,6 +20,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
@@ -71,6 +72,8 @@ func (h *Handler) NativeCheck(w http.ResponseWriter, r *http.Request) {
 		Action: req.Action.Name, ObjectType: req.Resource.Type, ObjectID: req.Resource.ID,
 		Context: req.Context,
 	}
+	start := time.Now()
+	entry := h.decisionEntry(r, "check", evalReq, "engine")
 	if len(req.ContextualTuples) > 0 {
 		cc, ok := h.raw.(authz.ContextualChecker)
 		if !ok {
@@ -79,6 +82,7 @@ func (h *Handler) NativeCheck(w http.ResponseWriter, r *http.Request) {
 		}
 		decision, err := cc.CheckWithContextualTuples(r.Context(), evalReq, req.ContextualTuples)
 		recordDecision(store, metrics.APINative, decision, err)
+		h.logDecision(entry, start, decision, nil, err)
 		if err != nil {
 			writeInternalError(w, err)
 			return
@@ -86,21 +90,27 @@ func (h *Handler) NativeCheck(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"allowed": decision})
 		return
 	}
-	if req.Detail {
+	if req.Detail || h.wantDetailForLog() {
 		if dc, ok := h.raw.(authz.DetailedChecker); ok {
 			decision, detail, err := dc.CheckAccessDetailed(r.Context(), evalReq)
 			recordDecisionDetail(store, metrics.APINative, detail, err)
+			h.logDecision(entry, start, decision, detail, err)
 			if err != nil {
 				writeInternalError(w, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"allowed": decision, "detail": detail})
+			if req.Detail {
+				writeJSON(w, http.StatusOK, map[string]any{"allowed": decision, "detail": detail})
+			} else {
+				writeJSON(w, http.StatusOK, map[string]any{"allowed": decision})
+			}
 			return
 		}
 		// detail requested but unsupported → fall through to the plain answer
 	}
 	decision, err := h.raw.CheckAccess(r.Context(), evalReq)
 	recordDecision(store, metrics.APINative, decision, err)
+	h.logDecision(entry, start, decision, nil, err)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -184,7 +194,9 @@ func (h *Handler) NativeCheckBatch(w http.ResponseWriter, r *http.Request) {
 			Action: action, ObjectType: objType, ObjectID: objID, Context: c.Context,
 		}
 	}
+	start := time.Now()
 	results, err := h.raw.CheckAccessBatch(r.Context(), store, evals, req.Context, semantic)
+	h.logBatch(r, "check-batch", "engine", evals, req.Context, results, start, err)
 	if err != nil {
 		writeInternalError(w, err)
 		return

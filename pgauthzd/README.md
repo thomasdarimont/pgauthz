@@ -380,6 +380,9 @@ All configuration is via environment variables.
 | `HTTP_IDLE_TIMEOUT` | `60s` | Max keep-alive idle time on every listener |
 | `HTTP_MAX_BODY_BYTES` | `10485760` (10 MiB) | Request-body cap (`http.MaxBytesReader`); generous — batch writes are legitimately large. `0` disables |
 | `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
+| `DECISION_LOG` | `off` | Decision log sink ([ADR 0013](../docs/adr/0013-decision-log.md)): `off`, `stdout`, `stderr`, or `file:<path>` (append-only; rotate externally with copy-truncate). One JSON line per decision on `evaluation(s)`, `check(-batch)`, `explain`, `events/reserve`, both listeners. Context **keys** only, never values |
+| `DECISION_LOG_SAMPLE` | `1` | Fraction (0–1) of **allow** lines written; denies, conditionals and errors are always written |
+| `DECISION_LOG_DETAIL` | `false` | Run the detailed evaluation for plain checks **for the log only** (every line gets `state`/`reason`); responses are unchanged. Costs the detailed check's second pass on conditional outcomes |
 
 ### pgauthzd-decision (`decision-only`) only
 

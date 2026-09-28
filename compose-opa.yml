@@ -135,6 +135,9 @@ services:
       # stack opts into trusted-PEP mode via env.sh, not this file.
       ALLOW_SUBJECT_OVERRIDE: "${ALLOW_SUBJECT_OVERRIDE:-false}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
+      DECISION_LOG: "${DECISION_LOG:-off}"
+      DECISION_LOG_SAMPLE: "${DECISION_LOG_SAMPLE:-1}"
+      DECISION_LOG_DETAIL: "${DECISION_LOG_DETAIL:-false}"
     # Keep retrying until roles.sql has run: on a fresh DB the startup read-only
     # assertion references authz_writer, which init.sh creates AFTER the stack is
     # up — the instance crash-loops until then, then recovers (like the reader/

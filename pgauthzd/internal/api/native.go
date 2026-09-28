@@ -10,8 +10,10 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
+	"thomasdarimont.de/authz/pgauthzd/internal/decisionlog"
 	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
 )
 
@@ -448,6 +450,11 @@ func (h *Handler) ReserveEvent(w http.ResponseWriter, r *http.Request) {
 	if consistency == "" {
 		consistency = "applied"
 	}
+	start := time.Now()
+	entry := h.decisionEntry(r, "reserve", authz.EvalRequest{
+		Store: store, SubjectType: subjectType, SubjectID: subjectID,
+		Action: req.Action.Name, ObjectType: req.Resource.Type, ObjectID: req.Resource.ID, Context: req.Context,
+	}, "engine")
 	out, err := er.ReserveEvent(r.Context(), authz.ReserveEventRequest{
 		Store: store, SubjectType: subjectType, SubjectID: subjectID,
 		Action: req.Action.Name, ObjectType: req.Resource.Type, ObjectID: req.Resource.ID,
@@ -456,6 +463,7 @@ func (h *Handler) ReserveEvent(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		metrics.EventsRejected.WithLabelValues(rejectReason(err)).Inc()
+		h.logDecision(entry, start, false, nil, err)
 		writeWriteError(w, err)
 		return
 	}
@@ -465,6 +473,11 @@ func (h *Handler) ReserveEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp["store"] = store
+	if h.decisions != nil {
+		allowed, _ := resp["allowed"].(bool)
+		entry.Gates = decisionlog.GatesOf(resp["gates"])
+		h.logDecision(entry, start, allowed, map[string]any{"reason": resp["reason"]}, nil)
+	}
 	if seq, ok := resp["seq"].(float64); ok && seq > 0 {
 		metrics.EventsRecorded.WithLabelValues("recorded").Inc()
 	}
@@ -511,11 +524,26 @@ func (h *Handler) Explain(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	out, err := nr.Explain(r.Context(), authz.EvalRequest{
+	start := time.Now()
+	explainReq := authz.EvalRequest{
 		Store: store, SubjectType: subjectType, SubjectID: subjectID,
 		Action: req.Action.Name, ObjectType: req.Resource.Type, ObjectID: req.Resource.ID,
 		Context: req.Context,
-	})
+	}
+	out, err := nr.Explain(r.Context(), explainReq)
+	if h.decisions != nil {
+		entry := h.decisionEntry(r, "explain", explainReq, "engine")
+		var parsed struct {
+			Decision struct {
+				Allowed bool   `json:"allowed"`
+				Reason  string `json:"reason"`
+			} `json:"decision"`
+		}
+		if err == nil {
+			_ = json.Unmarshal(out, &parsed)
+		}
+		h.logDecision(entry, start, parsed.Decision.Allowed, map[string]any{"reason": parsed.Decision.Reason}, err)
+	}
 	if err != nil {
 		writeInternalError(w, err)
 		return

@@ -97,6 +97,12 @@ startup via ALLOW_OPEN_DIAGNOSTICS, so a hand-edited manifest cannot slip past).
 {{- with $d.watchRequiredRole }}
 - { name: WATCH_REQUIRED_ROLE, value: {{ . | quote }} }
 {{- end }}
+{{- $dl := .root.Values.decisionLog | default dict }}
+{{- with $dl.sink }}
+- { name: DECISION_LOG,        value: {{ . | quote }} }
+- { name: DECISION_LOG_SAMPLE, value: {{ $dl.sample | default 1 | toString | quote }} }
+- { name: DECISION_LOG_DETAIL, value: {{ $dl.detail | default false | toString | quote }} }
+{{- end }}
 {{- if $d.allowOpenInProduction }}
 - { name: ALLOW_OPEN_DIAGNOSTICS, value: "true" }
 {{- end }}

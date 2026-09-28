@@ -90,6 +90,13 @@ var (
 		Help: "Access-check decisions by store, decision (allow|deny|conditional|error), and api.",
 	}, []string{"store", "decision", "api"})
 
+	// Decision log lines (ADR 0013): logged | sampled_out | error — a silent
+	// sink shows up here.
+	DecisionLogLines = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "pgauthzd_decision_log_lines_total",
+		Help: "Decision-log lines by result (logged|sampled_out|error).",
+	}, []string{"result"})
+
 	// Search / graph enumeration.
 	SearchRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "pgauthzd_search_requests_total",

@@ -51,6 +51,9 @@ services:
       # compose is safe to copy to production as-is.
       ALLOW_SUBJECT_OVERRIDE: "${ALLOW_SUBJECT_OVERRIDE:-false}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
+      DECISION_LOG: "${DECISION_LOG:-off}"
+      DECISION_LOG_SAMPLE: "${DECISION_LOG_SAMPLE:-1}"
+      DECISION_LOG_DETAIL: "${DECISION_LOG_DETAIL:-false}"
     # Keep retrying until the authzen_direct role exists (created by
     # db/security/initdb on first boot, or by init.sh on re-init).
     restart: unless-stopped
@@ -91,6 +94,9 @@ services:
       DEFAULT_STORE: "${DEFAULT_STORE:-demo}"
       ALLOW_SUBJECT_OVERRIDE: "${ALLOW_SUBJECT_OVERRIDE:-false}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
+      DECISION_LOG: "${DECISION_LOG:-off}"
+      DECISION_LOG_SAMPLE: "${DECISION_LOG_SAMPLE:-1}"
+      DECISION_LOG_DETAIL: "${DECISION_LOG_DETAIL:-false}"
     restart: unless-stopped
     volumes:
       - ./opa/data:/jwks:ro

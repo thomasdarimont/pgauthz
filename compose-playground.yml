@@ -148,7 +148,9 @@ services:
       JWT_ISSUERS: >-
         [{"issuer":"${JWT_ISSUER:-https://auth.example.com}","audience":"${JWT_AUDIENCE:-authz-api}","jwks_file":"/jwks/jwks.json","stores":["${DEFAULT_STORE:-demo}"]},
          {"issuer":"https://id.pgauthz.test/realms/pgauthz","jwks_url":"http://keycloak:8080/realms/pgauthz/protocol/openid-connect/certs","stores":[".*"]}]
-      JWT_ROLES_CLAIM: realm_access.roles,resource_access.authz-api.roles
+      # `roles` first so the demo issuer's test tokens (tests/test-authzen.sh)
+      # keep their writer/recorder claims; the Keycloak paths follow.
+      JWT_ROLES_CLAIM: roles,realm_access.roles,resource_access.authz-api.roles
       ALLOW_SUBJECT_OVERRIDE: "true"
 
   # Add the app.pgauthz.test route to the keycloak overlay's nginx proxy.

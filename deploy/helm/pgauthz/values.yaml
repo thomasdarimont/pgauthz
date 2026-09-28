@@ -50,6 +50,14 @@ diagnostics:
   # every start).
   allowOpenInProduction: false
 
+# ── Decision log (ADR 0013) ──────────────────────────────────────────────────
+# One JSON line per decision from pgauthzd (both listeners): resolved request,
+# decision/state/reason, caller, request id, latency — context KEY NAMES only.
+decisionLog:
+  sink: ""            # DECISION_LOG: "" / off | stdout | stderr | file:<path>
+  sample: 1           # DECISION_LOG_SAMPLE: fraction of ALLOW lines (denies always)
+  detail: false       # DECISION_LOG_DETAIL: state/reason on every line (log only)
+
 # ── Database: CloudNativePG cluster ──────────────────────────────────────────
 database:
   # Pod scheduling for the DB instances (CNPG .spec.affinity passthrough).

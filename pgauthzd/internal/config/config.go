@@ -325,6 +325,15 @@ type Config struct {
 	ForwardTokenToOPA bool
 
 	LogLevel string
+	// Decision log (ADR 0013): one JSON line per decision, emitted by the daemon.
+	// DecisionLog is the sink: off (default) | stdout | stderr | file:<path>.
+	DecisionLog string
+	// DecisionLogSample in [0,1] samples ALLOW lines; denies, conditionals and
+	// errors are always written. Default 1 (everything).
+	DecisionLogSample float64
+	// DecisionLogDetail upgrades plain checks to the detailed evaluation FOR
+	// THE LOG ONLY (state/reason on every line); responses are unchanged.
+	DecisionLogDetail bool
 }
 
 // deploymentEnvRe bounds DEPLOYMENT_ENVIRONMENT to a short identifier
@@ -388,6 +397,9 @@ func Load() (*Config, error) {
 		OPAEvalMetrics:               envBool("OPA_EVAL_METRICS", true),
 		ForwardTokenToOPA:            envBool("FORWARD_TOKEN_TO_OPA", false),
 		LogLevel:                     env("LOG_LEVEL", "info"),
+		DecisionLog:                  env("DECISION_LOG", "off"),
+		DecisionLogSample:            envFloat("DECISION_LOG_SAMPLE", 1),
+		DecisionLogDetail:            envBool("DECISION_LOG_DETAIL", false),
 	}
 
 	// Freshness keyring: FRESHNESS_TOKEN_KEYS (ordered, comma-separated — first
@@ -493,6 +505,15 @@ func Load() (*Config, error) {
 	// in isolation).
 	if c.Profile == "" {
 		c.Profile = ProfileFull
+	}
+	switch {
+	case c.DecisionLog == "" || c.DecisionLog == "off" || c.DecisionLog == "stdout" || c.DecisionLog == "stderr":
+	case strings.HasPrefix(c.DecisionLog, "file:") && len(c.DecisionLog) > len("file:"):
+	default:
+		return nil, fmt.Errorf("DECISION_LOG %q: expected off | stdout | stderr | file:<path>", c.DecisionLog)
+	}
+	if c.DecisionLogSample < 0 || c.DecisionLogSample > 1 {
+		return nil, fmt.Errorf("DECISION_LOG_SAMPLE %v: expected a fraction in [0,1]", c.DecisionLogSample)
 	}
 	switch c.Profile {
 	case ProfileDecisionOnly, ProfileFull:
@@ -617,6 +638,18 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 			return fallback
 		}
 		return d
+	}
+	return fallback
+}
+
+func envFloat(key string, fallback float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			envFail(key, v, "expected a number")
+			return fallback
+		}
+		return f
 	}
 	return fallback
 }

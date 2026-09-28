@@ -13,6 +13,7 @@ import (
 
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 	"thomasdarimont.de/authz/pgauthzd/internal/config"
+	"thomasdarimont.de/authz/pgauthzd/internal/decisionlog"
 	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
 )
 
@@ -56,11 +57,18 @@ type Handler struct {
 	// cfg.FreshnessKeys: freshKeys[0] mints, every entry verifies (rotation
 	// overlap, ADR 0009). Empty = feature disabled.
 	freshKeys authz.Keyring
+	// decisions is the decision log (ADR 0013); nil = off. listener labels
+	// the lines: "public" | "callback".
+	decisions *decisionlog.Logger
+	listener  string
 }
 
-func NewHandler(backend, raw, rawWrite authz.Backend, cfg *config.Config) *Handler {
+func NewHandler(backend, raw, rawWrite authz.Backend, cfg *config.Config, opts ...Option) *Handler {
 	h := &Handler{backend: backend, raw: raw, rawWrite: rawWrite, cfg: cfg, issuerStores: map[string][]*regexp.Regexp{},
-		freshKeys: authz.NewKeyring(cfg.FreshnessKeys)}
+		freshKeys: authz.NewKeyring(cfg.FreshnessKeys), listener: "public"}
+	for _, o := range opts {
+		o(h)
+	}
 	for _, iss := range cfg.Issuers {
 		if iss.Issuer == "" || len(iss.Stores) == 0 {
 			continue
@@ -85,8 +93,9 @@ func NewHandler(backend, raw, rawWrite authz.Backend, cfg *config.Config) *Handl
 // calls back into — a client can't sidestep policy via the raw API. When native
 // IS exposed here, pgauthzd authorizes writes itself, so the write routes are
 // gated by the WRITER_ROLE claim (requireWriterRole).
-func NewRouter(backend, raw, rawWrite authz.Backend, cfg *config.Config, jwtMW *JWTMiddleware) http.Handler {
-	h := NewHandler(backend, raw, rawWrite, cfg)
+func NewRouter(backend, raw, rawWrite authz.Backend, cfg *config.Config, jwtMW *JWTMiddleware, opts ...Option) http.Handler {
+	h := NewHandler(backend, raw, rawWrite, cfg, opts...)
+	h.listener = "public"
 	h.requireWriterRole = true
 	h.gateDiagnostics = true
 	return withMiddleware(newPublicMux(h, cfg.UsesOPA()), jwtMW, cfg.HTTPMaxBodyBytes)
@@ -125,6 +134,7 @@ func newPublicMux(h *Handler, usesOPA bool) *http.ServeMux {
 // separation is achieved by pointing OPA at different instances. Must not be
 // exposed to untrusted callers.
 func NewCallbackRouter(h *Handler, serviceToken string) http.Handler {
+	h.listener = "callback"
 	mux := http.NewServeMux()
 	registerNativeRead(mux, h)
 	if h.rawWrite != nil {
@@ -478,21 +488,33 @@ func (h *Handler) Evaluation(w http.ResponseWriter, r *http.Request) {
 		Context:     req.Context,
 	}
 
+	start := time.Now()
+	entry := h.decisionEntry(r, "evaluation", evalReq, h.viaLabel())
+
 	// Opt-in rich result (X-PGAuthz-Detail): backends that support it return
 	// state/missing_context/model for the AuthZEN response context field.
-	if dc, ok := h.backend.(authz.DetailedChecker); ok && DetailFromContext(r.Context()) {
+	// DECISION_LOG_DETAIL runs the same evaluation for the LOG only — the
+	// response then stays the plain decision.
+	wantDetail := DetailFromContext(r.Context())
+	if dc, ok := h.backend.(authz.DetailedChecker); ok && (wantDetail || h.wantDetailForLog()) {
 		decision, detail, err := dc.CheckAccessDetailed(r.Context(), evalReq)
 		recordDecisionDetail(store, metrics.APIAuthZEN, detail, err)
+		h.logDecision(entry, start, decision, detail, err)
 		if err != nil {
 			writeInternalError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, EvalResponseBody{Decision: decision, Context: detail})
+		if wantDetail {
+			writeJSON(w, http.StatusOK, EvalResponseBody{Decision: decision, Context: detail})
+		} else {
+			writeJSON(w, http.StatusOK, EvalResponseBody{Decision: decision})
+		}
 		return
 	}
 
 	decision, err := h.backend.CheckAccess(r.Context(), evalReq)
 	recordDecision(store, metrics.APIAuthZEN, decision, err)
+	h.logDecision(entry, start, decision, nil, err)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -588,7 +610,9 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	start := time.Now()
 	results, err := h.backend.CheckAccessBatch(r.Context(), store, evals, req.Context, semantic)
+	h.logBatch(r, "evaluations", h.viaLabel(), evals, req.Context, results, start, err)
 	if err != nil {
 		// A policy-hook veto (ADR 0011) rejects the whole batch: 403, never a
 		// fake all-false result. The structured `denials` disclose hook

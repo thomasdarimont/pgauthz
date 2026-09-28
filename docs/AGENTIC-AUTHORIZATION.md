@@ -352,11 +352,15 @@ Three records exist, for three questions:
 | How did the *graph* change (delegations, scopes)? | the audit trail | `audit_list_user`, `audit_list_object`, `watch_changes` |
 | Why was a call allowed or denied, *then*? | replay: `audit_check_access(..., p_at)` re-decides with the tuples, model and gates in effect at that time; `explain_access` for the live trace | SQL |
 
-A decision log for the daemon — every decision with reason and gate
-outcome, for the "intent vs observed behaviour" loop — is planned
-(pgauthzd, opt-in); until then the AuthZEN detail context and the metrics
-(`pgauthzd_check_decisions_total`, `pgauthzd_gate_clauses_total`) are what an observability
-pipeline gets.
+pgauthzd's **decision log** ([ADR 0013](adr/0013-decision-log.md),
+`DECISION_LOG=stdout|file:…`) adds the fourth record: one JSON line per
+decision with the resolved request, `state`, `reason`, gate outcomes on
+reserve, the caller and the request id — context key names, never values.
+Aggregate it by `reason` and `action` for "what do the rules actually do",
+cluster denials by subject for an agent that keeps probing a boundary, and
+replay any line with `audit_check_access` at its timestamp. Turn on
+`DECISION_LOG_DETAIL` so every line carries a reason without changing what
+callers receive.
 
 When an AI assistant helps you *understand* a policy ("why was this
 denied?"), ground it in `explain_access` output and concrete requests, not

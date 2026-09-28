@@ -82,6 +82,16 @@ pre-1.0, minor versions may include breaking changes.
   recording, the `gate_denied` explain, enumeration and `reserve_event`;
   `tests.sql` covers the permission matrix and both gates and runs in
   `tests/test.sh`.
+- **Decision log in pgauthzd** ([ADR 0013](docs/adr/0013-decision-log.md)):
+  `DECISION_LOG=off|stdout|stderr|file:<path>` writes one JSON line per
+  decision — `evaluation(s)`, `check(-batch)`, `explain`, `events/reserve`,
+  both listeners — with the resolved request, `decision`/`state`/`reason`,
+  `missing_context`, gate outcomes (reserve), context **key names** (never
+  values), caller (`actor`, `issuer`), `request_id` and latency.
+  `DECISION_LOG_SAMPLE` samples allows only; `DECISION_LOG_DETAIL` runs the
+  detailed evaluation for the log without changing responses.
+  `pgauthzd_decision_log_lines_total{result}` counts logged / sampled-out /
+  failed lines. Helm `decisionLog.*`; compose passes `DECISION_LOG*` through.
 - **`docs/AGENTIC-AUTHORIZATION.md`** — the guide to authorizing AI agents
   with pgauthz: the policy-aware loop over AuthZEN with detailed decisions as
   planner feedback, constraint-aware planning via the search API, task scope
@@ -266,6 +276,11 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **Playground overlay kept the demo issuer's roles on the writer.** The
+  `pgauthzd-full` override in `compose-playground.yml` set `JWT_ROLES_CLAIM`
+  to the Keycloak paths only, so demo-issuer tokens (`tests/test-authzen.sh`)
+  lost their writer/recorder roles (403 on writes and events) when the
+  playground overlay was up; `roles` is now listed first.
 - **OPA `explain` now forwards `input.context`** (new `pgauthz.explain_access_with_context`).
   Explaining through OPA — the playground's "As me" mode — evaluated conditions
   and temporal-gate clauses that read `$request.*` without the request context,
