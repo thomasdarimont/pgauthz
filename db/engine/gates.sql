@@ -442,7 +442,10 @@ BEGIN
         END IF;
     END IF;
     IF p_body ? 'match' THEN
-        FOR v_path IN SELECT jsonb_object_keys(p_body -> 'match') LOOP
+        -- match is containment: {"output.promise_kept": false} and
+        -- {"output": {"promise_kept": false}} mean the same thing, so check
+        -- the LEAF paths of the match document, dotted keys included.
+        FOR v_path IN SELECT path FROM authz._event_payload_leaves(p_body -> 'match', '') LOOP
             IF NOT (v_paths ? v_path) AND NOT EXISTS (
                 SELECT 1 FROM jsonb_each_text(v_paths) d
                  WHERE v_path LIKE d.key || '.%' AND d.value IN ('object', 'any')) THEN

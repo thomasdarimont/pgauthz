@@ -65,6 +65,13 @@ psql_file "$PG_DB" "$PG_DIR/examples/models/aia-acme/seed.sql"
 psql_file "$PG_DB" "$PG_DIR/examples/models/aia-acme/tests.sql"
 
 echo ""
+echo "==> Loading agents model (AI agents: planning, sequencing, delegation) + checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/examples/models/agents/model.sql"
+psql_file "$PG_DB" "$PG_DIR/examples/models/agents/seed.sql"
+psql_file "$PG_DB" "$PG_DIR/examples/models/agents/tests.sql"
+
+echo ""
 echo "==> Running contextual / condition checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_contextual.sql"

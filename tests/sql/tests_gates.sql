@@ -414,6 +414,13 @@ BEGIN
     BEGIN PERFORM authz.add_gate('test_gates', 'account', 'pay', 'm', '{"all_of": [{"formerly_within": {"window": "1h", "match": {"output.ok": true}}}]}');
     EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
     PERFORM _test_assert('gs_02_match_path_wrong_kind_refused', v_state, '23514');   -- output.ok exists only for response
+    PERFORM _test_assert_true('gs_02_match_nested_object_ok',
+        authz.add_gate('test_gates', 'account', 'pay', 'mn', '{"all_of": [{"formerly_within": {"window": "1h", "kind": "response", "match": {"output": {"ok": true}}}}]}') > 0);
+    PERFORM authz.drop_gate('test_gates', 'account', 'pay', 'mn');
+    v_state := NULL;
+    BEGIN PERFORM authz.add_gate('test_gates', 'account', 'pay', 'mn', '{"all_of": [{"formerly_within": {"window": "1h", "kind": "response", "match": {"output": {"nope": true}}}}]}');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('gs_02_match_nested_undeclared_refused', v_state, '23514');
     PERFORM _test_assert_true('gs_02_match_path_right_kind_ok',
         authz.add_gate('test_gates', 'account', 'pay', 'm', '{"all_of": [{"formerly_within": {"window": "1h", "kind": "response", "match": {"output.ok": true}}}]}') > 0);
     v_state := NULL;

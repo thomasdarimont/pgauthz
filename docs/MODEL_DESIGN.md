@@ -1928,7 +1928,8 @@ SELECT authz.model_set_payload_schema('bank', 'transfer', '{
   path.
 - `add_gate` refuses a clause that reads an undeclared path for its kind —
   `sum_within.field` (which must be declared `number` or `any`),
-  `count_distinct_within` `payload.<path>` keys, `match` paths — so a gate
+  `count_distinct_within` `payload.<path>` keys, `match` paths (dotted or
+  nested; the leaf paths are checked) — so a gate
   cannot count on a field no recorder is obliged to send. Actions without a
   schema stay unrestricted.
 - Schemas are part of the model: `export_model` emits `payload_schema` on a

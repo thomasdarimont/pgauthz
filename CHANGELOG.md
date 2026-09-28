@@ -82,6 +82,24 @@ pre-1.0, minor versions may include breaking changes.
   recording, the `gate_denied` explain, enumeration and `reserve_event`;
   `tests.sql` covers the permission matrix and both gates and runs in
   `tests/test.sh`.
+- **`examples/models/agents/`** — authorization for AI agents (*Authorization
+  in Action* ch. 18 / appendix C) on pgauthz: the policy-aware loop (every
+  tool call a check, denial with a reason), task scope as an expiring or
+  contextual tuple, constraint-aware planning with `list_actions` /
+  `list_objects` in place of policy residuals (guidance ≡ enforcement is a
+  test), sequencing and partner reputation as temporal gates over the action
+  log, a control plane with no agent path (the grant cannot even be written),
+  delegation as data with attenuation at evaluation time: grants go to an
+  agent's `reach` userset (`[agent] or reach from delegate`, enforced by the
+  type restriction), so a delegate reads only what its delegator still holds
+  and what it was explicitly given, revoking the delegator revokes the
+  subtree, chains cut at any link, plus an issuance precondition. 41 checks,
+  loaded by `test.sh`; the README lists what ReBAC cannot express (per-type
+  gates, multi-party approval as events, subject-side traversal).
+- **Gate cross-check accepts nested `match` objects.** `match: {"output":
+  {"promise_kept": false}}` is containment-equivalent to the dotted form and
+  is now validated against the payload schema by its leaf paths instead of
+  being rejected as an undeclared top-level key.
 - **`examples/models/aia-acme/`** — the ACME "Customer Collaboration" example from
   the book *Authorization in Action* (Cedar, chapter 9 + appendix A) as a
   pgauthz model with the book's entities as seed data and its four
