@@ -102,6 +102,8 @@ startup via ALLOW_OPEN_DIAGNOSTICS, so a hand-edited manifest cannot slip past).
 - { name: DECISION_LOG,        value: {{ . | quote }} }
 - { name: DECISION_LOG_SAMPLE, value: {{ $dl.sample | default 1 | toString | quote }} }
 - { name: DECISION_LOG_DETAIL, value: {{ $dl.detail | default false | toString | quote }} }
+- { name: DECISION_LOG_REQUIRED, value: {{ $dl.required | default false | toString | quote }} }
+- { name: DECISION_LOG_SEARCHES, value: {{ $dl.searches | default false | toString | quote }} }
 {{- end }}
 {{- if $d.allowOpenInProduction }}
 - { name: ALLOW_OPEN_DIAGNOSTICS, value: "true" }

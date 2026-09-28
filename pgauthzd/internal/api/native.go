@@ -424,6 +424,9 @@ func (h *Handler) ReserveEvent(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !h.requireDecisionLog(w) {
+		return
+	}
 	var req reserveEventBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeBadRequest(w, "invalid JSON: "+err.Error())
@@ -501,6 +504,9 @@ type explainRequestBody struct {
 func (h *Handler) Explain(w http.ResponseWriter, r *http.Request) {
 	nr, ok := h.nativeReader(w)
 	if !ok {
+		return
+	}
+	if !h.requireDecisionLog(w) {
 		return
 	}
 	if !h.requireExplainRole(w, r) {

@@ -406,6 +406,8 @@ All configuration is via environment variables.
 | `DECISION_LOG` | `off` | Decision log sink ([ADR 0013](../docs/adr/0013-decision-log.md)): `off`, `stdout`, `stderr`, or `file:<path>` (append-only; rotate externally with copy-truncate). One JSON line per decision on `evaluation(s)`, `check(-batch)`, `explain`, `events/reserve`, both listeners, with provenance (`pgauthzd_version`, the store's `model` name/version/checksum, OPA `policy` version + bundle revisions when fronted). Context **keys** only, never values |
 | `DECISION_LOG_SAMPLE` | `1` | Fraction (0–1) of **allow** lines written; denies, conditionals and errors are always written |
 | `DECISION_LOG_DETAIL` | `false` | Run the detailed evaluation for plain checks **for the log only** (every line gets `state`/`reason`); responses are unchanged. Costs the detailed check's second pass on conditional outcomes |
+| `DECISION_LOG_REQUIRED` | `false` | Evidence mode: after a failed log write, `/readyz` is 503 and every decision endpoint refuses with 503 until a write succeeds again — no decision without its record. Needs a sink. Regulated deployments only; the default stays best-effort |
+| `DECISION_LOG_SEARCHES` | `false` | Also write one line per search (`search/subject|resource|action`, native `list-*`): actor, store, endpoint, the query dimensions as given, `result_count`, latency — **never the returned ids**. Not sampled. Needs a sink |
 
 ### pgauthzd-decision (`decision-only`) only
 

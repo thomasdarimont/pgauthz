@@ -799,9 +799,16 @@ DECISION_LOG_DETAIL=true       # state + reason on every line (detailed evaluati
   identifiers, as in the audit trail); request-context **values**,
   contextual tuples, event payloads and tokens are not — only context key
   names. Treat the log like the audit trail.
-- Searches are counted (`pgauthzd_search_requests_total`), not logged.
-  `pgauthzd_decision_log_lines_total{result}` shows logged, sampled-out and
-  failed writes, so a broken sink is visible.
+- Searches are counted (`pgauthzd_search_requests_total`), not logged —
+  unless `DECISION_LOG_SEARCHES=true`, which adds one line per search with
+  the query dimensions and the result **count**, never the ids ("who
+  enumerated what, and how much").
+- The log is best-effort by default: `pgauthzd_decision_log_lines_total{result}`
+  shows logged, sampled-out and failed writes, so a broken sink is visible.
+  `DECISION_LOG_REQUIRED=true` turns it into evidence: after a failed write
+  the instance is not ready and refuses decisions (503) until the sink
+  accepts a line again. Pair it with a sink you monitor — a full disk then
+  stops authorization on purpose.
 
 ## Scale & supported limits
 

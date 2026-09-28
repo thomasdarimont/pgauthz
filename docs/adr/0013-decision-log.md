@@ -131,9 +131,14 @@ counts logged, sampled-out and failed writes so a silent sink is visible.
 
 ## Non-goals
 
-- Logging search results (which objects a caller enumerated) — counted, not
-  recorded; enumeration is already role-gated.
+- Logging search **results** (which objects a caller enumerated) — counted,
+  not recorded; enumeration is already role-gated. `DECISION_LOG_SEARCHES`
+  adds the search itself (dimensions + result count, no ids) for operators
+  who need "who enumerated what".
 - Recording decisions as events in the action log — a decision is not an
   action (ADR 0012).
-- Guaranteed delivery — a dropped line increments a counter; the log is
-  evidence, not a ledger.
+- Guaranteed delivery by default — a dropped line increments a counter; the
+  log is evidence, not a ledger. Deployments that need evidentiary
+  completeness opt into `DECISION_LOG_REQUIRED`: a failed write trips
+  readiness and refuses decisions until the sink accepts a line again
+  (availability traded for completeness, explicitly).

@@ -65,6 +65,8 @@ decisionLog:
   sink: ""            # DECISION_LOG: "" / off | stdout | stderr | file:<path>
   sample: 1           # DECISION_LOG_SAMPLE: fraction of ALLOW lines (denies always)
   detail: false       # DECISION_LOG_DETAIL: state/reason on every line (log only)
+  required: false     # DECISION_LOG_REQUIRED: fail closed (503) after a failed write
+  searches: false     # DECISION_LOG_SEARCHES: one line per search, result count only
 
 # ── Database: CloudNativePG cluster ──────────────────────────────────────────
 database:

@@ -138,6 +138,8 @@ services:
       DECISION_LOG: "${DECISION_LOG:-off}"
       DECISION_LOG_SAMPLE: "${DECISION_LOG_SAMPLE:-1}"
       DECISION_LOG_DETAIL: "${DECISION_LOG_DETAIL:-false}"
+      DECISION_LOG_REQUIRED: "${DECISION_LOG_REQUIRED:-false}"
+      DECISION_LOG_SEARCHES: "${DECISION_LOG_SEARCHES:-false}"
     # Keep retrying until roles.sql has run: on a fresh DB the startup read-only
     # assertion references authz_writer, which init.sh creates AFTER the stack is
     # up — the instance crash-loops until then, then recovers (like the reader/

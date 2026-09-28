@@ -459,6 +459,9 @@ func writeSubjectError(w http.ResponseWriter, err error) {
 
 // Evaluation handles POST /access/v1/evaluation
 func (h *Handler) Evaluation(w http.ResponseWriter, r *http.Request) {
+	if !h.requireDecisionLog(w) {
+		return
+	}
 	var req EvalRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeBadRequest(w, "invalid JSON: "+err.Error())
@@ -530,6 +533,9 @@ func (h *Handler) Evaluation(w http.ResponseWriter, r *http.Request) {
 
 // Evaluations handles POST /access/v1/evaluations
 func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
+	if !h.requireDecisionLog(w) {
+		return
+	}
 	var req EvalsBatchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeBadRequest(w, "invalid JSON: "+err.Error())
@@ -692,10 +698,13 @@ func (h *Handler) SearchSubject(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, "invalid page token: sealed cursor failed verification (wrong query context, or replicas without a shared CURSOR_SEAL_KEY)")
 		return
 	}
+	start := time.Now()
 	subjects, pageResp, err := h.backend.ListSubjects(r.Context(), store,
 		req.Subject.Type, req.Action.Name, req.Resource.Type, req.Resource.ID,
 		req.Context, page)
 	recordSearch(store, "subjects", len(subjects), err)
+	h.logSearch(r, "search/subject", h.viaLabel(), store, decisionlog.Ref{Type: req.Subject.Type}, req.Action.Name,
+		decisionlog.Ref{Type: req.Resource.Type, ID: req.Resource.ID}, req.Context, len(subjects), start, err)
 	if err != nil {
 		writeSearchError(w, err)
 		return
@@ -756,10 +765,13 @@ func (h *Handler) SearchResource(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, "invalid page token: sealed cursor failed verification (wrong query context, or replicas without a shared CURSOR_SEAL_KEY)")
 		return
 	}
+	start := time.Now()
 	resources, pageResp, err := h.backend.ListResources(r.Context(), store,
 		subjectType, subjectID, req.Action.Name, req.Resource.Type,
 		req.Context, page)
 	recordSearch(store, "objects", len(resources), err)
+	h.logSearch(r, "search/resource", h.viaLabel(), store, decisionlog.Ref{Type: subjectType, ID: subjectID}, req.Action.Name,
+		decisionlog.Ref{Type: req.Resource.Type}, req.Context, len(resources), start, err)
 	if err != nil {
 		writeSearchError(w, err)
 		return
@@ -803,9 +815,12 @@ func (h *Handler) SearchAction(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	start := time.Now()
 	actions, err := h.backend.ListActions(r.Context(), store,
 		subjectType, subjectID, req.Resource.Type, req.Resource.ID,
 		req.Context)
+	h.logSearch(r, "search/action", h.viaLabel(), store, decisionlog.Ref{Type: subjectType, ID: subjectID}, "",
+		decisionlog.Ref{Type: req.Resource.Type, ID: req.Resource.ID}, req.Context, len(actions), start, err)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -877,6 +892,13 @@ func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
 	}
 	if b == nil {
 		b = h.rawWrite
+	}
+	// DECISION_LOG_REQUIRED: a failed evidence write makes the instance
+	// not ready until a write succeeds again (decisions are refused meanwhile).
+	if h.cfg != nil && h.cfg.DecisionLogRequired && !h.decisions.Healthy() {
+		slog.Warn("readiness check failed", "error", "decision log write failed (DECISION_LOG_REQUIRED)")
+		writeError(w, http.StatusServiceUnavailable, "unhealthy")
+		return
 	}
 	if b != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), readyzProbeTimeout)

@@ -334,6 +334,14 @@ type Config struct {
 	// DecisionLogDetail upgrades plain checks to the detailed evaluation FOR
 	// THE LOG ONLY (state/reason on every line); responses are unchanged.
 	DecisionLogDetail bool
+	// DecisionLogRequired makes the log evidence, not best effort: after a
+	// failed write, readiness reports 503 and decision endpoints refuse (503)
+	// until a write succeeds again. Regulated deployments only.
+	DecisionLogRequired bool
+	// DecisionLogSearches adds one line per search (AuthZEN search/*, native
+	// list-*): actor, store, kind, query dimensions, result COUNT, latency —
+	// never the returned ids.
+	DecisionLogSearches bool
 }
 
 // deploymentEnvRe bounds DEPLOYMENT_ENVIRONMENT to a short identifier
@@ -400,6 +408,8 @@ func Load() (*Config, error) {
 		DecisionLog:                  env("DECISION_LOG", "off"),
 		DecisionLogSample:            envFloat("DECISION_LOG_SAMPLE", 1),
 		DecisionLogDetail:            envBool("DECISION_LOG_DETAIL", false),
+		DecisionLogRequired:          envBool("DECISION_LOG_REQUIRED", false),
+		DecisionLogSearches:          envBool("DECISION_LOG_SEARCHES", false),
 	}
 
 	// Freshness keyring: FRESHNESS_TOKEN_KEYS (ordered, comma-separated — first
@@ -514,6 +524,14 @@ func Load() (*Config, error) {
 	}
 	if c.DecisionLogSample < 0 || c.DecisionLogSample > 1 {
 		return nil, fmt.Errorf("DECISION_LOG_SAMPLE %v: expected a fraction in [0,1]", c.DecisionLogSample)
+	}
+	if c.DecisionLog == "" || c.DecisionLog == "off" {
+		if c.DecisionLogRequired {
+			return nil, fmt.Errorf("DECISION_LOG_REQUIRED=true needs a sink: set DECISION_LOG")
+		}
+		if c.DecisionLogSearches {
+			return nil, fmt.Errorf("DECISION_LOG_SEARCHES=true needs a sink: set DECISION_LOG")
+		}
 	}
 	switch c.Profile {
 	case ProfileDecisionOnly, ProfileFull:

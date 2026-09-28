@@ -143,3 +143,34 @@ func TestGatesOf(t *testing.T) {
 		t.Fatal("non-array input must yield nil")
 	}
 }
+
+type failWriter struct{ fail bool }
+
+func (f *failWriter) Write(b []byte) (int, error) {
+	if f.fail {
+		return 0, os.ErrClosed
+	}
+	return len(b), nil
+}
+
+func TestHealthyTracksLastWrite(t *testing.T) {
+	var nilLogger *Logger
+	if !nilLogger.Healthy() {
+		t.Fatal("nil logger must be healthy")
+	}
+	fw := &failWriter{}
+	l := New(fw, 1, nil)
+	if !l.Healthy() {
+		t.Fatal("healthy before the first write")
+	}
+	fw.fail = true
+	l.Log(Entry{Endpoint: "check", Decision: Bool(false)})
+	if l.Healthy() {
+		t.Fatal("a failed write must mark the logger unhealthy")
+	}
+	fw.fail = false
+	l.Log(Entry{Endpoint: "check", Decision: Bool(false)})
+	if !l.Healthy() {
+		t.Fatal("a successful write must clear the unhealthy state")
+	}
+}

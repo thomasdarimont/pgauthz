@@ -82,6 +82,14 @@ pre-1.0, minor versions may include breaking changes.
   recording, the `gate_denied` explain, enumeration and `reserve_event`;
   `tests.sql` covers the permission matrix and both gates and runs in
   `tests/test.sh`.
+- **Decision log: evidence mode and search lines** (review #11).
+  `DECISION_LOG_REQUIRED=true` fails closed after a failed log write —
+  `/readyz` 503 and every decision endpoint 503 until the sink accepts a line
+  again (`pgauthzd_authz_denied_total{reason="decision_log_required"}`).
+  `DECISION_LOG_SEARCHES=true` writes one line per AuthZEN search / native
+  list call with the query dimensions and `result_count`, never the ids.
+  Both need a sink and are off by default. Helm `decisionLog.required` /
+  `decisionLog.searches`; compose passthrough.
 - **`pgauthzd doctor`**: a preflight subcommand that loads the
   configuration as the daemon does and checks demo secrets, diagnostic gates,
   issuer store bindings, JWKS reachability, subject override, the cursor seal

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -204,5 +205,127 @@ func TestDecisionLogProvenance(t *testing.T) {
 	p, _ := ol["policy"].(map[string]any)
 	if p["opa_version"] != "1.18.2" || p["bundles"].(map[string]any)["policy"] != "rev-42" {
 		t.Fatalf("policy provenance: %v", ol["policy"])
+	}
+}
+
+type flakyWriter struct{ fail bool }
+
+func (f *flakyWriter) Write(b []byte) (int, error) {
+	if f.fail {
+		return 0, errors.New("disk full")
+	}
+	return len(b), nil
+}
+
+func TestDecisionLogRequiredFailsClosed(t *testing.T) {
+	fw := &flakyWriter{}
+	cfg := &config.Config{AllowSubjectOverride: true, DefaultStore: "demo", DecisionLog: "stdout", DecisionLogRequired: true}
+	h := NewHandler(detailStub{}, detailStub{}, detailStub{}, cfg, WithDecisionLog(decisionlog.New(fw, 1, nil)))
+	body := `{"subject":{"type":"user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"d1"}}`
+
+	// healthy sink: decisions flow, readiness ok
+	w := httptest.NewRecorder()
+	h.Evaluation(w, jsonReq("POST", "/access/v1/evaluation", body))
+	if w.Code != 200 {
+		t.Fatalf("healthy: %d %s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	h.Readyz(w, httptest.NewRequest("GET", "/readyz", nil))
+	if w.Code != 200 {
+		t.Fatalf("readyz healthy: %d", w.Code)
+	}
+
+	// the sink fails: this decision is answered (already decided), the write fails ...
+	fw.fail = true
+	w = httptest.NewRecorder()
+	h.Evaluation(w, jsonReq("POST", "/access/v1/evaluation", body))
+	if w.Code != 200 {
+		t.Fatalf("decision during the failing write should still answer: %d", w.Code)
+	}
+	// ... and from now on decisions and readiness refuse
+	for _, call := range []func(w *httptest.ResponseRecorder){
+		func(w *httptest.ResponseRecorder) { h.Evaluation(w, jsonReq("POST", "/access/v1/evaluation", body)) },
+		func(w *httptest.ResponseRecorder) { h.NativeCheck(w, jsonReq("POST", "/pgauthz/v1/check", body)) },
+		func(w *httptest.ResponseRecorder) { h.Explain(w, jsonReq("POST", "/pgauthz/v1/explain", body)) },
+		func(w *httptest.ResponseRecorder) { h.Readyz(w, httptest.NewRequest("GET", "/readyz", nil)) },
+	} {
+		w = httptest.NewRecorder()
+		call(w)
+		if w.Code != 503 {
+			t.Fatalf("required + unhealthy must be 503, got %d %s", w.Code, w.Body.String())
+		}
+	}
+	// the sink recovers: the guard refuses until a write succeeds — a search line
+	// (or any successful write) clears it; here a search with logging on.
+	fw.fail = false
+	h.cfg.DecisionLogSearches = true
+	w = httptest.NewRecorder()
+	h.NativeListActions(w, jsonReq("POST", "/pgauthz/v1/list-actions", body))
+	if w.Code != 200 {
+		t.Fatalf("search while refusing decisions: %d %s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	h.Evaluation(w, jsonReq("POST", "/access/v1/evaluation", body))
+	if w.Code != 200 {
+		t.Fatalf("after recovery: %d %s", w.Code, w.Body.String())
+	}
+
+	// not required: a broken sink never blocks
+	cfg2 := &config.Config{AllowSubjectOverride: true, DefaultStore: "demo", DecisionLog: "stdout"}
+	h2 := NewHandler(detailStub{}, detailStub{}, detailStub{}, cfg2, WithDecisionLog(decisionlog.New(&flakyWriter{fail: true}, 1, nil)))
+	w = httptest.NewRecorder()
+	h2.Evaluation(w, jsonReq("POST", "/access/v1/evaluation", body))
+	w = httptest.NewRecorder()
+	h2.Evaluation(w, jsonReq("POST", "/access/v1/evaluation", body))
+	if w.Code != 200 {
+		t.Fatalf("best-effort mode must not fail closed: %d", w.Code)
+	}
+}
+
+func TestDecisionLogSearchLines(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := &config.Config{AllowSubjectOverride: true, DefaultStore: "demo", DecisionLog: "stdout", DecisionLogSearches: true}
+	h := NewHandler(detailStub{}, detailStub{}, detailStub{}, cfg, WithDecisionLog(decisionlog.New(&buf, 1, nil)))
+	w := httptest.NewRecorder()
+	h.SearchResource(w, jsonReq("POST", "/access/v1/search/resource",
+		`{"subject":{"type":"user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document"},"context":{"clearance":"high"}}`))
+	if w.Code != 200 {
+		t.Fatalf("search: %d %s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	h.NativeListActions(w, jsonReq("POST", "/pgauthz/v1/list-actions",
+		`{"subject":{"type":"user","id":"alice"},"resource":{"type":"document","id":"d1"}}`))
+	if w.Code != 200 {
+		t.Fatalf("list-actions: %d %s", w.Code, w.Body.String())
+	}
+	got := lines(&buf)
+	if len(got) != 2 {
+		t.Fatalf("want 2 search lines, got %d: %s", len(got), buf.String())
+	}
+	l := got[0]
+	if l["endpoint"] != "search/resource" || l["result_count"] != float64(2) || l["action"] != "can_read" {
+		t.Fatalf("search line: %v", l)
+	}
+	if _, ok := l["decision"]; ok {
+		t.Fatalf("a search line carries no decision: %v", l)
+	}
+	if strings.Contains(buf.String(), "doc_1") || strings.Contains(buf.String(), "high") {
+		t.Fatalf("ids or context values leaked: %s", buf.String())
+	}
+	if ck, _ := l["context_keys"].([]any); len(ck) != 1 || ck[0] != "clearance" {
+		t.Fatalf("context keys: %v", l["context_keys"])
+	}
+	if got[1]["endpoint"] != "list-actions" || got[1]["result_count"] != float64(1) {
+		t.Fatalf("native line: %v", got[1])
+	}
+
+	// off: searches are counted, not logged
+	buf.Reset()
+	cfg.DecisionLogSearches = false
+	w = httptest.NewRecorder()
+	h.SearchResource(w, jsonReq("POST", "/access/v1/search/resource",
+		`{"subject":{"type":"user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document"}}`))
+	if buf.Len() != 0 {
+		t.Fatalf("search logged while off: %s", buf.String())
 	}
 }

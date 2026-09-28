@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -52,8 +53,11 @@ type Entry struct {
 	PgauthzdVersion string     `json:"pgauthzd_version,omitempty"`
 	Model           *ModelRef  `json:"model,omitempty"`
 	Policy          *PolicyRef `json:"policy,omitempty"`
-	LatencyMS       float64    `json:"latency_ms"`
-	Error           string     `json:"error,omitempty"`
+	// ResultCount is set on search lines (DECISION_LOG_SEARCHES): how many
+	// ids a search returned — never the ids themselves.
+	ResultCount *int    `json:"result_count,omitempty"`
+	LatencyMS   float64 `json:"latency_ms"`
+	Error       string  `json:"error,omitempty"`
 }
 
 // ModelRef is the model provenance of a store.
@@ -72,7 +76,7 @@ type PolicyRef struct {
 // Ref is a typed identifier.
 type Ref struct {
 	Type string `json:"type"`
-	ID   string `json:"id"`
+	ID   string `json:"id,omitempty"`
 }
 
 // Gate is one gate clause's outcome.
@@ -103,13 +107,21 @@ const (
 type Logger struct {
 	mu     sync.Mutex
 	w      *bufio.Writer
+	dst    io.Writer // the sink under the buffer, to reset after a failed write
 	closer io.Closer
 	sample float64
 	rnd    func() float64
 	// OnResult, when set, is called with a result label per Log call
 	// (wired to the metrics counter by the daemon).
 	OnResult func(result string)
+	// unhealthy is set when a write fails and cleared by the next successful
+	// write; DECISION_LOG_REQUIRED reads it to fail closed.
+	unhealthy atomic.Bool
 }
+
+// Healthy reports whether the last write succeeded (true for a nil Logger
+// and before the first write).
+func (l *Logger) Healthy() bool { return l == nil || !l.unhealthy.Load() }
 
 // Open returns a Logger for cfg, or nil when the sink is off. A file sink is
 // opened append-only (O_APPEND) so copy-truncate rotation works.
@@ -148,7 +160,7 @@ func Open(cfg Config) (*Logger, error) {
 
 // New builds a Logger over an arbitrary writer (tests, custom sinks).
 func New(w io.Writer, sample float64, closer io.Closer) *Logger {
-	return &Logger{w: bufio.NewWriterSize(w, 64*1024), closer: closer, sample: sample, rnd: rand.Float64}
+	return &Logger{w: bufio.NewWriterSize(w, 64*1024), dst: w, closer: closer, sample: sample, rnd: rand.Float64}
 }
 
 // Enabled reports whether entries are written (false for a nil Logger).
@@ -176,11 +188,18 @@ func (l *Logger) Log(e Entry) {
 	if werr == nil {
 		werr = l.w.Flush()
 	}
+	if werr != nil {
+		// bufio keeps a failed write's error sticky; reset so the sink gets a
+		// fresh attempt on the next line (the failed line is lost and counted).
+		l.w.Reset(l.dst)
+	}
 	l.mu.Unlock()
 	if werr != nil {
+		l.unhealthy.Store(true)
 		l.result(ResultError)
 		return
 	}
+	l.unhealthy.Store(false)
 	l.result(ResultLogged)
 }
 

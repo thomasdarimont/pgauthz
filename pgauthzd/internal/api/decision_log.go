@@ -208,3 +208,39 @@ func mergeKeys(a, b []string) []string {
 	sort.Strings(out)
 	return out
 }
+
+// requireDecisionLog enforces DECISION_LOG_REQUIRED: once a write has failed,
+// decisions are refused (503) until the sink accepts a line again, so no
+// decision is made that the evidence trail cannot show. The decision that
+// hit the failing write was already answered; the next one is refused.
+func (h *Handler) requireDecisionLog(w http.ResponseWriter) bool {
+	if h.cfg == nil || !h.cfg.DecisionLogRequired || h.decisions.Healthy() {
+		return true
+	}
+	metrics.AuthzDenied.WithLabelValues("decision_log_required").Inc()
+	writeError(w, http.StatusServiceUnavailable, "decision log unavailable (DECISION_LOG_REQUIRED): refusing to decide without evidence")
+	return false
+}
+
+// logSearch writes one search line (DECISION_LOG_SEARCHES): the query
+// dimensions as given and the result COUNT — never the returned ids. Lines
+// are not sampled; searches are role-gated and comparatively rare.
+func (h *Handler) logSearch(r *http.Request, endpoint, via, store string, subject decisionlog.Ref, action string, resource decisionlog.Ref, ctx map[string]any, n int, start time.Time, err error) {
+	if h.decisions == nil || h.cfg == nil || !h.cfg.DecisionLogSearches {
+		return
+	}
+	e := h.decisionEntry(r, endpoint, authz.EvalRequest{
+		Store: store, SubjectType: subject.Type, SubjectID: subject.ID, Action: action,
+		ObjectType: resource.Type, ObjectID: resource.ID, Context: ctx,
+	}, via)
+	e.LatencyMS = float64(time.Since(start).Microseconds()) / 1000
+	e.PgauthzdVersion = h.version
+	e.Model = h.modelProvenance(context.Background(), store)
+	e.Policy = h.policyProvenance(via)
+	if err != nil {
+		e.Error = err.Error()
+	} else {
+		e.ResultCount = &n
+	}
+	h.decisions.Log(e)
+}

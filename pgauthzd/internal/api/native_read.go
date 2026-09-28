@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
+	"thomasdarimont.de/authz/pgauthzd/internal/decisionlog"
 	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
 )
 
@@ -43,6 +44,9 @@ type nativeCheckBody struct {
 // NativeCheck — POST /pgauthz/v1/check: a single raw access decision.
 func (h *Handler) NativeCheck(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.nativeReader(w); !ok {
+		return
+	}
+	if !h.requireDecisionLog(w) {
 		return
 	}
 	var req nativeCheckBody
@@ -133,6 +137,9 @@ type nativeCheckBatchBody struct {
 // round-trip. Returns a boolean per check, in order.
 func (h *Handler) NativeCheckBatch(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.nativeReader(w); !ok {
+		return
+	}
+	if !h.requireDecisionLog(w) {
 		return
 	}
 	var req nativeCheckBatchBody
@@ -269,9 +276,12 @@ func (h *Handler) NativeListObjects(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	start := time.Now()
 	objects, pageResp, err := h.raw.ListResources(r.Context(), store,
 		subjectType, subjectID, req.Action.Name, req.Resource.Type, req.Context, req.pageReq())
 	recordSearch(store, "objects", len(objects), err)
+	h.logSearch(r, "list-objects", "engine", store, decisionlog.Ref{Type: subjectType, ID: subjectID}, req.Action.Name,
+		decisionlog.Ref{Type: req.Resource.Type}, req.Context, len(objects), start, err)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -317,9 +327,12 @@ func (h *Handler) NativeListSubjects(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	start := time.Now()
 	subjects, pageResp, err := h.raw.ListSubjects(r.Context(), store,
 		req.Subject.Type, req.Action.Name, req.Resource.Type, req.Resource.ID, req.Context, req.pageReq())
 	recordSearch(store, "subjects", len(subjects), err)
+	h.logSearch(r, "list-subjects", "engine", store, decisionlog.Ref{Type: req.Subject.Type}, req.Action.Name,
+		decisionlog.Ref{Type: req.Resource.Type, ID: req.Resource.ID}, req.Context, len(subjects), start, err)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -357,9 +370,12 @@ func (h *Handler) NativeListActions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	start := time.Now()
 	actions, err := h.raw.ListActions(r.Context(), store,
 		subjectType, subjectID, req.Resource.Type, req.Resource.ID, req.Context)
 	recordSearch(store, "actions", len(actions), err)
+	h.logSearch(r, "list-actions", "engine", store, decisionlog.Ref{Type: subjectType, ID: subjectID}, "",
+		decisionlog.Ref{Type: req.Resource.Type, ID: req.Resource.ID}, req.Context, len(actions), start, err)
 	if err != nil {
 		writeInternalError(w, err)
 		return

@@ -54,6 +54,8 @@ services:
       DECISION_LOG: "${DECISION_LOG:-off}"
       DECISION_LOG_SAMPLE: "${DECISION_LOG_SAMPLE:-1}"
       DECISION_LOG_DETAIL: "${DECISION_LOG_DETAIL:-false}"
+      DECISION_LOG_REQUIRED: "${DECISION_LOG_REQUIRED:-false}"
+      DECISION_LOG_SEARCHES: "${DECISION_LOG_SEARCHES:-false}"
     # Keep retrying until the authzen_direct role exists (created by
     # db/security/initdb on first boot, or by init.sh on re-init).
     restart: unless-stopped
@@ -97,6 +99,8 @@ services:
       DECISION_LOG: "${DECISION_LOG:-off}"
       DECISION_LOG_SAMPLE: "${DECISION_LOG_SAMPLE:-1}"
       DECISION_LOG_DETAIL: "${DECISION_LOG_DETAIL:-false}"
+      DECISION_LOG_REQUIRED: "${DECISION_LOG_REQUIRED:-false}"
+      DECISION_LOG_SEARCHES: "${DECISION_LOG_SEARCHES:-false}"
     restart: unless-stopped
     volumes:
       - ./opa/data:/jwks:ro

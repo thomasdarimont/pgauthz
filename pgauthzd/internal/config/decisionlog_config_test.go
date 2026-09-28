@@ -12,6 +12,8 @@ func TestDecisionLogConfig(t *testing.T) {
 		t.Setenv("DECISION_LOG", "")
 		t.Setenv("DECISION_LOG_SAMPLE", "")
 		t.Setenv("DECISION_LOG_DETAIL", "")
+		t.Setenv("DECISION_LOG_REQUIRED", "")
+		t.Setenv("DECISION_LOG_SEARCHES", "")
 		for k, v := range extra {
 			t.Setenv(k, v)
 		}
@@ -35,5 +37,15 @@ func TestDecisionLogConfig(t *testing.T) {
 	}
 	if _, err := load(map[string]string{"DECISION_LOG_SAMPLE": "2"}); err == nil || !strings.Contains(err.Error(), "DECISION_LOG_SAMPLE") {
 		t.Fatalf("bad sample accepted: %v", err)
+	}
+	// strict delivery / search lines need a sink
+	if _, err := load(map[string]string{"DECISION_LOG_REQUIRED": "true"}); err == nil || !strings.Contains(err.Error(), "DECISION_LOG_REQUIRED") {
+		t.Fatalf("required without a sink accepted: %v", err)
+	}
+	if _, err := load(map[string]string{"DECISION_LOG_SEARCHES": "true"}); err == nil || !strings.Contains(err.Error(), "DECISION_LOG_SEARCHES") {
+		t.Fatalf("searches without a sink accepted: %v", err)
+	}
+	if c, err := load(map[string]string{"DECISION_LOG": "stdout", "DECISION_LOG_REQUIRED": "true", "DECISION_LOG_SEARCHES": "true"}); err != nil || !c.DecisionLogRequired || !c.DecisionLogSearches {
+		t.Fatalf("valid strict config: %v %+v", err, c)
 	}
 }
