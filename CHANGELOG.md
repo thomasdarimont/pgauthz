@@ -82,6 +82,16 @@ pre-1.0, minor versions may include breaking changes.
   recording, the `gate_denied` explain, enumeration and `reserve_event`;
   `tests.sql` covers the permission matrix and both gates and runs in
   `tests/test.sh`.
+- **Adversarial hook-URL regression tests** (review #11): the `hookurl`
+  canonicaliser now has 20 reject cases (userinfo dressed as `host:port`,
+  percent-encoded dots, control characters, broken ports and brackets,
+  opaque/backslash and scheme-less forms, uppercase and Unicode/Cyrillic
+  hosts) and 13 decoy-host cases asserting the host reported for the
+  `allow_net` comparison is never a fragment/query/path/suffix decoy;
+  `tests/hooks-invalid/` gains `bad_suffix`, `bad_percent`,
+  `bad_portuserinfo`, `bad_redirect` (`enable_redirect: true`) and
+  `bad_computed` (non-literal url) fixtures, all asserted rejected by
+  `tests/test-hook-validator.sh` (CI).
 - **Decision log: evidence mode and search lines** (review #11).
   `DECISION_LOG_REQUIRED=true` fails closed after a failed log write —
   `/readyz` 503 and every decision endpoint 503 until the sink accepts a line

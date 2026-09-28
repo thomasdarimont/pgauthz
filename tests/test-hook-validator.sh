@@ -21,7 +21,9 @@ fi
 
 out=$(HOOK_HTTP_CAPABILITIES="$CAPS" "$ROOT/scripts/validate-hooks.sh" --global --allow-http "$ROOT/tests/hooks-invalid" 2>&1 || true)
 expect() {  # <fixture> <reason substring>
-    if grep -q "FAIL  $1" <<< "$out" && grep -F "$1" <<< "$out" | grep -q -- "$2"; then
+    # The reason may sit on the FAIL line or on the indented detail lines that
+    # follow it (the static-destination contract lists violations underneath).
+    if grep -q "FAIL  $1" <<< "$out" && grep -F -A4 "FAIL  $1" <<< "$out" | grep -q -- "$2"; then
         ok "$1 rejected ($2)"
     else
         bad "$1 must be rejected with '$2'"; echo "$out" | grep -F "$1" | sed 's/^/          /'
@@ -31,11 +33,16 @@ expect bad_ipv6.rego      "is not in the allow_net allowlist"
 expect bad_userinfo.rego  "userinfo"
 expect bad_plainhttp.rego "must be https"
 expect bad_upper.rego     "must be lowercase"
+expect bad_suffix.rego    "is not in the allow_net allowlist"
+expect bad_percent.rego   "does not parse"
+expect bad_portuserinfo.rego "userinfo"
+expect bad_redirect.rego  "enable_redirect must be false"
+expect bad_computed.rego  "non-static url"
 if grep -q "PASS  bad_" <<< "$out"; then bad "no invalid fixture may pass"; else ok "no invalid fixture passes"; fi
 
 # The plain-http opt-in admits exactly the http:// case, nothing else.
 out=$(HOOK_HTTP_CAPABILITIES="$CAPS" "$ROOT/scripts/validate-hooks.sh" --global --allow-http --allow-plain-http "$ROOT/tests/hooks-invalid" 2>&1 || true)
-if grep -q "PASS  bad_plainhttp.rego" <<< "$out" && ! grep -q "PASS  bad_ipv6\|PASS  bad_userinfo\|PASS  bad_upper" <<< "$out"; then
+if grep -q "PASS  bad_plainhttp.rego" <<< "$out" && ! grep -q "PASS  bad_ipv6\|PASS  bad_userinfo\|PASS  bad_upper\|PASS  bad_suffix\|PASS  bad_percent\|PASS  bad_portuserinfo\|PASS  bad_redirect\|PASS  bad_computed" <<< "$out"; then
     ok "--allow-plain-http admits only the http:// fixture"
 else
     bad "--allow-plain-http must admit only the http:// fixture"
