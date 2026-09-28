@@ -1783,8 +1783,9 @@ within the hour.
 
 ### The grammar
 
-A gate object has `all_of` (1–16 clauses, AND) and an optional
-`description`. Each clause is an object with exactly one key — the
+A gate object has `all_of` (1–16 clauses, AND), an optional `description`,
+and an optional `mode`: `enforce` (default), `shadow`, or `off` (see
+[Rolling a gate out](#rolling-a-gate-out-shadow-mode)). Each clause is an object with exactly one key — the
 primitive — and a body:
 
 | Key | `formerly_within` | `count_within` | `count_distinct_within` | `sum_within` | Value |
@@ -1850,6 +1851,55 @@ for another stock cannot leak through explain.
   them; the checksum ignores an empty array, so gate-free stores are
   unaffected. `describe_model` renders gates as `#` comment lines under the
   relation.
+
+### Rolling a gate out: shadow mode
+
+A gate can be introduced on a live relation without changing a single
+decision. `"mode": "shadow"` evaluates the gate exactly as enforcement would
+— same windows, same events, same cost — but a failing clause never denies:
+
+```sql
+SELECT authz.add_gate('bank', 'account', 'transfer', 'velocity_backstop', '{
+  "mode": "shadow",
+  "all_of": [{"count_within": {"window": "1h", "max": 5, "plus": 1}}]}');
+```
+
+What you see while it runs in shadow:
+
+- `explain_access` traces the step with its real outcome (`gate_denied`,
+  observed, threshold) and `"shadow": true`; `decision.reason` stays the
+  graph's reason. The summary marks the step `○` instead of `✗`.
+- `check_access_detailed` never turns `conditional` because of a shadow gate
+  (its missing `$request` keys are excluded from `missing_context`).
+- `reserve_event` allows, records the `request`, and returns the shadowed
+  clause outcome in `gates` so the PEP can log what would have happened.
+- Every would-be denial writes one structured line to the PostgreSQL server
+  log: `gate_shadow store=… gate=… clause=… relation=… subject=… object=…
+  reason=… observed=… threshold=…`. That is replica-safe — the check path
+  still never writes — and is what log shipping already collects.
+- `list_*` return their unfiltered results; `describe_model` renders the
+  gate as `# gate velocity_backstop (shadow): …`.
+
+Watch the log and the traces, tune the thresholds with `add_gate` (each
+change is versioned in `model_gates_audit` like any model change), then drop
+the `mode` key to enforce. The mode travels with the spec through the model
+registry, so a fleet can be moved from shadow to enforce with one
+`publish_model` / `apply_model`.
+
+`"mode": "off"` is the third per-gate value: the gate stays defined and
+versioned but is skipped entirely — no clauses evaluated, no trace steps —
+for pausing one gate without losing its definition. An `off` (or shadow)
+gate still counts toward the retention requirement reported by
+`gate_windows`, since re-enabling it after a purge would under-count; drop a
+gate to lift that requirement.
+
+Two database-wide switches complement the per-gate mode, as the GUC
+`authz.gates_mode` (`SET` per session, or `ALTER DATABASE authz SET …`):
+`shadow` puts **every** gate into shadow (an initial rollout, or a suspected
+false-deny incident), `off` skips gate evaluation entirely (the emergency
+kill switch — no steps, no cost). The default and any unrecognised value is
+`enforce`. Time-travel and enumeration follow the switch like every other
+path, since they all go through the same evaluator.
 
 ### What belongs in a gate
 

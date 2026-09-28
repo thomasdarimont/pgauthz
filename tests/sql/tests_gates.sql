@@ -544,6 +544,95 @@ END;
 $$;
 
 -- ================================================================
+-- Shadow mode: per-gate mode = shadow and the authz.gates_mode switch
+-- ================================================================
+DO $$
+DECLARE v_explain jsonb; v_step jsonb; v_detail jsonb; r jsonb; v_state text; v_subjects text;
+BEGIN
+    -- sanity: the cooldown gate on peek enforces today (alice has a peek event 9 min ago)
+    PERFORM _test_assert('sh_00_enforced_denies', pg_temp._g('peek')::text, 'false');
+
+    -- sh_01: the same gate in shadow mode reports but never denies
+    PERFORM authz.add_gate('test_gates', 'account', 'peek', 'cooldown',
+        '{"mode": "shadow", "all_of": [{"count_within": {"window": "10m", "max": 0}}]}');
+    PERFORM _test_assert('sh_01_shadow_allows', pg_temp._g('peek')::text, 'true');
+    v_explain := authz.explain_access('test_gates', 'user', 'alice', 'peek', 'account', 'acc-1');
+    v_step := pg_temp._gsteps('peek') -> 0;
+    PERFORM _test_assert('sh_01_step_keeps_real_outcome',
+        (v_step ->> 'reason') || ' ' || (v_step ->> 'result') || ' shadow=' || (v_step ->> 'shadow'), 'gate_denied false shadow=true');
+    PERFORM _test_assert('sh_01_decision_reason_is_the_graph', v_explain -> 'decision' ->> 'reason', 'direct_tuple');
+    PERFORM _test_assert_true('sh_01_summary_marks_shadow', position('○' in (v_explain ->> 'summary')) > 0, v_explain ->> 'summary');
+    PERFORM _test_assert_true('sh_01_describe_marks_shadow',
+        position('# gate cooldown (shadow)' in authz.describe_model('test_gates')) > 0);
+
+    -- sh_02: a shadow gate lacking $request context cannot make the decision conditional
+    PERFORM authz.add_gate('test_gates', 'account', 'withdraw', 'four_eyes', '{
+        "mode": "shadow",
+        "all_of": [{"formerly_within": {"window": "1h", "action": "approve_sale", "kind": "response",
+                                        "match": {"input.stock": "$request.stock", "output.approved": true},
+                                        "recorded_by": ["svc:approvals"]}}]}');
+    v_detail := authz.check_access_detailed('test_gates', 'user', 'alice', 'withdraw', 'account', 'acc-1');
+    PERFORM _test_assert('sh_02_detailed_state_allow', (v_detail ->> 'decision') || ' ' || (v_detail ->> 'state'), 'true allow');
+    PERFORM _test_assert('sh_02_missing_context_excludes_shadow', (v_detail -> 'missing_context')::text, '[]');
+
+    -- sh_03: reserve_event under a shadow gate is allowed and reports the shadowed clause
+    r := authz.reserve_event('test_gates', 'user', 'alice', 'peek', 'account', 'acc-1');
+    PERFORM _test_assert('sh_03_reserve_allowed_kind_request', (r ->> 'allowed') || ' ' || (r ->> 'kind') || ' ' || (r ->> 'reason'), 'true request allowed');
+    PERFORM _test_assert('sh_03_reserve_reports_shadow_outcome',
+        (r -> 'gates' -> 0 ->> 'reason') || ' ' || (r -> 'gates' -> 0 ->> 'shadow'), 'gate_denied true');
+
+    -- sh_04: the database-wide switch — shadow allows an ENFORCED gate; off skips evaluation; junk = enforce
+    PERFORM _test_assert('sh_04_enforced_quota_denies', pg_temp._g('approve')::text, 'false');
+    PERFORM set_config('authz.gates_mode', 'shadow', true);
+    PERFORM _test_assert('sh_04_global_shadow_allows', pg_temp._g('approve')::text, 'true');
+    PERFORM _test_assert('sh_04_global_shadow_traces_step',
+        pg_temp._gsteps('approve') -> 0 ->> 'shadow', 'true');
+    PERFORM set_config('authz.gates_mode', 'off', true);
+    PERFORM _test_assert('sh_04_off_allows', pg_temp._g('approve')::text, 'true');
+    PERFORM _test_assert('sh_04_off_evaluates_nothing', jsonb_array_length(pg_temp._gsteps('approve'))::text, '0');
+    PERFORM set_config('authz.gates_mode', 'bogus', true);
+    PERFORM _test_assert('sh_04_unknown_value_enforces', pg_temp._g('approve')::text, 'false');
+    PERFORM set_config('authz.gates_mode', '', true);
+
+    -- sh_05: enumeration under a shadow gate is unfiltered
+    PERFORM authz.add_gate('test_gates', 'doc', 'viewer', 'lockout',
+        '{"mode": "shadow", "all_of": [{"count_within": {"window": "1h", "kind": "denied", "max": 0}}]}');
+    SELECT string_agg(subject_id, ',' ORDER BY subject_id) INTO v_subjects
+      FROM authz.list_subjects('test_gates', 'user', 'viewer', 'doc', 'doc1');
+    PERFORM _test_assert('sh_05_list_subjects_unfiltered', v_subjects, 'alice,bob');
+
+    -- sh_06: validation
+    v_state := NULL;
+    BEGIN PERFORM authz.add_gate('test_gates', 'account', 'audit_note', 'bad',
+        '{"mode": "audit", "all_of": [{"count_within": {"window": "1h", "max": 1}}]}');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('sh_06_bad_mode_rejected', v_state, '23514');
+
+    -- sh_08: mode = off keeps the gate defined but skips it entirely (no steps), and it
+    -- still counts toward the retention requirement
+    PERFORM authz.add_gate('test_gates', 'account', 'peek', 'cooldown',
+        '{"mode": "off", "all_of": [{"count_within": {"window": "10m", "max": 0}}]}');
+    PERFORM _test_assert('sh_08_off_allows', pg_temp._g('peek')::text, 'true');
+    PERFORM _test_assert('sh_08_off_no_steps', jsonb_array_length(pg_temp._gsteps('peek'))::text, '0');
+    PERFORM _test_assert_true('sh_08_describe_marks_off',
+        position('# gate cooldown (off)' in authz.describe_model('test_gates')) > 0);
+    PERFORM _test_assert('sh_08_off_gate_still_in_windows',
+        (SELECT count(*) FROM authz.gate_windows('test_gates') w WHERE w.gate = 'cooldown')::text, '1');
+    PERFORM _test_assert('sh_08_still_versioned',
+        (SELECT a.action FROM authz.model_gates_audit a WHERE a.name = 'cooldown' AND a.store_id = authz._s('test_gates') ORDER BY a.seq DESC LIMIT 1), 'INSERT');
+
+    -- restore enforcement for the sections below
+    PERFORM authz.add_gate('test_gates', 'account', 'peek', 'cooldown', '{"all_of": [{"count_within": {"window": "10m", "max": 0}}]}');
+    PERFORM authz.add_gate('test_gates', 'account', 'withdraw', 'four_eyes', '{
+        "all_of": [{"formerly_within": {"window": "1h", "action": "approve_sale", "kind": "response",
+                                        "match": {"input.stock": "$request.stock", "output.approved": true},
+                                        "recorded_by": ["svc:approvals"]}}]}');
+    PERFORM authz.add_gate('test_gates', 'doc', 'viewer', 'lockout', '{"all_of": [{"count_within": {"window": "1h", "kind": "denied", "max": 0}}]}');
+    PERFORM _test_assert('sh_07_restored_enforces', pg_temp._g('peek')::text, 'false');
+END;
+$$;
+
+-- ================================================================
 -- reserve_event: the strict tier (phase 3)
 -- ================================================================
 DO $$

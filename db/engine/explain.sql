@@ -121,7 +121,8 @@ BEGIN
         gate_observed  numeric,
         gate_threshold numeric,
         gate_reason    text,      -- gate_passed | gate_denied | gate_missing_context | ...
-        gate_scope     text       -- subject | object
+        gate_scope     text,      -- subject | object
+        gate_shadow    boolean    -- true: reported only, did not affect the decision
     ) ON COMMIT DROP;
     TRUNCATE _access_trace RESTART IDENTITY;
     PERFORM set_config('authz.trace', 'on', true);
@@ -227,7 +228,8 @@ BEGIN
             -- A failed gate is the minimal cause: the graph allowed (gates only
             -- run after an allow), so it is tested before every graph reason.
             WHEN EXISTS (SELECT 1 FROM _access_trace s
-                          WHERE NOT s.result AND s.rule_type = 'temporal_gate')  THEN 'gate_denied'
+                          WHERE NOT s.result AND s.rule_type = 'temporal_gate'
+                            AND NOT COALESCE(s.gate_shadow, false))               THEN 'gate_denied'
             WHEN EXISTS (SELECT 1 FROM _access_trace s
                           WHERE NOT s.result AND s.rule_type = 'exclusion')      THEN 'excluded'
             WHEN EXISTS (SELECT 1 FROM _access_trace s
@@ -276,6 +278,7 @@ BEGIN
                     'observed',  s.gate_observed,
                     'threshold', s.gate_threshold,
                     'scope',     s.gate_scope,
+                    'shadow',    COALESCE(s.gate_shadow, false),
                     'missing_keys', to_jsonb(s.condition_missing_keys))
                 ELSE '{}'::jsonb END
         ORDER BY s.step
@@ -300,7 +303,7 @@ BEGIN
                   ORDER BY at.step
         LOOP
             v_indent := repeat('  ', t.depth);
-            v_icon   := CASE WHEN t.result THEN '✓' ELSE '✗' END;
+            v_icon   := CASE WHEN t.result THEN '✓' WHEN COALESCE(t.gate_shadow, false) THEN '○' ELSE '✗' END;
             v_line   := v_indent
                      || v_icon || ' '
                      || '[' || CASE WHEN t.rule_type = 'temporal_gate' THEN t.gate_reason
@@ -396,7 +399,8 @@ BEGIN
       INTO v_missing
       FROM jsonb_array_elements(v_explain->'trace') AS t(e)
       CROSS JOIN LATERAL jsonb_array_elements_text(t.e->'condition_missing_keys') AS m(k)
-     WHERE jsonb_typeof(t.e->'condition_missing_keys') = 'array';
+     WHERE jsonb_typeof(t.e->'condition_missing_keys') = 'array'
+       AND NOT COALESCE((t.e->>'shadow')::boolean, false);   -- a shadow gate cannot make it conditional
 
     SELECT COALESCE(jsonb_agg(DISTINCT t.e->>'condition_name'
                               ORDER BY t.e->>'condition_name'), '[]'::jsonb)

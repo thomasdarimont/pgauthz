@@ -476,6 +476,7 @@ BEGIN
                'observed',     t.gate_observed,
                'threshold',    t.gate_threshold,
                'scope',        t.gate_scope,
+               'shadow',       COALESCE(t.gate_shadow, false),
                'missing_keys', to_jsonb(t.condition_missing_keys)
            ) ORDER BY t.step), '[]'::jsonb)
       INTO v_gates
@@ -484,7 +485,8 @@ BEGIN
 
     v_reason := CASE
         WHEN v_allowed THEN 'allowed'
-        WHEN EXISTS (SELECT 1 FROM _access_trace t WHERE t.rule_type = 'temporal_gate' AND NOT t.result)
+        WHEN EXISTS (SELECT 1 FROM _access_trace t WHERE t.rule_type = 'temporal_gate' AND NOT t.result
+                        AND NOT COALESCE(t.gate_shadow, false))
              THEN 'gate_denied'
         ELSE 'graph_denied'
     END;

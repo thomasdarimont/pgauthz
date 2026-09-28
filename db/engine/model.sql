@@ -579,6 +579,7 @@ BEGIN
          ORDER BY mg.name
     LOOP
         v_out := v_out || '    # gate ' || CASE WHEN p_prefix_relation THEN g.relation || '/' ELSE '' END || g.name
+                 || CASE WHEN (g.spec ->> 'mode') IN ('shadow', 'off') THEN ' (' || (g.spec ->> 'mode') || ')' ELSE '' END
                  || COALESCE(': ' || (g.spec ->> 'description'), '') || E'\n';
         FOR v_clause IN SELECT * FROM jsonb_array_elements(g.spec -> 'all_of') LOOP
             SELECT k INTO v_prim FROM jsonb_object_keys(v_clause) k LIMIT 1;

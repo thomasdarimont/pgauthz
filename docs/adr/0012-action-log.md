@@ -164,6 +164,13 @@ the previous holder's event — the strict tier over-admitted), and the count
 primitives take an explicit `plus` like `sum_within` so a cap can include
 the request being decided.
 
+**Rollout without risk:** a gate spec may carry `"mode": "shadow"` — evaluated
+identically, reported (explain step with `shadow: true`, detailed, reserve
+outcomes, a structured `RAISE LOG` line — replica-safe, the check path still
+never writes) but never denying — and the `authz.gates_mode` GUC shadows or
+switches off every gate at once. Move a gate from shadow to enforce by
+editing the spec; the change is versioned and propagates through the registry.
+
 **What belongs in a gate:** a *permission* question ("may X do Y now?") that a
 security or compliance owner wants to define, version, audit and enforce
 centrally — separation of duties, prior approval, step-up freshness, lockout,

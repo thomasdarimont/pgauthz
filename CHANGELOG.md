@@ -82,6 +82,19 @@ pre-1.0, minor versions may include breaking changes.
   recording, the `gate_denied` explain, enumeration and `reserve_event`;
   `tests.sql` covers the permission matrix and both gates and runs in
   `tests/test.sh`.
+- **Shadow mode for temporal gates** — a gate spec may set `"mode": "shadow"`:
+  it is evaluated exactly as enforcement would (same windows, same cost) but
+  a failing clause never denies. The outcome is reported instead: the
+  `explain_access` step keeps its real reason/observed/threshold and carries
+  `"shadow": true` (summary icon `○`), `decision.reason` stays the graph's,
+  `check_access_detailed` excludes shadow gates from `missing_context`,
+  `reserve_event` allows and returns the shadowed clause outcome, and every
+  would-be denial writes a structured `gate_shadow …` line to the PostgreSQL
+  server log (replica-safe). The `authz.gates_mode` GUC (`enforce` default |
+  `shadow` | `off`) shadows or switches off every gate database-wide;
+  `describe_model` renders `(shadow)` / `(off)`. `"mode": "off"` keeps a gate
+  defined and versioned but skips it entirely. Introduce a gate on a live
+  relation, watch, then drop the key to enforce.
 - **Retention guard for temporal gates** (external review): `drop_event_partitions_before`
   and `purge_events` now refuse a cutoff that falls inside a live gate window
   (`check_violation`, naming the gate; `p_force => true` overrides), because a

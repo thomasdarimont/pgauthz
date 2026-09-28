@@ -175,12 +175,20 @@ BEGIN
             USING ERRCODE = 'check_violation';
     END IF;
     FOR v_key IN SELECT jsonb_object_keys(p_spec) LOOP
-        IF v_key NOT IN ('all_of', 'description', 'required_context') THEN
+        IF v_key NOT IN ('all_of', 'description', 'mode', 'required_context') THEN
             RAISE EXCEPTION 'gate spec has unknown key "%"', v_key USING ERRCODE = 'check_violation';
         END IF;
     END LOOP;
     IF p_spec ? 'description' AND jsonb_typeof(p_spec -> 'description') <> 'string' THEN
         RAISE EXCEPTION 'gate description must be a string' USING ERRCODE = 'check_violation';
+    END IF;
+    -- mode: enforce (default) denies on a failing clause; shadow evaluates and
+    -- reports (explain, detailed, reserve, server log) but never denies — the
+    -- way to introduce a gate on a live relation without interrupting authz;
+    -- off keeps the definition (and its history) but skips the gate entirely.
+    IF p_spec ? 'mode' AND (jsonb_typeof(p_spec -> 'mode') <> 'string'
+                            OR (p_spec ->> 'mode') NOT IN ('enforce', 'shadow', 'off')) THEN
+        RAISE EXCEPTION 'gate mode must be enforce | shadow | off' USING ERRCODE = 'check_violation';
     END IF;
     v_clauses := p_spec -> 'all_of';
     IF v_clauses IS NULL OR jsonb_typeof(v_clauses) <> 'array' THEN
@@ -373,6 +381,7 @@ BEGIN
 
     RETURN jsonb_strip_nulls(jsonb_build_object(
         'description', p_spec -> 'description',
+        'mode', p_spec -> 'mode',
         'all_of', v_out,
         'required_context', jsonb_build_object(
             'request', (SELECT COALESCE(jsonb_agg(DISTINCT k ORDER BY k), '[]'::jsonb) FROM unnest(v_req) k))));
@@ -738,6 +747,24 @@ END;
 $$;
 
 ------------------------------------------------------------------------
+-- _event_gates_mode: the database-wide switch, GUC authz.gates_mode —
+--   enforce (default): gates deny;
+--   shadow:  every gate evaluates and reports but never denies (rollout);
+--   off:     gates are not evaluated at all (emergency kill switch).
+-- Per session (SET) or per database (ALTER DATABASE authz SET …). Any other
+-- value reads as enforce (fail closed). Per-gate `mode: shadow` in the spec
+-- shadows one gate regardless of the switch.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._event_gates_mode() RETURNS text
+    LANGUAGE sql STABLE AS $$
+    SELECT CASE current_setting('authz.gates_mode', true)
+               WHEN 'shadow' THEN 'shadow'
+               WHEN 'off'    THEN 'off'
+               ELSE 'enforce'
+           END
+$$;
+
+------------------------------------------------------------------------
 -- _event_check_gates: evaluate every gate on (store, object_type, relation)
 -- for the checked principal; true when none exist or all clauses pass.
 --
@@ -751,6 +778,16 @@ $$;
 -- per clause is written into pg_temp._access_trace (depth 0), and every
 -- clause is evaluated so explain shows the whole gate; otherwise the first
 -- failing clause short-circuits.
+--
+-- SHADOW: a gate with spec mode = shadow, or every gate while
+-- authz.gates_mode = shadow, is evaluated exactly the same way but a failing
+-- clause does NOT deny; a gate with spec mode = off is skipped entirely
+-- (kept for its definition and history): the step is traced with shadow = true (its real
+-- reason/observed/threshold kept; decision.reason and missing_context ignore
+-- it) and a structured line goes to the server log (RAISE LOG:
+-- "gate_shadow store=… gate=… clause=… reason=… observed=… threshold=…"),
+-- which is replica-safe — the check path still never writes. With
+-- authz.gates_mode = off no gate is evaluated (no steps, no cost).
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._event_check_gates(
     p_store_id        integer,
@@ -779,9 +816,16 @@ DECLARE
     v_rel     text;
     v_object  text;
     v_start   timestamptz;
+    v_mode    text;
+    v_shadow  boolean;
+    v_store   text;
 BEGIN
     IF jsonb_array_length(v_gates) = 0 THEN
         RETURN true;
+    END IF;
+    v_mode := authz._event_gates_mode();
+    IF v_mode = 'off' THEN
+        RETURN true;   -- kill switch: gates are not evaluated at all
     END IF;
 
     v_trace  := COALESCE(current_setting('authz.trace', true), 'off') = 'on';
@@ -800,7 +844,11 @@ BEGIN
     END IF;
 
     FOR v_gate IN SELECT * FROM jsonb_array_elements(v_gates) LOOP
+        IF (v_gate -> 'spec' ->> 'mode') = 'off' THEN
+            CONTINUE;   -- defined but disabled: no clauses evaluated, no steps
+        END IF;
         v_idx := 0;
+        v_shadow := v_mode = 'shadow' OR (v_gate -> 'spec' ->> 'mode') = 'shadow';
         FOR v_clause IN SELECT * FROM jsonb_array_elements(v_gate -> 'spec' -> 'all_of') LOOP
             v_start := clock_timestamp();
             SELECT * INTO r FROM authz._event_eval_clause(
@@ -810,19 +858,38 @@ BEGIN
                 INSERT INTO _access_trace (
                     depth, rule_type, subject, relation, object, result, detail, duration_ms,
                     condition_missing_keys, gate_name, gate_clause, gate_window,
-                    gate_observed, gate_threshold, gate_reason, gate_scope)
+                    gate_observed, gate_threshold, gate_reason, gate_scope, gate_shadow)
                 VALUES (
                     0, 'temporal_gate', v_subject, v_rel, v_object, r.passed,
-                    'gate "' || (v_gate ->> 'name') || '" clause ' || v_idx || ': ' || COALESCE(r.detail, r.reason),
+                    'gate "' || (v_gate ->> 'name') || '" clause ' || v_idx
+                        || CASE WHEN v_shadow THEN ' [shadow]' ELSE '' END || ': ' || COALESCE(r.detail, r.reason),
                     extract(epoch from clock_timestamp() - v_start) * 1000,
                     r.missing_keys, v_gate ->> 'name',
                     v_idx || ':' || (SELECT k FROM jsonb_object_keys(v_clause) k LIMIT 1),
-                    r.window_text, r.observed, r.threshold, r.reason, r.scope);
+                    r.window_text, r.observed, r.threshold, r.reason, r.scope, v_shadow);
             END IF;
             IF NOT r.passed THEN
-                v_all := false;
-                IF NOT v_trace THEN
-                    RETURN false;
+                IF v_shadow THEN
+                    -- Report, never deny. Structured server-log line (replica-safe).
+                    -- Names are resolved lazily (only tracing resolves them up front):
+                    -- the line is for humans reading the server log.
+                    IF v_store IS NULL THEN
+                        SELECT st.name INTO v_store FROM authz.stores st WHERE st.id = p_store_id;
+                    END IF;
+                    IF v_rel IS NULL THEN
+                        v_subject := (SELECT name FROM authz.types     WHERE id = p_user_type)   || ':' || p_user_id;
+                        v_rel     := (SELECT name FROM authz.relations WHERE id = p_relation);
+                        v_object  := (SELECT name FROM authz.types     WHERE id = p_object_type) || ':' || COALESCE(p_object_id, '*');
+                    END IF;
+                    RAISE LOG 'gate_shadow store=% gate=% clause=%:% relation=% subject=% object=% reason=% observed=% threshold=% missing=%',
+                        v_store, v_gate ->> 'name', v_idx, (SELECT k FROM jsonb_object_keys(v_clause) k LIMIT 1),
+                        v_rel, v_subject, v_object,
+                        r.reason, r.observed, r.threshold, COALESCE(array_to_string(r.missing_keys, ','), '-');
+                ELSE
+                    v_all := false;
+                    IF NOT v_trace THEN
+                        RETURN false;
+                    END IF;
                 END IF;
             END IF;
             v_idx := v_idx + 1;
@@ -844,7 +911,9 @@ $$;
 -- (NULL when no gates); NULL p_store = every store (the fleet-wide bound the
 -- partition drop checks). Reader-callable: the readiness runbook compares it
 -- with the retention schedule; drop_event_partitions_before / purge_events
--- enforce it (events_admin.sql).
+-- enforce it (events_admin.sql). Gates in mode = shadow or off are INCLUDED:
+-- their definitions are live, and re-enabling one after a purge would
+-- under-count — drop a gate to lift its retention requirement.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._event_clause_window(p_body jsonb) RETURNS interval
 LANGUAGE sql IMMUTABLE AS $$
