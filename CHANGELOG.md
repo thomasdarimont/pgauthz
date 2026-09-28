@@ -7,6 +7,8 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-29
+
 ### Added
 
 - **The action log** ([ADR 0012](docs/adr/0012-action-log.md), temporal gates
@@ -1718,7 +1720,8 @@ PL/pgSQL.
 - PostgreSQL 18.x (developed/tested on 18.4). PostgREST, OPA, the AuthZEN
   services, and `pg_cel` are optional components of the reference deployment.
 
-[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.12.0...v0.13.0
