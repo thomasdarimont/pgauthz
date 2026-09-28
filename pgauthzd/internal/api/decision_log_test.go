@@ -21,6 +21,16 @@ func (detailStub) CheckAccessDetailed(context.Context, authz.EvalRequest) (bool,
 	return true, map[string]any{"state": "allow", "reason": "direct_tuple", "conditions": []any{}}, nil
 }
 
+// Provenance capabilities (ADR 0013): model version of the store and OPA
+// policy provenance.
+func (detailStub) ModelVersion(context.Context, string) (authz.ModelVersion, error) {
+	v := 7
+	return authz.ModelVersion{Name: "acme-collab", Version: &v, Checksum: "sha256:abc"}, nil
+}
+func (detailStub) PolicyProvenance() authz.PolicyProvenance {
+	return authz.PolicyProvenance{OPAVersion: "1.18.2", Bundles: map[string]string{"policy": "rev-42"}}
+}
+
 // NativeReader: the native handlers require the direct backend's surface.
 func (detailStub) Explain(context.Context, authz.EvalRequest) (json.RawMessage, error) {
 	return json.RawMessage(`{"decision": {"allowed": false, "reason": "gate_denied"}, "tree": {}}`), nil
@@ -33,7 +43,7 @@ func newLoggedHandler(t *testing.T, b authz.Backend, detail bool) (*Handler, *by
 	t.Helper()
 	var buf bytes.Buffer
 	cfg := &config.Config{AllowSubjectOverride: true, DefaultStore: "demo", DecisionLogDetail: detail}
-	h := NewHandler(b, b, b, cfg, WithDecisionLog(decisionlog.New(&buf, 1, nil)))
+	h := NewHandler(b, b, b, cfg, WithDecisionLog(decisionlog.New(&buf, 1, nil)), WithVersion("v-test"))
 	return h, &buf
 }
 
@@ -152,5 +162,47 @@ func TestDecisionLogBatchAndOff(t *testing.T) {
 		`{"subject":{"type":"user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"d1"}}`))
 	if w.Code != 200 {
 		t.Fatalf("off handler: status %d", w.Code)
+	}
+}
+
+func TestDecisionLogProvenance(t *testing.T) {
+	// engine-answered: model provenance + daemon version, no policy block
+	h, buf := newLoggedHandler(t, detailStub{}, false)
+	w := httptest.NewRecorder()
+	h.Evaluation(w, jsonReq("POST", "/access/v1/evaluation",
+		`{"subject":{"type":"user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"d1"}}`))
+	l := lines(buf)[0]
+	if l["pgauthzd_version"] != "v-test" {
+		t.Fatalf("version missing: %v", l)
+	}
+	m, _ := l["model"].(map[string]any)
+	if m["name"] != "acme-collab" || m["version"] != float64(7) || m["checksum"] != "sha256:abc" {
+		t.Fatalf("model provenance: %v", l["model"])
+	}
+	if _, ok := l["policy"]; ok {
+		t.Fatalf("engine-answered line must not carry policy provenance: %v", l)
+	}
+	// the model read is cached: a second decision does not re-read (same stub → same value; just no error)
+	w = httptest.NewRecorder()
+	h.Evaluation(w, jsonReq("POST", "/access/v1/evaluation",
+		`{"subject":{"type":"user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"d2"}}`))
+	if len(lines(buf)) != 2 {
+		t.Fatal("second line missing")
+	}
+
+	// OPA-fronted: policy provenance from the backend's latest report
+	var obuf bytes.Buffer
+	ocfg := &config.Config{AllowSubjectOverride: true, DefaultStore: "demo", OPAURL: "http://opa:8181"}
+	oh := NewHandler(detailStub{}, detailStub{}, nil, ocfg, WithDecisionLog(decisionlog.New(&obuf, 1, nil)))
+	w = httptest.NewRecorder()
+	oh.Evaluation(w, jsonReq("POST", "/access/v1/evaluation",
+		`{"subject":{"type":"user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"d1"}}`))
+	ol := lines(&obuf)[0]
+	if ol["via"] != "opa" {
+		t.Fatalf("via: %v", ol)
+	}
+	p, _ := ol["policy"].(map[string]any)
+	if p["opa_version"] != "1.18.2" || p["bundles"].(map[string]any)["policy"] != "rev-42" {
+		t.Fatalf("policy provenance: %v", ol["policy"])
 	}
 }

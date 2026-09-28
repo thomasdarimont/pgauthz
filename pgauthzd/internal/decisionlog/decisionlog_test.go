@@ -49,6 +49,10 @@ func TestLineShapeAndRedaction(t *testing.T) {
 		Decision: Bool(false), Actor: "internal_user:alice", Issuer: "https://idp", LatencyMS: 0.42,
 		ContextKeys: Keys(map[string]any{"device": map[string]any{"managed": true}, "clearance": "high"}),
 	}
+	v := 3
+	e.PgauthzdVersion = "1.2.3"
+	e.Model = &ModelRef{Name: "m", Version: &v, Checksum: "sha256:x"}
+	e.Policy = &PolicyRef{OPAVersion: "1.18.2", Bundles: map[string]string{"policy": "r1"}}
 	e.FromDetail(map[string]any{
 		"state": "conditional", "reason": "intersection_unsatisfied",
 		"missing_context": []any{"request.device"}, "conditions": []any{"managed_device"},
@@ -62,7 +66,7 @@ func TestLineShapeAndRedaction(t *testing.T) {
 	if err := json.Unmarshal([]byte(line), &got); err != nil {
 		t.Fatalf("not JSON: %v", err)
 	}
-	for _, k := range []string{"ts", "request_id", "listener", "endpoint", "via", "store", "subject", "action", "resource", "decision", "state", "reason", "missing_context", "conditions", "context_keys", "actor", "issuer", "latency_ms"} {
+	for _, k := range []string{"ts", "request_id", "listener", "endpoint", "via", "store", "subject", "action", "resource", "decision", "state", "reason", "missing_context", "conditions", "context_keys", "actor", "issuer", "pgauthzd_version", "model", "policy", "latency_ms"} {
 		if _, ok := got[k]; !ok {
 			t.Errorf("missing key %q in %s", k, line)
 		}

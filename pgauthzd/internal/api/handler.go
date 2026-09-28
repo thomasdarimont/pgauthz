@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"sync"
 	"time"
 
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
@@ -61,6 +62,10 @@ type Handler struct {
 	// the lines: "public" | "callback".
 	decisions *decisionlog.Logger
 	listener  string
+	version   string
+	// modelCache: per-store model provenance for decision-log lines (TTL).
+	modelMu    sync.Mutex
+	modelCache map[string]modelCacheEntry
 }
 
 func NewHandler(backend, raw, rawWrite authz.Backend, cfg *config.Config, opts ...Option) *Handler {

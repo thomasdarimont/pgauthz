@@ -92,6 +92,11 @@ pre-1.0, minor versions may include breaking changes.
   detailed evaluation for the log without changing responses.
   `pgauthzd_decision_log_lines_total{result}` counts logged / sampled-out /
   failed lines. Helm `decisionLog.*`; compose passes `DECISION_LOG*` through.
+  Lines carry **provenance** (review #11): `pgauthzd_version`, the store's
+  `model` (registry name/version + live checksum via `model_status`, cached
+  per store for 30 s) and, for OPA-fronted decisions, `policy` (OPA version +
+  bundle revisions, requested with `?provenance=true` only while the log is
+  on).
 - **`docs/AGENTIC-AUTHORIZATION.md`** — the guide to authorizing AI agents
   with pgauthz: the policy-aware loop over AuthZEN with detailed decisions as
   planner feedback, constraint-aware planning via the search API, task scope

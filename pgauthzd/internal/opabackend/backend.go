@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"thomasdarimont.de/authz/pgauthzd/internal/api"
@@ -32,6 +33,24 @@ type Backend struct {
 	evalMetrics bool
 	// maxResponseBytes bounds every OPA response body (review #10).
 	maxResponseBytes int64
+	// provenance adds ?provenance=true so OPA reports its version and the
+	// revision of every loaded bundle; the latest report is kept for the
+	// decision log (ADR 0013). Off unless the decision log is on.
+	provenance     bool
+	lastProvenance atomic.Pointer[authz.PolicyProvenance]
+}
+
+// EnableProvenance asks OPA for bundle provenance on every query.
+func (b *Backend) EnableProvenance() { b.provenance = true }
+
+// PolicyProvenance implements authz.PolicyProvenancer: the provenance OPA
+// reported with its most recent answer (zero value before the first query
+// or when provenance is off).
+func (b *Backend) PolicyProvenance() authz.PolicyProvenance {
+	if p := b.lastProvenance.Load(); p != nil {
+		return *p
+	}
+	return authz.PolicyProvenance{}
 }
 
 // New builds an OPA backend. timeout bounds EVERY OPA HTTP call — Go's zero
@@ -537,6 +556,9 @@ func (b *Backend) query(ctx context.Context, rule string, input any, dest any) (
 	if b.evalMetrics {
 		url += "&metrics=true"
 	}
+	if b.provenance {
+		url += "&provenance=true"
+	}
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -574,14 +596,27 @@ func (b *Backend) query(ctx context.Context, rule string, input any, dest any) (
 	// object whose timer_rego_query_eval_ns is OPA's own evaluation time
 	// (isolated from network + OPA HTTP framing).
 	var wrapper struct {
-		Result  json.RawMessage  `json:"result"`
-		Metrics map[string]int64 `json:"metrics"`
+		Result     json.RawMessage  `json:"result"`
+		Metrics    map[string]int64 `json:"metrics"`
+		Provenance *struct {
+			Version string `json:"version"`
+			Bundles map[string]struct {
+				Revision string `json:"revision"`
+			} `json:"bundles"`
+		} `json:"provenance"`
 	}
 	if err := json.Unmarshal(respBody, &wrapper); err != nil {
 		return fmt.Errorf("unmarshaling OPA response: %w", err)
 	}
 	if ns, ok := wrapper.Metrics["timer_rego_query_eval_ns"]; ok {
 		metrics.OPARegoEvalDuration.Observe(float64(ns) / 1e9)
+	}
+	if wrapper.Provenance != nil {
+		p := authz.PolicyProvenance{OPAVersion: wrapper.Provenance.Version, Bundles: map[string]string{}}
+		for name, bd := range wrapper.Provenance.Bundles {
+			p.Bundles[name] = bd.Revision
+		}
+		b.lastProvenance.Store(&p)
 	}
 
 	if wrapper.Result == nil {

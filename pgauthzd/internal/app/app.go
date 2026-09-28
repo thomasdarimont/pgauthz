@@ -160,9 +160,17 @@ func Run(name, version string) error {
 		slog.Info("decision log", "sink", cfg.DecisionLog, "sample", cfg.DecisionLogSample, "detail", cfg.DecisionLogDetail)
 	}
 	dlogOpt := api.WithDecisionLog(dlog)
+	verOpt := api.WithVersion(version)
+	if dlog.Enabled() {
+		// OPA-fronted decisions carry the policy/bundle revisions: ask OPA for
+		// provenance on every query only when there is a log to put it in.
+		if pp, ok := backend.(interface{ EnableProvenance() }); ok {
+			pp.EnableProvenance()
+		}
+	}
 
 	var servers []*http.Server
-	servers = append(servers, newServer(cfg, cfg.ListenAddr, api.NewRouter(backend, raw, rawWrite, cfg, jwtMW, dlogOpt)))
+	servers = append(servers, newServer(cfg, cfg.ListenAddr, api.NewRouter(backend, raw, rawWrite, cfg, jwtMW, dlogOpt, verOpt)))
 
 	// Prometheus metrics on a SEPARATE, non-public listener (ADR 0010).
 	if cfg.MetricsListenAddr != "" {
@@ -185,7 +193,7 @@ func Run(name, version string) error {
 		if terr != nil {
 			return terr
 		}
-		hCb := api.NewHandler(nil, raw, rawWrite, cfg, dlogOpt)
+		hCb := api.NewHandler(nil, raw, rawWrite, cfg, dlogOpt, verOpt)
 		cbSrv := newServer(cfg, cfg.InternalListenAddr, api.NewCallbackRouter(hCb, cfg.InternalServiceToken))
 		if tlsCfg != nil {
 			cbSrv.TLSConfig = tlsCfg

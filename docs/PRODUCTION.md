@@ -765,7 +765,9 @@ trail, with the same operational shape:
 
 pgauthzd can write one JSON line per decision ([ADR 0013](adr/0013-decision-log.md)):
 the resolved request, the answer, `state`/`reason`, the caller and issuer,
-the request id and latency. It is the record that lets you compare what
+the request id and latency, and **provenance** — the daemon version, the
+store's model (registry name/version and the live checksum) and, when OPA
+fronts the decision, OPA's version and bundle revisions. It is the record that lets you compare what
 policies were meant to do with what they decided — which reason permits most
 access, which principal keeps being denied, what changed after a model
 publish — and the index into time travel: `audit_check_access(store, …,

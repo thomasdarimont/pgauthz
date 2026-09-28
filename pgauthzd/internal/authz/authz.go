@@ -242,3 +242,31 @@ type DetailedChecker interface {
 type ContextualChecker interface {
 	CheckWithContextualTuples(ctx context.Context, req EvalRequest, contextualTuples json.RawMessage) (bool, error)
 }
+
+// ModelVersion is the model provenance of a store (decision log, ADR 0013):
+// the registry name/version applied to the store when it is registry-managed
+// (Version nil otherwise) and the checksum of the model as it currently is.
+type ModelVersion struct {
+	Name     string
+	Version  *int
+	Checksum string
+}
+
+// ModelVersioner is an optional backend capability: report a store's model
+// provenance (authz.model_status). Implemented by the direct backend.
+type ModelVersioner interface {
+	ModelVersion(ctx context.Context, store string) (ModelVersion, error)
+}
+
+// PolicyProvenance is the policy-side provenance of an OPA-fronted decision:
+// the OPA version and the revision of every loaded bundle (policy + hooks).
+type PolicyProvenance struct {
+	OPAVersion string
+	Bundles    map[string]string // bundle name → revision
+}
+
+// PolicyProvenancer is an optional backend capability: the provenance OPA
+// reported with its most recent answer (requested with ?provenance=true).
+type PolicyProvenancer interface {
+	PolicyProvenance() PolicyProvenance
+}

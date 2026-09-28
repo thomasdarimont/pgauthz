@@ -993,3 +993,33 @@ func buildPage(ids []string, limit int) ([]string, *authz.PageResponse, error) {
 
 	return ids, pageResp, nil
 }
+
+// ModelVersion implements authz.ModelVersioner via authz.model_status: the
+// registry name/version applied to the store (NULL when the store is not
+// registry-managed) and the live model checksum. model_status exports the
+// model to checksum it, so callers cache the result (the decision log keeps
+// a per-store TTL cache).
+func (b *Backend) ModelVersion(ctx context.Context, store string) (authz.ModelVersion, error) {
+	var (
+		mv      authz.ModelVersion
+		name    *string
+		version *int
+		sum     *string
+	)
+	err := b.withRole(ctx, func(q querier) error {
+		return q.QueryRow(ctx,
+			"SELECT model_name, model_version, live_checksum FROM authz.model_status($1)", store,
+		).Scan(&name, &version, &sum)
+	})
+	if err != nil {
+		return mv, fmt.Errorf("model_status: %w", err)
+	}
+	if name != nil {
+		mv.Name = *name
+	}
+	mv.Version = version
+	if sum != nil {
+		mv.Checksum = *sum
+	}
+	return mv, nil
+}

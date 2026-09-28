@@ -65,6 +65,7 @@ that answered it; an OPA-fronted AuthZEN decision is labelled `via: opa`.
 | `gates` | for `reserve`: per-clause outcomes (gate, clause, passed) |
 | `context_keys` | the **names** of the request-context keys supplied — never their values |
 | `actor`, `issuer` | the authenticated caller (token subject as `type:id`, issuer) — who asked, distinct from `subject` when a PEP checks on behalf of someone |
+| `pgauthzd_version`, `model`, `policy` | **provenance**: the daemon build; the store's model (`name`/`version` when registry-managed, always the live `checksum`, from `model_status`, cached per store for 30 s); for OPA-fronted decisions OPA's `opa_version` and the `bundles` revisions OPA reported with its answer (`?provenance=true`, requested only while the log is on) |
 | `error` | set when the backend failed; `decision` is then absent |
 
 Values that could identify data beyond the authorization graph are not
@@ -107,9 +108,12 @@ counts logged, sampled-out and failed writes so a silent sink is visible.
   Operators who consider ids sensitive route the log like the audit trail.
 - Retention, shipping and rotation belong to the log pipeline, not the
   daemon.
-- Not (yet) in the line: the model version in effect. The registry knows it
-  per store, but reading it per decision is a round trip; a follow-up can
-  cache `model_status` per store and stamp it.
+- Provenance is near-exact, not transactional: the model block comes from a
+  per-store cache refreshed every 30 s (a publish is attributed with up to
+  that delay), and the policy block is OPA's latest report, so a bundle that
+  changes between two concurrent answers can be attributed to the wrong
+  one by one line. `model.checksum` (the live model) plus `ts` is the
+  authoritative pair for replay.
 
 ## Alternatives considered
 

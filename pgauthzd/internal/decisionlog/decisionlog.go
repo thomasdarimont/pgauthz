@@ -45,8 +45,28 @@ type Entry struct {
 	ContextKeys []string `json:"context_keys,omitempty"`
 	Actor       string   `json:"actor,omitempty"`  // authenticated caller, "type:id"
 	Issuer      string   `json:"issuer,omitempty"` // verified token issuer
-	LatencyMS   float64  `json:"latency_ms"`
-	Error       string   `json:"error,omitempty"`
+	// Provenance: what decided. PgauthzdVersion is the daemon build; Model is
+	// the store's model (registry name/version when registry-managed, and the
+	// live checksum always); Policy is OPA's version + bundle revisions for an
+	// OPA-fronted decision.
+	PgauthzdVersion string     `json:"pgauthzd_version,omitempty"`
+	Model           *ModelRef  `json:"model,omitempty"`
+	Policy          *PolicyRef `json:"policy,omitempty"`
+	LatencyMS       float64    `json:"latency_ms"`
+	Error           string     `json:"error,omitempty"`
+}
+
+// ModelRef is the model provenance of a store.
+type ModelRef struct {
+	Name     string `json:"name,omitempty"`
+	Version  *int   `json:"version,omitempty"`
+	Checksum string `json:"checksum,omitempty"`
+}
+
+// PolicyRef is the policy provenance of an OPA-fronted decision.
+type PolicyRef struct {
+	OPAVersion string            `json:"opa_version,omitempty"`
+	Bundles    map[string]string `json:"bundles,omitempty"`
 }
 
 // Ref is a typed identifier.

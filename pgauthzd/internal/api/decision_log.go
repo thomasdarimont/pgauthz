@@ -7,6 +7,7 @@ package api
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"sort"
 	"time"
@@ -18,6 +19,75 @@ import (
 
 // Option configures a Handler / router at construction.
 type Option func(*Handler)
+
+// WithVersion stamps decision-log lines with the daemon build version.
+func WithVersion(v string) Option {
+	return func(h *Handler) { h.version = v }
+}
+
+// modelVersionTTL bounds how often a store's model provenance is re-read
+// (model_status exports the model to checksum it). A model publish is
+// therefore attributed with up to this much delay in the log.
+const modelVersionTTL = 30 * time.Second
+
+type modelCacheEntry struct {
+	mv  authz.ModelVersion
+	exp time.Time
+}
+
+// modelProvenance returns the store's model provenance from a per-store TTL
+// cache, reading it through the direct backend on a miss. nil when no direct
+// backend is available (DB-less OPA gateway) or the read fails.
+func (h *Handler) modelProvenance(ctx context.Context, store string) *decisionlog.ModelRef {
+	mvr, ok := h.raw.(authz.ModelVersioner)
+	if !ok || h.raw == nil {
+		return nil
+	}
+	now := time.Now()
+	h.modelMu.Lock()
+	if e, ok := h.modelCache[store]; ok && now.Before(e.exp) {
+		h.modelMu.Unlock()
+		return refOf(e.mv)
+	}
+	h.modelMu.Unlock()
+	mv, err := mvr.ModelVersion(ctx, store)
+	if err != nil {
+		// Provenance is best-effort: the line goes out without a model block.
+		slog.Debug("decision log: model provenance unavailable", "store", store, "error", err)
+		return nil
+	}
+	h.modelMu.Lock()
+	if h.modelCache == nil {
+		h.modelCache = map[string]modelCacheEntry{}
+	}
+	h.modelCache[store] = modelCacheEntry{mv: mv, exp: now.Add(modelVersionTTL)}
+	h.modelMu.Unlock()
+	return refOf(mv)
+}
+
+func refOf(mv authz.ModelVersion) *decisionlog.ModelRef {
+	if mv.Name == "" && mv.Version == nil && mv.Checksum == "" {
+		return nil
+	}
+	return &decisionlog.ModelRef{Name: mv.Name, Version: mv.Version, Checksum: mv.Checksum}
+}
+
+// policyProvenance returns OPA's version + bundle revisions for an OPA-fronted
+// decision (the backend's latest provenance report), nil otherwise.
+func (h *Handler) policyProvenance(via string) *decisionlog.PolicyRef {
+	if via != "opa" {
+		return nil
+	}
+	pp, ok := h.backend.(authz.PolicyProvenancer)
+	if !ok {
+		return nil
+	}
+	p := pp.PolicyProvenance()
+	if p.OPAVersion == "" && len(p.Bundles) == 0 {
+		return nil
+	}
+	return &decisionlog.PolicyRef{OPAVersion: p.OPAVersion, Bundles: p.Bundles}
+}
 
 // WithDecisionLog attaches the decision log (nil = off) — ADR 0013.
 func WithDecisionLog(l *decisionlog.Logger) Option {
@@ -63,6 +133,9 @@ func (h *Handler) logDecision(e decisionlog.Entry, start time.Time, decision boo
 		return
 	}
 	e.LatencyMS = float64(time.Since(start).Microseconds()) / 1000
+	e.PgauthzdVersion = h.version
+	e.Model = h.modelProvenance(context.Background(), e.Store)
+	e.Policy = h.policyProvenance(e.Via)
 	if err != nil {
 		e.Error = err.Error()
 	} else {
