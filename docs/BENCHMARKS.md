@@ -387,3 +387,12 @@ feature's existence.
 Gate evaluation is untouched by W5 (the cross-check runs at `add_gate` time
 only): gated check with 0 / 100 / 10k events 0.24 / 0.35 / 11.8 ms,
 `reserve_event` 0.86 ms, `list_events` page 0.26 ms.
+
+**Second run, same day (after the `allowed` write precondition, the gate
+cross-check change and the agents/aia-acme examples):** all five suites
+within the noise band above; nothing on the read path changed and nothing
+moved. One drive wildcard sample read 0.43 ms once and 0.16 / 0.15 on two
+reruns — a single-sample outlier, not a regression. Not covered by this
+suite: the `allowed` precondition (a write-path check; costs one
+`check_access` inside the write's transaction) and pgauthzd's decision log
+(ADR 0013; daemon-side, one JSON encode per decision, off by default).
