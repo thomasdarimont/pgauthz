@@ -334,11 +334,13 @@ type Config struct {
 	// DecisionLogDetail upgrades plain checks to the detailed evaluation FOR
 	// THE LOG ONLY (state/reason on every line); responses are unchanged.
 	DecisionLogDetail bool
-	// DecisionLogRequired makes the log evidence, not best effort: after a
-	// failed write, readiness reports 503 and decision endpoints — and the
-	// search endpoints too when DecisionLogSearches is on — refuse (503) until
-	// the sink accepts a line again (probed at most once per second). Implies
-	// DecisionLogSample = 1. Regulated deployments only.
+	// DecisionLogRequired makes the requested log stream evidence, not best
+	// effort: after a failed write, readiness reports 503 and decision
+	// endpoints refuse (503) until the sink accepts a line again (probed at
+	// most once per second). If DecisionLogSearches is also enabled, search
+	// endpoints refuse the same way, because those search lines are part of
+	// the requested evidence stream. Implies DecisionLogSample = 1. Regulated
+	// deployments only.
 	DecisionLogRequired bool
 	// DecisionLogSearches adds one line per search (AuthZEN search/*, native
 	// list-*): actor, store, kind, query dimensions, result COUNT, latency —
