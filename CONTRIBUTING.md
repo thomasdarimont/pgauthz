@@ -38,7 +38,7 @@ declared in [`db/engine/manifest.sh`](db/engine/manifest.sh) — `substrate`,
 order, consumed by `init.sh`, `init-readonly.sh`, `deploy/migrations/`, and the
 replication scripts. **When you add an engine SQL file, register it in the
 manifest with its profile** (and keep read-only deployments able to load
-`substrate + read` alone). See `CLAUDE.md` → *SQL Engine Conventions*.
+`substrate + read` alone). See `AGENTS.md` → *SQL Engine Conventions*.
 
 ## Schema changes (migrations)
 
