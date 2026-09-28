@@ -388,6 +388,48 @@ END;
 $$;
 
 -- ================================================================
+-- Payload schema ↔ gate cross-check (migration 0014)
+-- ================================================================
+DO $$
+DECLARE v_state text; v_err text;
+BEGIN
+    -- optional-only: declaring paths is enough for the cross-check and keeps later 'pay' recordings valid
+    PERFORM authz.model_set_payload_schema('test_gates', 'pay', '{
+        "optional": {"input.cost": "number", "input.tool": "string"},
+        "kinds": {"response": {"optional": {"output.ok": "boolean"}}}}');
+    -- gs_01: a sum over an undeclared field is refused; over a non-number too; a declared number passes
+    v_state := NULL; v_err := NULL;
+    BEGIN PERFORM authz.add_gate('test_gates', 'account', 'pay', 'spend', '{"all_of": [{"sum_within": {"window": "1h", "field": "input.amount", "max": 100}}]}');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; v_err := SQLERRM; END;
+    PERFORM _test_assert('gs_01_undeclared_sum_field_refused', v_state, '23514');
+    PERFORM _test_assert_true('gs_01_names_field', v_err LIKE '%input.amount%not declared%', coalesce(v_err, 'no error'));
+    v_state := NULL;
+    BEGIN PERFORM authz.add_gate('test_gates', 'account', 'pay', 'spend', '{"all_of": [{"sum_within": {"window": "1h", "field": "input.tool", "max": 100}}]}');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('gs_01_non_number_sum_field_refused', v_state, '23514');
+    PERFORM _test_assert_true('gs_01_declared_number_ok',
+        authz.add_gate('test_gates', 'account', 'pay', 'spend', '{"all_of": [{"sum_within": {"window": "1h", "field": "input.cost", "max": 100}}]}') > 0);
+    -- gs_02: match paths and payload keys must be declared for the clause's kind
+    v_state := NULL;
+    BEGIN PERFORM authz.add_gate('test_gates', 'account', 'pay', 'm', '{"all_of": [{"formerly_within": {"window": "1h", "match": {"output.ok": true}}}]}');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('gs_02_match_path_wrong_kind_refused', v_state, '23514');   -- output.ok exists only for response
+    PERFORM _test_assert_true('gs_02_match_path_right_kind_ok',
+        authz.add_gate('test_gates', 'account', 'pay', 'm', '{"all_of": [{"formerly_within": {"window": "1h", "kind": "response", "match": {"output.ok": true}}}]}') > 0);
+    v_state := NULL;
+    BEGIN PERFORM authz.add_gate('test_gates', 'account', 'pay', 'd', '{"all_of": [{"count_distinct_within": {"window": "1h", "key": "payload.input.nope", "max": 3}}]}');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('gs_02_distinct_key_undeclared_refused', v_state, '23514');
+    -- gs_03: an action without a schema is unrestricted (transfer has none here)
+    PERFORM _test_assert_true('gs_03_no_schema_unrestricted',
+        authz.add_gate('test_gates', 'account', 'transfer', 'free', '{"all_of": [{"sum_within": {"window": "1h", "field": "input.whatever", "max": 1}}]}') > 0);
+    PERFORM authz.drop_gate('test_gates', 'account', 'transfer', 'free');
+    PERFORM authz.drop_gate('test_gates', 'account', 'pay', 'spend');
+    PERFORM authz.drop_gate('test_gates', 'account', 'pay', 'm');
+END;
+$$;
+
+-- ================================================================
 -- Registry propagation, checksum stability, describe_model
 -- ================================================================
 DO $$
@@ -406,6 +448,11 @@ BEGIN
     -- publish + apply propagates the gates and passes the post-apply self-check
     v_ver := authz.publish_model('test_gates_model', 'test_gates');
     PERFORM authz.apply_model('test_gates2', 'test_gates_model');
+    PERFORM _test_assert('g_24_apply_propagates_payload_schema',
+        (SELECT (r.payload_schema -> 'optional' ->> 'input.cost') FROM authz.relations r
+          WHERE r.store_id = authz._s('test_gates2') AND r.name = 'pay'), 'number');
+    PERFORM _test_assert('g_24_export_omits_schema_when_unset',
+        (SELECT (x ? 'payload_schema')::text FROM jsonb_array_elements(v_def -> 'relations') x WHERE x ->> 'name' = 'transfer'), 'false');
     PERFORM _test_assert('g_24_apply_propagates_gates',
         (SELECT count(*) FROM authz.model_gates g WHERE g.store_id = authz._s('test_gates2'))::text,
         jsonb_array_length(v_def -> 'gates')::text);

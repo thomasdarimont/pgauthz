@@ -358,6 +358,103 @@ END;
 $$;
 
 -- ================================================================
+-- Payload schemas (migration 0014): declared shape enforced at record time
+-- ================================================================
+DO $$
+DECLARE v_seq bigint; v_err text; v_state text; v_bad text[]; v_spec text; n int;
+BEGIN
+    -- own store: the allowlist rows and event counts of test_events stay untouched
+    PERFORM authz.create_store('test_events_ps');
+    PERFORM authz.model_register_type('test_events_ps', 'user');
+    PERFORM authz.model_register_relation('test_events_ps', 'transfer');
+    -- ps_01: no schema → any object payload (today's behaviour)
+    v_seq := authz.record_event('test_events_ps', 'user', 'alice', 'transfer', p_payload => '{"whatever": 1}');
+    PERFORM _test_assert_true('ps_01_no_schema_accepts_anything', v_seq IS NOT NULL);
+
+    -- ps_02: declare a schema on transfer
+    PERFORM _test_assert('ps_02_set_schema_changed', authz.model_set_payload_schema('test_events_ps', 'transfer', '{
+        "required": {"input.amount": "number", "input.currency": "string"},
+        "optional": {"input.memo": "string", "input.meta": "object"},
+        "kinds": {"response": {"required": {"output.status": "string"}}}}')::text, 'true');
+    PERFORM _test_assert('ps_02_set_same_schema_noop', authz.model_set_payload_schema('test_events_ps', 'transfer', '{
+        "required": {"input.amount": "number", "input.currency": "string"},
+        "optional": {"input.memo": "string", "input.meta": "object"},
+        "kinds": {"response": {"required": {"output.status": "string"}}}}')::text, 'false');
+
+    -- ps_03: conforming payloads record; violations are 22023 naming the field
+    v_seq := authz.record_event('test_events_ps', 'user', 'alice', 'transfer', p_payload => '{"input": {"amount": 12.5, "currency": "EUR", "extra": true}}');
+    PERFORM _test_assert_true('ps_03_conforming_request_recorded', v_seq IS NOT NULL);
+    v_seq := authz.record_event('test_events_ps', 'user', 'alice', 'transfer', p_kind => 'response',
+        p_payload => '{"input": {"amount": 12.5, "currency": "EUR"}, "output": {"status": "ok"}}');
+    PERFORM _test_assert_true('ps_03_conforming_response_recorded', v_seq IS NOT NULL);
+    v_err := NULL; v_state := NULL;
+    BEGIN PERFORM authz.record_event('test_events_ps', 'user', 'alice', 'transfer', p_payload => '{"input": {"currency": "EUR"}}');
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; v_state := SQLSTATE; END;
+    PERFORM _test_assert('ps_03_missing_required_is_22023', v_state, '22023');
+    PERFORM _test_assert_true('ps_03_missing_required_named', v_err LIKE '%missing required input.amount (number)%', coalesce(v_err, 'no error'));
+    v_err := NULL;
+    BEGIN PERFORM authz.record_event('test_events_ps', 'user', 'alice', 'transfer', p_payload => '{"input": {"amount": "12", "currency": "EUR"}}');
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert_true('ps_03_wrong_type_named', v_err LIKE '%input.amount must be number (got string)%', coalesce(v_err, 'no error'));
+    v_err := NULL;
+    BEGIN PERFORM authz.record_event('test_events_ps', 'user', 'alice', 'transfer', p_kind => 'response',
+        p_payload => '{"input": {"amount": 1, "currency": "EUR"}}');
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert_true('ps_03_kind_specific_required', v_err LIKE '%missing required output.status%', coalesce(v_err, 'no error'));
+    -- the request kind does not need output.status
+    v_seq := authz.record_event('test_events_ps', 'user', 'alice', 'transfer', p_payload => '{"input": {"amount": 1, "currency": "EUR", "memo": "x"}}');
+    PERFORM _test_assert_true('ps_03_kind_section_scoped', v_seq IS NOT NULL);
+
+    -- ps_04: closed shape (additional: false) — undeclared leaves rejected, declared object subtrees allowed
+    PERFORM authz.model_set_payload_schema('test_events_ps', 'transfer', '{
+        "required": {"input.amount": "number"}, "optional": {"input.meta": "object"}, "additional": false}');
+    v_err := NULL;
+    BEGIN PERFORM authz.record_event('test_events_ps', 'user', 'alice', 'transfer', p_payload => '{"input": {"amount": 1, "rogue": 2}}');
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert_true('ps_04_closed_rejects_undeclared', v_err LIKE '%undeclared field input.rogue%', coalesce(v_err, 'no error'));
+    v_seq := authz.record_event('test_events_ps', 'user', 'alice', 'transfer', p_payload => '{"input": {"amount": 1, "meta": {"a": {"b": 1}}}}');
+    PERFORM _test_assert_true('ps_04_declared_object_subtree_allowed', v_seq IS NOT NULL);
+
+    -- ps_05: batches stay atomic under schema violations
+    SELECT count(*) INTO n FROM authz.list_events('test_events_ps', p_subject_type => 'user', p_subject_id => 'schema_batch');
+    BEGIN PERFORM authz.record_events_jsonb('test_events_ps', '[
+        {"subject_type": "user", "subject_id": "schema_batch", "action": "transfer", "payload": {"input": {"amount": 1}}},
+        {"subject_type": "user", "subject_id": "schema_batch", "action": "transfer", "payload": {"input": {"amount": "x"}}}]'::jsonb);
+    EXCEPTION WHEN OTHERS THEN NULL; END;
+    PERFORM _test_assert('ps_05_batch_atomic',
+        ((SELECT count(*) FROM authz.list_events('test_events_ps', p_subject_type => 'user', p_subject_id => 'schema_batch')) - n)::text, '0');
+
+    -- ps_06: schema validation
+    v_bad := ARRAY[
+        '{"required": {"input.amount": "integer"}}',
+        '{"required": {"input[0]": "number"}}',
+        '{"required": "input.amount"}',
+        '{"nope": {}}',
+        '{"kinds": {"started": {"required": {"a": "string"}}}}',
+        '{"kinds": {"response": {"extra": {}}}}',
+        '{"additional": "no"}',
+        '[]'
+    ];
+    n := 0;
+    FOREACH v_spec IN ARRAY v_bad LOOP
+        v_state := NULL;
+        BEGIN PERFORM authz.model_set_payload_schema('test_events_ps', 'transfer', v_spec::jsonb);
+        EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+        IF v_state = '22023' THEN n := n + 1; ELSE RAISE NOTICE 'ps_06: % → %', v_spec, coalesce(v_state, 'accepted'); END IF;
+    END LOOP;
+    PERFORM _test_assert('ps_06_invalid_schemas_rejected', n::text, array_length(v_bad, 1)::text);
+
+    -- ps_07: describe renders it; NULL clears it and anything records again
+    PERFORM _test_assert_true('ps_07_describe_renders_schema',
+        position('# payload schema transfer: ' in authz.describe_model('test_events_ps')) > 0);
+    PERFORM _test_assert('ps_07_clear', authz.model_set_payload_schema('test_events_ps', 'transfer', NULL)::text, 'true');
+    v_seq := authz.record_event('test_events_ps', 'user', 'alice', 'transfer', p_payload => '{"anything": "goes"}');
+    PERFORM _test_assert_true('ps_07_cleared_accepts_anything', v_seq IS NOT NULL);
+    PERFORM authz.delete_store('test_events_ps');
+END;
+$$;
+
+-- ================================================================
 -- list_events: filters and keyset pagination
 -- ================================================================
 DO $$

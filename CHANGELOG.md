@@ -82,6 +82,15 @@ pre-1.0, minor versions may include breaking changes.
   recording, the `gate_denied` explain, enumeration and `reserve_event`;
   `tests.sql` covers the permission matrix and both gates and runs in
   `tests/test.sh`.
+- **Per-action payload schemas** (migration 0014, external review): a relation
+  may declare the payload shape its events must have —
+  `authz.model_set_payload_schema(store, relation, schema)` with `required` /
+  `optional` dotted paths and JSON types, per-kind additions (`kinds.response`
+  …) and an optional closed shape (`additional: false`). `record_event`
+  enforces it (400 over HTTP, batches atomic), `add_gate` refuses clauses that
+  read undeclared paths or sum a non-number, the registry exports and
+  propagates it (emitted only when set, so existing checksums do not move),
+  `describe_model` renders it. Relations without a schema are unchanged.
 - **Action-log metrics in pgauthzd** (ADR 0010): `pgauthzd_events_rejected_total{reason}`
   (invalid_request | forbidden | error), `pgauthzd_event_lag_seconds{kind}`
   (record time − `occurred_at` per accepted event), `pgauthzd_reserve_decisions_total{result}`,

@@ -145,7 +145,8 @@ $$;
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._event_validate_gate_spec(
     p_store_id integer,
-    p_spec     jsonb
+    p_spec     jsonb,
+    p_relation integer DEFAULT NULL    -- the gate's own relation (default action for clauses)
 ) RETURNS jsonb
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
@@ -375,6 +376,11 @@ BEGIN
             END IF;
         END IF;
 
+        -- Schema cross-check (migration 0014): when the clause's action declares
+        -- a payload schema, every payload path the clause reads must be declared
+        -- for the clause's kind — a gate cannot count on a field no recorder is
+        -- obliged to send — and sum_within's field must be a number.
+        PERFORM authz._event_check_clause_schema(p_store_id, v_prim, v_body, v_prefix, p_relation);
         v_out := v_out || jsonb_build_array(jsonb_build_object(v_prim, v_nbody));
         i := i + 1;
     END LOOP;
@@ -385,6 +391,66 @@ BEGIN
         'all_of', v_out,
         'required_context', jsonb_build_object(
             'request', (SELECT COALESCE(jsonb_agg(DISTINCT k ORDER BY k), '[]'::jsonb) FROM unnest(v_req) k))));
+END;
+$$;
+
+-- _event_check_clause_schema: the add_gate ↔ payload-schema cross-check.
+CREATE OR REPLACE FUNCTION authz._event_check_clause_schema(
+    p_store_id integer,
+    p_prim     text,
+    p_body     jsonb,
+    p_prefix   text,
+    p_relation integer
+) RETURNS void
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_action integer;
+    v_schema jsonb;
+    v_paths  jsonb;
+    v_kind   text := COALESCE(p_body ->> 'kind', 'request');
+    v_path   text;
+BEGIN
+    IF p_body ? 'action' THEN
+        SELECT rl.id INTO v_action FROM authz.relations rl WHERE rl.store_id = p_store_id AND rl.name = p_body ->> 'action';
+    ELSE
+        v_action := p_relation;
+    END IF;
+    IF v_action IS NULL THEN
+        RETURN;
+    END IF;
+    SELECT rl.payload_schema INTO v_schema FROM authz.relations rl WHERE rl.id = v_action;
+    IF v_schema IS NULL THEN
+        RETURN;
+    END IF;
+    v_paths := authz._event_schema_paths(v_schema, v_kind, false);
+    IF p_body ? 'field' THEN
+        v_path := p_body ->> 'field';
+        IF NOT (v_paths ? v_path) THEN
+            RAISE EXCEPTION '%: sum_within field "%" is not declared in the payload schema of the action (kind %)', p_prefix, v_path, v_kind
+                USING ERRCODE = 'check_violation';
+        END IF;
+        IF (v_paths ->> v_path) NOT IN ('number', 'any') THEN
+            RAISE EXCEPTION '%: sum_within field "%" is declared as % — it must be a number', p_prefix, v_path, v_paths ->> v_path
+                USING ERRCODE = 'check_violation';
+        END IF;
+    END IF;
+    IF p_body ? 'key' AND (p_body ->> 'key') LIKE 'payload.%' THEN
+        v_path := substr(p_body ->> 'key', 9);
+        IF NOT (v_paths ? v_path) THEN
+            RAISE EXCEPTION '%: key "payload.%" is not declared in the payload schema of the action (kind %)', p_prefix, v_path, v_kind
+                USING ERRCODE = 'check_violation';
+        END IF;
+    END IF;
+    IF p_body ? 'match' THEN
+        FOR v_path IN SELECT jsonb_object_keys(p_body -> 'match') LOOP
+            IF NOT (v_paths ? v_path) AND NOT EXISTS (
+                SELECT 1 FROM jsonb_each_text(v_paths) d
+                 WHERE v_path LIKE d.key || '.%' AND d.value IN ('object', 'any')) THEN
+                RAISE EXCEPTION '%: match path "%" is not declared in the payload schema of the action (kind %)', p_prefix, v_path, v_kind
+                    USING ERRCODE = 'check_violation';
+            END IF;
+        END LOOP;
+    END IF;
 END;
 $$;
 

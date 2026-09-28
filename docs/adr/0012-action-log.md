@@ -233,9 +233,13 @@ temporal policy code would not.
   decisions or denials; a PEP that wants denials on record sends
   `kind: denied`. AuthZEN 1.0 has no "report an action" verb; the native
   endpoint is the contract.
-- **Payload projection is a convention in v1** (documented per gate); an
-  enforced per-action payload schema needs a column on `authz.relations` and
-  is a follow-up.
+- **Payload projection is model-declared (migration 0014):**
+  `authz.relations.payload_schema` — required/optional dotted paths with
+  JSON types, per-kind additions, optionally closed — enforced by
+  `record_event`, cross-checked by `add_gate` (a clause may only read declared
+  paths; `sum_within` fields must be numbers), exported and propagated by the
+  registry (emitted only when set). Relations without a schema behave as
+  before.
 
 ## Alternatives considered
 

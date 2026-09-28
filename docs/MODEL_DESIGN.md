@@ -1901,6 +1901,42 @@ kill switch — no steps, no cost). The default and any unrecognised value is
 `enforce`. Time-travel and enumeration follow the switch like every other
 path, since they all go through the same evaluator.
 
+### Payload schemas: the model owns the projection
+
+A gate over `input.amount` is only as good as the recorders' agreement on
+what `input.amount` is. Declare it: a relation (the action vocabulary) may
+carry a payload schema, enforced by `record_event` and cross-checked by
+`add_gate`:
+
+```sql
+SELECT authz.model_set_payload_schema('bank', 'transfer', '{
+  "required": {"input.amount": "number", "input.currency": "string"},
+  "optional": {"input.memo": "string"},
+  "kinds":    {"response": {"required": {"output.status": "string"}}},
+  "additional": true
+}');
+```
+
+- `required` / `optional` map dotted payload paths to JSON types (`string`,
+  `number`, `boolean`, `object`, `array`, `any`) and apply to every kind;
+  `kinds.<request|response|denied>` adds paths for one kind (a `response`
+  carries `output.*`, a `request` does not).
+- `record_event` rejects a payload that lacks a required path or carries a
+  declared path with the wrong type (`invalid_parameter_value`, 400 over
+  HTTP; the batch is atomic). `additional: false` closes the shape: every
+  payload leaf must be declared, or lie under a declared `object` / `any`
+  path.
+- `add_gate` refuses a clause that reads an undeclared path for its kind —
+  `sum_within.field` (which must be declared `number` or `any`),
+  `count_distinct_within` `payload.<path>` keys, `match` paths — so a gate
+  cannot count on a field no recorder is obliged to send. Actions without a
+  schema stay unrestricted.
+- Schemas are part of the model: `export_model` emits `payload_schema` on a
+  relation only when set (existing definitions and checksums do not move),
+  `apply_model` propagates it, `describe_model` renders `# payload schema
+  <relation>: {...}`. `NULL` clears it. Schemas apply going forward; already
+  recorded events are not re-validated.
+
 ### What belongs in a gate
 
 A rule belongs in a gate when it is a **permission** question a security or

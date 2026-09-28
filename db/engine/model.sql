@@ -601,6 +601,7 @@ DECLARE
     v_store_id integer := authz._s(p_store);
     v_out      text := 'store: ' || p_store || E'\n';
     v_type     record;
+    v_schema   record;
     v_rel      record;
     v_grp      record;
     v_expr     text;
@@ -608,6 +609,14 @@ DECLARE
     v_base     text;
     v_excl     text;
 BEGIN
+    -- Payload schemas are per relation (the action vocabulary), not per type:
+    -- rendered once, up front, as comment lines.
+    FOR v_schema IN
+        SELECT r.name, r.payload_schema FROM authz.relations r
+         WHERE r.store_id = v_store_id AND r.payload_schema IS NOT NULL ORDER BY r.name
+    LOOP
+        v_out := v_out || '# payload schema ' || v_schema.name || ': ' || v_schema.payload_schema::text || E'\n';
+    END LOOP;
     FOR v_type IN SELECT id, name FROM authz.types WHERE store_id = v_store_id ORDER BY name
     LOOP
         v_out := v_out || E'\ntype ' || v_type.name || E'\n';
@@ -665,6 +674,36 @@ BEGIN
         END LOOP;
     END LOOP;
     RETURN v_out;
+END;
+$$;
+
+------------------------------------------------------------------------
+-- model_set_payload_schema: declare (or clear, with NULL) the payload shape
+-- events for an action must have (ADR 0012, migration 0014). Validated here;
+-- enforced by record_event; cross-checked by add_gate. Part of the model:
+-- exported, checksummed and propagated by the registry.
+--
+--   SELECT authz.model_set_payload_schema('bank', 'transfer', '{
+--       "required": {"input.amount": "number", "input.currency": "string"},
+--       "kinds": {"response": {"required": {"output.status": "string"}}}}');
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.model_set_payload_schema(
+    p_store    text,
+    p_relation text,
+    p_schema   jsonb
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store);
+    v_relation integer := authz._r(v_store_id, p_relation);
+    v_schema   jsonb   := authz._event_validate_payload_schema(p_schema);
+    v_changed  int;
+BEGIN
+    UPDATE authz.relations r
+       SET payload_schema = v_schema
+     WHERE r.id = v_relation AND r.payload_schema IS DISTINCT FROM v_schema;
+    GET DIAGNOSTICS v_changed = ROW_COUNT;
+    RETURN v_changed > 0;
 END;
 $$;
 

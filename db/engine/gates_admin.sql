@@ -15,7 +15,7 @@ CREATE OR REPLACE FUNCTION authz._validate_gate_spec() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
     BEGIN
-        NEW.spec := authz._event_validate_gate_spec(NEW.store_id, NEW.spec);
+        NEW.spec := authz._event_validate_gate_spec(NEW.store_id, NEW.spec, NEW.relation);
     EXCEPTION WHEN check_violation THEN
         RAISE EXCEPTION 'gate "%": %', NEW.name, SQLERRM USING ERRCODE = 'check_violation';
     END;
@@ -59,7 +59,7 @@ BEGIN
             USING ERRCODE = 'check_violation';
     END IF;
     -- Normalize up front so the no-op comparison below sees the stored shape.
-    v_spec := authz._event_validate_gate_spec(v_store_id, p_spec);
+    v_spec := authz._event_validate_gate_spec(v_store_id, p_spec, v_relation);
 
     INSERT INTO authz.model_gates (store_id, object_type, relation, name, spec)
     VALUES (v_store_id, v_object_type, v_relation, p_name, v_spec)

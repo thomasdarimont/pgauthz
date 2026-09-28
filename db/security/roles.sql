@@ -338,6 +338,7 @@ GRANT EXECUTE ON FUNCTION authz.model_set_type_labels(text, text, text[]) TO aut
 GRANT EXECUTE ON FUNCTION authz.model_add_type_labels(text, text, text[]) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_remove_type_labels(text, text, text[]) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_register_relation(text, text, text) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.model_set_payload_schema(text, text, jsonb) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_add_rule(text, text, text, text, text, text, text, integer, text, boolean, boolean) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_remove_rule(text, integer) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_remove_rules(text, text, text) TO authz_admin;
@@ -424,6 +425,7 @@ ALTER FUNCTION authz.model_set_type_labels(text, text, text[]) SECURITY DEFINER;
 ALTER FUNCTION authz.model_add_type_labels(text, text, text[]) SECURITY DEFINER;
 ALTER FUNCTION authz.model_remove_type_labels(text, text, text[]) SECURITY DEFINER;
 ALTER FUNCTION authz.model_register_relation(text, text, text) SECURITY DEFINER;
+ALTER FUNCTION authz.model_set_payload_schema(text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.model_add_rule(text, text, text, text, text, text, text, integer, text, boolean, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.model_remove_rule(text, integer) SECURITY DEFINER;
 ALTER FUNCTION authz.model_remove_rules(text, text, text) SECURITY DEFINER;

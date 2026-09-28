@@ -63,7 +63,9 @@ $$;
 --   - object-scoped events respect namespace isolation: recording about an
 --     object type in a namespace needs the same can_write grant tuple
 --     writes need (an app records what it may manage);
---   - payload is an object bounded by authz.max_context_bytes (F5);
+--   - payload is an object bounded by authz.max_context_bytes (F5) and, when
+--     the action declares a payload schema, matches it (required paths,
+--     types, closed shape) — the model owns the projection;
 --   - occurred_at is bounded: not beyond authz.event_max_future_skew ahead
 --     of, nor beyond authz.event_max_backdate behind, the database clock.
 --     Absent, it is the database clock (= recorded_at).
@@ -133,6 +135,8 @@ BEGIN
             authz._max_context_bytes()
             USING ERRCODE = 'program_limit_exceeded';
     END IF;
+    -- The action's declared payload shape, when the model declares one (migration 0014).
+    PERFORM authz._event_check_payload(v_action, COALESCE(p_kind, 'request'), v_payload);
 
     IF v_occurred_at > v_now + authz._event_max_future_skew() THEN
         RAISE EXCEPTION 'occurred_at (%) is more than % in the future (authz.event_max_future_skew)',

@@ -95,10 +95,15 @@ BEGIN
               FROM authz.types t
              WHERE t.store_id = v_store_id), '[]'::jsonb),
         'relations', COALESCE((
-            SELECT jsonb_agg(jsonb_build_object(
-                       'name',        r.name,
-                       'description', r.description
-                   ) ORDER BY r.name)
+            SELECT jsonb_agg(
+                       -- payload_schema (migration 0014) is emitted only when set,
+                       -- so existing definitions and their checksums do not move
+                       jsonb_strip_nulls(jsonb_build_object(
+                           'name',           r.name,
+                           'description',    r.description,
+                           'payload_schema', r.payload_schema
+                       )) || jsonb_build_object('description', r.description)
+                   ORDER BY r.name)
               FROM authz.relations r
              WHERE r.store_id = v_store_id), '[]'::jsonb),
         'rules', COALESCE((
@@ -307,6 +312,8 @@ BEGIN
            SET description = v_row->>'description'
          WHERE r.store_id = v_store_id AND r.name = v_row->>'name'
            AND r.description IS DISTINCT FROM (v_row->>'description');
+        -- payload schema (migration 0014): absent in the definition = none
+        PERFORM authz.model_set_payload_schema(p_store, v_row->>'name', v_row->'payload_schema');
     END LOOP;
 
     -- Rules: delete stale first (a group whose operator changed must be

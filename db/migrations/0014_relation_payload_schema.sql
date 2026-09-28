@@ -1,0 +1,15 @@
+-- 0014_relation_payload_schema.sql
+--
+-- Per-action payload schemas for the action log (ADR 0012, hardening W5).
+--
+-- An event payload is the PEP's PROJECTION of an action (input.*, output.*).
+-- Without a declared shape, different recorders drift and a gate that is right
+-- in structure ("sum input.amount") is brittle in practice. A relation — the
+-- action vocabulary — may now carry a payload schema: required/optional dotted
+-- paths with JSON types, optionally per kind, optionally closed. authz.record_event
+-- enforces it (invalid_parameter_value → 400 over HTTP; batches atomic) and
+-- authz.add_gate cross-checks clause paths against it, so a gate cannot name a
+-- field no recorder is obliged to send. NULL = today's behaviour (no schema).
+-- Managed with authz.model_set_payload_schema; exported/applied by the model
+-- registry (emitted only when set, so existing checksums do not move).
+ALTER TABLE authz.relations ADD COLUMN payload_schema jsonb;

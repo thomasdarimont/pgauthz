@@ -81,6 +81,177 @@ CREATE OR REPLACE FUNCTION authz._event_max_backdate() RETURNS interval
     $$ SELECT COALESCE(NULLIF(current_setting('authz.event_max_backdate', true), '')::interval, interval '24 hours') $$;
 
 ------------------------------------------------------------------------
+-- Payload schemas (migration 0014): authz.relations.payload_schema.
+--
+--   {"required": {"input.amount": "number", "input.stock": "string"},
+--    "optional": {"input.memo": "string"},
+--    "additional": false,                       -- default true
+--    "kinds": {"response": {"required": {"output.status": "string"},
+--                           "optional": {"output.approved": "boolean"}}}}
+--
+-- Paths are dotted object paths (no arrays); types are the JSON kinds string
+-- | number | boolean | object | array | any. `required`/`optional` apply to
+-- every kind; `kinds.<request|response|denied>` adds paths for one kind.
+-- `additional: false` closes the shape: every payload leaf must be declared
+-- (a declared `object` or `any` path admits an arbitrary subtree beneath it).
+------------------------------------------------------------------------
+
+-- _event_validate_payload_schema: validate + normalize a schema (raises
+-- invalid_parameter_value). NULL passes through (no schema).
+CREATE OR REPLACE FUNCTION authz._event_validate_payload_schema(p_schema jsonb) RETURNS jsonb
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_key  text;
+    v_kind text;
+    v_sec  jsonb;
+BEGIN
+    IF p_schema IS NULL THEN
+        RETURN NULL;
+    END IF;
+    IF jsonb_typeof(p_schema) <> 'object' THEN
+        RAISE EXCEPTION 'payload schema must be a JSON object' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    FOR v_key IN SELECT jsonb_object_keys(p_schema) LOOP
+        IF v_key NOT IN ('required', 'optional', 'additional', 'kinds') THEN
+            RAISE EXCEPTION 'payload schema has unknown key "%"', v_key USING ERRCODE = 'invalid_parameter_value';
+        END IF;
+    END LOOP;
+    PERFORM authz._event_validate_schema_section(p_schema, '');
+    IF p_schema ? 'additional' AND jsonb_typeof(p_schema -> 'additional') <> 'boolean' THEN
+        RAISE EXCEPTION 'payload schema "additional" must be a boolean' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    IF p_schema ? 'kinds' THEN
+        IF jsonb_typeof(p_schema -> 'kinds') <> 'object' THEN
+            RAISE EXCEPTION 'payload schema "kinds" must be an object' USING ERRCODE = 'invalid_parameter_value';
+        END IF;
+        FOR v_kind, v_sec IN SELECT * FROM jsonb_each(p_schema -> 'kinds') LOOP
+            IF v_kind NOT IN ('request', 'response', 'denied') THEN
+                RAISE EXCEPTION 'payload schema kinds: unknown kind "%"', v_kind USING ERRCODE = 'invalid_parameter_value';
+            END IF;
+            IF jsonb_typeof(v_sec) <> 'object' THEN
+                RAISE EXCEPTION 'payload schema kinds.% must be an object', v_kind USING ERRCODE = 'invalid_parameter_value';
+            END IF;
+            FOR v_key IN SELECT jsonb_object_keys(v_sec) LOOP
+                IF v_key NOT IN ('required', 'optional') THEN
+                    RAISE EXCEPTION 'payload schema kinds.% has unknown key "%"', v_kind, v_key USING ERRCODE = 'invalid_parameter_value';
+                END IF;
+            END LOOP;
+            PERFORM authz._event_validate_schema_section(v_sec, 'kinds.' || v_kind || '.');
+        END LOOP;
+    END IF;
+    RETURN p_schema;
+END;
+$$;
+
+-- one {required, optional} section: dotted paths → known types
+CREATE OR REPLACE FUNCTION authz._event_validate_schema_section(p_sec jsonb, p_prefix text) RETURNS void
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_list text;
+    v_path text;
+    v_type jsonb;
+BEGIN
+    FOREACH v_list IN ARRAY ARRAY['required', 'optional'] LOOP
+        IF p_sec ? v_list THEN
+            IF jsonb_typeof(p_sec -> v_list) <> 'object' THEN
+                RAISE EXCEPTION 'payload schema % must be an object of {path: type}', p_prefix || v_list
+                    USING ERRCODE = 'invalid_parameter_value';
+            END IF;
+            FOR v_path, v_type IN SELECT * FROM jsonb_each(p_sec -> v_list) LOOP
+                IF NOT authz._event_path_ok(v_path) THEN
+                    RAISE EXCEPTION 'payload schema %: "%" is not a dotted path', p_prefix || v_list, v_path
+                        USING ERRCODE = 'invalid_parameter_value';
+                END IF;
+                IF jsonb_typeof(v_type) <> 'string'
+                   OR (v_type #>> '{}') NOT IN ('string', 'number', 'boolean', 'object', 'array', 'any') THEN
+                    RAISE EXCEPTION 'payload schema %.%: type must be string | number | boolean | object | array | any',
+                        p_prefix || v_list, v_path USING ERRCODE = 'invalid_parameter_value';
+                END IF;
+            END LOOP;
+        END IF;
+    END LOOP;
+END;
+$$;
+
+-- _event_schema_paths: the effective {path: type} map for a kind (base +
+-- kinds.<kind>), required and optional combined; p_required_only narrows.
+CREATE OR REPLACE FUNCTION authz._event_schema_paths(p_schema jsonb, p_kind text, p_required_only boolean) RETURNS jsonb
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT COALESCE(p_schema -> 'required', '{}'::jsonb)
+        || CASE WHEN p_required_only THEN '{}'::jsonb ELSE COALESCE(p_schema -> 'optional', '{}'::jsonb) END
+        || COALESCE(p_schema -> 'kinds' -> p_kind -> 'required', '{}'::jsonb)
+        || CASE WHEN p_required_only THEN '{}'::jsonb ELSE COALESCE(p_schema -> 'kinds' -> p_kind -> 'optional', '{}'::jsonb) END
+$$;
+
+-- _event_check_payload: enforce a relation's schema on one event's payload.
+-- Raises invalid_parameter_value naming every violation. Silent when the
+-- relation has no schema.
+CREATE OR REPLACE FUNCTION authz._event_check_payload(
+    p_action  integer,
+    p_kind    text,
+    p_payload jsonb
+) RETURNS void
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_schema  jsonb;
+    v_all     jsonb;
+    v_path    text;
+    v_type    text;
+    v_val     jsonb;
+    v_errs    text[] := '{}';
+    v_leaf    record;
+BEGIN
+    SELECT r.payload_schema INTO v_schema FROM authz.relations r WHERE r.id = p_action;
+    IF v_schema IS NULL THEN
+        RETURN;
+    END IF;
+    -- required paths present, and every declared path present has the declared type
+    FOR v_path, v_type IN SELECT key, value #>> '{}' FROM jsonb_each(authz._event_schema_paths(v_schema, p_kind, true)) LOOP
+        v_val := p_payload #> string_to_array(v_path, '.');
+        IF v_val IS NULL OR jsonb_typeof(v_val) = 'null' THEN
+            v_errs := v_errs || format('missing required %s (%s)', v_path, v_type);
+        END IF;
+    END LOOP;
+    v_all := authz._event_schema_paths(v_schema, p_kind, false);
+    FOR v_path, v_type IN SELECT key, value #>> '{}' FROM jsonb_each(v_all) LOOP
+        v_val := p_payload #> string_to_array(v_path, '.');
+        IF v_val IS NOT NULL AND jsonb_typeof(v_val) <> 'null' AND v_type <> 'any' AND jsonb_typeof(v_val) <> v_type THEN
+            v_errs := v_errs || format('%s must be %s (got %s)', v_path, v_type, jsonb_typeof(v_val));
+        END IF;
+    END LOOP;
+    -- closed shape: every payload leaf must be declared, or lie under a declared object/any path
+    IF COALESCE((v_schema ->> 'additional')::boolean, true) = false THEN
+        FOR v_leaf IN SELECT * FROM authz._event_payload_leaves(p_payload, '') LOOP
+            IF NOT EXISTS (
+                SELECT 1 FROM jsonb_each(v_all) d
+                 WHERE d.key = v_leaf.path
+                    OR (v_leaf.path LIKE d.key || '.%' AND (d.value #>> '{}') IN ('object', 'any'))
+            ) THEN
+                v_errs := v_errs || format('undeclared field %s (schema is closed)', v_leaf.path);
+            END IF;
+        END LOOP;
+    END IF;
+    IF array_length(v_errs, 1) > 0 THEN
+        RAISE EXCEPTION 'payload does not match the action''s schema (kind %): %', p_kind, array_to_string(v_errs, '; ')
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+END;
+$$;
+
+-- dotted paths of every leaf (non-object value) in a payload
+CREATE OR REPLACE FUNCTION authz._event_payload_leaves(p_doc jsonb, p_prefix text)
+RETURNS TABLE (path text) LANGUAGE sql IMMUTABLE AS $$
+    WITH RECURSIVE walk(path, val) AS (
+        SELECT p_prefix || e.key, e.value FROM jsonb_each(p_doc) e
+        UNION ALL
+        SELECT w.path || '.' || e.key, e.value
+          FROM walk w CROSS JOIN LATERAL jsonb_each(w.val) e
+         WHERE jsonb_typeof(w.val) = 'object'
+    )
+    SELECT path FROM walk WHERE jsonb_typeof(val) <> 'object' OR val = '{}'::jsonb
+$$;
+
+------------------------------------------------------------------------
 -- list_events: inspect a store's action log — "what did X do?" — keyset
 -- paginated like watch_changes: (occurred_at, seq) ascending, the caller
 -- feeds the last row's pair back as (p_after_at, p_after_seq). Every filter

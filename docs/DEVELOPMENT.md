@@ -1110,6 +1110,7 @@ Each native write endpoint maps to a SQL function:
 | `import_openfga_model` / `import_openfga_tuples` | OpenFGA import |
 | `grant_namespace_access` / `revoke_namespace_access` | Namespace access |
 | `add_gate` / `drop_gate` | Temporal gates over the action log ([MODEL_DESIGN §17](MODEL_DESIGN.md#17-temporal-gates-history-dependent-rules)) |
+| `model_set_payload_schema` | Declare (or clear) the payload shape events for an action must have; enforced by `record_event`, cross-checked by `add_gate` |
 | `find_redundant_tuples` / `cleanup_redundant_tuples` | Redundant-tuple maintenance |
 
 ### Integration patterns

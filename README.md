@@ -685,6 +685,14 @@ caller-supplied but bounded (`authz.event_max_future_skew`, default 5 s;
 are server-set. The log is append-only and monthly-partitioned like the audit
 trail (`ensure_event_partitions`, `drop_event_partitions_before`).
 
+The model can own the payload shape: `model_set_payload_schema('demo',
+'transfer', '{"required": {"input.amount": "number"}, "kinds": {"response":
+{"required": {"output.status": "string"}}}}')` makes `record_event` reject a
+transfer without a numeric `input.amount` (400 over HTTP, batch atomic) and
+makes `add_gate` refuse a clause that sums or matches a path no recorder is
+obliged to send. Actions without a schema accept any object payload; see
+[MODEL_DESIGN §17 → Payload schemas](docs/MODEL_DESIGN.md#payload-schemas-the-model-owns-the-projection).
+
 ## Authorization as a JOIN (data filtering)
 
 The "which rows can this user see?" problem — *list filtering* — is usually
