@@ -82,6 +82,14 @@ pre-1.0, minor versions may include breaking changes.
   recording, the `gate_denied` explain, enumeration and `reserve_event`;
   `tests.sql` covers the permission matrix and both gates and runs in
   `tests/test.sh`.
+- **`docs/AGENTIC-AUTHORIZATION.md`** — the guide to authorizing AI agents
+  with pgauthz: the policy-aware loop over AuthZEN with detailed decisions as
+  planner feedback, constraint-aware planning via the search API, task scope
+  as stored or contextual tuples, sequencing and budgets as temporal gates
+  (recorder = PEP, `reserve` for exact caps), delegation as data with
+  evaluation-time attenuation and issuance preconditions, the control plane
+  protected by absence, RAG authorize-before-retrieval (filter-then-search or
+  search-then-batch-check), what to log and replay, and what ReBAC does not do.
 - **Access-check preconditions for conditional writes.** `write_tuples_checked`
   (and `POST /pgauthz/v1/write-checked`, OPA `write_checked`) accept
   `{"match": "allowed" | "denied", user_type, user_id, relation, object_type,
