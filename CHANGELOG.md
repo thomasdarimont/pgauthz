@@ -82,6 +82,19 @@ pre-1.0, minor versions may include breaking changes.
   recording, the `gate_denied` explain, enumeration and `reserve_event`;
   `tests.sql` covers the permission matrix and both gates and runs in
   `tests/test.sh`.
+- **`examples/models/aia-acme/`** — the ACME "Customer Collaboration" example from
+  the book *Authorization in Action* (Cedar, chapter 9 + appendix A) as a
+  pgauthz model with the book's entities as seed data and its four
+  `is-authorized` evaluations plus the chapter-9 patterns as 36 checks. Shows
+  the Cedar → ReBAC translation: attributes become relations (`owner`,
+  `manager`, readers teams), `classification == "Legal"` becomes a reified
+  `classification` object with one `reviewer` tuple, `delegatable` and the
+  §9.7.2 overrides become flag tuples in intersection/exclusion groups, and
+  the global unmanaged-device `forbid` becomes a conditional object-wildcard
+  tuple that every employee path must intersect — fail-closed on missing
+  context, where Cedar would skip the erroring policy; the book's "stricter
+  outside business hours" is a second such tuple (`business_hours`) that only
+  non-owner edits must satisfy. Loaded by `test.sh`.
 - **Playground: AuthZEN console is store-scoped and says who you are.** Calls
   follow the store selected in the header via the AuthZEN §9.2 tenant path form
   (`?store=` on the BFF proxy → `/stores/<store>/access/v1/…`); the request

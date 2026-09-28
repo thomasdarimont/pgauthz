@@ -58,6 +58,13 @@ psql_file "$PG_DB" "$PG_DIR/examples/models/gdrive/seed.sql"
 psql_file "$PG_DB" "$PG_DIR/examples/models/gdrive/tests.sql"
 
 echo ""
+echo "==> Loading aia-acme model (Authorization in Action, Cedar example) + checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/examples/models/aia-acme/model.sql"
+psql_file "$PG_DB" "$PG_DIR/examples/models/aia-acme/seed.sql"
+psql_file "$PG_DB" "$PG_DIR/examples/models/aia-acme/tests.sql"
+
+echo ""
 echo "==> Running contextual / condition checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_contextual.sql"
