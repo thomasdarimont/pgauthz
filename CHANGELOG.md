@@ -7,6 +7,15 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **Docs: CIDR conditions and IPv4-mapped IPv6 addresses.** PostgreSQL keeps
+  `::ffff:10.0.0.1` as an IPv6 value, so a plain `<<=` against an IPv4 CIDR is
+  false for clients a dual-stack listener reports in mapped form. The README
+  `ip_in_range` example and the demo model's `ip_allowlist` condition now
+  normalise with `regexp_replace(host(ip), '^::ffff:', '')::inet`, and a note
+  explains why (the OpenFGA `in_cidr` fix in 1.18.2 is the same issue).
+
 ## [0.17.0] - 2026-09-29
 
 ### Security

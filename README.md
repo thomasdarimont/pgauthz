@@ -1094,9 +1094,11 @@ SELECT authz.check_access('demo',
 ### Other condition examples
 
 ```sql
--- IP allowlist: $1 has the client IP, $2 has the allowed CIDR range
+-- IP allowlist: $1 has the client IP, $2 has the allowed CIDR range.
+-- The regexp strips the IPv4-mapped IPv6 prefix (see the note below).
 SELECT authz.create_condition_sql('demo', 'ip_in_range',
- $$($1->>'client_ip')::inet <<= ($2->>'allowed_cidr')::cidr$$);
+ $$regexp_replace(host(($1->>'client_ip')::inet), '^::ffff:', '')::inet
+   <<= ($2->>'allowed_cidr')::cidr$$);
 
 -- Office hours only: $1 has the current time, no stored context needed
 SELECT authz.create_condition_sql('demo', 'office_hours',
@@ -1106,6 +1108,17 @@ SELECT authz.create_condition_sql('demo', 'office_hours',
 SELECT authz.create_condition_sql('demo', 'under_quota',
  $$($1->>'usage_count')::int < ($2->>'max_allowed')::int$$);
 ```
+
+> **CIDR conditions and IPv4-mapped IPv6 addresses.** Dual-stack listeners
+> (Go's `net/http` included) often report an IPv4 client as the mapped IPv6
+> form `::ffff:10.0.0.1`. PostgreSQL's `inet` keeps that as an IPv6 value
+> (`family()` = 6), so `'::ffff:10.0.0.1'::inet <<= '10.0.0.0/8'` is **false**
+> and a plain `<<=` allowlist silently denies (or, in an exclusion, silently
+> fails to block) such clients. Normalise the address first, as the
+> `ip_in_range` example does: `regexp_replace(host(ip), '^::ffff:', '')::inet`
+> turns a mapped address into its IPv4 form and leaves plain IPv4 and real
+> IPv6 addresses unchanged (RFC 4291 §2.5.5.2). Alternatively the PEP can
+> unmap before it builds the request context.
 
 ### Missing context
 

@@ -359,8 +359,12 @@ SELECT authz.create_condition_sql('demo',
         -- Time window: $1.current_time must be before $2.grant_time + $2.grant_duration
         ($1->>'current_time')::timestamptz
         < ($2->>'grant_time')::timestamptz + ($2->>'grant_duration')::interval
-        -- AND IP allowlist: $1.client_ip must be within $2.allowed_cidr
-        AND ($1->>'client_ip')::inet <<= ($2->>'allowed_cidr')::cidr
+        -- AND IP allowlist: $1.client_ip must be within $2.allowed_cidr.
+        -- host()+regexp_replace unmaps an IPv4-mapped IPv6 client address
+        -- (::ffff:10.0.0.1) so it matches an IPv4 CIDR — see README,
+        -- "CIDR conditions and IPv4-mapped IPv6 addresses".
+        AND regexp_replace(host(($1->>'client_ip')::inet), '^::ffff:', '')::inet
+            <<= ($2->>'allowed_cidr')::cidr
     $cond$,
     '{"request": ["current_time", "client_ip"], "stored": ["grant_time", "grant_duration", "allowed_cidr"]}'::jsonb
 );
