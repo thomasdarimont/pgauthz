@@ -15,12 +15,16 @@ export class PgExplainTree extends LitElement {
     .badge { width: 1rem; text-align: center; font-weight: 700; }
     .allow > .badge { color: var(--pg-allow-fg, #1a7f37); }
     .deny  > .badge { color: var(--pg-deny-fg, #cf222e); }
+    .shadow > .badge { color: var(--pg-muted, #888); }
     .children { margin-left: 1.1rem; border-left: 1px dotted var(--pg-tree-guide, #ccc); padding-left: var(--pg-space-2, .4rem); }
     .label .reason { color: var(--pg-reason-fg, #6639ba); }
     .label .muted { color: var(--pg-muted, #888); }
   `;
 
   _allowed(n) { return n.allowed === true || n.result === true; }
+  // A shadow temporal-gate clause that would have denied: reported, never decides.
+  static isShadowMiss(n) { return n.rule_type === 'temporal_gate' && n.shadow === true && !(n.allowed === true || n.result === true); }
+  static mark(n) { return PgExplainTree.isShadowMiss(n) ? '○' : (n.allowed === true || n.result === true) ? '✔' : '✘'; }
 
   // The step's main label text — matched tuple (exact granting tuple, wildcards
   // resolved), else detail, else the sub-goal "<rel> on <obj>". Shared by the
@@ -38,9 +42,8 @@ export class PgExplainTree extends LitElement {
   static toText(node) {
     const walk = (n, depth, isRoot) => {
       if (!n) return '';
-      const ok = n.allowed === true || n.result === true;
       const reason = n.reason && !isRoot ? ` [${n.reason}]` : '';
-      const line = '  '.repeat(depth) + (ok ? '✔' : '✘') + ' ' + PgExplainTree.labelText(n) + reason;
+      const line = '  '.repeat(depth) + PgExplainTree.mark(n) + ' ' + PgExplainTree.labelText(n) + reason;
       return line + '\n' + (n.children || []).map((c) => walk(c, depth + 1, false)).join('');
     };
     return walk(node, 0, true);
@@ -58,10 +61,10 @@ export class PgExplainTree extends LitElement {
     if (!n) return html``;
     const kids = n.children || [];
     return html`
-      <div class="node ${this._allowed(n) ? 'allow' : 'deny'}">
+      <div class="node ${PgExplainTree.isShadowMiss(n) ? 'shadow' : this._allowed(n) ? 'allow' : 'deny'}">
         <span class="toggle" @click=${() => (this.open = !this.open)}>
           ${kids.length ? (this.open ? '▾' : '▸') : '•'}</span>
-        <span class="badge">${this._allowed(n) ? '✔' : '✘'}</span>
+        <span class="badge">${PgExplainTree.mark(n)}</span>
         ${this._label(n)}
       </div>
       ${this.open && kids.length

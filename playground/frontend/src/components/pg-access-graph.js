@@ -13,6 +13,25 @@ const ENTITY = '#607d8b';  // neutral step
 const QUERY = '#0969da';   // the requested access (root) — blue outline
 const GRANT = '#d4a72c';   // the direct tuple that ultimately grants — gold outline
 const COND = '#8250df';    // a condition gates this step — purple dashed outline
+const GATE = '#0e7c86';    // a temporal gate clause (history over the action log) — teal
+const SHADOW = '#8c959f';  // a shadow gate clause: reported, never decides — grey dotted
+
+// A temporal-gate step (explain_access rule_type 'temporal_gate'): evaluated
+// after the graph allows, one step per clause, never part of the grant path.
+const isGate = (n) => n.rule_type === 'temporal_gate';
+const isShadow = (n) => isGate(n) && n.shadow === true;
+const stepOk = (n) => n.allowed === true || n.result === true;
+// Node text for a gate clause: the gate, the clause (index:primitive), and what
+// was observed against the threshold in the window — never the events themselves.
+const gateLines = (n) => {
+  const ok = stepOk(n);
+  const mark = isShadow(n) && !ok ? '○' : ok ? '✓' : '✗';
+  const head = `⏱ ${n.gate || 'gate'} ${mark}${isShadow(n) ? ' (shadow)' : ''}`;
+  const clause = [n.clause, n.window && `over ${n.window}`].filter(Boolean).join(' ');
+  const obs = n.observed != null && n.threshold != null ? `${n.observed} vs ${n.threshold}` : null;
+  const why = n.reason === 'gate_missing_context' ? `missing ${(n.missing_keys || []).join(', ') || 'context'}` : null;
+  return [head, clause, obs, why].filter(Boolean);
+};
 
 export class PgAccessGraph extends PgGraph {
   static properties = { node: { attribute: false }, allowedOnly: { type: Boolean } };
@@ -42,9 +61,16 @@ export class PgAccessGraph extends PgGraph {
     // branch is pruned, so on a DENY there's simply nothing to show. "Full tree"
     // keeps the dead-ends (dashed/red) so you can see everything explored.
     const prune = this.allowedOnly;
-    // No successful path (denied) in Access-path mode → just show the target, red.
-    if (prune && !(root.allowed === true || root.result === true)) {
-      return [{ data: { id: 'deny', label: root.object || '?' }, classes: 'deny' }];
+    // No successful path (denied) in Access-path mode → just show the target, red —
+    // plus the gate clauses that vetoed it, if the graph allowed but a gate denied
+    // (otherwise nothing would tell the denial apart from a missing path).
+    if (prune && !stepOk(root)) {
+      const out = [{ data: { id: 'deny', label: root.object || '?' }, classes: 'deny' }];
+      (root.children || []).filter((c) => isGate(c) && !stepOk(c) && !isShadow(c)).forEach((c, k) => {
+        out.push({ data: { id: 'g' + k, label: gateLines(c).join('\n'), detail: c.detail || '' }, classes: 'deny gate' });
+        out.push({ data: { id: 'ge' + k, source: 'deny', target: 'g' + k, label: 'gate', tmy: 0, cpd: 0 }, classes: 'deny' });
+      });
+      return out;
     }
     const ruleLabel = (n) => {
       if (n.rule_type === 'ttu') { const m = /via (\w+)/.exec(n.detail || ''); return m ? 'via\n' + m[1] : 'ttu'; }
@@ -52,6 +78,7 @@ export class PgAccessGraph extends PgGraph {
       if (n.rule_type === 'direct') {
         return (n.reason === 'object_wildcard_tuple' || n.reason === 'wildcard_tuple') ? 'wildcard' : 'direct';
       }
+      if (isGate(n)) return isShadow(n) ? 'gate\n(shadow)' : 'gate';
       return n.reason || '';
     };
     const els = [];
@@ -61,14 +88,17 @@ export class PgAccessGraph extends PgGraph {
     // twice as siblings — one denied, one granting; without the outcome the denied
     // one would claim the key and hide the granting subtree in the full tree. Only
     // truly identical converging steps merge (keeping the DAG for diamond graphs).
-    const stepKey = (n) => `${n.subject}|${n.relation}|${n.object}|${n.rule_type || ''}|${n.reason || ''}|${n.condition_name || ''}|${n.allowed === true || n.result === true}`;
+    // Gate clauses share subject|relation|object with the request, so their
+    // identity is the gate + clause.
+    const stepKey = (n) => `${n.subject}|${n.relation}|${n.object}|${n.rule_type || ''}|${n.reason || ''}|${n.condition_name || ''}|${n.gate || ''}|${n.clause || ''}|${stepOk(n)}`;
     const seen = new Map();    // stepKey → node id (dedupe only identical steps)
     const edgeSeen = new Set(); // source|target|label (dedupe repeated edges)
     const edgeEls = [];         // collected separately to spread parallel labels
     let i = 0, e = 0;
     const walk = (n, parentId, isRoot) => {
-      const ok = n.allowed === true || n.result === true;
-      if (prune && !ok) return;
+      const ok = stepOk(n);
+      // A shadow clause never decides, so it is worth seeing even on the pruned path.
+      if (prune && !ok && !isShadow(n)) return;
       const key = stepKey(n);
       const seenId = isRoot ? undefined : seen.get(key);
       const id = seenId ?? ('n' + i++);
@@ -80,31 +110,35 @@ export class PgAccessGraph extends PgGraph {
         if (!edgeSeen.has(ek)) {
           edgeSeen.add(ek);
           edgeEls.push({ data: { id: 'e' + e++, source: parentId, target: id, label: rl, tmy: 0, cpd: 0 },
-            classes: ok ? 'allow' : 'deny' });
+            classes: isShadow(n) && !ok ? 'shadow' : ok ? 'allow' : 'deny' });
         }
       }
       if (seenId != null) return; // node (and its subtree) already emitted
       if (!isRoot) seen.set(key, id);
       const isLeaf = !isRoot && (!n.children || n.children.length === 0);
-      const isGrant = ok && isLeaf;
-      const isDenyLeaf = !ok && isLeaf;
+      // A gate clause passing is a veto that did not fire — not a granting tuple.
+      const isGrant = ok && isLeaf && !isGate(n);
+      const isDenyLeaf = !ok && isLeaf && !isGate(n);
       // A wildcard match grants via "type:*", not the concrete id — show the tuple
       // that actually granted it (object wildcard → object:*, subject wildcard → subject:*).
       const wObj = n.reason === 'object_wildcard_tuple' ? (n.object || '').replace(/:[^:]*$/, ':*') : n.object;
       const wSubj = n.reason === 'wildcard_tuple' ? (n.subject || '').replace(/:[^:]*$/, ':*') : n.subject;
-      const lines = isGrant
-        ? [`${n.relation} ✓`, wObj, wSubj].filter(Boolean)
-        : isDenyLeaf
-          ? [`${n.relation} ✗`, n.object, n.subject].filter(Boolean)
-          : [n.relation, n.object].filter(Boolean);
+      const lines = isGate(n)
+        ? gateLines(n)
+        : isGrant
+          ? [`${n.relation} ✓`, wObj, wSubj].filter(Boolean)
+          : isDenyLeaf
+            ? [`${n.relation} ✗`, n.object, n.subject].filter(Boolean)
+            : [n.relation, n.object].filter(Boolean);
       let arr = lines.length ? lines : [n.detail || n.subject || '?'];
       // A condition gates this step — show it (granted-if vs denied-by).
-      if (n.condition_name) arr = [...arr, `⚖ ${ok ? 'if' : '✗'} ${n.condition_name}`];
+      if (n.condition_name && !isGate(n)) arr = [...arr, `⚖ ${ok ? 'if' : '✗'} ${n.condition_name}`];
       const label = arr.join('\n');
-      const cls = [ok ? 'allow' : 'deny'];
+      const cls = [isShadow(n) && !ok ? 'shadow' : ok ? 'allow' : 'deny'];
       if (isRoot) cls.push('root');
       if (isGrant) cls.push('grant');
-      if (n.condition_name) cls.push('conditional');
+      if (isGate(n)) cls.push('gate');
+      if (n.condition_name && !isGate(n)) cls.push('conditional');
       els.push({ data: { id, label, detail: n.detail || '' }, classes: cls.join(' ') });
       (n.children || []).forEach((c) => walk(c, id, false));
     };
@@ -152,6 +186,11 @@ export class PgAccessGraph extends PgGraph {
       { selector: 'node.grant', style: { 'background-color': ALLOW, 'border-width': 4, 'border-color': GRANT, shape: 'ellipse' } },
       // A condition gates this step (granted-if / denied-by): purple dashed ring.
       { selector: 'node.conditional', style: { 'border-width': 4, 'border-color': COND, 'border-style': 'dashed' } },
+      // A temporal-gate clause: teal double ring (passed = teal fill, denied = red fill);
+      // a shadow clause that would have denied is grey with a dotted ring.
+      { selector: 'node.gate', style: { 'border-width': 4, 'border-color': GATE, 'border-style': 'double', 'background-color': GATE } },
+      { selector: 'node.gate.deny', style: { 'background-color': DENY } },
+      { selector: 'node.shadow', style: { 'background-color': SHADOW, 'border-color': SHADOW, 'border-style': 'dotted' } },
       { selector: 'edge', style: {
         'curve-style': 'unbundled-bezier', 'target-arrow-shape': 'triangle',
         'control-point-distances': 'data(cpd)', 'control-point-weights': 0.5,
@@ -164,6 +203,8 @@ export class PgAccessGraph extends PgGraph {
       { selector: 'edge.allow', style: { 'line-color': ALLOW, 'target-arrow-color': ALLOW, color: ALLOW, width: 3.5 } },
       { selector: 'edge.deny', style: { 'line-color': DENY, 'target-arrow-color': DENY, color: DENY,
         'line-style': 'dashed', width: 2 } },
+      { selector: 'edge.shadow', style: { 'line-color': SHADOW, 'target-arrow-color': SHADOW, color: SHADOW,
+        'line-style': 'dotted', width: 2 } },
     ];
   }
 

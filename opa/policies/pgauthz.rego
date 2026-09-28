@@ -118,6 +118,19 @@ explain_access(store, subject_type, subject_id, relation, object_type, object_id
 	response.status_code == 200
 }
 
+# explain_access_with_context: the same trace with the request context the
+# check would see, so condition steps and temporal-gate clauses that read
+# $request.* resolve instead of reporting missing context.
+explain_access_with_context(store, subject_type, subject_id, relation, object_type, object_id, ctx) := response.body if {
+	response := _native_send(store, "explain", {
+		"subject": {"type": subject_type, "id": subject_id},
+		"action": {"name": relation},
+		"resource": {"type": object_type, "id": object_id},
+		"context": ctx,
+	}, -1)
+	response.status_code == 200
+}
+
 # check_access_detailed: the rich decision result (state allow|deny|
 # conditional, missing_context, conditions, model). Runs the explain
 # machinery in the engine — per-decision opt-in, deliberately NOT cached

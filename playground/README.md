@@ -29,7 +29,7 @@ production the PEP calls pgauthzd, the front door, which consults OPA).
 ```bash
 ./keycloak/config/generate-mkcerts.sh           # once (TLS for *.pgauthz.test)
 ./start.sh --playground                          # implies --keycloak; builds the BFF
-(cd keycloak/terraform && terraform apply)       # provisions the playground-bff client
+(cd keycloak/terraform && terraform apply)       # provisions the playground-bff client + demo roles (re-run after upgrades)
 # /etc/hosts: 127.0.0.1 app.pgauthz.test
 open https://app.pgauthz.test
 ```
@@ -43,7 +43,8 @@ the header combobox or **`?store=`** in the URL
 (e.g. `https://app.pgauthz.test/?store=demo`):
 
 - **Model Explorer** — the schema view. Left: the **model**
-  (`describe_model` DSL, with type labels). Right: the **type graph**, with a
+  (`describe_model` DSL, with type labels; temporal gates and per-action
+  payload schemas appear as `#` comment lines — they are not DSL). Right: the **type graph**, with a
   **model / data** toggle — `model` renders the declared type restrictions
   (every direct relation, matching the DSL; userset restrictions like
   `team#member` are dashed, see the legend), `data` renders the type→type
@@ -52,9 +53,29 @@ the header combobox or **`?store=`** in the URL
   **conditions**. Right: query the graph:
   - **Structured english**: `is internal_user:alice related to document:doc_payroll_001 as can_read?`
     with autocomplete on every field.
-  - → **ALLOW/DENY** + a **Cytoscape access graph** of the resolution path
+  - → **ALLOW/DENY** (+ the engine's `decision.reason`, e.g. `gate_denied`)
+    + a **Cytoscape access graph** of the resolution path
     (green = allowed step, red = denied), with the text tree as a detail —
-    including the exact granting tuple (`matched_tuple`).
+    including the exact granting tuple (`matched_tuple`). **Temporal gate**
+    clauses ([MODEL_DESIGN §17](../docs/MODEL_DESIGN.md#17-temporal-gates-history-dependent-rules))
+    show as teal nodes hanging off the requested access — one per clause,
+    with the observed value against the threshold in its window (never the
+    events) — red when a clause vetoed, grey ○ for a *shadow* clause that
+    only reports.
+  - **Act as the PEP** (action bar under the query, shown to users holding the
+    `authz_recorder` or `authz_writer` role): **Record response** records that
+    the queried action happened (`kind: response`, payload = the request
+    context under `input`) and **Reserve** takes the strict tier (decision +
+    `request` event under the per-subject lock,
+    `POST /pgauthz/v1/events/reserve`); both go to pgauthzd-full's native
+    events API with *your* token — the real PEP path, so `recorded_by` is you —
+    and re-run the explain so the gate nodes show the moved counters. Demo:
+    select store `gdrive`, ask `is user:bob related to doc:design_spec as
+    download?`, press *Record response* three times and watch the fourth check
+    come back `gate_denied` (`per_file_limit`, 3 per document per UTC day).
+    **Reset events…** (holders of `playground_admin`, allowlisted demo stores
+    only, two-step confirmation) purges the store's action log so the run can
+    be repeated. The log itself (`list_events`) is not browsable here.
   - Two evaluation modes (toggle in the Query header):
     **Explore** (default) — **engine-direct**, read-only, **any subject** (the
     OpenFGA-playground style); **As me (OPA)** — query as the logged-in user via
@@ -65,9 +86,18 @@ the header combobox or **`?store=`** in the URL
   API console driving the real `pgauthzd-opa` service through the BFF (your
   session token is injected server-side). Endpoint picker (evaluation,
   evaluations, subject/resource/action search, discovery), a templated request
-  built from the shared query fields (left), and the response (right). The
-  search endpoints are disabled without the `authzen_auditor` role (they
-  enumerate the access graph; see `SEARCH_REQUIRED_ROLE`).
+  built from the shared query fields (left), and the response (right). Calls
+  are scoped to the store selected in the header through the AuthZEN tenant
+  path form (`/stores/<store>/access/v1/…`). **You are the subject:**
+  pgauthzd-opa keeps the token subject authoritative (no body-subject
+  override), so the template defaults the subject to your token's
+  (`subject_type` claim + username, e.g. `internal_user:alice`) and the
+  console warns before you send when the fields name someone else (the
+  service answers 403) or when the store has no type matching your token —
+  `gdrive`, whose subjects are `user`, is an Access Explorer example, not an
+  AuthZEN one. The search endpoints are disabled without the
+  `authzen_auditor` role (they enumerate the access graph; see
+  `SEARCH_REQUIRED_ROLE`).
 
 Inputs autocomplete from the engine (`/api/meta/{stores,relations,objects,subjects}`,
 a read-only metadata connection). Graphs zoom with **Ctrl/⌘ + scroll** (or
@@ -125,4 +155,20 @@ receives a token. The metadata/explore connection uses the dedicated read-only
 console proxies to `pgauthzd-opa` (`AUTHZEN_URL`; empty hides the tab) with the
 session token injected server-side; its reverse-search endpoints are role-gated
 (`SEARCH_REQUIRED_ROLE` on pgauthzd-opa, mirrored in the UI via
-`PLAYGROUND_SEARCH_ROLE` → `/api/me.search_enabled`). Not for production as-is.
+`PLAYGROUND_SEARCH_ROLE` → `/api/me.search_enabled`), as is its public explain
+endpoint (`EXPLAIN_REQUIRED_ROLE`; the "As me" explain reaches the engine via
+OPA → pgauthzd's callback listener, which is exempt). Both are required once
+`DEPLOYMENT_ENVIRONMENT=production` ([PRODUCTION.md](../docs/PRODUCTION.md)).
+
+The action-log demo bends two production rules on purpose. The demo users hold
+`authz_recorder` (alice, bob via `authz_writer`, eva) so the playground can
+record events with their tokens — in production that role is a **PEP /
+ingestion-service credential**, never an end-user role (a holder can move a
+gate; [ADR 0012 §3](../docs/adr/0012-action-log.md#3-trust-model-for-recorded-events)).
+And `pgauthzd-full` runs with `ALLOW_SUBJECT_OVERRIDE=true` in this overlay so
+Explore mode can record for the subject in the query (`recorded_by` is still
+the token subject). **Reset events** is a purge: `ENGINE_RESET_DSN` connects
+as `authz_playground_reset`, a role that may execute `authz.purge_events` and
+nothing else (no reads, no writes), the BFF requires `PLAYGROUND_RESET_ROLE`
+and confines it to `PLAYGROUND_RESET_STORES`; unset the DSN to remove the
+feature. Not for production as-is.

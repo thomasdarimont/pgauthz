@@ -722,6 +722,24 @@ else
     fail_count=$((fail_count + 1)); echo "    FAIL  allow_detailed: context flips to allow (got $det)"
 fi
 
+# explain forwards the request context too (the playground's "As me" mode
+# explains through OPA; without this a condition or gate clause that reads
+# $request.* would always report missing context).
+total=$((total + 1))
+det=$(curl -sf -X POST "$OPA_URL/v1/data/authz/explain" \
+    -H "Content-Type: application/json" \
+    -d '{"input": {"subject": {"type": "internal_user", "id": "det_probe"}, "action": "viewer", "resource": {"type": "document", "id": "doc_det_1"}}}' \
+    | jq -r '(.result.decision.allowed // false)|tostring')
+det2=$(curl -sf -X POST "$OPA_URL/v1/data/authz/explain" \
+    -H "Content-Type: application/json" \
+    -d '{"input": {"subject": {"type": "internal_user", "id": "det_probe"}, "action": "viewer", "resource": {"type": "document", "id": "doc_det_1"}, "context": {"clearance": "high"}}}' \
+    | jq -r '(.result.decision.allowed // false)|tostring')
+if [ "$det/$det2" = "false/true" ]; then
+    pass_count=$((pass_count + 1)); echo "    PASS  explain: forwards request context (deny without, allow with)"
+else
+    fail_count=$((fail_count + 1)); echo "    FAIL  explain: forwards request context (got without=$det with=$det2)"
+fi
+
 docker exec -i "$DB_CONTAINER" psql -q -U authz -d authz -c \
     "SELECT authz.delete_tuple('demo','internal_user','det_probe','viewer','document','doc_det_1');
      SELECT authz.delete_condition('demo','dd_probe_clearance');" >/dev/null

@@ -141,6 +141,22 @@ explain := pgauthz.explain_access(
 	input.resource.id,
 ) if {
 	_subject_valid
+	not input.context
+}
+
+# With request context: conditions and temporal-gate clauses that read
+# $request.* are evaluated against it, as in the allow decision.
+explain := pgauthz.explain_access_with_context(
+	store,
+	subject_type,
+	subject_id,
+	input.action,
+	input.resource.type,
+	input.resource.id,
+	input.context,
+) if {
+	_subject_valid
+	input.context
 }
 
 # allow_detailed — the allow decision PLUS detail: state allow|deny|

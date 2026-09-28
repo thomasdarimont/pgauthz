@@ -113,6 +113,12 @@ button.link {
   font-size: var(--pg-text-sm); letter-spacing: .03em; margin: var(--pg-space-2) 0; }
 .decision.allow { background: var(--pg-allow-bg); color: var(--pg-allow-fg); }
 .decision.deny  { background: var(--pg-deny-bg);  color: var(--pg-deny-fg); }
+.decision-reason { font-family: var(--pg-font-mono); font-size: var(--pg-text-sm); margin-left: var(--pg-space-1); }
+/* Action-log demo bar (record / reserve / reset) under the query */
+.act-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--pg-space-2); margin: var(--pg-space-2) 0; font-size: var(--pg-text-sm); }
+.act-bar .confirm { display: inline-flex; align-items: center; gap: var(--pg-space-2); }
+.act-bar .danger { border-color: var(--pg-deny-fg); color: var(--pg-deny-fg); }
+.act-bar .event-msg { font-family: var(--pg-font-mono); }
 .error { color: var(--pg-deny-fg); }
 section h2 { font-size: .95rem; border-bottom: 1px solid var(--pg-border); padding-bottom: var(--pg-space-1); }
 ul { margin: var(--pg-space-1) 0; }
@@ -284,6 +290,8 @@ nav.perspective button.active { color: var(--pg-primary); border-color: var(--pg
 .legend .allow::before { background: var(--pg-allow-fg); }
 .legend .deny::before { background: var(--pg-deny-fg); }
 .legend .cond::before { background: transparent; border: 2px dashed #8250df; }
+.legend .gate::before { background: #0e7c86; border: 2px double #0e7c86; }
+.legend .shadow::before { background: #8c959f; border: 2px dotted #8c959f; }
 /* Relocated panels below the access graph (edge key + text resolution) */
 .aux { margin-top: var(--pg-space-3); }
 .aux > summary { cursor: pointer; }

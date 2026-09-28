@@ -22,3 +22,20 @@ resource "keycloak_role" "authzen_auditor_realm" {
   realm_id = keycloak_realm.pgauthz.id
   name     = "authzen_auditor"
 }
+
+# Recorder role: authorizes POST /pgauthz/v1/events (+ /events/reserve) on
+# pgauthzd-full (RECORDER_ROLE) — the action log that temporal gates decide on.
+# In production this is a PEP/ingestion-service credential, never an end-user
+# role (a holder can move a gate); the demo users hold it ONLY so the playground
+# can show gates working end to end. Realm role → realm_access.roles.
+resource "keycloak_role" "authz_recorder_realm" {
+  realm_id = keycloak_realm.pgauthz.id
+  name     = "authz_recorder"
+}
+
+# Playground admin: may reset (purge) an allowlisted demo store's action log
+# through the BFF (PLAYGROUND_RESET_ROLE) so a gate demo can be repeated.
+resource "keycloak_role" "playground_admin_realm" {
+  realm_id = keycloak_realm.pgauthz.id
+  name     = "playground_admin"
+}

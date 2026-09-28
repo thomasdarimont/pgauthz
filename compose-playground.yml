@@ -65,6 +65,22 @@ services:
       # Dedicated read-only metadata/explore role (SELECT on the metadata tables +
       # EXECUTE on describe_model/check/explain) — NOT the engine superuser.
       ENGINE_DSN: postgres://authz_metadata:${PLAYGROUND_ENGINE_PASSWORD:-authz}@authz-db:5432/authz
+      # Action-log demo (ADR 0012): "Record response" / "Reserve" in the Access
+      # Explorer go to pgauthzd-full's native /pgauthz/v1/events with the user's
+      # token — the real PEP path (RECORDER_ROLE-gated there). The role hints
+      # mirror pgauthzd-full's RECORDER_ROLE / WRITER_ROLE. Empty EVENTS_URL hides
+      # the buttons.
+      EVENTS_URL: http://pgauthzd-full:8080
+      PLAYGROUND_RECORDER_ROLE: authz_recorder
+      PLAYGROUND_WRITER_ROLE: authz_writer
+      # "Reset events" purges an allowlisted demo store's action log so a gate demo
+      # can be repeated: a dedicated connection role that may ONLY execute
+      # authz.purge_events (db/security/roles.sql), a Keycloak role (alice holds
+      # playground_admin, see keycloak/terraform), and a store allowlist. Unset
+      # ENGINE_RESET_DSN to remove the feature.
+      ENGINE_RESET_DSN: postgres://authz_playground_reset:${PLAYGROUND_RESET_PASSWORD:-authz}@authz-db:5432/authz
+      PLAYGROUND_RESET_ROLE: playground_admin
+      PLAYGROUND_RESET_STORES: gdrive
     volumes:
       # SPA mounted for live editing; the binary serves it from /web.
       - ./playground/frontend:/web:ro
@@ -103,6 +119,12 @@ services:
       # Keycloak realm + authz-api client claims (aggregated). Alice holds
       # authzen_auditor (see keycloak/terraform); other users get 403 on search.
       SEARCH_REQUIRED_ROLE: authzen_auditor
+      # explain reveals the resolution trace, so gate it the same way on the public
+      # listener. The playground's "As me" explain goes OPA → callback listener,
+      # which is exempt (OPA is the trusted PEP), so this does not affect it — and
+      # it keeps the overlay valid under DEPLOYMENT_ENVIRONMENT=production, which
+      # requires both roles to be set (see docs/PRODUCTION.md).
+      EXPLAIN_REQUIRED_ROLE: authzen_auditor
       JWT_ROLES_CLAIM: realm_access.roles,resource_access.authz-api.roles
       # Forward the verified token to OPA (input.token) so OPA re-validates it,
       # instead of forwarding only the resolved subject. Lets OPA run in the secure
@@ -111,6 +133,23 @@ services:
       # unset → subject == token). Leave off for PEP setups that check arbitrary
       # subjects on behalf of others (those genuinely need tokenless subject-trust).
       FORWARD_TOKEN_TO_OPA: "true"
+
+  # The action-log demo records through pgauthzd-full with the playground user's
+  # Keycloak token, so the writer instance trusts the Keycloak issuer too (same
+  # two-issuer set as pgauthzd-opa above) and reads roles from both claim paths.
+  # ALLOW_SUBJECT_OVERRIDE is on: Explore mode records for the subject in the
+  # query (e.g. gdrive's user:bob) rather than the token's internal_user:alice.
+  # recorded_by stays the TOKEN subject regardless (public listener, review #7),
+  # so the log still says who pressed the button. Demo-only — a real PEP setup
+  # keeps it off unless the PEP genuinely acts on behalf of others.
+  pgauthzd-full:
+    environment:
+      JWKS_FILE: ""
+      JWT_ISSUERS: >-
+        [{"issuer":"${JWT_ISSUER:-https://auth.example.com}","audience":"${JWT_AUDIENCE:-authz-api}","jwks_file":"/jwks/jwks.json","stores":["${DEFAULT_STORE:-demo}"]},
+         {"issuer":"https://id.pgauthz.test/realms/pgauthz","jwks_url":"http://keycloak:8080/realms/pgauthz/protocol/openid-connect/certs","stores":[".*"]}]
+      JWT_ROLES_CLAIM: realm_access.roles,resource_access.authz-api.roles
+      ALLOW_SUBJECT_OVERRIDE: "true"
 
   # Add the app.pgauthz.test route to the keycloak overlay's nginx proxy.
   proxy:

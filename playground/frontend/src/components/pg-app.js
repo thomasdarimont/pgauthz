@@ -17,7 +17,8 @@ export class PgApp extends LitElement {
     typeLabels: { state: true }, clusterHidden: { state: true },
     subjectType: { state: true }, subjectId: { state: true },
     action: { state: true }, objType: { state: true }, objId: { state: true },
-    context: { state: true }, decision: { state: true }, tree: { state: true },
+    context: { state: true }, decision: { state: true }, reason: { state: true }, tree: { state: true },
+    eventMsg: { state: true }, confirmReset: { state: true },
     error: { state: true }, busy: { state: true },
     queryTab: { state: true }, dataTab: { state: true }, allowedOnly: { state: true },
     leftOpen: { state: true }, leftWidth: { state: true },
@@ -39,7 +40,8 @@ export class PgApp extends LitElement {
     const demo = this.store === 'demo';
     this.subjectType = demo ? 'internal_user' : ''; this.subjectId = demo ? 'alice' : '';
     this.action = demo ? 'can_read' : ''; this.objType = demo ? 'document' : ''; this.objId = demo ? 'doc_payroll_001' : '';
-    this.context = ''; this.decision = null; this.tree = null; this.error = ''; this.busy = false;
+    this.context = ''; this.decision = null; this.reason = null; this.tree = null; this.error = ''; this.busy = false;
+    this.eventMsg = null; this.confirmReset = false;
     this.queryTab = 'structured'; this.dataTab = 'tuples'; this.allowedOnly = true;
     this.leftOpen = true; this.leftWidth = 520; this.typesOpen = false; this.contextOpen = false;
     this.typeHidden = []; this.relHidden = [];
@@ -140,7 +142,8 @@ export class PgApp extends LitElement {
     // query and clear the stale result so nothing carries over.
     this.subjectType = ''; this.subjectId = '';
     this.action = ''; this.objType = ''; this.objId = '';
-    this.decision = null; this.tree = null; this.error = '';
+    this.decision = null; this.reason = null; this.tree = null; this.error = '';
+    this.eventMsg = null; this.confirmReset = false;
     this._run(() => Promise.all([this._loadMeta(), this._loadStore()]));
   }
 
@@ -155,7 +158,7 @@ export class PgApp extends LitElement {
 
   _check() {
     return this._run(async () => {
-      this.decision = null; this.tree = null; this.explainJson = null;
+      this.decision = null; this.reason = null; this.tree = null; this.explainJson = null;
       const ctx = this._contextObj();
       // Single source of truth: derive BOTH the decision and the tree from one
       // explain_access result. A separate check call could observe a different
@@ -176,6 +179,8 @@ export class PgApp extends LitElement {
       this.tree = this._annotateTree(ex?.tree ?? null);
       // Decision from the same result: top-level decision/result, else the tree root.
       this.decision = ex?.decision?.allowed ?? ex?.result ?? this.tree?.allowed ?? this.tree?.result ?? null;
+      // Why: e.g. gate_denied (the graph allowed, a temporal gate vetoed) vs a plain no-path deny.
+      this.reason = ex?.decision?.reason ?? null;
     });
   }
 
@@ -195,7 +200,8 @@ export class PgApp extends LitElement {
       byKey.set(`${subj}|${t.relation}|${t.object_type}:${t.object_id}`, t.condition_name);
     }
     const walk = (n) => {
-      if (!n.condition_name && n.subject && n.relation && n.object) {
+      // Gate clauses share the request's subject|relation|object — they are not tuple steps.
+      if (!n.condition_name && n.rule_type !== 'temporal_gate' && n.subject && n.relation && n.object) {
         const c = byKey.get(`${n.subject}|${n.relation}|${n.object}`);
         if (c) n.condition_name = c;
       }
@@ -203,6 +209,81 @@ export class PgApp extends LitElement {
     };
     walk(tree);
     return tree;
+  }
+
+  // ---- Action-log demo (ADR 0012): act, don't only ask ----------------------
+  // A check is a question; temporal gates decide on what the PEP RECORDED. These
+  // buttons play the PEP: record the response the current query stands for, or
+  // reserve (decision + `request` record under the per-subject lock). Both go to
+  // pgauthzd-full with the user's token (RECORDER_ROLE-gated there); the
+  // explain is re-run afterwards so the gate nodes show the moved counters.
+  _eventSubject() {
+    // Explore mode: the subject in the sentence; As me: the token's (omit → pgauthzd fills it in).
+    return this.subjectType && this.subjectId ? { type: this.subjectType, id: this.subjectId } : null;
+  }
+
+  _recordEvent(kind) {
+    return this._run(async () => {
+      this.eventMsg = null;
+      const ev = { action: this.action, object_type: this.objType, object_id: this.objId, kind };
+      const subj = this._eventSubject();
+      if (subj) { ev.subject_type = subj.type; ev.subject_id = subj.id; }
+      const ctx = this._contextObj();
+      if (ctx !== undefined) ev.payload = { input: ctx };
+      const { body } = await api.eventsRecord({ store: this.store, events: [ev] });
+      this.eventMsg = `recorded ${kind} #${(body?.seqs ?? []).join(', ')} (recorded_by is the token subject)`;
+      await this._check();
+    });
+  }
+
+  _reserve() {
+    return this._run(async () => {
+      this.eventMsg = null;
+      const body = { store: this.store, action: { name: this.action }, resource: { type: this.objType, id: this.objId } };
+      const subj = this._eventSubject();
+      if (subj) body.subject = subj;
+      const ctx = this._contextObj();
+      if (ctx !== undefined) { body.context = ctx; body.payload = { input: ctx }; }
+      const { body: res } = await api.eventsReserve(body);
+      this.eventMsg = res?.allowed
+        ? `reserved: allowed — request event #${res.seq} recorded under the per-subject lock`
+        : `reserve refused (${res?.reason ?? 'denied'}) — denied event #${res?.seq ?? '–'} recorded`;
+      await this._check();
+    });
+  }
+
+  _resetEvents() {
+    return this._run(async () => {
+      this.confirmReset = false; this.eventMsg = null;
+      const { body } = await api.eventsReset(this.store);
+      this.eventMsg = `purged ${body?.purged ?? 0} event(s) of store ${this.store} — gates start from zero`;
+      if (this.tree) await this._check();
+    });
+  }
+
+  _canReset() {
+    return this.me?.reset_enabled === true && (this.me?.reset_stores ?? []).includes(this.store);
+  }
+
+  _actBar() {
+    if (!this.me?.events_enabled && !this._canReset()) return '';
+    const ready = !!(this.action && this.objType && this.objId) && !this.busy;
+    return html`<div class="act-bar" data-testid="act-bar">
+      ${this.me?.events_enabled ? html`
+        <span class="muted">act as the PEP:</span>
+        <button data-testid="act-record" ?disabled=${!ready} @click=${() => this._recordEvent('response')}
+          title="record that the action happened (kind: response) — what the gates count">Record response</button>
+        <button data-testid="act-reserve" ?disabled=${!ready} @click=${() => this._reserve()}
+          title="strict tier: decision + request event under the per-subject lock (POST /pgauthz/v1/events/reserve)">Reserve</button>` : ''}
+      ${this._canReset() ? (this.confirmReset
+        ? html`<span class="confirm" data-testid="reset-confirm">purge <strong>all</strong> events of <code>${this.store}</code>?
+            <button class="danger" data-testid="reset-yes" @click=${() => this._resetEvents()}>yes, purge</button>
+            <button data-testid="reset-no" @click=${() => (this.confirmReset = false)}>no</button></span>`
+        : html`<button class="link reset-events" data-testid="reset-events" ?disabled=${this.busy}
+            title="purge this demo store's action log (authz.purge_events) so the demo can be repeated"
+            @click=${() => (this.confirmReset = true)}>Reset events…</button>`) : ''}
+      ${this.eventMsg ? html`<span class="event-msg muted" data-testid="event-msg">${this.eventMsg}</span>` : ''}
+    </div>`;
   }
 
   // Drop a User/Relation/Object picked in the tuples table into the Structured query.
@@ -328,6 +409,7 @@ export class PgApp extends LitElement {
           <section class="right">
             ${this._authzenFields()}
             <pg-authzen data-testid="authzen" class="authzen-pane"
+              .store=${this.store} .me=${this.me} .storeTypes=${(this.typeLabels || []).map((t) => t.name)}
               .subjectType=${this.subjectType} .subjectId=${this.subjectId} .action=${this.action}
               .objType=${this.objType} .objId=${this.objId} .context=${this.context}
               .searchEnabled=${this.me?.search_enabled !== false}></pg-authzen>
@@ -425,6 +507,8 @@ export class PgApp extends LitElement {
       <summary><h2>Result</h2>
         ${this.decision != null ? html`<span class="decision ${this.decision ? 'allow' : 'deny'}"
           data-testid="decision" data-result=${this.decision ? 'allow' : 'deny'}>${this.decision ? 'ALLOW' : 'DENY'}</span>` : ''}
+        ${this.reason ? html`<span class="decision-reason muted" data-testid="decision-reason"
+          title="decision.reason from explain_access">${this.reason}</span>` : ''}
         <span class="chev"></span></summary>
       ${this.tree ? html`
       <div class="graph-toolbar">
@@ -440,6 +524,8 @@ export class PgApp extends LitElement {
           <span class="lg allow">grants</span>
           <span class="lg deny">dead end</span>
           <span class="lg cond">conditional</span>
+          <span class="lg gate">temporal gate</span>
+          <span class="lg shadow">shadow gate</span>
         </span>
       </div>
       <pg-access-graph data-testid="access-graph" .node=${this.tree} .allowedOnly=${this.allowedOnly}></pg-access-graph>
@@ -453,6 +539,7 @@ export class PgApp extends LitElement {
         <dt>via <em>&lt;relation&gt;</em></dt><dd>inherited from a <em>related</em> object reached through that relation (tuple-to-userset)</dd>
         <dt>userset</dt><dd>granted to a group/userset — resolution continues into its members</dd>
         <dt>intersection / exclusion</dt><dd>AND / BUT&nbsp;NOT rule groups</dd>
+        <dt>gate</dt><dd>a <em>temporal gate</em> clause evaluated over the action log after the graph allowed — one node per clause with what was observed against the threshold in its window; a failing clause vetoes (<code>gate_denied</code>), a <em>shadow</em> clause only reports (○)</dd>
       </dl></details>
     <details class="aux"><summary class="muted">resolution path
       <button class="copy-query" data-testid="path-copy-text" title="copy the resolution path as text"
@@ -512,6 +599,7 @@ export class PgApp extends LitElement {
         <p class="muted ctx-hint">e.g. the time-boxed share needs <code>{"current_time": "…"}</code>. Empty context → conditions fail closed (deny).</p>
       </details>
       ${this.error ? html`<p class="error">${this.error}</p>` : ''}
+      ${this._actBar()}
       ${this.tree || this.decision != null ? this._accessGraph() : ''}
     </details>`;
   }

@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"net/url"
 )
 
 // authzenProxy forwards an AuthZEN request to the authzen-opa service, injecting
 // the session's access token as a Bearer credential (the SPA never sees the token,
 // exactly like the OPA path). `path` is the AuthZEN sub-path on the service, e.g.
-// "/access/v1/evaluation". The playground is single-store here: the store is the
-// authzen-opa service's DEFAULT_STORE, so it's never in the request.
+// "/access/v1/evaluation". A `?store=` query parameter scopes the call to that
+// store through the AuthZEN 1.0 §9.2 tenant path form (/stores/<store><path>),
+// so the console follows the store selected in the header; pgauthzd enforces
+// the issuer's store binding. Without it the service's DEFAULT_STORE applies.
 func (s *Server) authzenProxy(method, path string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.sessionFromReq(r) == nil {
@@ -27,7 +30,11 @@ func (s *Server) authzenProxy(method, path string) http.HandlerFunc {
 			b, _ := io.ReadAll(r.Body)
 			body = bytes.NewReader(b)
 		}
-		req, err := http.NewRequestWithContext(r.Context(), method, s.cfg.AuthzenURL+path, body)
+		target := s.cfg.AuthzenURL + path
+		if store := r.URL.Query().Get("store"); store != "" {
+			target = s.cfg.AuthzenURL + "/stores/" + url.PathEscape(store) + path
+		}
+		req, err := http.NewRequestWithContext(r.Context(), method, target, body)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return

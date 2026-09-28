@@ -8,7 +8,9 @@
 # denies) and only a second `terraform apply` restores it.
 
 # alice — internal_user, read-only, plus the authzen_auditor role so she can use
-# the AuthZEN reverse-search endpoints (and the playground's search UI).
+# the AuthZEN reverse-search endpoints (and the playground's search UI), the
+# authz_recorder role (record events / reserve in the playground's gate demo) and
+# playground_admin (reset the demo store's action log).
 resource "keycloak_user" "alice" {
   realm_id   = keycloak_realm.pgauthz.id
   username   = "alice"
@@ -27,10 +29,15 @@ resource "keycloak_user" "alice" {
 resource "keycloak_user_roles" "alice" {
   realm_id = keycloak_realm.pgauthz.id
   user_id  = keycloak_user.alice.id
-  role_ids = [keycloak_role.authzen_auditor_realm.id]
+  role_ids = [
+    keycloak_role.authzen_auditor_realm.id,
+    keycloak_role.authz_recorder_realm.id,
+    keycloak_role.playground_admin_realm.id,
+  ]
 }
 
-# bob — internal_user, writer via the REALM role (realm_access.roles).
+# bob — internal_user, writer via the REALM role (realm_access.roles); a writer
+# may record events too (WRITER_ROLE passes pgauthzd's recorder gate).
 resource "keycloak_user" "bob" {
   realm_id   = keycloak_realm.pgauthz.id
   username   = "bob"
@@ -69,7 +76,9 @@ resource "keycloak_user" "carol" {
 }
 
 # eva — internal_user, writer via the CLIENT role (resource_access.authz-api.roles),
-# plus a db_role attribute for per-app namespace isolation.
+# plus a db_role attribute for per-app namespace isolation. Also a recorder via
+# the realm role, so role aggregation across both claim paths is exercised on
+# the events endpoint as well.
 resource "keycloak_user" "eva" {
   realm_id   = keycloak_realm.pgauthz.id
   username   = "eva"
@@ -88,5 +97,5 @@ resource "keycloak_user" "eva" {
 resource "keycloak_user_roles" "eva" {
   realm_id = keycloak_realm.pgauthz.id
   user_id  = keycloak_user.eva.id
-  role_ids = [keycloak_role.authz_writer_client.id]
+  role_ids = [keycloak_role.authz_writer_client.id, keycloak_role.authz_recorder_realm.id]
 }

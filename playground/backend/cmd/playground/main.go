@@ -44,6 +44,17 @@ func main() {
 		}
 	}
 
+	// Optional: the action-log reset connection (purge_events only; see config).
+	var resetDB *pgxpool.Pool
+	if cfg.ResetDSN != "" {
+		if rp, err := pgxpool.New(ctx, cfg.ResetDSN); err != nil {
+			log.Printf("engine reset DB unavailable (events reset disabled): %v", err)
+		} else {
+			resetDB = rp
+			defer rp.Close()
+		}
+	}
+
 	httpClient := &http.Client{Timeout: 15 * time.Second}
 	// Optionally trust an extra CA (e.g. the mkcert dev root) so the BFF can reach
 	// the issuer over its real https URL. Appended to the system pool, so public
@@ -76,7 +87,7 @@ func main() {
 	oidcClient := &oidc.Client{
 		HTTP: httpClient, ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret, TokenURL: disco.TokenURL,
 	}
-	srv := server.New(cfg, pool, engineDB, httpClient, oidcClient, disco)
+	srv := server.New(cfg, pool, engineDB, resetDB, httpClient, oidcClient, disco)
 
 	httpSrv := &http.Server{
 		Addr:              cfg.Addr,

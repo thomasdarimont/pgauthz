@@ -14,7 +14,8 @@ async function call(path, body, allow = []) {
   // instead of silently rendering empty/undefined/stale state. `allow` lists
   // non-2xx statuses that are a valid response (e.g. /api/me → 401 when logged out).
   if (!r.ok && !allow.includes(r.status)) {
-    throw new Error(json?.error ?? `HTTP ${r.status}`);
+    // BFF errors are {error}; pgauthzd errors (proxied verbatim) are {status, message}.
+    throw new Error(json?.error ?? json?.message ?? `HTTP ${r.status}`);
   }
   return { status: r.status, body: json };
 }
@@ -36,8 +37,13 @@ export const api = {
   // "As me" mode: q(rule, input) → OPA's result for data.authz.<rule> with the user's token.
   q: (rule, input) => call('api/q', { rule, input }),
   // AuthZEN console: proxied to the authzen-opa service with the user's token.
-  authzenConfig: () => call('api/authzen/config', undefined, [401, 502, 503]),
-  authzen: (endpoint, body) => call('api/authzen/' + endpoint, body, [400, 401, 403, 502, 503]),
+  // `store` scopes the call to the selected store (tenant path form on the service).
+  authzenConfig: (store) => call('api/authzen/config' + (store ? '?store=' + encodeURIComponent(store) : ''), undefined, [401, 502, 503]),
+  authzen: (endpoint, body, store) => call('api/authzen/' + endpoint + (store ? '?store=' + encodeURIComponent(store) : ''), body, [400, 401, 403, 502, 503]),
+  // Action-log demo: record / reserve via pgauthzd-full (user's token), reset via the BFF.
+  eventsRecord: (body) => call('api/events/record', body),
+  eventsReserve: (body) => call('api/events/reserve', body),
+  eventsReset: (store) => call('api/events/reset', { store }),
   login: () => { location.href = 'auth/login'; },
   logout: () => { location.href = 'auth/logout'; },
 };

@@ -60,7 +60,9 @@ export class PgModel extends LitElement {
         if (t?.description) rows.push({ num: ++n, text: '# ' + t.description, comment: true });
         if (t?.labels?.length) rows.push({ num: ++n, text: '# labels: ' + t.labels.join(', '), comment: true });
       }
-      rows.push({ num: ++n, text: line });
+      // The engine renders gates and payload schemas as `#` comment lines
+      // (describe_model output is display text, not round-trippable DSL).
+      rows.push({ num: ++n, text: line, comment: line.trimStart().startsWith('#') });
     });
     return html`<div class="editor">
       <div class="gutter">${rows.map((r) => html`<div>${r.num ?? ' '}</div>`)}</div>

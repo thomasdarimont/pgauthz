@@ -168,6 +168,20 @@ $$;
 GRANT authz_reader TO authz_metadata;
 GRANT SELECT ON authz.stores, authz.types, authz.relations, authz.conditions, authz.tuples TO authz_metadata;
 
+-- Playground action-log reset role: a dedicated LOGIN role for the playground's
+-- ENGINE_RESET_DSN that may do ONE thing — authz.purge_events (SECURITY DEFINER),
+-- so a temporal-gate demo can be repeated. It inherits nothing else: no reads,
+-- no writes, no model. Demo-only; do not create it outside the demo stack.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authz_playground_reset') THEN
+        -- Dev password — override in production deployments.
+        CREATE ROLE authz_playground_reset LOGIN PASSWORD 'authz';
+    END IF;
+END
+$$;
+GRANT USAGE ON SCHEMA authz TO authz_playground_reset;
+
 -- Watch/changefeed consumer role: a dedicated read-only LOGIN role for the
 -- watch-API example (examples/watch). Granted authz_auditor (which INHERITs
 -- authz_reader) so the consumer can SET ROLE authz_auditor and read the
@@ -330,6 +344,7 @@ GRANT EXECUTE ON FUNCTION authz.ensure_audit_partitions(int) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.ensure_event_partitions(int) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.drop_event_partitions_before(date, boolean) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.purge_events(text, timestamptz, boolean) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.purge_events(text, timestamptz, boolean) TO authz_playground_reset;   -- demo reset (see above)
 GRANT EXECUTE ON FUNCTION authz.create_store(text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.retire_store(text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.delete_store(text, boolean) TO authz_admin;

@@ -97,5 +97,10 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		// Whether this user may use the AuthZEN reverse-search endpoints (UI hint;
 		// authzen-opa is the real gate). No SearchRole configured → available to all.
 		"search_enabled": s.cfg.SearchRole == "" || tokenHasRole(se.accessToken, s.cfg.SearchRole),
+		// Action-log demo (UI hints; pgauthzd-full's RECORDER_ROLE gate and this
+		// BFF's reset gate are the real checks).
+		"events_enabled": s.eventsEnabled(se.accessToken),
+		"reset_enabled":  s.resetEnabled(se.accessToken),
+		"reset_stores":   s.cfg.ResetStores,
 	})
 }

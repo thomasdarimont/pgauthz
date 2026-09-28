@@ -31,6 +31,31 @@ type Config struct {
 	// whether the current user may use the AuthZEN reverse-search endpoints. Purely
 	// cosmetic (the real gate is in authzen-opa); empty = show search for everyone.
 	SearchRole string // PLAYGROUND_SEARCH_ROLE
+	// Action-log demo (ADR 0012): the SPA can record events / reserve through
+	// pgauthzd-full with the user's token, so temporal gates can be exercised
+	// live. EventsURL empty = the buttons are hidden. RecorderRole/WriterRole
+	// mirror pgauthzd's RECORDER_ROLE/WRITER_ROLE claim gate (UI hint; pgauthzd
+	// is the real gate).
+	EventsURL    string // EVENTS_URL — internal pgauthzd-full base (empty = disabled)
+	RecorderRole string // PLAYGROUND_RECORDER_ROLE
+	WriterRole   string // PLAYGROUND_WRITER_ROLE (a writer may record too)
+	// Reset: purge a demo store's action log so a gate demo can be repeated. Needs
+	// a dedicated DSN (a LOGIN role granted EXECUTE on authz.purge_events only —
+	// see db/security/roles.sql, authz_playground_reset), a Keycloak role, and the
+	// store must be on the allowlist. ResetDSN empty = disabled.
+	ResetDSN    string   // ENGINE_RESET_DSN
+	ResetRole   string   // PLAYGROUND_RESET_ROLE — Keycloak role required (empty = disabled)
+	ResetStores []string // PLAYGROUND_RESET_STORES — comma-separated allowlist (empty = disabled)
+}
+
+func envList(k string) []string {
+	var out []string
+	for _, p := range strings.Split(os.Getenv(k), ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func env(k, def string) string {
@@ -61,5 +86,11 @@ func Load() Config {
 		ExploreEnabled: env("PLAYGROUND_EXPLORE_ENABLED", "false") == "true",
 		ExploreRole:    env("PLAYGROUND_EXPLORE_ROLE", ""),
 		SearchRole:     env("PLAYGROUND_SEARCH_ROLE", ""),
+		EventsURL:      env("EVENTS_URL", ""),
+		RecorderRole:   env("PLAYGROUND_RECORDER_ROLE", "authz_recorder"),
+		WriterRole:     env("PLAYGROUND_WRITER_ROLE", "authz_writer"),
+		ResetDSN:       env("ENGINE_RESET_DSN", ""),
+		ResetRole:      env("PLAYGROUND_RESET_ROLE", ""),
+		ResetStores:    envList("PLAYGROUND_RESET_STORES"),
 	}
 }

@@ -16,14 +16,16 @@ type Server struct {
 	cfg       config.Config
 	db        *pgxpool.Pool
 	engineDB  *pgxpool.Pool // read-only; nil if ENGINE_DSN unset (autocomplete off)
+	resetDB   *pgxpool.Pool // purge_events only; nil if ENGINE_RESET_DSN unset (reset off)
 	http      *http.Client
 	oidc      *oidc.Client  // confidential-client token exchange
 	endpoints oidc.Metadata // discovered authorize/token/logout URLs
 }
 
-// New wires up a Server. engineDB may be nil (metadata/explore then disabled).
-func New(cfg config.Config, db, engineDB *pgxpool.Pool, hc *http.Client, oc *oidc.Client, ep oidc.Metadata) *Server {
-	return &Server{cfg: cfg, db: db, engineDB: engineDB, http: hc, oidc: oc, endpoints: ep}
+// New wires up a Server. engineDB may be nil (metadata/explore then disabled);
+// resetDB may be nil (events reset then disabled).
+func New(cfg config.Config, db, engineDB, resetDB *pgxpool.Pool, hc *http.Client, oc *oidc.Client, ep oidc.Metadata) *Server {
+	return &Server{cfg: cfg, db: db, engineDB: engineDB, resetDB: resetDB, http: hc, oidc: oc, endpoints: ep}
 }
 
 // Routes builds the HTTP handler, registering every route under the configured
@@ -67,6 +69,12 @@ func (s *Server) Routes() http.Handler {
 	h("POST /api/authzen/search/subject", s.authzenProxy("POST", "/access/v1/search/subject"))
 	h("POST /api/authzen/search/resource", s.authzenProxy("POST", "/access/v1/search/resource"))
 	h("POST /api/authzen/search/action", s.authzenProxy("POST", "/access/v1/search/action"))
+	// Action log demo: record / reserve through pgauthzd-full with the session
+	// token (the real PEP path, RECORDER_ROLE-gated there); reset = purge_events
+	// on an allowlisted demo store, role-gated here.
+	h("POST /api/events/record", s.eventsProxy("/pgauthz/v1/events"))
+	h("POST /api/events/reserve", s.eventsProxy("/pgauthz/v1/events/reserve"))
+	h("POST /api/events/reset", s.handleEventsReset)
 	mux.HandleFunc(bp+"/", s.handleStatic)
 	if bp != "" { // bare root → the app's base path
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

@@ -82,6 +82,39 @@ pre-1.0, minor versions may include breaking changes.
   recording, the `gate_denied` explain, enumeration and `reserve_event`;
   `tests.sql` covers the permission matrix and both gates and runs in
   `tests/test.sh`.
+- **Playground: AuthZEN console is store-scoped and says who you are.** Calls
+  follow the store selected in the header via the AuthZEN §9.2 tenant path form
+  (`?store=` on the BFF proxy → `/stores/<store>/access/v1/…`); the request
+  template defaults the subject to the token's (`subject_type` + username) and
+  a hint above the request explains that pgauthzd-opa evaluates as you, warns
+  before a 403 when the fields name another subject, and flags stores that lack
+  the token's subject type (gdrive).
+- **Playground: act as the PEP.** The Access Explorer gains an action bar:
+  **Record response** and **Reserve** send the current query to pgauthzd-full's
+  native `/pgauthz/v1/events` and `/events/reserve` with the user's Keycloak
+  token (the real PEP path, `RECORDER_ROLE`-gated there; `recorded_by` is the
+  token subject), then re-run explain so the gate nodes show the moved
+  counters — download a gdrive doc three times, watch the fourth turn into
+  `gate_denied`. **Reset events…** purges an allowlisted demo store's action
+  log (`authz.purge_events` with `p_force`) behind a two-step confirmation, a
+  Keycloak role (`playground_admin`) and a dedicated connection role that may
+  execute nothing but `purge_events` (`authz_playground_reset`,
+  `db/security/roles.sql`). Keycloak terraform grants the demo users
+  `authz_recorder` (documented as a demo concession — it is a PEP credential)
+  and alice `playground_admin`; `compose-playground.yml` adds the Keycloak
+  issuer to pgauthzd-full. New BFF env: `EVENTS_URL`,
+  `PLAYGROUND_RECORDER_ROLE`, `PLAYGROUND_WRITER_ROLE`, `ENGINE_RESET_DSN`,
+  `PLAYGROUND_RESET_ROLE`, `PLAYGROUND_RESET_STORES`.
+- **Playground: temporal gates in the Access Explorer.** Gate clauses
+  (`rule_type: temporal_gate`) render as their own teal nodes hanging off the
+  requested access — gate, clause, observed vs threshold in the window — instead
+  of masquerading as granting tuples or failed lookups; a gate-vetoed DENY shows
+  the vetoing clause; shadow clauses are neutral (○) in the graph and the text
+  tree; the Result header shows `decision.reason` (e.g. `gate_denied`); the
+  model view styles the engine's `# gate` / `# payload schema` lines as
+  comments; legends and README updated. `compose-playground.yml` sets
+  `EXPLAIN_REQUIRED_ROLE` on pgauthzd-opa so the overlay stays valid under
+  `DEPLOYMENT_ENVIRONMENT=production`.
 - **Per-action payload schemas** (migration 0014, external review): a relation
   may declare the payload shape its events must have —
   `authz.model_set_payload_schema(store, relation, schema)` with `required` /
@@ -183,6 +216,12 @@ pre-1.0, minor versions may include breaking changes.
   `recorded_by`).
 
 ### Fixed
+
+- **OPA `explain` now forwards `input.context`** (new `pgauthz.explain_access_with_context`).
+  Explaining through OPA — the playground's "As me" mode — evaluated conditions
+  and temporal-gate clauses that read `$request.*` without the request context,
+  so they always reported missing context while the `allow` decision (which
+  forwards it) did not. Covered in `tests/test-opa.sh`.
 
 - **Hook validator: `http.send` destinations are canonicalised with OPA's own
   parser** (external review, SECURITY-AUDIT F17). `validate-hooks.sh`
