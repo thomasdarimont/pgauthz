@@ -277,6 +277,9 @@ GRANT EXECUTE ON FUNCTION authz.plan_model_apply(text, text, integer) TO authz_r
 GRANT EXECUTE ON FUNCTION authz.assert_fresh(int, pg_lsn) TO authz_reader;
 -- Engine/tenant stats (ADR 0010): pgauthzd samples this for per-store gauges.
 GRANT EXECUTE ON FUNCTION authz.store_stats(int) TO authz_reader;
+-- Temporal gate retention requirement (ADR 0012): readiness runbooks compare it with the retention schedule.
+GRANT EXECUTE ON FUNCTION authz.gate_windows(text) TO authz_reader;
+GRANT EXECUTE ON FUNCTION authz.max_gate_window(text) TO authz_reader;
 
 ------------------------------------------------------------------------
 -- authz_writer: tuple management (inherits reader grants above)
@@ -309,8 +312,8 @@ GRANT EXECUTE ON FUNCTION authz.cleanup_redundant_tuples(text, text, text, jsonb
 GRANT EXECUTE ON FUNCTION authz.cleanup_expired_tuples(text, interval, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.ensure_audit_partitions(int) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.ensure_event_partitions(int) TO authz_admin;
-GRANT EXECUTE ON FUNCTION authz.drop_event_partitions_before(date) TO authz_admin;
-GRANT EXECUTE ON FUNCTION authz.purge_events(text, timestamptz) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.drop_event_partitions_before(date, boolean) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.purge_events(text, timestamptz, boolean) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.create_store(text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.retire_store(text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.delete_store(text, boolean) TO authz_admin;
@@ -370,6 +373,8 @@ ALTER FUNCTION authz.check_access_detailed(text, text, text, text, text, text, j
 ALTER FUNCTION authz.freshness_token() SECURITY DEFINER;
 ALTER FUNCTION authz.assert_fresh(int, pg_lsn) SECURITY DEFINER;
 ALTER FUNCTION authz.store_stats(int) SECURITY DEFINER;
+ALTER FUNCTION authz.gate_windows(text) SECURITY DEFINER;
+ALTER FUNCTION authz.max_gate_window(text) SECURITY DEFINER;
 ALTER FUNCTION authz.describe_model(text) SECURITY DEFINER;
 ALTER FUNCTION authz.write_tuple(text, text, text, text, text, text, text, text, jsonb, text, timestamptz) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_tuple(text, text, text, text, text, text, text, text) SECURITY DEFINER;
@@ -393,8 +398,8 @@ ALTER FUNCTION authz.record_events_jsonb(text, jsonb, text) SECURITY DEFINER;
 ALTER FUNCTION authz.reserve_event(text, text, text, text, text, text, jsonb, jsonb, text, timestamptz, text, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.list_events(text, text, text, text, text, text, text, text, timestamptz, timestamptz, timestamptz, bigint, int) SECURITY DEFINER;
 ALTER FUNCTION authz.ensure_event_partitions(int) SECURITY DEFINER;
-ALTER FUNCTION authz.drop_event_partitions_before(date) SECURITY DEFINER;
-ALTER FUNCTION authz.purge_events(text, timestamptz) SECURITY DEFINER;
+ALTER FUNCTION authz.drop_event_partitions_before(date, boolean) SECURITY DEFINER;
+ALTER FUNCTION authz.purge_events(text, timestamptz, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.create_store(text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.retire_store(text) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_store(text, boolean) SECURITY DEFINER;

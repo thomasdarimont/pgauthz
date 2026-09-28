@@ -374,6 +374,7 @@ Deploy-time (most are in [`PRODUCTION.md`](PRODUCTION.md) — this cross-checks 
 - [ ] **Metrics:** `METRICS_LISTEN_ADDR` non-public; scrape restricted to Prometheus (chart `NetworkPolicy` / no host port).
 - [ ] Every secret overridden; `opa.requireTokenForReads=true` unless a trusted PEP fronts reads.
 - [ ] `authz_contextual_reader` granted only to trusted services (and only if used).
+- [ ] **Event retention ≥ the longest gate window:** `SELECT authz.max_gate_window();` against the retention schedule. The engine refuses a shorter cutoff (`drop_event_partitions_before` / `purge_events` raise unless `p_force`), so a retention job should never need `p_force` in production.
 - [ ] **Production profile on:** `DEPLOYMENT_ENVIRONMENT=production` with `SEARCH_REQUIRED_ROLE`, `EXPLAIN_REQUIRED_ROLE` and `WATCH_REQUIRED_ROLE` set to an auditor-grade role (chart: `values-production.yaml`); `ALLOW_OPEN_DIAGNOSTICS` / `diagnostics.allowOpenInProduction` **not** set.
 - [ ] **`authz_recorder` / `RECORDER_ROLE` issued only to enforcement points and ingestion services** — never to end-user-facing clients: recorded events drive temporal gates, so a recorder can move a gate (fabricate an approval, lock a principal out, spend a quota). Per-recorder action allowlists (`grant_recorder_actions`) and `recorded_by` pins on sensitive clauses in place. (ADR 0012 §3; external review 2026-09.)
 - [ ] JWT verified against your IdP's JWKS; role claim (`DB_ROLE_CLAIM`) mapping reviewed.

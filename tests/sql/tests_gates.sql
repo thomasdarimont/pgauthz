@@ -498,6 +498,52 @@ END;
 $$;
 
 -- ================================================================
+-- Retention guard: gate_windows / max_gate_window, drop + purge refuse a
+-- cutoff inside a live gate window unless forced
+-- ================================================================
+DO $$
+DECLARE v_state text; v_err text; n int; v_max interval;
+BEGIN
+    -- the four_eyes_sod gate above has a 30d window; daily_quota is calendar day
+    v_max := authz.max_gate_window('test_gates');
+    PERFORM _test_assert('rg_01_max_gate_window_is_longest', v_max::text, '30 days');
+    PERFORM _test_assert('rg_01_calendar_day_bucket_is_25h',
+        (SELECT w."window"::text FROM authz.gate_windows('test_gates') w WHERE w.gate = 'daily_quota'), '25:00:00');
+    PERFORM _test_assert_true('rg_01_windows_list_every_clause',
+        (SELECT count(*) FROM authz.gate_windows('test_gates')) >= 6,
+        (SELECT count(*)::text FROM authz.gate_windows('test_gates')));
+    PERFORM _test_assert_true('rg_01_fleet_wide_includes_store',
+        authz.max_gate_window() >= v_max, authz.max_gate_window()::text);
+
+    -- rg_02: purge inside the window is refused with the gate named; forced or outside → runs
+    v_state := NULL; v_err := NULL;
+    BEGIN PERFORM authz.purge_events('test_gates', now() - interval '10 days');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; v_err := SQLERRM; END;
+    PERFORM _test_assert('rg_02_purge_inside_window_refused', v_state, '23514');
+    PERFORM _test_assert_true('rg_02_refusal_names_gate', v_err LIKE '%four_eyes_sod%' AND v_err LIKE '%30 days%', coalesce(v_err, 'no error'));
+    PERFORM _test_assert_true('rg_02_purge_outside_window_runs',
+        authz.purge_events('test_gates', now() - interval '31 days') >= 0);
+    PERFORM _test_assert_true('rg_02_purge_forced_runs',
+        authz.purge_events('test_gates', now() - interval '10 days', p_force => true) >= 0);
+
+    -- rg_03: the fleet-wide partition drop is guarded the same way
+    v_state := NULL;
+    BEGIN PERFORM authz.drop_event_partitions_before((now() - interval '10 days')::date);
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('rg_03_drop_inside_window_refused', v_state, '23514');
+    PERFORM _test_assert_true('rg_03_drop_outside_window_runs',
+        authz.drop_event_partitions_before((now() - interval '40 days')::date) >= 0);
+
+    -- rg_04: a store without gates is unrestricted
+    BEGIN PERFORM authz.delete_store('test_gates_nogate', p_purge_audit => true); EXCEPTION WHEN OTHERS THEN NULL; END;
+    PERFORM authz.create_store('test_gates_nogate');
+    PERFORM _test_assert('rg_04_no_gates_null_window', COALESCE(authz.max_gate_window('test_gates_nogate')::text, 'null'), 'null');
+    PERFORM _test_assert('rg_04_no_gates_purge_unrestricted', authz.purge_events('test_gates_nogate', now())::text, '0');
+    PERFORM authz.delete_store('test_gates_nogate', p_purge_audit => true);
+END;
+$$;
+
+-- ================================================================
 -- reserve_event: the strict tier (phase 3)
 -- ================================================================
 DO $$

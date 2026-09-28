@@ -415,6 +415,9 @@ next to the audit call, and drop old months with
 rows are all older; returns the count). Per-store retention is
 `authz.purge_events('tenant_a', now() - interval '90 days')` — a row delete
 scoped to one store, for tenants whose retention differs from the fleet's.
+Both refuse a cutoff inside a live temporal-gate window (a dropped range can
+only relax a cap) unless called with `p_force => true`;
+`authz.max_gate_window()` / `authz.gate_windows(store)` show the requirement.
 
 ### Suppressing the audit trail (DBA bulk operations)
 

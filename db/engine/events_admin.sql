@@ -298,16 +298,51 @@ $$;
 
 -- drop_event_partitions_before: retention. Drops every monthly events
 -- partition whose month ends on or before p_before (all its rows are
--- older). Returns the number dropped. Keep event retention >= the longest
--- gate window (phase 2) — a dropped month under-counts, which can only
--- relax a cap, never tighten one; and >= audit retention if time-travel
--- over gates is to stay exact.
+-- older). Returns the number dropped. GUARDED: a cutoff inside any store's
+-- live gate window is refused (check_violation) unless p_force — a dropped
+-- month under-counts, which can only relax a cap, never tighten one. Keep
+-- retention >= audit retention too if time-travel over gates is to stay exact.
 CREATE OR REPLACE FUNCTION authz.drop_event_partitions_before(
-    p_before date
+    p_before date,
+    p_force  boolean DEFAULT false
 ) RETURNS integer
 LANGUAGE plpgsql AS $$
 BEGIN
+    -- Fleet-wide: every store's live gates must survive the cutoff.
+    PERFORM authz._event_check_retention_cutoff(NULL, p_before::timestamptz, p_force);
     RETURN authz._drop_month_partitions_before('events', p_before);
+END;
+$$;
+
+-- _event_check_retention_cutoff: the retention guard. Refuses (check_violation)
+-- a cutoff that would remove events a LIVE gate still counts — i.e.
+-- p_before > now() - max_gate_window(store) — unless p_force. Retention
+-- shorter than a gate window under-counts and can only relax a cap, so this
+-- is enforced where the damage would happen rather than left to the runbook.
+-- Time-travel over a FORMER gate definition inside a purged range still
+-- under-counts; that needs audit-aligned retention and stays a documented
+-- caveat. NULL p_store = every store (the fleet-wide partition drop).
+CREATE OR REPLACE FUNCTION authz._event_check_retention_cutoff(
+    p_store  text,
+    p_before timestamptz,
+    p_force  boolean
+) RETURNS void
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_max   interval := authz.max_gate_window(p_store);
+    v_worst record;
+BEGIN
+    IF p_force OR v_max IS NULL OR p_before <= clock_timestamp() - v_max THEN
+        RETURN;
+    END IF;
+    SELECT w.store, w.gate, w.object_type, w.relation, w."window" INTO v_worst
+      FROM authz.gate_windows(p_store) w
+     ORDER BY w."window" DESC LIMIT 1;
+    RAISE EXCEPTION 'retention cutoff % is inside a live gate window: gate "%" on %#% (store "%") counts events from the last %; the earliest safe cutoff is % (pass p_force => true to relax the cap deliberately)',
+        p_before, v_worst.gate, v_worst.object_type, v_worst.relation, v_worst.store, v_max,
+        (clock_timestamp() - v_max)::timestamptz(0)
+        USING ERRCODE = 'check_violation',
+              HINT = 'Event retention must be >= the longest gate window (SELECT authz.max_gate_window()).';
 END;
 $$;
 
@@ -318,12 +353,14 @@ $$;
 -- unlike drop_event_partitions_before, which is DDL and O(partitions) but
 -- fleet-wide. Use it for a tenant whose retention is shorter than the
 -- fleet's, or for a tenant's erasure request short of delete_store. Returns
--- the number of rows deleted. Admin-only. The same caveat as any retention:
--- time-travel over gates for an instant inside the purged range
--- under-counts, which can only RELAX a cap.
+-- the number of rows deleted. Admin-only. Guarded like the partition drop:
+-- a cutoff inside a live gate window is refused unless p_force. Time-travel
+-- over gates for an instant inside the purged range still under-counts,
+-- which can only RELAX a cap.
 CREATE OR REPLACE FUNCTION authz.purge_events(
     p_store  text,
-    p_before timestamptz
+    p_before timestamptz,
+    p_force  boolean DEFAULT false
 ) RETURNS bigint
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -333,6 +370,8 @@ BEGIN
     IF p_before IS NULL THEN
         RAISE EXCEPTION 'p_before is required' USING ERRCODE = 'invalid_parameter_value';
     END IF;
+    -- This store's live gates must survive the cutoff (see the guard above).
+    PERFORM authz._event_check_retention_cutoff(p_store, p_before, p_force);
     PERFORM set_config('authz.audit_maintenance', 'on', true);
     DELETE FROM authz.events e
      WHERE e.store_id = v_store_id

@@ -435,11 +435,13 @@ BEGIN
     -- same call legitimately drops the (older, empty) current-month partitions
     -- init created — retention is by age, and ensure_event_partitions below
     -- recreates them.
-    PERFORM authz.drop_event_partitions_before('2031-01-20');
+    -- p_force: the fleet has live gates (the gdrive fixture) whose windows the
+    -- future cutoff would truncate — the guard is tested in tests_gates.sql.
+    PERFORM authz.drop_event_partitions_before('2031-01-20', p_force => true);
     PERFORM _test_assert('ev_18_retention_keeps_partial_month',
         (SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace ns ON ns.oid = c.relnamespace
           WHERE ns.nspname = 'authz' AND c.relname = 'events_2031_01')::text, '1');
-    PERFORM _test_assert('ev_18_retention_drops_completed_month', authz.drop_event_partitions_before('2031-02-01')::text, '1');
+    PERFORM _test_assert('ev_18_retention_drops_completed_month', authz.drop_event_partitions_before('2031-02-01', p_force => true)::text, '1');
     PERFORM _test_assert('ev_18_partition_gone',
         (SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace ns ON ns.oid = c.relnamespace
           WHERE ns.nspname = 'authz' AND c.relname = 'events_2031_01')::text, '0');

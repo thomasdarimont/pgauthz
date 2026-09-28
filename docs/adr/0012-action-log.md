@@ -212,8 +212,9 @@ temporal policy code would not.
 - **Operations:** schedule `ensure_event_partitions()` next to
   `ensure_audit_partitions()`; retention via `drop_event_partitions_before`
   (fleet-wide, partition drop) and `purge_events(store, before)` (per store,
-  row delete) — keep it ≥ the longest gate window once gates exist, since a
-  dropped month or purged range can only *relax* a cap; set
+  row delete) — both **refuse a cutoff inside a live gate window** unless
+  forced, since a dropped month or purged range can only *relax* a cap
+  (`gate_windows` / `max_gate_window` expose the requirement); set
   `authz.event_max_backdate` to the queue's worst-case lag; `delete_store`
   purges the store's events.
 - **Replication:** events replicate like everything else; a read-only install

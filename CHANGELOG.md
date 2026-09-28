@@ -82,6 +82,13 @@ pre-1.0, minor versions may include breaking changes.
   recording, the `gate_denied` explain, enumeration and `reserve_event`;
   `tests.sql` covers the permission matrix and both gates and runs in
   `tests/test.sh`.
+- **Retention guard for temporal gates** (external review): `drop_event_partitions_before`
+  and `purge_events` now refuse a cutoff that falls inside a live gate window
+  (`check_violation`, naming the gate; `p_force => true` overrides), because a
+  dropped or purged range under-counts and can only relax a cap. New
+  reader-callable `authz.gate_windows(store)` / `authz.max_gate_window(store)`
+  report each clause's effective window (calendar buckets rounded up: day
+  25 h, week 7 d 1 h, month 31 d, year 366 d) for readiness runbooks.
 - **Per-store event retention** — `authz.purge_events(store, before)` deletes
   one store's events older than a timestamp (row-wise, under the sanctioned
   maintenance window, admin-only, returns the count) — the per-tenant tool

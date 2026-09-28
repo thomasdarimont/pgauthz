@@ -731,9 +731,16 @@ trail, with the same operational shape:
   maintenance window; returns the count) — for a tenant whose retention is
   shorter than the fleet's, or an erasure request short of `delete_store`.
   Prefer the partition drop for the fleet; reach for the purge per tenant.
-- Keep event retention **≥ the longest gate window** — a dropped month or
-  purged range under-counts, which can only *relax* a cap — and ≥ audit
-  retention if time-travel over gates is to stay exact.
+- **Retention is guarded by the gates themselves.** Both functions refuse
+  (`check_violation`, naming the gate) a cutoff that falls inside a live gate
+  window — `authz.max_gate_window()` fleet-wide for the partition drop, the
+  store's own for `purge_events` — because a dropped month or purged range
+  under-counts, which can only *relax* a cap. `p_force => true` overrides
+  deliberately. For the readiness runbook, compare your schedule with
+  `SELECT authz.max_gate_window();` (`authz.gate_windows(store)` lists every
+  clause's effective window; a calendar `day` counts as 25 h, `month` as
+  31 d). Keep retention ≥ audit retention too if time-travel over *former*
+  gate definitions is to stay exact — the guard protects live gates only.
 - **Bounded timestamps:** `occurred_at` is caller-asserted (queues deliver
   late) but rejected beyond `authz.event_max_future_skew` (default **5 s**)
   ahead of, or `authz.event_max_backdate` (default **24 h**) behind, the

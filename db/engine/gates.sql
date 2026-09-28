@@ -832,3 +832,50 @@ BEGIN
     RETURN v_all;
 END;
 $$;
+
+------------------------------------------------------------------------
+-- gate_windows / max_gate_window: the retention requirement gates impose.
+-- A dropped month or purged range under-counts every window that reaches
+-- into it, which can only RELAX a cap — so event retention must be >= the
+-- longest live gate window. gate_windows lists each clause's effective
+-- window length: the interval itself for `window`; for `calendar` the
+-- longest span a bucket can cover (day = 25 h for a DST transition, week =
+-- 7 d 1 h, month = 31 d, year = 366 d). max_gate_window is the maximum
+-- (NULL when no gates); NULL p_store = every store (the fleet-wide bound the
+-- partition drop checks). Reader-callable: the readiness runbook compares it
+-- with the retention schedule; drop_event_partitions_before / purge_events
+-- enforce it (events_admin.sql).
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._event_clause_window(p_body jsonb) RETURNS interval
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE
+        WHEN p_body ? 'window' THEN (p_body ->> 'window')::interval
+        ELSE CASE p_body ->> 'calendar'
+            WHEN 'hour'  THEN interval '1 hour'
+            WHEN 'day'   THEN interval '25 hours'
+            WHEN 'week'  THEN interval '7 days 1 hour'
+            WHEN 'month' THEN interval '31 days'
+            WHEN 'year'  THEN interval '366 days'
+        END
+    END
+$$;
+
+CREATE OR REPLACE FUNCTION authz.gate_windows(p_store text DEFAULT NULL)
+RETURNS TABLE (store text, object_type text, relation text, gate text, clause text, "window" interval)
+LANGUAGE sql STABLE AS $$
+    SELECT st.name, ot.name, rl.name, g.name,
+           (c.ord - 1) || ':' || (SELECT k FROM jsonb_object_keys(c.clause) k LIMIT 1),
+           authz._event_clause_window(c.clause -> (SELECT k FROM jsonb_object_keys(c.clause) k LIMIT 1))
+      FROM authz.model_gates g
+      JOIN authz.stores    st ON st.id = g.store_id
+      JOIN authz.types     ot ON ot.id = g.object_type
+      JOIN authz.relations rl ON rl.id = g.relation
+      CROSS JOIN LATERAL jsonb_array_elements(g.spec -> 'all_of') WITH ORDINALITY AS c(clause, ord)
+     WHERE p_store IS NULL OR st.name = p_store
+     ORDER BY 1, 2, 3, 4, 5
+$$;
+
+CREATE OR REPLACE FUNCTION authz.max_gate_window(p_store text DEFAULT NULL) RETURNS interval
+LANGUAGE sql STABLE AS $$
+    SELECT max(w."window") FROM authz.gate_windows(p_store) w
+$$;
