@@ -109,6 +109,7 @@ DECLARE
     v_cond_name text;
     v_cond_id   integer;
     v_cond_ctx  jsonb;
+    v_assumed_keys  text[];      -- explain: keys an assumed condition lacked
     v_skip_direct   boolean := false;
     v_skip_wildcard boolean := false;
 BEGIN
@@ -151,12 +152,16 @@ BEGIN
            AND authz._eval_condition(condition_id, condition_context, p_request_context)
     ) THEN
         IF p_trace THEN
-            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated, matched_tuple)
+            SELECT a.cond_name, a.missing INTO v_cond_name, v_assumed_keys
+              FROM authz._assumed_cond(p_store_id, p_object_type, ARRAY[p_object_id], p_relation,
+                                       p_user_type, ARRAY[p_user_id], p_request_context) a;
+            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated, matched_tuple, condition_name, condition_missing_keys)
             VALUES (p_depth, 'direct', p_user_type_name || ':' || p_user_id,
                     p_relation_name, p_object_type_name || ':' || p_object_id,
-                    true, 'tuple found',
+                    true, 'tuple found' || authz._assumed_suffix(v_cond_name),
                     extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated,
-                    p_user_type_name || ':' || p_user_id || ' → ' || p_relation_name || ' → ' || p_object_type_name || ':' || p_object_id);
+                    p_user_type_name || ':' || p_user_id || ' → ' || p_relation_name || ' → ' || p_object_type_name || ':' || p_object_id,
+                    v_cond_name, v_assumed_keys);
         END IF;
         RETURN true;
     END IF;
@@ -187,12 +192,16 @@ BEGIN
            AND authz._eval_condition(condition_id, condition_context, p_request_context)
     ) THEN
         IF p_trace THEN
-            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated, matched_tuple)
+            SELECT a.cond_name, a.missing INTO v_cond_name, v_assumed_keys
+              FROM authz._assumed_cond(p_store_id, p_object_type, ARRAY[p_object_id], p_relation,
+                                       p_user_type, ARRAY['*'], p_request_context) a;
+            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated, matched_tuple, condition_name, condition_missing_keys)
             VALUES (p_depth, 'direct', p_user_type_name || ':' || p_user_id,
                     p_relation_name, p_object_type_name || ':' || p_object_id,
-                    true, 'wildcard tuple (*)',
+                    true, 'wildcard tuple (*)' || authz._assumed_suffix(v_cond_name),
                     extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated,
-                    p_user_type_name || ':* → ' || p_relation_name || ' → ' || p_object_type_name || ':' || p_object_id);
+                    p_user_type_name || ':* → ' || p_relation_name || ' → ' || p_object_type_name || ':' || p_object_id,
+                    v_cond_name, v_assumed_keys);
         END IF;
         RETURN true;
     END IF;
@@ -227,10 +236,13 @@ BEGIN
            AND authz._eval_condition(condition_id, condition_context, p_request_context)
     ) THEN
         IF p_trace THEN
-            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated, matched_tuple)
+            SELECT a.cond_name, a.missing INTO v_cond_name, v_assumed_keys
+              FROM authz._assumed_cond(p_store_id, p_object_type, ARRAY['*'], p_relation,
+                                       p_user_type, ARRAY[p_user_id, '*'], p_request_context) a;
+            INSERT INTO _access_trace (depth, rule_type, subject, relation, object, result, detail, duration_ms, model_rule_id, group_id, group_op, negated, matched_tuple, condition_name, condition_missing_keys)
             VALUES (p_depth, 'direct', p_user_type_name || ':' || p_user_id,
                     p_relation_name, p_object_type_name || ':' || p_object_id,
-                    true, 'object wildcard tuple (*)',
+                    true, 'object wildcard tuple (*)' || authz._assumed_suffix(v_cond_name),
                     extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated,
                     -- the stored object-wildcard tuple: subject may be exact or '*'
                     p_user_type_name || ':' ||
@@ -239,7 +251,8 @@ BEGIN
                           AND t2.relation = p_relation AND t2.user_type = p_user_type
                           AND t2.user_id IN (p_user_id, '*') AND t2.user_relation IS NULL
                         ORDER BY (t2.user_id = p_user_id) DESC LIMIT 1)
-                      || ' → ' || p_relation_name || ' → ' || p_object_type_name || ':*');
+                      || ' → ' || p_relation_name || ' → ' || p_object_type_name || ':*',
+                    v_cond_name, v_assumed_keys);
         END IF;
         RETURN true;
     END IF;
@@ -553,6 +566,68 @@ $$;
 -- Handles all three rule types: direct, computed, tuple-to-userset.
 -- Writes trace steps when p_trace is true.
 ------------------------------------------------------------------------
+-- _assumed_cond: explain support for the missing-context assumption. When
+-- the switch is on and a conditional tuple matched ONLY by assumption (no
+-- unconditional tuple would have matched on its own), returns the condition
+-- name and the keys it lacked so the trace step can say so — a `direct_tuple`
+-- reason for an assumed ban would misreport the decision. NULLs otherwise.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._assumed_cond(
+    p_store_id        integer,
+    p_object_type     integer,
+    p_object_ids      text[],
+    p_relation        integer,
+    p_user_type       integer,
+    p_user_ids        text[],
+    p_request_context jsonb,
+    OUT cond_name     text,
+    OUT missing       text[]
+) RETURNS record
+LANGUAGE plpgsql STABLE AS $$
+BEGIN
+    IF NOT authz._assume_missing_ctx() THEN
+        RETURN;
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM authz.tuples
+         WHERE store_id      = p_store_id
+           AND object_type   = p_object_type
+           AND object_id     = ANY (p_object_ids)
+           AND relation      = p_relation
+           AND user_type     = p_user_type
+           AND user_id       = ANY (p_user_ids)
+           AND user_relation IS NULL
+           AND condition_id  IS NULL
+    ) THEN
+        RETURN;   -- an unconditional tuple matched on its own merits
+    END IF;
+    SELECT c.name, m.keys
+      INTO cond_name, missing
+      FROM authz.tuples t
+      JOIN authz.conditions c ON c.id = t.condition_id
+      CROSS JOIN LATERAL (
+          SELECT authz._condition_missing_keys(t.condition_id, t.condition_context, p_request_context) AS keys
+      ) m
+     WHERE t.store_id      = p_store_id
+       AND t.object_type   = p_object_type
+       AND t.object_id     = ANY (p_object_ids)
+       AND t.relation      = p_relation
+       AND t.user_type     = p_user_type
+       AND t.user_id       = ANY (p_user_ids)
+       AND t.user_relation IS NULL
+       AND t.condition_id  IS NOT NULL
+       AND array_length(m.keys, 1) > 0
+     LIMIT 1;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION authz._assumed_suffix(p_cond_name text) RETURNS text
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE WHEN p_cond_name IS NULL THEN ''
+                ELSE ', condition "' || p_cond_name || '" unresolved (missing context) — assumed to hold' END;
+$$;
+
+------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._eval_rule(
     p_store_id          integer,
     p_user_type         integer,
@@ -689,6 +764,10 @@ DECLARE
     -- Cycle detection: nodes on the current evaluation path
     v_key  text;
     v_path text[];
+
+    -- Negated-term polarity flip (see the exclusion branch below)
+    v_assume boolean;
+    v_hit    boolean;
 BEGIN
     IF p_depth > authz._max_depth() THEN
         RAISE EXCEPTION 'check_access: maximum resolution depth (%) exceeded — relationship chain too deep or relation graph too complex',
@@ -837,8 +916,20 @@ BEGIN
                     v_group_pass := false;
                 END IF;
             ELSE
-                -- Negated rule: must NOT match.
-                IF authz._eval_rule(
+                -- Negated rule: must NOT match. The missing-context assumption
+                -- is FLIPPED for the subtracted term (fail closed on both
+                -- sides): with the switch off, a conditional grant whose
+                -- context is missing does not grant — and a conditional BAN
+                -- whose context is missing must still ban, so the excluded
+                -- term is evaluated with the switch on. Nested exclusions
+                -- flip again, so "unresolvable" always resolves toward deny.
+                -- check_access_detailed's optimistic pass starts with the
+                -- switch on and the same flip makes such a ban `conditional`.
+                -- (SECURITY-AUDIT F20; GUC changes are transaction-scoped and
+                -- roll back with the subtransaction if _eval_rule raises.)
+                v_assume := authz._assume_missing_ctx();
+                PERFORM authz._set_assume_missing_ctx(NOT v_assume);
+                v_hit := authz._eval_rule(
                     p_store_id, p_user_type, p_user_id,
                     p_relation, p_object_type, p_object_id,
                     rule.rule_type, rule.computed_relation,
@@ -846,7 +937,9 @@ BEGIN
                     p_request_context, p_has_ctx_tuples,
                     p_depth, v_trace, p_exclude, v_path,
                 rule.id, rule.group_id, rule.group_op, rule.negated
-                ) THEN
+                );
+                PERFORM authz._set_assume_missing_ctx(v_assume);
+                IF v_hit THEN
                     v_group_pass := false;
                 END IF;
             END IF;
@@ -945,6 +1038,7 @@ DECLARE
     v_result boolean;
     v_cap    int;
     v_cnt    bigint;
+    v_assume boolean := false;   -- memo polarity (see _check_memo_v2)
 BEGIN
     -- ── Root frame: pick the backend, run the check, ALWAYS clean up ─────────
     -- The 'guc' backend holds this check's visited (object, decision) pairs in a
@@ -958,10 +1052,15 @@ BEGIN
         IF COALESCE(current_setting('authz.memoize', true), 'on') = 'off' THEN
             v_mode := 'off';
         ELSIF current_setting('transaction_read_only') = 'off' THEN
-            CREATE TEMP TABLE IF NOT EXISTS _check_memo
-                (relation integer, object_type integer, object_id text, result boolean,
-                 PRIMARY KEY (relation, object_type, object_id));
-            TRUNCATE _check_memo;
+            -- (_v2: keyed by the missing-context polarity too — a sub-result
+            -- computed inside a negated term is not reusable outside it. New
+            -- name so sessions holding the old-shape temp table keep working
+            -- across an engine reload.)
+            CREATE TEMP TABLE IF NOT EXISTS _check_memo_v2
+                (relation integer, object_type integer, object_id text, assume boolean,
+                 result boolean,
+                 PRIMARY KEY (relation, object_type, object_id, assume));
+            TRUNCATE _check_memo_v2;
             v_mode := 'temp';
         ELSE
             PERFORM set_config('authz._memo_data', '{}', false);
@@ -989,14 +1088,17 @@ BEGIN
     -- Disable the cache while tracing so explain_access sees every step.
     IF v_use AND p_trace IS NOT TRUE
               AND COALESCE(current_setting('authz.trace', true), 'off') <> 'on' THEN
+        v_assume := authz._assume_missing_ctx();
         IF v_mode = 'temp' THEN
-            SELECT result INTO v_cached FROM _check_memo
-             WHERE relation = p_relation AND object_type = p_object_type AND object_id = p_object_id;
+            SELECT result INTO v_cached FROM _check_memo_v2
+             WHERE relation = p_relation AND object_type = p_object_type AND object_id = p_object_id
+               AND assume = v_assume;
             IF FOUND THEN
                 RETURN v_cached;
             END IF;
         ELSE  -- 'guc'
-            v_key  := p_relation::text || ':' || p_object_type::text || ':' || p_object_id;
+            v_key  := p_relation::text || ':' || p_object_type::text || ':' || p_object_id
+                      || ':' || v_assume::text;
             v_memo := COALESCE(current_setting('authz._memo_data', true), '{}')::jsonb;
             IF v_memo ? v_key THEN
                 RETURN (v_memo ->> v_key)::boolean;
@@ -1015,8 +1117,8 @@ BEGIN
     -- Cache only a path-independent (cycle-free) sub-result.
     IF v_use AND COALESCE(NULLIF(current_setting('authz._memo_prunes', true), '')::bigint, 0) = v_p0 THEN
         IF v_mode = 'temp' THEN
-            INSERT INTO _check_memo VALUES (p_relation, p_object_type, p_object_id, v_result)
-            ON CONFLICT (relation, object_type, object_id) DO NOTHING;
+            INSERT INTO _check_memo_v2 VALUES (p_relation, p_object_type, p_object_id, v_assume, v_result)
+            ON CONFLICT (relation, object_type, object_id, assume) DO NOTHING;
         ELSE  -- 'guc': read-modify-write the jsonb map back into the GUC.
             -- The GUC backend re-parses/serializes the whole map per probe, so a
             -- check with thousands of DISTINCT subproblems degrades (~quadratic)

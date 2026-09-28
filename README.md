@@ -455,7 +455,11 @@ grant) rather than missing input.
 step's reason — `direct_tuple`, `wildcard_tuple`, `object_wildcard_tuple`,
 `contextual_tuple`, `computed`, `userset`, `ttu`, or `intersection_satisfied`.
 For **DENY** it is one of `excluded`, `intersection_unsatisfied`,
-`condition_denied`, or `no_matching_rule`.
+`condition_denied`, or `no_matching_rule`. A step whose conditional tuple
+counted **only by assumption** — a subtracted term (`BUT NOT …`) whose
+condition lacked request context and was therefore taken as holding, fail
+closed — carries `condition_assumed` with its `condition_name` and
+`condition_missing_keys` (see [Missing context](#missing-context)).
 
 ```sql
 -- Just the winning path (drop the failed branches):
@@ -1102,6 +1106,24 @@ SELECT authz.create_condition_sql('demo', 'office_hours',
 SELECT authz.create_condition_sql('demo', 'under_quota',
  $$($1->>'usage_count')::int < ($2->>'max_allowed')::int$$);
 ```
+
+### Missing context
+
+A condition that cannot be evaluated because a required key (declared in
+`required_context`) is absent never *grants*, on either side of the model:
+
+- On a **granting** path the conditional tuple does not match (a
+  `condition_denied` step with `condition_missing_keys`).
+- On a **subtracted** path (`BUT NOT banned`, with `banned` a conditional
+  tuple) the tuple is **assumed to match** — an unevaluable ban still bans
+  (a `condition_assumed` step). Nested exclusions flip again, so "cannot
+  evaluate" always resolves toward deny.
+
+`check_access` therefore answers `false` in both cases;
+`check_access_detailed` reports `state: "conditional"` with the keys in
+`missing_context` when supplying them could change the answer, and `deny`
+when it could not. (OpenFGA reaches the same fail-closed outcome by rejecting
+the whole check with a *missing parameters* error.)
 
 ### Condition languages (`lang`)
 

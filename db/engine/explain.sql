@@ -24,6 +24,7 @@ LANGUAGE sql IMMUTABLE AS $$
         WHEN 'exclusion'    THEN CASE WHEN p_result THEN 'exclusion_satisfied'
                                                     ELSE 'exclusion_failed' END
         WHEN 'direct'       THEN CASE
+            WHEN p_detail LIKE '%assumed to hold'       THEN 'condition_assumed'
             WHEN p_detail = 'tuple found'               THEN 'direct_tuple'
             WHEN p_detail = 'object wildcard tuple (*)' THEN 'object_wildcard_tuple'
             WHEN p_detail = 'wildcard tuple (*)'        THEN 'wildcard_tuple'
@@ -389,26 +390,49 @@ DECLARE
     v_conds   jsonb;
     v_model   jsonb;
     v_state   text;
+    v_assumed jsonb;
 BEGIN
+    -- Collect the assumptions the walk makes on negated terms (a ban whose
+    -- context is missing is assumed to hold — fail closed), so their missing
+    -- keys are reported even where the trace has no per-step condition
+    -- columns (conditional userset / tupleset links).
+    PERFORM set_config('authz._assumed_missing', '', true);
+    PERFORM set_config('authz._collect_assumed', 'on', true);
     v_explain := authz.explain_access(p_store, p_user_type, p_user_id,
                                       p_relation, p_object_type, p_object_id,
                                       context);
+    PERFORM set_config('authz._collect_assumed', '', true);
+    v_assumed := COALESCE(NULLIF(current_setting('authz._assumed_missing', true), ''), '[]')::jsonb;
+    PERFORM set_config('authz._assumed_missing', '', true);
     v_allowed := (v_explain->'decision'->>'allowed')::boolean;
 
     SELECT COALESCE(jsonb_agg(DISTINCT k ORDER BY k), '[]'::jsonb)
       INTO v_missing
-      FROM jsonb_array_elements(v_explain->'trace') AS t(e)
-      CROSS JOIN LATERAL jsonb_array_elements_text(t.e->'condition_missing_keys') AS m(k)
-     WHERE jsonb_typeof(t.e->'condition_missing_keys') = 'array'
-       AND NOT COALESCE((t.e->>'shadow')::boolean, false);   -- a shadow gate cannot make it conditional
+      FROM (
+          SELECT m.k
+            FROM jsonb_array_elements(v_explain->'trace') AS t(e)
+            CROSS JOIN LATERAL jsonb_array_elements_text(t.e->'condition_missing_keys') AS m(k)
+           WHERE jsonb_typeof(t.e->'condition_missing_keys') = 'array'
+             AND NOT COALESCE((t.e->>'shadow')::boolean, false)   -- a shadow gate cannot make it conditional
+          UNION
+          SELECT m.k
+            FROM jsonb_array_elements(v_assumed) AS a(e)
+            CROSS JOIN LATERAL jsonb_array_elements_text(a.e->'keys') AS m(k)
+      ) u(k);
 
-    SELECT COALESCE(jsonb_agg(DISTINCT t.e->>'condition_name'
-                              ORDER BY t.e->>'condition_name'), '[]'::jsonb)
+    SELECT COALESCE(jsonb_agg(DISTINCT n ORDER BY n), '[]'::jsonb)
       INTO v_conds
-      FROM jsonb_array_elements(v_explain->'trace') AS t(e)
-     WHERE jsonb_typeof(t.e->'condition_missing_keys') = 'array'
-       AND jsonb_array_length(t.e->'condition_missing_keys') > 0
-       AND t.e->>'condition_name' IS NOT NULL;
+      FROM (
+          SELECT t.e->>'condition_name' AS n
+            FROM jsonb_array_elements(v_explain->'trace') AS t(e)
+           WHERE jsonb_typeof(t.e->'condition_missing_keys') = 'array'
+             AND jsonb_array_length(t.e->'condition_missing_keys') > 0
+             AND t.e->>'condition_name' IS NOT NULL
+          UNION
+          SELECT a.e->>'condition'
+            FROM jsonb_array_elements(v_assumed) AS a(e)
+           WHERE a.e->>'condition' IS NOT NULL
+      ) u(n);
 
     SELECT jsonb_build_object('name', s.model_name, 'version', s.model_version)
       INTO v_model

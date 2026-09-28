@@ -145,15 +145,17 @@ CREATE OR REPLACE FUNCTION authz._build_condition_snapshot(
 LANGUAGE plpgsql AS $$
 BEGIN
     CREATE TEMP TABLE IF NOT EXISTS _snapshot_conditions (
-        id         integer,
-        expression text,
-        lang       text
+        id               integer,
+        expression       text,
+        lang             text,
+        name             text,
+        required_context jsonb    -- as of p_at: drives the missing-context assumption
     ) ON COMMIT DROP;
 
     TRUNCATE _snapshot_conditions;
 
     INSERT INTO _snapshot_conditions
-    SELECT sub.condition_id, sub.expression, sub.lang
+    SELECT sub.condition_id, sub.expression, sub.lang, sub.name, sub.required_context
       FROM (
         SELECT DISTINCT ON (a.condition_id) a.*
           FROM authz.conditions_audit a
@@ -179,17 +181,31 @@ CREATE OR REPLACE FUNCTION authz._eval_condition_snapshot(
 ) RETURNS boolean
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
-    v_expr text;
-    v_lang text;
+    v_expr     text;
+    v_lang     text;
+    v_name     text;
+    v_required jsonb;
+    v_missing  text[];
 BEGIN
     IF p_condition_id IS NULL THEN
         RETURN true;   -- unconditional
     END IF;
 
-    EXECUTE 'SELECT expression, lang FROM _snapshot_conditions WHERE id = $1'
-       INTO v_expr, v_lang USING p_condition_id;
+    EXECUTE 'SELECT expression, lang, name, required_context FROM _snapshot_conditions WHERE id = $1'
+       INTO v_expr, v_lang, v_name, v_required USING p_condition_id;
     IF v_expr IS NULL THEN
         RETURN false;  -- condition did not exist as of p_at = deny
+    END IF;
+
+    -- Missing-context assumption, as in _eval_condition (flipped by the
+    -- snapshot group loop around negated terms), against the declaration in
+    -- effect as of p_at.
+    IF authz._assume_missing_ctx() THEN
+        v_missing := authz._missing_keys_of(v_required, p_condition_context, p_request_context);
+        IF array_length(v_missing, 1) > 0 THEN
+            PERFORM authz._note_assumed_condition(v_name, v_missing);
+            RETURN true;
+        END IF;
     END IF;
 
     RETURN authz._eval_condition_expr(
@@ -457,6 +473,8 @@ DECLARE
     v_cur_group_op integer;
     v_key          text;
     v_path         text[];
+    v_assume       boolean;   -- negated-term polarity flip
+    v_hit          boolean;
 BEGIN
     IF p_depth > authz._max_depth() THEN
         RAISE EXCEPTION 'audit_check_access: maximum resolution depth (%) exceeded — relationship chain too deep or relation graph too complex',
@@ -546,13 +564,20 @@ BEGIN
                     v_group_pass := false;
                 END IF;
             ELSE
-                IF authz._eval_rule_snapshot(
+                -- Negated rule: evaluated with the missing-context assumption
+                -- FLIPPED (mirrors _check_access_impl; SECURITY-AUDIT F20) so
+                -- an unevaluable ban still bans as of p_at.
+                v_assume := authz._assume_missing_ctx();
+                PERFORM authz._set_assume_missing_ctx(NOT v_assume);
+                v_hit := authz._eval_rule_snapshot(
                     p_store_id, p_user_type, p_user_id,
                     p_relation, p_object_type, p_object_id,
                     rule.rule_type, rule.computed_relation,
                     rule.tupleset_relation, rule.tupleset_computed,
                     p_request_context, p_depth, v_path
-                ) THEN
+                );
+                PERFORM authz._set_assume_missing_ctx(v_assume);
+                IF v_hit THEN
                     v_group_pass := false;
                 END IF;
             END IF;
@@ -607,6 +632,7 @@ DECLARE
     v_cached boolean;
     v_p0     bigint;
     v_result boolean;
+    v_assume boolean := false;   -- memo polarity
 BEGIN
     -- Root: (re)initialize the per-check snapshot memo. Unlike the live
     -- _check_access path, this one needs no read-only handling: audit_check_access
@@ -615,15 +641,18 @@ BEGIN
     -- therefore primary-only (never runs on a hot standby) and always memoizes.
     IF p_depth = 0 THEN
         CREATE TEMP TABLE IF NOT EXISTS _check_memo_snap
-            (relation integer, object_type integer, object_id text, result boolean,
-             PRIMARY KEY (relation, object_type, object_id)) ON COMMIT DROP;
+            (relation integer, object_type integer, object_id text, assume boolean,
+             result boolean,
+             PRIMARY KEY (relation, object_type, object_id, assume)) ON COMMIT DROP;
         TRUNCATE _check_memo_snap;
         PERFORM set_config('authz._memo_prunes_snap', '0', false);
     END IF;
 
     IF v_use THEN
+        v_assume := authz._assume_missing_ctx();
         SELECT result INTO v_cached FROM _check_memo_snap
-         WHERE relation = p_relation AND object_type = p_object_type AND object_id = p_object_id;
+         WHERE relation = p_relation AND object_type = p_object_type AND object_id = p_object_id
+           AND assume = v_assume;
         IF FOUND THEN
             RETURN v_cached;
         END IF;
@@ -637,8 +666,8 @@ BEGIN
 
     -- Cache only a path-independent (cycle-free) sub-result.
     IF v_use AND COALESCE(NULLIF(current_setting('authz._memo_prunes_snap', true), '')::bigint, 0) = v_p0 THEN
-        INSERT INTO _check_memo_snap VALUES (p_relation, p_object_type, p_object_id, v_result)
-        ON CONFLICT (relation, object_type, object_id) DO NOTHING;
+        INSERT INTO _check_memo_snap VALUES (p_relation, p_object_type, p_object_id, v_assume, v_result)
+        ON CONFLICT (relation, object_type, object_id, assume) DO NOTHING;
     END IF;
 
     RETURN v_result;

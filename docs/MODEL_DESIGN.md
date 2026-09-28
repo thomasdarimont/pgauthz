@@ -512,6 +512,13 @@ The `negated = true` flag marks the rule whose match **denies** access.
   time (insert the base rule before or together with negated rules), and
   the evaluator additionally fails closed if such a group exists anyway.
 - `negated = true` is only allowed in exclusion groups.
+- **A subtracted term that cannot be evaluated counts as matched.** If the
+  negated rule resolves to a conditional tuple whose required request context
+  is missing, the engine assumes the ban holds (fail closed) — `check_access`
+  denies, `explain_access` shows a `condition_assumed` step, and
+  `check_access_detailed` reports `conditional` with the missing keys. The
+  assumption flips at every nesting level, so "unresolvable" always resolves
+  toward deny.
 - **Multiple base rules in one exclusion group are AND-ed** — all base
   rules must match (in addition to no negated rule matching). This
   differs from OpenFGA, where the base of a `difference` is typically a

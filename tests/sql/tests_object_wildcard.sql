@@ -158,6 +158,32 @@ END;
 $$;
 SELECT * FROM _test_teardown_ow();
 
+-- ow_11 (F20): a CONDITIONAL block on a wildcard grant fails closed when the
+-- request context it needs is missing — assumed to block; with context that
+-- fails the condition the block does not apply.
+DO $$
+DECLARE s integer;
+BEGIN
+    PERFORM _test_setup_ow();
+    s := authz._s('test_ow');
+    INSERT INTO authz.conditions (store_id, name, expression, required_context)
+    VALUES (s, 'if_flag', $c$ ($1->>'flag') = 'on' $c$, '{"request":["flag"]}'::jsonb);
+    PERFORM authz.write_tuple('test_ow', 'user', 'adm', 'viewer', 'doc', '*');
+    PERFORM authz.write_tuple('test_ow', 'user', 'adm', 'blocked', 'doc', 'd9', p_condition => 'if_flag');
+    PERFORM _test_assert('ow_11a_cond_block_missing_ctx_denies',
+        authz.check_access('test_ow', 'user', 'adm', 'can_comment', 'doc', 'd9')::text, 'false');
+    PERFORM _test_assert('ow_11b_cond_block_state_conditional',
+        authz.check_access_detailed('test_ow', 'user', 'adm', 'can_comment', 'doc', 'd9')->>'state', 'conditional');
+    PERFORM _test_assert('ow_11c_cond_block_holds_with_ctx',
+        authz.check_access_with_context('test_ow', 'user', 'adm', 'can_comment', 'doc', 'd9', '{"flag":"on"}')::text, 'false');
+    PERFORM _test_assert('ow_11d_cond_block_fails_with_ctx',
+        authz.check_access_with_context('test_ow', 'user', 'adm', 'can_comment', 'doc', 'd9', '{"flag":"off"}')::text, 'true');
+    PERFORM _test_assert('ow_11e_unaffected_elsewhere',
+        authz.check_access('test_ow', 'user', 'adm', 'can_comment', 'doc', 'd1')::text, 'true');
+END;
+$$;
+SELECT * FROM _test_teardown_ow();
+
 -- ow_10: conditions on object-wildcard tuples are enforced
 DO $$
 BEGIN

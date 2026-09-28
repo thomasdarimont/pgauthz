@@ -117,26 +117,35 @@ CREATE OR REPLACE FUNCTION authz._eval_condition(
 ) RETURNS boolean
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
-    v_expr   text;
-    v_lang   text;
+    v_expr    text;
+    v_lang    text;
+    v_missing text[];
 BEGIN
     -- No condition = unconditional access
     IF p_condition_id IS NULL THEN
         RETURN true;
     END IF;
 
-    -- Optimistic pass (compositional tri-state, set only by
-    -- check_access_detailed's second evaluation): a condition that would fail
-    -- ONLY because its required context is missing is treated as PASSING, so
-    -- the surrounding graph reveals whether supplying that context could flip
-    -- the decision. A condition that evaluates to false with COMPLETE context
-    -- still denies. Never set on a normal check — contained to the detailed
-    -- classifier's transaction-local GUC.
-    IF current_setting('authz._assume_missing_ctx', true) = 'on'
-       AND array_length(
-             authz._condition_missing_keys(p_condition_id, p_condition_context, p_request_context),
-             1) > 0 THEN
-        RETURN true;
+    -- Missing-context assumption (authz._assume_missing_ctx). A condition that
+    -- would fail ONLY because its required context is missing is treated as
+    -- PASSING while the switch is on; a condition that evaluates to false with
+    -- COMPLETE context still denies. The switch is never on at the root of a
+    -- normal check. It is turned on by:
+    --   - check_access_detailed's second, optimistic evaluation (compositional
+    --     tri-state: does supplying the missing context flip the decision?);
+    --   - the graph walk itself for every NEGATED term of an exclusion group,
+    --     where it is FLIPPED relative to the enclosing polarity (see
+    --     _check_access_impl). "Missing" then resolves toward deny on both
+    --     sides: an unevaluable grant does not grant, an unevaluable ban bans.
+    -- Each assumption is recorded (authz._note_assumed_condition) so the
+    -- detailed classifier can report the keys that would settle it.
+    IF authz._assume_missing_ctx() THEN
+        v_missing := authz._condition_missing_keys(p_condition_id, p_condition_context, p_request_context);
+        IF array_length(v_missing, 1) > 0 THEN
+            PERFORM authz._note_assumed_condition(
+                (SELECT c.name FROM authz.conditions c WHERE c.id = p_condition_id), v_missing);
+            RETURN true;
+        END IF;
     END IF;
 
     -- Bound context size (DoS guard, SECURITY-AUDIT F5): a caller-supplied
@@ -184,22 +193,71 @@ $$;
 -- evaluated to false on the given inputs, not that inputs were absent.
 -- Used by explain_access to annotate condition_denied trace steps.
 ------------------------------------------------------------------------
+-- _missing_keys_of: the required request/stored keys (per a condition's
+-- required_context declaration) that the supplied contexts do not carry.
+-- Pure, so the time-travel path can apply it to a snapshotted declaration.
+CREATE OR REPLACE FUNCTION authz._missing_keys_of(
+    p_required_context  jsonb,
+    p_condition_context jsonb,
+    p_request_context   jsonb
+) RETURNS text[]
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT coalesce(array_agg(missing ORDER BY missing), '{}')
+      FROM (
+          SELECT 'request.' || k AS missing
+            FROM jsonb_array_elements_text(p_required_context->'request') AS k
+           WHERE NOT (coalesce(p_request_context, '{}'::jsonb) ? k)
+          UNION ALL
+          SELECT 'stored.' || k
+            FROM jsonb_array_elements_text(p_required_context->'stored') AS k
+           WHERE NOT (coalesce(p_condition_context, '{}'::jsonb) ? k)
+      ) m;
+$$;
+
 CREATE OR REPLACE FUNCTION authz._condition_missing_keys(
     p_condition_id      integer,
     p_condition_context jsonb,
     p_request_context   jsonb
 ) RETURNS text[]
 LANGUAGE sql STABLE AS $$
-    SELECT coalesce(array_agg(missing ORDER BY missing), '{}')
-      FROM authz.conditions c
-      CROSS JOIN LATERAL (
-          SELECT 'request.' || k AS missing
-            FROM jsonb_array_elements_text(c.required_context->'request') AS k
-           WHERE NOT (coalesce(p_request_context, '{}'::jsonb) ? k)
-          UNION ALL
-          SELECT 'stored.' || k
-            FROM jsonb_array_elements_text(c.required_context->'stored') AS k
-           WHERE NOT (coalesce(p_condition_context, '{}'::jsonb) ? k)
-      ) m
-     WHERE c.id = p_condition_id;
+    SELECT coalesce((
+        SELECT authz._missing_keys_of(c.required_context, p_condition_context, p_request_context)
+          FROM authz.conditions c
+         WHERE c.id = p_condition_id), '{}');
+$$;
+
+------------------------------------------------------------------------
+-- Missing-context assumption switch (transaction-local GUC
+-- authz._assume_missing_ctx). See _eval_condition for the semantics; the
+-- graph walk flips it around every negated term so that "cannot evaluate"
+-- always resolves toward deny.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._assume_missing_ctx() RETURNS boolean
+LANGUAGE sql STABLE AS $$
+    SELECT COALESCE(current_setting('authz._assume_missing_ctx', true), '') = 'on';
+$$;
+
+CREATE OR REPLACE FUNCTION authz._set_assume_missing_ctx(p_on boolean) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM set_config('authz._assume_missing_ctx', CASE WHEN p_on THEN 'on' ELSE '' END, true);
+END;
+$$;
+
+-- _note_assumed_condition: append {condition, keys} to the transaction-local
+-- accumulator authz._assumed_missing — only while authz._collect_assumed is
+-- on (check_access_detailed), so the normal check path pays nothing. The
+-- classifier reads it to report missing keys for assumptions the trace does
+-- not carry per step (conditional userset / tupleset link tuples).
+CREATE OR REPLACE FUNCTION authz._note_assumed_condition(p_name text, p_keys text[]) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF COALESCE(current_setting('authz._collect_assumed', true), '') <> 'on' THEN
+        RETURN;
+    END IF;
+    PERFORM set_config('authz._assumed_missing',
+        (COALESCE(NULLIF(current_setting('authz._assumed_missing', true), ''), '[]')::jsonb
+         || jsonb_build_array(jsonb_build_object('condition', p_name, 'keys', to_jsonb(p_keys))))::text,
+        true);
+END;
 $$;

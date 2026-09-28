@@ -7,6 +7,28 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Security
+
+- **Exclusion terms failed open on missing condition context**
+  (SECURITY-AUDIT F20, found while comparing against OpenFGA advisory
+  GHSA-5278-rrxc-mgf7). `can_view = viewer BUT NOT banned` with a `banned`
+  tuple whose condition needed a request key the caller did not supply
+  evaluated the ban as *false* — "not banned" — and **allowed**, on every
+  path (`check_access`, `check_access_detailed` reported `allow` while
+  listing the missing key, `list_objects`/`list_subjects`, `explain_access`,
+  `audit_check_access`). A missing key on a *granting* term was already
+  fail-closed. **Fixed:** the missing-context assumption
+  (`authz._assume_missing_ctx`) is now flipped for every negated term of an
+  exclusion group — and again at each nesting level — so an unevaluable ban
+  counts as a ban: `check_access` denies, `explain_access` shows a
+  `condition_assumed` step (with `condition_name` / `condition_missing_keys`),
+  `check_access_detailed` reports `conditional` with the keys that would
+  settle it (its optimistic second pass inherits the flip), and the
+  time-travel evaluator snapshots each condition's `required_context` so it
+  applies the same rule as of `p_at`. Both per-check memos are keyed by the
+  assumption polarity (`_check_memo_v2`). Regression tests cover the plain,
+  wildcard-base, nested (`(base BUT NOT a) BUT NOT b`, the shape of OpenFGA
+  GHSA-h7w8-xr72-cv4r) and time-travel cases.
 ## [0.16.0] - 2026-09-29
 
 ### Added

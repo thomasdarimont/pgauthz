@@ -122,6 +122,59 @@ END;
 $$;
 SELECT * FROM _test_teardown_ls();
 
+-- ls_04b (F20 / OpenFGA GHSA-h7w8-xr72-cv4r shape): nested exclusion on a
+-- type-bound wildcard base with a concrete duplicate tuple —
+--   can_post = ok_viewer BUT NOT muted ; ok_viewer = viewer BUT NOT banned
+--   user:* viewer, carol ALSO holds a concrete viewer tuple and is banned,
+--   dave is muted, erin is banned only CONDITIONALLY (missing context).
+-- Subjects the exclusions remove must not be listed; the wildcard row stays.
+DO $$
+DECLARE s integer;
+BEGIN
+    BEGIN PERFORM authz.delete_store('test_ls2'); EXCEPTION WHEN OTHERS THEN NULL; END;
+    s := authz.create_store('test_ls2');
+    PERFORM authz.model_register_type('test_ls2','user');
+    PERFORM authz.model_register_type('test_ls2','doc');
+    PERFORM authz.model_register_relation('test_ls2','viewer');
+    PERFORM authz.model_register_relation('test_ls2','banned');
+    PERFORM authz.model_register_relation('test_ls2','muted');
+    PERFORM authz.model_register_relation('test_ls2','ok_viewer');
+    PERFORM authz.model_register_relation('test_ls2','can_post');
+    PERFORM authz.model_add_rule('test_ls2','doc','viewer','direct');
+    PERFORM authz.model_add_rule('test_ls2','doc','banned','direct');
+    PERFORM authz.model_add_rule('test_ls2','doc','muted','direct');
+    PERFORM authz.model_add_rule('test_ls2','doc','ok_viewer','computed', p_computed_relation=>'viewer', p_group_id=>1, p_group_op=>'exclusion');
+    PERFORM authz.model_add_rule('test_ls2','doc','ok_viewer','computed', p_computed_relation=>'banned', p_group_id=>1, p_group_op=>'exclusion', p_negated=>true);
+    PERFORM authz.model_add_rule('test_ls2','doc','can_post','computed', p_computed_relation=>'ok_viewer', p_group_id=>1, p_group_op=>'exclusion');
+    PERFORM authz.model_add_rule('test_ls2','doc','can_post','computed', p_computed_relation=>'muted', p_group_id=>1, p_group_op=>'exclusion', p_negated=>true);
+    INSERT INTO authz.conditions (store_id, name, expression, required_context)
+    VALUES (s, 'if_flag', $c$ ($1->>'flag') = 'on' $c$, '{"request":["flag"]}'::jsonb);
+
+    PERFORM authz.write_tuple('test_ls2','user','*','viewer','doc','d1');
+    PERFORM authz.write_tuple('test_ls2','user','carol','viewer','doc','d1');   -- concrete duplicate
+    PERFORM authz.write_tuple('test_ls2','user','carol','banned','doc','d1');
+    PERFORM authz.write_tuple('test_ls2','user','dave','viewer','doc','d1');
+    PERFORM authz.write_tuple('test_ls2','user','dave','muted','doc','d1');
+    PERFORM authz.write_tuple('test_ls2','user','erin','viewer','doc','d1');
+    PERFORM authz.write_tuple('test_ls2','user','erin','banned','doc','d1', p_condition=>'if_flag');
+    PERFORM authz.write_tuple('test_ls2','user','frank','viewer','doc','d1');  -- clean
+
+    PERFORM _test_assert('ls_04b_nested_wildcard_base_subjects',
+        (SELECT array_agg(subject_id ORDER BY subject_id)::text
+           FROM authz.list_subjects('test_ls2','user','can_post','doc','d1')),
+        '{*,frank}');
+    PERFORM _test_assert('ls_04c_nested_carol_check_denied',
+        authz.check_access('test_ls2','user','carol','can_post','doc','d1')::text, 'false');
+    PERFORM _test_assert('ls_04d_nested_erin_cond_ban_missing_ctx_denied',
+        authz.check_access('test_ls2','user','erin','can_post','doc','d1')::text, 'false');
+    PERFORM _test_assert('ls_04e_nested_erin_with_ctx_listed',
+        (SELECT array_agg(subject_id ORDER BY subject_id)::text
+           FROM authz.list_subjects('test_ls2','user','can_post','doc','d1', '{"flag":"off"}')),
+        '{*,erin,frank}');
+    PERFORM authz.delete_store('test_ls2');
+END;
+$$;
+
 -- ls_04: exclusion — can_comment doc3 = viewer BUT NOT blocked = {dave}
 DO $$
 BEGIN
