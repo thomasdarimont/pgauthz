@@ -330,7 +330,7 @@ is the only backend ([ADR 0007](adr/0007-pgauthzd-front-door.md)).
 | **pgauthzd (front door)** | **The client-facing entry point.** Standard AuthZEN 1.0 (`/access/v1/*`) + native `/pgauthz/v1/*` HTTP endpoints, served by the one pgauthzd binary. Capability profiles: `pgauthzd-decision` (`decision-only`, Go→PG) and `pgauthzd-opa` (OPA-fronted via `OPA_URL`, consults OPA). **Validates the JWT** — **multi-issuer** via `JWT_ISSUERS` (the token's `iss` selects the validator; legacy single-issuer envs still work). Reverse-search endpoints optionally role-gated (`SEARCH_REQUIRED_ROLE` + `JWT_ROLES_CLAIM`). `pgauthzd-opa` forwards the verified token to OPA (`FORWARD_TOKEN_TO_OPA`) so OPA re-validates it — defense in depth. |
 | **OPA (opt-in sidecar)** | Opt-in (the default stack is OPA-free); when enabled, reachable **only by pgauthzd** (shared service token, no host port) — the sole caller of OPA is pgauthzd. Policy-as-code (Rego) evaluation, JWT re-validation, response caching, endpoint security. Calls **back** into pgauthzd's native callback for graph data — no independent path to the database. |
 | **pgauthzd (decision-only)** | Serves the reads that OPA calls **back** for, via the native `/pgauthz/v1` callback. Connects with a read-only DB role (inherits `authz_reader`), verified read-only at startup. Internal only — no host port. |
-| **pgauthzd (full)** | The write front door: in the default stack it validates the JWT + writer role (`WRITER_ROLE` claim) itself and applies the write natively via pgx under a fixed `authz_writer` role — no OPA on the write path. In the opt-in OPA overlay it *also* serves OPA-forwarded writes via the native callback (trusting OPA's asserted subject + `X-PGAuthz-Role`, gated by the shared service token, no JWT verification of its own). |
+| **pgauthzd (full)** | The write front door: in the default stack it validates the JWT + writer role (`WRITER_ROLE` claim) itself and applies the write natively via pgx under a fixed `authz_writer` role — no OPA on the write path. Also the **action-log ingress**: `POST /pgauthz/v1/events` (batch record, `RECORDER_ROLE` claim) and `/events/reserve` (decision + record under a per-subject lock). In the opt-in OPA overlay it *also* serves OPA-forwarded writes via the native callback (trusting OPA's asserted subject + `X-PGAuthz-Role`, gated by the shared service token, no JWT verification of its own). |
 | **PostgreSQL** | The authorization engine. All logic in PL/pgSQL functions within the `authz` schema. |
 
 ### Level 2: PostgreSQL `authz` Schema
@@ -348,6 +348,10 @@ is the only backend ([ADR 0007](adr/0007-pgauthzd-front-door.md)).
 | `models_audit` | Immutable model-rule change log (versions the model for time-travel) | — |
 | `namespace_access` | Per-namespace role grants (read/write) | — |
 | `tuples` | Relationship facts (the core data) | LIST by `object_type`, optional HASH sub-partitioning |
+| `events` | The **action log** ([ADR 0012](adr/0012-action-log.md)): what principals *actually did*, recorded by the PEP (`record_event`), never inferred from decisions; integer type/relation ids like `tuples` | RANGE by `occurred_at` (monthly) |
+| `model_gates` | Temporal gates: `all_of` clause specs (jsonb) attached to an `(object_type, relation)`, evaluated over `events` after the graph allows | — |
+| `model_gates_audit` | Immutable gate change log (versions gate definitions for time-travel) | — |
+| `recorder_actions` | Per-recorder action allowlists (role → actions it may record), the namespace-access analog for the action log | — |
 | `tuples_audit` | Immutable tuple change log | RANGE by `performed_at` (monthly) |
 
 #### Indexes
@@ -509,6 +513,16 @@ Maximum recursion depth: 32 levels by default, configurable via the
 `authz.max_depth` GUC (see DESIGN.md). Exceeding it raises; cycles are
 pruned independently.
 
+The walk above is the *graph* answer. Every public entry point reaches it
+through one seam, `authz._decide` (`_decide_snapshot` for time-travel): graph
+walk first, then — only if the graph allows — the **temporal gates** on the
+target `(object_type, relation)` are evaluated over the action log for the
+checked principal ([ADR 0012](adr/0012-action-log.md), gates in
+[MODEL_DESIGN §17](MODEL_DESIGN.md#17-temporal-gates-history-dependent-rules)).
+Gates apply to the question asked, never to userset sub-resolution inside
+the walk; any failing clause denies (`decision.reason = gate_denied`). A lint
+step in the test suite fails if an entry point calls the walk directly.
+
 ### Scenario 3: Tuple Write (Write Path)
 
 ```
@@ -541,12 +555,32 @@ With the opt-in OPA overlay, the equivalent write policy-as-code is OPA's
 `write.rego` (which verifies the writer role and forwards to the writer's
 native callback).
 
+### Scenario 3b: Recording an Action (Action Log)
+
+1. The application/PEP performs the action, then calls `POST /pgauthz/v1/events`
+   (or `authz.record_event(s)` directly) with the flat event shape — subject,
+   action (a declared relation), optional object, `kind`
+   (`request` / `response` / `denied`), a minimal payload projection, and an
+   `event_id` + `occurred_at` pair for idempotency
+2. pgauthzd validates the JWT, requires the `RECORDER_ROLE` claim (a writer
+   passes too), attributes `recorded_by` to the token subject, and assumes a
+   recorder-capable DB role (member of `authz_recorder`)
+3. `record_event` checks the recorder's action allowlist and the object
+   type's namespace grant, bounds `occurred_at` against the database clock,
+   and inserts; a re-delivered `event_id` is reported as a duplicate, never a
+   second row. The batch is atomic
+4. For a hard cap the PEP calls `/events/reserve` instead of check-then-record:
+   under an advisory lock per `(store, subject)` the engine takes the full
+   decision and records the `request` (or a `denied`) in the same transaction
+
+The check path never writes — an "allow" is not an action.
+
 ### Scenario 4: Time-Travel Query
 
 1. Caller invokes `audit_check_access(store, user, relation, object, timestamp)`
-2. Engine queries `tuples_audit`, `models_audit`, **and `conditions_audit`** for all events up to the target timestamp
-3. Replays each into a temp table — the last event per tuple / model rule / condition wins (ties broken by `seq`), keeping only those whose last event was an `INSERT`
-4. Runs the snapshot check against the reconstructed tuples, model (`_snapshot_models`), **and condition expressions** (`_snapshot_conditions`), so all reflect time T
+2. Engine queries `tuples_audit`, `models_audit`, `conditions_audit` **and `model_gates_audit`** for all events up to the target timestamp
+3. Replays each into a temp table — the last event per tuple / model rule / condition / gate wins (ties broken by `seq`), keeping only those whose last event was an `INSERT`
+4. Runs the snapshot check against the reconstructed tuples, model (`_snapshot_models`), condition expressions (`_snapshot_conditions`) **and gate definitions** (`_snapshot_gates`), so all reflect time T; the action log needs no snapshot (it is append-only) — gate windows are evaluated relative to T over events with `occurred_at <= T AND recorded_at <= T`, i.e. what the engine could have *known* then
 5. Drops the temp tables at transaction end
 
 ### Scenario 5: Error Handling
@@ -891,6 +925,12 @@ concrete integration examples.
 - **Time-travel queries:** reconstruct permission state at any past timestamp by replaying the audit log
 - **Transactional versioning:** audit rows carry the transaction timestamp (`transaction_timestamp()`), so all changes in one transaction share one version and time-travel applies a transaction's effect atomically — never a partial, mid-transaction state. The `seq` identity orders events that share a timestamp (last-write-wins replay). Group related changes in one transaction to give them one version
 - **Audit suppression control:** only `authz_admin` can suppress audit logging (for maintenance operations)
+
+Two logs, two questions: the **audit trail** (`*_audit`) answers "how did
+the authorization graph change and who changed it"; the **action log**
+(`events`) answers "what did principals actually do", as asserted by a
+trusted recorder. Both are append-only and monthly-partitioned; `list_events`
+(auditor) is the inspection API for the latter.
 
 ### Testability
 

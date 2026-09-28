@@ -21,21 +21,24 @@ This means:
 
 ### Role hierarchy
 
-Four application roles — both `authz_auditor` and `authz_writer`
-inherit from `authz_reader`, and `authz_admin` inherits both:
+Five application roles — both `authz_auditor` and `authz_writer` inherit
+from `authz_reader`, `authz_writer` also inherits `authz_recorder`, and
+`authz_admin` inherits both branches:
 
 ```
                 ┌── authz_auditor ──┐
      authz_reader                   ├── authz_admin
                 └── authz_writer ───┘
+   authz_recorder ───────┘
 ```
 
 | Role | Capabilities |
 |---|---|
-| `authz_auditor` | Reader + audit trail queries, time-travel access checks (`audit_list_user`, `audit_list_object`, `audit_check_access`, `audit_list_actions`) |
+| `authz_auditor` | Reader + audit trail queries, time-travel access checks (`audit_list_user`, `audit_list_object`, `audit_check_access`, `audit_list_actions`), the changefeed (`watch_changes`) and the action log (`list_events`) |
 | `authz_reader` | Live access checks, search queries, explain |
-| `authz_writer` | Tuple management (write, delete, batch operations) |
-| `authz_admin` | Store lifecycle, model evolution (`model_register_type`, `model_register_relation`, `model_add_rule`, `model_remove_rule`), type restrictions, namespace management, model import, maintenance (`cleanup_redundant_tuples`) |
+| `authz_recorder` | Feed the action log only (`record_event`, `record_events_jsonb`, `reserve_event`) — a **PEP-only** credential: recorded events drive temporal gates, so a recorder can move a gate; never grant it to end-user-facing clients ([ADR 0012](adr/0012-action-log.md)) |
+| `authz_writer` | Tuple management (write, delete, batch operations); inherits `authz_recorder` |
+| `authz_admin` | Store lifecycle, model evolution (`model_register_type`, `model_register_relation`, `model_add_rule`, `model_remove_rule`), type restrictions, temporal gates (`add_gate`, `drop_gate`), namespace management, recorder allowlists (`grant_recorder_actions`), model import, maintenance (`cleanup_redundant_tuples`, event partitions and retention) |
 
 This separation ensures compliance teams can review both current
 permissions and historical access states, without being able to
@@ -114,6 +117,12 @@ in `tuples_audit`, including:
 The `performed_by` variable is set via `set_config(..., true)`, making
 it transaction-local — it auto-resets after each call with no risk of
 leaking between requests.
+
+The audit trail is one of **two** append-only logs. It records how the
+*graph* changed. The **action log** (`authz.events`, [ADR 0012](adr/0012-action-log.md))
+records what principals *did*, as asserted by a trusted recorder, and is what
+temporal gates evaluate; the check path never writes to it — a decision is
+not an action. Both are monthly-partitioned with partition-drop retention.
 
 ## Performance
 
@@ -433,6 +442,31 @@ Use application-side logic when:
 - The constraint is about the *object being acted on* (invoice amount,
   document status) rather than the *grant itself*
 - Different applications apply different thresholds to the same permission
+
+### Temporal gates: history as a third layer
+
+Conditions look at the request; **temporal gates** look at the *past* — what
+the principal already did, as recorded in the action log by the PEP after
+the action ran ([ADR 0012](adr/0012-action-log.md),
+[MODEL_DESIGN §17](MODEL_DESIGN.md#17-temporal-gates-history-dependent-rules)).
+They are centrally managed, history-dependent **veto** rules attached to an
+`(object_type, relation)`, evaluated after the graph allows, over four fixed
+primitives (`count_within`, `count_distinct_within`, `sum_within`,
+`formerly_within`). The decision composes as
+
+```
+graph allows  AND  conditions allow  AND  temporal gates over recorded actions allow
+```
+
+Use a gate when the rule is a *permission* question a security or compliance
+owner wants defined and enforced centrally — quotas and velocity caps, prior
+approval, step-up freshness, lockout after repeated denials, separation of
+duties, agent guardrails — and the same rule as for conditions applies: keep
+*outcome* decisions (which account to debit, whether to retry, the next
+workflow state) in the application. Gates are not a workflow engine, and they
+bound *recorded* actions: the recorder (`authz_recorder`) is a trusted PEP
+credential, and where a cap must hold exactly under concurrency the PEP uses
+`reserve_event` rather than check-then-record.
 
 ## Model updates
 

@@ -50,11 +50,12 @@ controlled through these application roles:
 
 | Role | Can do | Inherits |
 |---|---|---|
-| `authz_auditor` | `audit_check_access`, `audit_list_actions`, `audit_list_user`, `audit_list_object` | — |
+| `authz_auditor` | `audit_check_access`, `audit_list_actions`, `audit_list_user`, `audit_list_object`, `watch_changes`, `list_events` | — |
 | `authz_reader` | `check_access`, `check_access_with_context`, `list_objects`, `list_subjects`, `list_actions`, `validate_condition`, `explain_access` | — |
 | `authz_contextual_reader` | `check_access_with_contextual_tuples`, `check_access_with_contextual_tuples_jsonb` (inject ephemeral tuples — grant only to trusted PDP callers, NOT to roles reachable by untrusted clients) | — |
-| `authz_writer` | `write_tuple`, `delete_tuple`, `write_tuples`, `delete_tuples`, `write_tuples_jsonb`, `delete_tuples_jsonb`, `delete_user_tuples` | `authz_reader` |
-| `authz_admin` | `create_store`, `retire_store`, `delete_store`, `model_register_type`, `model_register_relation`, `model_add_rule`, `model_remove_rule`, `model_remove_rules`, `find_redundant_tuples`, manage `namespace_access` table | `authz_writer` |
+| `authz_recorder` | `record_event`, `record_events_jsonb`, `reserve_event` — feed the action log ([ADR 0012](adr/0012-action-log.md)). PEP-only: recorded events drive temporal gates | — |
+| `authz_writer` | `write_tuple`, `delete_tuple`, `write_tuples`, `delete_tuples`, `write_tuples_jsonb`, `delete_tuples_jsonb`, `delete_user_tuples`, `write_tuples_checked` | `authz_reader`, `authz_recorder` |
+| `authz_admin` | `create_store`, `retire_store`, `delete_store`, `model_register_type`, `model_register_relation`, `model_add_rule`, `model_remove_rule`, `model_remove_rules`, `add_gate`, `drop_gate`, `grant_recorder_actions`, `revoke_recorder_actions`, `find_redundant_tuples`, event partitions/retention (`ensure_event_partitions`, `drop_event_partitions_before`, `purge_events`), manage `namespace_access` table | `authz_writer`, `authz_auditor` |
 
 `authz_auditor` is a peer of `authz_reader`, not part of the linear chain.
 The decision-only pgauthzd connects as `authzen_direct`, which inherits `authz_reader`.

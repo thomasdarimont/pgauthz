@@ -43,8 +43,10 @@ one — no independent party has attested to these claims.
 ## Threat model
 
 **Assets.** The authorization tuples + models (who-can-do-what), the audit trail
-(system of record), and the correctness of every decision (a wrong *allow* is
-the worst outcome).
+(system of record), the **action log** (what principals did, as asserted by
+trusted recorders — temporal gates decide on it, so its integrity is a decision
+input; ADR 0012), and the correctness of every decision (a wrong *allow* is the
+worst outcome).
 
 **Trust boundaries.**
 

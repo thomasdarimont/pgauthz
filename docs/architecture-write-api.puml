@@ -35,7 +35,7 @@ database "PostgreSQL\nprimary" as pg #Orange
 
 N1 -right-> pgd
 
-appA -down-> pgd : "A: POST /pgauthz/v1/write\n(JWT: writer role)"
+appA -down-> pgd : "A: POST /pgauthz/v1/write\n(JWT: writer role)\nPOST /pgauthz/v1/events\n(JWT: recorder role)"
 pgd -down-> pg : "SQL (pgx; authz_writer\nor per-app role)"
 
 appB -down-> pg : "B: direct SQL\nwrite_tuple() /\nwrite_tuples_checked()\n(authz_writer role)"
