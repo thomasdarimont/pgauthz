@@ -323,6 +323,14 @@ pre-1.0, minor versions may include breaking changes.
   to the Keycloak paths only, so demo-issuer tokens (`tests/test-authzen.sh`)
   lost their writer/recorder roles (403 on writes and events) when the
   playground overlay was up; `roles` is now listed first.
+- **`DECISION_LOG_REQUIRED` could latch unhealthy until a restart** (review
+  #12): decisions were refused before they reached the logger, so nothing
+  ever retried a failed sink. The guard and `/readyz` now probe the sink with
+  a marker line (`endpoint: decision_log_probe`, `state: sink_recovered`) at
+  most once per second and resume when it accepts. Required mode now rejects
+  `DECISION_LOG_SAMPLE < 1` (sampled evidence is not complete evidence), and
+  the model-provenance read on a cache miss runs under the request context
+  with a 100 ms budget instead of an unbounded background context.
 - **OPA `explain` now forwards `input.context`** (new `pgauthz.explain_access_with_context`).
   Explaining through OPA — the playground's "As me" mode — evaluated conditions
   and temporal-gate clauses that read `$request.*` without the request context,

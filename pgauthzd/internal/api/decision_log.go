@@ -30,6 +30,11 @@ func WithVersion(v string) Option {
 // therefore attributed with up to this much delay in the log.
 const modelVersionTTL = 30 * time.Second
 
+// modelVersionBudget bounds a cache-miss read: provenance is best-effort and
+// must never hold a decision's response; on timeout the line goes out
+// without a model block.
+const modelVersionBudget = 100 * time.Millisecond
+
 type modelCacheEntry struct {
 	mv  authz.ModelVersion
 	exp time.Time
@@ -50,7 +55,9 @@ func (h *Handler) modelProvenance(ctx context.Context, store string) *decisionlo
 		return refOf(e.mv)
 	}
 	h.modelMu.Unlock()
-	mv, err := mvr.ModelVersion(ctx, store)
+	rctx, cancel := context.WithTimeout(ctx, modelVersionBudget)
+	defer cancel()
+	mv, err := mvr.ModelVersion(rctx, store)
 	if err != nil {
 		// Provenance is best-effort: the line goes out without a model block.
 		slog.Debug("decision log: model provenance unavailable", "store", store, "error", err)
@@ -128,13 +135,13 @@ func (h *Handler) decisionEntry(r *http.Request, endpoint string, req authz.Eval
 
 // logDecision finalizes and writes an entry: outcome (decision + optional
 // detail, or the error) and latency since start.
-func (h *Handler) logDecision(e decisionlog.Entry, start time.Time, decision bool, detail map[string]any, err error) {
+func (h *Handler) logDecision(ctx context.Context, e decisionlog.Entry, start time.Time, decision bool, detail map[string]any, err error) {
 	if h.decisions == nil {
 		return
 	}
 	e.LatencyMS = float64(time.Since(start).Microseconds()) / 1000
 	e.PgauthzdVersion = h.version
-	e.Model = h.modelProvenance(context.Background(), e.Store)
+	e.Model = h.modelProvenance(ctx, e.Store)
 	e.Policy = h.policyProvenance(e.Via)
 	if err != nil {
 		e.Error = err.Error()
@@ -186,10 +193,10 @@ func (h *Handler) logBatch(r *http.Request, endpoint, via string, evals []authz.
 			e.ContextKeys = mergeKeys(e.ContextKeys, sharedKeys)
 		}
 		if err != nil {
-			h.logDecision(e, start, false, nil, err)
+			h.logDecision(r.Context(), e, start, false, nil, err)
 			continue
 		}
-		h.logDecision(e, start, results[i].Decision, nil, nil)
+		h.logDecision(r.Context(), e, start, results[i].Decision, nil, nil)
 	}
 }
 
@@ -217,6 +224,11 @@ func (h *Handler) requireDecisionLog(w http.ResponseWriter) bool {
 	if h.cfg == nil || !h.cfg.DecisionLogRequired || h.decisions.Healthy() {
 		return true
 	}
+	// Give the sink a (rate-limited) chance to recover before refusing —
+	// otherwise a refused decision never reaches Log and the state latches.
+	if h.decisions.Probe() {
+		return true
+	}
 	metrics.AuthzDenied.WithLabelValues("decision_log_required").Inc()
 	writeError(w, http.StatusServiceUnavailable, "decision log unavailable (DECISION_LOG_REQUIRED): refusing to decide without evidence")
 	return false
@@ -235,7 +247,7 @@ func (h *Handler) logSearch(r *http.Request, endpoint, via, store string, subjec
 	}, via)
 	e.LatencyMS = float64(time.Since(start).Microseconds()) / 1000
 	e.PgauthzdVersion = h.version
-	e.Model = h.modelProvenance(context.Background(), store)
+	e.Model = h.modelProvenance(r.Context(), store)
 	e.Policy = h.policyProvenance(via)
 	if err != nil {
 		e.Error = err.Error()

@@ -48,4 +48,8 @@ func TestDecisionLogConfig(t *testing.T) {
 	if c, err := load(map[string]string{"DECISION_LOG": "stdout", "DECISION_LOG_REQUIRED": "true", "DECISION_LOG_SEARCHES": "true"}); err != nil || !c.DecisionLogRequired || !c.DecisionLogSearches {
 		t.Fatalf("valid strict config: %v %+v", err, c)
 	}
+	// required = complete: sampling is refused
+	if _, err := load(map[string]string{"DECISION_LOG": "stdout", "DECISION_LOG_REQUIRED": "true", "DECISION_LOG_SAMPLE": "0.5"}); err == nil || !strings.Contains(err.Error(), "DECISION_LOG_SAMPLE must be 1") {
+		t.Fatalf("required with sampling accepted: %v", err)
+	}
 }

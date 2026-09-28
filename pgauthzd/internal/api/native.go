@@ -466,7 +466,7 @@ func (h *Handler) ReserveEvent(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		metrics.EventsRejected.WithLabelValues(rejectReason(err)).Inc()
-		h.logDecision(entry, start, false, nil, err)
+		h.logDecision(r.Context(), entry, start, false, nil, err)
 		writeWriteError(w, err)
 		return
 	}
@@ -479,7 +479,7 @@ func (h *Handler) ReserveEvent(w http.ResponseWriter, r *http.Request) {
 	if h.decisions != nil {
 		allowed, _ := resp["allowed"].(bool)
 		entry.Gates = decisionlog.GatesOf(resp["gates"])
-		h.logDecision(entry, start, allowed, map[string]any{"reason": resp["reason"]}, nil)
+		h.logDecision(r.Context(), entry, start, allowed, map[string]any{"reason": resp["reason"]}, nil)
 	}
 	if seq, ok := resp["seq"].(float64); ok && seq > 0 {
 		metrics.EventsRecorded.WithLabelValues("recorded").Inc()
@@ -548,7 +548,7 @@ func (h *Handler) Explain(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			_ = json.Unmarshal(out, &parsed)
 		}
-		h.logDecision(entry, start, parsed.Decision.Allowed, map[string]any{"reason": parsed.Decision.Reason}, err)
+		h.logDecision(r.Context(), entry, start, parsed.Decision.Allowed, map[string]any{"reason": parsed.Decision.Reason}, err)
 	}
 	if err != nil {
 		writeInternalError(w, err)

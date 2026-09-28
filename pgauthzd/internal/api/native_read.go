@@ -86,7 +86,7 @@ func (h *Handler) NativeCheck(w http.ResponseWriter, r *http.Request) {
 		}
 		decision, err := cc.CheckWithContextualTuples(r.Context(), evalReq, req.ContextualTuples)
 		recordDecision(store, metrics.APINative, decision, err)
-		h.logDecision(entry, start, decision, nil, err)
+		h.logDecision(r.Context(), entry, start, decision, nil, err)
 		if err != nil {
 			writeInternalError(w, err)
 			return
@@ -98,7 +98,7 @@ func (h *Handler) NativeCheck(w http.ResponseWriter, r *http.Request) {
 		if dc, ok := h.raw.(authz.DetailedChecker); ok {
 			decision, detail, err := dc.CheckAccessDetailed(r.Context(), evalReq)
 			recordDecisionDetail(store, metrics.APINative, detail, err)
-			h.logDecision(entry, start, decision, detail, err)
+			h.logDecision(r.Context(), entry, start, decision, detail, err)
 			if err != nil {
 				writeInternalError(w, err)
 				return
@@ -114,7 +114,7 @@ func (h *Handler) NativeCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	decision, err := h.raw.CheckAccess(r.Context(), evalReq)
 	recordDecision(store, metrics.APINative, decision, err)
-	h.logDecision(entry, start, decision, nil, err)
+	h.logDecision(r.Context(), entry, start, decision, nil, err)
 	if err != nil {
 		writeInternalError(w, err)
 		return

@@ -507,7 +507,7 @@ func (h *Handler) Evaluation(w http.ResponseWriter, r *http.Request) {
 	if dc, ok := h.backend.(authz.DetailedChecker); ok && (wantDetail || h.wantDetailForLog()) {
 		decision, detail, err := dc.CheckAccessDetailed(r.Context(), evalReq)
 		recordDecisionDetail(store, metrics.APIAuthZEN, detail, err)
-		h.logDecision(entry, start, decision, detail, err)
+		h.logDecision(r.Context(), entry, start, decision, detail, err)
 		if err != nil {
 			writeInternalError(w, err)
 			return
@@ -522,7 +522,7 @@ func (h *Handler) Evaluation(w http.ResponseWriter, r *http.Request) {
 
 	decision, err := h.backend.CheckAccess(r.Context(), evalReq)
 	recordDecision(store, metrics.APIAuthZEN, decision, err)
-	h.logDecision(entry, start, decision, nil, err)
+	h.logDecision(r.Context(), entry, start, decision, nil, err)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -895,7 +895,7 @@ func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
 	}
 	// DECISION_LOG_REQUIRED: a failed evidence write makes the instance
 	// not ready until a write succeeds again (decisions are refused meanwhile).
-	if h.cfg != nil && h.cfg.DecisionLogRequired && !h.decisions.Healthy() {
+	if h.cfg != nil && h.cfg.DecisionLogRequired && !h.decisions.Healthy() && !h.decisions.Probe() {
 		slog.Warn("readiness check failed", "error", "decision log write failed (DECISION_LOG_REQUIRED)")
 		writeError(w, http.StatusServiceUnavailable, "unhealthy")
 		return

@@ -117,11 +117,40 @@ type Logger struct {
 	// unhealthy is set when a write fails and cleared by the next successful
 	// write; DECISION_LOG_REQUIRED reads it to fail closed.
 	unhealthy atomic.Bool
+	// lastProbe (unix nanos) rate-limits Probe so a dead sink is retried at
+	// most once per ProbeInterval, not once per refused request.
+	lastProbe atomic.Int64
 }
+
+// ProbeInterval bounds how often Probe retries a failed sink.
+var ProbeInterval = time.Second
 
 // Healthy reports whether the last write succeeded (true for a nil Logger
 // and before the first write).
 func (l *Logger) Healthy() bool { return l == nil || !l.unhealthy.Load() }
+
+// Probe gives a failed sink a chance to recover: while the logger is
+// unhealthy it writes a marker line at most once per ProbeInterval and
+// reports whether the sink is healthy afterwards. Required mode refuses
+// decisions before they reach Log, so without this nothing would ever retry
+// the sink and a transient failure would need a restart. The marker line
+// (`endpoint: decision_log_probe`, `state: sink_recovered`) is legitimate
+// evidence: its presence in the stream is the proof that writes resumed.
+func (l *Logger) Probe() bool {
+	if l == nil || !l.unhealthy.Load() {
+		return true
+	}
+	now := time.Now()
+	last := l.lastProbe.Load()
+	if last != 0 && now.Sub(time.Unix(0, last)) < ProbeInterval {
+		return false
+	}
+	if !l.lastProbe.CompareAndSwap(last, now.UnixNano()) {
+		return false // another request is probing right now
+	}
+	l.Log(Entry{Time: now.UTC(), Listener: "-", Endpoint: "decision_log_probe", State: "sink_recovered"})
+	return l.Healthy()
+}
 
 // Open returns a Logger for cfg, or nil when the sink is off. A file sink is
 // opened append-only (O_APPEND) so copy-truncate rotation works.

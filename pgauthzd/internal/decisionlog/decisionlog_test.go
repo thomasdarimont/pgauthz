@@ -3,6 +3,7 @@ package decisionlog
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -172,5 +173,53 @@ func TestHealthyTracksLastWrite(t *testing.T) {
 	l.Log(Entry{Endpoint: "check", Decision: Bool(false)})
 	if !l.Healthy() {
 		t.Fatal("a successful write must clear the unhealthy state")
+	}
+}
+
+func TestProbeRecoversASink(t *testing.T) {
+	old := ProbeInterval
+	ProbeInterval = 0
+	defer func() { ProbeInterval = old }()
+	var nilLogger *Logger
+	if !nilLogger.Probe() {
+		t.Fatal("nil logger probe must be true")
+	}
+	fw := &failWriter{fail: true}
+	var buf bytes.Buffer
+	l := New(io.MultiWriter(&buf, fw), 1, nil)
+	l.Log(Entry{Endpoint: "check", Decision: Bool(false)})
+	if l.Healthy() {
+		t.Fatal("expected unhealthy after a failed write")
+	}
+	if l.Probe() {
+		t.Fatal("probe against a still-failing sink must report unhealthy")
+	}
+	fw.fail = false
+	buf.Reset()
+	if !l.Probe() {
+		t.Fatal("probe must recover once the sink accepts writes")
+	}
+	if !strings.Contains(buf.String(), `"endpoint":"decision_log_probe"`) || !strings.Contains(buf.String(), `"state":"sink_recovered"`) {
+		t.Fatalf("probe must leave a marker line: %q", buf.String())
+	}
+	if !l.Healthy() || !l.Probe() {
+		t.Fatal("healthy after recovery; a probe on a healthy logger is a no-op true")
+	}
+}
+
+func TestProbeIsRateLimited(t *testing.T) {
+	old := ProbeInterval
+	ProbeInterval = time.Hour
+	defer func() { ProbeInterval = old }()
+	fw := &failWriter{fail: true}
+	l := New(fw, 1, nil)
+	l.Log(Entry{Endpoint: "check", Decision: Bool(false)})
+	attempts := 0
+	l.OnResult = func(string) { attempts++ }
+	fw.fail = false
+	l.Probe() // first probe within the interval: writes
+	l.Probe() // second: suppressed
+	if attempts != 1 {
+		t.Fatalf("probe writes = %d, want 1 (rate-limited)", attempts)
 	}
 }

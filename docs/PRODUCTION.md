@@ -807,6 +807,9 @@ effect at that moment.
 DECISION_LOG=stdout            # or stderr, or file:/var/log/pgauthzd/decisions.log
 DECISION_LOG_SAMPLE=0.1        # keep 10% of allows; denies/conditionals/errors always
 DECISION_LOG_DETAIL=true       # state + reason on every line (detailed evaluation, log only)
+DECISION_LOG_SEARCHES=true     # one line per search: dimensions + result count, never ids
+DECISION_LOG_REQUIRED=true     # regulated / evidence-complete: fail closed on a failed write
+DECISION_LOG_SAMPLE=1          # required by DECISION_LOG_REQUIRED (complete evidence)
 ```
 
 - Off by default; the hot path is unchanged unless enabled. With
@@ -826,7 +829,12 @@ DECISION_LOG_DETAIL=true       # state + reason on every line (detailed evaluati
   shows logged, sampled-out and failed writes, so a broken sink is visible.
   `DECISION_LOG_REQUIRED=true` turns it into evidence: after a failed write
   the instance is not ready and refuses decisions (503) until the sink
-  accepts a line again. Pair it with a sink you monitor — a full disk then
+  accepts a line again — the guard retries the sink with a marker line at
+  most once per second (`endpoint: decision_log_probe`), so a transient
+  failure heals without a restart. It requires `DECISION_LOG_SAMPLE=1`. The
+  circuit is global: with `DECISION_LOG_SEARCHES` a failed search-line write
+  trips it as well, while searches themselves keep answering (only decision
+  endpoints refuse). Pair it with a sink you monitor — a full disk then
   stops authorization on purpose.
 
 ## Scale & supported limits

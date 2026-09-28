@@ -48,8 +48,10 @@ written by the daemon, never by the engine.
 **Where it is emitted.** On every endpoint that produces a decision:
 AuthZEN `evaluation` and `evaluations` (one line per evaluation), native
 `check` and `check-batch` (one line per check), `explain`, and
-`events/reserve`. Searches are not decisions and are not logged (they are
-counted). Both listeners emit, labelled `listener: public|callback`, so a
+`events/reserve`. Searches are not decisions: they are counted, not logged
+by default, and their result ids are never logged; `DECISION_LOG_SEARCHES`
+adds one line per search with the query dimensions and the result count.
+Both listeners emit, labelled `listener: public|callback`, so a
 decision that OPA fetched through the callback appears once, at the edge
 that answered it; an OPA-fronted AuthZEN decision is labelled `via: opa`.
 
@@ -141,4 +143,11 @@ counts logged, sampled-out and failed writes so a silent sink is visible.
   log is evidence, not a ledger. Deployments that need evidentiary
   completeness opt into `DECISION_LOG_REQUIRED`: a failed write trips
   readiness and refuses decisions until the sink accepts a line again
-  (availability traded for completeness, explicitly).
+  (availability traded for completeness, explicitly). Required mode implies
+  `DECISION_LOG_SAMPLE=1` (rejected otherwise — sampled evidence is not
+  complete evidence). Recovery is a rate-limited **probe**: while unhealthy,
+  the guard and readiness write a marker line (`endpoint:
+  decision_log_probe`, `state: sink_recovered`) at most once per second; the
+  marker's presence in the stream is the proof that writes resumed. The
+  circuit is global to the logger: a failed search-line write trips it too,
+  and only decision endpoints refuse — searches keep answering.

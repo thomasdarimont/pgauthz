@@ -525,6 +525,9 @@ func Load() (*Config, error) {
 	if c.DecisionLogSample < 0 || c.DecisionLogSample > 1 {
 		return nil, fmt.Errorf("DECISION_LOG_SAMPLE %v: expected a fraction in [0,1]", c.DecisionLogSample)
 	}
+	if c.DecisionLogRequired && c.DecisionLogSample < 1 {
+		return nil, fmt.Errorf("DECISION_LOG_REQUIRED=true means complete evidence: DECISION_LOG_SAMPLE must be 1 (got %v)", c.DecisionLogSample)
+	}
 	if c.DecisionLog == "" || c.DecisionLog == "off" {
 		if c.DecisionLogRequired {
 			return nil, fmt.Errorf("DECISION_LOG_REQUIRED=true needs a sink: set DECISION_LOG")

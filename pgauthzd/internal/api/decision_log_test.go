@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -327,5 +328,50 @@ func TestDecisionLogSearchLines(t *testing.T) {
 		`{"subject":{"type":"user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document"}}`))
 	if buf.Len() != 0 {
 		t.Fatalf("search logged while off: %s", buf.String())
+	}
+}
+
+// Review #12: required mode must recover WITHOUT any other write reaching
+// the logger — the guard probes the sink itself.
+func TestDecisionLogRequiredRecoversByProbe(t *testing.T) {
+	old := decisionlog.ProbeInterval
+	decisionlog.ProbeInterval = 0
+	defer func() { decisionlog.ProbeInterval = old }()
+	fw := &flakyWriter{}
+	var buf bytes.Buffer
+	cfg := &config.Config{AllowSubjectOverride: true, DefaultStore: "demo", DecisionLog: "stdout", DecisionLogRequired: true}
+	h := NewHandler(detailStub{}, detailStub{}, detailStub{}, cfg, WithDecisionLog(decisionlog.New(io.MultiWriter(&buf, fw), 1, nil)))
+	body := `{"subject":{"type":"user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"d1"}}`
+
+	fw.fail = true
+	w := httptest.NewRecorder()
+	h.Evaluation(w, jsonReq("POST", "/access/v1/evaluation", body)) // answered; its write fails
+	w = httptest.NewRecorder()
+	h.Evaluation(w, jsonReq("POST", "/access/v1/evaluation", body))
+	if w.Code != 503 {
+		t.Fatalf("unhealthy sink must refuse: %d", w.Code)
+	}
+	w = httptest.NewRecorder()
+	h.Readyz(w, httptest.NewRequest("GET", "/readyz", nil))
+	if w.Code != 503 {
+		t.Fatalf("readyz must be 503 while the sink is down: %d", w.Code)
+	}
+
+	// the sink comes back: the next decision's guard probes, recovers, decides
+	fw.fail = false
+	buf.Reset()
+	w = httptest.NewRecorder()
+	h.Evaluation(w, jsonReq("POST", "/access/v1/evaluation", body))
+	if w.Code != 200 {
+		t.Fatalf("decisions must resume once the sink accepts a line: %d %s", w.Code, w.Body.String())
+	}
+	got := lines(&buf)
+	if len(got) != 2 || got[0]["endpoint"] != "decision_log_probe" || got[0]["state"] != "sink_recovered" || got[1]["endpoint"] != "evaluation" {
+		t.Fatalf("expected a probe marker followed by the decision line: %s", buf.String())
+	}
+	w = httptest.NewRecorder()
+	h.Readyz(w, httptest.NewRequest("GET", "/readyz", nil))
+	if w.Code != 200 {
+		t.Fatalf("readyz after recovery: %d", w.Code)
 	}
 }
