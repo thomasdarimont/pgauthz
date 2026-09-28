@@ -17,8 +17,11 @@ const fontFor = (hex) => {
   return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6 ? 'black' : 'white';
 };
 
-const esc = (s) => String(s ?? '')
-  .replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+const esc = (s) =>
+  String(s ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n');
 
 export function cyToDot(cy, { name = 'g', rankdir = 'TB' } = {}) {
   // Only export what's on screen (respects the type graph's hide filters).
@@ -32,7 +35,9 @@ export function cyToDot(cy, { name = 'g', rankdir = 'TB' } = {}) {
   cy.nodes(':visible').forEach((n) => {
     const d = n.data();
     const fill = rgbToHex(n.style('background-color'));
-    lines.push(`  "${esc(d.id)}" [label="${esc(d.label ?? d.id)}", fillcolor="${fill}", fontcolor="${fontFor(fill)}"];`);
+    lines.push(
+      `  "${esc(d.id)}" [label="${esc(d.label ?? d.id)}", fillcolor="${fill}", fontcolor="${fontFor(fill)}"];`,
+    );
   });
   cy.edges(':visible').forEach((e) => {
     const d = e.data();

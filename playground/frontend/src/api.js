@@ -9,7 +9,11 @@ async function call(path, body, allow = []) {
     body: body ? JSON.stringify(body) : undefined,
   });
   let json = null;
-  try { json = await r.json(); } catch { /* non-JSON */ }
+  try {
+    json = await r.json();
+  } catch {
+    /* non-JSON */
+  }
   // Surface backend failures as thrown errors so callers (via _run) show them
   // instead of silently rendering empty/undefined/stale state. `allow` lists
   // non-2xx statuses that are a valid response (e.g. /api/me → 401 when logged out).
@@ -38,12 +42,26 @@ export const api = {
   q: (rule, input) => call('api/q', { rule, input }),
   // AuthZEN console: proxied to the authzen-opa service with the user's token.
   // `store` scopes the call to the selected store (tenant path form on the service).
-  authzenConfig: (store) => call('api/authzen/config' + (store ? '?store=' + encodeURIComponent(store) : ''), undefined, [401, 502, 503]),
-  authzen: (endpoint, body, store) => call('api/authzen/' + endpoint + (store ? '?store=' + encodeURIComponent(store) : ''), body, [400, 401, 403, 502, 503]),
+  authzenConfig: (store) =>
+    call(
+      'api/authzen/config' + (store ? '?store=' + encodeURIComponent(store) : ''),
+      undefined,
+      [401, 502, 503],
+    ),
+  authzen: (endpoint, body, store) =>
+    call(
+      'api/authzen/' + endpoint + (store ? '?store=' + encodeURIComponent(store) : ''),
+      body,
+      [400, 401, 403, 502, 503],
+    ),
   // Action-log demo: record / reserve via pgauthzd-full (user's token), reset via the BFF.
   eventsRecord: (body) => call('api/events/record', body),
   eventsReserve: (body) => call('api/events/reserve', body),
   eventsReset: (store) => call('api/events/reset', { store }),
-  login: () => { location.href = 'auth/login'; },
-  logout: () => { location.href = 'auth/logout'; },
+  login: () => {
+    location.href = 'auth/login';
+  },
+  logout: () => {
+    location.href = 'auth/logout';
+  },
 };

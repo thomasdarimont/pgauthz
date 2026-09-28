@@ -15,18 +15,52 @@ export class PgGraph extends LitElement {
   static properties = { zoomLevel: { state: true }, copied: { state: true } };
 
   static styles = css`
-    :host { display: block; position: relative;
-      border: 1px solid var(--pg-border, #d0d7de); border-radius: var(--pg-radius-md, 6px); }
-    #graph { width: 100%; height: 100%; background: var(--pg-surface, #f6f8fa); }
-    .controls { position: absolute; top: var(--pg-space-2, .5rem); right: var(--pg-space-2, .5rem);
-      z-index: 2; display: flex; gap: 2px; }
-    .controls button { width: 30px; height: 30px; padding: 0; font-size: 17px; line-height: 1;
-      border: 1px solid var(--pg-border, #d0d7de); background: var(--pg-bg, #fff);
-      color: var(--pg-fg, #1f2328); border-radius: var(--pg-radius-sm, 4px); cursor: pointer; }
-    .controls button:hover { background: var(--pg-surface, #f6f8fa); }
-    .controls .zoomlvl { display: inline-flex; align-items: center; height: 30px; padding: 0 7px;
-      font-size: 12px; color: var(--pg-muted, #6e7781); background: var(--pg-bg, #fff); white-space: nowrap;
-      border: 1px solid var(--pg-border, #d0d7de); border-radius: var(--pg-radius-sm, 4px); }
+    :host {
+      display: block;
+      position: relative;
+      border: 1px solid var(--pg-border, #d0d7de);
+      border-radius: var(--pg-radius-md, 6px);
+    }
+    #graph {
+      width: 100%;
+      height: 100%;
+      background: var(--pg-surface, #f6f8fa);
+    }
+    .controls {
+      position: absolute;
+      top: var(--pg-space-2, 0.5rem);
+      right: var(--pg-space-2, 0.5rem);
+      z-index: 2;
+      display: flex;
+      gap: 2px;
+    }
+    .controls button {
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      font-size: 17px;
+      line-height: 1;
+      border: 1px solid var(--pg-border, #d0d7de);
+      background: var(--pg-bg, #fff);
+      color: var(--pg-fg, #1f2328);
+      border-radius: var(--pg-radius-sm, 4px);
+      cursor: pointer;
+    }
+    .controls button:hover {
+      background: var(--pg-surface, #f6f8fa);
+    }
+    .controls .zoomlvl {
+      display: inline-flex;
+      align-items: center;
+      height: 30px;
+      padding: 0 7px;
+      font-size: 12px;
+      color: var(--pg-muted, #6e7781);
+      background: var(--pg-bg, #fff);
+      white-space: nowrap;
+      border: 1px solid var(--pg-border, #d0d7de);
+      border-radius: var(--pg-radius-sm, 4px);
+    }
   `;
 
   constructor() {
@@ -36,21 +70,39 @@ export class PgGraph extends LitElement {
   }
 
   // ── Hooks (override in subclasses) ─────────────────────────────────
-  graphName() { return 'graph'; }         // DOT export name
-  buildElements() { return []; }          // → cytoscape elements
-  cyStyle() { return []; }                // → cytoscape style array
-  layoutOptions() { return { name: 'grid', fit: false }; }
-  onNodeTap(/* evt */) {}                 // node click handler
-  _prepare() {}                           // runs before layout (e.g. apply a visibility filter)
-  afterLayout() { this._fitReadable(); }  // runs on layoutstop
-  extraControls() { return ''; }          // extra toolbar html (left of the zoom level)
-  legend() { return ''; }                 // legend html (rendered outside .controls)
-  fitPadding() { return 30; }
-  minReadableZoom() { return 0.8; }
+  graphName() {
+    return 'graph';
+  } // DOT export name
+  buildElements() {
+    return [];
+  } // → cytoscape elements
+  cyStyle() {
+    return [];
+  } // → cytoscape style array
+  layoutOptions() {
+    return { name: 'grid', fit: false };
+  }
+  onNodeTap(/* evt */) {} // node click handler
+  _prepare() {} // runs before layout (e.g. apply a visibility filter)
+  afterLayout() {
+    this._fitReadable();
+  } // runs on layoutstop
+  extraControls() {
+    return '';
+  } // extra toolbar html (left of the zoom level)
+  legend() {
+    return '';
+  } // legend html (rendered outside .controls)
+  fitPadding() {
+    return 30;
+  }
+  minReadableZoom() {
+    return 0.8;
+  }
 
   // ── Cytoscape lifecycle ────────────────────────────────────────────
-  _cy;       // protected: the Cytoscape instance
-  #fit100;   // the fitted zoom that counts as 100%
+  _cy; // protected: the Cytoscape instance
+  #fit100; // the fitted zoom that counts as 100%
   #ro;
 
   firstUpdated() {
@@ -59,7 +111,8 @@ export class PgGraph extends LitElement {
       container: graphEl,
       elements: this.buildElements(),
       layout: { name: 'preset' },
-      minZoom: 0.3, maxZoom: 3,
+      minZoom: 0.3,
+      maxZoom: 3,
       userZoomingEnabled: false, // a plain wheel scrolls the page; zoom is gated below
       style: this.cyStyle(),
     });
@@ -69,12 +122,16 @@ export class PgGraph extends LitElement {
     this._runLayout();
     // Ctrl/⌘ + wheel (and trackpad pinch, delivered as a ctrlKey wheel) zooms about
     // the cursor; a plain wheel is left alone so the page/pane scrolls as normal.
-    graphEl.addEventListener('wheel', (e) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
-      e.preventDefault();
-      const rect = graphEl.getBoundingClientRect();
-      this._zoomBy(Math.exp(-e.deltaY * 0.002), { x: e.clientX - rect.left, y: e.clientY - rect.top });
-    }, { passive: false });
+    graphEl.addEventListener(
+      'wheel',
+      (e) => {
+        if (!(e.ctrlKey || e.metaKey)) return;
+        e.preventDefault();
+        const rect = graphEl.getBoundingClientRect();
+        this._zoomBy(Math.exp(-e.deltaY * 0.002), { x: e.clientX - rect.left, y: e.clientY - rect.top });
+      },
+      { passive: false },
+    );
     this.#ro = new ResizeObserver(() => this._cy?.resize());
     this.#ro.observe(this);
   }
@@ -112,9 +169,10 @@ export class PgGraph extends LitElement {
     this._cy.fit(undefined, this.fitPadding());
     let z = this._cy.zoom();
     const min = this.minReadableZoom();
-    if (z < min) z = min; else if (z > 2) z = 2;
-    this.#fit100 = z;         // this fitted zoom is "100%"
-    this._cy.zoom(z * 0.9);   // start zoomed out to 90%
+    if (z < min) z = min;
+    else if (z > 2) z = 2;
+    this.#fit100 = z; // this fitted zoom is "100%"
+    this._cy.zoom(z * 0.9); // start zoomed out to 90%
     this._cy.center();
     this._updateZoom();
   }
@@ -138,19 +196,24 @@ export class PgGraph extends LitElement {
       await navigator.clipboard.writeText(dot);
       this.copied = true;
       setTimeout(() => (this.copied = false), 1200);
-    } catch { /* clipboard unavailable (insecure context) */ }
+    } catch {
+      /* clipboard unavailable (insecure context) */
+    }
   }
 
   render() {
-    return html`
-      <div class="controls">
+    return html` <div class="controls">
         ${this.extraControls()}
-        <span class="zoomlvl" title="Ctrl/⌘ + scroll (or pinch) to zoom · buttons to step">${this.zoomLevel}%</span>
+        <span class="zoomlvl" title="Ctrl/⌘ + scroll (or pinch) to zoom · buttons to step"
+          >${this.zoomLevel}%</span
+        >
         <button title="re-arrange nodes" @click=${() => this._runLayout()}>↻</button>
         <button title="zoom in" @click=${() => this._zoomBy(1.35)}>+</button>
         <button title="zoom out" @click=${() => this._zoomBy(1 / 1.35)}>−</button>
         <button title="center & fit" @click=${() => this._fitReadable()}>⊙</button>
-        <button title="copy as Graphviz DOT" data-testid="copy-dot" @click=${() => this.#copyDot()}>${this.copied ? '✓' : '⧉'}</button>
+        <button title="copy as Graphviz DOT" data-testid="copy-dot" @click=${() => this.#copyDot()}>
+          ${this.copied ? '✓' : '⧉'}
+        </button>
       </div>
       ${this.legend()}
       <div id="graph"></div>`;

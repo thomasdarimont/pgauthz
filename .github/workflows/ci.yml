@@ -331,3 +331,20 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose -f compose.yml -f compose-authzen.yml -f compose-cel.yml down -v || true
+
+  playground-lint:
+    name: Playground frontend lint + format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: playground/frontend/package-lock.json
+      - name: npm ci + eslint + prettier --check
+        working-directory: playground/frontend
+        run: |
+          npm ci
+          npm run check

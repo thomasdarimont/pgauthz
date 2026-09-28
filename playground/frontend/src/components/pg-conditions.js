@@ -7,8 +7,15 @@ export class PgConditions extends LitElement {
   static properties = { conditions: { attribute: false } };
 
   static styles = css`
-    :host { display: flex; flex-direction: column; min-height: 0; }
-    pg-grid { flex: 1 1 auto; min-height: 0; }
+    :host {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    pg-grid {
+      flex: 1 1 auto;
+      min-height: 0;
+    }
   `;
 
   // The stored expression is heavily indented (from a $cond$ … $cond$ block);
@@ -27,7 +34,9 @@ export class PgConditions extends LitElement {
       const o = JSON.parse(raw || '{}');
       const fmt = (a) => (a || []).join(', ');
       return { request: fmt(o.request), stored: fmt(o.stored) };
-    } catch { return { request: '', stored: '' }; }
+    } catch {
+      return { request: '', stored: '' };
+    }
   }
 
   #columns() {
@@ -41,9 +50,11 @@ export class PgConditions extends LitElement {
   }
 
   #filter(c, q) {
-    return String(c.name).toLowerCase().includes(q)
-      || String(c.lang).toLowerCase().includes(q)
-      || String(c.expression).toLowerCase().includes(q);
+    return (
+      String(c.name).toLowerCase().includes(q) ||
+      String(c.lang).toLowerCase().includes(q) ||
+      String(c.expression).toLowerCase().includes(q)
+    );
   }
 
   #rowText(c) {
@@ -52,10 +63,14 @@ export class PgConditions extends LitElement {
   }
 
   render() {
-    return html`<pg-grid data-testid="conditions-grid"
-      .rows=${this.conditions || []} .columns=${this.#columns()}
-      .filter=${(c, q) => this.#filter(c, q)} .rowText=${(c) => this.#rowText(c)}
-      searchPlaceholder="filter conditions — name, lang, or expression"></pg-grid>`;
+    return html`<pg-grid
+      data-testid="conditions-grid"
+      .rows=${this.conditions || []}
+      .columns=${this.#columns()}
+      .filter=${(c, q) => this.#filter(c, q)}
+      .rowText=${(c) => this.#rowText(c)}
+      searchPlaceholder="filter conditions — name, lang, or expression"
+    ></pg-grid>`;
   }
 }
 customElements.define('pg-conditions', PgConditions);

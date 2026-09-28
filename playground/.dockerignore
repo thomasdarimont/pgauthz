@@ -2,3 +2,6 @@
 backend/playground-bff
 **/.DS_Store
 **/*.test
+
+# Frontend lint/format tooling only — never ship it into /web
+frontend/node_modules

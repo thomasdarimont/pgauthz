@@ -141,6 +141,20 @@ The SPA is **volume-mounted** and served statically with **no bundler** — edit
 anything under `frontend/` and **reload the browser** (hard-reload if cached). Only Go
 (`backend/`) changes need a rebuild: `docker compose … build playground-bff`.
 
+The SPA's `package.json` exists only for **linting and formatting** (ESLint + Prettier);
+nothing is bundled from `node_modules` — runtime libraries come from the importmap in
+`index.html`. The `dependencies` mirror the importmap versions so IDEs can resolve the
+bare imports (`lit`, `cytoscape`, …); keep the two in
+sync when upgrading. CI runs the same check:
+
+```bash
+cd playground/frontend
+npm ci
+npm run lint          # eslint src
+npm run format        # prettier --write src/**/*.js
+npm run check         # what CI runs: lint + prettier --check
+```
+
 Styling is structured with **design tokens** (`frontend/styles.css` `:root`): primitive
 tokens (palette, spacing, radii, type) → semantic tokens (`--pg-allow-fg`, …).
 Components — including the shadow-DOM `pg-explain-tree` — consume the semantic
