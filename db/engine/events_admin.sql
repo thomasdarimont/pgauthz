@@ -94,7 +94,8 @@ LANGUAGE plpgsql AS $$
 DECLARE
     v_store_id     integer := authz._s(p_store);
     v_subject_type integer := authz._t(v_store_id, p_subject_type);
-    v_action       integer := authz._r(v_store_id, p_action);
+    v_action       integer;
+    v_schema       jsonb;          -- the action's declared payload shape, if any (migration 0014)
     v_object_type  integer;
     v_kind         smallint := authz._event_kind(COALESCE(p_kind, 'request'));
     -- clock_timestamp(): the actual instant of the insert. statement_timestamp()
@@ -106,6 +107,13 @@ DECLARE
     v_payload      jsonb := COALESCE(p_payload, '{}'::jsonb);
     v_seq          bigint;
 BEGIN
+    -- One lookup resolves the action and fetches its payload schema (the
+    -- schema-less fast path costs nothing beyond the name resolution).
+    SELECT r.id, r.payload_schema INTO v_action, v_schema
+      FROM authz.relations r WHERE r.store_id = v_store_id AND r.name = p_action;
+    IF v_action IS NULL THEN
+        RAISE EXCEPTION 'Unknown relation: %', p_action;
+    END IF;
     IF p_subject_id IS NULL OR p_subject_id = '' THEN
         RAISE EXCEPTION 'subject_id is required' USING ERRCODE = 'invalid_parameter_value';
     END IF;
@@ -136,7 +144,9 @@ BEGIN
             USING ERRCODE = 'program_limit_exceeded';
     END IF;
     -- The action's declared payload shape, when the model declares one (migration 0014).
-    PERFORM authz._event_check_payload(v_action, COALESCE(p_kind, 'request'), v_payload);
+    IF v_schema IS NOT NULL THEN
+        PERFORM authz._event_check_payload(v_schema, COALESCE(p_kind, 'request'), v_payload);
+    END IF;
 
     IF v_occurred_at > v_now + authz._event_max_future_skew() THEN
         RAISE EXCEPTION 'occurred_at (%) is more than % in the future (authz.event_max_future_skew)',

@@ -33,7 +33,7 @@ CREATE OR REPLACE FUNCTION authz._event_kind_denied() RETURNS smallint
 -- Resolve a kind name to its id. Strict like _s/_t/_r: an unknown kind is a
 -- caller bug and raises (invalid_parameter_value, so pgauthzd maps it to 400).
 CREATE OR REPLACE FUNCTION authz._event_kind(p_name text) RETURNS smallint
-LANGUAGE plpgsql IMMUTABLE AS $$
+LANGUAGE plpgsql STABLE AS $$
 DECLARE
     v_kind smallint := CASE p_name
         WHEN 'request'  THEN authz._event_kind_request()
@@ -99,7 +99,7 @@ CREATE OR REPLACE FUNCTION authz._event_max_backdate() RETURNS interval
 -- _event_validate_payload_schema: validate + normalize a schema (raises
 -- invalid_parameter_value). NULL passes through (no schema).
 CREATE OR REPLACE FUNCTION authz._event_validate_payload_schema(p_schema jsonb) RETURNS jsonb
-LANGUAGE plpgsql IMMUTABLE AS $$
+LANGUAGE plpgsql STABLE AS $$
 DECLARE
     v_key  text;
     v_kind text;
@@ -145,7 +145,7 @@ $$;
 
 -- one {required, optional} section: dotted paths → known types
 CREATE OR REPLACE FUNCTION authz._event_validate_schema_section(p_sec jsonb, p_prefix text) RETURNS void
-LANGUAGE plpgsql IMMUTABLE AS $$
+LANGUAGE plpgsql STABLE AS $$
 DECLARE
     v_list text;
     v_path text;
@@ -183,17 +183,19 @@ LANGUAGE sql IMMUTABLE AS $$
         || CASE WHEN p_required_only THEN '{}'::jsonb ELSE COALESCE(p_schema -> 'kinds' -> p_kind -> 'optional', '{}'::jsonb) END
 $$;
 
--- _event_check_payload: enforce a relation's schema on one event's payload.
--- Raises invalid_parameter_value naming every violation. Silent when the
--- relation has no schema.
+-- _event_check_payload: enforce a relation's declared schema on one event's
+-- payload. Raises invalid_parameter_value naming every violation. The caller
+-- passes the schema it already read with the relation row (record_event
+-- resolves the action and its schema in one lookup); NULL = no schema.
+DROP FUNCTION IF EXISTS authz._event_check_payload(integer, text, jsonb);
 CREATE OR REPLACE FUNCTION authz._event_check_payload(
-    p_action  integer,
+    p_schema  jsonb,
     p_kind    text,
     p_payload jsonb
 ) RETURNS void
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
-    v_schema  jsonb;
+    v_schema  jsonb := p_schema;
     v_all     jsonb;
     v_path    text;
     v_type    text;
@@ -201,7 +203,6 @@ DECLARE
     v_errs    text[] := '{}';
     v_leaf    record;
 BEGIN
-    SELECT r.payload_schema INTO v_schema FROM authz.relations r WHERE r.id = p_action;
     IF v_schema IS NULL THEN
         RETURN;
     END IF;

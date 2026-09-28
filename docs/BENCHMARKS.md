@@ -363,3 +363,27 @@ becomes a workload.
 the raw count into an index-only scan (2.2 → 1.6 ms over 10k events) but the
 gated check moved only 9.6 → 8.9 ms — the sum clause's payload reads
 dominate, and the index would not help those.
+
+## Addendum: 2026-09-28 (payload schemas, migration 0014)
+
+All five suites rerun after a fresh install; every number outside the
+recording paths is within run-to-run noise of the table above (the machine
+alternates between a "quiet" and a ~10–20 % slower run — `check_access`
+ungated baseline 0.136 / 0.147 / 0.161 ms across three consecutive gates runs,
+`audit_check_access` 3.9 / 4.0 / 9.9 ms — so compare like with like).
+
+**Recording paid for the schema lookup once, then didn't.** The first cut
+called a separate `_event_check_payload(action, …)` per event which probed
+`relations` by primary key even when the relation declares no schema:
+`record_event` 0.054 → 0.060–0.064 ms, batch of 100 5.3 → 5.9–6.1 ms (+10 %).
+Folding the schema into the relation-name lookup `record_event` already does
+(one `SELECT id, payload_schema … WHERE store_id = $1 AND name = $2`) and
+skipping the check when the schema is NULL brought both back to parity:
+0.056 / 5.5 ms on a quiet run, 0.061 / 5.7 on a slow one. A relation *with*
+a schema pays the check itself — a handful of `#>` path extractions per
+declared path, microseconds — which is the price of the guarantee, not of the
+feature's existence.
+
+Gate evaluation is untouched by W5 (the cross-check runs at `add_gate` time
+only): gated check with 0 / 100 / 10k events 0.24 / 0.35 / 11.8 ms,
+`reserve_event` 0.86 ms, `list_events` page 0.26 ms.
