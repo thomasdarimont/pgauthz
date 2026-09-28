@@ -323,6 +323,11 @@ pre-1.0, minor versions may include breaking changes.
   to the Keycloak paths only, so demo-issuer tokens (`tests/test-authzen.sh`)
   lost their writer/recorder roles (403 on writes and events) when the
   playground overlay was up; `roles` is now listed first.
+- **Search evidence is complete under required mode** (review #13): with
+  `DECISION_LOG_REQUIRED` and `DECISION_LOG_SEARCHES` both set, searches are
+  refused (503) while the sink is down, like decisions — no answer without the
+  line that was asked for. With search lines off, searches are counted only
+  and never refused. No third switch.
 - **`DECISION_LOG_REQUIRED` could latch unhealthy until a restart** (review
   #12): decisions were refused before they reached the logger, so nothing
   ever retried a failed sink. The guard and `/readyz` now probe the sink with

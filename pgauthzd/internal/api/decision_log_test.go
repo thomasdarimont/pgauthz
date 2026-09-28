@@ -219,6 +219,9 @@ func (f *flakyWriter) Write(b []byte) (int, error) {
 }
 
 func TestDecisionLogRequiredFailsClosed(t *testing.T) {
+	old := decisionlog.ProbeInterval
+	decisionlog.ProbeInterval = 0 // recovery is the guard's probe, not a lucky side channel
+	defer func() { decisionlog.ProbeInterval = old }()
 	fw := &flakyWriter{}
 	cfg := &config.Config{AllowSubjectOverride: true, DefaultStore: "demo", DecisionLog: "stdout", DecisionLogRequired: true}
 	h := NewHandler(detailStub{}, detailStub{}, detailStub{}, cfg, WithDecisionLog(decisionlog.New(fw, 1, nil)))
@@ -256,14 +259,14 @@ func TestDecisionLogRequiredFailsClosed(t *testing.T) {
 			t.Fatalf("required + unhealthy must be 503, got %d %s", w.Code, w.Body.String())
 		}
 	}
-	// the sink recovers: the guard refuses until a write succeeds — a search line
-	// (or any successful write) clears it; here a search with logging on.
+	// the sink recovers: the next guarded call probes it and resumes — here a
+	// search under required+searches, which is guarded exactly like a decision.
 	fw.fail = false
 	h.cfg.DecisionLogSearches = true
 	w = httptest.NewRecorder()
 	h.NativeListActions(w, jsonReq("POST", "/pgauthz/v1/list-actions", body))
 	if w.Code != 200 {
-		t.Fatalf("search while refusing decisions: %d %s", w.Code, w.Body.String())
+		t.Fatalf("search after the sink recovered: %d %s", w.Code, w.Body.String())
 	}
 	w = httptest.NewRecorder()
 	h.Evaluation(w, jsonReq("POST", "/access/v1/evaluation", body))
@@ -373,5 +376,64 @@ func TestDecisionLogRequiredRecoversByProbe(t *testing.T) {
 	h.Readyz(w, httptest.NewRequest("GET", "/readyz", nil))
 	if w.Code != 200 {
 		t.Fatalf("readyz after recovery: %d", w.Code)
+	}
+}
+
+// Review #13: with search lines asked for under required mode, a search is
+// refused while the sink is down, exactly like a decision; with search lines
+// off, searches keep answering (counted only).
+func TestDecisionLogRequiredCoversSearchesWhenAskedFor(t *testing.T) {
+	old := decisionlog.ProbeInterval
+	decisionlog.ProbeInterval = 0
+	defer func() { decisionlog.ProbeInterval = old }()
+	body := `{"subject":{"type":"user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"d1"}}`
+	down := func(searches bool) (*Handler, *flakyWriter) {
+		fw := &flakyWriter{}
+		cfg := &config.Config{AllowSubjectOverride: true, DefaultStore: "demo", DecisionLog: "stdout",
+			DecisionLogRequired: true, DecisionLogSearches: searches}
+		h := NewHandler(detailStub{}, detailStub{}, detailStub{}, cfg, WithDecisionLog(decisionlog.New(fw, 1, nil)))
+		fw.fail = true
+		w := httptest.NewRecorder()
+		h.Evaluation(w, jsonReq("POST", "/access/v1/evaluation", body)) // trips the circuit
+		return h, fw
+	}
+
+	// search evidence asked for → searches fail closed too
+	h, fw := down(true)
+	for _, call := range []func(w *httptest.ResponseRecorder){
+		func(w *httptest.ResponseRecorder) {
+			h.SearchAction(w, jsonReq("POST", "/access/v1/search/action", body))
+		},
+		func(w *httptest.ResponseRecorder) {
+			h.NativeListActions(w, jsonReq("POST", "/pgauthz/v1/list-actions", body))
+		},
+		func(w *httptest.ResponseRecorder) {
+			h.NativeListObjects(w, jsonReq("POST", "/pgauthz/v1/list-objects", body))
+		},
+	} {
+		w := httptest.NewRecorder()
+		call(w)
+		if w.Code != 503 {
+			t.Fatalf("search under required+searches with a down sink must be 503, got %d %s", w.Code, w.Body.String())
+		}
+	}
+	fw.fail = false
+	w := httptest.NewRecorder()
+	h.SearchAction(w, jsonReq("POST", "/access/v1/search/action", body))
+	if w.Code != 200 {
+		t.Fatalf("search must resume after the sink recovers: %d %s", w.Code, w.Body.String())
+	}
+
+	// search evidence not asked for → searches keep answering while decisions refuse
+	h, _ = down(false)
+	w = httptest.NewRecorder()
+	h.SearchAction(w, jsonReq("POST", "/access/v1/search/action", body))
+	if w.Code != 200 {
+		t.Fatalf("searches without search lines must not be refused: %d", w.Code)
+	}
+	w = httptest.NewRecorder()
+	h.Evaluation(w, jsonReq("POST", "/access/v1/evaluation", body))
+	if w.Code != 503 {
+		t.Fatalf("decisions must still refuse: %d", w.Code)
 	}
 }

@@ -832,10 +832,12 @@ DECISION_LOG_SAMPLE=1          # required by DECISION_LOG_REQUIRED (complete evi
   accepts a line again — the guard retries the sink with a marker line at
   most once per second (`endpoint: decision_log_probe`), so a transient
   failure heals without a restart. It requires `DECISION_LOG_SAMPLE=1`. The
-  circuit is global: with `DECISION_LOG_SEARCHES` a failed search-line write
-  trips it as well, while searches themselves keep answering (only decision
-  endpoints refuse). Pair it with a sink you monitor — a full disk then
-  stops authorization on purpose.
+  rule is "no answer without the line you asked for": with
+  `DECISION_LOG_SEARCHES` on as well, searches are refused (503) while the
+  sink is down exactly like decisions, and a failed search-line write trips
+  the same circuit; with search lines off, searches are counted only and
+  never refused. Pair it with a sink you monitor — a full disk then stops
+  authorization on purpose.
 
 ## Scale & supported limits
 

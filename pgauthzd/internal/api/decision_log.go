@@ -256,3 +256,15 @@ func (h *Handler) logSearch(r *http.Request, endpoint, via, store string, subjec
 	}
 	h.decisions.Log(e)
 }
+
+// requireSearchLog is the search-side of the evidence circuit: when the
+// operator asked for search evidence (DECISION_LOG_SEARCHES) under required
+// mode, a search is refused exactly like a decision while the sink is down —
+// "no answer without its line" applies to every line that was asked for.
+// With search lines off, searches are only counted and never refused.
+func (h *Handler) requireSearchLog(w http.ResponseWriter) bool {
+	if h.cfg == nil || !h.cfg.DecisionLogRequired || !h.cfg.DecisionLogSearches {
+		return true
+	}
+	return h.requireDecisionLog(w)
+}

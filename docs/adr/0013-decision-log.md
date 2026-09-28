@@ -149,5 +149,8 @@ counts logged, sampled-out and failed writes so a silent sink is visible.
   the guard and readiness write a marker line (`endpoint:
   decision_log_probe`, `state: sink_recovered`) at most once per second; the
   marker's presence in the stream is the proof that writes resumed. The
-  circuit is global to the logger: a failed search-line write trips it too,
-  and only decision endpoints refuse — searches keep answering.
+  circuit is one per logger and covers every line the operator asked for:
+  with `DECISION_LOG_SEARCHES` on, a failed search-line write trips it and
+  searches are refused like decisions; with search lines off, searches are
+  counted only and never refused. No third switch — asking for search
+  evidence under required mode is asking for it to be complete.

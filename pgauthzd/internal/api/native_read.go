@@ -251,6 +251,9 @@ func (h *Handler) NativeListObjects(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.nativeReader(w); !ok {
 		return
 	}
+	if !h.requireSearchLog(w) {
+		return
+	}
 	if !h.requireSearchRole(w, r) {
 		return
 	}
@@ -303,6 +306,9 @@ func (h *Handler) NativeListSubjects(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.nativeReader(w); !ok {
 		return
 	}
+	if !h.requireSearchLog(w) {
+		return
+	}
 	if !h.requireSearchRole(w, r) {
 		return
 	}
@@ -350,6 +356,9 @@ type nativeListActionsBody struct {
 // holds on the object (list_actions).
 func (h *Handler) NativeListActions(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.nativeReader(w); !ok {
+		return
+	}
+	if !h.requireSearchLog(w) {
 		return
 	}
 	var req nativeListActionsBody

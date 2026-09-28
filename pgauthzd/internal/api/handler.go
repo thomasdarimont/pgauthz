@@ -658,7 +658,7 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 
 // SearchSubject handles POST /access/v1/search/subject
 func (h *Handler) SearchSubject(w http.ResponseWriter, r *http.Request) {
-	if !h.requireSearchRole(w, r) {
+	if !h.requireSearchRole(w, r) || !h.requireSearchLog(w) {
 		return
 	}
 	var req SearchSubjectRequest
@@ -725,7 +725,7 @@ func (h *Handler) SearchSubject(w http.ResponseWriter, r *http.Request) {
 
 // SearchResource handles POST /access/v1/search/resource
 func (h *Handler) SearchResource(w http.ResponseWriter, r *http.Request) {
-	if !h.requireSearchRole(w, r) {
+	if !h.requireSearchRole(w, r) || !h.requireSearchLog(w) {
 		return
 	}
 	var req SearchResourceRequest
@@ -792,7 +792,7 @@ func (h *Handler) SearchResource(w http.ResponseWriter, r *http.Request) {
 
 // SearchAction handles POST /access/v1/search/action
 func (h *Handler) SearchAction(w http.ResponseWriter, r *http.Request) {
-	if !h.requireSearchRole(w, r) {
+	if !h.requireSearchRole(w, r) || !h.requireSearchLog(w) {
 		return
 	}
 	var req SearchActionRequest
