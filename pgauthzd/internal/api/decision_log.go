@@ -221,7 +221,17 @@ func mergeKeys(a, b []string) []string {
 // decision is made that the evidence trail cannot show. The decision that
 // hit the failing write was already answered; the next one is refused.
 func (h *Handler) requireDecisionLog(w http.ResponseWriter) bool {
-	if h.cfg == nil || !h.cfg.DecisionLogRequired || h.decisions.Healthy() {
+	if h.cfg == nil || !h.cfg.DecisionLogRequired {
+		return true
+	}
+	// Required mode without a logger attached (a construction path that
+	// skipped WithDecisionLog, or an embedding) must not silently degrade to
+	// best-effort: a nil logger is healthy by definition, so check it first.
+	if h.decisions == nil {
+		writeError(w, http.StatusServiceUnavailable, "decision log unavailable (DECISION_LOG_REQUIRED): no logger attached")
+		return false
+	}
+	if h.decisions.Healthy() {
 		return true
 	}
 	// Give the sink a (rate-limited) chance to recover before refusing —

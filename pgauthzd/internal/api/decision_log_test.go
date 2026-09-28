@@ -437,3 +437,21 @@ func TestDecisionLogRequiredCoversSearchesWhenAskedFor(t *testing.T) {
 		t.Fatalf("decisions must still refuse: %d", w.Code)
 	}
 }
+
+// Review #14: required mode with no logger attached must fail closed, not
+// silently degrade (a nil logger reports healthy).
+func TestDecisionLogRequiredWithoutLoggerRefuses(t *testing.T) {
+	cfg := &config.Config{AllowSubjectOverride: true, DefaultStore: "demo", DecisionLog: "stdout", DecisionLogRequired: true}
+	h := NewHandler(detailStub{}, detailStub{}, detailStub{}, cfg) // no WithDecisionLog
+	body := `{"subject":{"type":"user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"d1"}}`
+	w := httptest.NewRecorder()
+	h.Evaluation(w, jsonReq("POST", "/access/v1/evaluation", body))
+	if w.Code != 503 {
+		t.Fatalf("required mode without a logger must refuse: %d %s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	h.Readyz(w, httptest.NewRequest("GET", "/readyz", nil))
+	if w.Code != 503 {
+		t.Fatalf("readyz without a logger under required mode must be 503: %d", w.Code)
+	}
+}

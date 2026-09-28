@@ -895,8 +895,8 @@ func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
 	}
 	// DECISION_LOG_REQUIRED: a failed evidence write makes the instance
 	// not ready until a write succeeds again (decisions are refused meanwhile).
-	if h.cfg != nil && h.cfg.DecisionLogRequired && !h.decisions.Healthy() && !h.decisions.Probe() {
-		slog.Warn("readiness check failed", "error", "decision log write failed (DECISION_LOG_REQUIRED)")
+	if h.cfg != nil && h.cfg.DecisionLogRequired && (h.decisions == nil || (!h.decisions.Healthy() && !h.decisions.Probe())) {
+		slog.Warn("readiness check failed", "error", "decision log unavailable (DECISION_LOG_REQUIRED)")
 		writeError(w, http.StatusServiceUnavailable, "unhealthy")
 		return
 	}
