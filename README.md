@@ -2,10 +2,19 @@
 
 [![CI](https://github.com/thomasdarimont/pgauthz/actions/workflows/ci.yml/badge.svg)](https://github.com/thomasdarimont/pgauthz/actions/workflows/ci.yml)
 
-A pure PostgreSQL implementation of the [Google Zanzibar](https://research.google/pubs/zanzibar-googles-consistent-global-authorization-system/) /
-[OpenFGA](https://openfga.dev/) authorization model.
-No external authorization service needed — just SQL functions
-that resolve relationship tuples recursively.
+An authorization engine that lives in PostgreSQL, plus a small daemon that
+puts it on the network.
+
+The engine implements the [Google Zanzibar](https://research.google/pubs/zanzibar-googles-consistent-global-authorization-system/) /
+[OpenFGA](https://openfga.dev/) relationship model — tuples, models,
+conditions, temporal gates, audit and time travel — as SQL functions. An
+application that shares the database authorizes with a query: no network
+hop, no second data store, and filtering is a JOIN. **pgauthzd**, a
+stateless Go daemon, serves the same engine over HTTP for everyone else:
+[AuthZEN 1.0](#authzen-10-api), a native check/search/write API, JWT
+validation, and an opt-in OPA sidecar for policy-as-code. Either way the
+data and the decisions stay in your PostgreSQL; there is no separate
+authorization database to run.
 
 ## Features
 

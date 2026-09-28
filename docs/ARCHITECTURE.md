@@ -267,7 +267,7 @@ matters).
 
 | Decision | Quality Goal | Rationale |
 |---|---|---|
-| Pure PostgreSQL implementation | Operability | No external authorization service to deploy, monitor, or version. The database is the single source of truth. |
+| Pure PostgreSQL engine | Operability | No separate authorization database to deploy, back up, or keep consistent — the engine runs where the data is, and pgauthzd in front of it is stateless. The database is the single source of truth. |
 | SECURITY DEFINER functions | Security | Application roles have zero table access. The function API is the only entry point, making the table schema an internal implementation detail. |
 | Integer ID encoding | Performance | `smallint` IDs (2 bytes) instead of text for types/relations. Smaller rows, faster comparisons, better cache hit ratio. |
 | LIST partitioning by object_type | Performance | Each type gets its own partition. `check_access` benefits from partition pruning — only the relevant partition is scanned. |

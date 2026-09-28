@@ -5,7 +5,7 @@ convention). `CLAUDE.md` imports this file, so Claude Code reads the same instru
 
 ## Project Overview
 
-pgauthz is a **PostgreSQL-native authorization engine** implementing Google Zanzibar / OpenFGA relationship-based access control (ReBAC) in pure SQL. It answers "Can user X do action Y on object Z?" without requiring an external authorization service.
+pgauthz is a **PostgreSQL-native authorization engine** implementing Google Zanzibar / OpenFGA relationship-based access control (ReBAC) in pure SQL, plus **pgauthzd**, a stateless Go daemon that serves the engine over HTTP (AuthZEN 1.0, native API, JWT). It answers "Can user X do action Y on object Z?" with a query for co-located applications and over HTTP for everyone else; the data and decisions stay in PostgreSQL, there is no separate authorization database.
 
 ## Architecture
 
