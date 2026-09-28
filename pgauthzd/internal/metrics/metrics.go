@@ -121,6 +121,40 @@ var (
 		Help: "Action-log events accepted via the native events endpoint, by result (recorded|duplicate).",
 	}, []string{"result"})
 
+	// Batches refused on /events and /events/reserve, by the class the handler
+	// mapped the engine error to: invalid_request (undeclared action, bad
+	// payload, out-of-bounds occurred_at — a dead-letter candidate for the
+	// producer), forbidden (recorder allowlist / namespace / DB role), error.
+	EventsRejected = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "pgauthzd_events_rejected_total",
+		Help: "Action-log batches rejected on the native events endpoints, by reason (invalid_request|forbidden|error).",
+	}, []string{"reason"})
+
+	// Ingestion lag of accepted events: recorded_at − occurred_at, per event of
+	// an accepted batch (0 when the producer let occurred_at default). A stalled
+	// outbox/queue shows up here long before a gate misbehaves; a gate can only
+	// count what has arrived.
+	EventLag = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "pgauthzd_event_lag_seconds",
+		Help:    "Ingestion lag (record time minus occurred_at) of accepted action-log events.",
+		Buckets: []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60, 300, 900, 3600, 21600, 86400},
+	}, []string{"kind"})
+
+	// reserve_event outcomes (the strict tier), by the engine's reason.
+	ReserveDecisions = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "pgauthzd_reserve_decisions_total",
+		Help: "reserve_event outcomes on the native endpoint, by result (allowed|gate_denied|graph_denied).",
+	}, []string{"result"})
+
+	// Temporal-gate clause outcomes pgauthzd can see — on the explain path and
+	// in reserve_event results — by reason and whether the clause ran in shadow
+	// mode. shadow=true with reason=gate_denied is the "what a gate WOULD deny"
+	// signal for a gate being rolled out.
+	GateClauses = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "pgauthzd_gate_clauses_total",
+		Help: "Temporal-gate clause outcomes observed via explain and reserve, by path (explain|reserve), reason, and shadow (true|false).",
+	}, []string{"path", "reason", "shadow"})
+
 	// Backend latency.
 	DBQueryDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "pgauthzd_db_query_duration_seconds",
@@ -285,6 +319,18 @@ func init() {
 	}
 	for _, r := range []string{"recorded", "duplicate"} {
 		EventsRecorded.WithLabelValues(r)
+	}
+	for _, r := range []string{"invalid_request", "forbidden", "error"} {
+		EventsRejected.WithLabelValues(r)
+	}
+	for _, r := range []string{"allowed", "gate_denied", "graph_denied"} {
+		ReserveDecisions.WithLabelValues(r)
+	}
+	for _, r := range []string{"gate_passed", "gate_denied", "gate_missing_context"} {
+		GateClauses.WithLabelValues("reserve", r, "false")
+		GateClauses.WithLabelValues("reserve", r, "true")
+		GateClauses.WithLabelValues("explain", r, "false")
+		GateClauses.WithLabelValues("explain", r, "true")
 	}
 	for _, r := range []string{"ok", "error"} {
 		OPARequests.WithLabelValues(r)

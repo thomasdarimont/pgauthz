@@ -132,6 +132,24 @@ callback instance to isolate pure policy/hook logic.
 | `pgauthzd_requests_by_issuer_total` | counter | `issuer` |
 | `pgauthzd_condition_eval_total` | counter | `result` |
 
+**Action log & temporal gates ([ADR 0012](0012-action-log.md)):**
+
+| Metric | Type | Labels |
+|---|---|---|
+| `pgauthzd_events_recorded_total` | counter | `result` ∈ `recorded \| duplicate` |
+| `pgauthzd_events_rejected_total` | counter | `reason` ∈ `invalid_request \| forbidden \| error` |
+| `pgauthzd_event_lag_seconds` | histogram | `kind` — record time − `occurred_at` per accepted event |
+| `pgauthzd_reserve_decisions_total` | counter | `result` ∈ `allowed \| gate_denied \| graph_denied` |
+| `pgauthzd_gate_clauses_total` | counter | `path` ∈ `explain \| reserve`, `reason`, `shadow` ∈ `true \| false` |
+
+`events_rejected{reason="invalid_request"}` is the producer's bug (undeclared
+action, bad payload, out-of-bounds `occurred_at`) — the dead-letter candidates;
+`event_lag_seconds` rising means the outbox/queue is stalling and gates are
+counting fewer events than happened; `gate_clauses{shadow="true",
+reason="gate_denied"}` is what a gate in shadow mode *would* have denied. The
+engine cannot expose per-check gate outcomes through a boolean decision, so
+these are observed where the outcome is returned: explain and reserve.
+
 `reason` (JWT) ∈ `bad_signature \| expired \| unknown_issuer \| audience \|
 missing`; `reason` (authz) ∈ `writer_role \| search_role \| store_binding \|
 db_role_binding \| forbidden_role`; `condition result` ∈ `allow \| deny \| error

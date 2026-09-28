@@ -372,9 +372,11 @@ func (h *Handler) RecordEvents(w http.ResponseWriter, r *http.Request) {
 		Store: store, Events: req.Events, RecordedBy: recordedBy, Consistency: req.Consistency,
 	})
 	if err != nil {
+		metrics.EventsRejected.WithLabelValues(rejectReason(err)).Inc()
 		writeWriteError(w, err)
 		return
 	}
+	observeEventLags(req.Events)
 	resp := map[string]any{"store": store}
 	if err := json.Unmarshal(out, &resp); err != nil {
 		writeInternalError(w, err)
@@ -453,6 +455,7 @@ func (h *Handler) ReserveEvent(w http.ResponseWriter, r *http.Request) {
 		RecordedBy: recordedBy, RecordDenied: req.RecordDenied, Consistency: consistency,
 	})
 	if err != nil {
+		metrics.EventsRejected.WithLabelValues(rejectReason(err)).Inc()
 		writeWriteError(w, err)
 		return
 	}
@@ -465,6 +468,7 @@ func (h *Handler) ReserveEvent(w http.ResponseWriter, r *http.Request) {
 	if seq, ok := resp["seq"].(float64); ok && seq > 0 {
 		metrics.EventsRecorded.WithLabelValues("recorded").Inc()
 	}
+	recordReserveOutcome(resp)
 	if rev := h.mintRevision(w, r); rev != "" {
 		resp["revision"] = rev
 	}
@@ -516,6 +520,7 @@ func (h *Handler) Explain(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	recordExplainGateClauses(out)
 	writeRawJSON(w, http.StatusOK, out)
 }
 

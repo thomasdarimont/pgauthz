@@ -82,6 +82,12 @@ pre-1.0, minor versions may include breaking changes.
   recording, the `gate_denied` explain, enumeration and `reserve_event`;
   `tests.sql` covers the permission matrix and both gates and runs in
   `tests/test.sh`.
+- **Action-log metrics in pgauthzd** (ADR 0010): `pgauthzd_events_rejected_total{reason}`
+  (invalid_request | forbidden | error), `pgauthzd_event_lag_seconds{kind}`
+  (record time − `occurred_at` per accepted event), `pgauthzd_reserve_decisions_total{result}`,
+  and `pgauthzd_gate_clauses_total{path,reason,shadow}` — temporal-gate clause
+  outcomes observed on the explain and reserve paths, including what a
+  shadow-mode gate would have denied.
 - **`examples/events/` — action-log ingestion reference** (external review):
   a compose overlay with Redis Streams, a consumer (consumer group,
   at-least-once, batches, dead-letter stream for content rejections with the
