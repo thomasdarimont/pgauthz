@@ -35,7 +35,7 @@ spec:
         - { name: DEFAULT_DB_ROLE, value: authz_reader }
         - { name: JWKS_FILE,     value: /jwks/jwks.json }
         - { name: JWT_ISSUER,    value: {{ .Values.opa.jwtIssuer | quote }} }
-        - { name: JWT_AUDIENCE,  value: {{ .Values.opa.jwtAudience | quote }} }
+        {{- include "pgauthz.audienceEnv" $ | nindent 8 }}
         - { name: DEFAULT_STORE, value: {{ .Values.opa.defaultStore | quote }} }
         - { name: ALLOW_SUBJECT_OVERRIDE, value: "false" }
         {{- include "pgauthz.diagnosticsEnv" (dict "root" $ "env" .Values.deploymentEnvironment) | nindent 8 }}

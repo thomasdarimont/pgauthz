@@ -187,10 +187,15 @@ All endpoints (except `/healthz` and `/.well-known/*`) require a Bearer JWT.
 objects, each with its own JWKS cache; the token's `iss` claim selects the
 validator (an untrusted `iss` is rejected). The legacy single-issuer variables
 (`JWKS_URL`/`JWKS_FILE`/`JWT_ISSUER`/`JWT_AUDIENCE`) still work and form one
-issuer; both can be combined. Example (adds Keycloak next to the demo issuer):
+issuer; both can be combined. **Every issuer must pin an `audience`** — the
+identifier this API expects in `aud` — or pgauthzd refuses to start: without
+it, any token the IdP mints for *another* API (same keys, same subject claims)
+would be accepted here. `ALLOW_MISSING_AUDIENCE=true` is the deliberately
+alarming override (warns on every start). Example (adds Keycloak next to the
+demo issuer):
 
 ```
-JWT_ISSUERS=[{"issuer":"https://id.pgauthz.test/realms/pgauthz","jwks_url":"http://keycloak:8080/realms/pgauthz/protocol/openid-connect/certs"}]
+JWT_ISSUERS=[{"issuer":"https://id.pgauthz.test/realms/pgauthz","audience":"authz-api","jwks_url":"http://keycloak:8080/realms/pgauthz/protocol/openid-connect/certs"}]
 ```
 
 **Role-gated reverse search.** The search endpoints
@@ -371,12 +376,13 @@ All configuration is via environment variables.
 | `JWKS_URL` | | URL to JWKS endpoint (required if `JWKS_FILE` not set) |
 | `JWKS_FILE` | | Path to local JWKS file (required if `JWKS_URL` not set) |
 | `JWT_ISSUER` | | Expected `iss` claim (optional) |
-| `JWT_AUDIENCE` | | Expected `aud` claim (optional) |
+| `JWT_AUDIENCE` | | Expected `aud` claim — **required** for the legacy single issuer (every issuer must pin an audience; see `ALLOW_MISSING_AUDIENCE`) |
 | `JWT_ISSUERS` | | Additional trusted issuers: JSON array of `{issuer, audience, jwks_url, jwks_file, stores, db_roles, client_db_roles}`; `iss` selects the validator; `stores` / `db_roles` (anchored regex lists) bind the issuer to specific stores / per-app DB roles; `client_db_roles` maps this issuer's client ids to roles |
 | `JWT_ROLES_CLAIM` | | Comma-separated dotted claim paths aggregated into the caller's roles (e.g. `realm_access.roles,resource_access.authz-api.roles`) |
 | `SEARCH_REQUIRED_ROLE` | | If set, the `search/*` endpoints require this role (`403` otherwise); empty = search open to any authenticated caller |
 | `WATCH_REQUIRED_ROLE` | *unset = watch disabled* | Gates the native changefeed on the public listener (review #10) — the feed exposes authorization topology. Unset: 403. A role name: JWT-role gate. `"*"`: explicitly open (discouraged). Callback listener unaffected |
 | `EXPLAIN_REQUIRED_ROLE` | *empty = open* | Gates native explain on the public listener like search (set a role in production — explain reveals model structure and traces) |
+| `ALLOW_MISSING_AUDIENCE` | `false` | An issuer without an `audience` is a STARTUP FAILURE (tokens minted for any other API would be accepted — confused deputy). This deliberately alarming override starts anyway (WARNING on every start) |
 | `ALLOW_OPEN_DIAGNOSTICS` | `false` | With `DEPLOYMENT_ENVIRONMENT=production`, an unset `SEARCH_REQUIRED_ROLE` / `EXPLAIN_REQUIRED_ROLE` or a `WATCH_REQUIRED_ROLE` of `"*"` is a STARTUP FAILURE (the production profile). This deliberately alarming override starts anyway (WARNING on every start) |
 | `RECORDER_ROLE` | `authz_recorder` | Gates `POST /pgauthz/v1/events` (the action log, [ADR 0012](../docs/adr/0012-action-log.md)) on the public listener; `WRITER_ROLE` passes too. Empty = ungated. Callback listener unaffected (its DB-role check — member of `authz_recorder` — still applies). **Issue this claim to PEPs and ingestion services only** — recorded events drive temporal gates, so a holder can move a gate; never to end-user tokens |
 | `ALLOW_UNBOUND_MULTI_ISSUER` | `false` | With >1 trusted issuers, an issuer without stores/db_roles bindings is a STARTUP FAILURE (cross-tenant risk). This deliberately alarming override restores warn-and-continue |

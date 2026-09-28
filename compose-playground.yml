@@ -113,7 +113,7 @@ services:
       JWKS_FILE: ""
       JWT_ISSUERS: >-
         [{"issuer":"${JWT_ISSUER:-https://auth.example.com}","audience":"${JWT_AUDIENCE:-authz-api}","jwks_file":"/jwks/jwks.json","stores":["${DEFAULT_STORE:-demo}"]},
-         {"issuer":"https://id.pgauthz.test/realms/pgauthz","jwks_url":"http://keycloak:8080/realms/pgauthz/protocol/openid-connect/certs","stores":[".*"]}]
+         {"issuer":"https://id.pgauthz.test/realms/pgauthz","audience":"authz-api","jwks_url":"http://keycloak:8080/realms/pgauthz/protocol/openid-connect/certs","stores":[".*"]}]
       # Reverse-search endpoints (search/subject|resource|action) enumerate the
       # access graph, so gate them behind an auditor role. Roles are read from the
       # Keycloak realm + authz-api client claims (aggregated). Alice holds
@@ -147,7 +147,7 @@ services:
       JWKS_FILE: ""
       JWT_ISSUERS: >-
         [{"issuer":"${JWT_ISSUER:-https://auth.example.com}","audience":"${JWT_AUDIENCE:-authz-api}","jwks_file":"/jwks/jwks.json","stores":["${DEFAULT_STORE:-demo}"]},
-         {"issuer":"https://id.pgauthz.test/realms/pgauthz","jwks_url":"http://keycloak:8080/realms/pgauthz/protocol/openid-connect/certs","stores":[".*"]}]
+         {"issuer":"https://id.pgauthz.test/realms/pgauthz","audience":"authz-api","jwks_url":"http://keycloak:8080/realms/pgauthz/protocol/openid-connect/certs","stores":[".*"]}]
       # `roles` first so the demo issuer's test tokens (tests/test-authzen.sh)
       # keep their writer/recorder claims; the Keycloak paths follow.
       JWT_ROLES_CLAIM: roles,realm_access.roles,resource_access.authz-api.roles

@@ -67,7 +67,7 @@ spec:
             - { name: DB_POOL_MAX,   value: {{ .Values.reader.dbPoolMax | quote }} }
             - { name: JWKS_FILE,     value: /jwks/jwks.json }
             - { name: JWT_ISSUER,    value: {{ .Values.opa.jwtIssuer | quote }} }
-            - { name: JWT_AUDIENCE,  value: {{ .Values.opa.jwtAudience | quote }} }
+            {{- include "pgauthz.audienceEnv" $ | nindent 12 }}
             - { name: DEFAULT_STORE, value: {{ .Values.opa.defaultStore | quote }} }
             - { name: ALLOW_SUBJECT_OVERRIDE, value: "false" }
             # Deployment label + diagnostic-surface gates (production profile).
@@ -167,7 +167,7 @@ spec:
             - { name: DB_POOL_MAX,   value: {{ .Values.writer.dbPoolMax | quote }} }
             - { name: JWKS_FILE,     value: /jwks/jwks.json }
             - { name: JWT_ISSUER,    value: {{ .Values.opa.jwtIssuer | quote }} }
-            - { name: JWT_AUDIENCE,  value: {{ .Values.opa.jwtAudience | quote }} }
+            {{- include "pgauthz.audienceEnv" $ | nindent 12 }}
             - { name: DEFAULT_STORE, value: {{ .Values.opa.defaultStore | quote }} }
             - { name: ALLOW_SUBJECT_OVERRIDE, value: "false" }
             # Deployment label + diagnostic-surface gates (production profile).

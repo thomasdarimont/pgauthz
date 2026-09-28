@@ -65,6 +65,24 @@ store-hooks-{{ printf "%.40s" (. | lower | replace "_" "-") }}-{{ sha256sum . | 
 {{- end }}
 
 {{/*
+pgauthz.audienceEnv — JWT_AUDIENCE for one pgauthzd container. Every trusted
+issuer must pin an audience (SECURITY-AUDIT F21): pgauthzd refuses to start
+without one, so the chart refuses to render an empty opa.jwtAudience unless
+opa.allowMissingAudience is set DELIBERATELY (then ALLOW_MISSING_AUDIENCE is
+passed through and pgauthzd warns on every start). Arg: the root context.
+*/}}
+{{- define "pgauthz.audienceEnv" -}}
+{{- $o := .Values.opa -}}
+{{- if and (not $o.jwtAudience) (not $o.allowMissingAudience) -}}
+{{- fail "opa.jwtAudience is empty: pgauthzd refuses an issuer without an audience (tokens minted for any other API would be accepted). Set it to this API's identifier, or set opa.allowMissingAudience=true DELIBERATELY." -}}
+{{- end -}}
+- { name: JWT_AUDIENCE, value: {{ $o.jwtAudience | quote }} }
+{{- if $o.allowMissingAudience }}
+- { name: ALLOW_MISSING_AUDIENCE, value: "true" }
+{{- end }}
+{{- end -}}
+
+{{/*
 pgauthz.diagnosticsEnv — env entries for one pgauthzd container: the
 deployment label plus the role gates of the discovery/diagnostic surfaces
 (search, explain, watch). Args: (dict "root" $ "env" <DEPLOYMENT_ENVIRONMENT>).

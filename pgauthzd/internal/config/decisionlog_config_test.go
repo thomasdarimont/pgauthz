@@ -8,7 +8,7 @@ import (
 // Decision log settings (ADR 0013): sink and sample are validated at load.
 func TestDecisionLogConfig(t *testing.T) {
 	load := func(extra map[string]string) (*Config, error) {
-		setIssuers(t, `[{"issuer":"https://a","jwks_file":"/keys/a.json","stores":["demo"]}]`)
+		setIssuers(t, `[{"issuer":"https://a","audience":"api","jwks_file":"/keys/a.json","stores":["demo"]}]`)
 		t.Setenv("DECISION_LOG", "")
 		t.Setenv("DECISION_LOG_SAMPLE", "")
 		t.Setenv("DECISION_LOG_DETAIL", "")

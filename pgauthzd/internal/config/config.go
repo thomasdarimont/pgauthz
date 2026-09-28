@@ -212,6 +212,13 @@ type Config struct {
 	// override that lets a production-labelled instance start with an open
 	// search/explain/watch surface (logged as a WARNING on every start).
 	AllowOpenDiagnostics bool
+	// AllowMissingAudience (ALLOW_MISSING_AUDIENCE) lets a trusted issuer be
+	// configured WITHOUT an expected `aud`. Every issuer must otherwise pin an
+	// audience (JWT_AUDIENCE / "audience" in JWT_ISSUERS): without one, any
+	// token the IdP mints for ANY other API — same signing keys, same subject
+	// claims — is accepted here. Startup fails by default; the
+	// override starts anyway and logs a WARNING on every start.
+	AllowMissingAudience bool
 	// OPAMaxResponseBytes bounds every OPA HTTP response body (review #10):
 	// a broken/misconfigured OPA must cause a clean policy_evaluation_failed,
 	// not unbounded allocation. Default 10 MiB, matching HTTP_MAX_BODY_BYTES.
@@ -385,6 +392,7 @@ func Load() (*Config, error) {
 		OpenAPIEnabled:               envBool("OPENAPI_ENABLED", true),
 		DeploymentEnvironment:        env("DEPLOYMENT_ENVIRONMENT", ""),
 		AllowOpenDiagnostics:         envBool("ALLOW_OPEN_DIAGNOSTICS", false),
+		AllowMissingAudience:         envBool("ALLOW_MISSING_AUDIENCE", false),
 		OPAMaxResponseBytes:          int64(envInt("OPA_MAX_RESPONSE_BYTES", 10<<20)),
 		CursorSealKey:                env("CURSOR_SEAL_KEY", ""),
 		MetricsListenAddr:            env("METRICS_LISTEN_ADDR", ""),
@@ -496,6 +504,15 @@ func Load() (*Config, error) {
 	for i, iss := range c.Issuers {
 		if iss.JWKSURL == "" && iss.JWKSFile == "" {
 			return nil, fmt.Errorf("issuer %d (%q) has no jwks_url or jwks_file", i, iss.Issuer)
+		}
+		// Audience is required (F21): an issuer without one accepts every token
+		// its IdP mints for any other API. Fail closed at startup unless the
+		// operator overrides deliberately.
+		if strings.TrimSpace(iss.Audience) == "" {
+			if !c.AllowMissingAudience {
+				return nil, fmt.Errorf("issuer %d (%q) has no audience — tokens this IdP mints for ANY other API would be accepted here; set JWT_AUDIENCE (legacy form) or \"audience\" in JWT_ISSUERS to this API's identifier, or override deliberately with ALLOW_MISSING_AUDIENCE=true", i, iss.Issuer)
+			}
+			log.Printf("WARNING (ALLOW_MISSING_AUDIENCE): issuer %q has no audience — tokens minted for any other API are accepted", iss.Issuer)
 		}
 		for _, p := range iss.Stores {
 			if _, err := regexp.Compile("^(?:" + p + ")$"); err != nil {

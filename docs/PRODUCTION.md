@@ -58,7 +58,10 @@ by `init.sh` on every run.
       `JWT_AUDIENCE`) for OPA and the AuthZEN services. The AuthZEN services can
       trust several issuers at once via `JWT_ISSUERS` (JSON array of
       `{issuer, audience, jwks_url|jwks_file}`; the token's `iss` selects the
-      validator — legacy single-issuer envs still work).
+      validator — legacy single-issuer envs still work). pgauthzd **refuses to
+      start** when an issuer has no audience (a token minted for another API
+      would otherwise pass); `ALLOW_MISSING_AUDIENCE=true` is the alarming
+      override, never for production.
 - [ ] **Bind every issuer to its stores and roles** (multi-tenant AuthZEN).
       An issuer without a `stores` binding can reach **every** store; without a
       `db_roles`/`client_db_roles` binding it can claim any reader role. Set

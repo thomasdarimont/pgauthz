@@ -192,7 +192,13 @@ opa:
   replicas: 2
   # Read into the rego at startup via opa.runtime().env (same as compose).
   jwtIssuer: "https://auth.example.com"
+  # Required: the audience this API expects in `aud`. pgauthzd refuses to start
+  # (and the chart refuses to render) without one — a token the IdP minted for
+  # any other API would otherwise be accepted (SECURITY-AUDIT F21).
   jwtAudience: "authz-api"
+  # Deliberately alarming override: render/start with an empty audience anyway
+  # (pgauthzd warns on every start). Never in production.
+  allowMissingAudience: false
   defaultStore: "demo"
   # SECURITY: token-only reads. Keep true unless a trusted PEP fronts OPA.
   requireTokenForReads: true

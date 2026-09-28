@@ -15,8 +15,8 @@ func setIssuers(t *testing.T, issuersJSON string) {
 
 func TestRequireStoreBindingRejectsUnboundIssuer(t *testing.T) {
 	setIssuers(t, `[
-		{"issuer":"https://a","jwks_file":"/keys/a.json","stores":["tenant-a-.*"]},
-		{"issuer":"https://b","jwks_file":"/keys/b.json"}
+		{"issuer":"https://a","audience":"api","jwks_file":"/keys/a.json","stores":["tenant-a-.*"]},
+		{"issuer":"https://b","audience":"api","jwks_file":"/keys/b.json"}
 	]`)
 	t.Setenv("REQUIRE_STORE_BINDING", "true")
 	_, err := Load()
@@ -27,8 +27,8 @@ func TestRequireStoreBindingRejectsUnboundIssuer(t *testing.T) {
 
 func TestRequireStoreBindingAcceptsFullyBound(t *testing.T) {
 	setIssuers(t, `[
-		{"issuer":"https://a","jwks_file":"/keys/a.json","stores":["tenant-a-.*"]},
-		{"issuer":"https://b","jwks_file":"/keys/b.json","stores":["demo"]}
+		{"issuer":"https://a","audience":"api","jwks_file":"/keys/a.json","stores":["tenant-a-.*"]},
+		{"issuer":"https://b","audience":"api","jwks_file":"/keys/b.json","stores":["demo"]}
 	]`)
 	t.Setenv("REQUIRE_STORE_BINDING", "true")
 	if _, err := Load(); err != nil {
@@ -40,8 +40,8 @@ func TestRequireStoreBindingAcceptsFullyBound(t *testing.T) {
 // now fatal (cross-tenant reachability) unless deliberately overridden.
 func TestStoreBindingMultiIssuerFailClosed(t *testing.T) {
 	setIssuers(t, `[
-		{"issuer":"https://a","jwks_file":"/keys/a.json"},
-		{"issuer":"https://b","jwks_file":"/keys/b.json"}
+		{"issuer":"https://a","audience":"api","jwks_file":"/keys/a.json"},
+		{"issuer":"https://b","audience":"api","jwks_file":"/keys/b.json"}
 	]`)
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "ALLOW_UNBOUND_MULTI_ISSUER") {
 		t.Fatalf("unbound multi-issuer must fail closed, got %v", err)
@@ -54,8 +54,8 @@ func TestStoreBindingMultiIssuerFailClosed(t *testing.T) {
 
 func TestRequireDBRoleBindingRejectsUnboundIssuer(t *testing.T) {
 	setIssuers(t, `[
-		{"issuer":"https://a","jwks_file":"/keys/a.json","stores":["a_*"],"db_roles":["app_a_authz"]},
-		{"issuer":"https://b","jwks_file":"/keys/b.json","stores":["b_*"]}
+		{"issuer":"https://a","audience":"api","jwks_file":"/keys/a.json","stores":["a_*"],"db_roles":["app_a_authz"]},
+		{"issuer":"https://b","audience":"api","jwks_file":"/keys/b.json","stores":["b_*"]}
 	]`)
 	t.Setenv("DB_ROLE_CLAIM", "db_role") // role derivation configured
 	t.Setenv("REQUIRE_DB_ROLE_BINDING", "true")
@@ -67,8 +67,8 @@ func TestRequireDBRoleBindingRejectsUnboundIssuer(t *testing.T) {
 
 func TestRequireDBRoleBindingAcceptsClientMapAsBinding(t *testing.T) {
 	setIssuers(t, `[
-		{"issuer":"https://a","jwks_file":"/keys/a.json","stores":["a_*"],"db_roles":["app_a_authz"]},
-		{"issuer":"https://b","jwks_file":"/keys/b.json","stores":["b_*"],"client_db_roles":{"app-b":"app_b_authz"}}
+		{"issuer":"https://a","audience":"api","jwks_file":"/keys/a.json","stores":["a_*"],"db_roles":["app_a_authz"]},
+		{"issuer":"https://b","audience":"api","jwks_file":"/keys/b.json","stores":["b_*"],"client_db_roles":{"app-b":"app_b_authz"}}
 	]`)
 	t.Setenv("DB_ROLE_CLAIM", "db_role")
 	t.Setenv("REQUIRE_DB_ROLE_BINDING", "true")
@@ -81,8 +81,8 @@ func TestRequireDBRoleBindingNoopWithoutDerivation(t *testing.T) {
 	// No DB_ROLE_CLAIM / CLIENT_DB_ROLES anywhere: roles cannot be claimed at
 	// all, so the binding requirement has nothing to enforce.
 	setIssuers(t, `[
-		{"issuer":"https://a","jwks_file":"/keys/a.json","stores":["a_*"]},
-		{"issuer":"https://b","jwks_file":"/keys/b.json","stores":["b_*"]}
+		{"issuer":"https://a","audience":"api","jwks_file":"/keys/a.json","stores":["a_*"]},
+		{"issuer":"https://b","audience":"api","jwks_file":"/keys/b.json","stores":["b_*"]}
 	]`)
 	t.Setenv("DB_ROLE_CLAIM", "")
 	t.Setenv("REQUIRE_DB_ROLE_BINDING", "true")
@@ -92,7 +92,7 @@ func TestRequireDBRoleBindingNoopWithoutDerivation(t *testing.T) {
 }
 
 func TestDBRoleCacheTTLDefault(t *testing.T) {
-	setIssuers(t, `[{"issuer":"https://a","jwks_file":"/keys/a.json"}]`)
+	setIssuers(t, `[{"issuer":"https://a","audience":"api","jwks_file":"/keys/a.json"}]`)
 	c, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -106,7 +106,7 @@ func TestDBRoleCacheTTLDefault(t *testing.T) {
 
 func setMinimalIssuer(t *testing.T) {
 	t.Helper()
-	setIssuers(t, `[{"issuer":"https://a","jwks_file":"/keys/a.json"}]`)
+	setIssuers(t, `[{"issuer":"https://a","audience":"api","jwks_file":"/keys/a.json"}]`)
 }
 
 func TestFreshnessKeysParsing(t *testing.T) {
@@ -258,6 +258,7 @@ func TestProductionProfileRequiresGatedDiagnostics(t *testing.T) {
 	base := func(t *testing.T) {
 		t.Helper()
 		t.Setenv("JWKS_FILE", "/keys/a.json")
+		t.Setenv("JWT_AUDIENCE", "api")
 		t.Setenv("JWT_ISSUERS", "")
 		t.Setenv("SEARCH_REQUIRED_ROLE", "")
 		t.Setenv("EXPLAIN_REQUIRED_ROLE", "")
@@ -312,4 +313,43 @@ func TestProductionProfileRequiresGatedDiagnostics(t *testing.T) {
 			t.Fatalf("unexpected: %v", err)
 		}
 	})
+}
+
+// Every trusted issuer must pin an audience (F21): without one, a token the
+// IdP minted for any other API is accepted. Fails closed at startup; the
+// override starts (with a warning).
+func TestAudienceRequiredPerIssuer(t *testing.T) {
+	setIssuers(t, `[
+		{"issuer":"https://a","audience":"api","jwks_file":"/keys/a.json"},
+		{"issuer":"https://b","jwks_file":"/keys/b.json"}
+	]`)
+	t.Setenv("ALLOW_UNBOUND_MULTI_ISSUER", "true")
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), `issuer 1 ("https://b") has no audience`) ||
+		!strings.Contains(err.Error(), "ALLOW_MISSING_AUDIENCE") {
+		t.Fatalf("issuer without audience must fail startup naming it and the override, got %v", err)
+	}
+	t.Setenv("ALLOW_MISSING_AUDIENCE", "true")
+	if _, err := Load(); err != nil {
+		t.Fatalf("deliberate override must permit startup, got %v", err)
+	}
+}
+
+func TestAudienceRequiredLegacyForm(t *testing.T) {
+	t.Setenv("JWT_ISSUERS", "")
+	t.Setenv("JWKS_URL", "")
+	t.Setenv("JWKS_FILE", "/keys/a.json")
+	t.Setenv("JWT_ISSUER", "https://a")
+	t.Setenv("JWT_AUDIENCE", "")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "has no audience") {
+		t.Fatalf("legacy issuer without JWT_AUDIENCE must fail startup, got %v", err)
+	}
+	t.Setenv("JWT_AUDIENCE", "   ")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "has no audience") {
+		t.Fatalf("whitespace audience must count as missing, got %v", err)
+	}
+	t.Setenv("JWT_AUDIENCE", "api")
+	if _, err := Load(); err != nil {
+		t.Fatalf("legacy issuer with JWT_AUDIENCE must load, got %v", err)
+	}
 }

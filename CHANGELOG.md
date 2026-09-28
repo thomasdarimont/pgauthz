@@ -7,6 +7,21 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Security
+
+- **pgauthzd requires an audience for every trusted issuer**
+  `JWT_AUDIENCE` was optional and an empty value skipped the `aud` check, so a
+  token the IdP minted for *any other API* — same keys, same subject and role
+  claims — was accepted by pgauthzd (confused deputy). Startup now fails when
+  the legacy single issuer or any `JWT_ISSUERS` entry has no `audience`,
+  naming the issuer and the fix; `ALLOW_MISSING_AUDIENCE=true` is the
+  deliberately alarming override (WARNING on every start); the Helm chart
+  refuses to render an empty `opa.jwtAudience` unless
+  `opa.allowMissingAudience` is set. **Upgrade note:** every shipped
+  compose/Helm deployment already pins `authz-api`; the playground's Keycloak
+  issuer entries now carry it too (the realm's audience mapper mints it). If
+  you run an issuer without an audience, add one before upgrading.
+
 ### Changed
 
 - **Docs: CIDR conditions and IPv4-mapped IPv6 addresses.** PostgreSQL keeps
