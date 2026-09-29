@@ -1,0 +1,37 @@
+# pgauthz
+
+> A PostgreSQL-native authorization engine (Google Zanzibar / OpenFGA relationship model as SQL functions: tuples, models, conditions, temporal gates, audit and time travel) plus pgauthzd, a stateless Go daemon that serves it over HTTP (AuthZEN 1.0, native API, JWT). Data and decisions stay in PostgreSQL.
+
+One owner per topic. Read the file that owns the topic, not the README.
+
+## Start here
+
+- [README](README.md): pitch, features, setup, a complete example, the documentation map
+- [Example models](examples/models/README.md): helloworld, demo, gdrive, github, todo, aia-acme, agents
+
+## Reference
+
+- [SQL API](docs/API.md): every public function with signature, return shape and a worked call; recipes
+- [Model design](docs/MODEL_DESIGN.md): types, relations, rules, wildcards, conditions (SQL/CEL), temporal gates, model registry, OpenFGA import
+- [Audit, time travel, changefeed](docs/AUDIT.md): what changed, what was true at time T, what changed since
+- [pgauthzd](pgauthzd/README.md): the HTTP daemon — profiles, environment, AuthZEN, native API, JWT, decision log
+- [pgauthzctl](pgauthzctl/README.md): model-as-code CLI — import, test, publish, roll out
+- [OPA overlay](opa/README.md): optional policy-as-code sidecar and policy hooks
+
+## Design and operations
+
+- [Architecture](docs/ARCHITECTURE.md): arc42 — building blocks, runtime, deployment, crosscutting concepts
+- [Design decisions](docs/DESIGN.md): why PostgreSQL, security model, performance, where permissions belong
+- [Development](docs/DEVELOPMENT.md): day-to-day operations, HTTP write API, integration, debugging, repository layout
+- [Production](docs/PRODUCTION.md): checklist, roles, network, secrets, replicas, HA, retention, upgrades
+- [Agentic authorization](docs/AGENTIC-AUTHORIZATION.md): AI agents as principals — tool calls, planning, delegation, RAG
+- [Data filtering](examples/filtering/README.md): authorization as a JOIN
+- [Comparison with OpenFGA](docs/COMPARISON.md)
+- [Benchmarks](docs/BENCHMARKS.md)
+- [Security audit](docs/SECURITY-AUDIT.md)
+- [Architecture decision records](docs/adr/)
+
+## Optional
+
+- [Changelog](CHANGELOG.md): read one version block, not the file
+- [AGENTS.md](AGENTS.md): conventions for coding agents and contributors

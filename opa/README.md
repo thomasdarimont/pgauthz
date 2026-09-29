@@ -1089,7 +1089,7 @@ tokens from `opa/http-client.env.json`.
   front door; delegating the write-authz *decision* fully into pgauthzd is the
   pending pgauthzd-fronted-writes increment — today OPA's `write.rego` still
   fronts that decision.) See
-  [DEVELOPMENT.md → Write API](../docs/DEVELOPMENT.md#write-api-opa-fronted).
+  [DEVELOPMENT.md → Write API](../docs/DEVELOPMENT.md#write-api-pgauthzd-front-door).
 - **JWKS rotation:** Replace `opa/data/jwks.json` with your identity
   provider's JWKS endpoint, or mount the file from a secrets manager.
   OPA reloads data files automatically when they change (with `--watch`).

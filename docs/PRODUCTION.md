@@ -68,7 +68,7 @@ by `init.sh` on every run.
       the bindings per issuer in `JWT_ISSUERS` and enforce completeness with
       `REQUIRE_STORE_BINDING=true` and `REQUIRE_DB_ROLE_BINDING=true` — the
       service then refuses to start with an unbound issuer instead of running
-      unrestricted. See [authzen/README.md → Multi-Store](../authzen/README.md).
+      unrestricted. See [authzen/README.md → Multi-Store](../pgauthzd/README.md).
 - [ ] **Configure per-app DB roles on both AuthZEN services** (multi-tenant).
       Both services enforce database-level per-application namespace isolation
       on reads: `pgauthzd-decision` assumes the derived role itself
@@ -228,7 +228,7 @@ pgauthzd). Transport security splits across the hops:
   manager, not in committed files.
 - Configure JWT verification on OPA and the AuthZEN services: `JWKS_URL` (or
   `JWKS_FILE`), `JWT_ISSUER`, `JWT_AUDIENCE`, and optionally `REQUIRED_SCOPE`.
-  See [DEVELOPMENT.md → JWT](DEVELOPMENT.md#jwt-secret--jwks).
+  See [DEVELOPMENT.md → JWT](#jwt-signature-verification-asymmetric--jwks).
 
 ### JWT signature verification (asymmetric / JWKS)
 

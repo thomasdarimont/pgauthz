@@ -7,6 +7,30 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **Documentation split: one owner per topic.** `README.md` shrinks from
+  ~2,000 to ~330 lines — pitch, features, setup, the complete example and a
+  **documentation map** — and every topic now has exactly one home:
+  `docs/API.md` (new; the SQL function reference and recipes), `docs/AUDIT.md`
+  (new; audit trail, time travel and the changefeed, which moves out of
+  DEVELOPMENT), `docs/COMPARISON.md` (new; the OpenFGA comparison),
+  `examples/models/README.md` (new; the example index), `examples/filtering/`
+  (authorization as a JOIN, prose included), `docs/MODEL_DESIGN.md` (gains
+  multi-store, namespaces, the condition-language and missing-context sections
+  and the CIDR note; its stale `required_context` description is corrected),
+  `docs/ARCHITECTURE.md` (gains the resolution walkthrough, the OPA / AuthZEN /
+  read-replica deployment sections and the access-control roles),
+  `docs/DESIGN.md` (the long "Why PostgreSQL"), `docs/DEVELOPMENT.md`
+  (repository layout), `playground/README.md` (overview). README sections that
+  merely paralleled an existing owner (wildcards, object wildcards, rule
+  groups, temporal gates, deployment topologies) were dropped in favour of
+  that owner. Old README anchors are rewritten repo-wide; `llms.txt` at the
+  root and AGENTS.md "Where to read" point agents at the owner instead of the
+  README. New `scripts/check-links.sh` (relative links + anchors, GitHub slug
+  rules) runs in CI and pre-release; it also caught four links that had been
+  dangling for a while.
+
 ### Added
 
 - **Resolver regression shapes suite** (`tests/sql/tests_resolver_shapes.sql`,

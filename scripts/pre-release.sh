@@ -51,6 +51,9 @@ step "Go build + vet + tests (pgauthzd)"
 (cd pgauthzd && go build ./... && go vet ./... && go test ./...) || die "pgauthzd build/vet/test failed"
 step "Go build + vet (pgauthzctl)"
 (cd pgauthzctl && go build ./... && go vet ./...) || die "pgauthzctl build/vet failed"
+
+step "Markdown links + anchors"
+./scripts/check-links.sh || die "broken markdown links (see above)"
 if [ -d playground/backend ]; then
     step "Go build + vet (playground BFF)"
     (cd playground/backend && go build ./... && go vet ./...) || die "playground BFF build/vet failed"

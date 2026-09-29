@@ -1059,7 +1059,7 @@ the reserved request itself counts. See
 Store lifecycle (`create_store`/`delete_store`), model evolution (`model_*`),
 namespace management, and OpenFGA import are **not** exposed over the public
 write API — they require `authz_admin` and are run via **direct SQL** (or your
-own admin tooling). See [direct SQL](#via-direct-sql-jdbc).
+own admin tooling). See [direct SQL](#direct-sql-example-jdbc--pgx).
 
 ### Compose configuration
 
@@ -1405,58 +1405,6 @@ unnecessary network round-trips when access is denied, but the
 downstream service should not trust the caller blindly. Forward the
 JWT so each service can verify independently.
 
-## Watching for changes (changefeed)
-
-To react to tuple changes in real time — cache invalidation, materialization,
-sync — stream them from the audit log instead of polling. Two pieces:
-
-- **`NOTIFY authz_changes`** — the audit trigger emits a doorbell on every write,
-  deduplicated to **one per store per transaction** (a 50-tuple batch → one
-  notification). Payload is the `store_id`.
-- **`authz.watch_changes(store, after_at, after_seq, …)`** — returns the decoded
-  changes after a `(performed_at, seq)` cursor. The notify is only a doorbell;
-  the cursor is the source of truth, so nothing is lost if a notification is
-  missed, and a consumer resumes from its persisted cursor after a restart.
-
-```sql
--- everything in 'demo' since a cursor:
-SELECT * FROM authz.watch_changes('demo', '2026-06-01', 0);
-
--- filter by object types, namespaces, and/or relations (one watch covers many —
--- pass arrays; each is OR-within, all AND together; NULL = all). e.g. "viewer on
--- document/folder within the dms namespace":
-SELECT * FROM authz.watch_changes('acme',
-    p_object_types => ARRAY['document','folder'],
-    p_namespaces   => ARRAY['dms'],
-    p_relations    => ARRAY['viewer']);
--- The feed reports the raw changed tuple, not derived permission impact.
-
--- current high-water cursor (to start "from now"):
-SELECT * FROM authz.watch_cursor('demo');
-```
-
-Consumer loop: `LISTEN authz_changes` → on notification call `watch_changes`
-after the last cursor → process → persist the new cursor.
-
-**Store lifecycle.** Most events are tuple changes (`action` `INSERT` / `DELETE`).
-Retiring a store (`retire_store`) emits one **store-wide** `STORE_RETIRED` event
-(with no tuple fields) instead of a delete per tuple — a consumer should treat it
-as "invalidate everything for this store". It bypasses the object-type /
-namespace / relation filters (a narrowly-scoped watcher still sees it), and
-`watch_changes` / `watch_cursor` keep resolving a retired store so the consumer
-can drain the changefeed's final events.
-
-**Safety / lag.** `seq` is assigned at INSERT time, not commit time, so changes
-are cursored by `(performed_at, seq)` and gated by a stability lag (`p_lag`,
-default 1s): only rows older than `now() - p_lag` are returned. Because the
-writer roles carry a `statement_timeout`, a write transaction cannot outlive it
-— a lag at or above that bound is a hard no-skip guarantee; a smaller lag trades
-that for lower latency (fine for at-least-once cache invalidation). For strict
-exactly-once streaming, use logical replication on `tuples_audit`.
-
-A runnable end-to-end demo (a `LISTEN` consumer + compose overlay) is in
-[`examples/watch/`](../examples/watch/README.md).
-
 ## Debugging
 
 ### Trace which tuples exist for an object
@@ -1517,3 +1465,23 @@ SELECT * FROM authz.list_actions('demo', 'internal_user', 'bob', 'document', 'do
 -- All objects of a type user can access
 SELECT * FROM authz.list_objects('demo', 'internal_user', 'bob', 'can_read', 'document');
 ```
+
+## Repository layout
+
+| Path | Purpose |
+|---|---|
+| `db/engine/` | Core authorization engine — schema, access checks, tuple management, audit, model rules |
+| `db/security/` | Role definitions and GRANT/SECURITY DEFINER setup |
+| `db/openfga/` | OpenFGA JSON model and tuple import |
+| `tests/sql/` | Test suites (API, search, namespace, wildcards, contextual, intersection, etc.) |
+| `examples/models/` | Example authorization models (helloworld, demo, gdrive, github, todo) — **not** part of the deployable engine; see [Example Models](../examples/models/README.md#example-models) |
+| `examples/watch/` | Runnable setup example for the watch/changefeed feature (compose overlay + Python consumer) |
+| `examples/events/` | Action-log ingestion: outbox → queue (Redis Streams) → consumer that records into pgauthz with at-least-once delivery, idempotency, a dead-letter stream for content rejections and ingestion-lag metrics (compose overlay + Python consumer/producer) |
+| `pgauthzd/` | The Go daemon: native `/pgauthz/v1` + AuthZEN 1.0 HTTP APIs ([see pgauthzd/README.md](../pgauthzd/README.md)) |
+| `playground/` | Web UI: Go BFF + Lit SPA for exploring stores and visualizing `explain_access` ([see playground/README.md](../playground/README.md)) |
+| `opa/` | Rego policies for JWT authn + Zanzibar authz via the pgauthzd native callback |
+| `docs/` | Design documents, development guide, model design, OPA integration |
+| `compose.yml` | PostgreSQL + pgauthzd + OPA |
+| `compose-authzen.yml` | pgauthzd AuthZEN services (pgauthzd-decision + pgauthzd-opa) |
+| `compose-playground.yml` | Playground web UI (BFF + bundled SPA) + its session DB |
+| `bootstrap.sh` | Full init + test run |

@@ -39,6 +39,12 @@ jobs:
           go build ./...
           go vet ./...
 
+      # Every relative Markdown link and #anchor must resolve (docs are split
+      # across README.md / docs/ / component READMEs; a move must not leave a
+      # dangling reference).
+      - name: Check markdown links
+        run: ./scripts/check-links.sh
+
       # init.sh applies the structural migrations in db/migrations/ via sqlx-cli
       # (env.sh finds it on PATH or in ~/.cargo/bin). Cache the compiled binary
       # so only the first run pays the build cost; pin the version to match

@@ -24,6 +24,31 @@ to the SPA. Every query is forwarded with the session's access token, so it runs
 **as the logged-in user** — the way a real PEP evaluates a request (in
 production the PEP calls pgauthzd, the front door, which consults OPA).
 
+## Overview
+
+An OpenFGA-playground-style web app for exploring an engine instance: pick a store,
+browse its model / tuples / conditions, and run access queries — then
+**visualize the resolution path** that `explain_access` returns, as a tree and an
+access graph. Queries run through the **real production path end to end** (OIDC
+login → pgauthzd → OPA → native callback → engine), so what you see in the UI is
+what the engine decides.
+
+It is a small **backend-for-frontend** (Go) plus a no-build **Lit SPA**, packaged
+as one self-contained container image. The browser authenticates via OIDC
+authorization-code + PKCE against Keycloak; the BFF holds the tokens server-side
+and forwards each query as the logged-in user. Bring it up with the playground
+compose overlay:
+
+```bash
+docker compose -f compose.yml -f compose-keycloak.yml -f compose-playground.yml up -d
+# then open https://app.pgauthz.test/playground
+```
+
+The playground is a trusted **admin/dev tool** (engine-direct explore mode can
+check arbitrary subjects, read-only) — keep it access-restricted. See
+[`playground/README.md`](README.md) for configuration (the single
+`ISSUER` OIDC discovery setting, base-path serving, and the container layout).
+
 ## Run
 
 ```bash

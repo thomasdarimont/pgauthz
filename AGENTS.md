@@ -7,6 +7,25 @@ convention). `CLAUDE.md` imports this file, so Claude Code reads the same instru
 
 pgauthz is a **PostgreSQL-native authorization engine** implementing Google Zanzibar / OpenFGA relationship-based access control (ReBAC) in pure SQL, plus **pgauthzd**, a stateless Go daemon that serves the engine over HTTP (AuthZEN 1.0, native API, JWT). It answers "Can user X do action Y on object Z?" with a query for co-located applications and over HTTP for everyone else; the data and decisions stay in PostgreSQL, there is no separate authorization database.
 
+## Where to read
+
+Do not read `README.md` or `CHANGELOG.md` whole. The README's
+**Documentation map** lists one owner per topic; open that file for the task:
+
+- `docs/API.md` — SQL function signatures, return shapes, recipes
+- `docs/MODEL_DESIGN.md` — modelling (rules, wildcards, conditions, gates, registry, import)
+- `docs/AUDIT.md` — audit trail, time travel, changefeed
+- `docs/ARCHITECTURE.md` — how it works / how it is deployed (arc42)
+- `docs/PRODUCTION.md` — operations, roles, replicas, retention, upgrades
+- `docs/DEVELOPMENT.md` — HTTP write API, integration, debugging, repository layout
+- `pgauthzd/README.md`, `pgauthzctl/README.md`, `playground/README.md`, `opa/README.md` — the components
+- `CHANGELOG.md` — `grep -n '^## \[' CHANGELOG.md`, then read the one version block you need
+
+**One owner per topic.** A feature is documented in its owning doc; the README
+gets one sentence and a link (and a row in the Documentation map if it is a
+new topic). Do not add a new `##` section to README.md. Every relative link
+and `#anchor` must resolve: `./scripts/check-links.sh` runs in CI.
+
 ## Architecture
 
 Deployment (OPA is opt-in — the default stack is OPA-free):

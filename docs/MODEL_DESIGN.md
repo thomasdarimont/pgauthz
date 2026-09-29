@@ -84,6 +84,34 @@ SELECT authz.create_store('gdrive', 'Google Drive permission model');
 
 All subsequent definitions reference this store.
 
+### Multi-Store Support
+
+Every authorization operation is scoped to a **store** — an independent
+authorization namespace. Each store has its own types, relations, models,
+conditions, and tuples. Stores are fully isolated from each other.
+
+The demo store is called `'demo'` and is created by the example model
+`examples/models/demo/model.sql` (see [Example Models](../examples/models/README.md#example-models)).
+
+```sql
+-- Create a new store for testing a model change
+INSERT INTO authz.stores (name) VALUES ('v2_experiment');
+
+-- All API functions take the store name as the first parameter
+SELECT authz.write_tuple('v2_experiment',
+    'internal_user', 'alice', 'can_read', 'document', 'doc_001');
+SELECT authz.check_access('v2_experiment',
+    'internal_user', 'alice', 'can_read', 'document', 'doc_001');
+
+-- Clean up
+SELECT authz.delete_store('v2_experiment');
+```
+
+Stores are also the **multi-tenancy** unit: one store per tenant isolates
+tuples by construction, while the [model registry](MODEL_DESIGN.md#16-sharing-one-model-across-stores-model-registry)
+shares one versioned model across all tenant stores (publish → canary →
+fleet, with drift detection and a `plan_model_apply` dry-run).
+
 ---
 
 ## 3. Step 2 -- Define Types
@@ -714,6 +742,8 @@ guarantee holds from the first write, tuples carrying it deny until you define
 the real expression with `create_condition_sql` / `create_condition_cel`
 (an in-place upsert, so the binding survives).
 
+---
+
 ## 6. Step 5 -- Write Tuples
 
 With the model in place, you grant access by writing tuples.
@@ -885,8 +915,13 @@ INSERT INTO authz.conditions (store_id, name, expression, required_context) VALU
 - `expression`: A SQL boolean expression where `$1` is the request-time context
   (JSONB passed by the caller) and `$2` is the tuple-stored context (JSONB
   stored alongside the tuple).
-- `required_context`: Documents expected keys (informational, not enforced at
-  the SQL level).
+- `required_context`: the keys the expression needs, split into `request`
+  (supplied at check time) and `stored` (saved with the tuple). Enforced:
+  `write_tuple` rejects a conditional tuple whose stored context lacks a
+  declared key, and a check whose request context lacks a declared key
+  reports it (`condition_missing_keys` in `explain_access`,
+  `missing_context` in `check_access_detailed`) — see
+  [Missing context](#missing-context).
 
 ### Writing Conditional Tuples
 
@@ -924,6 +959,100 @@ of context.
 - Business-hour restrictions
 - Geographic or IP-based constraints
 - Feature flags or license checks at the tuple level
+
+### Other condition examples
+
+```sql
+-- IP allowlist: $1 has the client IP, $2 has the allowed CIDR range.
+-- The regexp strips the IPv4-mapped IPv6 prefix (see the note below).
+SELECT authz.create_condition_sql('demo', 'ip_in_range',
+ $$regexp_replace(host(($1->>'client_ip')::inet), '^::ffff:', '')::inet
+   <<= ($2->>'allowed_cidr')::cidr$$);
+
+-- Office hours only: $1 has the current time, no stored context needed
+SELECT authz.create_condition_sql('demo', 'office_hours',
+ $$extract(hour from ($1->>'current_time')::timestamptz) BETWEEN 8 AND 17$$);
+
+-- Usage quota: $1 has the current usage count, $2 has the max allowed
+SELECT authz.create_condition_sql('demo', 'under_quota',
+ $$($1->>'usage_count')::int < ($2->>'max_allowed')::int$$);
+```
+
+> **CIDR conditions and IPv4-mapped IPv6 addresses.** Dual-stack listeners
+> (Go's `net/http` included) often report an IPv4 client as the mapped IPv6
+> form `::ffff:10.0.0.1`. PostgreSQL's `inet` keeps that as an IPv6 value
+> (`family()` = 6), so `'::ffff:10.0.0.1'::inet <<= '10.0.0.0/8'` is **false**
+> and a plain `<<=` allowlist silently denies (or, in an exclusion, silently
+> fails to block) such clients. Normalise the address first, as the
+> `ip_in_range` example does: `regexp_replace(host(ip), '^::ffff:', '')::inet`
+> turns a mapped address into its IPv4 form and leaves plain IPv4 and real
+> IPv6 addresses unchanged (RFC 4291 §2.5.5.2). Alternatively the PEP can
+> unmap before it builds the request context.
+
+### Missing context
+
+A condition that cannot be evaluated because a required key (declared in
+`required_context`) is absent never *grants*, on either side of the model:
+
+- On a **granting** path the conditional tuple does not match (a
+  `condition_denied` step with `condition_missing_keys`).
+- On a **subtracted** path (`BUT NOT banned`, with `banned` a conditional
+  tuple) the tuple is **assumed to match** — an unevaluable ban still bans
+  (a `condition_assumed` step). Nested exclusions flip again, so "cannot
+  evaluate" always resolves toward deny.
+
+`check_access` therefore answers `false` in both cases;
+`check_access_detailed` reports `state: "conditional"` with the keys in
+`missing_context` when supplying them could change the answer, and `deny`
+when it could not. (OpenFGA reaches the same fail-closed outcome by rejecting
+the whole check with a *missing parameters* error.)
+
+### Condition languages (`lang`)
+
+Conditions carry a `lang` column selecting the expression language. `'sql'` is
+the built-in default shown above — a SQL boolean over `$1` (request context) and
+`$2` (stored context), evaluated in a zero-privilege sandbox, no dependencies.
+
+`'cel'` is an **optional** language for friendlier ABAC expressions, evaluated by
+the [`extensions/pg-cel`](../extensions/pg-cel) Rust/pgrx extension. The two
+context bags are exposed as `request.*` and `stored.*`:
+
+```sql
+-- Same "not expired" rule, in CEL (requires the pg_cel extension).
+SELECT authz.create_condition_cel('demo', 'cel_not_expired',
+    'timestamp(request.current_time) < timestamp(stored.expires)',
+    '{"request": ["current_time"], "stored": ["expires"]}');
+```
+
+Enable CEL by building the extension into the Postgres image and turning it on:
+
+```bash
+PGAUTHZ_CEL=1 ./start.sh    # or ./start.sh --cel — builds the pg_cel image
+PGAUTHZ_CEL=1 ./init.sh     # runs CREATE EXTENSION pg_cel SCHEMA authz
+```
+
+`lang='cel'` writes are rejected until the evaluator is installed, so the default
+stack is never left with conditions it can't run. For a runnable walk-through see
+[`examples/models/demo/demo_cel.sql`](../examples/models/demo/demo_cel.sql).
+
+**Validation is parse-only.** Both languages are syntax-checked at write time
+(SQL test-compile / CEL compile), but undeclared variables, type mismatches, and
+value formats are not — those deny at check time. A common CEL gotcha: `duration()`
+wants a Go-style string (`"2h"`), not a Postgres interval (`"2 hours"`). Dry-run a
+condition against representative context with `validate_condition` to catch such
+issues early — it evaluates the real expression and raises on a bad value:
+
+```sql
+SELECT authz.validate_condition('demo', 'cel_not_expired',
+    '{"expires": "2026-03-11T11:00:00Z"}'::jsonb,         -- stored context
+    '{"current_time": "2026-03-11T10:00:00Z"}'::jsonb);   -- request context
+-- => true   (a malformed timestamp/duration in the context would raise here)
+```
+
+The engine dispatches languages in one place (`authz._eval_condition_expr`), so
+adding cedar/rego later is additive. See
+[`extensions/pg-cel/README.md`](../extensions/pg-cel/README.md) for the build and
+the SQL-vs-CEL trade-offs (e.g. IP-range conditions stay `lang='sql'`).
 
 ---
 
@@ -1090,6 +1219,56 @@ to the `tuples` table would:
 
 Since the mapping is always type/namespace → service (not tuple → service), it
 belongs in configuration, not in authorization data.
+
+### Namespace-Based Access Control
+
+When multiple applications share a single store, **namespaces** restrict
+which application can read or write tuples for which object types. This prevents
+one application from accidentally modifying or querying another's authorization data.
+
+- Types with `namespace = NULL` are **unrestricted** — any role can read and write them.
+- Types with a non-NULL namespace require the **effective request role** to be a member of a
+  granted role. The effective role is the `SET ROLE` identity (what pgauthzd switches to
+  per request, from the forwarded `X-PGAuthz-Role`), falling back to the session user for direct connections.
+- **Read and write access** is controlled via `authz.namespace_access` using `can_read` and `can_write` flags.
+
+```sql
+-- Assign namespaces to types
+UPDATE authz.types SET namespace = 'hr'
+ WHERE store_id = authz._s('demo')
+   AND name IN ('engagement', 'assignment');
+
+UPDATE authz.types SET namespace = 'documents'
+ WHERE store_id = authz._s('demo')
+   AND name IN ('document', 'upload_request');
+
+-- Grant access per namespace to application roles
+INSERT INTO authz.namespace_access (store_id, namespace, db_role, can_read, can_write) VALUES
+    (authz._s('demo'), 'hr',        'app_hr',     true, true),
+    (authz._s('demo'), 'hr',        'app_portal', true, false),  -- portal can read HR data but not write
+    (authz._s('demo'), 'documents', 'app_dms',    true, true);
+
+-- Wire up: DB users get their application role
+GRANT app_hr     TO hr_backend_user;
+GRANT app_dms    TO dms_backend_user;
+GRANT app_portal TO portal_user;
+```
+
+Now `hr_backend_user` can read and write tuples for `engagement` and `assignment`,
+`dms_backend_user` can read and write tuples for `document` and `upload_request`,
+and `portal_user` can read (but not write) HR authorization data.
+
+Write namespace enforcement applies to: `write_tuple`, `delete_tuple`, `write_tuples`,
+`delete_tuples`, `delete_user_tuples`.
+
+Read namespace enforcement applies to: `check_access`, `check_access_with_context`,
+`check_access_with_contextual_tuples`, `list_objects`, `list_subjects`, `list_actions`,
+`explain_access`, `audit_check_access`, `audit_list_actions`.
+
+Namespace read checks apply only to the **top-level object type** being queried.
+Internal TTU traversals across type boundaries are not restricted — this ensures
+cross-domain models work correctly while still controlling which applications can
+initiate queries against which types.
 
 ---
 

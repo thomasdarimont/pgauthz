@@ -601,6 +601,104 @@ The engine is **fail-closed** throughout:
 
 ---
 
+### How check_access resolves permissions
+
+1. Resolves store name to store_id
+2. Looks up direct tuples (index-only scan via partial index)
+3. Evaluates conditions on matching tuples (if any)
+4. Expands usersets (e.g., `team:payroll_team#member` → all team members)
+5. Follows computed relations (e.g., `can_read` → `viewer`)
+6. Traverses tuple-to-userset links (e.g., `can_view from in_internal_space`)
+7. Unions contextual tuples into each step (if provided)
+8. If the graph allows, evaluates the relation's [temporal gates](MODEL_DESIGN.md#17-temporal-gates-history-dependent-rules)
+   over the action log (only for the question asked — never for userset
+   sub-resolution); any failing clause denies
+
+Steps 1–7 compose recursively. Here's the simplest real check against the
+seeded **demo** store — Carol can read a document because she was granted
+`viewer` on it directly, and `can_read` is computed from `viewer`:
+
+```sql
+SELECT authz.explain_access('demo',
+    'client_user', 'carol', 'can_read', 'document', 'doc_client_private_001') ->> 'summary';
+```
+
+```
+client_user:carol → can_read → document:doc_client_private_001 = ALLOWED (computed)
+  ✓ [direct_tuple] viewer on document:doc_client_private_001 — tuple found (1.174 ms)
+✓ [computed] can_read on document:doc_client_private_001 — can_read ← viewer (1.498 ms)
+```
+
+Two ideas do most of the work: a **direct tuple** (the stored `viewer` grant)
+and a **computed relation** (`can_read` is satisfied by `viewer`). Real models
+simply nest more of the same. The check below — *can Alice read
+`doc_payroll_001`?* — adds **userset expansion** (group membership) and
+**tuple-to-userset (TTU)** steps that hop from a document to the space and
+assignment it belongs to, but every line is still one of the same handful of
+move types. Ask the engine for this trace with `explain_access`:
+
+```sql
+SELECT authz.explain_access('demo',
+    'internal_user', 'alice', 'can_read', 'document', 'doc_payroll_001');
+```
+
+It returns the structured JSON described under
+[explain_access](API.md#explain_access--why-was-access-allowed-or-denied) above. That
+JSON already carries a ready-made visualization in its `summary` field — extract
+it with the `->>` operator to print the trace as a tree:
+
+```sql
+SELECT authz.explain_access('demo',
+    'internal_user', 'alice', 'can_read', 'document', 'doc_payroll_001') ->> 'summary';
+```
+
+```
+internal_user:alice → can_read → document:doc_payroll_001 = ALLOWED (ttu)
+  ✗ [no_direct_tuple] viewer on document:doc_payroll_001 — no tuple (1.937 ms)
+✗ [computed] can_read on document:doc_payroll_001 — can_read ← viewer (2.347 ms)
+    ✗ [no_direct_tuple] viewer on internal_data_space:eng_42_payroll_internal — no tuple (0.610 ms)
+  ✗ [computed] can_view on internal_data_space:eng_42_payroll_internal — can_view ← viewer (0.767 ms)
+      ✗ [no_direct_tuple] accountant on assignment:eng_42_payroll — no tuple (0.573 ms)
+    ✗ [computed] can_view on assignment:eng_42_payroll — can_view ← accountant (0.680 ms)
+        ✓ [direct_tuple] member on team:payroll_team — tuple found (0.342 ms)
+      ✓ [userset] payroll_clerk on assignment:eng_42_payroll — expand team:payroll_team#member (0.777 ms)
+    ✓ [computed] can_view on assignment:eng_42_payroll — can_view ← payroll_clerk (0.839 ms)
+  ✓ [ttu] can_view on internal_data_space:eng_42_payroll_internal — can_view ← can_view on assignment:eng_42_payroll (via parent_assignment) (1.822 ms)
+✓ [ttu] can_read on document:doc_payroll_001 — can_read ← can_view on internal_data_space:eng_42_payroll_internal (via in_internal_space) (3.020 ms)
+```
+
+Read each line as `✓/✗ [reason] relation on object — detail (timing)`. Indentation
+is recursion depth and steps are listed in **evaluation order** (children before
+their parent), so the bottom line is the top-level decision. Here the engine first
+tries the cheap `viewer` paths (all ✗), then follows the TTU chain
+`document → internal_data_space → assignment`, where Alice's `team:payroll_team`
+membership finally satisfies `payroll_clerk` and the whole check resolves to
+ALLOWED. Per-step `duration_ms` timings vary run to run.
+
+The engine stops as soon as any path returns true. Pass `p_successful_only => true`
+to drop the ✗ branches and keep only the winning path:
+
+```sql
+SELECT authz.explain_access('demo',
+    'internal_user', 'alice', 'can_read', 'document', 'doc_payroll_001',
+    p_successful_only => true) ->> 'summary';
+```
+
+```
+internal_user:alice → can_read → document:doc_payroll_001 = ALLOWED (ttu)
+        ✓ [direct_tuple] member on team:payroll_team — tuple found (0.345 ms)
+      ✓ [userset] payroll_clerk on assignment:eng_42_payroll — expand team:payroll_team#member (0.829 ms)
+    ✓ [computed] can_view on assignment:eng_42_payroll — can_view ← payroll_clerk (0.903 ms)
+  ✓ [ttu] can_view on internal_data_space:eng_42_payroll_internal — can_view ← can_view on assignment:eng_42_payroll (via parent_assignment) (1.902 ms)
+✓ [ttu] can_read on document:doc_payroll_001 — can_read ← can_view on internal_data_space:eng_42_payroll_internal (via in_internal_space) (3.136 ms)
+```
+
+The machine-readable `trace` (flat) and `tree` (nested) fields carry the same
+steps for programmatic use.
+
+All recursive calls use integer IDs internally. Text-to-ID resolution
+happens once at the top-level public function.
+
 ## 7. Deployment View
 
 ### Docker Compose Services
@@ -842,6 +940,207 @@ approximation, with strict reads pinned to the guaranteed tier.)
 
 ---
 
+### Deployment with OPA and pgauthzd
+
+The authorization engine is designed to run as part of a three-tier stack:
+
+```
+              clients → AuthZEN 1.0 / native /pgauthz/v1 (HTTP + JWT)
+                              │
+                              ▼
+                 ┌─────────────────────────┐          ┌──────────────┐
+                 │  pgauthzd (FRONT DOOR)  │          │     OPA      │
+                 │  validates the JWT;     ├─consult─►│  (internal   │
+                 │  fronts all reads &     │◄callback─┤   policy     │
+                 │  writes                 │          │   sidecar)   │
+                 └───────────┬─────────────┘          └──────────────┘
+                             │ pgx — decision-only direct, or via the
+                             │ native callback reader/writer instances
+                             ▼
+                 ┌─────────────────────────┐
+                 │       PostgreSQL        │
+                 │  - authz schema         │
+                 │  - check_access, list_* │
+                 └─────────────────────────┘
+```
+
+- **PostgreSQL** stores all authorization data and executes the recursive
+  access checks. All logic lives in SQL functions — no application code needed.
+- **pgauthzd** is the **front door**: a single Go daemon that validates the JWT
+  and exposes the `authz` schema over its native `/pgauthz/v1` HTTP API (plus
+  AuthZEN 1.0). Its capability follows the instance's **profile** and DB role: a
+  `decision-only` instance connects with a read-only role (checks/lists/explain),
+  a `full` instance connects with `authz_writer` (reads + writes). Reader/writer
+  separation is achieved by running **separate pgauthzd instances**, not separate
+  services.
+- **OPA** (Open Policy Agent) is an **internal policy sidecar** that only pgauthzd
+  calls (a pgauthzd instance with `OPA_URL` set forwards it the verified token). Its Rego
+  policies re-validate the token and call **back** into pgauthzd's native
+  `/pgauthz/v1` API — the read callback for checks/lists, the write callback for
+  tuple writes — combining the graph result with additional policy logic
+  (environment checks, rate limits, etc.). OPA has no independent path to the
+  database.
+
+Applications call **pgauthzd** for authorization decisions. When `OPA_URL` is set,
+pgauthzd consults OPA, which calls back into a pgauthzd callback instance,
+which calls PostgreSQL; a `decision-only` pgauthzd answers straight from the graph
+with no OPA hop. Reads route to a **decision-only** pgauthzd instance
+(read-only DB role); writes (`write_tuple`, `delete_tuple`, …) route to a
+**full** pgauthzd instance (`authz_writer` role). The callback path is
+`<native_url>/stores/{store}/pgauthz/v1/{endpoint}`, configured on the OPA side
+via `NATIVE_URL` (reads), `NATIVE_WRITE_URL` (writes), and `NATIVE_SERVICE_TOKEN`.
+
+> **Trust boundary:** the callback listener trusts OPA's asserted subject and the
+> per-app role header `X-PGAuthz-Role`; it does **not** re-verify the end-user JWT —
+> for this internal hop OPA is the trusted upstream caller, and pgauthzd is the
+> external front door that already validated the JWT. The
+> listener is authenticated with a shared service token (pgauthzd
+> `INTERNAL_SERVICE_TOKEN` / OPA `NATIVE_SERVICE_TOKEN`) and optionally mTLS, and
+> the compose stack gives pgauthzd **no host port** — it is reachable only by OPA
+> on the internal Docker network. Never expose it directly; anyone who can reach
+> it can enumerate your authorization data via `list_objects` / `list_subjects`.
+
+**Authentication / OIDC.** pgauthzd is the front door: it validates the caller's
+JWT (issuer, audience, signature via JWKS — multi-issuer via `JWT_ISSUERS`, the
+`iss` claim selecting the validator; legacy single-issuer envs still work) and
+derives the subject from the token claims, so pgauthz runs behind **any** OAuth2
+AS / OIDC provider — just point pgauthzd's issuer config / `JWKS_URL` at yours.
+When `OPA_URL` is set, pgauthzd forwards the verified token to
+its OPA sidecar, which re-validates it (defense in depth). An **optional bundled Keycloak** demo
+(Terraform-provisioned, TLS) lives in [`keycloak/`](../keycloak) for a runnable
+end-to-end example — start it with `./start.sh --keycloak`, and see
+[`examples/keycloak/query-demo.sh`](../examples/keycloak) for real tokens (human
+users via password grant, plus an app-as-a-service via client_credentials)
+driving `check_access`.
+
+### AuthZEN 1.0 API
+
+The `pgauthzd/` directory contains the Go daemon implementing the
+[AuthZEN 1.0](https://openid.net/specs/authorization-api-1_0.html) standard
+(plus the native `/pgauthz/v1` API). Its full HTTP contract is served as an
+**OpenAPI description** at `GET /pgauthz/v1/openapi.json` (contract-tested
+against the routes; see [pgauthzd/README.md](../pgauthzd/README.md#openapi-description)).
+One `pgauthzd` binary, capability-scoped by profile, is deployed as several demo services sharing a common HTTP handler layer:
+
+- **`pgauthzd-decision`** (port 8090) — the `decision-only` profile: Go → PostgreSQL (lowest latency, pure Zanzibar)
+- **`pgauthzd-opa`** (port 8091) — OPA-fronted (`OPA_URL` set): Go → OPA → pgauthzd native callback → PostgreSQL (app-specific Rego policies)
+
+Both expose identical endpoints:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/access/v1/evaluation` | Single access check |
+| POST | `/access/v1/evaluations` | Batch with semantics |
+| POST | `/access/v1/search/subject` | Who has access? |
+| POST | `/access/v1/search/resource` | What can subject access? |
+| POST | `/access/v1/search/action` | What can subject do? |
+| GET | `/.well-known/authzen-configuration` | PDP discovery |
+| GET | `/healthz` | Health check |
+
+All endpoints require a valid JWT (ES256/RS256). Claims mapping matches
+the existing `authn.rego` (`preferred_username` → subject ID,
+`subject_type` → subject type).
+
+```bash
+# Start with AuthZEN services
+docker compose -f compose.yml -f compose-authzen.yml up -d --build
+
+# Test
+./tests/test-authzen.sh
+```
+
+### Scaling with read replicas
+
+Since `check_access` and all `list_*` functions are pure reads, the
+authorization engine scales horizontally by adding PostgreSQL read replicas:
+
+```
+                         ┌─────────────────────┐
+                         │   Application       │
+                         └──────┬─────┬────────┘
+                        writes  │     │  reads
+                 ┌──────────────▼──┐  │
+                 │  Primary (R/W)  │  │
+                 │  - write_tuple  │  │
+                 │  - delete_tuple │  │
+                 │  - model mgmt   │  │
+                 └───┬─────────┬─v─┘  │
+        replication  │         │      │
+           ┌─────────▼───┐  ┌──▼──────▼────────┐
+           │ Replica 1   │  │ Replica 2        │
+           │ (read-only) │  │ (read-only)      │
+           │             │  │                  │
+           │ pgauthzd    │  │ pgauthzd         │
+           │ (decision-  │  │ (decision-       │
+           │  only)+OPA  │  │  only)+OPA       │
+           └─────────────┘  └──────────────────┘
+```
+
+- **Primary instance** handles writes: `write_tuple`, `delete_tuple`,
+  `write_tuples`, `delete_tuples`, `delete_user_tuples`, model management.
+  Writes are typically low-volume (user onboarding, permission changes).
+- **Read replicas** handle the high-volume read traffic: `check_access`,
+  `list_objects`, `list_subjects`, `list_actions`. Each replica runs its own
+  `decision-only` pgauthzd and OPA instance.
+- Streaming replication keeps replicas in sync. Authorization data changes
+  infrequently (compared to read volume), so replication lag is negligible.
+- A load balancer distributes read requests across replicas. Since
+  authorization checks are stateless (no session affinity needed), any
+  replica can serve any request.
+
+This separation works well because authorization workloads are heavily
+read-biased: a typical application performs thousands of `check_access`
+calls for every `write_tuple`. A single primary can handle the write
+throughput while multiple replicas absorb the read load.
+
+#### Consistency model
+
+A decision is only as fresh as the data the check reads, so the contract
+depends on **where the read is routed**:
+
+- **Single instance, or any read on the primary — strong, read-your-writes.**
+  PostgreSQL MVCC guarantees a check sees every committed write (grant or
+  revoke) immediately. This is the default for the base (non-replicated) stack.
+- **Read replicas — eventually consistent, bounded by replication lag.**
+  Streaming replication is asynchronous: a write committed on the primary
+  becomes visible on a replica only after the lag (typically sub-second, since
+  authorization data changes infrequently). A check routed to a replica within
+  that window sees the *previous* state.
+
+The asymmetry matters for security:
+
+- **Stale allow after a revoke** is the dangerous case — revoke a grant on the
+  primary and a check on a lagging replica may still return `allowed` until the
+  change replicates (the ReBAC "new enemy" problem).
+- **Stale deny after a grant** is only an availability hiccup — access you just
+  granted isn't visible yet.
+
+Getting the consistency you need:
+
+- **Route the affected subject's security-critical checks to the primary** —
+  and after a *revoke*, not just the admin's confirming check: the revoked
+  subject's own later requests may keep hitting replicas, so route *their*
+  sensitive actions (or temporarily pin them) to the primary too. Primary reads
+  are read-your-writes given a fresh snapshot (a new transaction, and no stale
+  OPA cache hit).
+- **Accept bounded staleness** for the high-volume common case (sub-second lag
+  is fine for most authorization).
+- **Synchronous replication** (`synchronous_commit = remote_apply`) makes the
+  standbys in the *synchronous set* read-your-writes, trading write latency for
+  zero lag on those replicas (only).
+
+> **Revision / freshness tokens (zookies).** pgauthz has an opt-in,
+> Zanzibar-style consistency token to pin a read to "at least as fresh as this
+> write." A write returns a signed LSN-watermark token (`X-PGAuthz-Revision`);
+> a read presents it with `X-PGAuthz-Consistency: at_least_as_fresh` and is
+> served only by a replica that has replayed to it, else `409 + X-PGAuthz-Stale`
+> (retry the primary). The token is a **post-commit** WAL position
+> (`pg_current_wal_insert_lsn()` after the write commits — an LSN captured inside
+> the write transaction is pre-commit and unsound), tagged with the WAL timeline
+> to stay sound across failover. Enable with `FRESHNESS_TOKEN_KEYS`. See
+> [ADR 0009](adr/0009-freshness-tokens.md) /
+> [ARCHITECTURE.md → Read-your-writes](ARCHITECTURE.md).
+
 ## 8. Crosscutting Concepts
 
 ### Security: Defense in Depth
@@ -867,6 +1166,42 @@ capability/resource breakdown.
 The engine checks `session_user` membership in namespace-granted roles
 before allowing reads or writes. Types with `namespace = NULL` remain
 unrestricted.
+
+### Access control roles
+
+| Role | Can do | Inherits |
+|---|---|---|
+| `authz_auditor` | `audit_check_access`, `audit_list_actions`, `audit_list_user`, `audit_list_object` | `authz_reader` |
+| `authz_reader` | `check_access`, `check_access_with_context`, `list_objects`, `list_subjects`, `list_actions`, `validate_condition`, `explain_access` | -- |
+| `authz_contextual_reader` | `check_access_with_contextual_tuples`, `check_access_with_contextual_tuples_jsonb` — inject ephemeral tuples into a check. **Separate from `authz_reader`**: a caller could inject the grant being tested, so grant this only to trusted PDP/backend callers, never to a role reachable by untrusted clients. | -- |
+| `authz_writer` | `write_tuple`, `delete_tuple`, `write_tuples`, `delete_tuples`, `delete_user_tuples` | `authz_reader` |
+| `authz_admin` | `create_store`, `delete_store`, `model_register_type`, `model_register_relation`, manage `namespace_access` table | `authz_writer` |
+
+`authz_auditor` inherits `authz_reader` (can query both live and historical permissions) but cannot write.
+A `decision-only` pgauthzd instance connects with a read-only role that inherits `authz_reader`.
+All public functions are `SECURITY DEFINER` — application roles need no
+direct table access.
+
+> For which role each component should connect as / be granted (OPA→pgauthzd,
+> AuthZEN-direct, backend writers, admins, and when to grant
+> `authz_contextual_reader`), see the **[Production Hardening guide → Role
+> recipes](PRODUCTION.md#role-recipes)**.
+
+The schema and all its objects are owned by **`authz_owner`, a
+non-superuser role**, so `SECURITY DEFINER` functions execute with only
+the privileges they need (ownership of the `authz` tables) rather than
+superuser rights — a flaw in a definer function cannot escalate to
+superuser. The condition sandbox (`_exec_condition`) is owned by the
+separate zero-privilege `authz_eval` role; the database itself remains
+owned by the bootstrap `authz` superuser (break-glass DBA only).
+
+```sql
+-- Backend that needs to write tuples
+GRANT authz_writer TO my_backend_user;
+
+-- Admin tool that can manage stores
+GRANT authz_admin TO my_admin_user;
+```
 
 ### Application Integration Pattern
 
@@ -916,6 +1251,19 @@ concrete integration examples.
 | Condition short-circuit | Unconditional tuples checked before condition evaluation |
 | Temp table reuse | `CREATE IF NOT EXISTS` + `TRUNCATE` avoids catalog churn |
 | UUID audit IDs | `gen_random_uuid()` eliminates sequence serialization |
+
+- **Integer IDs** for type/relation names (~2-3x faster lookups, ~50% smaller indexes)
+- **Partitioned by object_type** (partition pruning on every query)
+- **Covering partial indexes** (separate indexes for direct vs userset lookups)
+- **Store-scoped indexes** (store_id as leading column for multi-tenant partition pruning)
+- **Audit partitioned by month** (old partitions can be detached and archived)
+- **PostgreSQL tuning** (`shared_buffers`, `effective_cache_size`, `work_mem`, `random_page_cost`)
+
+For measured numbers (and a reproducible harness — `./bench/run.sh`), see
+**[docs/BENCHMARKS.md](BENCHMARKS.md)**: `check_access` is sub-millisecond
+for typical checks, and `list_objects` / `list_subjects` are bounded by the
+*reachable set* rather than the store size (a 3-grantee object resolves in
+~12 ms in a 50,000-user store).
 
 ### Auditability
 
