@@ -154,6 +154,11 @@ echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_memo_property.sql"
 
 echo ""
+echo "==> Running resolver regression shapes (OpenFGA v2-resolver bug classes)..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_resolver_shapes.sql"
+
+echo ""
 echo "==> Running read-only (replica) check resolution checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_readonly.sql"

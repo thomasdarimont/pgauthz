@@ -7,6 +7,19 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Resolver regression shapes suite** (`tests/sql/tests_resolver_shapes.sql`,
+  in `tests/test.sh`): the graph structures that broke OpenFGA's v2 check
+  resolver during 2026 (#3244 two recursive TTUs sharing a tupleset relation,
+  #3239 multi-branch recursion on one relation with a cycle and a diamond,
+  #3195 independently-recursive relations under a union, #3224 deep nesting
+  — resolves to the depth limit and fails closed with an error past it,
+  #3145 contextual tuples mixed with stored ones inside a userset and an
+  intersection in any order, #3284 wide union/intersection operand sets)
+  pinned as fixed-answer fixtures, each asserted with the memo on, with the
+  memo off, and against `list_objects` / `list_subjects` membership.
+
 ### Fixed
 
 - **`list_objects` scanned every tuple partition of every store again**
