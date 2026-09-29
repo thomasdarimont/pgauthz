@@ -316,9 +316,9 @@ A web UI to browse stores, run access queries and visualise the
 
 ### Example models
 
-`helloworld`, `demo`, `gdrive`, `github`, `todo`, `aia-acme` and `agents`,
-each with a model, seed data and a walkthrough, several with tests that run
-in CI: [`examples/models/`](examples/models/README.md).
+`helloworld`, `demo`, `gdrive`, `github`, `todo`, `aia-acme`, `agents` and
+`fourquestions`, each with a model, seed data and a walkthrough, most with
+tests that run in CI: [`examples/models/`](examples/models/README.md).
 
 ### Comparison with OpenFGA
 

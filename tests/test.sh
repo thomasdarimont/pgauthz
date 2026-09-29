@@ -72,6 +72,13 @@ psql_file "$PG_DB" "$PG_DIR/examples/models/agents/seed.sql"
 psql_file "$PG_DB" "$PG_DIR/examples/models/agents/tests.sql"
 
 echo ""
+echo "==> Loading fourquestions model (the pitch example: team, exclusion, expiry, three gates) + checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/examples/models/fourquestions/model.sql"
+psql_file "$PG_DB" "$PG_DIR/examples/models/fourquestions/seed.sql"
+psql_file "$PG_DB" "$PG_DIR/examples/models/fourquestions/tests.sql"
+
+echo ""
 echo "==> Running contextual / condition checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_contextual.sql"

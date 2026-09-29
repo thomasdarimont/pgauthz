@@ -7,7 +7,7 @@ One owner per topic. Read the file that owns the topic, not the README.
 ## Start here
 
 - [README](README.md): pitch, features, setup, a complete example, the documentation map
-- [Example models](examples/models/README.md): helloworld, demo, gdrive, github, todo, aia-acme, agents
+- [Example models](examples/models/README.md): helloworld, demo, gdrive, github, todo, aia-acme, agents, fourquestions (the four-questions pitch example)
 
 ## Reference
 

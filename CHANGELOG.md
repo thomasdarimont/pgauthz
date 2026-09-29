@@ -33,6 +33,20 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **`examples/models/fourquestions/`** — the pitch sentence as one runnable
+  store: *share this folder with the marketing team, except Bob; external
+  reviewers read-only until next Friday, but only once they accepted the NDA; three
+  downloads a day; payments over 10k need two distinct approvers.* A userset
+  grant, an exclusion group, an expiring tuple and three temporal gates
+  (`formerly_within` pinned to a trusted recorder, a calendar-day
+  `count_within`, `count_distinct_within` keyed on `payload.input.approver`
+  plus a separation-of-duties clause over the same events matching the
+  approver against `$request.self`), with a payload schema on the approval
+  action. Its README records the two modelling decisions the
+  sentence forces: the NDA gate hangs on `review` (the question the portal
+  asks, so it never touches the team), and the amount tier is a distinct
+  action because gates are AND-only vetoes. 37 assertions, loaded by
+  `tests/test.sh`.
 - **Resolver regression shapes suite** (`tests/sql/tests_resolver_shapes.sql`,
   in `tests/test.sh`): the graph structures that broke OpenFGA's v2 check
   resolver during 2026 (#3244 two recursive TTUs sharing a tupleset relation,
