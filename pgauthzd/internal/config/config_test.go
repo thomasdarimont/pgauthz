@@ -335,6 +335,41 @@ func TestAudienceRequiredPerIssuer(t *testing.T) {
 	}
 }
 
+// Under the production profile the audience override is refused outright:
+// an issuer without an audience fails even with ALLOW_MISSING_AUDIENCE=true,
+// and the flag alone fails startup even when every issuer pins an audience.
+func TestProductionProfileForbidsMissingAudienceOverride(t *testing.T) {
+	t.Run("audience-less issuer fails despite the override", func(t *testing.T) {
+		setIssuers(t, `[{"issuer":"https://b","jwks_file":"/keys/b.json"}]`)
+		t.Setenv("ALLOW_UNBOUND_MULTI_ISSUER", "true")
+		t.Setenv("ALLOW_MISSING_AUDIENCE", "true")
+		t.Setenv("DEPLOYMENT_ENVIRONMENT", "production")
+		t.Setenv("SEARCH_REQUIRED_ROLE", "authz_auditor")
+		t.Setenv("EXPLAIN_REQUIRED_ROLE", "authz_auditor")
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error(), `issuer 0 ("https://b") has no audience`) ||
+			!strings.Contains(err.Error(), "not honoured") {
+			t.Fatalf("production must refuse an audience-less issuer regardless of the override, got %v", err)
+		}
+	})
+	t.Run("the flag alone fails startup", func(t *testing.T) {
+		setIssuers(t, `[{"issuer":"https://a","audience":"api","jwks_file":"/keys/a.json"}]`)
+		t.Setenv("ALLOW_UNBOUND_MULTI_ISSUER", "true")
+		t.Setenv("ALLOW_MISSING_AUDIENCE", "true")
+		t.Setenv("DEPLOYMENT_ENVIRONMENT", "prod")
+		t.Setenv("SEARCH_REQUIRED_ROLE", "authz_auditor")
+		t.Setenv("EXPLAIN_REQUIRED_ROLE", "authz_auditor")
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error(), "ALLOW_MISSING_AUDIENCE=true is forbidden") {
+			t.Fatalf("production must refuse the latent override, got %v", err)
+		}
+		t.Setenv("ALLOW_MISSING_AUDIENCE", "")
+		if _, err := Load(); err != nil {
+			t.Fatalf("same config without the override must start, got %v", err)
+		}
+	})
+}
+
 func TestAudienceRequiredLegacyForm(t *testing.T) {
 	t.Setenv("JWT_ISSUERS", "")
 	t.Setenv("JWKS_URL", "")

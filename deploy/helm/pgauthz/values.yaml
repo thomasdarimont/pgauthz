@@ -197,7 +197,9 @@ opa:
   # any other API would otherwise be accepted (SECURITY-AUDIT F21).
   jwtAudience: "authz-api"
   # Deliberately alarming override: render/start with an empty audience anyway
-  # (pgauthzd warns on every start). Never in production.
+  # (pgauthzd warns on every start). Refused outright under
+  # deploymentEnvironment=production — the chart will not render and pgauthzd
+  # will not start with it.
   allowMissingAudience: false
   defaultStore: "demo"
   # SECURITY: token-only reads. Keep true unless a trusted PEP fronts OPA.

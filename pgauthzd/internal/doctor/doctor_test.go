@@ -26,7 +26,8 @@ func resetEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{"DEPLOYMENT_ENVIRONMENT", "SEARCH_REQUIRED_ROLE", "EXPLAIN_REQUIRED_ROLE", "WATCH_REQUIRED_ROLE",
 		"ALLOW_OPEN_DIAGNOSTICS", "INTERNAL_SERVICE_TOKEN", "INTERNAL_LISTEN_ADDR", "DATABASE_URL", "OPA_URL", "CURSOR_SEAL_KEY",
-		"ALLOW_SUBJECT_OVERRIDE", "METRICS_LISTEN_ADDR", "DECISION_LOG", "JWKS_URL", "JWKS_FILE", "JWT_ISSUER", "JWT_AUDIENCE", "JWT_ISSUERS"} {
+		"ALLOW_SUBJECT_OVERRIDE", "METRICS_LISTEN_ADDR", "DECISION_LOG", "JWKS_URL", "JWKS_FILE", "JWT_ISSUER", "JWT_AUDIENCE", "JWT_ISSUERS",
+		"ALLOW_MISSING_AUDIENCE"} {
 		t.Setenv(k, "")
 	}
 }
@@ -156,5 +157,26 @@ func TestDBPassword(t *testing.T) {
 		if got := dbPassword(in); got != want {
 			t.Errorf("dbPassword(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// `doctor --profile production` must report ALLOW_MISSING_AUDIENCE=true as a
+// fatal config finding (the daemon would refuse to start with it), even when
+// the issuer itself pins an audience.
+func TestDoctorProductionProfileRejectsMissingAudienceOverride(t *testing.T) {
+	resetEnv(t)
+	jwks := writeJWKS(t)
+	t.Setenv("JWT_ISSUERS", `[{"issuer":"https://auth.example.com","audience":"authz-api","jwks_file":"`+jwks+`","stores":["demo"]}]`)
+	t.Setenv("SEARCH_REQUIRED_ROLE", "authz_auditor")
+	t.Setenv("EXPLAIN_REQUIRED_ROLE", "authz_auditor")
+	t.Setenv("ALLOW_MISSING_AUDIENCE", "true")
+
+	r := Run(context.Background(), Options{Version: "test", HTTP: &http.Client{}, ForceProduction: true})
+	c := byName(r)
+	if c["config"].Status != StatusFail || !strings.Contains(c["config"].Detail, "ALLOW_MISSING_AUDIENCE=true is forbidden") {
+		t.Fatalf("production profile must fail on the audience override: %+v", c["config"])
+	}
+	if r.ExitCode(false) != 1 {
+		t.Fatalf("exit code: %d", r.ExitCode(false))
 	}
 }

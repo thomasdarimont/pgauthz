@@ -69,10 +69,17 @@ pgauthz.audienceEnv — JWT_AUDIENCE for one pgauthzd container. Every trusted
 issuer must pin an audience (SECURITY-AUDIT F21): pgauthzd refuses to start
 without one, so the chart refuses to render an empty opa.jwtAudience unless
 opa.allowMissingAudience is set DELIBERATELY (then ALLOW_MISSING_AUDIENCE is
-passed through and pgauthzd warns on every start). Arg: the root context.
+passed through and pgauthzd warns on every start). Under the production
+profile (deploymentEnvironment=production/prod) there is no override: the
+chart refuses to render with opa.allowMissingAudience at all, as pgauthzd
+refuses to start with ALLOW_MISSING_AUDIENCE=true. Arg: the root context.
 */}}
 {{- define "pgauthz.audienceEnv" -}}
 {{- $o := .Values.opa -}}
+{{- $env := .Values.deploymentEnvironment | default "" -}}
+{{- if and (or (eq $env "production") (eq $env "prod")) $o.allowMissingAudience -}}
+{{- fail (printf "deploymentEnvironment=%s (production profile) forbids opa.allowMissingAudience: set opa.jwtAudience to this API's identifier and remove the override." $env) -}}
+{{- end -}}
 {{- if and (not $o.jwtAudience) (not $o.allowMissingAudience) -}}
 {{- fail "opa.jwtAudience is empty: pgauthzd refuses an issuer without an audience (tokens minted for any other API would be accepted). Set it to this API's identifier, or set opa.allowMissingAudience=true DELIBERATELY." -}}
 {{- end -}}

@@ -509,6 +509,12 @@ func Load() (*Config, error) {
 		// its IdP mints for any other API. Fail closed at startup unless the
 		// operator overrides deliberately.
 		if strings.TrimSpace(iss.Audience) == "" {
+			if c.IsProduction() {
+				// The production profile has no override for this one: an
+				// audience-less issuer is an authentication hole, not a
+				// diagnostic surface, so there is no trusted-network argument.
+				return nil, fmt.Errorf("issuer %d (%q) has no audience — tokens this IdP mints for ANY other API would be accepted here; set JWT_AUDIENCE (legacy form) or \"audience\" in JWT_ISSUERS to this API's identifier (ALLOW_MISSING_AUDIENCE is not honoured with DEPLOYMENT_ENVIRONMENT=%s)", i, iss.Issuer, c.DeploymentEnvironment)
+			}
 			if !c.AllowMissingAudience {
 				return nil, fmt.Errorf("issuer %d (%q) has no audience — tokens this IdP mints for ANY other API would be accepted here; set JWT_AUDIENCE (legacy form) or \"audience\" in JWT_ISSUERS to this API's identifier, or override deliberately with ALLOW_MISSING_AUDIENCE=true", i, iss.Issuer)
 			}
@@ -608,6 +614,15 @@ func Load() (*Config, error) {
 	// startup — a misconfiguration must not become an open surface — unless the
 	// operator overrides deliberately.
 	if c.IsProduction() {
+		// ALLOW_MISSING_AUDIENCE is forbidden outright under the production
+		// label, even when every issuer currently pins an audience: a latent
+		// override would silently take effect the day an issuer entry loses
+		// its audience. Open diagnostics keep their override (a trusted
+		// internal network is a legitimate reason); an unverified audience
+		// has none.
+		if c.AllowMissingAudience {
+			return nil, fmt.Errorf("ALLOW_MISSING_AUDIENCE=true is forbidden with DEPLOYMENT_ENVIRONMENT=%s — give every issuer an audience and unset the override", c.DeploymentEnvironment)
+		}
 		if open := c.openDiagnostics(); len(open) > 0 {
 			if !c.AllowOpenDiagnostics {
 				return nil, fmt.Errorf("DEPLOYMENT_ENVIRONMENT=%s requires role-gated diagnostic surfaces, but: %s — set them (e.g. authz_auditor), or override deliberately with ALLOW_OPEN_DIAGNOSTICS=true", c.DeploymentEnvironment, strings.Join(open, "; "))

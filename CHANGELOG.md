@@ -129,6 +129,16 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Security
 
+- **The production profile refuses the audience override.** With
+  `DEPLOYMENT_ENVIRONMENT=production`/`prod`, `ALLOW_MISSING_AUDIENCE=true`
+  fails startup outright — even when every issuer currently pins an audience,
+  so the override cannot lie dormant until an issuer entry loses its
+  `audience` — and an audience-less issuer fails naming the issuer, with no
+  override hint. `pgauthzd doctor --profile production` reports it as a fatal
+  config finding; the Helm chart refuses to render `opa.allowMissingAudience`
+  under `deploymentEnvironment=production`. Open diagnostics keep their
+  `ALLOW_OPEN_DIAGNOSTICS` override (a trusted internal network is a
+  legitimate reason); an unverified audience has none. (External review.)
 - **pgauthzd requires an audience for every trusted issuer**
   `JWT_AUDIENCE` was optional and an empty value skipped the `aud` check, so a
   token the IdP minted for *any other API* — same keys, same subject and role

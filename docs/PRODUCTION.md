@@ -61,7 +61,10 @@ by `init.sh` on every run.
       validator — legacy single-issuer envs still work). pgauthzd **refuses to
       start** when an issuer has no audience (a token minted for another API
       would otherwise pass); `ALLOW_MISSING_AUDIENCE=true` is the alarming
-      override, never for production.
+      override for development. Under `DEPLOYMENT_ENVIRONMENT=production` it
+      is **refused**: pgauthzd does not start and the Helm chart does not
+      render with it set, even when every issuer pins an audience, so the
+      override cannot lie dormant in a production manifest.
 - [ ] **Bind every issuer to its stores and roles** (multi-tenant AuthZEN).
       An issuer without a `stores` binding can reach **every** store; without a
       `db_roles`/`client_db_roles` binding it can claim any reader role. Set
@@ -85,11 +88,13 @@ by `init.sh` on every run.
       reveals model structure and resolution traces, and watch streams every
       grant/revoke. All three are open to any authenticated caller by default
       (development ergonomics, back-compat). Set
-      `DEPLOYMENT_ENVIRONMENT=production` plus `SEARCH_REQUIRED_ROLE`,
-      `EXPLAIN_REQUIRED_ROLE` and `WATCH_REQUIRED_ROLE` (auditor-grade, e.g.
-      `authz_auditor`, matched through `JWT_ROLES_CLAIM`): with the production
-      label pgauthzd **refuses to start** with an open search/explain surface
-      or a `"*"` watch, and the Helm chart refuses to render it
+      `DEPLOYMENT_ENVIRONMENT=production` plus `SEARCH_REQUIRED_ROLE` and
+      `EXPLAIN_REQUIRED_ROLE`, and `WATCH_REQUIRED_ROLE` if watch is enabled
+      (an unset watch role disables the changefeed on the public listener,
+      which is a valid production mode; `"*"` never is). Roles are
+      auditor-grade, e.g. `authz_auditor`, matched through `JWT_ROLES_CLAIM`.
+      With the production label pgauthzd **refuses to start** with an open
+      search/explain surface or a `"*"` watch, and the Helm chart refuses to render it
       (`deploymentEnvironment` + `diagnostics.*`; `values-production.yaml`).
       `ALLOW_OPEN_DIAGNOSTICS=true` / `diagnostics.allowOpenInProduction` is
       the deliberately alarming override.
