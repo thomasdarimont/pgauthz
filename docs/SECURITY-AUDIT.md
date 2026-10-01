@@ -11,6 +11,12 @@ one — no independent party has attested to these claims.
   forwarding), the OPA sidecar policies (public-path allowlist, read/write
   role forwarding), and the model registry. The playground BFF is reviewed as a
   dev-only tool (out of the deployable engine).
+- **Default deployment.** The OPA sidecar, its policies, the native callback
+  listener, the service token and the optional mTLS are the **opt-in OPA
+  overlay** ([ADR 0008](adr/0008-opa-is-opt-in.md)). The default stack is
+  application → pgauthzd → PostgreSQL; a reader assessing that deployment can
+  skip every finding about the callback surface and Rego, and the trust
+  boundary is the daemon's JWT validation plus the engine's roles.
 - **Method:** the original four engine passes (SECURITY DEFINER + roles; the
   condition sandbox; multi-tenant isolation; fail-closed + write validation +
   audit), plus a **2026-07 refresh** covering the surfaces added since v0.1.x:

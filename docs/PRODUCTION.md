@@ -71,7 +71,10 @@ by `init.sh` on every run.
       the bindings per issuer in `JWT_ISSUERS` and enforce completeness with
       `REQUIRE_STORE_BINDING=true` and `REQUIRE_DB_ROLE_BINDING=true` — the
       service then refuses to start with an unbound issuer instead of running
-      unrestricted. See [authzen/README.md → Multi-Store](../pgauthzd/README.md).
+      unrestricted. With several issuers an unbound one already fails startup;
+      under `DEPLOYMENT_ENVIRONMENT=production` the `ALLOW_UNBOUND_MULTI_ISSUER`
+      override is refused outright, and `doctor --profile production` warns
+      about a single unbound issuer. See [authzen/README.md → Multi-Store](../pgauthzd/README.md).
 - [ ] **Configure per-app DB roles on both AuthZEN services** (multi-tenant).
       Both services enforce database-level per-application namespace isolation
       on reads: `pgauthzd-decision` assumes the derived role itself
@@ -142,6 +145,65 @@ by `init.sh` on every run.
       isolation over the pgauthzd write path, issue per-app DB roles and set
       `DB_ROLE_CLAIM` (pgauthzd validates the role and `SET LOCAL ROLE`s to it
       per request) — see [DEVELOPMENT.md → Per-app namespace isolation](DEVELOPMENT.md#per-app-namespace-isolation-over-the-pgauthzd-write-path).
+
+## Adoption path: the minimal profile
+
+External reviews keep reconstructing the same rollout advice from the
+checklist above, so here it is in one place. pgauthz is a security-critical
+component with a wide feature surface; the safe first deployment uses almost
+none of it.
+
+1. **One domain, one store, one model.** Start with a single, non-critical
+   authorization domain — project or document membership, say — in its own
+   store, with the existing authorization code kept as the fallback. Call
+   both for a while and log disagreements (the pgauthzd
+   [decision log](#decision-log) is the record on this side) before pgauthz
+   becomes the authority for that domain. Add domains one at a time.
+2. **The default stack, nothing optional.** Application → pgauthzd →
+   PostgreSQL. No OPA overlay (`OPA_URL` unset), `ALLOW_SUBJECT_OVERRIDE=false`
+   (the token subject is the subject), no contextual tuples
+   (`AUTHZ_CONTEXTUAL_READER_GRANTEE` unset), no temporal gates or action log
+   until a use case asks for history, search and explain either role-gated
+   or unused, no replica freshness tokens until you run replicas. Each of
+   these is a trust-boundary decision; defer the decision rather than
+   defaulting it.
+3. **The production profile from day one.** `DEPLOYMENT_ENVIRONMENT=production`
+   makes the documented "never in production" rules enforceable: startup
+   refuses open search/explain, a `"*"` watch role, `ALLOW_MISSING_AUDIENCE`
+   and `ALLOW_UNBOUND_MULTI_ISSUER`; the Helm chart refuses to render the same
+   states. Add `REQUIRE_STORE_BINDING=true` and `REQUIRE_DB_ROLE_BINDING=true`
+   so bindings are required rather than warned about, and run
+   `pgauthzd doctor --profile production` in the pipeline that promotes a
+   config.
+4. **Review every database role.** Application roles must not read the base
+   tables, inherit an administrative role, hold a privileged connection
+   string, or reach the database except through the intended tier. The
+   [role recipes](#role-recipes) are the reference; `tests/sql/test_users.sql`
+   creates one login per application role so the boundaries can be probed
+   from `psql` in your own environment.
+5. **Run the adversarial cases against your deployment.** Most of what a
+   reviewer asks for already exists as a suite; the point is to run them
+   against the configuration you will ship, not only in this repository's CI.
+
+   | Adversarial case | Covered by |
+   |---|---|
+   | Cross-store and cross-namespace reads and writes | `tests/sql/tests_namespace.sql`; Go `TestIssuerStoreBinding` (`pgauthzd/internal/api/store_test.go`) |
+   | Cross-issuer tokens, unbound issuers, store and role bindings | Go `pgauthzd/internal/config/config_test.go` (binding, audience, production-profile tests), `TestIssuerDBRoleBinding` (`dbrole_test.go`) |
+   | Caller-supplied subject or audit attribution | Go `subject_test.go`, `native_write_test.go` |
+   | Role-header forwarding on the OPA callback | `tests/test-opa.sh` (with the OPA overlay only) |
+   | Expired tuples, including revival through session state | `tests/sql/tests_expiry.sql` (migration 0006, finding F11) |
+   | Cycles, depth limits, diamond and converging graphs | `tests/sql/tests_recursion.sql`, `tests_resolver_shapes.sql`, `tests_memo_property.sql`, `tests_readonly.sql` (on a standby) |
+   | Unknown or erroring conditions, missing context, exclusions | `tests/sql/tests_contextual.sql`, `tests_decision_tristate.sql`, `tests_intersection.sql`, `tests_condition_lang.sql` |
+   | Decision-cache bypass and per-role partitioning | `tests/test-opa.sh` (`no_cache` checks; OPA overlay only) |
+   | Cursor tampering on paginated search | Go `pgauthzd/internal/api/cursorseal_test.go` |
+   | Replica lag, failover, lossy promotion | `tests/test-replication.sh`, `tests/test-scaling.sh`, `deploy/helm/pgauthz/failover-test.sh`, `tests/sql/tests_freshness.sql` |
+
+   What is **not** covered yet: failure drills and scale on real hardware
+   (see [Scale & supported limits](#scale--supported-limits)).
+6. **Get an independent review.** The self-audit is preparation for one,
+   not a substitute. Hand the reviewer the exact migrations, `roles.sql`,
+   the rendered manifests and `.env` you will run, and the
+   [standing ask for an external auditor](SECURITY-AUDIT.md#for-an-external-auditor).
 
 ## Role recipes
 

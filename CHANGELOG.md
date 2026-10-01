@@ -136,9 +136,21 @@ pre-1.0, minor versions may include breaking changes.
   `audience` — and an audience-less issuer fails naming the issuer, with no
   override hint. `pgauthzd doctor --profile production` reports it as a fatal
   config finding; the Helm chart refuses to render `opa.allowMissingAudience`
-  under `deploymentEnvironment=production`. Open diagnostics keep their
-  `ALLOW_OPEN_DIAGNOSTICS` override (a trusted internal network is a
-  legitimate reason); an unverified audience has none. (External review.)
+  under `deploymentEnvironment=production`. The same rule applies to
+  `ALLOW_UNBOUND_MULTI_ISSUER`: forbidden under the production label, and an
+  unbound issuer among several fails with no override hint; `doctor --profile
+  production` additionally warns about a single unbound issuer (legal, but a
+  choice to make explicit with `REQUIRE_STORE_BINDING`). Open diagnostics keep
+  their `ALLOW_OPEN_DIAGNOSTICS` override (a trusted internal network is a
+  legitimate reason) and `ALLOW_SUBJECT_OVERRIDE` stays a warning (AuthZEN
+  PDP deployments legitimately decide for arbitrary subjects); an unverified
+  audience or an unbound issuer has no such reason. (External review.)
+- **`docs/PRODUCTION.md` gains an adoption path**: the minimal first
+  deployment (one domain, the default stack, the production profile from day
+  one, a DB-role review) and a table mapping the adversarial cases external
+  reviewers ask for to the suites that already cover them, with the gaps
+  named. `docs/SECURITY-AUDIT.md` now states up front that the callback and
+  Rego surfaces belong to the opt-in OPA overlay. (External reviews.)
 - **pgauthzd requires an audience for every trusted issuer**
   `JWT_AUDIENCE` was optional and an empty value skipped the `aud` check, so a
   token the IdP minted for *any other API* — same keys, same subject and role

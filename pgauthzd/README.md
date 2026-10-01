@@ -277,7 +277,8 @@ A token from that issuer selecting any other store is rejected with `403`.
 Issuers without a `stores` list are **unrestricted**. With a single issuer that
 is the default; with **several** issuers configured an unbound one is a startup
 **error** (fail-closed — its tokens could reach every store) unless you opt out
-deliberately with `ALLOW_UNBOUND_MULTI_ISSUER=true`. Bind every issuer
+deliberately with `ALLOW_UNBOUND_MULTI_ISSUER=true` (refused outright under
+`DEPLOYMENT_ENVIRONMENT=production`). Bind every issuer
 explicitly (`".*"` if you really mean all stores), and set
 `REQUIRE_STORE_BINDING=true` in any multi-tenant deployment to make the gap an
 error even for a single issuer. Note that `SEARCH_REQUIRED_ROLE` gates search
@@ -386,7 +387,7 @@ All configuration is via environment variables.
 | `ALLOW_MISSING_AUDIENCE` | `false` | An issuer without an `audience` is a STARTUP FAILURE (tokens minted for any other API would be accepted — confused deputy). This deliberately alarming override starts anyway (WARNING on every start) — except under `DEPLOYMENT_ENVIRONMENT=production`, where it is a startup failure itself |
 | `ALLOW_OPEN_DIAGNOSTICS` | `false` | With `DEPLOYMENT_ENVIRONMENT=production`, an unset `SEARCH_REQUIRED_ROLE` / `EXPLAIN_REQUIRED_ROLE` or a `WATCH_REQUIRED_ROLE` of `"*"` is a STARTUP FAILURE (the production profile). This deliberately alarming override starts anyway (WARNING on every start) |
 | `RECORDER_ROLE` | `authz_recorder` | Gates `POST /pgauthz/v1/events` (the action log, [ADR 0012](../docs/adr/0012-action-log.md)) on the public listener; `WRITER_ROLE` passes too. Empty = ungated. Callback listener unaffected (its DB-role check — member of `authz_recorder` — still applies). **Issue this claim to PEPs and ingestion services only** — recorded events drive temporal gates, so a holder can move a gate; never to end-user tokens |
-| `ALLOW_UNBOUND_MULTI_ISSUER` | `false` | With >1 trusted issuers, an issuer without stores/db_roles bindings is a STARTUP FAILURE (cross-tenant risk). This deliberately alarming override restores warn-and-continue |
+| `ALLOW_UNBOUND_MULTI_ISSUER` | `false` | With >1 trusted issuers, an issuer without stores/db_roles bindings is a STARTUP FAILURE (cross-tenant risk). This deliberately alarming override restores warn-and-continue — except under `DEPLOYMENT_ENVIRONMENT=production`, where it is a startup failure itself |
 | `OPA_MAX_RESPONSE_BYTES` | `10485760` | Bounds every OPA response body; oversized → `policy_evaluation_failed` (5xx), never a large allocation |
 | `DB_ROLE_CLAIM` | | Dot-separated claim path with the caller's per-app DB role for namespace enforcement (see [Per-App Namespace Enforcement](#per-app-namespace-enforcement)) |
 | `CLIENT_DB_ROLES` | | JSON map client id (`azp`) → per-app DB role; fallback when `DB_ROLE_CLAIM` is unset/absent |

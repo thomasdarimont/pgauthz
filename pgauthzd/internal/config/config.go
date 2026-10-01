@@ -588,7 +588,11 @@ func Load() (*Config, error) {
 			if len(c.Issuers) > 1 {
 				// SECURE BY DEFAULT for multi-issuer (review #10): an unbound
 				// issuer reaches every store — fail startup instead of warning
-				// past a cross-tenant hole.
+				// past a cross-tenant hole. The production profile has no
+				// override for this: bindings are configuration, add them.
+				if c.IsProduction() {
+					return nil, fmt.Errorf("issuer %q has no stores binding while %d issuers are trusted — its tokens could access EVERY store; add stores patterns in JWT_ISSUERS (ALLOW_UNBOUND_MULTI_ISSUER is not honoured with DEPLOYMENT_ENVIRONMENT=%s)", iss.Issuer, len(c.Issuers), c.DeploymentEnvironment)
+				}
 				if !c.AllowUnboundMultiIssuer {
 					return nil, fmt.Errorf("issuer %q has no stores binding while %d issuers are trusted — its tokens could access EVERY store; add stores patterns in JWT_ISSUERS, or override deliberately with ALLOW_UNBOUND_MULTI_ISSUER=true", iss.Issuer, len(c.Issuers))
 				}
@@ -600,6 +604,9 @@ func Load() (*Config, error) {
 				return nil, fmt.Errorf("REQUIRE_DB_ROLE_BINDING: issuer %q has no db_roles or client_db_roles binding", iss.Issuer)
 			}
 			if len(c.Issuers) > 1 {
+				if c.IsProduction() {
+					return nil, fmt.Errorf("issuer %q has no db_roles/client_db_roles binding while %d issuers are trusted and DB-role derivation is active — its tokens could claim ANY reader role; add db_roles patterns in JWT_ISSUERS (ALLOW_UNBOUND_MULTI_ISSUER is not honoured with DEPLOYMENT_ENVIRONMENT=%s)", iss.Issuer, len(c.Issuers), c.DeploymentEnvironment)
+				}
 				if !c.AllowUnboundMultiIssuer {
 					return nil, fmt.Errorf("issuer %q has no db_roles/client_db_roles binding while %d issuers are trusted and DB-role derivation is active — its tokens could claim ANY reader role; add db_roles patterns in JWT_ISSUERS, or override deliberately with ALLOW_UNBOUND_MULTI_ISSUER=true", iss.Issuer, len(c.Issuers))
 				}
@@ -622,6 +629,12 @@ func Load() (*Config, error) {
 		// has none.
 		if c.AllowMissingAudience {
 			return nil, fmt.Errorf("ALLOW_MISSING_AUDIENCE=true is forbidden with DEPLOYMENT_ENVIRONMENT=%s — give every issuer an audience and unset the override", c.DeploymentEnvironment)
+		}
+		// Same for the unbound-issuer override: an issuer that can reach every
+		// store or claim every reader role is a cross-tenant hole, and the fix
+		// (stores / db_roles patterns) is pure configuration.
+		if c.AllowUnboundMultiIssuer {
+			return nil, fmt.Errorf("ALLOW_UNBOUND_MULTI_ISSUER=true is forbidden with DEPLOYMENT_ENVIRONMENT=%s — bind every issuer (stores, db_roles) and unset the override", c.DeploymentEnvironment)
 		}
 		if open := c.openDiagnostics(); len(open) > 0 {
 			if !c.AllowOpenDiagnostics {

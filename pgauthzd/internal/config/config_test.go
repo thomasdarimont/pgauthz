@@ -341,7 +341,7 @@ func TestAudienceRequiredPerIssuer(t *testing.T) {
 func TestProductionProfileForbidsMissingAudienceOverride(t *testing.T) {
 	t.Run("audience-less issuer fails despite the override", func(t *testing.T) {
 		setIssuers(t, `[{"issuer":"https://b","jwks_file":"/keys/b.json"}]`)
-		t.Setenv("ALLOW_UNBOUND_MULTI_ISSUER", "true")
+		t.Setenv("ALLOW_UNBOUND_MULTI_ISSUER", "")
 		t.Setenv("ALLOW_MISSING_AUDIENCE", "true")
 		t.Setenv("DEPLOYMENT_ENVIRONMENT", "production")
 		t.Setenv("SEARCH_REQUIRED_ROLE", "authz_auditor")
@@ -354,7 +354,7 @@ func TestProductionProfileForbidsMissingAudienceOverride(t *testing.T) {
 	})
 	t.Run("the flag alone fails startup", func(t *testing.T) {
 		setIssuers(t, `[{"issuer":"https://a","audience":"api","jwks_file":"/keys/a.json"}]`)
-		t.Setenv("ALLOW_UNBOUND_MULTI_ISSUER", "true")
+		t.Setenv("ALLOW_UNBOUND_MULTI_ISSUER", "")
 		t.Setenv("ALLOW_MISSING_AUDIENCE", "true")
 		t.Setenv("DEPLOYMENT_ENVIRONMENT", "prod")
 		t.Setenv("SEARCH_REQUIRED_ROLE", "authz_auditor")
@@ -364,6 +364,46 @@ func TestProductionProfileForbidsMissingAudienceOverride(t *testing.T) {
 			t.Fatalf("production must refuse the latent override, got %v", err)
 		}
 		t.Setenv("ALLOW_MISSING_AUDIENCE", "")
+		if _, err := Load(); err != nil {
+			t.Fatalf("same config without the override must start, got %v", err)
+		}
+	})
+}
+
+// The production profile refuses ALLOW_UNBOUND_MULTI_ISSUER as well: an
+// unbound issuer among several fails even with the override, and the flag
+// alone fails startup when every issuer is bound.
+func TestProductionProfileForbidsUnboundIssuerOverride(t *testing.T) {
+	prod := func(t *testing.T) {
+		t.Helper()
+		t.Setenv("DEPLOYMENT_ENVIRONMENT", "production")
+		t.Setenv("SEARCH_REQUIRED_ROLE", "authz_auditor")
+		t.Setenv("EXPLAIN_REQUIRED_ROLE", "authz_auditor")
+		t.Setenv("ALLOW_UNBOUND_MULTI_ISSUER", "true")
+	}
+	t.Run("unbound issuer fails despite the override", func(t *testing.T) {
+		setIssuers(t, `[
+			{"issuer":"https://a","audience":"api","jwks_file":"/keys/a.json","stores":["a"]},
+			{"issuer":"https://b","audience":"api","jwks_file":"/keys/b.json"}
+		]`)
+		prod(t)
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error(), `issuer "https://b" has no stores binding`) ||
+			!strings.Contains(err.Error(), "not honoured") {
+			t.Fatalf("production must refuse an unbound issuer regardless of the override, got %v", err)
+		}
+	})
+	t.Run("the flag alone fails startup", func(t *testing.T) {
+		setIssuers(t, `[
+			{"issuer":"https://a","audience":"api","jwks_file":"/keys/a.json","stores":["a"]},
+			{"issuer":"https://b","audience":"api","jwks_file":"/keys/b.json","stores":["b"]}
+		]`)
+		prod(t)
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error(), "ALLOW_UNBOUND_MULTI_ISSUER=true is forbidden") {
+			t.Fatalf("production must refuse the latent override, got %v", err)
+		}
+		t.Setenv("ALLOW_UNBOUND_MULTI_ISSUER", "")
 		if _, err := Load(); err != nil {
 			t.Fatalf("same config without the override must start, got %v", err)
 		}

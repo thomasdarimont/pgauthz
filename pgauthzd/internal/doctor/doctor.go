@@ -114,6 +114,22 @@ func Run(ctx context.Context, opts Options) *Report {
 	} else {
 		add("production profile", StatusWarn, "not evaluated: DEPLOYMENT_ENVIRONMENT is not production (run `pgauthzd doctor --profile production` before promoting)")
 	}
+	// A single unbound issuer is legal (the legacy env form has no stores
+	// field) and reaches every store; in production that should be a choice,
+	// not an omission.
+	if prod && !cfg.RequireStoreBinding {
+		var unbound []string
+		for _, iss := range cfg.Issuers {
+			if len(iss.Stores) == 0 {
+				unbound = append(unbound, iss.Issuer)
+			}
+		}
+		if len(unbound) > 0 {
+			add("issuer bindings", StatusWarn, "issuer(s) without a stores binding reach EVERY store: "+strings.Join(unbound, ", ")+" — add stores patterns in JWT_ISSUERS (\".*\" if you mean all) and set REQUIRE_STORE_BINDING=true")
+		} else {
+			add("issuer bindings", StatusOK, "every issuer carries a stores binding")
+		}
+	}
 
 	// ── diagnostic surfaces ──────────────────────────────────────────────
 	var open []string
@@ -191,7 +207,11 @@ func Run(ctx context.Context, opts Options) *Report {
 
 	// ── subject trust ────────────────────────────────────────────────────
 	if cfg.AllowSubjectOverride {
-		add("subject override", StatusWarn, "ALLOW_SUBJECT_OVERRIDE=true: callers may name any subject (trusted-PEP mode) — keep this listener PEP-only")
+		if prod {
+			add("subject override", StatusWarn, "ALLOW_SUBJECT_OVERRIDE=true on a production instance: the token subject is NOT authoritative, any caller may ask about any subject (trusted-PEP/PDP mode) — confirm by network policy that only the PEP can reach this listener")
+		} else {
+			add("subject override", StatusWarn, "ALLOW_SUBJECT_OVERRIDE=true: callers may name any subject (trusted-PEP mode) — keep this listener PEP-only")
+		}
 	} else {
 		add("subject override", StatusOK, "the token subject is authoritative")
 	}

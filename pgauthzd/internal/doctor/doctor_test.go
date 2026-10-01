@@ -27,7 +27,7 @@ func resetEnv(t *testing.T) {
 	for _, k := range []string{"DEPLOYMENT_ENVIRONMENT", "SEARCH_REQUIRED_ROLE", "EXPLAIN_REQUIRED_ROLE", "WATCH_REQUIRED_ROLE",
 		"ALLOW_OPEN_DIAGNOSTICS", "INTERNAL_SERVICE_TOKEN", "INTERNAL_LISTEN_ADDR", "DATABASE_URL", "OPA_URL", "CURSOR_SEAL_KEY",
 		"ALLOW_SUBJECT_OVERRIDE", "METRICS_LISTEN_ADDR", "DECISION_LOG", "JWKS_URL", "JWKS_FILE", "JWT_ISSUER", "JWT_AUDIENCE", "JWT_ISSUERS",
-		"ALLOW_MISSING_AUDIENCE"} {
+		"ALLOW_MISSING_AUDIENCE", "ALLOW_UNBOUND_MULTI_ISSUER", "REQUIRE_STORE_BINDING"} {
 		t.Setenv(k, "")
 	}
 }
@@ -179,4 +179,40 @@ func TestDoctorProductionProfileRejectsMissingAudienceOverride(t *testing.T) {
 	if r.ExitCode(false) != 1 {
 		t.Fatalf("exit code: %d", r.ExitCode(false))
 	}
+}
+
+// `doctor --profile production` fails on ALLOW_UNBOUND_MULTI_ISSUER=true and
+// warns about a single unbound issuer (legal, but a choice to make explicit).
+func TestDoctorProductionProfileIssuerBindings(t *testing.T) {
+	resetEnv(t)
+	jwks := writeJWKS(t)
+	base := func(t *testing.T) {
+		t.Helper()
+		t.Setenv("SEARCH_REQUIRED_ROLE", "authz_auditor")
+		t.Setenv("EXPLAIN_REQUIRED_ROLE", "authz_auditor")
+	}
+	t.Run("override is fatal", func(t *testing.T) {
+		base(t)
+		t.Setenv("JWT_ISSUERS", `[{"issuer":"https://auth.example.com","audience":"authz-api","jwks_file":"`+jwks+`","stores":["demo"]}]`)
+		t.Setenv("ALLOW_UNBOUND_MULTI_ISSUER", "true")
+		r := Run(context.Background(), Options{Version: "test", HTTP: &http.Client{}, ForceProduction: true})
+		c := byName(r)
+		if c["config"].Status != StatusFail || !strings.Contains(c["config"].Detail, "ALLOW_UNBOUND_MULTI_ISSUER=true is forbidden") {
+			t.Fatalf("production profile must fail on the unbound-issuer override: %+v", c["config"])
+		}
+	})
+	t.Run("single unbound issuer warns, bound issuer is ok", func(t *testing.T) {
+		base(t)
+		t.Setenv("JWT_ISSUERS", `[{"issuer":"https://auth.example.com","audience":"authz-api","jwks_file":"`+jwks+`"}]`)
+		r := Run(context.Background(), Options{Version: "test", HTTP: &http.Client{}, ForceProduction: true})
+		c := byName(r)
+		if c["issuer bindings"].Status != StatusWarn || !strings.Contains(c["issuer bindings"].Detail, "auth.example.com") {
+			t.Fatalf("unbound single issuer should warn in production: %+v", c["issuer bindings"])
+		}
+		t.Setenv("JWT_ISSUERS", `[{"issuer":"https://auth.example.com","audience":"authz-api","jwks_file":"`+jwks+`","stores":["demo"]}]`)
+		r = Run(context.Background(), Options{Version: "test", HTTP: &http.Client{}, ForceProduction: true})
+		if c := byName(r); c["issuer bindings"].Status != StatusOK {
+			t.Fatalf("bound issuer: %+v", c["issuer bindings"])
+		}
+	})
 }
