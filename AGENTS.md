@@ -12,6 +12,7 @@ pgauthz is a **PostgreSQL-native authorization engine** implementing Google Zanz
 Do not read `README.md` or `CHANGELOG.md` whole. The README's
 **Documentation map** lists one owner per topic; open that file for the task:
 
+- `docs/USE-CASES.md` — "can it do X, and how?": the index of use cases with sketches
 - `docs/API.md` — SQL function signatures, return shapes, recipes
 - `docs/MODEL_DESIGN.md` — modelling (rules, wildcards, conditions, gates, registry, import)
 - `docs/AUDIT.md` — audit trail, time travel, changefeed

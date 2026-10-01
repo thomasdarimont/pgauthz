@@ -217,6 +217,7 @@ Each topic has exactly one owner. Read the owner, not this file, for detail.
 
 | File | Owns | Read when … |
 |---|---|---|
+| [`docs/USE-CASES.md`](docs/USE-CASES.md) | index of use cases, simple to advanced, each with a sketch and a link to the owner | you are asking "can it do X, and how?" |
 | [`docs/API.md`](docs/API.md) | SQL function reference + recipes | you need a signature, return shape or error |
 | [`docs/MODEL_DESIGN.md`](docs/MODEL_DESIGN.md) | modelling: types, relations, rules, wildcards, conditions, gates, registry, OpenFGA import | you are writing or changing an authorization model |
 | [`docs/AUDIT.md`](docs/AUDIT.md) | audit trail, time travel, changefeed | you need history, replay or change notifications |

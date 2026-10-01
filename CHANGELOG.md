@@ -33,6 +33,16 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **`docs/USE-CASES.md`** — an index of use cases from simple (roles,
+  hierarchies, public access, expiring grants) through common (folder
+  inheritance, conditions, fail-closed device checks, rule groups, object
+  wildcards, data filtering, time travel, changefeed, policy hooks,
+  namespaces, the registry, OpenFGA and Cedar imports) to advanced (rate
+  limits, prior approval, separation of duties, lockout, quotas, exact caps,
+  shadow rollout, agent task scope, sequencing, delegation, the control
+  plane, RAG), each with a short sketch of how to express it and a link to
+  the owning doc or example. Listed in the documentation map, `llms.txt`
+  and AGENTS.md.
 - **Conditions declare their clock, and the server's is the default**
   (migration 0016). `create_condition*` gain `p_time_source => 'server' |
   'caller'`. A `server` condition — the default for every condition created
