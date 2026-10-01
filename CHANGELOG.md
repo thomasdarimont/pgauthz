@@ -33,6 +33,26 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Conditions declare their clock, and the server's is the default**
+  (migration 0016). `create_condition*` gain `p_time_source => 'server' |
+  'caller'`. A `server` condition — the default for every condition created
+  from now on — has `current_time` set by the engine before evaluation
+  (statement time on live paths; on time-travel paths `current_time` is
+  `p_at` for every condition, as before) and ignores any caller value, so
+  business hours and grant windows cannot be forgotten or backdated by the
+  enforcement point, and never report `current_time` as missing context.
+  `caller` is the explicit choice when the request legitimately asserts a
+  time (tests and demos that pin the clock, "as of T" asked live); the
+  shipped examples and suites say so where they do. **Upgrade note:**
+  conditions that exist when the migration runs are stamped `caller`, so no
+  existing decision changes; `describe_model` renders every condition's
+  clock (`# condition x (sql, caller time)`) for review. The choice is
+  policy: versioned in `conditions_audit`, exported by the registry only when
+  `server` (definitions published earlier keep meaning `caller`; existing
+  checksums do not move), rendered by `describe_model`, and named on a denied
+  step in `explain_access`. Signature note: the three `create_condition*`
+  functions gained a trailing parameter (roles.sql updated; old overloads
+  dropped on reload).
 - **`examples/models/fourquestions/`** — the pitch sentence as one runnable
   store: *share this folder with the marketing team, except Bob; external
   reviewers read-only until next Friday, but only once they accepted the NDA; three

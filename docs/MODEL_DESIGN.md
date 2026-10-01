@@ -922,6 +922,33 @@ INSERT INTO authz.conditions (store_id, name, expression, required_context) VALU
   reports it (`condition_missing_keys` in `explain_access`,
   `missing_context` in `check_access_detailed`) — see
   [Missing context](#missing-context).
+- `time_source` (`p_time_source` on `create_condition*`, default `server`):
+  which clock `current_time` comes from. **`server`** (the default): the
+  engine sets `current_time` from its own clock before evaluating this
+  condition and ignores any caller value — statement time on live paths; on
+  time-travel paths `current_time` is `p_at` for every condition, as before.
+  Business hours, grant windows and anything a caller could be tempted to
+  backdate are safe without the author knowing the option exists.
+  **`caller`**: the request context supplies it — the enforcement point
+  asserts a time. Choose it explicitly when the caller legitimately asks
+  about another moment: tests and demos that pin the clock, "would this be
+  allowed at T" asked live. The choice is part of the policy: a change is
+  versioned in `conditions_audit`, the registry exports and propagates it,
+  `describe_model` renders `# condition <name> (sql, server time)` /
+  `(sql, caller time)`, and a denied step in `explain_access` names the
+  clock. Conditions created before this option exists stay `caller`, so an
+  upgrade changes no decision.
+
+  ```sql
+  -- business hours by the server's clock (the default)
+  SELECT authz.create_condition_sql('gdrive', 'office_hours',
+      $$ extract(hour from ($1->>'current_time')::timestamptz) BETWEEN 8 AND 17 $$,
+      '{"request": ["current_time"]}');
+  -- a grant window the caller is allowed to ask about "as of" a time it supplies
+  SELECT authz.create_condition_sql('gdrive', 'grant_window',
+      $$ ($1->>'current_time')::timestamptz < ($2->>'until')::timestamptz $$,
+      '{"request": ["current_time"], "stored": ["until"]}', p_time_source => 'caller');
+  ```
 
 ### Writing Conditional Tuples
 

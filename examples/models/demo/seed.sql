@@ -95,7 +95,8 @@ BEGIN
             ($1->>'current_time')::timestamptz
             < ($2->>'grant_time')::timestamptz + ($2->>'grant_duration')::interval
         $cond$,
-        '{"request": ["current_time"], "stored": ["grant_time", "grant_duration"]}'::jsonb
+        '{"request": ["current_time"], "stored": ["grant_time", "grant_duration"]}'::jsonb,
+        p_time_source => 'caller'   -- the demo pins the clock from the request
     );
     PERFORM authz.write_tuple('demo',
         'internal_user', 'bob', 'viewer', 'document', 'doc_timeboxed_001',

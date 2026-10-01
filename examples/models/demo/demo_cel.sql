@@ -31,7 +31,8 @@
 SELECT authz.create_condition_cel('demo',
     'non_expired_grant_cel',
     'timestamp(request.current_time) < timestamp(stored.grant_time) + duration(stored.grant_duration)',
-    '{"request": ["current_time"], "stored": ["grant_time", "grant_duration"]}'::jsonb
+    '{"request": ["current_time"], "stored": ["grant_time", "grant_duration"]}'::jsonb,
+    p_time_source => 'caller'   -- the demo pins the clock from the request
 );
 
 

@@ -637,6 +637,17 @@ DECLARE
     v_base     text;
     v_excl     text;
 BEGIN
+    -- Conditions are referenced by tuples, not by rules: rendered once, up
+    -- front, with their language and clock (migration 0016) so a reviewer sees
+    -- which conditions trust the caller's time and which use the server's.
+    FOR v_schema IN
+        SELECT c.name, c.lang, c.time_source FROM authz.conditions c
+         WHERE c.store_id = v_store_id ORDER BY c.name
+    LOOP
+        v_out := v_out || '# condition ' || v_schema.name || ' (' || v_schema.lang
+                 || CASE WHEN v_schema.time_source = 'server' THEN ', server time' ELSE ', caller time' END
+                 || ')' || E'\n';
+    END LOOP;
     -- Payload schemas are per relation (the action vocabulary), not per type:
     -- rendered once, up front, as comment lines.
     FOR v_schema IN

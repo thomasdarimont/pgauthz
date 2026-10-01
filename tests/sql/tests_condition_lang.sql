@@ -40,10 +40,10 @@ BEGIN
         (s, authz._t(s,'doc'), authz._r(s,'can_read'), authz._rel_computed(), authz._r(s,'viewer'), NULL, NULL);
 
     -- cl_01: lang defaults to 'sql' when omitted
-    INSERT INTO authz.conditions (store_id, name, expression, required_context) VALUES
+    INSERT INTO authz.conditions (store_id, name, expression, required_context, time_source) VALUES
         (s, 'not_expired',
          $cond$($1->>'current_time')::timestamptz < ($2->>'expires')::timestamptz$cond$,
-         '{"request": ["current_time"], "stored": ["expires"]}'::jsonb);
+         '{"request": ["current_time"], "stored": ["expires"]}'::jsonb, 'caller');
     SELECT lang INTO v_lang FROM authz.conditions WHERE store_id = s AND name = 'not_expired';
     PERFORM _test_assert_true('cl_01_default_lang_is_sql', v_lang = authz._cond_lang_sql(), 'lang=' || v_lang);
 
@@ -113,11 +113,11 @@ BEGIN
     -- (e.g. the extensions/pg-cel build). Skipped — not failed — otherwise, so
     -- the default dependency-free stack stays green.
     IF to_regprocedure('authz.cel_eval_bool(text, text)') IS NOT NULL THEN
-        INSERT INTO authz.conditions (store_id, name, expression, lang, required_context) VALUES
+        INSERT INTO authz.conditions (store_id, name, expression, lang, required_context, time_source) VALUES
             (s, 'cel_not_expired',
              $cel$timestamp(request.current_time) < timestamp(stored.expires)$cel$,
              authz._cond_lang_cel(),
-             '{"request": ["current_time"], "stored": ["expires"]}'::jsonb);
+             '{"request": ["current_time"], "stored": ["expires"]}'::jsonb, 'caller');
 
         PERFORM authz.write_tuple('test_condlang',
             'user', 'bob', 'viewer', 'doc', 'd2',

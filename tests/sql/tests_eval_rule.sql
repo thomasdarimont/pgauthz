@@ -67,10 +67,10 @@ BEGIN
     PERFORM authz.write_tuple('test_eval', 'user', 'bob', 'can_view', 'folder', 'f1');
 
     -- Condition for time-based tests
-    INSERT INTO authz.conditions (store_id, name, expression, required_context) VALUES
+    INSERT INTO authz.conditions (store_id, name, expression, required_context, time_source) VALUES
     (s, 'not_expired',
      $cond$($1->>'current_time')::timestamptz < ($2->>'expires')::timestamptz$cond$,
-     '{"request": ["current_time"], "stored": ["expires"]}'::jsonb);
+     '{"request": ["current_time"], "stored": ["expires"]}'::jsonb, 'caller');
 
     -- Conditional tuple: user:carol --viewer--> doc:d_cond (expires)
     PERFORM authz.write_tuple('test_eval',

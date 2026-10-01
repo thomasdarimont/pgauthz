@@ -314,7 +314,8 @@ SELECT authz.create_condition_sql('demo',
         ($1->>'current_time')::timestamptz
         < ($2->>'grant_time')::timestamptz + ($2->>'grant_duration')::interval
     $cond$,
-    '{"request": ["current_time"], "stored": ["grant_time", "grant_duration"]}'::jsonb
+    '{"request": ["current_time"], "stored": ["grant_time", "grant_duration"]}'::jsonb,
+    p_time_source => 'caller'   -- the demo pins the clock from the request
 );
 
 -- Write a conditional tuple: Alice can view doc_temp_001, but only for 2 hours.
@@ -366,7 +367,8 @@ SELECT authz.create_condition_sql('demo',
         AND regexp_replace(host(($1->>'client_ip')::inet), '^::ffff:', '')::inet
             <<= ($2->>'allowed_cidr')::cidr
     $cond$,
-    '{"request": ["current_time", "client_ip"], "stored": ["grant_time", "grant_duration", "allowed_cidr"]}'::jsonb
+    '{"request": ["current_time", "client_ip"], "stored": ["grant_time", "grant_duration", "allowed_cidr"]}'::jsonb,
+    p_time_source => 'caller'   -- the demo pins the clock from the request
 );
 
 -- Write a conditional tuple: Bob can view doc_secure_001, but only
@@ -569,7 +571,8 @@ SELECT authz.create_condition_sql('demo',
         ($1->>'current_time')::timestamptz
         < ($2->>'grant_time')::timestamptz + ($2->>'grant_duration')::interval
     $cond$,
-    '{"request": ["current_time"], "stored": ["grant_time", "grant_duration"]}'::jsonb
+    '{"request": ["current_time"], "stored": ["grant_time", "grant_duration"]}'::jsonb,
+    p_time_source => 'caller'   -- the demo pins the clock from the request
 );
 
 -- Alice gets temporary viewer access to a document (2-hour window on March 11).

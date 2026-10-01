@@ -270,7 +270,8 @@ BEGIN
            AND user_relation IS NULL
            AND condition_id  IS NOT NULL
     ) THEN
-        SELECT c.name, t.condition_id, t.condition_context
+        SELECT c.name || CASE WHEN c.time_source = 'server' THEN ' (server time)' ELSE '' END,
+               t.condition_id, t.condition_context
           INTO v_cond_name, v_cond_id, v_cond_ctx
           FROM authz.tuples t
           JOIN authz.conditions c ON c.id = t.condition_id
@@ -287,7 +288,8 @@ BEGIN
                 p_relation_name, p_object_type_name || ':' || p_object_id,
                 false, 'tuple found, condition "' || v_cond_name || '" denied',
                 extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated,
-                v_cond_name, authz._condition_missing_keys(v_cond_id, v_cond_ctx, p_request_context));
+                regexp_replace(v_cond_name, ' \(server time\)$', ''),
+                authz._condition_missing_keys(v_cond_id, v_cond_ctx, p_request_context));
     END IF;
     END IF; -- v_skip_direct
 

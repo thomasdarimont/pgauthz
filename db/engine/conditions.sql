@@ -110,6 +110,27 @@ $$;
 -- table/function access. Only pure SQL operators and casts work inside
 -- 'sql' expressions.
 ------------------------------------------------------------------------
+------------------------------------------------------------------------
+-- _eval_clock: the clock a `time_source = 'server'` condition sees as
+-- `current_time`. Live paths: the statement timestamp (one value for every
+-- candidate of a listing, like tuple expiry). Time-travel paths set the
+-- transaction-local GUC authz._eval_as_of to p_at, so history replays the
+-- clock that was in effect.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._eval_clock() RETURNS timestamptz
+LANGUAGE sql STABLE AS $$
+    SELECT COALESCE(NULLIF(current_setting('authz._eval_as_of', true), '')::timestamptz,
+                    statement_timestamp());
+$$;
+
+-- _with_server_time: the request context a server-time condition evaluates
+-- against — the caller's context with `current_time` replaced by the clock.
+CREATE OR REPLACE FUNCTION authz._with_server_time(p_request_context jsonb) RETURNS jsonb
+LANGUAGE sql STABLE AS $$
+    SELECT COALESCE(p_request_context, '{}'::jsonb)
+           || jsonb_build_object('current_time', to_char(authz._eval_clock() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'));
+$$;
+
 CREATE OR REPLACE FUNCTION authz._eval_condition(
     p_condition_id      integer,
     p_condition_context jsonb,      -- stored with the tuple
@@ -119,11 +140,26 @@ LANGUAGE plpgsql STABLE AS $$
 DECLARE
     v_expr    text;
     v_lang    text;
+    v_source  text;
+    v_req     jsonb := p_request_context;
     v_missing text[];
 BEGIN
     -- No condition = unconditional access
     IF p_condition_id IS NULL THEN
         RETURN true;
+    END IF;
+
+    SELECT expression, lang, time_source INTO v_expr, v_lang, v_source
+      FROM authz.conditions WHERE id = p_condition_id;
+    IF v_expr IS NULL THEN
+        RETURN false;  -- unknown condition = deny
+    END IF;
+
+    -- Server-time condition (migration 0016): `current_time` is the engine's
+    -- clock, never the caller's claim. Done before the missing-context logic,
+    -- so the key counts as supplied.
+    IF v_source = 'server' THEN
+        v_req := authz._with_server_time(v_req);
     END IF;
 
     -- Missing-context assumption (authz._assume_missing_ctx). A condition that
@@ -140,7 +176,7 @@ BEGIN
     -- Each assumption is recorded (authz._note_assumed_condition) so the
     -- detailed classifier can report the keys that would settle it.
     IF authz._assume_missing_ctx() THEN
-        v_missing := authz._condition_missing_keys(p_condition_id, p_condition_context, p_request_context);
+        v_missing := authz._condition_missing_keys(p_condition_id, p_condition_context, v_req);
         IF array_length(v_missing, 1) > 0 THEN
             PERFORM authz._note_assumed_condition(
                 (SELECT c.name FROM authz.conditions c WHERE c.id = p_condition_id), v_missing);
@@ -153,23 +189,17 @@ BEGIN
     -- is rejected before it is bound into condition evaluation. Raised with a
     -- dedicated errcode that is re-raised below (a clear error, not a silent
     -- deny). NULL contexts have NULL size, so the guard skips them.
-    IF pg_column_size(p_request_context)   > authz._max_context_bytes()
+    IF pg_column_size(v_req)               > authz._max_context_bytes()
        OR pg_column_size(p_condition_context) > authz._max_context_bytes() THEN
         RAISE EXCEPTION 'condition context exceeds the %-byte limit (authz.max_context_bytes)',
             authz._max_context_bytes()
             USING ERRCODE = 'program_limit_exceeded';
     END IF;
 
-    SELECT expression, lang INTO v_expr, v_lang
-      FROM authz.conditions WHERE id = p_condition_id;
-    IF v_expr IS NULL THEN
-        RETURN false;  -- unknown condition = deny
-    END IF;
-
     RETURN authz._eval_condition_expr(
         v_lang,
         v_expr,
-        COALESCE(p_request_context, '{}'::jsonb),
+        COALESCE(v_req, '{}'::jsonb),
         COALESCE(p_condition_context, '{}'::jsonb)
     );
 EXCEPTION
@@ -220,8 +250,12 @@ CREATE OR REPLACE FUNCTION authz._condition_missing_keys(
     p_request_context   jsonb
 ) RETURNS text[]
 LANGUAGE sql STABLE AS $$
+    -- a server-time condition supplies current_time itself (migration 0016)
     SELECT coalesce((
-        SELECT authz._missing_keys_of(c.required_context, p_condition_context, p_request_context)
+        SELECT authz._missing_keys_of(c.required_context, p_condition_context,
+                   CASE WHEN c.time_source = 'server'
+                        THEN COALESCE(p_request_context, '{}'::jsonb) || '{"current_time": true}'::jsonb
+                        ELSE p_request_context END)
           FROM authz.conditions c
          WHERE c.id = p_condition_id), '{}');
 $$;

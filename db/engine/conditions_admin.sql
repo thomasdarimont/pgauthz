@@ -98,28 +98,42 @@ CREATE OR REPLACE TRIGGER trg_conditions_validate_expression
 --   SELECT authz.create_condition('demo', 'office_hours',
 --       $$extract(hour from ($1->>'current_time')::timestamptz) BETWEEN 8 AND 17$$);
 ------------------------------------------------------------------------
+-- p_time_source (migration 0016): where `current_time` comes from for this
+-- condition — 'server' (default: the engine's clock; a caller value is
+-- ignored) or 'caller' (the request context; replayable, the caller's
+-- assertion — the explicit choice for tests, demos and "as of T" questions).
+-- Part of the policy: versioned, exported, rendered.
+DROP FUNCTION IF EXISTS authz.create_condition(text, text, text, text, jsonb);
 CREATE OR REPLACE FUNCTION authz.create_condition(
     p_store            text,
     p_name             text,
     p_expression       text,
     p_lang             text  DEFAULT authz._cond_lang_sql(),
-    p_required_context jsonb DEFAULT NULL
+    p_required_context jsonb DEFAULT NULL,
+    p_time_source      text  DEFAULT 'server'
 ) RETURNS integer
 LANGUAGE plpgsql AS $$
 DECLARE
     v_store_id integer := authz._s(p_store);
     v_id       integer;
 BEGIN
-    INSERT INTO authz.conditions (store_id, name, expression, lang, required_context)
-    VALUES (v_store_id, p_name, p_expression, p_lang, p_required_context)
+    IF p_time_source IS NULL OR p_time_source NOT IN ('caller', 'server') THEN
+        RAISE EXCEPTION 'condition "%": time_source must be caller or server (got %)', p_name, COALESCE(p_time_source, 'NULL')
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+
+    INSERT INTO authz.conditions (store_id, name, expression, lang, required_context, time_source)
+    VALUES (v_store_id, p_name, p_expression, p_lang, p_required_context, p_time_source)
     ON CONFLICT (store_id, name) DO UPDATE
         SET expression       = EXCLUDED.expression,
             lang             = EXCLUDED.lang,
-            required_context = EXCLUDED.required_context
+            required_context = EXCLUDED.required_context,
+            time_source      = EXCLUDED.time_source
         -- Skip a no-op rewrite so an unchanged re-run adds no audit version.
         WHERE authz.conditions.expression       IS DISTINCT FROM EXCLUDED.expression
            OR authz.conditions.lang             IS DISTINCT FROM EXCLUDED.lang
            OR authz.conditions.required_context IS DISTINCT FROM EXCLUDED.required_context
+           OR authz.conditions.time_source      IS DISTINCT FROM EXCLUDED.time_source
     RETURNING id INTO v_id;
 
     -- DO UPDATE ... WHERE that matched nothing (identical re-run) returns no
@@ -146,26 +160,30 @@ $$;
 --       'timestamp(request.now) < timestamp(stored.expires)',
 --       '{"request": ["now"], "stored": ["expires"]}');
 ------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS authz.create_condition_sql(text, text, text, jsonb);
 CREATE OR REPLACE FUNCTION authz.create_condition_sql(
     p_store            text,
     p_name             text,
     p_expression       text,
-    p_required_context jsonb DEFAULT NULL
+    p_required_context jsonb DEFAULT NULL,
+    p_time_source      text  DEFAULT 'server'
 ) RETURNS integer
 LANGUAGE sql AS $$
     SELECT authz.create_condition(p_store, p_name, p_expression,
-                                  authz._cond_lang_sql(), p_required_context);
+                                  authz._cond_lang_sql(), p_required_context, p_time_source);
 $$;
 
+DROP FUNCTION IF EXISTS authz.create_condition_cel(text, text, text, jsonb);
 CREATE OR REPLACE FUNCTION authz.create_condition_cel(
     p_store            text,
     p_name             text,
     p_expression       text,
-    p_required_context jsonb DEFAULT NULL
+    p_required_context jsonb DEFAULT NULL,
+    p_time_source      text  DEFAULT 'server'
 ) RETURNS integer
 LANGUAGE sql AS $$
     SELECT authz.create_condition(p_store, p_name, p_expression,
-                                  authz._cond_lang_cel(), p_required_context);
+                                  authz._cond_lang_cel(), p_required_context, p_time_source);
 $$;
 
 ------------------------------------------------------------------------

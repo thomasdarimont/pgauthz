@@ -53,6 +53,8 @@ BEGIN
      $cond$,
      '{"request": ["client_ip"], "stored": ["allowed_cidr"]}'::jsonb
     );
+    -- the suite pins the clock from the request context for this condition
+    UPDATE authz.conditions SET time_source = 'caller' WHERE store_id = s AND name = 'non_expired_grant';
 
     PERFORM authz.write_tuple('test_contextual',
         'user', 'alice', 'viewer', 'doc', 'doc1',
@@ -588,6 +590,120 @@ $$;
 SELECT * FROM _test_teardown_contextual();
 
 -- Cleanup file-level functions
+-- ctx_26: condition time source (migration 0016) — `server` conditions read the
+-- engine's clock for current_time, ignoring (or not needing) the caller's value;
+-- `caller` conditions keep today's behaviour. The choice is versioned, replayed
+-- by time travel, exported by the registry and rendered by describe/explain.
+DO $$
+DECLARE v_msg text; v_n0 int; v_n1 int; d jsonb; e text;
+BEGIN
+    PERFORM _test_setup_contextual();
+    -- same expression, two clocks
+    PERFORM authz.create_condition_sql('test_contextual', 'after_2000_caller',
+        $c$ ($1->>'current_time')::timestamptz > '2000-01-01' $c$, '{"request": ["current_time"]}', p_time_source => 'caller');
+    PERFORM authz.create_condition_sql('test_contextual', 'after_2000_server',
+        $c$ ($1->>'current_time')::timestamptz > '2000-01-01' $c$, '{"request": ["current_time"]}',
+        p_time_source => 'server');
+    PERFORM authz.create_condition_sql('test_contextual', 'before_2000_server',
+        $c$ ($1->>'current_time')::timestamptz < '2000-01-01' $c$, '{"request": ["current_time"]}',
+        p_time_source => 'server');
+    PERFORM authz.write_tuple('test_contextual', 'user', 'tc1', 'viewer', 'doc', 'doc1', p_condition => 'after_2000_caller');
+    PERFORM authz.write_tuple('test_contextual', 'user', 'tc2', 'viewer', 'doc', 'doc1', p_condition => 'after_2000_server');
+    PERFORM authz.write_tuple('test_contextual', 'user', 'tc3', 'viewer', 'doc', 'doc1', p_condition => 'before_2000_server');
+
+    -- a) the caller's clock is honoured for a caller condition …
+    PERFORM _test_assert('ctx_26a_caller_time_honoured',
+        authz.check_access_with_context('test_contextual','user','tc1','viewer','doc','doc1','{"current_time": "1999-06-01T00:00:00Z"}')::text, 'false');
+    -- b) … and ignored for a server condition (the server is past 2000)
+    PERFORM _test_assert('ctx_26b_server_time_ignores_caller_claim',
+        authz.check_access_with_context('test_contextual','user','tc2','viewer','doc','doc1','{"current_time": "1999-06-01T00:00:00Z"}')::text, 'true');
+    PERFORM _test_assert('ctx_26c_server_time_cannot_be_backdated',
+        authz.check_access_with_context('test_contextual','user','tc3','viewer','doc','doc1','{"current_time": "1999-06-01T00:00:00Z"}')::text, 'false');
+    -- d) a server condition needs no current_time from the caller: not missing, not conditional
+    PERFORM _test_assert('ctx_26d_server_time_needs_no_caller_key',
+        authz.check_access('test_contextual','user','tc2','viewer','doc','doc1')::text, 'true');
+    d := authz.check_access_detailed('test_contextual','user','tc3','viewer','doc','doc1');
+    PERFORM _test_assert('ctx_26e_server_time_never_conditional', (d->>'state') || ' ' || (d->'missing_context')::text, 'deny []');
+    -- the caller condition without the key stays conditional (unchanged behaviour)
+    PERFORM _test_assert('ctx_26f_caller_time_still_conditional',
+        authz.check_access_detailed('test_contextual','user','tc1','viewer','doc','doc1')->>'state', 'conditional');
+    -- g) explain names the clock on the denied step
+    SELECT x->>'detail' INTO e FROM jsonb_array_elements(
+        authz.explain_access('test_contextual','user','tc3','viewer','doc','doc1')->'trace') x
+     WHERE x->>'condition_name' = 'before_2000_server' LIMIT 1;
+    PERFORM _test_assert_true('ctx_26g_explain_names_server_time', e LIKE '%before_2000_server (server time)%denied', e);
+    -- h) invalid source rejected
+    BEGIN
+        PERFORM authz.create_condition_sql('test_contextual', 'bad_src', 'true', NULL, p_time_source => 'moon');
+        v_msg := 'no error';
+    EXCEPTION WHEN OTHERS THEN v_msg := SQLERRM; END;
+    PERFORM _test_assert_true('ctx_26h_invalid_source_rejected', v_msg LIKE '%time_source must be caller or server%', v_msg);
+    -- i) changing the clock is a versioned change (DELETE + INSERT in the audit)
+    SELECT count(*) INTO v_n0 FROM authz.conditions_audit a JOIN authz.conditions c ON c.id = a.condition_id
+     WHERE c.store_id = authz._s('test_contextual') AND c.name = 'after_2000_caller';
+    PERFORM authz.create_condition_sql('test_contextual', 'after_2000_caller',
+        $c$ ($1->>'current_time')::timestamptz > '2000-01-01' $c$, '{"request": ["current_time"]}', p_time_source => 'server');
+    SELECT count(*) INTO v_n1 FROM authz.conditions_audit a JOIN authz.conditions c ON c.id = a.condition_id
+     WHERE c.store_id = authz._s('test_contextual') AND c.name = 'after_2000_caller';
+    PERFORM _test_assert('ctx_26i_clock_change_is_versioned', (v_n1 - v_n0)::text, '2');
+    PERFORM _test_assert('ctx_26j_switched_condition_now_server',
+        authz.check_access_with_context('test_contextual','user','tc1','viewer','doc','doc1','{"current_time": "1999-06-01T00:00:00Z"}')::text, 'true');
+    -- k) export carries time_source only for server conditions; describe renders both clocks
+    PERFORM _test_assert('ctx_26k_export_marks_server_only',
+        (SELECT string_agg(c->>'name' || ':' || COALESCE(c->>'time_source', '-'), ' ' ORDER BY c->>'name')
+           FROM jsonb_array_elements(authz.export_model('test_contextual')->'conditions') c
+          WHERE c->>'name' LIKE '%2000%'),
+        'after_2000_caller:server after_2000_server:server before_2000_server:server');
+    PERFORM _test_assert_true('ctx_26l_describe_renders_clock',
+        position('# condition before_2000_server (sql, server time)' in authz.describe_model('test_contextual')) > 0,
+        authz.describe_model('test_contextual'));
+    -- m) the default is the server's clock — for the function API and for a raw INSERT
+    PERFORM authz.create_condition_sql('test_contextual', 'dflt_fn', 'true');
+    INSERT INTO authz.conditions (store_id, name, expression) VALUES (authz._s('test_contextual'), 'dflt_ins', 'true');
+    PERFORM _test_assert('ctx_26m_default_is_server',
+        (SELECT string_agg(name || '=' || time_source, ' ' ORDER BY name) FROM authz.conditions
+          WHERE store_id = authz._s('test_contextual') AND name LIKE 'dflt_%'), 'dflt_fn=server dflt_ins=server');
+END;
+$$;
+SELECT * FROM _test_teardown_contextual();
+
+-- ctx_27: time travel — every condition's current_time is p_at there (as
+-- before); a server condition's clock is therefore p_at too, whatever the
+-- caller sends, and a live check after a time-travel call still uses now.
+DO $$
+BEGIN
+    PERFORM _test_setup_contextual();
+    PERFORM authz.create_condition_sql('test_contextual', 'from_2030',
+        $c$ ($1->>'current_time')::timestamptz >= '2030-01-01' $c$, '{"request": ["current_time"]}', p_time_source => 'caller');   -- caller clock, for now
+    PERFORM authz.write_tuple('test_contextual', 'user', 'tt1', 'viewer', 'doc', 'doc1', p_condition => 'from_2030');
+    PERFORM _test_assert('ctx_27a_caller_clock_live',
+        authz.check_access_with_context('test_contextual','user','tt1','viewer','doc','doc1','{"current_time": "2031-01-01T00:00:00Z"}')::text, 'true');
+END;
+$$;
+SELECT set_config('test.ctx27_t1', clock_timestamp()::text, false);
+DO $$
+DECLARE v_t1 timestamptz := current_setting('test.ctx27_t1')::timestamptz;
+BEGIN
+    -- switch the clock to the server (a later transaction)
+    PERFORM authz.create_condition_sql('test_contextual', 'from_2030',
+        $c$ ($1->>'current_time')::timestamptz >= '2030-01-01' $c$, '{"request": ["current_time"]}', p_time_source => 'server');
+    -- live: the server is before 2030, the caller's 2031 is ignored
+    PERFORM _test_assert('ctx_27b_server_clock_live_denies',
+        authz.check_access_with_context('test_contextual','user','tt1','viewer','doc','doc1','{"current_time": "2031-01-01T00:00:00Z"}')::text, 'false');
+    -- time travel always evaluates current_time = p_at, for BOTH clock kinds (as
+    -- before this feature): as of t1 (2026) the caller's 2031 does not count
+    PERFORM _test_assert('ctx_27c_as_of_t1_is_p_at_for_every_condition',
+        authz.audit_check_access('test_contextual','user','tt1','viewer','doc','doc1', v_t1, '{"current_time": "2031-01-01T00:00:00Z"}')::text, 'false');
+    -- time travel to 2030-06-01 (after the switch): the clock IS p_at → allowed, whatever the caller says
+    PERFORM _test_assert('ctx_27d_server_clock_is_p_at',
+        authz.audit_check_access('test_contextual','user','tt1','viewer','doc','doc1', '2030-06-01T00:00:00Z', '{"current_time": "1999-01-01T00:00:00Z"}')::text, 'true');
+    -- … and a live check right after a time-travel call in the same transaction is NOT answered as of 2030
+    PERFORM _test_assert('ctx_27e_live_after_time_travel_uses_now',
+        authz.check_access_with_context('test_contextual','user','tt1','viewer','doc','doc1','{"current_time": "2031-01-01T00:00:00Z"}')::text, 'false');
+END;
+$$;
+SELECT * FROM _test_teardown_contextual();
+
 DROP FUNCTION IF EXISTS _test_teardown_contextual();
 DROP FUNCTION IF EXISTS _test_setup_contextual();
 

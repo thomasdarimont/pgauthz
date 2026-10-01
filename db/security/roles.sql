@@ -363,9 +363,9 @@ GRANT EXECUTE ON FUNCTION authz.model_remove_type_restriction(text, integer) TO 
 GRANT EXECUTE ON FUNCTION authz.model_remove_type_restrictions(text, text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.import_openfga_model(text, jsonb) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.import_openfga_tuples(text, jsonb) TO authz_admin;
-GRANT EXECUTE ON FUNCTION authz.create_condition(text, text, text, text, jsonb) TO authz_admin;
-GRANT EXECUTE ON FUNCTION authz.create_condition_sql(text, text, text, jsonb) TO authz_admin;
-GRANT EXECUTE ON FUNCTION authz.create_condition_cel(text, text, text, jsonb) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.create_condition(text, text, text, text, jsonb, text) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.create_condition_sql(text, text, text, jsonb, text) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.create_condition_cel(text, text, text, jsonb, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.delete_condition(text, text) TO authz_admin;
 -- Temporal gates (ADR 0012): model changes, admin-only.
 GRANT EXECUTE ON FUNCTION authz.add_gate(text, text, text, text, jsonb) TO authz_admin;
@@ -451,12 +451,12 @@ ALTER FUNCTION authz.model_remove_type_restriction(text, integer) SECURITY DEFIN
 ALTER FUNCTION authz.model_remove_type_restrictions(text, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.import_openfga_model(text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.import_openfga_tuples(text, jsonb) SECURITY DEFINER;
-ALTER FUNCTION authz.create_condition(text, text, text, text, jsonb) SECURITY DEFINER;
+ALTER FUNCTION authz.create_condition(text, text, text, text, jsonb, text) SECURITY DEFINER;
 -- The lang-specific wrappers delegate to create_condition; making them definer
 -- keeps the API uniform and prevents inlining from running them as the caller.
 -- See SECURITY-AUDIT F2.
-ALTER FUNCTION authz.create_condition_sql(text, text, text, jsonb) SECURITY DEFINER;
-ALTER FUNCTION authz.create_condition_cel(text, text, text, jsonb) SECURITY DEFINER;
+ALTER FUNCTION authz.create_condition_sql(text, text, text, jsonb, text) SECURITY DEFINER;
+ALTER FUNCTION authz.create_condition_cel(text, text, text, jsonb, text) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_condition(text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.add_gate(text, text, text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.drop_gate(text, text, text, text) SECURITY DEFINER;

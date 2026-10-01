@@ -90,11 +90,16 @@ BEGIN
     -- context is merged in; current_time always reflects p_at. Temporal gates
     -- (ADR 0012) evaluate as of p_at too — their definitions from the gate
     -- snapshot, the action log bounded by what was recorded by then.
+    -- Server-time conditions (migration 0016) read this clock instead of the
+    -- caller's current_time; cleared afterwards so a live check later in the
+    -- same transaction is not answered as of p_at.
+    PERFORM set_config('authz._eval_as_of', p_at::text, true);
     v_result := authz._decide_snapshot(
         v_store_id, v_user_type, p_user_id, v_relation, v_object_type, p_object_id,
         COALESCE(p_request_context, '{}'::jsonb) || jsonb_build_object('current_time', p_at),
         p_at
     );
+    PERFORM set_config('authz._eval_as_of', '', true);
 
     -- _snapshot_tuples has ON COMMIT DROP — no explicit cleanup needed.
 
@@ -133,6 +138,7 @@ BEGIN
     -- Candidate relations come from the model AS OF p_at (the snapshot),
     -- not the current model, so a relation whose rule was added later is
     -- not considered. Dynamic SQL because _snapshot_models is per-session.
+    PERFORM set_config('authz._eval_as_of', p_at::text, true);   -- server-time conditions see p_at
     RETURN QUERY EXECUTE '
         SELECT r.name
           FROM (
@@ -146,6 +152,7 @@ BEGIN
     USING v_store_id, v_object_type, v_user_type, p_user_id, p_object_id,
           COALESCE(p_request_context, '{}'::jsonb) || jsonb_build_object('current_time', p_at),
           p_at;
+    PERFORM set_config('authz._eval_as_of', '', true);
 END;
 $$;
 

@@ -149,13 +149,14 @@ BEGIN
         expression       text,
         lang             text,
         name             text,
-        required_context jsonb    -- as of p_at: drives the missing-context assumption
+        required_context jsonb,   -- as of p_at: drives the missing-context assumption
+        time_source      text     -- as of p_at: caller | server (migration 0016)
     ) ON COMMIT DROP;
 
     TRUNCATE _snapshot_conditions;
 
     INSERT INTO _snapshot_conditions
-    SELECT sub.condition_id, sub.expression, sub.lang, sub.name, sub.required_context
+    SELECT sub.condition_id, sub.expression, sub.lang, sub.name, sub.required_context, sub.time_source
       FROM (
         SELECT DISTINCT ON (a.condition_id) a.*
           FROM authz.conditions_audit a
@@ -185,23 +186,31 @@ DECLARE
     v_lang     text;
     v_name     text;
     v_required jsonb;
+    v_source   text;
+    v_req      jsonb := p_request_context;
     v_missing  text[];
 BEGIN
     IF p_condition_id IS NULL THEN
         RETURN true;   -- unconditional
     END IF;
 
-    EXECUTE 'SELECT expression, lang, name, required_context FROM _snapshot_conditions WHERE id = $1'
-       INTO v_expr, v_lang, v_name, v_required USING p_condition_id;
+    EXECUTE 'SELECT expression, lang, name, required_context, time_source FROM _snapshot_conditions WHERE id = $1'
+       INTO v_expr, v_lang, v_name, v_required, v_source USING p_condition_id;
     IF v_expr IS NULL THEN
         RETURN false;  -- condition did not exist as of p_at = deny
+    END IF;
+
+    -- Server-time condition as of p_at: the clock is p_at (authz._eval_as_of,
+    -- set by the time-travel entry points), never the caller's value.
+    IF v_source = 'server' THEN
+        v_req := authz._with_server_time(v_req);
     END IF;
 
     -- Missing-context assumption, as in _eval_condition (flipped by the
     -- snapshot group loop around negated terms), against the declaration in
     -- effect as of p_at.
     IF authz._assume_missing_ctx() THEN
-        v_missing := authz._missing_keys_of(v_required, p_condition_context, p_request_context);
+        v_missing := authz._missing_keys_of(v_required, p_condition_context, v_req);
         IF array_length(v_missing, 1) > 0 THEN
             PERFORM authz._note_assumed_condition(v_name, v_missing);
             RETURN true;
@@ -211,7 +220,7 @@ BEGIN
     RETURN authz._eval_condition_expr(
         v_lang,
         v_expr,
-        COALESCE(p_request_context, '{}'::jsonb),
+        COALESCE(v_req, '{}'::jsonb),
         COALESCE(p_condition_context, '{}'::jsonb)
     );
 EXCEPTION

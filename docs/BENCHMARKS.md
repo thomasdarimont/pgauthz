@@ -440,3 +440,25 @@ parameter or literal the executor can evaluate before scanning, never a
 subselect the planner may choose to join. A regression guard is the
 benchmark itself — the `list_objects` lines are the ones to watch after any
 PostgreSQL upgrade.
+
+## Addendum: 2026-10-02 (condition clock `time_source`, fresh install)
+
+All five suites rerun after migration 0016 (every condition carries a clock
+choice; the evaluator reads it with the expression it already fetched and,
+for `server` conditions, sets `current_time` before evaluating). Every
+decision-path number is within run-to-run noise of the 2026-09-29 table:
+rules condition ALLOW 0.177 → 0.182 ms/op, condition DENY 0.289 → 0.300,
+drive shallow 0.165 → 0.162, deep TTU 3.67 → 3.59, github nested-team 1.36
+→ 1.30, gates baseline 0.164 → 0.171, `list_objects` rules intersection
+3.79 → 3.81 (the pruning fix holds). The benchmark's own condition reads
+`now` from the request rather than `current_time`, so it exercises the
+`caller` path; a `server` condition adds one `jsonb ||` per evaluation,
+below the noise floor here.
+
+Not a code effect, but visible: `audit_check_access` 116 → 29 ms (drive)
+and 10.5 → 4.0 ms (gates). This run followed a fresh `./init.sh`, so the
+audit log held only the fixtures' own history instead of weeks of test-suite
+churn — a reminder that time-travel replay cost tracks audit-log size up to
+`p_at`, and that the retention guidance in PRODUCTION applies to the audit
+tables as much as to events.
+

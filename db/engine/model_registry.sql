@@ -161,7 +161,12 @@ BEGIN
                        'expression',       c.expression,
                        'lang',             c.lang,
                        'required_context', c.required_context
-                   ) ORDER BY c.name)
+                   )
+                   -- time_source (migration 0016): emitted only when 'server',
+                   -- so existing definitions and checksums do not move
+                   || CASE WHEN c.time_source = 'server'
+                           THEN jsonb_build_object('time_source', 'server') ELSE '{}'::jsonb END
+                   ORDER BY c.name)
               FROM authz.conditions c
              WHERE c.store_id = v_store_id), '[]'::jsonb),
         -- Temporal gates (ADR 0012): part of the model definition, propagated
@@ -381,7 +386,8 @@ BEGIN
     LOOP
         PERFORM authz.create_condition(
             p_store, v_row->>'name', v_row->>'expression',
-            v_row->>'lang', v_row->'required_context');
+            v_row->>'lang', v_row->'required_context',
+            COALESCE(v_row->>'time_source', 'caller'));
     END LOOP;
 
     -- Type restrictions: exact diff (delete stale, add all desired). The
