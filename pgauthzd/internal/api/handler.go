@@ -251,10 +251,14 @@ func registerNativeWrite(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("POST /pgauthz/v1/delete", h.DeleteTuples)
 	mux.HandleFunc("POST /pgauthz/v1/delete-user", h.DeleteUserTuples)
 	mux.HandleFunc("POST /pgauthz/v1/write-checked", h.WriteTuplesChecked)
+	mux.HandleFunc("POST /pgauthz/v1/grant", h.Grant)
+	mux.HandleFunc("POST /pgauthz/v1/revoke", h.Revoke)
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/write", h.WriteTuples)
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/delete", h.DeleteTuples)
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/delete-user", h.DeleteUserTuples)
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/write-checked", h.WriteTuplesChecked)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/grant", h.Grant)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/revoke", h.Revoke)
 	// The action log (ADR 0012): a write in every operational sense (writer DB
 	// connection, consistency mode, audit actor), gated by RECORDER_ROLE.
 	mux.HandleFunc("POST /pgauthz/v1/events", h.RecordEvents)

@@ -177,6 +177,13 @@ BEGIN
         DELETE FROM authz.conditions_audit WHERE store_id = v_store_id;
         PERFORM set_config('authz.audit_maintenance', '', true);
     END IF;
+    -- Grant rules (migration 0017) reference the store's types/relations.
+    DELETE FROM authz.grant_rules       WHERE store_id = v_store_id;
+    IF p_purge_audit THEN
+        PERFORM set_config('authz.audit_maintenance', 'on', true);
+        DELETE FROM authz.grant_rules_audit WHERE store_id = v_store_id;
+        PERFORM set_config('authz.audit_maintenance', '', true);
+    END IF;
     -- Temporal gates (ADR 0012) reference the store's types/relations.
     DELETE FROM authz.model_gates       WHERE store_id = v_store_id;
     IF p_purge_audit THEN

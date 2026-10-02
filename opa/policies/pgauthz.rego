@@ -365,6 +365,44 @@ delete_user_tuples(store, user, performed_by, headers) := _native_write(store, "
 # and writes, in one transaction (optimistic concurrency).
 write_tuples_checked(store, preconditions, deletes, writes, performed_by, headers) := _native_write(store, "write-checked", {"preconditions": preconditions, "deletes": deletes, "writes": writes, "performed_by": performed_by}, headers)
 
+# authz.grant / authz.revoke: sharing (migration 0017). `actor` is the
+# verified subject OPA asserts to the callback listener; the engine's grant
+# rules decide. Optional tuple keys (user_relation, condition, condition_context,
+# expires_at) pass through; `context` is the actor's request context.
+grant(store, tuple, context, actor, headers) := _native_write(store, "grant", _grant_body(tuple, context, actor), headers)
+
+revoke(store, tuple, context, actor, headers) := _native_write(store, "revoke", _grant_body(tuple, context, actor), headers)
+
+_grant_body(tuple, context, actor) := object.union(
+	{
+		"user": {"type": tuple.user_type, "id": tuple.user_id},
+		"relation": tuple.relation,
+		"object": {"type": tuple.object_type, "id": tuple.object_id},
+		"actor": actor,
+	},
+	object.union(
+		object.filter(
+			{
+				"user_relation": object.get(tuple, "user_relation", null),
+				"condition": object.get(tuple, "condition", null),
+				"condition_context": object.get(tuple, "condition_context", null),
+				"expires_at": object.get(tuple, "expires_at", null),
+			},
+			[k | some k, v in {
+				"user_relation": object.get(tuple, "user_relation", null),
+				"condition": object.get(tuple, "condition", null),
+				"condition_context": object.get(tuple, "condition_context", null),
+				"expires_at": object.get(tuple, "expires_at", null),
+			}; v != null],
+		),
+		_grant_context(context),
+	),
+)
+
+_grant_context(context) := {"context": context} if context != null
+
+_grant_context(context) := {} if context == null
+
 # _native_write POSTs an authorized write to the writer instance's callback
 # listener (store-scoped path). Forwards the service credential + the per-app
 # role (X-PGAuthz-Role) and consistency (from write.rego's _headers → body).

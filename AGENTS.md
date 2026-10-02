@@ -89,7 +89,7 @@ cd pgauthzd && go build ./... && go test ./...
 - `tests/sql/` — SQL test suites (API, search, contextual tuples, namespaces, intersections, wildcards, type restrictions)
 - `examples/models/` — Example authorization models (helloworld, demo, gdrive, github, todo, aia-acme, agents, fourquestions), each with model.sql, seed.sql, demo.sql; demo, todo, gdrive, aia-acme and agents also have tests.sql (gdrive showcases temporal gates on `doc.download`; aia-acme is the *Authorization in Action* Cedar example as ReBAC — global `forbid` = conditional object-wildcard tuple intersected into every employee path), demo additionally demo_cel.sql (CEL-condition showcase, needs the pg_cel extension). helloworld is the README "complete example" as loadable files. Not part of the deployable engine — `init.sh` does not load them; `test.sh`/`bootstrap.sh` load the demo, todo, gdrive, aia-acme, agents and fourquestions models as test fixtures
 - `examples/watch/` — Runnable setup example for the watch/changefeed feature (compose overlay + Python consumer)
-- `db/security/` — PostgreSQL role definitions (authz_reader, authz_writer, authz_admin, authz_auditor, authz_recorder)
+- `db/security/` — PostgreSQL role definitions (authz_reader, authz_writer, authz_sharer, authz_admin, authz_auditor, authz_recorder)
 - `db/openfga/` — Import functions for existing OpenFGA JSON models/tuples
 - `db/replication/` — Logical replication and materialized permissions patterns
 - `pgauthzd/` — The Go daemon (cmd/, internal/api/, internal/app/, internal/authz/, internal/config/, internal/metrics/, internal/pgbackend/, internal/opabackend/)

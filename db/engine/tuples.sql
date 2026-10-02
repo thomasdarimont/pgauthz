@@ -822,3 +822,135 @@ BEGIN
     RETURN jsonb_build_object('written', v_written, 'deleted', v_deleted);
 END;
 $$;
+
+------------------------------------------------------------------------
+-- authz.grant / authz.revoke: sharing as a first-class API (migration
+-- 0017). "actor gives user relation on object" — allowed only if the
+-- store's GRANT RULE for (object_type, relation) exists and the actor is
+-- allowed its `requires` relation on that same object (`requires_revoke`
+-- for authz.revoke). The decision is the full one (graph, conditions with
+-- p_request_context, temporal gates), taken under the same per-object
+-- advisory lock write_tuples_checked uses, so a right revoked concurrently
+-- is seen; the tuple is then written / deleted with performed_by = the
+-- actor, so the audit trail answers "who gave carol access" directly.
+--
+-- Fail-closed by construction: no rule → raise (the writer role's
+-- write_tuple is unaffected). Object wildcards are refused — a per-object
+-- check cannot cover "every object"; privileged wildcard grants stay a
+-- writer-role write_tuple. Usersets, conditions and expiry pass through to
+-- write_tuple, whose type-restriction and wildcard gates still apply.
+--
+-- Returns write_tuple's boolean (true = written, false = already present)
+-- resp. delete_tuple's (true = deleted, false = no such tuple).
+--
+-- `grant` / `revoke` are SQL reserved words: call them schema-qualified,
+-- as every authz function is (`SELECT authz.grant(...)`; a bare `grant(...)`
+-- is a syntax error).
+--
+--   SELECT authz.grant('docs',  'user', 'bob', 'user', 'dave',  'editor', 'document', 'plan');
+--   SELECT authz.revoke('docs', 'user', 'bob', 'user', 'carol', 'viewer', 'document', 'plan');
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._grant_rule_check(
+    p_store         text,
+    p_store_id      integer,
+    p_actor_type    text,
+    p_actor_id      text,
+    p_relation      text,
+    p_object_type   text,
+    p_object_id     text,
+    p_revoke        boolean,
+    p_context       jsonb
+) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_type    integer := authz._t(p_store_id, p_object_type);
+    v_rel     integer := authz._r(p_store_id, p_relation);
+    v_req     integer;
+    v_req_nm  text;
+    v_detail  jsonb;
+    v_verb    text := CASE WHEN p_revoke THEN 'revoke' ELSE 'grant' END;
+BEGIN
+    IF p_object_id = '*' THEN
+        RAISE EXCEPTION '%: object wildcards cannot be granted per object — use write_tuple (writer role)', v_verb
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    SELECT CASE WHEN p_revoke THEN COALESCE(g.requires_revoke, g.requires) ELSE g.requires END
+      INTO v_req
+      FROM authz.grant_rules g
+     WHERE g.store_id = p_store_id AND g.object_type = v_type AND g.relation = v_rel;
+    IF v_req IS NULL THEN
+        RAISE EXCEPTION '%: no grant rule for %.% in store % — declare one with model_add_grant_rule',
+            v_verb, p_object_type, p_relation, p_store
+            USING ERRCODE = 'check_violation';
+    END IF;
+    SELECT r.name INTO v_req_nm FROM authz.relations r WHERE r.id = v_req;
+
+    -- Same lock key as write_tuples_checked, so checked writes and
+    -- grant/revoke on one object serialize with each other.
+    PERFORM pg_advisory_xact_lock(hashtextextended(p_store || ':' || p_object_type || ':' || p_object_id, 0));
+
+    IF NOT authz._decide(p_store_id, authz._t(p_store_id, p_actor_type), p_actor_id,
+                         v_req, v_type, p_object_id, p_context) THEN
+        -- Say which right is missing, and which context would settle it.
+        v_detail := authz.check_access_detailed(p_store, p_actor_type, p_actor_id, v_req_nm,
+                                                p_object_type, p_object_id, p_context);
+        RAISE EXCEPTION '% refused: %:% is not allowed % on %:%',
+            v_verb, p_actor_type, p_actor_id, v_req_nm, p_object_type,
+            p_object_id || CASE WHEN v_detail->>'state' = 'conditional'
+                 THEN ' (missing request context: ' || (SELECT string_agg(k, ', ') FROM jsonb_array_elements_text(v_detail->'missing_context') k) || ')'
+                 ELSE '' END
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION authz.grant(
+    p_store             text,
+    p_actor_type        text,
+    p_actor_id          text,
+    p_user_type         text,
+    p_user_id           text,
+    p_relation          text,
+    p_object_type       text,
+    p_object_id         text,
+    p_user_relation     text        DEFAULT NULL,
+    p_condition         text        DEFAULT NULL,
+    p_condition_context jsonb       DEFAULT NULL,
+    p_expires_at        timestamptz DEFAULT NULL,
+    p_request_context   jsonb       DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store);
+BEGIN
+    PERFORM authz._grant_rule_check(p_store, v_store_id, p_actor_type, p_actor_id,
+                                    p_relation, p_object_type, p_object_id, false, p_request_context);
+    RETURN authz.write_tuple(p_store, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
+                             p_user_relation, p_condition, p_condition_context,
+                             p_performed_by => p_actor_type || ':' || p_actor_id,
+                             p_expires_at   => p_expires_at);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION authz.revoke(
+    p_store           text,
+    p_actor_type      text,
+    p_actor_id        text,
+    p_user_type       text,
+    p_user_id         text,
+    p_relation        text,
+    p_object_type     text,
+    p_object_id       text,
+    p_user_relation   text  DEFAULT NULL,
+    p_request_context jsonb DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store);
+BEGIN
+    PERFORM authz._grant_rule_check(p_store, v_store_id, p_actor_type, p_actor_id,
+                                    p_relation, p_object_type, p_object_id, true, p_request_context);
+    RETURN authz.delete_tuple(p_store, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
+                              p_user_relation, p_performed_by => p_actor_type || ':' || p_actor_id);
+END;
+$$;

@@ -63,6 +63,14 @@ BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authz_recorder') THEN
         CREATE ROLE authz_recorder NOLOGIN;
     END IF;
+    -- Sharing role (migration 0017): authz.grant / authz.revoke ONLY — the
+    -- engine checks the actor's sharing right under the store's grant rules
+    -- before writing, so this role can be handed to the application tier
+    -- that lets END USERS share, without giving it write_tuple (which writes
+    -- anything). Granted TO authz_writer below (a writer can share).
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authz_sharer') THEN
+        CREATE ROLE authz_sharer NOLOGIN;
+    END IF;
     -- Non-superuser owner of the schema and its objects (see the
     -- ownership transfer at the end of this file).
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authz_owner') THEN
@@ -103,6 +111,7 @@ GRANT authz_writer TO authz_admin;
 GRANT authz_auditor TO authz_admin;
 -- A writer can record events; a pure recorder cannot write tuples.
 GRANT authz_recorder TO authz_writer;
+GRANT authz_sharer   TO authz_writer;
 
 -- AuthZEN Go service (authzen-direct): connects directly and calls the
 -- read API (evaluation + search). A dedicated non-superuser LOGIN role
@@ -246,7 +255,15 @@ REVOKE EXECUTE ON FUNCTION pg_catalog.pg_sleep_for(interval)                   F
 REVOKE EXECUTE ON FUNCTION pg_catalog.pg_sleep_until(timestamp with time zone) FROM PUBLIC;
 
 -- All roles need schema access.
-GRANT USAGE ON SCHEMA authz TO authz_auditor, authz_reader, authz_writer, authz_admin, authz_contextual_reader, authz_recorder;
+GRANT USAGE ON SCHEMA authz TO authz_auditor, authz_reader, authz_writer, authz_admin, authz_contextual_reader, authz_recorder, authz_sharer;
+
+------------------------------------------------------------------------
+-- authz_sharer: share on behalf of an end user (migration 0017). EXECUTE on
+-- authz.grant / authz.revoke only — the functions decide under the
+-- store's grant rules; no reads, no unconditional tuple writes.
+------------------------------------------------------------------------
+GRANT EXECUTE ON FUNCTION authz.grant(text, text, text, text, text, text, text, text, text, text, jsonb, timestamptz, jsonb) TO authz_sharer;
+GRANT EXECUTE ON FUNCTION authz.revoke(text, text, text, text, text, text, text, text, text, jsonb) TO authz_sharer;
 
 ------------------------------------------------------------------------
 -- authz_recorder: feed the action log (ADR 0012). EXECUTE on the two record
@@ -351,6 +368,8 @@ GRANT EXECUTE ON FUNCTION authz.retire_store(text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.delete_store(text, boolean) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_register_type(text, text, int, text, text, text[]) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_remove_type(text, text, boolean, text) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.model_add_grant_rule(text, text, text, text, text) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.model_drop_grant_rule(text, text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_set_type_labels(text, text, text[]) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_add_type_labels(text, text, text[]) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_remove_type_labels(text, text, text[]) TO authz_admin;
@@ -440,6 +459,10 @@ ALTER FUNCTION authz.retire_store(text) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_store(text, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.model_register_type(text, text, int, text, text, text[]) SECURITY DEFINER;
 ALTER FUNCTION authz.model_remove_type(text, text, boolean, text) SECURITY DEFINER;
+ALTER FUNCTION authz.model_add_grant_rule(text, text, text, text, text) SECURITY DEFINER;
+ALTER FUNCTION authz.model_drop_grant_rule(text, text, text) SECURITY DEFINER;
+ALTER FUNCTION authz.grant(text, text, text, text, text, text, text, text, text, text, jsonb, timestamptz, jsonb) SECURITY DEFINER;
+ALTER FUNCTION authz.revoke(text, text, text, text, text, text, text, text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.model_set_type_labels(text, text, text[]) SECURITY DEFINER;
 ALTER FUNCTION authz.model_add_type_labels(text, text, text[]) SECURITY DEFINER;
 ALTER FUNCTION authz.model_remove_type_labels(text, text, text[]) SECURITY DEFINER;

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -21,6 +22,7 @@ type writeStubBackend struct {
 	writeErr      error
 	written       int
 	lastReserve   authz.ReserveEventRequest
+	lastGrant     authz.GrantRequest
 }
 
 func (b *writeStubBackend) WriteTuples(context.Context, authz.WriteRequest) (int, error) {
@@ -31,6 +33,14 @@ func (b *writeStubBackend) DeleteUserTuples(context.Context, authz.DeleteUserReq
 }
 func (b *writeStubBackend) WriteTuplesChecked(context.Context, authz.CheckedWriteRequest) (json.RawMessage, error) {
 	return nil, b.writeErr
+}
+func (b *writeStubBackend) Grant(_ context.Context, req authz.GrantRequest) (bool, error) {
+	b.lastGrant = req
+	return b.written > 0, b.writeErr
+}
+func (b *writeStubBackend) Revoke(_ context.Context, req authz.GrantRequest) (bool, error) {
+	b.lastGrant = req
+	return b.written > 0, b.writeErr
 }
 func (b *writeStubBackend) DeleteTuples(context.Context, authz.WriteRequest) (int, error) {
 	return b.written, b.writeErr
@@ -424,4 +434,62 @@ func TestReserveEventGatesAndValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Grant/revoke: the actor is the token subject; a differing body actor is
+// refused on the public listener; the engine's refusal (ErrForbiddenRole)
+// surfaces as 403 with its message; the writer role is NOT required.
+func TestGrantActorRules(t *testing.T) {
+	stub := &writeStubBackend{written: 1}
+	h := &Handler{
+		cfg:               &config.Config{Profile: config.ProfileFull, WriterRole: "authz_writer", SubjectTypeDefault: "user"},
+		rawWrite:          stub,
+		requireWriterRole: true,
+	}
+	body := `{"user":{"type":"user","id":"dave"},"relation":"editor","object":{"type":"document","id":"plan"}}`
+
+	t.Run("actor is the token subject, no writer role needed", func(t *testing.T) {
+		r := jsonReq("POST", "/pgauthz/v1/grant", body)
+		r = r.WithContext(context.WithValue(context.WithValue(r.Context(), ctxSubjectType, "user"), ctxSubjectID, "bob"))
+		w := httptest.NewRecorder()
+		h.Grant(w, r)
+		if w.Code != 200 {
+			t.Fatalf("status %d: %s", w.Code, w.Body)
+		}
+		if stub.lastGrant.ActorType != "user" || stub.lastGrant.ActorID != "bob" || stub.lastGrant.Relation != "editor" {
+			t.Fatalf("actor/relation not forwarded: %+v", stub.lastGrant)
+		}
+		if !strings.Contains(w.Body.String(), `"granted":true`) {
+			t.Fatalf("body: %s", w.Body)
+		}
+	})
+	t.Run("a differing body actor is refused on the public listener", func(t *testing.T) {
+		r := jsonReq("POST", "/pgauthz/v1/grant", `{"actor":"alice","user":{"type":"user","id":"dave"},"relation":"editor","object":{"type":"document","id":"plan"}}`)
+		r = r.WithContext(context.WithValue(context.WithValue(r.Context(), ctxSubjectType, "user"), ctxSubjectID, "bob"))
+		w := httptest.NewRecorder()
+		h.Grant(w, r)
+		if w.Code != 403 {
+			t.Fatalf("expected 403, got %d: %s", w.Code, w.Body)
+		}
+	})
+	t.Run("engine refusal is 403 with the engine's message", func(t *testing.T) {
+		refused := &writeStubBackend{writeErr: fmt.Errorf("%w: grant refused: user:bob is not allowed can_share_edit on document:plan", authz.ErrForbiddenRole)}
+		h2 := &Handler{cfg: h.cfg, rawWrite: refused, requireWriterRole: true}
+		r := jsonReq("POST", "/pgauthz/v1/revoke", body)
+		r = r.WithContext(context.WithValue(context.WithValue(r.Context(), ctxSubjectType, "user"), ctxSubjectID, "bob"))
+		w := httptest.NewRecorder()
+		h2.Revoke(w, r)
+		if w.Code != 403 || !strings.Contains(w.Body.String(), "grant refused: user:bob is not allowed can_share_edit") {
+			t.Fatalf("expected 403 with engine message, got %d: %s", w.Code, w.Body)
+		}
+	})
+	t.Run("missing fields are 400", func(t *testing.T) {
+		r := jsonReq("POST", "/pgauthz/v1/grant", `{"user":{"type":"user","id":"dave"}}`)
+		r = r.WithContext(context.WithValue(context.WithValue(r.Context(), ctxSubjectType, "user"), ctxSubjectID, "bob"))
+		w := httptest.NewRecorder()
+		h.Grant(w, r)
+		if w.Code != 400 {
+			t.Fatalf("expected 400, got %d", w.Code)
+		}
+	})
 }

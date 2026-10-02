@@ -221,6 +221,11 @@ echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_model_registry.sql"
 
 echo ""
+echo "==> Running grant rules / grant+revoke checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_grant.sql"
+
+echo ""
 echo "==> Running model_remove_type checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_model_remove_type.sql"

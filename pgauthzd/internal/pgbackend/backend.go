@@ -546,6 +546,64 @@ func (b *Backend) WriteTuplesChecked(ctx context.Context, req authz.CheckedWrite
 	return raw, nil
 }
 
+// Grant — SELECT authz.grant(...). Engine errors are mapped so a
+// refusal (insufficient_privilege) is the caller's 403 with the engine's
+// message ("grant refused: user:bob is not allowed can_share_edit on …"),
+// and a missing grant rule / bad parameter a 400.
+func (b *Backend) Grant(ctx context.Context, req authz.GrantRequest) (bool, error) {
+	var out bool
+	err := b.writeWithRole(ctx, req.Consistency, func(q querier) error {
+		return q.QueryRow(ctx,
+			`SELECT authz.grant($1, $2, $3, $4, $5, $6, $7, $8,
+			    p_user_relation => $9, p_condition => $10, p_condition_context => $11,
+			    p_expires_at => $12::timestamptz, p_request_context => $13)`,
+			req.Store, req.ActorType, req.ActorID, req.UserType, req.UserID, req.Relation,
+			req.ObjectType, req.ObjectID, textOrNil(req.UserRelation), textOrNil(req.Condition),
+			jsonbOrNil(req.ConditionContext), textOrNil(req.ExpiresAt), jsonbOrNil(req.RequestContext),
+		).Scan(&out)
+	})
+	if err != nil {
+		return false, mapSharingError(err)
+	}
+	return out, nil
+}
+
+// mapSharingError: a 42501 from authz.grant / authz.revoke is the ENGINE's
+// refusal ("grant refused: user:bob is not allowed can_share_edit on …") —
+// surface that message alone, not the generic db-role sentinel text.
+func mapSharingError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "42501" {
+		return &authz.SharingRefused{Msg: pgErr.Message}
+	}
+	return mapEngineError(err)
+}
+
+// Revoke — SELECT authz.revoke(...); see Grant.
+func (b *Backend) Revoke(ctx context.Context, req authz.GrantRequest) (bool, error) {
+	var out bool
+	err := b.writeWithRole(ctx, req.Consistency, func(q querier) error {
+		return q.QueryRow(ctx,
+			`SELECT authz.revoke($1, $2, $3, $4, $5, $6, $7, $8,
+			    p_user_relation => $9, p_request_context => $10)`,
+			req.Store, req.ActorType, req.ActorID, req.UserType, req.UserID, req.Relation,
+			req.ObjectType, req.ObjectID, textOrNil(req.UserRelation), jsonbOrNil(req.RequestContext),
+		).Scan(&out)
+	})
+	if err != nil {
+		return false, mapSharingError(err)
+	}
+	return out, nil
+}
+
+// jsonbOrNil passes SQL NULL when the field is absent (engine default NULL).
+func jsonbOrNil(b json.RawMessage) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return []byte(b)
+}
+
 // jsonbOrDefault passes an empty JSONB array when the field is absent, matching
 // the engine function's defaults.
 func jsonbOrDefault(b json.RawMessage) []byte {

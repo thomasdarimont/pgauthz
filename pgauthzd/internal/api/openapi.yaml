@@ -758,6 +758,131 @@ paths:
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
 
+  /pgauthz/v1/grant:
+    post:
+      tags: [native-write]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+        profile: full
+      operationId: grant
+      summary: Share — the authenticated subject grants a relation on an object
+      description: >
+        Sharing as a first-class call. The ENGINE decides whether the actor may
+        hand the relation out, under the store's grant rules
+        (model_add_grant_rule); the actor is the authenticated subject — the
+        body has no actor field on the public listener (a differing `actor` is
+        rejected unless ALLOW_SUBJECT_OVERRIDE; the callback listener takes the
+        upstream's asserted `actor`). Not gated by WRITER_ROLE: end users share.
+        403 with the engine's message when refused, 400 when the relation has
+        no grant rule.
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+      requestBody: { $ref: '#/components/requestBodies/Grant' }
+      responses:
+        '200': { $ref: '#/components/responses/GrantOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /stores/{store}/pgauthz/v1/grant:
+    post:
+      tags: [native-write]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+        profile: full
+      operationId: grantStore
+      summary: Share, store-scoped
+      description: >
+        Sharing as a first-class call. The ENGINE decides whether the actor may
+        hand the relation out, under the store's grant rules
+        (model_add_grant_rule); the actor is the authenticated subject — the
+        body has no actor field on the public listener (a differing `actor` is
+        rejected unless ALLOW_SUBJECT_OVERRIDE; the callback listener takes the
+        upstream's asserted `actor`). Not gated by WRITER_ROLE: end users share.
+        403 with the engine's message when refused, 400 when the relation has
+        no grant rule.
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+      requestBody: { $ref: '#/components/requestBodies/Grant' }
+      responses:
+        '200': { $ref: '#/components/responses/GrantOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/revoke:
+    post:
+      tags: [native-write]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+        profile: full
+      operationId: revoke
+      summary: Unshare — the authenticated subject revokes a relation on an object
+      description: >
+        Sharing as a first-class call. The ENGINE decides whether the actor may
+        hand the relation out, under the store's grant rules
+        (model_add_grant_rule); the actor is the authenticated subject — the
+        body has no actor field on the public listener (a differing `actor` is
+        rejected unless ALLOW_SUBJECT_OVERRIDE; the callback listener takes the
+        upstream's asserted `actor`). Not gated by WRITER_ROLE: end users share.
+        403 with the engine's message when refused, 400 when the relation has
+        no grant rule.
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+      requestBody: { $ref: '#/components/requestBodies/Grant' }
+      responses:
+        '200': { $ref: '#/components/responses/GrantOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /stores/{store}/pgauthz/v1/revoke:
+    post:
+      tags: [native-write]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+        profile: full
+      operationId: revokeStore
+      summary: Unshare, store-scoped
+      description: >
+        Sharing as a first-class call. The ENGINE decides whether the actor may
+        hand the relation out, under the store's grant rules
+        (model_add_grant_rule); the actor is the authenticated subject — the
+        body has no actor field on the public listener (a differing `actor` is
+        rejected unless ALLOW_SUBJECT_OVERRIDE; the callback listener takes the
+        upstream's asserted `actor`). Not gated by WRITER_ROLE: end users share.
+        403 with the engine's message when refused, 400 when the relation has
+        no grant rule.
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+      requestBody: { $ref: '#/components/requestBodies/Grant' }
+      responses:
+        '200': { $ref: '#/components/responses/GrantOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+
   /pgauthz/v1/write-checked:
     post:
       tags: [native-write]
@@ -1162,6 +1287,11 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/WriteCheckedRequest' }
+    Grant:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/GrantRequest' }
     RecordEvents:
       required: true
       content:
@@ -1281,6 +1411,14 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/DeleteResponse' }
+    GrantOK:
+      description: The grant / revoke was decided and applied (or was already so).
+      headers:
+        X-PGAuthz-Revision: { $ref: '#/components/headers/XPGAuthzRevision' }
+        X-PGAuthz-Revision-Status: { $ref: '#/components/headers/XPGAuthzRevisionStatus' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/GrantResponse' }
     WriteCheckedOK:
       description: >
         The engine's write_tuples_checked JSON verbatim — applied (bool),
@@ -1772,6 +1910,46 @@ components:
         consistency: { $ref: '#/components/schemas/Consistency' }
         performed_by: { $ref: '#/components/schemas/PerformedBy' }
       required: [user]
+    GrantRequest:
+      type: object
+      properties:
+        user: { $ref: '#/components/schemas/Subject' }
+        user_relation:
+          type: string
+          description: Userset grantee (e.g. `member` for team#member).
+        relation: { type: string }
+        object: { $ref: '#/components/schemas/Resource' }
+        condition:
+          type: string
+          description: Condition name to bind to the granted tuple (grant only).
+        condition_context:
+          type: object
+          additionalProperties: true
+        expires_at:
+          type: string
+          format: date-time
+          description: Expiry of the granted tuple (grant only).
+        context:
+          type: object
+          additionalProperties: true
+          description: Request context for the ACTOR's check (conditions, gates).
+        consistency: { $ref: '#/components/schemas/Consistency' }
+        actor:
+          type: string
+          description: >
+            Callback listener only: the upstream's asserted actor. On the
+            public listener the actor is the token subject; a differing value
+            is rejected unless ALLOW_SUBJECT_OVERRIDE.
+      required: [user, relation, object]
+    GrantResponse:
+      type: object
+      properties:
+        store: { type: string }
+        granted: { type: boolean, description: "grant: true = written, false = already present" }
+        revoked: { type: boolean, description: "revoke: true = deleted, false = no such tuple" }
+        actor: { $ref: '#/components/schemas/Subject' }
+        revision: { type: string }
+      required: [store, actor]
     WriteCheckedRequest:
       type: object
       properties:

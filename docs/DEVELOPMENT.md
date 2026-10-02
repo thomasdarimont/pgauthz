@@ -54,7 +54,8 @@ controlled through these application roles:
 | `authz_reader` | `check_access`, `check_access_with_context`, `list_objects`, `list_subjects`, `list_actions`, `validate_condition`, `explain_access` | — |
 | `authz_contextual_reader` | `check_access_with_contextual_tuples`, `check_access_with_contextual_tuples_jsonb` (inject ephemeral tuples — grant only to trusted PDP callers, NOT to roles reachable by untrusted clients) | — |
 | `authz_recorder` | `record_event`, `record_events_jsonb`, `reserve_event` — feed the action log ([ADR 0012](adr/0012-action-log.md)). PEP-only: recorded events drive temporal gates | — |
-| `authz_writer` | `write_tuple`, `delete_tuple`, `write_tuples`, `delete_tuples`, `write_tuples_jsonb`, `delete_tuples_jsonb`, `delete_user_tuples`, `write_tuples_checked` | `authz_reader`, `authz_recorder` |
+| `authz_sharer` | `grant`, `revoke` — share on behalf of an actor, decided by the store's grant rules ([MODEL_DESIGN → Grant rules](MODEL_DESIGN.md#grant-rules-who-may-share)). The role for an application tier that lets END USERS share: no `write_tuple` | — |
+| `authz_writer` | `write_tuple`, `delete_tuple`, `write_tuples`, `delete_tuples`, `write_tuples_jsonb`, `delete_tuples_jsonb`, `delete_user_tuples`, `write_tuples_checked` | `authz_reader`, `authz_recorder`, `authz_sharer` |
 | `authz_admin` | `create_store`, `retire_store`, `delete_store`, `model_register_type`, `model_register_relation`, `model_add_rule`, `model_remove_rule`, `model_remove_rules`, `add_gate`, `drop_gate`, `grant_recorder_actions`, `revoke_recorder_actions`, `find_redundant_tuples`, event partitions/retention (`ensure_event_partitions`, `drop_event_partitions_before`, `purge_events`), manage `namespace_access` table | `authz_writer`, `authz_auditor` |
 
 `authz_auditor` is a peer of `authz_reader`, not part of the linear chain.
@@ -829,6 +830,8 @@ subject is recorded as the audit author (`performed_by`); an explicit
 | `POST /pgauthz/v1/delete` | `{"tuples":[…]}` (batch delete) | `{"store":…,"deleted":N}` |
 | `POST /pgauthz/v1/delete-user` | `{"user":{"type","id"}}` (offboarding) | `{"store":…,"deleted":N}` |
 | `POST /pgauthz/v1/write-checked` | `{"preconditions":[…],"deletes":[…],"writes":[…]}` (conditional/atomic — see below) | engine JSONB verbatim, e.g. `{"deleted":1,"written":1}` |
+| `POST /pgauthz/v1/grant` | `{"user":{"type","id"},"relation","object":{"type","id"}}` + optional `user_relation`, `condition`, `condition_context`, `expires_at`, `context` (the actor's request context) — sharing; the **actor is the token subject** (no actor field on the public listener), decided by the store's grant rules, no `WRITER_ROLE` needed | `{"store":…,"granted":bool,"actor":{…}}`; 403 with the engine's reason when refused, 400 when the relation has no grant rule |
+| `POST /pgauthz/v1/revoke` | same body (minus condition/expiry) | `{"store":…,"revoked":bool,"actor":{…}}` |
 
 A **tuple** element is `{user_type, user_id, relation, object_type, object_id}`
 plus optional `user_relation`, `condition_name`, `context`, and `expires_at`.

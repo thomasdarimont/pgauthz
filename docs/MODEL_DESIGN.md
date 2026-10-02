@@ -1301,6 +1301,45 @@ initiate queries against which types.
 
 ## 11. Revoking Access and Maintenance
 
+### Grant Rules: Who May Share
+
+"Can view" and "can change who views" must never be the same question. The
+sharing policy is model data: a **grant rule** per `(type, relation)` names
+the relation the actor must be allowed on the same object to hand that
+relation out, and optionally a different one to take it back.
+
+```sql
+SELECT authz.model_add_rule('docs', 'document', 'can_share_view', 'computed', 'editor');
+SELECT authz.model_add_rule('docs', 'document', 'can_share_view', 'computed', 'owner');
+SELECT authz.model_add_rule('docs', 'document', 'can_share_edit', 'computed', 'owner');
+
+SELECT authz.model_add_grant_rule('docs', 'document', 'viewer', 'can_share_view');
+SELECT authz.model_add_grant_rule('docs', 'document', 'editor', 'can_share_edit', p_requires_revoke => 'owner');
+```
+
+`authz.grant(store, actor_type, actor_id, user_type, user_id, relation,
+object_type, object_id, …)` then does what the application used to spell out
+as a `write_tuples_checked` precondition plus a write: look the rule up,
+check the actor for the required relation on that object (full decision,
+under the object lock), write the tuple attributed to the actor. `revoke`
+is the counterpart. What the rules give you:
+
+- **Fail-closed by construction.** A relation with no grant rule cannot be
+  granted through `grant` at all, and a rule may not require the relation
+  itself (`viewer` requires `viewer` would let every viewer re-share).
+- **Reviewable.** `describe_model` renders `# grant requires can_share_edit
+  (revoke requires owner)` under the relation; the registry exports and
+  applies the rules with the model; the audit table answers "who could
+  share on Tuesday".
+- **Narrow trust.** The `authz_sharer` role holds only `grant` and `revoke`.
+
+Patterns: "grant no more than you hold" is a required relation that implies
+the granted one (`can_share_edit = owner`, and `editor` is implied by
+`owner`); "editors may share, only owners may unshare" is `p_requires_revoke`;
+forbidding self-grant is an exclusion on the required relation. Object
+wildcards stay a writer-role `write_tuple`; multi-tuple invariants and
+delegation chains stay `write_tuples_checked`.
+
 ### Deleting Tuples
 
 Remove a specific tuple to revoke access:

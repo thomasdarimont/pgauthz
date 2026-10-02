@@ -9,6 +9,25 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Sharing as a first-class API: `authz.grant` / `authz.revoke` + grant
+  rules** (migration 0017). A grant rule (`model_add_grant_rule(store, type,
+  relation, requires, p_requires_revoke)`) declares which relation an actor
+  must be allowed on the *same object* to hand a relation out; `authz.grant
+  (store, actor_type, actor_id, user_type, user_id, relation, object_type,
+  object_id, …)` looks it up, runs the actor's full check under the
+  per-object lock `write_tuples_checked` uses, and writes the tuple with
+  `performed_by` = the actor (`revoke` likewise). Fail-closed by
+  construction: no rule → refused, a rule may not require the relation
+  itself, object wildcards are refused; refusals name the missing right and
+  any missing request context. Rendered by `describe_model` (`# grant
+  requires …`), exported/applied by the registry (checksum-neutral when
+  absent), audited (`grant_rules_audit`), removed with their type by
+  `model_remove_type`. New DB role **`authz_sharer`** (these two functions
+  only; `authz_writer` inherits it). pgauthzd: `POST /pgauthz/v1/grant` and
+  `/revoke` — the actor is the token subject, no `WRITER_ROLE` needed, 403
+  with the engine's reason when refused; OPA ops `grant` / `revoke`. New
+  suite `tests/sql/tests_grant.sql`. (`grant`/`revoke` are SQL reserved
+  words: call them schema-qualified, as every authz function is.)
 - **`authz.model_remove_type(store, type, p_force, p_performed_by)`** — the
   missing counterpart of `model_register_type`. Removes a type with its rules,
   the restrictions that name it on either side and its tuple partition; fails

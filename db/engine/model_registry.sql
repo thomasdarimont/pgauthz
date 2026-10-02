@@ -57,7 +57,8 @@ LANGUAGE sql IMMUTABLE AS $$
     -- as before the key existed: registry versions published earlier stay in
     -- sync and show no drift after the upgrade.
     SELECT encode(sha256(convert_to((
-        jsonb_set(CASE WHEN COALESCE(p_def->'gates', '[]'::jsonb) = '[]'::jsonb THEN p_def - 'gates' ELSE p_def END,
+        jsonb_set((CASE WHEN COALESCE(p_def->'gates', '[]'::jsonb) = '[]'::jsonb THEN p_def - 'gates' ELSE p_def END)
+                  - CASE WHEN COALESCE(p_def->'grant_rules', '[]'::jsonb) = '[]'::jsonb THEN 'grant_rules' ELSE '' END,
                   '{types}', (
             SELECT COALESCE(jsonb_agg(t - 'hash_modulus' ORDER BY t->>'name'),
                             '[]'::jsonb)
@@ -182,6 +183,21 @@ BEGIN
               FROM authz.model_gates g
               JOIN authz.types     ot ON ot.id = g.object_type
               JOIN authz.relations rl ON rl.id = g.relation
+             WHERE g.store_id = v_store_id), '[]'::jsonb),
+        -- Grant rules (migration 0017): dropped from the checksum when empty,
+        -- like gates, so earlier versions stay in sync.
+        'grant_rules', COALESCE((
+            SELECT jsonb_agg(jsonb_build_object(
+                       'object_type',     ot.name,
+                       'relation',        rl.name,
+                       'requires',        rq.name,
+                       'requires_revoke', rr.name     -- null when same as requires
+                   ) ORDER BY ot.name, rl.name)
+              FROM authz.grant_rules g
+              JOIN authz.types     ot ON ot.id = g.object_type
+              JOIN authz.relations rl ON rl.id = g.relation
+              JOIN authz.relations rq ON rq.id = g.requires
+         LEFT JOIN authz.relations rr ON rr.id = g.requires_revoke
              WHERE g.store_id = v_store_id), '[]'::jsonb)
     );
 END;
@@ -430,6 +446,21 @@ BEGIN
             v_row->>'allowed_user_type', v_row->>'allowed_user_relation',
             COALESCE((v_row->>'allow_wildcard')::boolean, false),
             v_row->>'condition');
+    END LOOP;
+
+    -- Grant rules (migration 0017): exact diff. Stale ones go first so a
+    -- stale relation they reference can be removed below; desired ones are
+    -- upserted (no-op when unchanged, so the history stays quiet).
+    DELETE FROM authz.grant_rules g
+     USING authz.types ot, authz.relations rl
+     WHERE g.store_id = v_store_id AND ot.id = g.object_type AND rl.id = g.relation
+       AND NOT EXISTS (
+           SELECT 1 FROM jsonb_array_elements(COALESCE(v_def->'grant_rules', '[]'::jsonb)) x
+            WHERE x->>'object_type' = ot.name AND x->>'relation' = rl.name);
+    FOR v_row IN SELECT * FROM jsonb_array_elements(COALESCE(v_def->'grant_rules', '[]'::jsonb))
+    LOOP
+        PERFORM authz.model_add_grant_rule(p_store, v_row->>'object_type', v_row->>'relation',
+                                           v_row->>'requires', v_row->>'requires_revoke');
     END LOOP;
 
     -- Stale relations: removable only when nothing references them anymore.

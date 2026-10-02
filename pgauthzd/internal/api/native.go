@@ -600,3 +600,103 @@ func (h *Handler) Watch(w http.ResponseWriter, r *http.Request) {
 	}
 	writeRawJSON(w, http.StatusOK, out)
 }
+
+// grantBody is the native sharing request (migration 0017). There is NO
+// actor field on purpose: on the public listener the actor is the
+// authenticated subject (the token), so a caller cannot share "as" someone
+// else; on the service-token callback listener the trusted upstream asserts
+// it through the usual performed_by rules (resolveActor), which is why that
+// field exists here under the name "actor".
+type grantBody struct {
+	User             Subject         `json:"user"`
+	UserRelation     string          `json:"user_relation,omitempty"`
+	Relation         string          `json:"relation"`
+	Object           Resource        `json:"object"`
+	Condition        string          `json:"condition,omitempty"`
+	ConditionContext json.RawMessage `json:"condition_context,omitempty"`
+	ExpiresAt        string          `json:"expires_at,omitempty"`
+	Context          json.RawMessage `json:"context,omitempty"` // the actor's request context
+	Consistency      string          `json:"consistency,omitempty"`
+	Actor            string          `json:"actor,omitempty"` // callback listener only (trusted PEP)
+}
+
+// Grant — POST /pgauthz/v1/grant: the authenticated subject shares a
+// relation on an object. Gated by the ENGINE's grant rules (who may hand this
+// relation out), not by WRITER_ROLE: end users share; the writer role is for
+// backends that write anything. The instance must be writable (full
+// profile); the per-app DB role from the token still scopes namespaces.
+func (h *Handler) Grant(w http.ResponseWriter, r *http.Request) {
+	h.grantOrRevoke(w, r, false)
+}
+
+// Revoke — POST /pgauthz/v1/revoke: the counterpart of Grant.
+func (h *Handler) Revoke(w http.ResponseWriter, r *http.Request) {
+	h.grantOrRevoke(w, r, true)
+}
+
+func (h *Handler) grantOrRevoke(w http.ResponseWriter, r *http.Request, revoke bool) {
+	if !h.cfg.Writable() {
+		writeError(w, http.StatusForbidden,
+			"this instance is read-only (decision-only profile); sharing requires the full profile")
+		return
+	}
+	nw, ok := h.rawWrite.(authz.NativeWriter)
+	if !ok {
+		writeError(w, http.StatusNotImplemented,
+			"the pgauthz sharing API requires the full profile (writer DB role)")
+		return
+	}
+	var req grantBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.User.Type == "" || req.User.ID == "" || req.Relation == "" || req.Object.Type == "" || req.Object.ID == "" {
+		writeBadRequest(w, "user.type, user.id, relation, object.type and object.id are required")
+		return
+	}
+	store, ok := h.storeChecked(w, r)
+	if !ok {
+		return
+	}
+	// The actor: token subject on the public listener (a differing body value
+	// is rejected unless ALLOW_SUBJECT_OVERRIDE), the asserted subject on the
+	// callback listener. Same trust rules as performed_by on every write.
+	actorID, ok := h.resolveActor(w, r, req.Actor, "actor")
+	if !ok {
+		return
+	}
+	actorType, jwtSubject := SubjectFromContext(r.Context())
+	if actorID != jwtSubject || actorType == "" {
+		// An asserted actor carries no type of its own: it is a subject of the
+		// instance's default subject type, like every token subject.
+		actorType = h.cfg.SubjectTypeDefault
+	}
+	greq := authz.GrantRequest{
+		Store: store, ActorType: actorType, ActorID: actorID,
+		UserType: req.User.Type, UserID: req.User.ID, UserRelation: req.UserRelation,
+		Relation: req.Relation, ObjectType: req.Object.Type, ObjectID: req.Object.ID,
+		Condition: req.Condition, ConditionContext: req.ConditionContext, ExpiresAt: req.ExpiresAt,
+		RequestContext: req.Context, Consistency: req.Consistency,
+	}
+	var (
+		changed bool
+		err     error
+		key     = "granted"
+	)
+	if revoke {
+		changed, err = nw.Revoke(r.Context(), greq)
+		key = "revoked"
+	} else {
+		changed, err = nw.Grant(r.Context(), greq)
+	}
+	if err != nil {
+		writeWriteError(w, err)
+		return
+	}
+	resp := map[string]any{"store": store, key: changed, "actor": map[string]string{"type": actorType, "id": actorID}}
+	if rev := h.mintRevision(w, r); rev != "" {
+		resp["revision"] = rev
+	}
+	writeJSON(w, http.StatusOK, resp)
+}

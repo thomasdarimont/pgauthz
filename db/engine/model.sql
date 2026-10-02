@@ -202,7 +202,9 @@ BEGIN
     PERFORM set_config('authz.performed_by', COALESCE(p_performed_by, ''), true);
     v_tuples := authz._rls_delete_type_tuples(v_store_id, v_type_id);
 
-    -- 3. Model rows that mention the type (both logged to models_audit).
+    -- 3. Model rows that mention the type (logged to their audit tables).
+    DELETE FROM authz.grant_rules g
+     WHERE g.store_id = v_store_id AND g.object_type = v_type_id;
     DELETE FROM authz.type_restrictions x
      WHERE x.store_id = v_store_id
        AND (x.object_type = v_type_id OR x.allowed_user_type = v_type_id);
@@ -244,6 +246,79 @@ BEGIN
         'rules_removed',        v_rules,
         'restrictions_removed', v_restrictions,
         'partition_dropped',    v_part_dropped);
+END;
+$$;
+
+------------------------------------------------------------------------
+-- model_add_grant_rule: declare who may grant (and revoke) a relation on a
+-- type through authz.grant / authz.revoke (migration 0017). The actor
+-- must be ALLOWED p_requires on the same object to grant p_relation, and
+-- p_requires_revoke (default: p_requires) to revoke it. Upsert: re-adding
+-- changes the requirements in place (audited as DELETE + INSERT).
+--
+-- The sharing policy thereby lives in the model — rendered by
+-- describe_model, versioned through the registry — instead of in every
+-- application call site. Relations without a rule cannot be granted via
+-- authz.grant at all (the writer role's write_tuple is unaffected).
+--
+-- Examples:
+--   SELECT authz.model_add_grant_rule('docs', 'document', 'viewer', 'can_share_view');
+--   SELECT authz.model_add_grant_rule('docs', 'document', 'editor', 'can_share_edit',
+--                                      p_requires_revoke => 'owner');
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.model_add_grant_rule(
+    p_store           text,
+    p_object_type     text,
+    p_relation        text,
+    p_requires        text,
+    p_requires_revoke text DEFAULT NULL
+) RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store);
+    v_type     integer := authz._t(v_store_id, p_object_type);
+    v_rel      integer := authz._r(v_store_id, p_relation);
+    v_req      integer := authz._r(v_store_id, p_requires);
+    v_req_rev  integer := CASE WHEN p_requires_revoke IS NULL THEN NULL
+                               ELSE authz._r(v_store_id, p_requires_revoke) END;
+    v_id       integer;
+BEGIN
+    -- A rule "granting X requires X" would let anyone who holds X hand it
+    -- on without a separate sharing right: almost always a mistake, and
+    -- trivially expressible on purpose with a computed relation.
+    IF v_req = v_rel THEN
+        RAISE EXCEPTION 'model_add_grant_rule: % on % cannot require itself — use a dedicated sharing relation (e.g. can_share_%)',
+            p_relation, p_object_type, p_relation;
+    END IF;
+    INSERT INTO authz.grant_rules (store_id, object_type, relation, requires, requires_revoke)
+    VALUES (v_store_id, v_type, v_rel, v_req, v_req_rev)
+    ON CONFLICT (store_id, object_type, relation) DO UPDATE
+        SET requires = EXCLUDED.requires, requires_revoke = EXCLUDED.requires_revoke
+      WHERE (authz.grant_rules.requires, authz.grant_rules.requires_revoke)
+            IS DISTINCT FROM (EXCLUDED.requires, EXCLUDED.requires_revoke)
+    RETURNING id INTO v_id;
+    IF v_id IS NULL THEN
+        SELECT g.id INTO v_id FROM authz.grant_rules g
+         WHERE g.store_id = v_store_id AND g.object_type = v_type AND g.relation = v_rel;
+    END IF;
+    RETURN v_id;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION authz.model_drop_grant_rule(
+    p_store       text,
+    p_object_type text,
+    p_relation    text
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store);
+BEGIN
+    DELETE FROM authz.grant_rules g
+     WHERE g.store_id = v_store_id
+       AND g.object_type = authz._t(v_store_id, p_object_type)
+       AND g.relation    = authz._r(v_store_id, p_relation);
+    RETURN FOUND;
 END;
 $$;
 
@@ -815,6 +890,17 @@ BEGIN
                 END LOOP;
                 v_out := v_out || '    define ' || v_rel.name || ': ' || v_expr || E'\n'
                          || authz._describe_gates(v_store_id, v_type.id, v_rel.id, false);
+                -- Grant rule (migration 0017): who may hand this relation out.
+                SELECT '    # grant requires ' || rq.name
+                       || CASE WHEN g.requires_revoke IS NOT NULL THEN ' (revoke requires ' || rr.name || ')' ELSE '' END || E'\n'
+                  INTO v_group
+                  FROM authz.grant_rules g
+                  JOIN authz.relations rq ON rq.id = g.requires
+             LEFT JOIN authz.relations rr ON rr.id = g.requires_revoke
+                 WHERE g.store_id = v_store_id AND g.object_type = v_type.id AND g.relation = v_rel.id;
+                IF v_group IS NOT NULL THEN
+                    v_out := v_out || v_group;
+                END IF;
             END LOOP;
         END IF;
         -- Gates on relations that have no rules on this type (declared-vocabulary

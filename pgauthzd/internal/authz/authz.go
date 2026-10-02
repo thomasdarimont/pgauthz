@@ -143,6 +143,44 @@ type NativeWriter interface {
 	// WriteTuplesChecked applies preconditions + deletes + writes atomically
 	// (optimistic concurrency); returns the engine's JSONB result verbatim.
 	WriteTuplesChecked(ctx context.Context, req CheckedWriteRequest) (json.RawMessage, error)
+	// Grant / Revoke: sharing as a first-class call (migration
+	// 0017). The ENGINE decides whether the actor may hand the relation out,
+	// under the store's grant rules; the daemon only supplies the actor
+	// (the authenticated subject). Returns write_tuple's / delete_tuple's
+	// boolean (true = written resp. deleted; false = already so).
+	Grant(ctx context.Context, req GrantRequest) (bool, error)
+	Revoke(ctx context.Context, req GrantRequest) (bool, error)
+}
+
+// SharingRefused: the engine refused authz.grant / authz.revoke because the
+// actor lacks the grant rule's required relation (or the relation has no
+// grant rule). Is(ErrForbiddenRole) so the handler answers 403; Error() is
+// the engine's own message, which names the missing right.
+type SharingRefused struct{ Msg string }
+
+func (e *SharingRefused) Error() string        { return e.Msg }
+func (e *SharingRefused) Is(target error) bool { return target == ErrForbiddenRole }
+
+// GrantRequest is one authz.grant / authz.revoke call. Actor is who is
+// sharing (the authenticated subject on the public listener); User/Relation/
+// Object the tuple; Condition, ConditionContext and ExpiresAt (grant only)
+// pass through to write_tuple; RequestContext feeds the actor's check
+// (conditions, gates).
+type GrantRequest struct {
+	Store            string
+	ActorType        string
+	ActorID          string
+	UserType         string
+	UserID           string
+	UserRelation     string
+	Relation         string
+	ObjectType       string
+	ObjectID         string
+	Condition        string
+	ConditionContext json.RawMessage
+	ExpiresAt        string // RFC 3339 or empty
+	RequestContext   json.RawMessage
+	Consistency      string
 }
 
 // WriteRequest is a batch tuple write/delete. Tuples is the JSONB array in the

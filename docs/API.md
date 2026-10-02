@@ -39,6 +39,7 @@ always uses explicit separate parameters for type, ID, and relation.
   - [delete_tuple — Remove a relationship tuple](#delete_tuple--remove-a-relationship-tuple)
   - [write_tuples / delete_tuples — Batch operations](#write_tuples--delete_tuples--batch-operations)
   - [delete_user_tuples — Remove all tuples for a user](#delete_user_tuples--remove-all-tuples-for-a-user)
+  - [grant / revoke — Share on behalf of an actor](#grant--revoke--share-on-behalf-of-an-actor)
   - [model_remove_type — Remove a type and everything about it](#model_remove_type--remove-a-type-and-everything-about-it)
   - [audit_check_access — Point-in-time permission check](#audit_check_access--point-in-time-permission-check)
   - [audit_list_user / audit_list_object — Audit trail queries](#audit_list_user--audit_list_object--audit-trail-queries)
@@ -355,6 +356,43 @@ SELECT authz.delete_user_tuples('demo', 'internal_user', 'grace');
 SELECT authz.delete_user_tuples('demo', 'internal_user', 'grace',
     p_performed_by => 'offboarding_service');
 ```
+
+### grant / revoke — Share on behalf of an actor
+
+"Bob gives Dave edit access to the plan" as one call, allowed only if the
+model says Bob may. A **grant rule** declares, per type and relation, which
+relation the actor must be allowed on the *same object* to grant it (and,
+optionally, a different one to revoke it). `authz.grant` looks the rule up,
+runs the actor's full check (graph, conditions with `p_request_context`,
+gates) under the same per-object lock `write_tuples_checked` uses, and
+writes the tuple with `performed_by` set to the actor. A relation without a
+grant rule cannot be granted this way at all; the writer role's
+`write_tuple` is unaffected.
+
+```sql
+-- the sharing policy, once, in the model
+SELECT authz.model_add_grant_rule('docs', 'document', 'viewer', 'can_share_view');
+SELECT authz.model_add_grant_rule('docs', 'document', 'editor', 'can_share_edit', p_requires_revoke => 'owner');
+
+-- actor type/id first, then the tuple exactly as write_tuple takes it
+SELECT authz.grant('docs',  'user', 'bob', 'user', 'dave',  'editor', 'document', 'plan');
+-- ERROR: grant refused: user:bob is not allowed can_share_edit on document:plan   (SQLSTATE 42501)
+SELECT authz.grant('docs',  'user', 'bob', 'user', 'carol', 'viewer', 'document', 'plan');   -- true
+SELECT authz.grant('docs',  'user', 'bob', 'team', 'mkt',   'viewer', 'document', 'plan',
+    p_user_relation => 'member', p_expires_at => now() + interval '7 days');            -- usersets, expiry pass through
+SELECT authz.revoke('docs', 'user', 'bob', 'user', 'carol', 'viewer', 'document', 'plan');  -- true
+```
+
+Returns `write_tuple`'s / `delete_tuple`'s boolean. A refusal names the
+missing right and, for a conditional sharing right, the request-context keys
+that would settle it. Object wildcards are refused (a per-object check cannot
+cover "every object"). `grant` and `revoke` are SQL reserved words: always
+call them schema-qualified, as every authz function is. The dedicated
+`authz_sharer` role holds exactly these two functions, so an application tier
+that lets end users share needs no `write_tuple`. Over HTTP:
+`POST /pgauthz/v1/grant` and `/revoke`, actor = the token subject.
+`describe_model` renders the rules as `# grant requires …` lines and the
+registry versions them with the model.
 
 ### model_remove_type — Remove a type and everything about it
 

@@ -300,3 +300,38 @@ CREATE OR REPLACE TRIGGER trg_model_gates_audit
 CREATE OR REPLACE TRIGGER trg_model_gates_audit_block_dml
     BEFORE UPDATE OR DELETE ON authz.model_gates_audit
     FOR EACH ROW EXECUTE FUNCTION authz._audit_block_dml();
+
+-- Grant-rule history (migration 0017): same shape as _audit_gate — an UPDATE
+-- (model_add_grant_rule upsert) is split into DELETE(old) + INSERT(new).
+CREATE OR REPLACE FUNCTION authz._audit_grant_rule() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_performed_by text;
+BEGIN
+    v_performed_by := COALESCE(
+        NULLIF(current_setting('authz.performed_by', true), ''),
+        authz._effective_role()
+    );
+    IF TG_OP IN ('UPDATE', 'DELETE') THEN
+        INSERT INTO authz.grant_rules_audit (
+            action, performed_at, performed_by, grant_rule_id, store_id, object_type, relation, requires, requires_revoke
+        ) VALUES
+            ('DELETE', transaction_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.object_type, OLD.relation, OLD.requires, OLD.requires_revoke);
+    END IF;
+    IF TG_OP IN ('UPDATE', 'INSERT') THEN
+        INSERT INTO authz.grant_rules_audit (
+            action, performed_at, performed_by, grant_rule_id, store_id, object_type, relation, requires, requires_revoke
+        ) VALUES
+            ('INSERT', transaction_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.object_type, NEW.relation, NEW.requires, NEW.requires_revoke);
+    END IF;
+    RETURN COALESCE(NEW, OLD);
+END;
+$$;
+
+CREATE OR REPLACE TRIGGER trg_grant_rules_audit
+    AFTER INSERT OR UPDATE OR DELETE ON authz.grant_rules
+    FOR EACH ROW EXECUTE FUNCTION authz._audit_grant_rule();
+
+CREATE OR REPLACE TRIGGER trg_grant_rules_audit_block_dml
+    BEFORE UPDATE OR DELETE ON authz.grant_rules_audit
+    FOR EACH ROW EXECUTE FUNCTION authz._audit_block_dml();

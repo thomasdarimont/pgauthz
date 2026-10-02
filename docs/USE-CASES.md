@@ -22,7 +22,7 @@ combine several.
   - [Conditional object wildcard, intersection, detailed check — deny from unmanaged devices, fail closed when you don't know](#conditional-object-wildcard-intersection-detailed-check--deny-from-unmanaged-devices-fail-closed-when-you-dont-know)
   - [Rule groups: intersection and exclusion — delete your own items unless you're admin; blocked members can't edit](#rule-groups-intersection-and-exclusion--delete-your-own-items-unless-youre-admin-blocked-members-cant-edit)
   - [Object wildcard — an auditor who sees every document, now and in future](#object-wildcard--an-auditor-who-sees-every-document-now-and-in-future)
-  - [Checked writes — who may share, and never more than they hold](#checked-writes--who-may-share-and-never-more-than-they-hold)
+  - [Grant rules — who may share, and never more than they hold](#grant-rules--who-may-share-and-never-more-than-they-hold)
   - [Marker tuples and exclusion — archived, under legal hold, draft only](#marker-tuples-and-exclusion--archived-under-legal-hold-draft-only)
   - [Object wildcard, bulk delete, expiry — suspended, offboarded, break-glass](#object-wildcard-bulk-delete-expiry--suspended-offboarded-break-glass)
   - [Search API as a JOIN — show me only what I may see](#search-api-as-a-join--show-me-only-what-i-may-see)
@@ -531,67 +531,62 @@ SELECT authz.write_tuple('demo', 'internal_user', 'nadia', 'viewer', 'document',
 ```
 Shown in: [MODEL_DESIGN → Object wildcards](MODEL_DESIGN.md#object-wildcards-privileged-grants).
 
-### Checked writes — who may share, and never more than they hold
+### Grant rules — who may share, and never more than they hold
 
 **Scenario:** Editors may share a document for viewing; only the owner may
 make someone an editor. "Can view" and "can change who views" must never be
 the same question, and a share must be refused if the sharer lost the right
 a moment earlier.
 
-**Solution:** Sharing rights are relations like any other, and the
-enforcement point writes the share **through a precondition** that checks
-the sharer's right inside the same transaction as the write.
+**Solution:** The sharing policy is part of the model: a **grant rule** per
+relation names the right the actor must hold on the same object. The
+application then says "bob gives dave editor on the plan" in one call, and
+the engine decides, writes, and attributes the change to bob.
 
-**1. Sharing rights are computed relations.** `can_share_view` and
-`can_share_edit` are separate from `can_view`; the owner holds both, an
-editor only the first.
+**1. Sharing rights are relations, and grant rules point at them.**
+`can_share_view` and `can_share_edit` are separate from `can_view`; the
+owner holds both, an editor only the first. The grant rules say which right
+gates which relation (and, optionally, a different right for revoking).
 
 ```sql
-SELECT authz.model_add_rule('docs', 'document', 'can_view',       'computed', 'viewer');
-SELECT authz.model_add_rule('docs', 'document', 'can_view',       'computed', 'editor');
-SELECT authz.model_add_rule('docs', 'document', 'can_view',       'computed', 'owner');
 SELECT authz.model_add_rule('docs', 'document', 'can_share_view', 'computed', 'editor');
 SELECT authz.model_add_rule('docs', 'document', 'can_share_view', 'computed', 'owner');
 SELECT authz.model_add_rule('docs', 'document', 'can_share_edit', 'computed', 'owner');
+
+SELECT authz.model_add_grant_rule('docs', 'document', 'viewer', 'can_share_view');
+SELECT authz.model_add_grant_rule('docs', 'document', 'editor', 'can_share_edit', p_requires_revoke => 'owner');
 ```
 
-**2. The share is a checked write.** `write_tuples_checked` takes
-preconditions and writes; a precondition with `"match": "allowed"` runs a
-full access check for the *sharer*, and the write happens only if it
-passes. Everything runs in one transaction under a lock on the object, so a
-right revoked concurrently is seen.
+**2. Sharing is one call: actor first, then the tuple.** `authz.grant`
+looks the rule up, checks the actor for the required right on that object
+inside the same transaction and lock, and writes the tuple with the actor
+as `performed_by`. A right revoked concurrently is seen.
 
 ```sql
--- bob (an editor) shares view access with carol: allowed
-SELECT authz.write_tuples_checked('docs',
-  p_preconditions => '[{"match": "allowed", "user_type": "user", "user_id": "bob",
-                        "relation": "can_share_view", "object_type": "document", "object_id": "plan"}]',
-  p_writes        => '[{"user_type": "user", "user_id": "carol", "relation": "viewer",
-                        "object_type": "document", "object_id": "plan"}]',
-  p_performed_by  => 'bob');
--- {"deleted": 0, "written": 1}
-
--- bob tries to make dave an editor: the precondition fails, nothing is written
-SELECT authz.write_tuples_checked('docs',
-  p_preconditions => '[{"match": "allowed", "user_type": "user", "user_id": "bob",
-                        "relation": "can_share_edit", "object_type": "document", "object_id": "plan"}]',
-  p_writes        => '[{"user_type": "user", "user_id": "dave", "relation": "editor",
-                        "object_type": "document", "object_id": "plan"}]',
-  p_performed_by  => 'bob');
--- ERROR: Write precondition failed: allowed {... "relation": "can_share_edit" ...}
+SELECT authz.grant('docs', 'user', 'bob', 'user', 'carol', 'viewer', 'document', 'plan');   -- true: bob is an editor
+SELECT authz.grant('docs', 'user', 'bob', 'user', 'dave',  'editor', 'document', 'plan');
+-- ERROR: grant refused: user:bob is not allowed can_share_edit on document:plan
+SELECT authz.grant('docs', 'user', 'alice', 'user', 'dave', 'editor', 'document', 'plan');  -- true: alice owns it
+SELECT authz.revoke('docs', 'user', 'bob', 'user', 'dave', 'editor', 'document', 'plan');
+-- ERROR: revoke refused: user:bob is not allowed owner on document:plan
 ```
 
-**3. Variations with the same mechanism.** "Grant no more than you hold" is
-a precondition that the sharer is `allowed` the relation being granted.
-Revoking someone else's access is a `can_unshare` relation checked the same
-way, with the tuple in `p_deletes`. "Nobody removes the owner" is a relation
-nobody holds, so the precondition can never pass. Over HTTP the same call is
-`POST /pgauthz/v1/write-checked`, and the audit trail records `performed_by`
-as the sharer, so "who gave carol access" is one query later.
+**3. What the rules buy.** A relation without a grant rule cannot be
+granted this way at all, so forgetting the policy fails closed instead of
+writing the tuple. The policy is reviewable: `describe_model` renders
+`# grant requires can_share_edit (revoke requires owner)` under the
+relation, and the registry versions it with the model. The `authz_sharer`
+database role holds only `grant` and `revoke`, so the tier that lets end
+users share never needs `write_tuple`. Over HTTP the actor *is* the token
+subject (`POST /pgauthz/v1/grant`), so nobody can share as someone else.
+"Grant no more than you hold" is a required right that implies the granted
+one; usersets and expiry pass straight through (`p_user_relation`,
+`p_expires_at`), so "share with the team until Friday" stays one call.
+Multi-tuple invariants and delegation chains remain `write_tuples_checked`.
 
-Shown in: [DEVELOPMENT → Conditional / atomic writes](DEVELOPMENT.md#conditional--atomic-writes-optimistic-concurrency),
-[`examples/models/aia-acme/`](../examples/models/aia-acme/README.md)
-(`employee_can_share`, `share_locked`), [Delegation with attenuation](#delegation-with-attenuation-checked-writes--subagents-never-exceed-their-parent) below.
+Shown in: [API → grant / revoke](API.md#grant--revoke--share-on-behalf-of-an-actor),
+[MODEL_DESIGN → Grant rules](MODEL_DESIGN.md#grant-rules-who-may-share),
+[Delegation with attenuation](#delegation-with-attenuation-checked-writes--subagents-never-exceed-their-parent) below.
 
 ### Marker tuples and exclusion — archived, under legal hold, draft only
 
