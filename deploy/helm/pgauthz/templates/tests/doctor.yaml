@@ -47,3 +47,45 @@ spec:
   volumes:
     - name: jwks
       configMap: { name: {{ include "pgauthz.fullname" . }}-opa-data }
+{{- if .Values.authzen.opa.enabled }}
+{{- /*
+A second preflight for the OPA-fronted gateway (authzen.opa.enabled): the
+same `doctor --profile production`, wired like the gateway container — no
+DATABASE_URL, OPA_URL set — so the OPA health probe and the gateway's own
+diagnostic/audience config are actually checked, not only the reader's.
+*/}}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "pgauthz.fullname" . }}-doctor-opa
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: doctor
+      image: {{ include "pgauthz.image" .Values.images.pgauthzd }}
+      imagePullPolicy: {{ .Values.images.pullPolicy }}
+      command: ["/usr/local/bin/app", "doctor", "--profile", "production"{{ if (.Values.doctor).strict }}, "--strict"{{ end }}]
+      env:
+        - { name: PGAUTHORIZER_PROFILE, value: decision-only }
+        - name: OPA_URL
+          value: http://{{ include "pgauthz.fullname" . }}-opa:8181
+        - { name: JWKS_FILE,   value: /jwks/jwks.json }
+        - { name: JWT_ISSUER,  value: {{ .Values.opa.jwtIssuer | quote }} }
+        {{- include "pgauthz.audienceEnv" $ | nindent 8 }}
+        - { name: DEFAULT_STORE, value: {{ .Values.opa.defaultStore | quote }} }
+        - { name: ALLOW_SUBJECT_OVERRIDE, value: "false" }
+        {{- include "pgauthz.diagnosticsEnv" (dict "root" $ "env" (.Values.authzen.opa.deploymentEnvironment | default .Values.deploymentEnvironment)) | nindent 8 }}
+        {{- if .Values.opa.hookFilteredEnumeration }}
+        - { name: CURSOR_SEAL_KEY, value: {{ .Values.authzen.opa.cursorSealKey | quote }} }
+        {{- end }}
+      volumeMounts:
+        - { name: jwks, mountPath: /jwks, readOnly: true }
+  volumes:
+    - name: jwks
+      configMap: { name: {{ include "pgauthz.fullname" . }}-opa-data }
+{{- end }}

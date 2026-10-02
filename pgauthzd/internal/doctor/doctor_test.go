@@ -216,3 +216,34 @@ func TestDoctorProductionProfileIssuerBindings(t *testing.T) {
 		}
 	})
 }
+
+// The override that lets the daemon start (and the chart render) with open
+// diagnostics in production must not FAIL preflight: warn, consistently with
+// the runtime; fatal only under --strict.
+func TestDoctorProductionOpenDiagnosticsOverrideWarns(t *testing.T) {
+	resetEnv(t)
+	jwks := writeJWKS(t)
+	t.Setenv("JWT_ISSUERS", `[{"issuer":"https://auth.example.com","audience":"authz-api","jwks_file":"`+jwks+`","stores":["demo"]}]`)
+	t.Setenv("ALLOW_OPEN_DIAGNOSTICS", "true")
+	r := Run(context.Background(), Options{Version: "test", HTTP: &http.Client{}, ForceProduction: true})
+	c := byName(r)
+	if c["config"].Status != StatusOK {
+		t.Fatalf("config must load with the override: %+v", c["config"])
+	}
+	if c["diagnostic surfaces"].Status != StatusWarn || !strings.Contains(c["diagnostic surfaces"].Detail, "ALLOW_OPEN_DIAGNOSTICS") {
+		t.Fatalf("open diagnostics under the override must warn, not fail: %+v", c["diagnostic surfaces"])
+	}
+	// Without the override the same config fails startup (the loader refuses
+	// open diagnostics in production), so the override is what lets preflight
+	// get past config at all — and the surfaces check must not then fail it.
+	for _, chk := range r.Checks {
+		if chk.Status == StatusFail && chk.Name == "diagnostic surfaces" {
+			t.Fatalf("diagnostic surfaces counted as a failure under the override")
+		}
+	}
+	t.Setenv("ALLOW_OPEN_DIAGNOSTICS", "")
+	r2 := Run(context.Background(), Options{Version: "test", HTTP: &http.Client{}, ForceProduction: true})
+	if byName(r2)["config"].Status != StatusFail {
+		t.Fatalf("without the override production config must fail: %+v", byName(r2)["config"])
+	}
+}

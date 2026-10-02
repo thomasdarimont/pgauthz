@@ -269,9 +269,11 @@ reader:
   replicas: 3
   dbPoolMax: 20                # replicas x dbPoolMax must stay < max_connections
   # Route reads at the pooler (replicas) by default. Set to "rw" to send reads
-  # to the primary when read-your-writes freshness matters more than scale-out
-  # (the project deliberately has no consistency tokens; replica lag + the OPA
-  # cache TTL are the staleness window).
+  # to the primary when read-your-writes freshness matters more than scale-out.
+  # For selective read-your-writes on replicas use freshness tokens instead
+  # (FRESHNESS_TOKEN_KEYS + X-PGAuthz-Consistency: at_least_as_fresh — a stale
+  # replica answers 409 or the reader falls back to the primary); replica lag
+  # + the OPA cache TTL are the staleness window for everything else.
   target: "pooler-ro"          # one of: pooler-ro | ro | rw
   resources:
     requests: { cpu: 100m, memory: 128Mi }

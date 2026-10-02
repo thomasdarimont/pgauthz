@@ -138,6 +138,15 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **`pgauthzd doctor` agrees with the runtime on `ALLOW_OPEN_DIAGNOSTICS`.**
+  Open diagnostics in production under the override warned on one check
+  but failed on another, so a release the daemon starts and the chart
+  renders could still fail `helm test`; preflight now warns (fatal under
+  `--strict`), as the runtime does. `helm test` gains a second doctor pod
+  wired like the OPA gateway when `authzen.opa.enabled` (`OPA_URL`, no
+  database), so OPA's health is actually probed; the Helm `target` comment
+  no longer claims there are no consistency tokens (freshness tokens exist).
+  (External review.)
 - **`list_objects` scanned every tuple partition of every store again**
   (re-found by the benchmark, 2026-09-29). The July fix constrained the
   three subject-rooted scans of the reachability walk with a tautology

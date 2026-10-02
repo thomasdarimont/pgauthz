@@ -857,8 +857,13 @@ production deployment before you promote it — the production profile's
 gates, demo secrets, issuer bindings and JWKS, the DB role for the profile,
 the callback listener, OPA and the decision-log sink — and exits non-zero on
 any failure. In Kubernetes, `helm test <release>` runs the same check with
-the reader's configuration. Wire it into the pipeline that applies the
-config; it catches the mistakes this guide lists before a pod ever starts.
+the reader's configuration, and, when `authzen.opa.enabled`, a second one
+wired like the OPA gateway (`OPA_URL`, no database) so OPA's health and the
+gateway's own config are checked too. The overrides the production profile
+honours (`ALLOW_OPEN_DIAGNOSTICS`) warn in preflight rather than fail, as
+they do at startup; pass `--strict` (`doctor.strict` in Helm) to fail on
+warnings. Wire it into the pipeline that applies the config; it catches
+the mistakes this guide lists before a pod ever starts.
 
 ## Decision log
 

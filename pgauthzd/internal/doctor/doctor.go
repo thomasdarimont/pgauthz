@@ -145,6 +145,11 @@ func Run(ctx context.Context, opts Options) *Report {
 	switch {
 	case len(open) == 0:
 		add("diagnostic surfaces", StatusOK, "search, explain and watch are role-gated or disabled")
+	case prod && cfg.AllowOpenDiagnostics:
+		// The daemon starts and the chart renders with this override, so
+		// preflight must not fail what the runtime deliberately allows — it
+		// warns (fatal under --strict), consistently with the runtime WARNING.
+		add("diagnostic surfaces", StatusWarn, "open in production via ALLOW_OPEN_DIAGNOSTICS=true (deliberate?): "+strings.Join(open, ", "))
 	case prod:
 		add("diagnostic surfaces", StatusFail, "open in production: "+strings.Join(open, ", "))
 	default:
