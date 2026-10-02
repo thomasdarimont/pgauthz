@@ -564,11 +564,17 @@ BEGIN
     v_seq := authz.record_event('test_events', 'user', 'purge_me', 'download');   -- recent, must survive
     PERFORM set_config('authz.event_max_backdate', '', true);
 
+    -- Count the rows the purge should remove instead of hard-coding 2: ev_09's
+    -- backdated row is usually gone (ev_18's partition drop took its month)
+    -- but survives on the 1st of a month, when "now - 1 day" lands in the
+    -- previous month's partition (CI failed on 2026-10-01 for this reason).
+    SELECT count(*) INTO n_old FROM authz.list_events('test_events') WHERE occurred_at < now() - interval '1 day';
+    PERFORM _test_assert_true('ev_25_has_old_rows', n_old >= 2, 'old rows: ' || n_old);
     SELECT count(*) INTO n_before FROM authz.list_events('test_events');
     PERFORM _test_assert('ev_25_purge_returns_count',
-        authz.purge_events('test_events', now() - interval '1 day')::text, '2');   -- (ev_18's partition drop already removed ev_09's backdated row)
+        authz.purge_events('test_events', now() - interval '1 day')::text, n_old::text);
     SELECT count(*) INTO n_after FROM authz.list_events('test_events');
-    PERFORM _test_assert('ev_25_only_old_rows_gone', (n_before - n_after)::text, '2');
+    PERFORM _test_assert('ev_25_only_old_rows_gone', (n_before - n_after)::text, n_old::text);
     PERFORM _test_assert('ev_25_recent_row_survives',
         (SELECT count(*) FROM authz.list_events('test_events', p_subject_type => 'user', p_subject_id => 'purge_me'))::text, '1');
     PERFORM _test_assert('ev_25_other_store_untouched',
