@@ -227,10 +227,13 @@ func registerNativeRead(mux *http.ServeMux, h *Handler) {
 	listSubjects := h.readGuard(h.NativeListSubjects)
 	listActions := h.readGuard(h.NativeListActions)
 
+	grantOptions := h.readGuard(h.GrantOptions)
 	mux.HandleFunc("POST /pgauthz/v1/explain", explain)
 	mux.HandleFunc("POST /pgauthz/v1/watch", h.Watch)
+	mux.HandleFunc("POST /pgauthz/v1/grant-options", grantOptions)
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/explain", explain)
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/watch", h.Watch)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/grant-options", grantOptions)
 
 	mux.HandleFunc("POST /pgauthz/v1/check", check)
 	mux.HandleFunc("POST /pgauthz/v1/check-batch", checkBatch)
@@ -253,12 +256,14 @@ func registerNativeWrite(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("POST /pgauthz/v1/write-checked", h.WriteTuplesChecked)
 	mux.HandleFunc("POST /pgauthz/v1/grant", h.Grant)
 	mux.HandleFunc("POST /pgauthz/v1/revoke", h.Revoke)
+	mux.HandleFunc("POST /pgauthz/v1/apply-grants", h.ApplyGrants)
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/write", h.WriteTuples)
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/delete", h.DeleteTuples)
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/delete-user", h.DeleteUserTuples)
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/write-checked", h.WriteTuplesChecked)
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/grant", h.Grant)
 	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/revoke", h.Revoke)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/apply-grants", h.ApplyGrants)
 	// The action log (ADR 0012): a write in every operational sense (writer DB
 	// connection, consistency mode, audit actor), gated by RECORDER_ROLE.
 	mux.HandleFunc("POST /pgauthz/v1/events", h.RecordEvents)

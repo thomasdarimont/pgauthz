@@ -394,6 +394,36 @@ that lets end users share needs no `write_tuple`. Over HTTP:
 `describe_model` renders the rules as `# grant requires …` lines and the
 registry versions them with the model.
 
+**For a share dialog**, three read helpers and one atomic write:
+
+```sql
+-- per relation with a grant rule: may the actor grant / revoke it, and who may hold it
+SELECT * FROM authz.grant_options('docs', 'user', 'bob', 'document', 'plan');
+--  relation | can_grant | can_revoke | requires       | requires_revoke | grantee_types
+--  editor   | f         | f          | can_share_edit | owner           | {user}
+--  viewer   | t         | t          | can_share_view | can_share_view  | {team#member,user}
+SELECT authz.can_grant('docs',  'user', 'bob', 'viewer', 'document', 'plan');   -- true; false (never an error) without a rule
+SELECT authz.can_revoke('docs', 'user', 'bob', 'editor', 'document', 'plan');   -- false
+SELECT * FROM authz.list_grant_rules('docs');                                   -- the rules by name
+-- many (actor, object) pairs at once — a list view with a "Share" button per row:
+SELECT idx, object_id, can_grant FROM authz.grant_options_batch('docs', '[
+    {"actor_type": "user", "actor_id": "bob", "object_type": "document", "object_id": "plan"},
+    {"actor_type": "user", "actor_id": "bob", "object_type": "document", "object_id": "memo", "context": {"client_ip": "10.1.2.3"}}]');
+
+-- the dialog's save: grants + revokes in ONE transaction, all-or-nothing
+SELECT authz.apply_grants('docs', 'user', 'bob',
+    p_grants  => '[{"user_type": "user", "user_id": "carol", "relation": "viewer", "object_type": "document", "object_id": "plan"}]',
+    p_revokes => '[{"user_type": "user", "user_id": "dave",  "relation": "viewer", "object_type": "document", "object_id": "plan"}]');
+-- {"granted": 1, "revoked": 1}; a refused entry raises "apply_grants: grant entry N: grant refused: …"
+```
+
+The grantee never affects these answers (only the static type restrictions,
+reported as `grantee_types`), so one `grant_options` call per object renders
+the whole dialog; "which of my documents can I share" is `list_objects` on
+the required relation. The read helpers are granted to `authz_reader` and
+`authz_sharer`; `apply_grants` to `authz_sharer`. Over HTTP:
+`POST /pgauthz/v1/grant-options` and `/apply-grants`.
+
 ### model_remove_type — Remove a type and everything about it
 
 Removes a type from a store's dictionary together with its rules, the type

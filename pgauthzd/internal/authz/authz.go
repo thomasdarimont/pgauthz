@@ -111,6 +111,20 @@ type NativeReader interface {
 	// WatchChanges returns a page of the audit changefeed for a store
 	// (cursored by after_at/after_seq, lag-gated, filterable).
 	WatchChanges(ctx context.Context, req WatchRequest) (json.RawMessage, error)
+	// GrantOptions renders what the actor may share on an object: one row
+	// per relation with a grant rule — can_grant, can_revoke, the required
+	// relations and who may hold it (authz.grant_options as a JSON array).
+	GrantOptions(ctx context.Context, req GrantOptionsRequest) (json.RawMessage, error)
+}
+
+// GrantOptionsRequest asks what Actor may grant/revoke on one object.
+type GrantOptionsRequest struct {
+	Store      string
+	ActorType  string
+	ActorID    string
+	ObjectType string
+	ObjectID   string
+	Context    map[string]any
 }
 
 // WatchRequest is a cursored changefeed page request.
@@ -150,6 +164,22 @@ type NativeWriter interface {
 	// boolean (true = written resp. deleted; false = already so).
 	Grant(ctx context.Context, req GrantRequest) (bool, error)
 	Revoke(ctx context.Context, req GrantRequest) (bool, error)
+	// ApplyGrants applies a share dialog's grants + revokes atomically
+	// (authz.apply_grants); returns the engine's {"granted","revoked"} JSON.
+	ApplyGrants(ctx context.Context, req ApplyGrantsRequest) (json.RawMessage, error)
+}
+
+// ApplyGrantsRequest is one apply_grants call: Grants/Revokes are the JSON
+// arrays in the engine's entry shape; Context the actor's request context
+// for every entry that carries none of its own.
+type ApplyGrantsRequest struct {
+	Store       string
+	ActorType   string
+	ActorID     string
+	Grants      json.RawMessage
+	Revokes     json.RawMessage
+	Context     json.RawMessage
+	Consistency string
 }
 
 // SharingRefused: the engine refused authz.grant / authz.revoke because the

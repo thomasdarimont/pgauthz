@@ -659,18 +659,9 @@ func (h *Handler) grantOrRevoke(w http.ResponseWriter, r *http.Request, revoke b
 	if !ok {
 		return
 	}
-	// The actor: token subject on the public listener (a differing body value
-	// is rejected unless ALLOW_SUBJECT_OVERRIDE), the asserted subject on the
-	// callback listener. Same trust rules as performed_by on every write.
-	actorID, ok := h.resolveActor(w, r, req.Actor, "actor")
+	actorType, actorID, ok := h.resolveSharingActor(w, r, req.Actor)
 	if !ok {
 		return
-	}
-	actorType, jwtSubject := SubjectFromContext(r.Context())
-	if actorID != jwtSubject || actorType == "" {
-		// An asserted actor carries no type of its own: it is a subject of the
-		// instance's default subject type, like every token subject.
-		actorType = h.cfg.SubjectTypeDefault
 	}
 	greq := authz.GrantRequest{
 		Store: store, ActorType: actorType, ActorID: actorID,
@@ -699,4 +690,133 @@ func (h *Handler) grantOrRevoke(w http.ResponseWriter, r *http.Request, revoke b
 		resp["revision"] = rev
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// resolveSharingActor: the actor of a sharing call is the token subject on
+// the public listener (a differing body value is rejected unless
+// ALLOW_SUBJECT_OVERRIDE), the asserted subject on the callback listener —
+// the same trust rules as performed_by on every write. An asserted actor
+// carries no type of its own: it is a subject of the instance's default
+// subject type, like every token subject.
+func (h *Handler) resolveSharingActor(w http.ResponseWriter, r *http.Request, bodyActor string) (actorType, actorID string, ok bool) {
+	actorID, ok = h.resolveActor(w, r, bodyActor, "actor")
+	if !ok {
+		return "", "", false
+	}
+	actorType, jwtSubject := SubjectFromContext(r.Context())
+	if actorID != jwtSubject || actorType == "" {
+		actorType = h.cfg.SubjectTypeDefault
+	}
+	return actorType, actorID, true
+}
+
+// applyGrantsBody is a share dialog's save: grants + revokes, atomic.
+type applyGrantsBody struct {
+	Grants      json.RawMessage `json:"grants,omitempty"`
+	Revokes     json.RawMessage `json:"revokes,omitempty"`
+	Context     json.RawMessage `json:"context,omitempty"`
+	Consistency string          `json:"consistency,omitempty"`
+	Actor       string          `json:"actor,omitempty"` // callback listener only
+}
+
+// ApplyGrants — POST /pgauthz/v1/apply-grants: apply grants + revokes as one
+// transaction (authz.apply_grants); a single refusal rolls everything back
+// and the 403 names the entry. Same actor and profile rules as /grant.
+func (h *Handler) ApplyGrants(w http.ResponseWriter, r *http.Request) {
+	if !h.cfg.Writable() {
+		writeError(w, http.StatusForbidden,
+			"this instance is read-only (decision-only profile); sharing requires the full profile")
+		return
+	}
+	nw, ok := h.rawWrite.(authz.NativeWriter)
+	if !ok {
+		writeError(w, http.StatusNotImplemented,
+			"the pgauthz sharing API requires the full profile (writer DB role)")
+		return
+	}
+	var req applyGrantsBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, "invalid JSON: "+err.Error())
+		return
+	}
+	if len(req.Grants) == 0 && len(req.Revokes) == 0 {
+		writeBadRequest(w, "grants or revokes is required")
+		return
+	}
+	store, ok := h.storeChecked(w, r)
+	if !ok {
+		return
+	}
+	actorType, actorID, ok := h.resolveSharingActor(w, r, req.Actor)
+	if !ok {
+		return
+	}
+	out, err := nw.ApplyGrants(r.Context(), authz.ApplyGrantsRequest{
+		Store: store, ActorType: actorType, ActorID: actorID,
+		Grants: req.Grants, Revokes: req.Revokes, Context: req.Context, Consistency: req.Consistency,
+	})
+	if err != nil {
+		writeWriteError(w, err)
+		return
+	}
+	var counts map[string]any
+	_ = json.Unmarshal(out, &counts)
+	resp := map[string]any{"store": store, "actor": map[string]string{"type": actorType, "id": actorID}}
+	for k, v := range counts {
+		resp[k] = v
+	}
+	if rev := h.mintRevision(w, r); rev != "" {
+		resp["revision"] = rev
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// grantOptionsBody asks what the actor may share on one object. `subject`
+// follows the read path's rules (token subject; a body subject only with
+// ALLOW_SUBJECT_OVERRIDE), so a UI backend may render for the user it serves.
+type grantOptionsBody struct {
+	Subject  Subject        `json:"subject"`
+	Resource Resource       `json:"resource"`
+	Context  map[string]any `json:"context,omitempty"`
+}
+
+// GrantOptions — POST /pgauthz/v1/grant-options: the share dialog's data —
+// per relation with a grant rule: can_grant, can_revoke, requires,
+// requires_revoke, grantee_types. A read (reader role), direct backend only.
+func (h *Handler) GrantOptions(w http.ResponseWriter, r *http.Request) {
+	nr, ok := h.nativeReader(w)
+	if !ok {
+		return
+	}
+	var req grantOptionsBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, "invalid JSON: "+err.Error())
+		return
+	}
+	subjectType, subjectID, err := h.resolveSubject(r, req.Subject)
+	if err != nil {
+		writeSubjectError(w, err)
+		return
+	}
+	if req.Resource.Type == "" || req.Resource.ID == "" {
+		writeBadRequest(w, "resource.type and resource.id are required")
+		return
+	}
+	store, ok := h.storeChecked(w, r)
+	if !ok {
+		return
+	}
+	out, err := nr.GrantOptions(r.Context(), authz.GrantOptionsRequest{
+		Store: store, ActorType: subjectType, ActorID: subjectID,
+		ObjectType: req.Resource.Type, ObjectID: req.Resource.ID, Context: req.Context,
+	})
+	if err != nil {
+		writeWriteError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"store": store, "actor": map[string]string{"type": subjectType, "id": subjectID},
+		"resource": map[string]string{"type": req.Resource.Type, "id": req.Resource.ID},
+		"options":  json.RawMessage(out),
+	})
 }

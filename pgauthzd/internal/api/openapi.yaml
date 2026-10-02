@@ -883,6 +883,101 @@ paths:
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
 
+  /pgauthz/v1/apply-grants:
+    post:
+      tags: [native-write]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+        profile: full
+      operationId: applyGrants
+      summary: Apply a set of grants and revokes atomically
+      description: >
+        A share dialog's save: grants and revokes applied as ONE transaction (authz.apply_grants). Every entry is decided under the store's grant rules for the actor (the token subject); a single refusal rolls everything back and the 403 names the entry.
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+      requestBody: { $ref: '#/components/requestBodies/ApplyGrants' }
+      responses:
+        '200': { $ref: '#/components/responses/ApplyGrantsOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /stores/{store}/pgauthz/v1/apply-grants:
+    post:
+      tags: [native-write]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+        profile: full
+      operationId: applyGrantsStore
+      summary: Apply grants and revokes, store-scoped
+      description: >
+        A share dialog's save: grants and revokes applied as ONE transaction (authz.apply_grants). Every entry is decided under the store's grant rules for the actor (the token subject); a single refusal rolls everything back and the 403 names the entry.
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+      requestBody: { $ref: '#/components/requestBodies/ApplyGrants' }
+      responses:
+        '200': { $ref: '#/components/responses/ApplyGrantsOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/grant-options:
+    post:
+      tags: [native-read]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+      operationId: grantOptions
+      summary: What the subject may share on an object
+      description: >
+        What the subject may share on one object: per relation with a grant rule, can_grant, can_revoke, the required relations and who may hold it (authz.grant_options). A read — renders the share dialog and the revoke button per 'who has access' row; the grantee never affects the answer.
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+      requestBody: { $ref: '#/components/requestBodies/GrantOptions' }
+      responses:
+        '200': { $ref: '#/components/responses/GrantOptionsOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /stores/{store}/pgauthz/v1/grant-options:
+    post:
+      tags: [native-read]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+      operationId: grantOptionsStore
+      summary: Share options, store-scoped
+      description: >
+        What the subject may share on one object: per relation with a grant rule, can_grant, can_revoke, the required relations and who may hold it (authz.grant_options). A read — renders the share dialog and the revoke button per 'who has access' row; the grantee never affects the answer.
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+      requestBody: { $ref: '#/components/requestBodies/GrantOptions' }
+      responses:
+        '200': { $ref: '#/components/responses/GrantOptionsOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+
   /pgauthz/v1/write-checked:
     post:
       tags: [native-write]
@@ -1292,6 +1387,16 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/GrantRequest' }
+    ApplyGrants:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApplyGrantsRequest' }
+    GrantOptions:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/GrantOptionsRequest' }
     RecordEvents:
       required: true
       content:
@@ -1411,6 +1516,19 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/DeleteResponse' }
+    ApplyGrantsOK:
+      description: Every entry applied (or already so).
+      headers:
+        X-PGAuthz-Revision: { $ref: '#/components/headers/XPGAuthzRevision' }
+        X-PGAuthz-Revision-Status: { $ref: '#/components/headers/XPGAuthzRevisionStatus' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApplyGrantsResponse' }
+    GrantOptionsOK:
+      description: The subject's sharing options on the object.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/GrantOptionsResponse' }
     GrantOK:
       description: The grant / revoke was decided and applied (or was already so).
       headers:
@@ -1941,6 +2059,78 @@ components:
             public listener the actor is the token subject; a differing value
             is rejected unless ALLOW_SUBJECT_OVERRIDE.
       required: [user, relation, object]
+    ApplyGrantsRequest:
+      type: object
+      properties:
+        grants:
+          type: array
+          items: { $ref: '#/components/schemas/GrantEntry' }
+        revokes:
+          type: array
+          items: { $ref: '#/components/schemas/GrantEntry' }
+        context:
+          type: object
+          additionalProperties: true
+          description: The actor's request context for entries that carry none of their own.
+        consistency: { $ref: '#/components/schemas/Consistency' }
+        actor:
+          type: string
+          description: Callback listener only (see /grant).
+    GrantEntry:
+      type: object
+      description: One grant or revoke, in the engine's flat tuple shape.
+      properties:
+        user_type: { type: string }
+        user_id: { type: string }
+        user_relation: { type: string }
+        relation: { type: string }
+        object_type: { type: string }
+        object_id: { type: string }
+        condition: { type: string, description: grants only }
+        condition_context: { type: object, additionalProperties: true }
+        expires_at: { type: string, format: date-time, description: grants only }
+        context: { type: object, additionalProperties: true, description: overrides the batch context for this entry }
+      required: [user_type, user_id, relation, object_type, object_id]
+    ApplyGrantsResponse:
+      type: object
+      properties:
+        store: { type: string }
+        granted: { type: integer, description: entries that wrote a tuple }
+        revoked: { type: integer, description: entries that deleted a tuple }
+        actor: { $ref: '#/components/schemas/Subject' }
+        revision: { type: string }
+      required: [store, granted, revoked, actor]
+    GrantOptionsRequest:
+      type: object
+      properties:
+        subject: { $ref: '#/components/schemas/Subject' }
+        resource: { $ref: '#/components/schemas/Resource' }
+        context:
+          type: object
+          additionalProperties: true
+      required: [resource]
+    GrantOptionsResponse:
+      type: object
+      properties:
+        store: { type: string }
+        actor: { $ref: '#/components/schemas/Subject' }
+        resource: { $ref: '#/components/schemas/Resource' }
+        options:
+          type: array
+          items:
+            type: object
+            properties:
+              relation: { type: string }
+              can_grant: { type: boolean }
+              can_revoke: { type: boolean }
+              requires: { type: string }
+              requires_revoke: { type: string }
+              grantee_types:
+                type: array
+                items: { type: string }
+                description: "Who may hold the relation: user, team#member, user:* (wildcard allowed)."
+            required: [relation, can_grant, can_revoke, requires, requires_revoke, grantee_types]
+      required: [store, actor, resource, options]
     GrantResponse:
       type: object
       properties:

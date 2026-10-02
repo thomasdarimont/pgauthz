@@ -31,6 +31,7 @@
 --       define can_create_file: owner
 --       define can_write: owner or can_write from parent
 --       define can_share: owner or can_share from parent
+--       # grant viewer requires can_share
 --
 --   type doc
 --     relations
@@ -46,6 +47,7 @@
 --       #   count_within{calendar: "day", tz: "UTC", kind: "response", max: 100, plus: 1}
 --       # gate per_file_limit: at most 3 downloads of THIS document per UTC day
 --       #   count_within{calendar: "day", tz: "UTC", scope: "object", kind: "response", max: 3, plus: 1}
+--       # grant viewer requires can_share (revoke requires owner)
 
 -- Create the store. Dropped first so this file is idempotent — re-running
 -- it resets the store from scratch instead of failing on the existing
@@ -234,3 +236,12 @@ SELECT authz.add_gate('gdrive', 'doc', 'download', 'daily_download_quota', '{
 SELECT authz.add_gate('gdrive', 'doc', 'download', 'per_file_limit', '{
   "description": "at most 3 downloads of this document per UTC day",
   "all_of": [{"count_within": {"calendar": "day", "tz": "UTC", "scope": "object", "kind": "response", "max": 3, "plus": 1}}]}');
+
+-- ── Sharing: who may hand `viewer` out (grant rules, migration 0017) ────────
+-- The "Share" dialog. `can_share` already exists in the model (owner, or
+-- inherited from the parent folder); the grant rules make it the right that
+-- authz.grant checks before writing a viewer tuple, so the application never
+-- has to spell out the precondition. On a doc, revoking needs more than
+-- sharing: only the owner may take a viewer away (p_requires_revoke).
+SELECT authz.model_add_grant_rule('gdrive', 'folder', 'viewer', 'can_share');
+SELECT authz.model_add_grant_rule('gdrive', 'doc',    'viewer', 'can_share', p_requires_revoke => 'owner');

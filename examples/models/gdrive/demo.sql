@@ -323,7 +323,89 @@ SELECT authz.reserve_event('gdrive', 'user', 'bob', 'download', 'doc', 'announce
 
 
 -- ============================================================================
--- 12. CLEANUP
+-- 12. THE SHARE DIALOG — grant rules, grant_options, grant / revoke,
+--     apply_grants (migration 0017)
+-- ============================================================================
+--
+-- Frank owns design_spec; Alice may share it (can_share is inherited from the
+-- root folder she owns); Bob is a plain viewer. The dialog renders from ONE
+-- read per object, then saves through authz.grant / authz.revoke, which check
+-- the actor under the grant rules and attribute the change to the actor.
+
+-- What may each of them do in the dialog for design_spec? One actor and
+-- one object is grant_options; many pairs at once (a list view with a
+-- "Share" button per row, or this comparison) is grant_options_batch.
+SELECT actor_id, relation, can_grant, can_revoke, requires, requires_revoke, grantee_types
+  FROM authz.grant_options_batch('gdrive', '[
+    {"actor_type": "user", "actor_id": "bob",   "object_type": "doc", "object_id": "design_spec"},
+    {"actor_type": "user", "actor_id": "alice", "object_type": "doc", "object_id": "design_spec"},
+    {"actor_type": "user", "actor_id": "frank", "object_type": "doc", "object_id": "design_spec"}]');
+--  actor_id | relation | can_grant | can_revoke | requires  | requires_revoke | grantee_types
+--  bob      | viewer   | f         | f          | can_share | owner           | {group#member,user,user:*}
+--  alice    | viewer   | t         | f          | can_share | owner           | …   ← may share, not unshare
+--  frank    | viewer   | t         | t          | can_share | owner           | …   ← the owner may both
+
+-- A list view: one actor, every document — which rows get a "Share" button?
+SELECT object_id, can_grant
+  FROM authz.grant_options_batch('gdrive', '[
+    {"actor_type": "user", "actor_id": "alice", "object_type": "doc", "object_id": "design_spec"},
+    {"actor_type": "user", "actor_id": "alice", "object_type": "doc", "object_id": "budget"},
+    {"actor_type": "user", "actor_id": "alice", "object_type": "doc", "object_id": "announcement"}]');
+-- => design_spec t, budget t, announcement t   (alice owns the root folder: can_share everywhere)
+
+-- Which docs could Bob share at all? (the required relation, as a search)
+SELECT * FROM authz.list_objects('gdrive', 'user', 'bob', 'can_share', 'doc');
+-- => (none)
+
+-- Alice shares with Dave: allowed, written, attributed to alice.
+SELECT authz.grant('gdrive', 'user', 'alice', 'user', 'dave', 'viewer', 'doc', 'design_spec')
+           AS "alice shares design_spec with dave";                               -- true
+SELECT authz.check_access('gdrive', 'user', 'dave', 'can_read', 'doc', 'design_spec')
+           AS "dave can read";                                                     -- true
+
+-- Bob tries the same: refused, nothing written, the reason names the missing right.
+DO $$
+BEGIN
+    PERFORM authz.grant('gdrive', 'user', 'bob', 'user', 'erin', 'viewer', 'doc', 'design_spec');
+EXCEPTION WHEN insufficient_privilege THEN
+    RAISE NOTICE 'bob: %', SQLERRM;
+    -- bob: grant refused: user:bob is not allowed can_share on doc:design_spec
+END $$;
+
+-- Alice may share but not unshare a doc (revoke requires owner); Frank may.
+DO $$
+BEGIN
+    PERFORM authz.revoke('gdrive', 'user', 'alice', 'user', 'dave', 'viewer', 'doc', 'design_spec');
+EXCEPTION WHEN insufficient_privilege THEN
+    RAISE NOTICE 'alice: %', SQLERRM;
+    -- alice: revoke refused: user:alice is not allowed owner on doc:design_spec
+END $$;
+SELECT authz.revoke('gdrive', 'user', 'frank', 'user', 'dave', 'viewer', 'doc', 'design_spec')
+           AS "frank unshares dave";                                               -- true
+
+-- The dialog's save button: add two people, remove one — one transaction.
+SELECT authz.apply_grants('gdrive', 'user', 'frank',
+    p_grants  => '[{"user_type": "user", "user_id": "dave", "relation": "viewer", "object_type": "doc", "object_id": "design_spec"},
+                   {"user_type": "user", "user_id": "erin", "relation": "viewer", "object_type": "doc", "object_id": "design_spec",
+                    "expires_at": "2030-01-01T00:00:00Z"}]',
+    p_revokes => '[{"user_type": "user", "user_id": "bob",  "relation": "viewer", "object_type": "doc", "object_id": "design_spec"}]')
+           AS "frank saves the dialog";
+-- => {"granted": 2, "revoked": 1}
+
+-- Who gave Dave access? The audit trail names the actor.
+SELECT action, user_id, performed_by
+  FROM authz.audit_list_object('gdrive', 'doc', 'design_spec')
+ WHERE user_id IN ('dave', 'erin', 'bob')
+ ORDER BY performed_at;
+-- INSERT bob  authz        ← the seed (no actor: the DB role)
+-- INSERT dave user:alice   ← alice shared
+-- DELETE dave user:frank   ← frank unshared
+-- DELETE bob  user:frank   ← the dialog save: revokes first …
+-- INSERT dave user:frank   ← … then grants (same instant: one transaction)
+-- INSERT erin user:frank
+
+-- ============================================================================
+-- 13. CLEANUP
 -- ============================================================================
 
 SELECT authz.delete_store('gdrive');

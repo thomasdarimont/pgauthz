@@ -568,6 +568,45 @@ func (b *Backend) Grant(ctx context.Context, req authz.GrantRequest) (bool, erro
 	return out, nil
 }
 
+// ApplyGrants — SELECT authz.apply_grants(...): all-or-nothing; the engine's
+// error names the refused entry.
+func (b *Backend) ApplyGrants(ctx context.Context, req authz.ApplyGrantsRequest) (json.RawMessage, error) {
+	var raw []byte
+	err := b.writeWithRole(ctx, req.Consistency, func(q querier) error {
+		return q.QueryRow(ctx,
+			"SELECT authz.apply_grants($1, $2, $3, $4, $5, $6)",
+			req.Store, req.ActorType, req.ActorID, jsonbOrDefault(req.Grants), jsonbOrDefault(req.Revokes), jsonbOrNil(req.Context),
+		).Scan(&raw)
+	})
+	if err != nil {
+		return nil, mapSharingError(err)
+	}
+	return raw, nil
+}
+
+// GrantOptions — authz.grant_options as a JSON array (read path, per-app role).
+func (b *Backend) GrantOptions(ctx context.Context, req authz.GrantOptionsRequest) (json.RawMessage, error) {
+	var ctxJSON []byte
+	if req.Context != nil {
+		var err error
+		if ctxJSON, err = json.Marshal(req.Context); err != nil {
+			return nil, fmt.Errorf("marshaling context: %w", err)
+		}
+	}
+	var raw []byte
+	err := b.withRole(ctx, func(q querier) error {
+		return q.QueryRow(ctx,
+			`SELECT COALESCE(jsonb_agg(to_jsonb(o)), '[]'::jsonb)
+			   FROM authz.grant_options($1, $2, $3, $4, $5, $6) o`,
+			req.Store, req.ActorType, req.ActorID, req.ObjectType, req.ObjectID, ctxJSON,
+		).Scan(&raw)
+	})
+	if err != nil {
+		return nil, mapEngineError(err)
+	}
+	return raw, nil
+}
+
 // mapSharingError: a 42501 from authz.grant / authz.revoke is the ENGINE's
 // refusal ("grant refused: user:bob is not allowed can_share_edit on …") —
 // surface that message alone, not the generic db-role sentinel text.

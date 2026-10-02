@@ -954,3 +954,256 @@ BEGIN
                               p_user_relation, p_performed_by => p_actor_type || ':' || p_actor_id);
 END;
 $$;
+
+------------------------------------------------------------------------
+-- UI support for sharing (migration 0017): render what an actor may do
+-- before offering it. The grantee never affects these answers — whether
+-- bob may grant `editor` on the plan depends on bob, the relation and the
+-- object alone; the grantee only matters through the (static) type
+-- restrictions, reported here as grantee_types so a picker can offer only
+-- subjects the relation may hold.
+--
+--   grant_options  — per object: every relation with a grant rule, whether
+--                    the actor may grant / revoke it, and who may hold it.
+--                    One call renders the share dialog AND the revoke
+--                    button on each "who has access" row.
+--   can_grant / can_revoke — the same as booleans (false, never raise, when
+--                    the relation has no grant rule or the object is '*').
+--   list_grant_rules — the store's rules by name (for "which of my
+--                    documents can I share": list_objects on `requires`).
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.list_grant_rules(p_store text)
+RETURNS TABLE (object_type text, relation text, requires text, requires_revoke text)
+LANGUAGE sql STABLE AS $$
+    SELECT ot.name, rl.name, rq.name, COALESCE(rr.name, rq.name)
+      FROM authz.grant_rules g
+      JOIN authz.types     ot ON ot.id = g.object_type
+      JOIN authz.relations rl ON rl.id = g.relation
+      JOIN authz.relations rq ON rq.id = g.requires
+ LEFT JOIN authz.relations rr ON rr.id = g.requires_revoke
+     WHERE g.store_id = authz._s(p_store)
+     ORDER BY 1, 2;
+$$;
+
+CREATE OR REPLACE FUNCTION authz.grant_options(
+    p_store       text,
+    p_actor_type  text,
+    p_actor_id    text,
+    p_object_type text,
+    p_object_id   text,
+    p_context     jsonb DEFAULT NULL
+) RETURNS TABLE (
+    relation        text,
+    can_grant       boolean,
+    can_revoke      boolean,
+    requires        text,
+    requires_revoke text,
+    grantee_types   text[]
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store);
+    v_actor    integer := authz._t(v_store_id, p_actor_type);
+    v_type     integer := authz._t(v_store_id, p_object_type);
+    v_rule     record;
+    v_req_rev  integer;
+    v_ok_grant boolean;
+    v_ok_rev   boolean;
+BEGIN
+    FOR v_rule IN
+        SELECT g.relation, g.requires, g.requires_revoke, rl.name AS relation_name,
+               rq.name AS requires_name, COALESCE(rr.name, rq.name) AS requires_revoke_name
+          FROM authz.grant_rules g
+          JOIN authz.relations rl ON rl.id = g.relation
+          JOIN authz.relations rq ON rq.id = g.requires
+     LEFT JOIN authz.relations rr ON rr.id = g.requires_revoke
+         WHERE g.store_id = v_store_id AND g.object_type = v_type
+         ORDER BY rl.name
+    LOOP
+        v_req_rev := COALESCE(v_rule.requires_revoke, v_rule.requires);
+        IF p_object_id = '*' THEN
+            v_ok_grant := false; v_ok_rev := false;   -- grant/revoke refuse wildcards
+        ELSE
+            v_ok_grant := authz._decide(v_store_id, v_actor, p_actor_id, v_rule.requires, v_type, p_object_id, p_context);
+            v_ok_rev   := CASE WHEN v_req_rev = v_rule.requires THEN v_ok_grant
+                               ELSE authz._decide(v_store_id, v_actor, p_actor_id, v_req_rev, v_type, p_object_id, p_context) END;
+        END IF;
+        relation        := v_rule.relation_name;
+        can_grant       := v_ok_grant;
+        can_revoke      := v_ok_rev;
+        requires        := v_rule.requires_name;
+        requires_revoke := v_rule.requires_revoke_name;
+        -- Who may hold the relation: "user", "team#member", "user:*" (wildcard allowed).
+        SELECT COALESCE(array_agg(
+                   ut.name || CASE WHEN ur.name IS NOT NULL THEN '#' || ur.name ELSE '' END
+                           || CASE WHEN x.allow_wildcard THEN ':*' ELSE '' END
+                   ORDER BY ut.name, ur.name NULLS FIRST), '{}')
+          INTO grantee_types
+          FROM authz.type_restrictions x
+          JOIN authz.types ut ON ut.id = x.allowed_user_type
+     LEFT JOIN authz.relations ur ON ur.id = x.allowed_user_relation
+         WHERE x.store_id = v_store_id AND x.object_type = v_type AND x.relation = v_rule.relation;
+        RETURN NEXT;
+    END LOOP;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION authz.can_grant(
+    p_store text, p_actor_type text, p_actor_id text,
+    p_relation text, p_object_type text, p_object_id text,
+    p_context jsonb DEFAULT NULL
+) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+    SELECT COALESCE((SELECT o.can_grant FROM authz.grant_options(p_store, p_actor_type, p_actor_id, p_object_type, p_object_id, p_context) o
+                      WHERE o.relation = p_relation), false);
+$$;
+
+CREATE OR REPLACE FUNCTION authz.can_revoke(
+    p_store text, p_actor_type text, p_actor_id text,
+    p_relation text, p_object_type text, p_object_id text,
+    p_context jsonb DEFAULT NULL
+) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+    SELECT COALESCE((SELECT o.can_revoke FROM authz.grant_options(p_store, p_actor_type, p_actor_id, p_object_type, p_object_id, p_context) o
+                      WHERE o.relation = p_relation), false);
+$$;
+
+------------------------------------------------------------------------
+-- apply_grants: apply a set of grant changes — additions AND removals — as
+-- ONE transaction: a share dialog's save. Every entry is decided under its
+-- object lock exactly as authz.grant / authz.revoke would, all-or-nothing:
+-- a single refusal rolls the whole batch back, and the error names the
+-- entry. Grants-only or revokes-only is just an empty other array.
+--
+--   p_grants / p_revokes: arrays of {user_type, user_id, relation,
+--     object_type, object_id, user_relation?, condition?, condition_context?,
+--     expires_at? (grants), context?}; an entry's `context` overrides
+--     p_context (the actor's request context for the check).
+--   returns {"granted": n, "revoked": m} — counts of entries that changed
+--     something (an already-present grant / absent revoke counts 0).
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.apply_grants(
+    p_store      text,
+    p_actor_type text,
+    p_actor_id   text,
+    p_grants     jsonb DEFAULT '[]'::jsonb,
+    p_revokes    jsonb DEFAULT '[]'::jsonb,
+    p_context    jsonb DEFAULT NULL
+) RETURNS jsonb
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_obj     record;
+    v_e       jsonb;
+    v_i       integer := 0;
+    v_granted integer := 0;
+    v_revoked integer := 0;
+    v_ctx     jsonb;
+BEGIN
+    IF jsonb_typeof(p_grants) <> 'array' OR jsonb_typeof(p_revokes) <> 'array' THEN
+        RAISE EXCEPTION 'apply_grants: p_grants and p_revokes must be JSON arrays'
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    -- Lock every object up front in a stable order (deadlock-free), as
+    -- write_tuples_checked does; grant/revoke re-take the same locks (held).
+    FOR v_obj IN
+        SELECT DISTINCT e->>'object_type' AS ot, e->>'object_id' AS oid
+          FROM jsonb_array_elements(p_grants || p_revokes) e
+         ORDER BY 1, 2
+    LOOP
+        PERFORM pg_advisory_xact_lock(hashtextextended(p_store || ':' || v_obj.ot || ':' || v_obj.oid, 0));
+    END LOOP;
+
+    FOR v_e IN SELECT * FROM jsonb_array_elements(p_revokes)
+    LOOP
+        v_i := v_i + 1;
+        v_ctx := CASE WHEN jsonb_typeof(v_e->'context') = 'object' THEN v_e->'context' ELSE p_context END;
+        BEGIN
+            IF authz.revoke(p_store, p_actor_type, p_actor_id,
+                            v_e->>'user_type', v_e->>'user_id', v_e->>'relation',
+                            v_e->>'object_type', v_e->>'object_id',
+                            p_user_relation => v_e->>'user_relation', p_request_context => v_ctx) THEN
+                v_revoked := v_revoked + 1;
+            END IF;
+        EXCEPTION WHEN OTHERS THEN
+            RAISE EXCEPTION 'apply_grants: revoke entry %: %', v_i, SQLERRM USING ERRCODE = SQLSTATE;
+        END;
+    END LOOP;
+    v_i := 0;
+    FOR v_e IN SELECT * FROM jsonb_array_elements(p_grants)
+    LOOP
+        v_i := v_i + 1;
+        v_ctx := CASE WHEN jsonb_typeof(v_e->'context') = 'object' THEN v_e->'context' ELSE p_context END;
+        BEGIN
+            IF authz.grant(p_store, p_actor_type, p_actor_id,
+                           v_e->>'user_type', v_e->>'user_id', v_e->>'relation',
+                           v_e->>'object_type', v_e->>'object_id',
+                           p_user_relation     => v_e->>'user_relation',
+                           p_condition         => v_e->>'condition',
+                           p_condition_context => CASE WHEN jsonb_typeof(v_e->'condition_context') = 'object' THEN v_e->'condition_context' END,
+                           p_expires_at        => (v_e->>'expires_at')::timestamptz,
+                           p_request_context   => v_ctx) THEN
+                v_granted := v_granted + 1;
+            END IF;
+        EXCEPTION WHEN OTHERS THEN
+            RAISE EXCEPTION 'apply_grants: grant entry %: %', v_i, SQLERRM USING ERRCODE = SQLSTATE;
+        END;
+    END LOOP;
+    RETURN jsonb_build_object('granted', v_granted, 'revoked', v_revoked);
+END;
+$$;
+
+------------------------------------------------------------------------
+-- grant_options_batch: grant_options for many (actor, object) pairs in one
+-- call — a list view rendering a "Share" button per row (one actor, many
+-- objects), or an admin view comparing actors. p_requests is a JSON array of
+-- {actor_type, actor_id, object_type, object_id, context?}; each row of the
+-- result carries the request's index (0-based) and identity, then the same
+-- columns as grant_options. A request whose object type has no grant rules
+-- yields no rows.
+--
+--   SELECT * FROM authz.grant_options_batch('gdrive', '[
+--     {"actor_type": "user", "actor_id": "bob",   "object_type": "doc", "object_id": "design_spec"},
+--     {"actor_type": "user", "actor_id": "alice", "object_type": "doc", "object_id": "design_spec"}]');
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.grant_options_batch(
+    p_store    text,
+    p_requests jsonb
+) RETURNS TABLE (
+    idx             integer,
+    actor_type      text,
+    actor_id        text,
+    object_type     text,
+    object_id       text,
+    relation        text,
+    can_grant       boolean,
+    can_revoke      boolean,
+    requires        text,
+    requires_revoke text,
+    grantee_types   text[]
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_req jsonb;
+    v_i   integer := -1;
+BEGIN
+    IF jsonb_typeof(p_requests) <> 'array' THEN
+        RAISE EXCEPTION 'grant_options_batch: p_requests must be a JSON array'
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    FOR v_req IN SELECT * FROM jsonb_array_elements(p_requests)
+    LOOP
+        v_i := v_i + 1;
+        IF v_req->>'actor_type' IS NULL OR v_req->>'actor_id' IS NULL
+           OR v_req->>'object_type' IS NULL OR v_req->>'object_id' IS NULL THEN
+            RAISE EXCEPTION 'grant_options_batch: request % needs actor_type, actor_id, object_type and object_id', v_i
+                USING ERRCODE = 'invalid_parameter_value';
+        END IF;
+        RETURN QUERY
+            SELECT v_i, v_req->>'actor_type', v_req->>'actor_id', v_req->>'object_type', v_req->>'object_id',
+                   o.relation, o.can_grant, o.can_revoke, o.requires, o.requires_revoke, o.grantee_types
+              FROM authz.grant_options(p_store, v_req->>'actor_type', v_req->>'actor_id',
+                                       v_req->>'object_type', v_req->>'object_id',
+                                       CASE WHEN jsonb_typeof(v_req->'context') = 'object' THEN v_req->'context' END) o;
+    END LOOP;
+END;
+$$;

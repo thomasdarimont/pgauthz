@@ -197,6 +197,7 @@ $$;
 
 -- ga_12: model_remove_type takes the type's grant rules with it; delete_store cascades
 DO $$
+DECLARE v_sid int;
 BEGIN
     PERFORM authz.model_register_type('test_grant', 'note');
     PERFORM authz.model_add_rule('test_grant', 'note', 'viewer', 'direct');
@@ -206,8 +207,81 @@ BEGIN
     PERFORM authz.model_remove_type('test_grant', 'note');
     PERFORM _test_assert('ga_12_rules_gone_with_type',
         (SELECT count(*) FROM authz.grant_rules g JOIN authz.types t ON t.id = g.object_type WHERE g.store_id = authz._s('test_grant') AND t.name = 'note')::text, '0');
+    v_sid := authz._s('test_grant_t2');
     PERFORM authz.delete_store('test_grant_t2', p_purge_audit => true);
-    PERFORM _test_assert('ga_12_delete_store_cascades', (SELECT count(*) FROM authz.grant_rules_audit WHERE store_id NOT IN (SELECT id FROM authz.stores))::text, '0');
+    PERFORM _test_assert('ga_12_delete_store_cascades', (SELECT count(*) FROM authz.grant_rules_audit WHERE store_id = v_sid)::text, '0');
+END;
+$$;
+
+-- ga_13: grant_options renders the dialog — per relation, can_grant / can_revoke and who may hold it
+DO $$
+DECLARE v_row record; n int;
+BEGIN
+    -- bob is an editor: may grant+revoke viewer, neither for editor (requires owner to revoke)
+    SELECT count(*) INTO n FROM authz.grant_options('test_grant', 'user', 'bob', 'document', 'plan');
+    PERFORM _test_assert('ga_13_one_row_per_rule', n::text, '2');
+    SELECT * INTO v_row FROM authz.grant_options('test_grant', 'user', 'bob', 'document', 'plan') WHERE relation = 'viewer';
+    PERFORM _test_assert('ga_13_bob_viewer', v_row.can_grant::text || '/' || v_row.can_revoke::text || '/' || v_row.requires || '/' || v_row.requires_revoke, 'true/true/can_share_view/can_share_view');
+    PERFORM _test_assert('ga_13_viewer_grantee_types', array_to_string(v_row.grantee_types, ','), 'team#member,user');
+    SELECT * INTO v_row FROM authz.grant_options('test_grant', 'user', 'bob', 'document', 'plan') WHERE relation = 'editor';
+    PERFORM _test_assert('ga_13_bob_editor', v_row.can_grant::text || '/' || v_row.can_revoke::text || '/' || v_row.requires_revoke, 'false/false/owner');
+    -- alice owns it: everything
+    SELECT bool_and(can_grant AND can_revoke) INTO v_row FROM authz.grant_options('test_grant', 'user', 'alice', 'document', 'plan');
+    PERFORM _test_assert('ga_13_owner_all', v_row.bool_and::text, 'true');
+    -- predicates agree; unknown rule / wildcard object → false, not an error
+    PERFORM _test_assert('ga_13_can_grant', authz.can_grant('test_grant', 'user', 'bob', 'viewer', 'document', 'plan')::text, 'true');
+    PERFORM _test_assert('ga_13_can_revoke_editor_false', authz.can_revoke('test_grant', 'user', 'bob', 'editor', 'document', 'plan')::text, 'false');
+    PERFORM _test_assert('ga_13_no_rule_false', authz.can_grant('test_grant', 'user', 'alice', 'owner', 'document', 'plan')::text, 'false');
+    PERFORM _test_assert('ga_13_wildcard_false', authz.can_grant('test_grant', 'user', 'alice', 'viewer', 'document', '*')::text, 'false');
+    -- conditional sharing right: context decides
+    PERFORM _test_assert('ga_13_ctx_missing', authz.can_grant('test_grant', 'user', 'hank', 'viewer', 'document', 'memo')::text, 'false');
+    PERFORM _test_assert('ga_13_ctx_given', authz.can_grant('test_grant', 'user', 'hank', 'viewer', 'document', 'memo', '{"client_ip": "10.1.2.3"}')::text, 'true');
+    -- batch: many (actor, object) pairs, rows carry the request index and identity
+    SELECT count(*) INTO n FROM authz.grant_options_batch('test_grant', '[
+        {"actor_type": "user", "actor_id": "bob",   "object_type": "document", "object_id": "plan"},
+        {"actor_type": "user", "actor_id": "alice", "object_type": "document", "object_id": "plan"},
+        {"actor_type": "user", "actor_id": "hank",  "object_type": "document", "object_id": "memo", "context": {"client_ip": "10.1.2.3"}}]');
+    PERFORM _test_assert('ga_13_batch_rows', n::text, '6');
+    PERFORM _test_assert('ga_13_batch_identity',
+        (SELECT idx::text || '/' || actor_id || '/' || can_grant::text FROM authz.grant_options_batch('test_grant', '[
+            {"actor_type": "user", "actor_id": "bob",  "object_type": "document", "object_id": "plan"},
+            {"actor_type": "user", "actor_id": "hank", "object_type": "document", "object_id": "memo", "context": {"client_ip": "10.1.2.3"}}]')
+          WHERE idx = 1 AND relation = 'viewer'), '1/hank/true');
+    -- rules by name, for "which of my documents can I share" via list_objects on requires
+    SELECT count(*) INTO n FROM authz.list_grant_rules('test_grant');
+    PERFORM _test_assert('ga_13_list_grant_rules', n::text, '2');
+    SELECT count(*) INTO n FROM authz.list_objects('test_grant', 'user', 'bob', 'can_share_view', 'document');
+    PERFORM _test_assert('ga_13_shareable_objects', n::text, '1');
+END;
+$$;
+
+-- ga_14: apply_grants — one transaction, all-or-nothing, counts only real changes
+DO $$
+DECLARE v_res jsonb; v_err text; v_state text;
+BEGIN
+    v_res := authz.apply_grants('test_grant', 'user', 'alice',
+        p_grants  => '[{"user_type":"user","user_id":"liz","relation":"viewer","object_type":"document","object_id":"plan"},
+                       {"user_type":"user","user_id":"max","relation":"editor","object_type":"document","object_id":"plan","expires_at":"2030-01-01T00:00:00Z"},
+                       {"user_type":"user","user_id":"bob","relation":"editor","object_type":"document","object_id":"plan"}]',
+        p_revokes => '[{"user_type":"user","user_id":"bob","relation":"viewer","object_type":"document","object_id":"plan"}]');
+    PERFORM _test_assert('ga_14_counts', v_res::text, '{"granted": 2, "revoked": 1}');   -- bob already editor: 0
+    PERFORM _test_assert('ga_14_liz_can_view', authz.check_access('test_grant', 'user', 'liz', 'can_view', 'document', 'plan')::text, 'true');
+    -- bob (editor) tries to add a viewer AND an editor in one batch: the editor entry is refused → nothing written
+    BEGIN
+        PERFORM authz.apply_grants('test_grant', 'user', 'bob',
+            p_grants => '[{"user_type":"user","user_id":"nia","relation":"viewer","object_type":"document","object_id":"plan"},
+                          {"user_type":"user","user_id":"omar","relation":"editor","object_type":"document","object_id":"plan"}]');
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; v_state := SQLSTATE; END;
+    PERFORM _test_assert('ga_14_refused_names_entry', v_err, 'apply_grants: grant entry 2: grant refused: user:bob is not allowed can_share_edit on document:plan');
+    PERFORM _test_assert('ga_14_sqlstate_kept', v_state, '42501');
+    PERFORM _test_assert('ga_14_all_or_nothing', authz.check_access('test_grant', 'user', 'nia', 'can_view', 'document', 'plan')::text, 'false');
+    -- per-entry context overrides the batch context
+    v_res := authz.apply_grants('test_grant', 'user', 'hank',
+        p_grants => '[{"user_type":"user","user_id":"pia","relation":"viewer","object_type":"document","object_id":"memo","context":{"client_ip":"10.9.9.9"}}]',
+        p_context => '{"client_ip": "8.8.8.8"}');
+    PERFORM _test_assert('ga_14_entry_context_wins', v_res->>'granted', '1');
+    PERFORM _test_assert('ga_14_audit_by_actor',
+        (SELECT performed_by FROM authz.audit_list_object('test_grant', 'document', 'plan') WHERE user_id = 'liz' AND action = 'INSERT' LIMIT 1), 'user:alice');
 END;
 $$;
 

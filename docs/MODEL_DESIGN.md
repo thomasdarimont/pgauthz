@@ -1331,7 +1331,12 @@ is the counterpart. What the rules give you:
   (revoke requires owner)` under the relation; the registry exports and
   applies the rules with the model; the audit table answers "who could
   share on Tuesday".
-- **Narrow trust.** The `authz_sharer` role holds only `grant` and `revoke`.
+- **Narrow trust.** The `authz_sharer` role holds only `grant`, `revoke`
+  and `apply_grants` (plus the read helpers).
+- **A share dialog is one read and one write.** `grant_options(actor,
+  object)` says per relation whether the actor may grant / revoke it and who
+  may hold it — the grantee never affects the answer — and `apply_grants`
+  saves the dialog's grants and revokes as one transaction, all-or-nothing.
 
 Patterns: "grant no more than you hold" is a required relation that implies
 the granted one (`can_share_edit = owner`, and `editor` is implied by

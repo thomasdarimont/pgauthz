@@ -37,6 +37,9 @@ func (detailStub) PolicyProvenance() authz.PolicyProvenance {
 func (detailStub) Explain(context.Context, authz.EvalRequest) (json.RawMessage, error) {
 	return json.RawMessage(`{"decision": {"allowed": false, "reason": "gate_denied"}, "tree": {}}`), nil
 }
+func (detailStub) GrantOptions(context.Context, authz.GrantOptionsRequest) (json.RawMessage, error) {
+	return json.RawMessage(`[]`), nil
+}
 func (detailStub) WatchChanges(context.Context, authz.WatchRequest) (json.RawMessage, error) {
 	return json.RawMessage(`{"changes": []}`), nil
 }

@@ -41,6 +41,9 @@ func (b *freshStub) WriteTuplesChecked(context.Context, authz.CheckedWriteReques
 }
 func (b *freshStub) Grant(context.Context, authz.GrantRequest) (bool, error)  { return true, nil }
 func (b *freshStub) Revoke(context.Context, authz.GrantRequest) (bool, error) { return true, nil }
+func (b *freshStub) ApplyGrants(context.Context, authz.ApplyGrantsRequest) (json.RawMessage, error) {
+	return json.RawMessage(`{"granted": 0, "revoked": 0}`), nil
+}
 func (b *freshStub) RecordEvents(context.Context, authz.RecordEventsRequest) (json.RawMessage, error) {
 	return json.RawMessage(`{"recorded": 1, "duplicates": 0, "seqs": [1]}`), nil
 }
@@ -201,6 +204,9 @@ func (minterlessStub) Grant(context.Context, authz.GrantRequest) (bool, error) {
 }
 func (minterlessStub) Revoke(context.Context, authz.GrantRequest) (bool, error) {
 	return true, nil
+}
+func (minterlessStub) ApplyGrants(context.Context, authz.ApplyGrantsRequest) (json.RawMessage, error) {
+	return json.RawMessage(`{"granted": 0, "revoked": 0}`), nil
 }
 
 // Freshness enabled + a writer that cannot mint is `unavailable` (enabled but

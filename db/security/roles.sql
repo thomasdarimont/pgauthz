@@ -264,6 +264,13 @@ GRANT USAGE ON SCHEMA authz TO authz_auditor, authz_reader, authz_writer, authz_
 ------------------------------------------------------------------------
 GRANT EXECUTE ON FUNCTION authz.grant(text, text, text, text, text, text, text, text, text, text, jsonb, timestamptz, jsonb) TO authz_sharer;
 GRANT EXECUTE ON FUNCTION authz.revoke(text, text, text, text, text, text, text, text, text, jsonb) TO authz_sharer;
+GRANT EXECUTE ON FUNCTION authz.apply_grants(text, text, text, jsonb, jsonb, jsonb) TO authz_sharer;
+-- Rendering what an actor may do is a READ: reader (and sharer) may ask.
+GRANT EXECUTE ON FUNCTION authz.grant_options(text, text, text, text, text, jsonb) TO authz_reader, authz_sharer;
+GRANT EXECUTE ON FUNCTION authz.can_grant(text, text, text, text, text, text, jsonb) TO authz_reader, authz_sharer;
+GRANT EXECUTE ON FUNCTION authz.can_revoke(text, text, text, text, text, text, jsonb) TO authz_reader, authz_sharer;
+GRANT EXECUTE ON FUNCTION authz.list_grant_rules(text) TO authz_reader, authz_sharer;
+GRANT EXECUTE ON FUNCTION authz.grant_options_batch(text, jsonb) TO authz_reader, authz_sharer;
 
 ------------------------------------------------------------------------
 -- authz_recorder: feed the action log (ADR 0012). EXECUTE on the two record
@@ -463,6 +470,12 @@ ALTER FUNCTION authz.model_add_grant_rule(text, text, text, text, text) SECURITY
 ALTER FUNCTION authz.model_drop_grant_rule(text, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.grant(text, text, text, text, text, text, text, text, text, text, jsonb, timestamptz, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.revoke(text, text, text, text, text, text, text, text, text, jsonb) SECURITY DEFINER;
+ALTER FUNCTION authz.apply_grants(text, text, text, jsonb, jsonb, jsonb) SECURITY DEFINER;
+ALTER FUNCTION authz.grant_options(text, text, text, text, text, jsonb) SECURITY DEFINER;
+ALTER FUNCTION authz.can_grant(text, text, text, text, text, text, jsonb) SECURITY DEFINER;
+ALTER FUNCTION authz.can_revoke(text, text, text, text, text, text, jsonb) SECURITY DEFINER;
+ALTER FUNCTION authz.list_grant_rules(text) SECURITY DEFINER;
+ALTER FUNCTION authz.grant_options_batch(text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.model_set_type_labels(text, text, text[]) SECURITY DEFINER;
 ALTER FUNCTION authz.model_add_type_labels(text, text, text[]) SECURITY DEFINER;
 ALTER FUNCTION authz.model_remove_type_labels(text, text, text[]) SECURITY DEFINER;

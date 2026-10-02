@@ -28,6 +28,17 @@ pre-1.0, minor versions may include breaking changes.
   with the engine's reason when refused; OPA ops `grant` / `revoke`. New
   suite `tests/sql/tests_grant.sql`. (`grant`/`revoke` are SQL reserved
   words: call them schema-qualified, as every authz function is.)
+  **For share dialogs:** `grant_options(store, actor, object)` renders per
+  relation whether the actor may grant / revoke it, the required relations
+  and who may hold it (`grantee_types`); `can_grant` / `can_revoke` as
+  booleans (false, never an error, without a rule); `grant_options_batch` for
+  many (actor, object) pairs in one call (a list view's "Share" buttons);
+  `list_grant_rules`; and
+  `apply_grants(store, actor, p_grants, p_revokes)` saves a dialog's changes
+  as one transaction, all-or-nothing, naming a refused entry. pgauthzd:
+  `POST /pgauthz/v1/grant-options` (a read) and `/apply-grants`. The gdrive
+  example gains grant rules (`viewer` requires `can_share`; revoking a doc's
+  viewer requires `owner`), a share-dialog demo section and tests.
 - **`authz.model_remove_type(store, type, p_force, p_performed_by)`** — the
   missing counterpart of `model_register_type`. Removes a type with its rules,
   the restrictions that name it on either side and its tuple partition; fails

@@ -42,6 +42,12 @@ func (b *writeStubBackend) Revoke(_ context.Context, req authz.GrantRequest) (bo
 	b.lastGrant = req
 	return b.written > 0, b.writeErr
 }
+func (b *writeStubBackend) ApplyGrants(context.Context, authz.ApplyGrantsRequest) (json.RawMessage, error) {
+	if b.writeErr != nil {
+		return nil, b.writeErr
+	}
+	return json.RawMessage(`{"granted": 2, "revoked": 1}`), nil
+}
 func (b *writeStubBackend) DeleteTuples(context.Context, authz.WriteRequest) (int, error) {
 	return b.written, b.writeErr
 }

@@ -23,6 +23,7 @@ combine several.
   - [Rule groups: intersection and exclusion — delete your own items unless you're admin; blocked members can't edit](#rule-groups-intersection-and-exclusion--delete-your-own-items-unless-youre-admin-blocked-members-cant-edit)
   - [Object wildcard — an auditor who sees every document, now and in future](#object-wildcard--an-auditor-who-sees-every-document-now-and-in-future)
   - [Grant rules — who may share, and never more than they hold](#grant-rules--who-may-share-and-never-more-than-they-hold)
+  - [grant_options, apply_grants — the share dialog](#grant_options-apply_grants--the-share-dialog)
   - [Marker tuples and exclusion — archived, under legal hold, draft only](#marker-tuples-and-exclusion--archived-under-legal-hold-draft-only)
   - [Object wildcard, bulk delete, expiry — suspended, offboarded, break-glass](#object-wildcard-bulk-delete-expiry--suspended-offboarded-break-glass)
   - [Search API as a JOIN — show me only what I may see](#search-api-as-a-join--show-me-only-what-i-may-see)
@@ -587,6 +588,60 @@ Multi-tuple invariants and delegation chains remain `write_tuples_checked`.
 Shown in: [API → grant / revoke](API.md#grant--revoke--share-on-behalf-of-an-actor),
 [MODEL_DESIGN → Grant rules](MODEL_DESIGN.md#grant-rules-who-may-share),
 [Delegation with attenuation](#delegation-with-attenuation-checked-writes--subagents-never-exceed-their-parent) below.
+
+### grant_options, apply_grants — the share dialog
+
+**Scenario:** A "Share" dialog on a document: it must show which roles the
+current user may hand out, offer only the kinds of grantee each role may
+hold, put a revoke button on exactly the rows the user may remove, and save
+the whole set of changes at once or not at all.
+
+**Solution:** One read renders the dialog, one write saves it. The grantee
+never changes the answer: whether alice may share the design spec depends on
+alice, the relation and the document, so the dialog asks once per object,
+not once per person.
+
+**1. Render from one call.** `grant_options` returns, per relation with a
+grant rule, whether the actor may grant and revoke it, the rights those
+depend on, and who may hold it. In the Drive example, `can_share` is
+inherited from the folder, and revoking on a document needs the owner.
+
+```sql
+SELECT * FROM authz.grant_options('gdrive', 'user', 'alice', 'doc', 'design_spec');
+--  relation | can_grant | can_revoke | requires  | requires_revoke | grantee_types
+--  viewer   | t         | f          | can_share | owner           | {group#member,user,user:*}
+```
+
+The "who has access" list is `list_subjects` on the relation; the revoke
+button on each row is `can_revoke` from the same call. A list view with a
+"Share" button per row is `grant_options_batch` with one request per
+document. `can_grant` and
+`can_revoke` exist as plain booleans for a single button. For "which of my
+documents can I share at all", the required relation is the search:
+`list_objects(alice, 'can_share', 'doc')`.
+
+**2. Save atomically.** The dialog's additions and removals go through
+`apply_grants` as one transaction: every entry is decided for the actor
+under its object lock, a single refusal rolls everything back, and the error
+names the entry. Usersets and expiry are per entry.
+
+```sql
+SELECT authz.apply_grants('gdrive', 'user', 'frank',
+    p_grants  => '[{"user_type": "user", "user_id": "dave", "relation": "viewer", "object_type": "doc", "object_id": "design_spec"},
+                   {"user_type": "group", "user_id": "engineering", "user_relation": "member", "relation": "viewer",
+                    "object_type": "doc", "object_id": "design_spec", "expires_at": "2030-01-01T00:00:00Z"}]',
+    p_revokes => '[{"user_type": "user", "user_id": "bob", "relation": "viewer", "object_type": "doc", "object_id": "design_spec"}]');
+-- {"granted": 2, "revoked": 1}
+-- a refused entry: ERROR: apply_grants: grant entry 2: grant refused: user:frank is not allowed … (nothing written)
+```
+
+Over HTTP the same two calls are `POST /pgauthz/v1/grant-options` (a read)
+and `POST /pgauthz/v1/apply-grants`, with the actor taken from the token.
+Afterwards `audit_list_object` shows every change with the actor who made
+it.
+
+Shown in: [`examples/models/gdrive/`](../examples/models/gdrive) (section 12
+of `demo.sql`, with tests), [API → grant / revoke](API.md#grant--revoke--share-on-behalf-of-an-actor).
 
 ### Marker tuples and exclusion — archived, under legal hold, draft only
 
