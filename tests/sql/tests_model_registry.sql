@@ -138,8 +138,13 @@ BEGIN
      WHERE a.version = 2;
     PERFORM _test_assert('reg_19_fleet_apply_both_v2', v_count::text, '2');
 
-    -- An extra type in the target is never removed automatically: error.
+    -- An extra type still referenced by tuples blocks the apply (apply
+    -- removes only UNREFERENCED extra types, through model_remove_type).
     PERFORM authz.model_register_type('test_reg_t2', 'rogue');
+    PERFORM authz.model_register_relation('test_reg_t2', 'rogue_rel');
+    PERFORM authz.model_add_rule('test_reg_t2', 'rogue', 'rogue_rel', 'direct');
+    PERFORM authz.model_add_type_restriction('test_reg_t2', 'rogue', 'rogue_rel', 'user');
+    PERFORM authz.write_tuple('test_reg_t2', 'user', 'x', 'rogue_rel', 'rogue', 'r1');
     BEGIN
         PERFORM authz.apply_model('test_reg_t2', 'test_reg_model', 2);
     EXCEPTION WHEN OTHERS THEN
@@ -187,12 +192,22 @@ BEGIN
             || '/' || (p->'rollback'->>'possible'),
         'false/true/["always"]/["editor"]/true');
 
-    -- Extra type in the store → extra_type blocker, can_apply=false.
+    -- Extra type referenced by a tuple → type_referenced blocker with the
+    -- count, can_apply=false; once the tuple is gone the type is no longer a
+    -- blocker (apply would remove it) and the plan is applicable again.
     p := authz.plan_model_apply('test_reg_t2', 'test_reg_model');
     PERFORM _test_assert('reg_25_plan_extra_type_blocks',
         (p->>'can_apply') || '/' || (p->'blockers'->0->>'kind')
-            || '/' || (p->'blockers'->0->>'name'),
-        'false/extra_type/rogue');
+            || '/' || (p->'blockers'->0->>'name') || '/' || (p->'blockers'->0->>'tuples'),
+        'false/type_referenced/rogue/1');
+    PERFORM authz.delete_tuple('test_reg_t2', 'user', 'x', 'rogue_rel', 'rogue', 'r1');
+    p := authz.plan_model_apply('test_reg_t2', 'test_reg_model');
+    PERFORM _test_assert('reg_25b_unreferenced_extra_type_not_a_blocker',
+        (p->>'can_apply') || '/' || jsonb_array_length(p->'blockers')::text, 'true/0');
+    PERFORM _test_assert('reg_25c_apply_removes_unreferenced_type',
+        (SELECT count(*) FROM authz.apply_model('test_reg_t2', 'test_reg_model', 2))::text, '1');
+    PERFORM _test_assert('reg_25d_type_gone',
+        (SELECT count(*) FROM authz.types WHERE store_id = authz._s('test_reg_t2') AND name = 'rogue')::text, '0');
 
     -- Relation slated for removal but still referenced by tuples → blocker
     -- with the tuple count; deleting the tuples clears it.

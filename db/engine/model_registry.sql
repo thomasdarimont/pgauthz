@@ -268,8 +268,8 @@ DECLARE
     v_version  integer;
     v_sum      text;
     v_def      jsonb;
-    v_extra    text;
     v_row      jsonb;
+    v_stale    record;
     v_rel      record;
     v_live_sum text;
 BEGIN
@@ -288,16 +288,24 @@ BEGIN
             v_def->>'format';
     END IF;
 
-    -- Strict: no automated type removal.
-    SELECT string_agg(t.name, ', ' ORDER BY t.name) INTO v_extra
-      FROM authz.types t
-     WHERE t.store_id = v_store_id
-       AND t.name NOT IN (SELECT x->>'name' FROM jsonb_array_elements(v_def->'types') x);
-    IF v_extra IS NOT NULL THEN
-        RAISE EXCEPTION 'apply_model: store % has types not in model %/%: % — '
-            'type removal is not automated (a type owns a tuple partition); '
-            'remove them manually before applying', p_store, p_name, v_version, v_extra;
-    END IF;
+    -- Stale types: removed through model_remove_type, which fails closed —
+    -- a type still referenced by tuples (either side), gates or events
+    -- raises and aborts the apply (same stance as stale relations below).
+    -- Its rules/restrictions go with it; relations stay registered and are
+    -- reconciled further down. plan_model_apply reports the blockers.
+    FOR v_stale IN
+        SELECT t.name FROM authz.types t
+         WHERE t.store_id = v_store_id
+           AND t.name NOT IN (SELECT x->>'name' FROM jsonb_array_elements(v_def->'types') x)
+         ORDER BY t.name
+    LOOP
+        BEGIN
+            PERFORM authz.model_remove_type(p_store, v_stale.name);
+        EXCEPTION WHEN OTHERS THEN
+            RAISE EXCEPTION 'apply_model: type % is not in model %/% and cannot be removed from store %: %',
+                v_stale.name, p_name, v_version, p_store, SQLERRM;
+        END;
+    END LOOP;
 
     -- Types: add new (with partition), update metadata on existing.
     FOR v_row IN SELECT * FROM jsonb_array_elements(v_def->'types')
@@ -662,7 +670,7 @@ $$;
 --     can_apply,                       -- no blockers found
 --     current,                         -- store_model_state + in_sync, or NULL (unmanaged)
 --     blockers: [                      -- each would make apply_model raise
---       {kind: "extra_type",                     name},
+--       {kind: "type_referenced",   name, tuples, gates, events},  -- extra type apply cannot remove
 --       {kind: "relation_referenced_by_tuples",  name, tuples},
 --       {kind: "cel_evaluator_missing",          conditions: [names]}
 --     ],
@@ -676,8 +684,10 @@ $$;
 --     rollback: {                      -- feasibility of re-applying the CURRENTLY
 --       to_version,                    -- recorded version after this apply
 --       possible,                      -- false if the target adds types the current
---                                      -- version lacks (no automated type removal)
---       type_removals_required:        [names],
+--                                      -- version lacks: rolling back removes them,
+--                                      -- which succeeds only while nothing
+--                                      -- references them at that time
+--       type_removals_required:        [names],   -- removable only while unreferenced
 --       relations_requiring_removal:   [names]  -- removable only while no tuples
 --                                               -- reference them at rollback time
 --     } | NULL                         -- NULL for unmanaged stores
@@ -728,13 +738,28 @@ BEGIN
     v_live     := authz.export_model(p_store);
     v_live_sum := authz._model_checksum(v_live);
 
-    -- Blocker: extra types (apply_model never removes a type).
-    SELECT v_blockers || COALESCE(jsonb_agg(
-               jsonb_build_object('kind', 'extra_type', 'name', t.e->>'name')
-               ORDER BY t.e->>'name'), '[]'::jsonb)
-      INTO v_blockers
-      FROM jsonb_array_elements(authz._jsonb_array_except_by_name(
-               v_live->'types', v_def->'types')) AS t(e);
+    -- Blocker: extra types that apply_model's model_remove_type would refuse
+    -- — referenced by tuples (either side), a gate, or recorded events. An
+    -- unreferenced extra type is removed by apply and is not a blocker.
+    FOR v_rel IN
+        SELECT x.e->>'name' AS name
+          FROM jsonb_array_elements(authz._jsonb_array_except_by_name(v_live->'types', v_def->'types')) AS x(e)
+         ORDER BY 1
+    LOOP
+        DECLARE v_tid int := authz._t(v_store_id, v_rel.name); v_t bigint; v_g int; v_e bigint;
+        BEGIN
+            SELECT count(*) INTO v_t FROM authz.tuples t
+             WHERE t.store_id = v_store_id AND (t.object_type = v_tid OR t.user_type = v_tid);
+            SELECT count(*) INTO v_g FROM authz.model_gates g WHERE g.store_id = v_store_id AND g.object_type = v_tid;
+            SELECT count(*) INTO v_e FROM authz.events e
+             WHERE e.store_id = v_store_id AND (e.subject_type = v_tid OR e.object_type = v_tid);
+            IF v_t > 0 OR v_g > 0 OR v_e > 0 THEN
+                v_blockers := v_blockers || jsonb_build_object(
+                    'kind', 'type_referenced', 'name', v_rel.name,
+                    'tuples', v_t, 'gates', v_g, 'events', v_e);
+            END IF;
+        END;
+    END LOOP;
 
     -- Blocker: stale relations still referenced by tuples.
     v_rel_remove := authz._jsonb_array_except_by_name(v_live->'relations', v_def->'relations');

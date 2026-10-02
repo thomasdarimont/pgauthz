@@ -129,6 +129,125 @@ END;
 $$;
 
 ------------------------------------------------------------------------
+-- model_remove_type: removes a type from a store's dictionary together
+-- with everything the model says about it — rules on the type, type
+-- restrictions where it is the object type OR the allowed subject type —
+-- and its dedicated tuple partition. The relations the type's rules used
+-- stay registered (other types may use them).
+--
+-- Fail-closed guards, in order:
+--   1. Temporal gates on the type, recorded events naming it (as subject
+--      or object) → always refused; drop the gates / purge the events
+--      first (those are deliberate operator actions).
+--   2. Tuples naming the type on either side → refused unless p_force,
+--      which deletes them (expired rows too) through the audited path:
+--      every removed tuple gets a DELETE audit row attributed to
+--      p_performed_by / the effective role, and the changefeed is notified.
+--
+-- What it does NOT do: touch the audit tables. The type's history stays in
+-- tuples_audit / models_audit under its integer id, but the live dictionary
+-- no longer resolves that id, so audit_check_access / audit_list_* for the
+-- removed type raise "Unknown type" from then on — exactly as delete_store
+-- (vs retire_store) does for a whole store. For an audit-critical store,
+-- keep the type registered and delete its tuples instead.
+--
+-- Returns a summary: {"type", "tuples_deleted", "rules_removed",
+-- "restrictions_removed", "partition_dropped"}.
+--
+-- Examples:
+--   SELECT authz.model_remove_type('demo', 'legacy_report');
+--   SELECT authz.model_remove_type('demo', 'legacy_report', p_force => true);
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.model_remove_type(
+    p_store        text,
+    p_type_name    text,
+    p_force        boolean DEFAULT false,
+    p_performed_by text    DEFAULT NULL
+) RETURNS jsonb
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id     integer := authz._s(p_store);
+    v_type_id      integer := authz._t(v_store_id, p_type_name);
+    v_gates        int;
+    v_events       bigint;
+    v_tuples       bigint := 0;
+    v_rules        int;
+    v_restrictions int;
+    v_part_name    text;
+    v_part_dropped boolean := false;
+BEGIN
+    -- 1. Hard references: never removed implicitly.
+    SELECT count(*) INTO v_gates FROM authz.model_gates g
+     WHERE g.store_id = v_store_id AND g.object_type = v_type_id;
+    IF v_gates > 0 THEN
+        RAISE EXCEPTION 'model_remove_type: type % in store % has % temporal gate(s) — drop them first (drop_gate)',
+            p_type_name, p_store, v_gates;
+    END IF;
+    SELECT count(*) INTO v_events FROM authz.events e
+     WHERE e.store_id = v_store_id AND (e.subject_type = v_type_id OR e.object_type = v_type_id);
+    IF v_events > 0 THEN
+        RAISE EXCEPTION 'model_remove_type: type % in store % is named by % recorded event(s) — purge them first (purge_events)',
+            p_type_name, p_store, v_events;
+    END IF;
+
+    -- 2. Tuples on either side: refuse, or (p_force) delete through the
+    --    audited path. Expired rows are hidden from this count by RLS but
+    --    deleted by the helper; the count reported is the helper's.
+    SELECT count(*) INTO v_tuples FROM authz.tuples t
+     WHERE t.store_id = v_store_id AND (t.object_type = v_type_id OR t.user_type = v_type_id);
+    IF v_tuples > 0 AND NOT p_force THEN
+        RAISE EXCEPTION 'model_remove_type: type % in store % is referenced by % tuple(s) (as object or subject) — delete them first, or pass p_force => true to delete them',
+            p_type_name, p_store, v_tuples;
+    END IF;
+    PERFORM set_config('authz.performed_by', COALESCE(p_performed_by, ''), true);
+    v_tuples := authz._rls_delete_type_tuples(v_store_id, v_type_id);
+
+    -- 3. Model rows that mention the type (both logged to models_audit).
+    DELETE FROM authz.type_restrictions x
+     WHERE x.store_id = v_store_id
+       AND (x.object_type = v_type_id OR x.allowed_user_type = v_type_id);
+    GET DIAGNOSTICS v_restrictions = ROW_COUNT;
+    DELETE FROM authz.models m
+     WHERE m.store_id = v_store_id AND m.object_type = v_type_id;
+    GET DIAGNOSTICS v_rules = ROW_COUNT;
+
+    -- 4. The type's dedicated partition (same naming as _ensure_tuple_partition).
+    v_part_name := 'tuples_' || regexp_replace(p_store, '[^a-zA-Z0-9]', '_', 'g')
+                   || '_'     || regexp_replace(p_type_name, '[^a-zA-Z0-9]', '_', 'g');
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_class c
+                 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'authz' AND c.relname = v_part_name AND c.relispartition) THEN
+        EXECUTE format('ALTER TABLE authz.tuples DETACH PARTITION authz.%I', v_part_name);
+        EXECUTE format('DROP TABLE authz.%I', v_part_name);
+        v_part_dropped := true;
+    END IF;
+
+    -- 5. The dictionary row, plus a TYPE_REMOVED marker in the audit trail
+    --    (object_type keeps the now-unresolvable id, object_id carries the
+    --    NAME so changefeed consumers can read it; sentinel 0/'*' elsewhere,
+    --    as STORE_RETIRED). watch_changes surfaces it to every watcher.
+    DELETE FROM authz.types WHERE id = v_type_id;
+    INSERT INTO authz.tuples_audit (
+        action, performed_at, performed_by, store_id,
+        user_type, user_id, user_relation, relation, object_type, object_id,
+        condition_id, condition_context
+    ) VALUES (
+        'TYPE_REMOVED', transaction_timestamp(),
+        COALESCE(NULLIF(current_setting('authz.performed_by', true), ''), authz._effective_role()),
+        v_store_id, 0, '*', NULL, 0, v_type_id, p_type_name, NULL, NULL
+    );
+    PERFORM pg_notify('authz_changes', v_store_id::text);
+
+    RETURN jsonb_build_object(
+        'type',                 p_type_name,
+        'tuples_deleted',       v_tuples,
+        'rules_removed',        v_rules,
+        'restrictions_removed', v_restrictions,
+        'partition_dropped',    v_part_dropped);
+END;
+$$;
+
+------------------------------------------------------------------------
 -- model_register_relation: registers a new relation name in a store.
 --
 -- Idempotent — returns the relation's integer ID whether it was

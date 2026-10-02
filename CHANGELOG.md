@@ -7,6 +7,21 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **`authz.model_remove_type(store, type, p_force, p_performed_by)`** — the
+  missing counterpart of `model_register_type`. Removes a type with its rules,
+  the restrictions that name it on either side and its tuple partition; fails
+  closed on gates and recorded events (always) and on tuples naming the type
+  as object or subject (unless `p_force`, which deletes them, expired rows
+  included, through the audited path with a `TYPE_REMOVED` marker that
+  `watch_changes` delivers to every watcher). Before, nothing removed a type
+  and a manual `DELETE` orphaned its tuples. `apply_model` now removes types a
+  new version no longer declares when nothing references them; a referenced
+  one blocks the apply and `plan_model_apply` reports it as a
+  `type_referenced` blocker (replaces the unconditional `extra_type` blocker).
+  New suite `tests/sql/tests_model_remove_type.sql`.
+
 ### Changed
 
 - **Documentation split: one owner per topic.** `README.md` shrinks from

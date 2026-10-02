@@ -39,6 +39,7 @@ always uses explicit separate parameters for type, ID, and relation.
   - [delete_tuple — Remove a relationship tuple](#delete_tuple--remove-a-relationship-tuple)
   - [write_tuples / delete_tuples — Batch operations](#write_tuples--delete_tuples--batch-operations)
   - [delete_user_tuples — Remove all tuples for a user](#delete_user_tuples--remove-all-tuples-for-a-user)
+  - [model_remove_type — Remove a type and everything about it](#model_remove_type--remove-a-type-and-everything-about-it)
   - [audit_check_access — Point-in-time permission check](#audit_check_access--point-in-time-permission-check)
   - [audit_list_user / audit_list_object — Audit trail queries](#audit_list_user--audit_list_object--audit-trail-queries)
   - [record_event / list_events — The action log](#record_event--list_events--the-action-log)
@@ -354,6 +355,34 @@ SELECT authz.delete_user_tuples('demo', 'internal_user', 'grace');
 SELECT authz.delete_user_tuples('demo', 'internal_user', 'grace',
     p_performed_by => 'offboarding_service');
 ```
+
+### model_remove_type — Remove a type and everything about it
+
+Removes a type from a store's dictionary together with its rules, the type
+restrictions that name it (as object type or as allowed subject type) and its
+dedicated tuple partition. The relations its rules used stay registered.
+Fail-closed: a type with temporal gates or recorded events is always refused
+(drop the gates / purge the events first); a type still named by tuples on
+either side is refused unless `p_force => true`, which deletes them, expired
+rows included, through the audited path. Returns a summary.
+
+```sql
+SELECT authz.model_remove_type('demo', 'legacy_report');
+-- ERROR: model_remove_type: type legacy_report in store demo is referenced by 12 tuple(s) …
+
+SELECT authz.model_remove_type('demo', 'legacy_report', p_force => true, p_performed_by => 'cleanup-job');
+-- {"type": "legacy_report", "tuples_deleted": 12, "rules_removed": 3,
+--  "restrictions_removed": 2, "partition_dropped": true}
+```
+
+The audit trail keeps the type's history (plus a `TYPE_REMOVED` marker that
+`watch_changes` delivers to every watcher), but the live dictionary no longer
+resolves the type, so `audit_check_access` and the `audit_list_*` functions
+raise "Unknown type" for it afterwards — as `delete_store` does for a whole
+store. For an audit-critical store, keep the type registered and delete its
+tuples instead. `apply_model` calls this for types a new model version no
+longer declares, without `p_force`, so a referenced type blocks the apply
+(`plan_model_apply` reports it as a `type_referenced` blocker).
 
 ### audit_check_access — Point-in-time permission check
 

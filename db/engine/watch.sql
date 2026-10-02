@@ -78,12 +78,14 @@ BEGIN
          WHERE a.store_id = v_store_id
            AND (a.performed_at, a.seq) > (p_after_at, p_after_seq)
            AND a.performed_at <= clock_timestamp() - p_lag
-           -- Store-lifecycle events are store-wide: they bypass the per-tuple
-           -- type / namespace / relation filters so a narrowly-scoped watcher
-           -- still learns the whole store was retired.
-           AND (a.action = 'STORE_RETIRED' OR p_object_types IS NULL OR a.object_type = ANY(v_object_types))
-           AND (a.action = 'STORE_RETIRED' OR p_namespaces   IS NULL OR ot.namespace  = ANY(p_namespaces))
-           AND (a.action = 'STORE_RETIRED' OR p_relations    IS NULL OR a.relation     = ANY(v_relations))
+           -- Lifecycle events (STORE_RETIRED, TYPE_REMOVED — the latter names
+           -- the type in object_id) bypass the per-tuple type / namespace /
+           -- relation filters so a narrowly-scoped watcher still learns that
+           -- the store was retired or a type (whose name may be its own
+           -- filter, now unresolvable) was removed.
+           AND (a.action IN ('STORE_RETIRED', 'TYPE_REMOVED') OR p_object_types IS NULL OR a.object_type = ANY(v_object_types))
+           AND (a.action IN ('STORE_RETIRED', 'TYPE_REMOVED') OR p_namespaces   IS NULL OR ot.namespace  = ANY(p_namespaces))
+           AND (a.action IN ('STORE_RETIRED', 'TYPE_REMOVED') OR p_relations    IS NULL OR a.relation     = ANY(v_relations))
          ORDER BY a.performed_at, a.seq
          LIMIT p_limit;
 END;

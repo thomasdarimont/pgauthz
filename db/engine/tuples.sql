@@ -115,6 +115,26 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION authz._rls_delete_type_tuples(
+    p_store_id int,
+    p_type_id  int
+) RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_count int;
+BEGIN
+    -- Purge every tuple that names the type on EITHER side, incl. expired
+    -- rows (model_remove_type with p_force). The object side lives in the
+    -- type's own partition, the subject side in other types' partitions.
+    -- Runs as authz_rls_bypass; the audit trigger logs each row.
+    DELETE FROM authz.tuples
+     WHERE store_id = p_store_id
+       AND (object_type = p_type_id OR user_type = p_type_id);
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    RETURN v_count;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION authz.write_tuple(
     p_store             text,
     p_user_type         text,

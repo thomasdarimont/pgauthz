@@ -90,8 +90,13 @@ check "apply v2" \
 check "rollout shows v2 = latest" \
     sh -c "'$CTL' model rollout ctl_it_model | grep -q '@2/latest 2'"
 
-# Blocked plan exits non-zero (extra type in the store) — CI-gateable.
-psqlq "SELECT authz.model_register_type('ctl_it_tenant', 'rogue');" >/dev/null
+# Blocked plan exits non-zero (extra type in the store, still referenced by a
+# tuple — an unreferenced extra type is removed by apply, not a blocker) — CI-gateable.
+psqlq "SELECT authz.model_register_type('ctl_it_tenant', 'rogue');
+       SELECT authz.model_register_relation('ctl_it_tenant', 'rogue_rel');
+       SELECT authz.model_add_rule('ctl_it_tenant', 'rogue', 'rogue_rel', 'direct');
+       SELECT authz.model_add_type_restriction('ctl_it_tenant', 'rogue', 'rogue_rel', 'user');
+       SELECT authz.write_tuple('ctl_it_tenant', 'user', 'x', 'rogue_rel', 'rogue', 'r1');" >/dev/null
 check_fails "plan exits non-zero on blockers" \
     "$CTL" model plan ctl_it_model --store ctl_it_tenant
 

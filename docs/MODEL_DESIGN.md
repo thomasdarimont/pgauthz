@@ -1392,6 +1392,34 @@ SELECT authz.delete_tuples('gdrive', ARRAY[
 Use `find_redundant_tuples` (below) to identify tuples that no longer contribute
 to any access decision.
 
+### Removing a Type
+
+Removing a whole type is a bigger step than removing a rule: a type owns a
+tuple partition, may be the *subject* type of other types' restrictions, and
+may be named by gates and recorded events. `model_remove_type` does the whole
+job and fails closed on every reference it will not remove on its own:
+
+| Reference | Behaviour |
+|---|---|
+| Temporal gates on the type, events naming it | Always refused: drop the gates / purge the events first |
+| Tuples naming the type as object **or** subject | Refused unless `p_force => true`, which deletes them (expired rows too) through the audited path |
+| Rules on the type, restrictions naming it on either side | Removed (logged to `models_audit`) |
+| Relations its rules used | Kept — other types may use them |
+| The type's tuple partition | Dropped |
+| Audit history | Kept under the type's integer id, with a `TYPE_REMOVED` marker; no longer resolvable by name |
+
+```sql
+SELECT authz.model_remove_type('gdrive', 'legacy_share', p_force => true);
+-- {"type": "legacy_share", "tuples_deleted": 40, "rules_removed": 2, "restrictions_removed": 1, "partition_dropped": true}
+```
+
+Because time travel resolves names against the live dictionary, removing a
+type makes "could X read legacy_share:1 last month" unanswerable from then
+on — the same trade-off as `delete_store` versus `retire_store`. For an
+audit-critical store, leave the type registered and delete its tuples. The
+registry uses this function for types a new version no longer declares (see
+[§16](#16-sharing-one-model-across-stores-model-registry)).
+
 ### Finding Redundant Tuples
 
 Over time, models accumulate tuples that are redundant — access is already
@@ -1964,9 +1992,10 @@ old version and is retried individually.
 **Rolling back is a forward operation.** Versions are immutable, and
 `apply_model('store', 'name', <older version>)` re-applies an older
 definition — but that is a *new rollout*, not an undo, and it inherits the
-same guard rails: types added by the newer version block the apply (no
-automated type removal), and relations that tenant tuples have referenced in
-the meantime block their own removal. Data written under the newer model can
+same guard rails: types added by the newer version are removed by the
+rollback only while nothing references them (`model_remove_type` without
+force), and relations that tenant tuples have referenced in the meantime
+block their own removal. Data written under the newer model can
 make the older model unreachable without cleanup. Plan model evolution the
 way you plan schema migrations — **expand → migrate → contract**: ship
 additive versions first (new relations/rules alongside the old), migrate
@@ -1995,15 +2024,17 @@ SELECT jsonb_pretty(authz.plan_model_apply('tenant_acme', 'saas_core', 3));
 --   },
 --   "rollback": {            -- could you re-apply the CURRENT version (2) after this?
 --     "to_version": 2,
---     "possible": false,     -- v3 adds a type, and types are never auto-removed
+--     "possible": false,     -- v3 adds a type; rolling back must remove it (only while unreferenced)
 --     "type_removals_required": ["folder"],
 --     "relations_requiring_removal": ["can_export"]
 --   }
 -- }
 ```
 
-Blocker kinds map one-to-one to `apply_model`'s guard rails: `extra_type`
-(the store has a type the definition lacks), `relation_referenced_by_tuples`
+Blocker kinds map one-to-one to `apply_model`'s guard rails:
+`type_referenced` (the store has a type the definition lacks **and** tuples,
+a gate or recorded events still name it — an unreferenced extra type is
+removed by apply via `model_remove_type`), `relation_referenced_by_tuples`
 (delete those tuples first), and `cel_evaluator_missing` (the definition
 carries CEL conditions but the store's database has no evaluator installed).
 The plan diffs the same canonical name-based exports the checksums hash, so
