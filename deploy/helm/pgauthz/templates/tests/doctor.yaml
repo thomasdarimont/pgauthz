@@ -2,9 +2,11 @@
 `helm test <release>` runs `pgauthzd doctor --profile production` with the
 READER deployment's configuration: the same config the daemon loads, plus
 demo-secret detection, JWKS reachability, the DB role assertion for the
-profile, OPA health and the decision-log sink. Fails the test (non-zero
-exit) on any failing check. Warnings are printed, not fatal — pass
-`--strict` via doctor.strict to fail on them too.
+profile and the decision-log sink. (OPA health is probed by the second pod
+below, which is wired like the OPA gateway and rendered only when
+authzen.opa.enabled.) Fails the test (non-zero exit) on any failing check.
+Warnings are printed, not fatal — pass `--strict` via doctor.strict to fail
+on them too.
 */ -}}
 apiVersion: v1
 kind: Pod
