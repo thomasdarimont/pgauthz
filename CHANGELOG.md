@@ -36,7 +36,10 @@ pre-1.0, minor versions may include breaking changes.
 - **`docs/USE-CASES.md`** — an index of use cases from simple (roles,
   hierarchies, public access, expiring grants) through common (folder
   inheritance, conditions, fail-closed device checks, rule groups, object
-  wildcards, data filtering, time travel, changefeed, policy hooks,
+  wildcards, sharing administration through checked writes, lifecycle
+  markers (archived, legal hold, draft), suspension / offboarding /
+  break-glass, one user in several tenants, service principals and acting
+  on behalf of a user, data filtering, time travel, changefeed, policy hooks,
   namespaces, the registry, OpenFGA and Cedar imports) to advanced (rate
   limits, prior approval, separation of duties, lockout, quotas, exact caps,
   shadow rollout, agent task scope, sequencing, delegation, the control

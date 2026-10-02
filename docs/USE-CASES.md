@@ -22,12 +22,17 @@ combine several.
   - [Conditional object wildcard, intersection, detailed check — deny from unmanaged devices, fail closed when you don't know](#conditional-object-wildcard-intersection-detailed-check--deny-from-unmanaged-devices-fail-closed-when-you-dont-know)
   - [Rule groups: intersection and exclusion — delete your own items unless you're admin; blocked members can't edit](#rule-groups-intersection-and-exclusion--delete-your-own-items-unless-youre-admin-blocked-members-cant-edit)
   - [Object wildcard — an auditor who sees every document, now and in future](#object-wildcard--an-auditor-who-sees-every-document-now-and-in-future)
+  - [Checked writes — who may share, and never more than they hold](#checked-writes--who-may-share-and-never-more-than-they-hold)
+  - [Marker tuples and exclusion — archived, under legal hold, draft only](#marker-tuples-and-exclusion--archived-under-legal-hold-draft-only)
+  - [Object wildcard, bulk delete, expiry — suspended, offboarded, break-glass](#object-wildcard-bulk-delete-expiry--suspended-offboarded-break-glass)
   - [Search API as a JOIN — show me only what I may see](#search-api-as-a-join--show-me-only-what-i-may-see)
   - [Time travel and the audit trail — could Grace read payroll last Tuesday, and who revoked it?](#time-travel-and-the-audit-trail--could-grace-read-payroll-last-tuesday-and-who-revoked-it)
   - [Changefeed — react to changes: cache invalidation, sync](#changefeed--react-to-changes-cache-invalidation-sync)
   - [Policy hooks (OPA) — an org-wide rule that narrows but never widens](#policy-hooks-opa--an-org-wide-rule-that-narrows-but-never-widens)
+  - [Store per tenant, tuple-to-userset — one user in several workspaces](#store-per-tenant-tuple-to-userset--one-user-in-several-workspaces)
   - [Namespaces — per-application isolation inside one store](#namespaces--per-application-isolation-inside-one-store)
   - [Model registry and model-as-code — one model, many tenants](#model-registry-and-model-as-code--one-model-many-tenants)
+  - [Typed service principals — jobs, exporters, and acting on behalf of a user](#typed-service-principals--jobs-exporters-and-acting-on-behalf-of-a-user)
   - [OpenFGA import — "we already have an OpenFGA model"](#openfga-import--we-already-have-an-openfga-model)
   - [Policies as data — "our policies are already in Cedar"](#policies-as-data--our-policies-are-already-in-cedar)
 - [Advanced](#advanced)
@@ -526,6 +531,194 @@ SELECT authz.write_tuple('demo', 'internal_user', 'nadia', 'viewer', 'document',
 ```
 Shown in: [MODEL_DESIGN → Object wildcards](MODEL_DESIGN.md#object-wildcards-privileged-grants).
 
+### Checked writes — who may share, and never more than they hold
+
+**Scenario:** Editors may share a document for viewing; only the owner may
+make someone an editor. "Can view" and "can change who views" must never be
+the same question, and a share must be refused if the sharer lost the right
+a moment earlier.
+
+**Solution:** Sharing rights are relations like any other, and the
+enforcement point writes the share **through a precondition** that checks
+the sharer's right inside the same transaction as the write.
+
+**1. Sharing rights are computed relations.** `can_share_view` and
+`can_share_edit` are separate from `can_view`; the owner holds both, an
+editor only the first.
+
+```sql
+SELECT authz.model_add_rule('share', 'document', 'can_view',       'computed', 'viewer');
+SELECT authz.model_add_rule('share', 'document', 'can_view',       'computed', 'editor');
+SELECT authz.model_add_rule('share', 'document', 'can_view',       'computed', 'owner');
+SELECT authz.model_add_rule('share', 'document', 'can_share_view', 'computed', 'editor');
+SELECT authz.model_add_rule('share', 'document', 'can_share_view', 'computed', 'owner');
+SELECT authz.model_add_rule('share', 'document', 'can_share_edit', 'computed', 'owner');
+```
+
+**2. The share is a checked write.** `write_tuples_checked` takes
+preconditions and writes; a precondition with `"match": "allowed"` runs a
+full access check for the *sharer*, and the write happens only if it
+passes. Everything runs in one transaction under a lock on the object, so a
+right revoked concurrently is seen.
+
+```sql
+-- bob (an editor) shares view access with carol: allowed
+SELECT authz.write_tuples_checked('share',
+  p_preconditions => '[{"match": "allowed", "user_type": "user", "user_id": "bob",
+                        "relation": "can_share_view", "object_type": "document", "object_id": "plan"}]',
+  p_writes        => '[{"user_type": "user", "user_id": "carol", "relation": "viewer",
+                        "object_type": "document", "object_id": "plan"}]',
+  p_performed_by  => 'bob');
+-- {"deleted": 0, "written": 1}
+
+-- bob tries to make dave an editor: the precondition fails, nothing is written
+SELECT authz.write_tuples_checked('share',
+  p_preconditions => '[{"match": "allowed", "user_type": "user", "user_id": "bob",
+                        "relation": "can_share_edit", "object_type": "document", "object_id": "plan"}]',
+  p_writes        => '[{"user_type": "user", "user_id": "dave", "relation": "editor",
+                        "object_type": "document", "object_id": "plan"}]',
+  p_performed_by  => 'bob');
+-- ERROR: Write precondition failed: allowed {... "relation": "can_share_edit" ...}
+```
+
+**3. Variations with the same mechanism.** "Grant no more than you hold" is
+a precondition that the sharer is `allowed` the relation being granted.
+Revoking someone else's access is a `can_unshare` relation checked the same
+way, with the tuple in `p_deletes`. "Nobody removes the owner" is a relation
+nobody holds, so the precondition can never pass. Over HTTP the same call is
+`POST /pgauthz/v1/write-checked`, and the audit trail records `performed_by`
+as the sharer, so "who gave carol access" is one query later.
+
+Shown in: [DEVELOPMENT → Conditional / atomic writes](DEVELOPMENT.md#conditional--atomic-writes-optimistic-concurrency),
+[`examples/models/aia-acme/`](../examples/models/aia-acme/README.md)
+(`employee_can_share`, `share_locked`), [Delegation with attenuation](#delegation-with-attenuation-checked-writes--subagents-never-exceed-their-parent) below.
+
+### Marker tuples and exclusion — archived, under legal hold, draft only
+
+**Scenario:** An archived document can be read but not edited; a document
+under legal hold cannot be deleted, not even by its owner; some documents
+may be edited only while they are drafts. The state lives in the
+application's own table and changes in the application's own transaction.
+
+**Solution:** A state is a **marker tuple** on the object: a relation whose
+subject is the wildcard `user:*`, so it holds for everyone. Permissions
+subtract it with an exclusion (or require it with an intersection). Because
+the engine lives in the same database, the marker is written in the same
+transaction as the state column, so the two can never disagree.
+
+**1. Marker relations allow the wildcard subject.**
+
+```sql
+SELECT authz.model_add_rule('docs', 'document', 'archived',   'direct');
+SELECT authz.model_add_rule('docs', 'document', 'legal_hold', 'direct');
+SELECT authz.model_add_type_restriction('docs', 'document', 'archived',   'user', p_allow_wildcard => true);
+SELECT authz.model_add_type_restriction('docs', 'document', 'legal_hold', 'user', p_allow_wildcard => true);
+```
+
+**2. Permissions subtract the marker.**
+
+```sql
+-- can_edit   = editor BUT NOT archived
+SELECT authz.model_add_rule('docs', 'document', 'can_edit', 'computed', 'editor',
+    p_group_id => 1, p_group_op => 'exclusion');
+SELECT authz.model_add_rule('docs', 'document', 'can_edit', 'computed', 'archived',
+    p_group_id => 1, p_group_op => 'exclusion', p_negated => true);
+-- can_delete = owner BUT NOT legal_hold
+SELECT authz.model_add_rule('docs', 'document', 'can_delete', 'computed', 'owner',
+    p_group_id => 1, p_group_op => 'exclusion');
+SELECT authz.model_add_rule('docs', 'document', 'can_delete', 'computed', 'legal_hold',
+    p_group_id => 1, p_group_op => 'exclusion', p_negated => true);
+```
+
+**3. Changing state is writing or deleting one tuple.**
+
+```sql
+SELECT authz.check_access('docs', 'user', 'bob', 'can_edit', 'document', 'q3');     -- true: bob is an editor
+
+UPDATE documents SET state = 'archived' WHERE id = 'q3';                            -- your table …
+SELECT authz.write_tuple('docs', 'user', '*', 'archived', 'document', 'q3');          -- … and the marker, same transaction
+SELECT authz.check_access('docs', 'user', 'bob', 'can_edit', 'document', 'q3');     -- false
+
+SELECT authz.write_tuple('docs', 'user', '*', 'legal_hold', 'document', 'q3');
+SELECT authz.check_access('docs', 'user', 'alice', 'can_delete', 'document', 'q3'); -- false, though alice owns it
+
+SELECT authz.delete_tuple('docs', 'user', '*', 'archived', 'document', 'q3');         -- un-archive
+SELECT authz.check_access('docs', 'user', 'bob', 'can_edit', 'document', 'q3');     -- true again
+```
+
+"Editable only while draft" is the same marker with an intersection instead:
+`can_edit = editor AND draft`, with `user:* → draft → document:x` written on
+creation and deleted on submit. Every marker change is in the audit trail
+and visible to time travel, so "was it archived when bob edited it?" is
+answerable; `list_objects` honours markers too, so an archived document
+drops out of "what can bob edit" without application code.
+
+Shown in: [MODEL_DESIGN → Rule groups](MODEL_DESIGN.md#rule-groups--intersection-and-exclusion),
+[MODEL_DESIGN → Wildcard tuples](MODEL_DESIGN.md#wildcard-tuples-public-access).
+
+### Object wildcard, bulk delete, expiry — suspended, offboarded, break-glass
+
+**Scenario:** A suspended account must lose access immediately but keep its
+grants for when it is reinstated; an offboarded employee loses everything,
+auditable; an on-call engineer gets edit rights for one hour during an
+incident, and someone must be able to see who granted what.
+
+**Solution:** Three different lifetimes, three different tools.
+
+**1. Suspension: one object-wildcard tuple, subtracted everywhere.** A
+`suspended` relation with the object wildcard holds for the user on every
+document; each permission subtracts it. The grants stay in place.
+
+```sql
+SELECT authz.model_add_rule('docs', 'document', 'suspended', 'direct', p_allow_object_wildcard => true);
+SELECT authz.model_add_type_restriction('docs', 'document', 'suspended', 'user');
+-- can_read = (viewer BUT NOT suspended) OR (editor BUT NOT suspended)
+SELECT authz.model_add_rule('docs', 'document', 'can_read', 'computed', 'viewer',    p_group_id => 1, p_group_op => 'exclusion');
+SELECT authz.model_add_rule('docs', 'document', 'can_read', 'computed', 'suspended', p_group_id => 1, p_group_op => 'exclusion', p_negated => true);
+SELECT authz.model_add_rule('docs', 'document', 'can_read', 'computed', 'editor',    p_group_id => 2, p_group_op => 'exclusion');
+SELECT authz.model_add_rule('docs', 'document', 'can_read', 'computed', 'suspended', p_group_id => 2, p_group_op => 'exclusion', p_negated => true);
+
+SELECT authz.write_tuple('docs', 'user', 'bob', 'suspended', 'document', '*');
+SELECT authz.check_access('docs', 'user', 'bob', 'can_read', 'document', 'q3');   -- false
+SELECT * FROM authz.list_objects('docs', 'user', 'bob', 'editor', 'document');    -- q3: the grant is still there
+SELECT authz.delete_tuple('docs', 'user', 'bob', 'suspended', 'document', '*');   -- reinstate
+```
+
+One tuple per object type that carries permissions; a suspension that must
+cover every type is one tuple per type, written together.
+
+**2. Offboarding: delete every tuple for the subject, in one audited call.**
+
+```sql
+SELECT authz.delete_user_tuples('docs', 'user', 'bob', p_performed_by => 'hr-sync');   -- → number removed
+SELECT authz.check_access('docs', 'user', 'bob', 'can_read', 'document', 'q3');         -- false
+SELECT * FROM authz.audit_list_user('docs', 'user', 'bob');   -- every grant he had, and the DELETEs by hr-sync
+```
+
+The audit trail keeps what bob had, so "what could bob reach on his last
+day" is a time-travel query, and the changefeed tells caches to drop him.
+
+**3. Break-glass: an expiring grant with an attributed writer.** The grant
+ends by itself; the audit row says who made it; the reason belongs in the
+incident ticket, or in the action log as a recorded event.
+
+```sql
+SELECT authz.write_tuple('docs', 'user', 'oncall-erin', 'editor', 'document', 'q3',
+    p_expires_at   => now() + interval '1 hour',
+    p_performed_by => 'erin');
+SELECT authz.record_event('docs', 'user', 'oncall-erin', 'break_glass', 'document', 'q3',
+    p_payload => '{"ticket": "INC-4711"}', p_recorded_by => 'svc:incident-portal');
+```
+
+For the review afterwards: `audit_list_user` shows the grant and its expiry,
+`list_events` the recorded reason. A gate can even require the ticket:
+`formerly_within` on `break_glass` recorded by the incident portal, so an
+on-call edit without a ticket is denied.
+
+Shown in: [API → delete_user_tuples](API.md#delete_user_tuples--remove-all-tuples-for-a-user),
+[MODEL_DESIGN → Object wildcards](MODEL_DESIGN.md#object-wildcards-privileged-grants),
+[AUDIT → Audit trail and time travel](AUDIT.md#audit-trail-and-time-travel).
+
 ### Search API as a JOIN — show me only what I may see
 
 **Scenario:** A listing page shows the twenty newest documents the user may
@@ -600,6 +793,58 @@ deny contains {"code": "export_requires_client_role"} if {
 Shown in: [`examples/opa-hooks/`](../examples/opa-hooks/README.md),
 [ADR 0011](adr/0011-opa-policy-hooks.md).
 
+### Store per tenant, tuple-to-userset — one user in several workspaces
+
+**Scenario:** Alice is a member of two customers' workspaces. Nothing she
+holds in one may ever grant her anything in the other, a document belongs to
+exactly one workspace, and a support engineer's access must be deliberate
+and visible, not a side effect of a global role.
+
+**Solution:** Two boundaries, one hard and one modelled.
+
+**1. The hard boundary is the store.** Every tuple, model rule and check
+carries a `store_id`; a check in one store cannot see another store's tuples
+at all. One store per tenant is the recommended shape, with the registry
+keeping the model identical across them. Over HTTP, pgauthzd binds each
+JWT issuer to the stores it may select, so a token for tenant A cannot even
+address tenant B.
+
+```sql
+SELECT authz.check_access('tenant_a', 'user', 'alice', 'can_view', 'document', 'd1');   -- decided from tenant_a only
+SELECT authz.check_access('tenant_b', 'user', 'alice', 'can_view', 'document', 'd1');   -- tenant_b has no such document: denied
+```
+
+**2. Inside a tenant, scope flows down the container chain.** A document
+belongs to a project, a project to a workspace, and membership is granted
+on the workspace. Each level reads `can_view` from its parent with a
+tuple-to-userset rule, so a user in workspace W2 is never a hop away from
+W1's documents: there is no edge to follow.
+
+```sql
+SELECT authz.model_add_rule('tenant_a', 'workspace', 'can_view', 'computed', 'member');
+SELECT authz.model_add_rule('tenant_a', 'project',   'can_view', 'ttu', p_tupleset_relation => 'parent', p_tupleset_computed => 'can_view');
+SELECT authz.model_add_rule('tenant_a', 'document',  'can_view', 'ttu', p_tupleset_relation => 'parent', p_tupleset_computed => 'can_view');
+
+SELECT authz.write_tuple('tenant_a', 'user', 'alice', 'member', 'workspace', 'w1');
+SELECT authz.write_tuple('tenant_a', 'user', 'bob',   'member', 'workspace', 'w2');
+SELECT authz.write_tuple('tenant_a', 'workspace', 'w1', 'parent', 'project',  'p1');
+SELECT authz.write_tuple('tenant_a', 'project',   'p1', 'parent', 'document', 'd1');
+
+SELECT authz.check_access('tenant_a', 'user', 'alice', 'can_view', 'document', 'd1');   -- true
+SELECT authz.check_access('tenant_a', 'user', 'bob',   'can_view', 'document', 'd1');   -- false
+```
+
+Type restrictions make "exactly one workspace" structural: `project.parent`
+accepts only a `workspace`, `document.parent` only a `project`, and a
+tuple naming anything else is refused at write time. Support access is then
+an ordinary, expiring grant in the tenant's store, written by the support
+tool with `p_performed_by`, so it shows up in that tenant's audit trail
+rather than hiding behind a global role.
+
+Shown in: [MODEL_DESIGN → Multi-store support](MODEL_DESIGN.md#multi-store-support),
+[Model registry](#model-registry-and-model-as-code--one-model-many-tenants) below,
+[pgauthzd → Multi-store support](../pgauthzd/README.md#multi-store-support) (issuer-to-store binding).
+
 ### Namespaces — per-application isolation inside one store
 
 **Scenario:** Billing and support share one store, but neither application
@@ -633,6 +878,60 @@ SELECT * FROM authz.model_rollout_status('saas_core');
 ```
 Shown in: [MODEL_DESIGN → Model registry](MODEL_DESIGN.md#16-sharing-one-model-across-stores-model-registry),
 [`pgauthzctl/`](../pgauthzctl/README.md).
+
+### Typed service principals — jobs, exporters, and acting on behalf of a user
+
+**Scenario:** A nightly job exports every report; a queue worker renders a
+document a user asked for; an API gateway forwards requests with the user's
+identity. None of them should quietly inherit a broad database role, and
+"the job can do it" must never become "the user could do it".
+
+**Solution:** A service is a principal with its own type and its own
+grants, and a job working for a user checks the **user**, not itself.
+
+**1. Services are a subject type with their own relations.** The exporter
+holds `exporter` on every report through an object wildcard; it holds no
+`viewer`, so it cannot read as itself.
+
+```sql
+SELECT authz.model_add_rule('reports', 'report', 'exporter', 'direct', p_allow_object_wildcard => true);
+SELECT authz.model_add_type_restriction('reports', 'report', 'exporter', 'service');   -- only services
+SELECT authz.model_add_rule('reports', 'report', 'can_export', 'computed', 'exporter');
+
+SELECT authz.write_tuple('reports', 'service', 'nightly-export', 'exporter', 'report', '*');
+SELECT authz.check_access('reports', 'service', 'nightly-export', 'can_export', 'report', 'r1');   -- true
+SELECT authz.check_access('reports', 'service', 'nightly-export', 'can_read',   'report', 'r1');   -- false: not its job
+```
+
+**2. On behalf of a user: check the user, record the service.** The worker
+asks whether *alice* may read the report, and records what happened under
+its own name, so the action log shows both who the action was for and who
+performed it.
+
+```sql
+SELECT authz.check_access('reports', 'user', 'alice', 'can_read', 'report', 'r1');   -- alice's rights, not the worker's
+SELECT authz.record_event('reports', 'user', 'alice', 'export', 'report', 'r1',
+    p_kind => 'response', p_recorded_by => 'svc:nightly-export');
+```
+
+For bulk work, `list_objects` for the user gives the set to process in one
+call; for many single checks, the batch endpoint evaluates them in one
+request.
+
+**3. Over HTTP, identity is the token's.** pgauthzd takes the subject from
+the verified JWT; a request body naming a different subject is rejected
+unless the instance is explicitly configured as a trusted decision point
+for a PEP (`ALLOW_SUBJECT_OVERRIDE`). Every issuer must pin an audience, so
+a token minted for another API is not accepted here (the confused-deputy
+case), and each issuer is bound to the stores and database roles its tokens
+may use. A service gets its own issuer entry or client role with exactly
+that binding, which is how a migration job is kept from running as the
+full writer.
+
+Shown in: [`examples/models/agents/`](../examples/models/agents/README.md)
+(a non-human principal end to end), [pgauthzd → Authentication](../pgauthzd/README.md#authentication),
+[PRODUCTION → AuthZEN subject policy](PRODUCTION.md#authzen-subject-policy),
+[pgauthzd → Batch evaluations](../pgauthzd/README.md#batch-evaluations).
 
 ### OpenFGA import — "we already have an OpenFGA model"
 
