@@ -547,12 +547,12 @@ the sharer's right inside the same transaction as the write.
 editor only the first.
 
 ```sql
-SELECT authz.model_add_rule('share', 'document', 'can_view',       'computed', 'viewer');
-SELECT authz.model_add_rule('share', 'document', 'can_view',       'computed', 'editor');
-SELECT authz.model_add_rule('share', 'document', 'can_view',       'computed', 'owner');
-SELECT authz.model_add_rule('share', 'document', 'can_share_view', 'computed', 'editor');
-SELECT authz.model_add_rule('share', 'document', 'can_share_view', 'computed', 'owner');
-SELECT authz.model_add_rule('share', 'document', 'can_share_edit', 'computed', 'owner');
+SELECT authz.model_add_rule('docs', 'document', 'can_view',       'computed', 'viewer');
+SELECT authz.model_add_rule('docs', 'document', 'can_view',       'computed', 'editor');
+SELECT authz.model_add_rule('docs', 'document', 'can_view',       'computed', 'owner');
+SELECT authz.model_add_rule('docs', 'document', 'can_share_view', 'computed', 'editor');
+SELECT authz.model_add_rule('docs', 'document', 'can_share_view', 'computed', 'owner');
+SELECT authz.model_add_rule('docs', 'document', 'can_share_edit', 'computed', 'owner');
 ```
 
 **2. The share is a checked write.** `write_tuples_checked` takes
@@ -563,7 +563,7 @@ right revoked concurrently is seen.
 
 ```sql
 -- bob (an editor) shares view access with carol: allowed
-SELECT authz.write_tuples_checked('share',
+SELECT authz.write_tuples_checked('docs',
   p_preconditions => '[{"match": "allowed", "user_type": "user", "user_id": "bob",
                         "relation": "can_share_view", "object_type": "document", "object_id": "plan"}]',
   p_writes        => '[{"user_type": "user", "user_id": "carol", "relation": "viewer",
@@ -572,7 +572,7 @@ SELECT authz.write_tuples_checked('share',
 -- {"deleted": 0, "written": 1}
 
 -- bob tries to make dave an editor: the precondition fails, nothing is written
-SELECT authz.write_tuples_checked('share',
+SELECT authz.write_tuples_checked('docs',
   p_preconditions => '[{"match": "allowed", "user_type": "user", "user_id": "bob",
                         "relation": "can_share_edit", "object_type": "document", "object_id": "plan"}]',
   p_writes        => '[{"user_type": "user", "user_id": "dave", "relation": "editor",
