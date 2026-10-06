@@ -1,6 +1,6 @@
 # keycloak/ — demo OIDC issuer for pgauthz
 
-An **opt-in** local Keycloak (26.6.4) that issues the JWTs OPA verifies, so the
+An **opt-in** local Keycloak (26.7.5) that issues the JWTs OPA verifies, so the
 "bring your own OIDC provider" story is runnable end-to-end. Real deployments
 drop this entirely and point OPA's `JWT_ISSUER` / `JWKS_URL` at their own OAuth2
 AS / OIDC OP. The fast self-minted test tokens (`tests/test-authzen.sh`) are
@@ -14,7 +14,7 @@ keycloak/
   extensions/        → mounted to /opt/keycloak/providers (SPI JARs)
   config/
     keycloak.conf            # http behind the proxy, proxy-headers, health
-    .env                     # KEYCLOAK_VERSION=26.6.4, bootstrap admin, db password
+    .env                     # KEYCLOAK_VERSION=26.7.5, bootstrap admin, db password
     generate-mkcerts.sh      # mkcert *.pgauthz.test → certs/
     certs/                   # cert.pem/key.pem/rootCA.pem (gitignored)
     proxy/                   # nginx: TLS termination + host routing
