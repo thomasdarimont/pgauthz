@@ -1,4 +1,4 @@
-# Optional demo overlay: a real OIDC issuer (Keycloak 26.6.4) in front of pgauthz,
+# Optional demo overlay: a real OIDC issuer (Keycloak 26.7.5) in front of pgauthz,
 # provisioned by Terraform (keycloak/terraform) and fronted by an nginx proxy that
 # terminates TLS for *.pgauthz.test (mkcert). Mirrors the keycloak-dev-training
 # dev layout. Real deployments bring their own OAuth2 AS / OIDC OP — just add it
@@ -37,7 +37,7 @@ services:
       retries: 10
 
   keycloak:
-    image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak}:${KEYCLOAK_VERSION:-26.7.4}
+    image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak}:${KEYCLOAK_VERSION:-26.7.5}
     depends_on:
       keycloak-db:
         condition: service_healthy
