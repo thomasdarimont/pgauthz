@@ -1393,7 +1393,9 @@ SELECT authz.write_tuples_checked('agents',
   p_writes => '[{"user_type": "agent", "user_id": "research_agent", "relation": "delegate",
                  "object_type": "agent", "object_id": "acme_assist", "expires_at": "2026-10-01T18:00:00Z"}]');
 ```
-Shown in: [AGENTIC-AUTHORIZATION → Delegation](AGENTIC-AUTHORIZATION.md#5-delegation-and-subagents).
+Shown in: [AGENTIC-AUTHORIZATION → Delegation](AGENTIC-AUTHORIZATION.md#5-delegation-and-subagents);
+end to end with a Keycloak delegated token and a task the PEP opens and closes:
+[`examples/agentic/`](../examples/agentic/README.md).
 
 ### Type restrictions — guard the control plane by absence
 

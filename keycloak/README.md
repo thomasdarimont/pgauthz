@@ -117,6 +117,26 @@ eval "$(./keycloak/get-token.sh --service app-dms)"   # client_credentials token
 client also has its own service account (`get-token.sh --service`), but it has no
 `subject_type`, so — by the fail-closed rule — it is **denied** until granted one.
 
+### Agent delegation: `acme-app`, `acme_assist`, `acme-other-agent`
+
+Three more clients (`terraform/client.agentic.tf`) back
+[`examples/agentic/`](../examples/agentic/README.md), where alice lets the
+**acme_assist** agent act on her behalf via Keycloak's **token-exchange
+delegation** (preview in 26.8 — `compose-keycloak.yml` sets
+`KC_FEATURES=token-exchange-delegation,parameterized-scopes`):
+
+| Client | Role in the demo |
+|---|---|
+| `acme-app` | the app alice logs in to (device grant, **consent required**); requests `delegation:client:acme_assist` so her token carries `may_act`. Its service account is the PEP (`authz_writer` + `authz_recorder`) |
+| `acme_assist` | the agent: service account + standard token exchange; exchanges alice's token + its own for a **delegated** token (`sub`=alice, `act.client_id`=`acme_assist`). Holds the FGAP v2 `delegate` permission on Users (`admin_permissions_enabled` on the realm) |
+| `acme-other-agent` | an actor without that permission — Keycloak drops the scope / refuses the exchange |
+
+All three stamp `subject_type=user` (the `agents` store's human type) and the
+`authz-api` audience; the delegated token's claims come from the **actor**
+client's mappers. pgauthzd and OPA map `act.client_id` to the principal
+`agent:<client_id>` (`ACTOR_CLAIM` / `ACTOR_SUBJECT_TYPE`, set in
+`compose-keycloak.yml`), so the client is named like the seeded agent.
+
 ## Per-app DB role (namespace isolation)
 
 pgauthz can scope writes to a per-app namespace via a Postgres role that OPA

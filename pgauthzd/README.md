@@ -211,6 +211,18 @@ client roles). Unset (default), search is open to any authenticated caller.
 |---|---|---|
 | Subject ID | `subject.id` | `preferred_username` (fallback: `sub`) |
 | Subject type | `subject.type` | `subject_type` (fallback: config default) |
+| Delegated actor | `subject` = `ACTOR_SUBJECT_TYPE:<claim>`, token subject → `on_behalf_of` | `ACTOR_CLAIM` (unset; e.g. `act.client_id`) |
+
+**Delegated tokens (`ACTOR_CLAIM`).** A token minted by OAuth token-exchange
+delegation says "*actor* acts for *subject*" (`act` claim, RFC 8693; Keycloak's
+token-exchange delegation). With `ACTOR_CLAIM=act.client_id` and
+`ACTOR_SUBJECT_TYPE=agent`, such a token is checked **as the actor**
+(`agent:<client_id>`) with the actor's own authority in the graph — never as
+the user, which would hand an agent everything the user may do. The user is
+kept as `on_behalf_of` in the decision log and the OPA hook actor. The same
+two variables exist on OPA (`authn.rego`), which derives the subject
+independently when it is in the path. End-to-end example:
+[`examples/agentic/`](../examples/agentic/README.md).
 
 **Freshness (`Cache-Control: no-cache`).** A caller that must observe a
 just-committed change — e.g. re-checking immediately after a revoke — sends
@@ -396,6 +408,8 @@ All configuration is via environment variables.
 | `SUBJECT_ID_FALLBACK_CLAIM` | `sub` | Fallback JWT claim for subject ID |
 | `SUBJECT_TYPE_CLAIM` | `subject_type` | JWT claim for subject type |
 | `SUBJECT_TYPE_DEFAULT` | `internal_user` | Default subject type if claim missing |
+| `ACTOR_CLAIM` | *(unset)* | Dotted path of a claim naming a **delegated actor** (RFC 8693 `act.client_id`; Keycloak token-exchange delegation). When it resolves to a non-empty string, the principal is `ACTOR_SUBJECT_TYPE:<value>` and the token's own subject is carried as `on_behalf_of` (decision log). Unset = such tokens are their subject |
+| `ACTOR_SUBJECT_TYPE` | `agent` | Subject type of a delegated actor |
 | `ALLOW_SUBJECT_OVERRIDE` | `false` | Allow a request-body subject to override the JWT subject (trusted PEP/PDP mode). Default false = token-only; a mismatched body subject is rejected with `403` |
 | `DEFAULT_STORE` | `demo` | Default authorization store |
 | `STORE_HEADER` | `X-PGAuthz-Store` | HTTP header for store selection |

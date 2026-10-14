@@ -41,7 +41,7 @@ in [`docs/slides/`](docs/slides).
 - **Watch / changefeed** — cursored, filterable stream of tuple changes plus a `NOTIFY` doorbell, for cache invalidation and sync
 - **Action log** — `record_event` / `list_events`: a per-store, per-principal record of what subjects *actually did* (reported by your PEP, never inferred from decisions) — see [ADR 0012](docs/adr/0012-action-log.md)
 - **Temporal gates** — centrally managed, history-dependent veto rules over trusted recorded actions (Dogwood-inspired, not Dogwood-compatible; not a workflow engine): rate limits, spend caps, prior approval, step-up freshness, lockouts, agent guardrails (`count_within`, `sum_within`, `formerly_within`, `count_distinct_within`), applied on every check, listing, explain and time-travel path; `reserve_event` for concurrency-exact caps — see [MODEL_DESIGN §17](docs/MODEL_DESIGN.md#17-temporal-gates-history-dependent-rules)
-- **Agentic authorization** — every tool call a check with the agent as principal, planning via the search API instead of policy residuals, task scope as expiring or contextual tuples, sequencing and budgets as temporal gates, delegation as data with evaluation-time attenuation, RAG authorize-before-retrieval — see [AGENTIC-AUTHORIZATION.md](docs/AGENTIC-AUTHORIZATION.md) and `examples/models/agents/`
+- **Agentic authorization** — every tool call a check with the agent as principal, planning via the search API instead of policy residuals, task scope as expiring or contextual tuples, sequencing and budgets as temporal gates, delegation as data with evaluation-time attenuation, RAG authorize-before-retrieval — see [AGENTIC-AUTHORIZATION.md](docs/AGENTIC-AUTHORIZATION.md) and `examples/models/agents/`; a human delegating to an agent via Keycloak token exchange, bounded by a task, runs end to end in [`examples/agentic/`](examples/agentic/README.md)
 - **Search API** — `list_objects`, `list_subjects`, `list_actions` for discovery queries
 - **OpenFGA import** — import existing OpenFGA JSON models and tuples directly
 - **Namespace-based access control** — per-application isolation of object types within a shared store, database-enforced end to end
@@ -240,6 +240,7 @@ Each topic has exactly one owner. Read the owner, not this file, for detail.
 | [`playground/README.md`](playground/README.md) | the web UI | you want to see a resolution path |
 | [`examples/models/README.md`](examples/models/README.md) | the example models and what each shows | you want a starting point |
 | [`examples/filtering/README.md`](examples/filtering/README.md) | authorization as a JOIN (data filtering) | you list what a user may see |
+| [`examples/agentic/README.md`](examples/agentic/README.md) | human → agent delegation: Keycloak token exchange + a task-bounded agent, end to end | an agent acts on a user's behalf |
 | [`opa/README.md`](opa/README.md) | the optional OPA overlay and policy hooks | you need policy-as-code on top |
 | [`CHANGELOG.md`](CHANGELOG.md) | what changed per version | you are upgrading (read one version block, not the file) |
 | [`AGENTS.md`](AGENTS.md) | conventions for coding agents and contributors | you are changing this repository |

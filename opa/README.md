@@ -776,6 +776,19 @@ Client, VS Code REST Client):
 
 ---
 
+### Delegated actors (`ACTOR_CLAIM`)
+
+A token minted by OAuth token-exchange **delegation** carries an `act` claim
+(RFC 8693): the actor acts for the token's subject. With
+`ACTOR_CLAIM=act.client_id` (dotted path) and `ACTOR_SUBJECT_TYPE=agent`
+on the OPA service, `authn.rego` makes the **actor** the principal
+(`subject_type`/`subject_id` = `agent` / `<client_id>`) and exposes the
+token's own subject as `authn.on_behalf_of` (`{type, id}`, also on the hook
+actor as `input.actor.on_behalf_of`, `{}` for plain tokens). Set the same two
+variables on the pgauthzd instances in front of OPA — both derive the subject
+from the token. Unset = a delegated token is treated as its subject. See
+[`examples/agentic/`](../examples/agentic/README.md).
+
 ## 8. Conditions and Context
 
 When the authorization model uses conditions (ABAC), pass request-time

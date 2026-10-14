@@ -260,6 +260,23 @@ Properties, each proven by a test in the example:
 - Revocation is one delete; "only the named delegate may use it" is
   structural, the tuple names the subject.
 
+**The human → agent hop is the issuer's job; everything below it is the
+graph's.** When a user lets an agent act for them through OAuth token-exchange
+delegation (Keycloak: consent → `may_act` on the user's token → the agent
+exchanges it for a delegated token with `sub` = the user and `act.client_id`
+= the agent), pgauthzd's `ACTOR_CLAIM=act.client_id` makes the **agent** the
+principal of every request made with that token and keeps the user as
+`on_behalf_of`. The agent is then checked with *its* authority — reach, task
+scope, gates — never the user's: a delegated token proves that the user
+*let* the agent act, not what the agent is working on. The task itself is a
+bundle of expiring tuples the PEP writes at task start (under a precondition
+on the user's own access) and deletes when the task is **completed** — so the
+agent's authority ends with the task even while its token is still valid, and
+the subagent chain above goes with it. A delegated token cannot be exchanged
+again, which is fine: chains live in the graph, where they expire and cut per
+link. Runnable, with the consent screen and the negative paths:
+[`examples/agentic/`](../examples/agentic/README.md).
+
 Cross-domain delegation (a partner's agent acting under a credential your
 system issued) is the same on the resource side: pgauthzd trusts the
 partner's issuer per `JWT_ISSUERS` with a store binding, the partner agent is

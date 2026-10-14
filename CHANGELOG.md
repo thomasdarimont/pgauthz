@@ -9,6 +9,24 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Delegated actors (`ACTOR_CLAIM` / `ACTOR_SUBJECT_TYPE`)** on pgauthzd and
+  OPA: a token carrying an RFC 8693 `act` claim (OAuth token-exchange
+  delegation — Keycloak 26.8's `token-exchange-delegation`) is checked **as the
+  actor** (`agent:<act.client_id>`) with the actor's own authority, never as
+  the user it acts for; the user is carried as `on_behalf_of` in the decision
+  log (new field) and on the OPA hook actor (`input.actor.on_behalf_of`,
+  additive to the ADR 0011 ABI). Off by default. New runnable example
+  **`examples/agentic/`**: alice consents to the `acme_assist` agent acting
+  for her, the agent exchanges her token for a delegated one, and the PEP
+  opens a task-bounded authority for it in the `agents` store (expiring task
+  bundle under a precondition on alice's own access, subagent reach) and
+  closes it when the task is completed — the still-valid delegated token then
+  denies everywhere; time travel replays the window. Keycloak overlay: the
+  two preview features are enabled, `keycloak/terraform/client.agentic.tf`
+  adds the clients and the FGAP v2 `delegate` permission, and the overlay now
+  carries the two-issuer `JWT_ISSUERS` set itself (previously only the
+  playground overlay did), so `./start.sh --keycloak` alone serves Keycloak
+  tokens through pgauthzd.
 - **Sharing as a first-class API: `authz.grant` / `authz.revoke` + grant
   rules** (migration 0017). A grant rule (`model_add_grant_rule(store, type,
   relation, requires, p_requires_revoke)`) declares which relation an actor

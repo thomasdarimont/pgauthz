@@ -109,7 +109,11 @@ Users add hooks by **mounting `.rego` files** — compose: volume onto
     written allowlist-style. Time- and environment-gated hooks read these,
     **never** caller `context.*`.
   - **platform-derived:** `store`, `subject`, and **`actor`** — the
-    authenticated caller, now on BOTH ABIs as `{id, roles}`. `actor.roles` is
+    authenticated caller, now on BOTH ABIs as `{id, roles}` (plus
+    `actor.on_behalf_of`, additive: `{type, id}` of the token subject when the
+    caller is a delegated actor per `ACTOR_CLAIM` — an agent holding a
+    token-exchange delegation token — and `{}` otherwise, so hooks can key on
+    it without guarding for undefined). `actor.roles` is
     the platform-verified role set (`authn.roles`, aggregated from the
     configured `JWT_ROLES_CLAIM` paths — for Keycloak typically
     `realm_access.roles` plus an app client's `resource_access.<client>.roles`),
