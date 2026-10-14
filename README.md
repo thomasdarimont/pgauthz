@@ -16,6 +16,10 @@ validation, and an opt-in OPA sidecar for policy-as-code. Either way the
 data and the decisions stay in your PostgreSQL; there is no separate
 authorization database to run.
 
+For a tour of what it can do, see the slides
+[*pgauthz: Can your AuthZ do that?*](docs/slides/pgauthz_Can%20your%20AuthZ%20do%20that_V1.pdf)
+in [`docs/slides/`](docs/slides).
+
 ## Features
 
 - **Relationship-based access control (ReBAC)** — Zanzibar/OpenFGA model with direct, computed, and tuple-to-userset rules
@@ -230,6 +234,7 @@ Each topic has exactly one owner. Read the owner, not this file, for detail.
 | [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | numbers, methodology, regressions found | you need latency figures |
 | [`docs/SECURITY-AUDIT.md`](docs/SECURITY-AUDIT.md) | threat model, findings, hardening checklist | you are assessing risk |
 | [`docs/adr/`](docs/adr) | architecture decision records | you want to know why something is the way it is |
+| [`docs/slides/`](docs/slides) | slide decks: a capability teaser (*Can your AuthZ do that?*) | you want the overview before the docs |
 | [`pgauthzd/README.md`](pgauthzd/README.md) | the HTTP daemon: profiles, env, AuthZEN, native API, JWT | you deploy or call pgauthzd |
 | [`pgauthzctl/README.md`](pgauthzctl/README.md) | model-as-code CLI: import, test, publish, roll out | your models live in git |
 | [`playground/README.md`](playground/README.md) | the web UI | you want to see a resolution path |

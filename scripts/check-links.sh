@@ -15,6 +15,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 python3 - "$@" <<'PY'
 import os, re, sys, unicodedata
+from urllib.parse import unquote
 
 ROOT = os.getcwd()
 SKIP_DIRS = {'.git', 'node_modules', 'scratch', 'target', 'dist', 'build', '.venv', 'vendor'}
@@ -90,6 +91,7 @@ for f in md_files(sys.argv[1:]):
             if re.match(r'^[a-z][a-z0-9+.-]*:', target):   # http:, mailto:, etc.
                 continue
             path_part, _, frag = target.partition('#')
+            path_part = unquote(path_part)   # `%20` etc. in file names
             if path_part == '':
                 tgt = f
             else:
