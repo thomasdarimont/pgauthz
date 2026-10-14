@@ -52,6 +52,7 @@ psql_file "$PG_DB" "$SCRIPT_DIR/db/security/roles.sql"
 # no-op on the stock postgres image, so the default stack is unaffected and
 # only lang='sql' conditions are available; with the extension installed,
 # lang='cel' conditions become writable and evaluable.
+check_pg_cel_consistency "$PG_DB"
 echo "==> Enabling CEL evaluator (pg_cel) if available..."
 # Install into the engine's own schema: the CEL evaluator is an engine
 # dependency, so it belongs in authz (not public), and the engine references

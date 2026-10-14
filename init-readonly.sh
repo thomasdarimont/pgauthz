@@ -41,6 +41,7 @@ psql_file "$PG_DB" "$SCRIPT_DIR/db/security/roles_readonly.sql"
 
 # Optional CEL evaluator, only if the replicated store uses lang='cel'
 # conditions and the pg_cel extension is present in this image.
+check_pg_cel_consistency "$PG_DB"
 echo "==> Enabling CEL evaluator (pg_cel) if available..."
 if psql_exec "$PG_DB" -c "CREATE EXTENSION IF NOT EXISTS pg_cel SCHEMA authz;" >/dev/null 2>&1; then
   echo "    pg_cel enabled — CEL conditions evaluable"

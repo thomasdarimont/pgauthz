@@ -187,6 +187,14 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **`init.sh` / `init-readonly.sh` / `tests/test.sh` refuse a pg_cel-created
+  volume on a stock image.** Starting the stack without `--cel` on a data
+  volume the pg_cel image created leaves the extension registered in
+  `pg_extension` while the image has no `pg_cel.so`: the catalog says CEL is
+  present, every evaluation fails with "could not access file pg_cel", and the
+  CEL tests die mid-run. A shared preflight in `env.sh`
+  (`check_pg_cel_consistency`) now fails fast with the two remedies (start
+  with `--cel` again, or drop the volume).
 - **`pgauthzd doctor` agrees with the runtime on `ALLOW_OPEN_DIAGNOSTICS`.**
   Open diagnostics in production under the override warned on one check
   but failed on another, so a release the daemon starts and the chart

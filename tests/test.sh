@@ -23,6 +23,10 @@ if grep -n "authz\._check_access_snapshot(" "$PG_DIR/db/engine/audit.sql"; then
 fi
 echo "    ok"
 
+# A pg_cel-created volume on a stock image would make every CEL check fail
+# mid-run with "could not access file pg_cel" — refuse early (env.sh).
+check_pg_cel_consistency "$PG_DB"
+
 # Load shared test helpers (_assert, _assert_true, _test_reset, _test_report)
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_helpers.sql"
 

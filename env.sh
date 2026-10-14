@@ -174,6 +174,27 @@ psql_file() {
   docker exec -i -e PGPASSWORD="$PG_PASSWORD" "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d "$db" < "$file"
 }
 
+# Preflight: a data volume created by the pg_cel image (compose-cel.yml) keeps
+# the extension REGISTERED in pg_extension even when the stack was later started
+# on the stock postgres image, whose filesystem has no pg_cel.so. The catalog
+# then says CEL is there (to_regprocedure('authz.cel_eval_bool(…)') is not
+# NULL) while every evaluation fails with "could not access file pg_cel" — a
+# confusing mid-run error. Fail fast with the two remedies instead. Called by
+# init.sh, init-readonly.sh and tests/test.sh; a no-op on a healthy stack.
+check_pg_cel_consistency() {
+  local db="${1:-$PG_DB}" stale
+  stale="$(psql_exec "$db" -tA -c "SELECT 1 FROM pg_extension WHERE extname = 'pg_cel'
+            AND NOT EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'pg_cel')" 2>/dev/null || true)"
+  if [ "$stale" = "1" ]; then
+    echo "ERROR: the database has the pg_cel extension registered, but the running image" >&2
+    echo "       ($(docker inspect "$DB_CONTAINER" --format '{{.Config.Image}}' 2>/dev/null)) does not ship it —" >&2
+    echo "       its data volume was created by the pg_cel image (compose-cel.yml)." >&2
+    echo "       Either start the stack with --cel again (./start.sh --cel …)," >&2
+    echo "       or drop the volume: ./stop.sh --clean && ./start.sh … && ./init.sh" >&2
+    return 1
+  fi
+}
+
 # Locate sqlx-cli (PATH, then the default cargo bin dir).
 SQLX_BIN="${SQLX_BIN:-sqlx}"
 if ! command -v "$SQLX_BIN" >/dev/null 2>&1 && [ -x "$HOME/.cargo/bin/sqlx" ]; then
