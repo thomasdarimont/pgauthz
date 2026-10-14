@@ -44,8 +44,12 @@ type Entry struct {
 	Gates []Gate `json:"gates,omitempty"`
 	// ContextKeys: names of the request-context keys supplied, sorted. Never values.
 	ContextKeys []string `json:"context_keys,omitempty"`
-	Actor       string   `json:"actor,omitempty"`  // authenticated caller, "type:id"
-	Issuer      string   `json:"issuer,omitempty"` // verified token issuer
+	Actor       string   `json:"actor,omitempty"` // authenticated caller, "type:id"
+	// OnBehalfOf: the token subject a delegated actor acts for ("type:id"),
+	// when the caller's token named an actor (ACTOR_CLAIM). The decision was
+	// made for Actor/Subject; this records whose task it served.
+	OnBehalfOf string `json:"on_behalf_of,omitempty"`
+	Issuer     string `json:"issuer,omitempty"` // verified token issuer
 	// Provenance: what decided. PgauthzdVersion is the daemon build; Model is
 	// the store's model (registry name/version when registry-managed, and the
 	// live checksum always); Policy is OPA's version + bundle revisions for an

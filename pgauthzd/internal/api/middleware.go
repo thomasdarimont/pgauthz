@@ -71,7 +71,23 @@ const (
 	ctxDBRole
 	ctxNoCache
 	ctxDetail
+	ctxOnBehalfOf
 )
+
+// onBehalfOf is the token subject a delegated actor acts for (ACTOR_CLAIM).
+type onBehalfOf struct{ Type, ID string }
+
+// OnBehalfOfFromContext returns the token's own subject when the request's
+// principal is a delegated actor (ACTOR_CLAIM resolved on the verified token:
+// RFC 8693 `act`, Keycloak token-exchange delegation). Empty strings when the
+// caller is not acting on someone's behalf. Informational — the engine
+// decides for the actor; this is carried into the decision log.
+func OnBehalfOfFromContext(ctx context.Context) (subjectType, subjectID string) {
+	if v, ok := ctx.Value(ctxOnBehalfOf).(onBehalfOf); ok {
+		return v.Type, v.ID
+	}
+	return "", ""
+}
 
 // IssuerFromContext returns the verified token's issuer (`iss` claim, matched
 // against a trusted issuer during verification). Empty if unauthenticated.
@@ -173,6 +189,12 @@ type JWTConfig struct {
 	SubjectIDFallback  string
 	SubjectTypeClaim   string
 	SubjectTypeDefault string
+	// ActorClaim: dot-separated path of a claim naming a DELEGATED ACTOR (RFC
+	// 8693 `act.client_id`). When it resolves, the principal becomes
+	// (ActorSubjectType, value) and the token's own subject is kept as
+	// on_behalf_of. Empty = off. See config.Config.ActorClaim.
+	ActorClaim       string
+	ActorSubjectType string
 	// RolesClaims is a comma-separated list of dot-separated claim paths whose
 	// (string-array) values are aggregated into the caller's role set — mirrors
 	// OPA's JWT_ROLES_CLAIM. E.g. "realm_access.roles,resource_access.authz-api.roles".
@@ -283,21 +305,16 @@ func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 
 		ctx := r.Context()
 
-		// Extract subject ID
-		subjectID := claimString(claims, m.cfg.SubjectIDClaim)
-		if subjectID == "" {
-			subjectID = claimString(claims, m.cfg.SubjectIDFallback)
-		}
+		// Principal: the token subject — or, for a delegated token, the actor
+		// named by ACTOR_CLAIM, with the token subject kept as on_behalf_of.
+		subjectType, subjectID, oboType, oboID := m.deriveSubject(claims)
 		if subjectID != "" {
 			ctx = context.WithValue(ctx, ctxSubjectID, subjectID)
 		}
-
-		// Extract subject type
-		subjectType := claimString(claims, m.cfg.SubjectTypeClaim)
-		if subjectType == "" {
-			subjectType = m.cfg.SubjectTypeDefault
-		}
 		ctx = context.WithValue(ctx, ctxSubjectType, subjectType)
+		if oboID != "" {
+			ctx = context.WithValue(ctx, ctxOnBehalfOf, onBehalfOf{Type: oboType, ID: oboID})
+		}
 
 		// Aggregate roles across the configured claim paths (for role-gated endpoints).
 		if m.cfg.RolesClaims != "" {
@@ -339,6 +356,37 @@ func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// deriveSubject resolves the request principal from verified claims.
+//
+// Plain token: (SubjectTypeClaim|SubjectTypeDefault, SubjectIDClaim|SubjectIDFallback).
+//
+// Delegated token (ActorClaim configured AND resolving to a non-empty string,
+// e.g. `act.client_id` on a Keycloak token-exchange delegation token): the
+// principal is (ActorSubjectType, <actor>) and the token's own subject is
+// returned as on-behalf-of. The actor is then checked with ITS OWN authority
+// in the graph (an agent's reach, task scope, gates) — a delegated token
+// never lets the actor inherit the user's permissions. The binding "may this
+// actor act for this user" was decided by the issuer (consent, may_act); the
+// graph decides what the actor may do while it does.
+func (m *JWTMiddleware) deriveSubject(claims jwt.MapClaims) (subjectType, subjectID, oboType, oboID string) {
+	subjectID = claimString(claims, m.cfg.SubjectIDClaim)
+	if subjectID == "" {
+		subjectID = claimString(claims, m.cfg.SubjectIDFallback)
+	}
+	subjectType = claimString(claims, m.cfg.SubjectTypeClaim)
+	if subjectType == "" {
+		subjectType = m.cfg.SubjectTypeDefault
+	}
+	if m.cfg.ActorClaim == "" {
+		return subjectType, subjectID, "", ""
+	}
+	actor := claimStringPath(claims, m.cfg.ActorClaim)
+	if actor == "" {
+		return subjectType, subjectID, "", ""
+	}
+	return m.cfg.ActorSubjectType, actor, subjectType, subjectID
 }
 
 func (m *JWTMiddleware) verifyToken(tokenStr string) (jwt.MapClaims, error) {

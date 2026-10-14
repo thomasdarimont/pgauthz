@@ -130,6 +130,9 @@ func (h *Handler) decisionEntry(r *http.Request, endpoint string, req authz.Eval
 	if st, sid := SubjectFromContext(r.Context()); st != "" && sid != "" {
 		e.Actor = st + ":" + sid
 	}
+	if ot, oid := OnBehalfOfFromContext(r.Context()); ot != "" && oid != "" {
+		e.OnBehalfOf = ot + ":" + oid
+	}
 	return e
 }
 

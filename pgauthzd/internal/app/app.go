@@ -141,6 +141,8 @@ func Run(name, version string) error {
 		SubjectIDFallback:  cfg.SubjectIDFallback,
 		SubjectTypeClaim:   cfg.SubjectTypeClaim,
 		SubjectTypeDefault: cfg.SubjectTypeDefault,
+		ActorClaim:         cfg.ActorClaim,
+		ActorSubjectType:   cfg.ActorSubjectType,
 	})
 
 	// Build the listeners.

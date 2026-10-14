@@ -135,12 +135,19 @@ _hook_decision_actor := {
 	"id": authn.subject_id,
 	"roles": _hook_actor_roles,
 	"claims": _hook_actor_claims,
+	"on_behalf_of": _hook_on_behalf_of,
 } if {
 	input.token
 	authn.token_is_valid
 }
 
-_hook_decision_actor := {"id": "", "roles": [], "claims": {}} if not _hook_decision_actor_from_token
+# on_behalf_of: the token subject a delegated actor (ACTOR_CLAIM) acts for —
+# {"type","id"}; {} for a plain token, so hooks can key on it safely.
+_hook_on_behalf_of := authn.on_behalf_of
+
+_hook_on_behalf_of := {} if not authn.on_behalf_of
+
+_hook_decision_actor := {"id": "", "roles": [], "claims": {}, "on_behalf_of": {}} if not _hook_decision_actor_from_token
 
 _hook_decision_actor_from_token if {
 	input.token

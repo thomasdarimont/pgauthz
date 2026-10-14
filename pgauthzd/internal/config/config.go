@@ -162,6 +162,19 @@ type Config struct {
 	SubjectIDClaim     string
 	SubjectIDFallback  string
 
+	// ActorClaim (ACTOR_CLAIM): dot-separated path of the verified-token claim
+	// that names a DELEGATED ACTOR — the party acting on the token subject's
+	// behalf (RFC 8693 `act.client_id`; Keycloak token-exchange delegation).
+	// When the path resolves to a non-empty string the request's principal is
+	// (ActorSubjectType, <value>) and the token's own subject is carried as
+	// on_behalf_of (decision log): an agent holding a delegated token is
+	// checked with ITS authority, never the user's. Empty = off — a token
+	// carrying an act claim is then treated as its subject, as before.
+	ActorClaim string
+	// ActorSubjectType (ACTOR_SUBJECT_TYPE): the subject type of a delegated
+	// actor, e.g. "agent" (the default).
+	ActorSubjectType string
+
 	// FreshnessKeys are the ordered HMAC secrets for signing/verifying freshness
 	// tokens (ADR 0009 read-your-writes): the FIRST key mints, EVERY key
 	// verifies — which is what makes key rotation a zero-downtime overlap
@@ -387,6 +400,8 @@ func Load() (*Config, error) {
 		SubjectTypeDefault:           env("SUBJECT_TYPE_DEFAULT", "internal_user"),
 		SubjectIDClaim:               env("SUBJECT_ID_CLAIM", "preferred_username"),
 		SubjectIDFallback:            env("SUBJECT_ID_FALLBACK_CLAIM", "sub"),
+		ActorClaim:                   env("ACTOR_CLAIM", ""),
+		ActorSubjectType:             env("ACTOR_SUBJECT_TYPE", "agent"),
 		FreshnessPrimaryURL:          env("FRESHNESS_PRIMARY_URL", ""),
 		FreshnessPrimaryPoolMax:      envInt("FRESHNESS_PRIMARY_POOL_MAX", 10),
 		OpenAPIEnabled:               envBool("OPENAPI_ENABLED", true),
@@ -568,6 +583,9 @@ func Load() (*Config, error) {
 		// ok
 	default:
 		return nil, fmt.Errorf("unknown PGAUTHORIZER_PROFILE %q (decision-only | full)", c.Profile)
+	}
+	if c.ActorClaim != "" && strings.TrimSpace(c.ActorSubjectType) == "" {
+		return nil, fmt.Errorf("ACTOR_CLAIM is set but ACTOR_SUBJECT_TYPE is empty — a delegated actor needs a subject type (e.g. agent)")
 	}
 
 	// Binding requirements: an issuer without a stores binding can reach every
