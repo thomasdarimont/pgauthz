@@ -14,7 +14,7 @@ fullnameOverride: ""
 images:
   pullPolicy: IfNotPresent
   postgres:   { repository: ghcr.io/cloudnative-pg/postgresql, tag: "18.6" }
-  opa:        { repository: openpolicyagent/opa,               tag: "1.20.2" }
+  opa:        { repository: openpolicyagent/opa,               tag: "1.21.2" }
   migrations: { repository: pgauthz-migrations,                tag: "0.17.0" }
   # pgauthzd — the single unified daemon. Behaviour is selected per Deployment by
   # PGAUTHORIZER_PROFILE (decision-only | full) — DB capability — plus the

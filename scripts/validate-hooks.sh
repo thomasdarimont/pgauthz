@@ -55,7 +55,7 @@ hookurl() {
 }
 SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-OPA_IMAGE="${OPA_IMAGE:-openpolicyagent/opa:1.20.2}"
+OPA_IMAGE="${OPA_IMAGE:-openpolicyagent/opa:1.21.2}"
 ALLOW_HTTP=0
 ALLOW_PLAIN_HTTP="${HOOK_ALLOW_PLAIN_HTTP:-0}"   # admit http:// beyond loopback (trusted private network)
 TIER="any"       # any | global | store

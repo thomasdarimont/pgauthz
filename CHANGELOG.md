@@ -98,6 +98,15 @@ pre-1.0, minor versions may include breaking changes.
   `gen-schema.sh`). A minor release: data directories upgrade in place, no
   engine or migration change. Benchmark figures and the planner notes in
   `access.sql` still say 18.4 — that is the version they were measured on.
+- **OPA 1.21.2** (was 1.20.2) everywhere the sidecar is pinned: compose
+  overlays, Helm, CI, the hook validator and the pre-release script. Carries
+  the Go 1.27.2 security rebuild, the 1.21.2 fix that makes the basic
+  authorizer (`--authorization=basic`, our `system_authz.rego`) and the Data
+  API resolve `%2F`-encoded slashes to the same document, the 1.21 rule-indexer
+  improvements, `rule_labels` on Data API responses, and the 1.20 `and`/`or`
+  keywords for hook authors. Behaviour changes checked against every Rego
+  suite and the hook validator: stricter `:=` safety (1.19), empty literals
+  typed as empty (1.21), YAML 1.2 parsing (1.21; we load JSON data only).
 - **Keycloak 26.8.1** in the demo issuer overlay (was 26.7.5):
   `compose-keycloak.yml`, `keycloak/README.md`, `keycloak.conf`. 26.8 is the
   release that ships token-exchange delegation and parameterized scopes as
