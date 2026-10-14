@@ -23,6 +23,15 @@ if grep -n "authz\._check_access_snapshot(" "$PG_DIR/db/engine/audit.sql"; then
 fi
 echo "    ok"
 
+# The suites run against an INSTALLED engine (init.sh / bootstrap.sh). On a
+# fresh volume the first missing role or table would surface as a confusing
+# mid-run error ('role "authz_reader" does not exist') — say what is missing.
+if [ "$(psql_exec "$PG_DB" -tA -c "SELECT to_regclass('authz.tuples') IS NOT NULL" 2>/dev/null)" != "t" ]; then
+  echo "ERROR: the pgauthz engine is not installed in database '$PG_DB' (no authz.tuples)." >&2
+  echo "       Run ./init.sh first (or ./bootstrap.sh, which runs init.sh + all suites)." >&2
+  exit 1
+fi
+
 # A pg_cel-created volume on a stock image would make every CEL check fail
 # mid-run with "could not access file pg_cel" — refuse early (env.sh).
 check_pg_cel_consistency "$PG_DB"

@@ -207,7 +207,9 @@ pre-1.0, minor versions may include breaking changes.
   present, every evaluation fails with "could not access file pg_cel", and the
   CEL tests die mid-run. A shared preflight in `env.sh`
   (`check_pg_cel_consistency`) now fails fast with the two remedies (start
-  with `--cel` again, or drop the volume).
+  with `--cel` again, or drop the volume). `tests/test.sh` likewise refuses a
+  database without the engine (`role "authz_reader" does not exist` mid-run
+  before) and points at `init.sh` / `bootstrap.sh`.
 - **`pgauthzd doctor` agrees with the runtime on `ALLOW_OPEN_DIAGNOSTICS`.**
   Open diagnostics in production under the override warned on one check
   but failed on another, so a release the daemon starts and the chart
