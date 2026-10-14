@@ -274,8 +274,13 @@ on the user's own access) and deletes when the task is **completed** — so the
 agent's authority ends with the task even while its token is still valid, and
 the subagent chain above goes with it. A delegated token cannot be exchanged
 again, which is fine: chains live in the graph, where they expire and cut per
-link. Runnable, with the consent screen and the negative paths:
-[`examples/agentic/`](../examples/agentic/README.md).
+link. When the agent needs more than its task gives, the denial's reason
+(`check_access_detailed`: the task half of the intersection is missing) is
+the cue to **ask, not retry**: the PEP requests a renewed consent from the
+user *out of band* (OIDC CIBA — the issuer reaches the user's device, the
+answer comes back as a fresh token or `access_denied`) and widens the task
+bundle only on approval. Runnable, with the consent screen, the step-up and
+the negative paths: [`examples/agentic/`](../examples/agentic/README.md).
 
 Cross-domain delegation (a partner's agent acting under a credential your
 system issued) is the same on the resource side: pgauthzd trusts the

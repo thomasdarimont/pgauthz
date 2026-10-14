@@ -1481,7 +1481,7 @@ SELECT * FROM authz.list_objects('demo', 'internal_user', 'bob', 'can_read', 'do
 | `tests/sql/` | Test suites (API, search, namespace, wildcards, contextual, intersection, etc.) |
 | `examples/models/` | Example authorization models (helloworld, demo, gdrive, github, todo) — **not** part of the deployable engine; see [Example Models](../examples/models/README.md#example-models) |
 | `examples/watch/` | Runnable setup example for the watch/changefeed feature (compose overlay + Python consumer) |
-| `examples/agentic/` | Human → agent delegation end to end: Keycloak token-exchange delegation (`act` claim → `ACTOR_CLAIM`), a task-bounded agent in the `agents` store, subagent reach, task completion, time travel (script + README) |
+| `examples/agentic/` | Human → agent delegation end to end: Keycloak token-exchange delegation (`act` claim → `ACTOR_CLAIM`), a task-bounded agent in the `agents` store, subagent reach, out-of-band step-up consent (CIBA) that widens the task, task completion, time travel (script + README) |
 | `examples/events/` | Action-log ingestion: outbox → queue (Redis Streams) → consumer that records into pgauthz with at-least-once delivery, idempotency, a dead-letter stream for content rejections and ingestion-lag metrics (compose overlay + Python consumer/producer) |
 | `pgauthzd/` | The Go daemon: native `/pgauthz/v1` + AuthZEN 1.0 HTTP APIs ([see pgauthzd/README.md](../pgauthzd/README.md)) |
 | `playground/` | Web UI: Go BFF + Lit SPA for exploring stores and visualizing `explain_access` ([see playground/README.md](../playground/README.md)) |

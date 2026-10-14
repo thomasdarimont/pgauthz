@@ -7,7 +7,7 @@
 # agent:<client_id> (ACTOR_CLAIM), so the agent is checked with ITS authority
 # in the `agents` store, never the user's.
 #
-#   acme-app         — the app alice logs in to. Requests the parameterized scope
+#   acme-app         — the app alice logs in to (device grant + CIBA). Requests the scope
 #                      delegation:client:acme_assist, so her token carries may_act
 #                      (consent is mandatory for delegation scopes and is never
 #                      stored). Its SERVICE ACCOUNT is the PEP — the agent runtime
@@ -43,6 +43,15 @@ resource "keycloak_openid_client" "acme_app" {
   oauth2_device_authorization_grant_enabled = true
   service_accounts_enabled                  = true # the PEP identity (task open/close)
   consent_required                          = true # delegation scopes REQUIRE consent
+
+  # CIBA (step-up consent mid-task): the PEP asks alice OUT OF BAND for a new
+  # consent via the backchannel authentication endpoint; Keycloak hands the
+  # request to the authentication entity (compose-keycloak.yml sets its URI),
+  # whose SUCCEED callback is alice's consent — same delegation scope, same
+  # may_act. No typed provider argument yet, hence the raw client attribute.
+  extra_config = {
+    "oidc.ciba.grant.enabled" = "true"
+  }
 
   valid_redirect_uris = []
   web_origins         = []

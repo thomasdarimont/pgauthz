@@ -61,6 +61,12 @@ services:
       # features in Keycloak 26.8 (parameterized-scopes carries the
       # delegation:client:<id> scope). Drop them for a stock issuer.
       KC_FEATURES: ${KC_FEATURES:-token-exchange-delegation,parameterized-scopes}
+      # CIBA (examples/agentic step-up consent): Keycloak delivers backchannel
+      # authentication requests to an external "authentication entity" over
+      # HTTP — here the demo script itself, listening on the docker host (it
+      # plays alice's device and answers the callback). Override to point at a
+      # real consent app; CIBA is a supported feature, on by default.
+      KC_SPI_CIBA_AUTH_CHANNEL__CIBA_HTTP_AUTH_CHANNEL__HTTP_AUTHENTICATION_CHANNEL_URI: ${CIBA_AUTH_CHANNEL_URI:-http://host.docker.internal:18555/ciba}
     volumes:
       - ./keycloak/config/keycloak.conf:/opt/keycloak/conf/keycloak.conf:ro
       # Live-reloadable custom themes and SPI provider JARs.
@@ -73,6 +79,9 @@ services:
       # Resolve the frontend hostnames to the docker host (where the proxy :443 is).
       - "id.pgauthz.test:host-gateway"
       - "admin.pgauthz.test:host-gateway"
+      # The CIBA authentication entity above (Docker Desktop resolves this
+      # name on its own; the mapping makes it work on Linux too).
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000; echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep -q UP <&3"]
       interval: 10s

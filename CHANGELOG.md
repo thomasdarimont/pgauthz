@@ -21,9 +21,20 @@ pre-1.0, minor versions may include breaking changes.
   opens a task-bounded authority for it in the `agents` store (expiring task
   bundle under a precondition on alice's own access, subagent reach) and
   closes it when the task is completed — the still-valid delegated token then
-  denies everywhere; time travel replays the window. Keycloak overlay: the
-  two preview features are enabled, `keycloak/terraform/client.agentic.tf`
-  adds the clients and the FGAP v2 `delegate` permission, and the overlay now
+  denies everywhere; time travel replays the window. **Step-up consent out of
+  band (CIBA):** when the agent needs more than its task gives, the rich
+  decision's reason is the cue to ask — the PEP sends a backchannel
+  authentication request (`…/ext/ciba/auth`, same delegation scope, a
+  `binding_message` plus what/why as extra parameters), Keycloak delivers it
+  to the authentication entity (alice's device, played by the script on
+  `:18555`), a decline ends in `access_denied` and nothing changes, an
+  approval yields a fresh `may_act` token and only then does the PEP widen the
+  task bundle (one more `write-checked`); `--browser` lets you answer the
+  prompt yourself. Keycloak overlay: the two preview features are enabled,
+  the CIBA HTTP authentication channel points at the docker host
+  (`CIBA_AUTH_CHANNEL_URI`), `keycloak/terraform/client.agentic.tf` adds the
+  clients (acme-app with the CIBA grant) and the FGAP v2 `delegate`
+  permission, `realm.tf` spells out the CIBA policy, and the overlay now
   carries the two-issuer `JWT_ISSUERS` set itself (previously only the
   playground overlay did), so `./start.sh --keycloak` alone serves Keycloak
   tokens through pgauthzd.
