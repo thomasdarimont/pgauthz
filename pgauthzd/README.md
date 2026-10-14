@@ -608,7 +608,13 @@ backend on a **writer-capable** connection role (`pgauthzd_rw`, which inherits
 `authz_writer`). The security boundary is the DB role, not a flag:
 
 - a **`decision-only`** instance (read-only role, e.g. `authzen_direct`) returns
-  **`403`** — and asserts at startup that its role genuinely cannot write;
+  **`403`** — and asserts at startup that its role genuinely cannot write (a
+  `full` instance asserts the opposite). On a database where the engine is not
+  installed yet (no `authz_writer` role / `authz.tuples` table — a fresh volume
+  before `init.sh` or the migration job ran) the assertion cannot be answered;
+  pgauthzd then logs one warning and **waits**, re-checking every 2 s, and
+  completes startup the moment the engine lands. A role that *can* be checked
+  and is wrong for the profile is still fatal;
 - an **OPA-fronted** instance (`OPA_URL` set) returns **`501`** (its writes go through the OPA
   write policy (`write.rego`) fronting the `full` writer instance, not this
   native path).

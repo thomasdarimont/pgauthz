@@ -1030,6 +1030,26 @@ func (b *Backend) AssertWritable(ctx context.Context) error {
 	return nil
 }
 
+// IsEngineNotInstalled reports whether err is PostgreSQL telling us the pgauthz
+// engine is not there yet — a missing role (42704 undefined_object, e.g.
+// authz_writer before roles.sql ran), table (42P01 undefined_table, e.g.
+// authz.tuples before the migrations ran) or schema (3F000). The startup
+// profile assertions treat this as "wait for init.sh / the migration job",
+// not as a misconfiguration: on a fresh database the daemon would otherwise
+// crash-loop until the engine lands, and `docker compose up --wait` (start.sh,
+// env.sh) never returns.
+func IsEngineNotInstalled(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	switch pgErr.Code {
+	case "42704", "42P01", "3F000":
+		return true
+	}
+	return false
+}
+
 func (b *Backend) Healthz(ctx context.Context) error {
 	return b.pool.Ping(ctx)
 }

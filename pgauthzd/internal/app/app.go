@@ -88,13 +88,13 @@ func Run(name, version string) error {
 		raw = pgb
 		if cfg.Profile == config.ProfileDecisionOnly {
 			// Fail-closed: a decision-only instance must sit on a read-only role.
-			if perr := pgb.AssertReadOnly(ctx); perr != nil {
+			if perr := awaitEngine(ctx, "decision-only", pgb.AssertReadOnly); perr != nil {
 				return perr
 			}
 			slog.Info("decision-only: verified read-only DB role")
 		} else {
 			// full: fail closed if the role can't actually write.
-			if perr := pgb.AssertWritable(ctx); perr != nil {
+			if perr := awaitEngine(ctx, "full", pgb.AssertWritable); perr != nil {
 				return perr
 			}
 			rawWrite = pgb
@@ -348,6 +348,38 @@ func newPGBackend(ctx context.Context, cfg *config.Config) (*pgbackend.Backend, 
 		}
 	}
 	return pgbackend.New(pool, primaryPool, time.Duration(cfg.DBRoleCacheTTLSeconds)*time.Second, cfg.DefaultDBRole, localPoolName), cleanup, nil
+}
+
+// engineRetryInterval paces awaitEngine's re-checks while the engine is absent.
+var engineRetryInterval = 2 * time.Second
+
+// awaitEngine runs a profile assertion (AssertReadOnly / AssertWritable) and,
+// while PostgreSQL reports that the engine is not installed yet (no authz
+// roles/tables — a fresh database before init.sh or the migration job ran),
+// keeps re-checking instead of exiting. The daemon stays up (compose's
+// `--wait` returns, Kubernetes sees a running pod) and completes startup the
+// moment the engine lands; any OTHER assertion failure — a writable role on a
+// decision-only instance, a non-writer on a full one — is still fatal, fail
+// closed, exactly as before. The wait is unbounded by design: the only way out
+// is the engine appearing (or the process being stopped).
+func awaitEngine(ctx context.Context, profile string, assert func(context.Context) error) error {
+	logged := false
+	for {
+		err := assert(ctx)
+		if err == nil || !pgbackend.IsEngineNotInstalled(err) {
+			return err
+		}
+		if !logged {
+			slog.Warn("engine not installed yet — waiting for init.sh / the migrations to land",
+				"profile", profile, "error", err, "retry", engineRetryInterval.String())
+			logged = true
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for the engine to be installed: %w", ctx.Err())
+		case <-time.After(engineRetryInterval):
+		}
+	}
 }
 
 // newPool builds and pings a pgx pool bounded to maxConns.

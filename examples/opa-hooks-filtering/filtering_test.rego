@@ -129,6 +129,7 @@ test_actor_roles_from_verified_token if {
 			"realm_access": {"roles": ["ops"]},
 			"resource_access": {"document-api": {"roles": ["admin"]}},
 		},
+		"on_behalf_of": {}, # a plain (non-delegated) token
 	}
 }
 
@@ -148,7 +149,9 @@ test_actor_resource_access_uri_client if {
 
 test_actor_empty_without_token if {
 	abi := data.authz._decision_hook_input with input as _inp
-	abi.actor == {"id": "", "roles": [], "claims": {}}
+	# on_behalf_of is part of the actor ABI since delegated actors (ACTOR_CLAIM):
+	# {} for a plain token, so hooks can key on it without a presence check.
+	abi.actor == {"id": "", "roles": [], "claims": {}, "on_behalf_of": {}}
 }
 
 # An auditor's role EXEMPTS the classified veto — in checks and therefore in

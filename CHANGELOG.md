@@ -187,6 +187,19 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **pgauthzd no longer crash-loops on a fresh database.** The startup profile
+  assertions (`decision-only` → read-only role, `full` → writer role) ran
+  before the engine existed and died on `role "authz_writer" does not exist`,
+  so after `./stop.sh --clean` a `./start.sh` (compose `--wait`) never
+  returned and `init.sh` could not follow. pgauthzd now recognises "engine not
+  installed yet" (missing role / table / schema) and waits, re-checking every
+  2 s with one warning, then completes startup the moment `init.sh` or the
+  migration job lands. Any other assertion failure — a writable role on a
+  decision-only instance, a non-writer on a full one — is still fatal.
+- **Hook example tests vs the actor ABI.** `examples/opa-hooks-filtering`'s
+  Rego tests still asserted the pre-delegation actor shape; since the actor
+  carries `on_behalf_of` (`{}` for a plain token) OPA's type checker refused
+  the comparison and the OPA integration CI job was red. Expectations updated.
 - **`init.sh` / `init-readonly.sh` / `tests/test.sh` refuse a pg_cel-created
   volume on a stock image.** Starting the stack without `--cel` on a data
   volume the pg_cel image created leaves the extension registered in
