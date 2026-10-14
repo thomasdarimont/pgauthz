@@ -302,10 +302,10 @@ jobs:
         with:
           context: .
           file: extensions/pg-cel/Dockerfile
-          tags: pgauthz-postgres-cel:18.4
+          tags: pgauthz-postgres-cel:18.6
           build-args: |
             PG_MAJOR=18
-            POSTGRES_TAG=18.4
+            POSTGRES_TAG=18.6
           load: true
           cache-from: type=gha,scope=pg-cel
           cache-to: type=gha,scope=pg-cel,mode=max

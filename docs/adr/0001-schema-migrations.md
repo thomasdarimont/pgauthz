@@ -199,7 +199,7 @@ Ordered; each step keeps `./init.sh` + `./tests/test.sh` green.
    `schema.sql` / `schema_audit.sql` were `git rm`'d (their structure now lives
    here).
 3. **Runner image — DONE.** `deploy/migrations/Dockerfile` bakes a pinned
-   `sqlx-cli` 0.9.0 (slim, `--features rustls,postgres`) over `postgres:18.4`;
+   `sqlx-cli` 0.9.0 (slim, `--features rustls,postgres`) over `postgres:18.6`;
    `env.sh` detects a local `sqlx` for `init*.sh`.
 4. **Rewire installers — DONE.** `init.sh`, `init-readonly.sh`,
    `deploy/migrations/run-migrations.sh`, and `db/replication/init-replication.sh`

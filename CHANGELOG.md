@@ -9,6 +9,15 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Agentic authorization demos.** Alongside the `agents` model
+  (`examples/models/agents/`, the *Authorization in Action* ch. 18 scenario),
+  the repository now carries runnable demos of a human delegating to an
+  agent: `examples/agentic/delegation-demo.sh` (Keycloak token-exchange
+  delegation → a task-bounded agent, subagent reach, task completion, time
+  travel — details in the next entry) and its out-of-band **step-up consent**
+  via Keycloak CIBA, both scripted end to end against the `--keycloak` stack;
+  plus a capability-teaser slide deck, *pgauthz: Can your AuthZ do that?*
+  (`docs/slides/`), linked from the README.
 - **Delegated actors (`ACTOR_CLAIM` / `ACTOR_SUBJECT_TYPE`)** on pgauthzd and
   OPA: a token carrying an RFC 8693 `act` claim (OAuth token-exchange
   delegation — Keycloak 26.8's `token-exchange-delegation`) is checked **as the
@@ -83,6 +92,17 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- **PostgreSQL 18.6.** Every image pin moves from 18.4 to 18.6 (compose
+  stack, replication/scaling demos, Keycloak and playground databases, the
+  pg_cel build, the migrations runner image, the Helm CNPG tag, CI,
+  `gen-schema.sh`). A minor release: data directories upgrade in place, no
+  engine or migration change. Benchmark figures and the planner notes in
+  `access.sql` still say 18.4 — that is the version they were measured on.
+- **Keycloak 26.8.1** in the demo issuer overlay (was 26.7.5):
+  `compose-keycloak.yml`, `keycloak/README.md`, `keycloak.conf`. 26.8 is the
+  release that ships token-exchange delegation and parameterized scopes as
+  preview features, which the agentic example turns on (`KC_FEATURES`); CIBA
+  is a supported feature, on by default.
 - **Documentation split: one owner per topic.** `README.md` shrinks from
   ~2,000 to ~330 lines — pitch, features, setup, the complete example and a
   **documentation map** — and every topic now has exactly one home:

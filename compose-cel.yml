@@ -16,5 +16,5 @@ services:
       dockerfile: extensions/pg-cel/Dockerfile
       args:
         PG_MAJOR: "18"
-        POSTGRES_TAG: "18.4"
-    image: pgauthz-postgres-cel:18.4
+        POSTGRES_TAG: "18.6"
+    image: pgauthz-postgres-cel:18.6

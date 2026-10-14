@@ -742,7 +742,7 @@ write rule then returns `writes_disabled`).
 
 | Service | Image                        | Ports | Notes |
 |---|------------------------------|---|---|
-| `authz-db` | `postgres:18.4`              | 55433:5432 | `max_connections=250`, tuned `shared_buffers`, `work_mem` |
+| `authz-db` | `postgres:18.6`              | 55433:5432 | `max_connections=250`, tuned `shared_buffers`, `work_mem` |
 | `pgauthzd` (decision-only) | `pgauthzd` (multi-stage)     | internal only | Read-only; connects as `authzen_direct` (inherits `authz_reader`); serves the native `/pgauthz/v1` read callback |
 | `opa` | `openpolicyagent/opa:1.20.2` | 8181:8181 | Internal Rego policy sidecar that pgauthzd consults (when `OPA_URL` is set); calls **back** into pgauthzd's native callback listeners. Only pgauthzd calls it. Token auth + basic authorization. Env: `JWT_ISSUER`, `JWT_AUDIENCE`, `DEFAULT_STORE`, `NATIVE_URL`, `NATIVE_WRITE_URL`, `NATIVE_SERVICE_TOKEN`, `JWT_ROLES_CLAIM`, `WRITER_ROLE`, `REQUIRE_TOKEN_FOR_READS` (tokenless `input.subject` reads only when `false` — trusted-PEP mode; the keycloak overlay pins `true`), `DEFAULT_CACHE_TTL_SECONDS`. |
 | `pgauthzd` (full/writer) | `pgauthzd` (multi-stage)     | internal only | Fixed `authz_writer` role, **no JWT** of its own — the OPA writer-role policy authorizes the forwarded write today; trusts the service token + `X-PGAuthz-Role`; reachable only by OPA (which pgauthzd's write front door consults) |

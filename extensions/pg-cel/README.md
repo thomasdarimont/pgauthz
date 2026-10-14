@@ -78,7 +78,7 @@ seed.sql first), see
 
 ```bash
 # from the repository root (build context must include extensions/pg-cel)
-docker build -f extensions/pg-cel/Dockerfile -t pgauthz-postgres-cel:18.4 .
+docker build -f extensions/pg-cel/Dockerfile -t pgauthz-postgres-cel:18.6 .
 ```
 
 ### Local extension development (cargo-pgrx)

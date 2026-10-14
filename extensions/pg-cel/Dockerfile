@@ -4,7 +4,7 @@
 # postgres image, so lang='cel' conditions can be evaluated in-database.
 #
 # Build from the REPOSITORY ROOT (the build context needs extensions/pg-cel):
-#   docker build -f extensions/pg-cel/Dockerfile -t pgauthz-postgres-cel:18.4 .
+#   docker build -f extensions/pg-cel/Dockerfile -t pgauthz-postgres-cel:18.6 .
 #
 # Or via the compose overlay (preferred):
 #   docker compose -f compose.yml -f compose-cel.yml up -d --build
@@ -15,7 +15,7 @@
 # pgrx dependency in Cargo.toml.
 
 ARG PG_MAJOR=18
-ARG POSTGRES_TAG=18.4
+ARG POSTGRES_TAG=18.6
 ARG PGRX_VERSION=0.19.2
 
 # ---- build stage -----------------------------------------------------------

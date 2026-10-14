@@ -111,7 +111,7 @@ the important shape is:
 ```yaml
 services:
   authz-db:
-    image: postgres:18.4
+    image: postgres:18.6
     environment:
       POSTGRES_USER: authz
       POSTGRES_PASSWORD: authz

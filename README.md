@@ -115,7 +115,7 @@ rest are the components of the reference deployment.
 
 | Component | Version                   | Required? | Notes |
 |---|---------------------------|---|---|
-| **PostgreSQL** | 18.4                      | **required** | The engine. Uses partitioning, generated identity, and JSONB; developed and tested on 18.x. |
+| **PostgreSQL** | 18.6                      | **required** | The engine. Uses partitioning, generated identity, and JSONB; developed and tested on 18.x. |
 | pgauthzd | —                         | optional | Single Go daemon exposing the engine over HTTP (native `/pgauthz/v1` + AuthZEN 1.0 API); capability profiles `decision-only` (read-only DB role) / `full` (read+write); fronting OPA is the orthogonal `OPA_URL` flag (not a third profile). OPA's Rego calls back into it for reads and writes. |
 | OPA | 1.18.2                    | optional | Internal policy-as-code sidecar (Rego) that only pgauthzd calls (when `OPA_URL` is set); not a client-facing entry point. |
 | Go (pgauthzd) | 1.27.1                    | optional | One `pgauthzd` binary; demo services `pgauthzd-decision` / `pgauthzd-opa` / `pgauthzd-full`. |

@@ -18,7 +18,7 @@ RUN cargo install sqlx-cli --version 0.9.0 \
     --no-default-features --features rustls,postgres --locked
 
 # ── installer image ─────────────────────────────────────────────────────────
-FROM postgres:18.4
+FROM postgres:18.6
 
 COPY --from=sqlx-build /usr/local/cargo/bin/sqlx /usr/local/bin/sqlx
 

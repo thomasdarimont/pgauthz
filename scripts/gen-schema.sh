@@ -25,7 +25,7 @@ trap cleanup EXIT
 
 docker run -d --name "$NAME" \
   -e POSTGRES_USER=authz -e POSTGRES_PASSWORD=authz -e POSTGRES_DB=authz \
-  -p "$PORT:5432" -v "$ROOT":/repo:ro postgres:18.4 >/dev/null
+  -p "$PORT:5432" -v "$ROOT":/repo:ro postgres:18.6 >/dev/null
 
 for _ in $(seq 1 60); do docker exec "$NAME" pg_isready -U authz >/dev/null 2>&1 && break; sleep 1; done
 
