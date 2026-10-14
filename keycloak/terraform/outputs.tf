@@ -23,3 +23,22 @@ output "app_dms_client_secret" {
   value       = keycloak_openid_client.app_dms.client_secret
   sensitive   = true
 }
+
+# examples/agentic (get-token.sh --service <client> reads <client>_client_secret).
+output "acme_app_client_secret" {
+  description = "Client secret for acme-app (device login + the PEP's client_credentials)."
+  value       = keycloak_openid_client.acme_app.client_secret
+  sensitive   = true
+}
+
+output "acme_assist_client_secret" {
+  description = "Client secret for acme_assist (actor token + delegated token exchange)."
+  value       = keycloak_openid_client.acme_assist.client_secret
+  sensitive   = true
+}
+
+output "acme_other_agent_client_secret" {
+  description = "Client secret for acme-other-agent (negative delegation path)."
+  value       = keycloak_openid_client.acme_other_agent.client_secret
+  sensitive   = true
+}

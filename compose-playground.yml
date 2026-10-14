@@ -108,12 +108,9 @@ services:
   # multi-tenant deployment (bind each IdP to its tenant's stores).
   pgauthzd-opa:
     environment:
-      # Blank the legacy single-issuer form so it is not ALSO appended as an
-      # unbound issuer; both issuers live in JWT_ISSUERS below.
-      JWKS_FILE: ""
-      JWT_ISSUERS: >-
-        [{"issuer":"${JWT_ISSUER:-https://auth.example.com}","audience":"${JWT_AUDIENCE:-authz-api}","jwks_file":"/jwks/jwks.json","stores":["${DEFAULT_STORE:-demo}"]},
-         {"issuer":"https://id.pgauthz.test/realms/pgauthz","audience":"authz-api","jwks_url":"http://keycloak:8080/realms/pgauthz/protocol/openid-connect/certs","stores":[".*"]}]
+      # The two-issuer JWT_ISSUERS set (demo issuer → demo store, Keycloak →
+      # ".*") and JWT_ROLES_CLAIM come from compose-keycloak.yml, which this
+      # overlay always sits on top of.
       # Reverse-search endpoints (search/subject|resource|action) enumerate the
       # access graph, so gate them behind an auditor role. Roles are read from the
       # Keycloak realm + authz-api client claims (aggregated). Alice holds
@@ -125,7 +122,6 @@ services:
       # it keeps the overlay valid under DEPLOYMENT_ENVIRONMENT=production, which
       # requires both roles to be set (see docs/PRODUCTION.md).
       EXPLAIN_REQUIRED_ROLE: authzen_auditor
-      JWT_ROLES_CLAIM: realm_access.roles,resource_access.authz-api.roles
       # Forward the verified token to OPA (input.token) so OPA re-validates it,
       # instead of forwarding only the resolved subject. Lets OPA run in the secure
       # REQUIRE_TOKEN_FOR_READS=true mode (see compose-keycloak.yml). Safe here
@@ -144,13 +140,7 @@ services:
   # keeps it off unless the PEP genuinely acts on behalf of others.
   pgauthzd-full:
     environment:
-      JWKS_FILE: ""
-      JWT_ISSUERS: >-
-        [{"issuer":"${JWT_ISSUER:-https://auth.example.com}","audience":"${JWT_AUDIENCE:-authz-api}","jwks_file":"/jwks/jwks.json","stores":["${DEFAULT_STORE:-demo}"]},
-         {"issuer":"https://id.pgauthz.test/realms/pgauthz","audience":"authz-api","jwks_url":"http://keycloak:8080/realms/pgauthz/protocol/openid-connect/certs","stores":[".*"]}]
-      # `roles` first so the demo issuer's test tokens (tests/test-authzen.sh)
-      # keep their writer/recorder claims; the Keycloak paths follow.
-      JWT_ROLES_CLAIM: roles,realm_access.roles,resource_access.authz-api.roles
+      # JWT_ISSUERS / JWT_ROLES_CLAIM: see compose-keycloak.yml.
       ALLOW_SUBJECT_OVERRIDE: "true"
 
   # Add the app.pgauthz.test route to the keycloak overlay's nginx proxy.

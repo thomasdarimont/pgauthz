@@ -50,3 +50,24 @@ variable "playground_bff_client_secret" {
   default     = "playground-bff-demo-secret"
   sensitive   = true
 }
+
+variable "acme_app_client_secret" {
+  description = "Client secret for acme-app (examples/agentic: the user-facing app + PEP service account). Override for anything real."
+  type        = string
+  default     = "acme-app-demo-secret"
+  sensitive   = true
+}
+
+variable "acme_assist_client_secret" {
+  description = "Client secret for acme_assist (examples/agentic: the agent / token-exchange actor). Override for anything real."
+  type        = string
+  default     = "acme-assist-demo-secret"
+  sensitive   = true
+}
+
+variable "acme_other_agent_client_secret" {
+  description = "Client secret for acme-other-agent (examples/agentic: an actor without the delegate permission). Override for anything real."
+  type        = string
+  default     = "acme-other-agent-demo-secret"
+  sensitive   = true
+}

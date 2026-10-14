@@ -55,6 +55,12 @@ services:
       KC_HOSTNAME: https://id.pgauthz.test
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
       KC_LOG_LEVEL: ${KC_LOG_LEVEL:-INFO}
+      # Token-exchange DELEGATION (examples/agentic): a user consents to an
+      # agent acting on their behalf; the agent exchanges the user's token for
+      # a delegated one (sub = user, act.client_id = agent). Both are PREVIEW
+      # features in Keycloak 26.8 (parameterized-scopes carries the
+      # delegation:client:<id> scope). Drop them for a stock issuer.
+      KC_FEATURES: ${KC_FEATURES:-token-exchange-delegation,parameterized-scopes}
     volumes:
       - ./keycloak/config/keycloak.conf:/opt/keycloak/conf/keycloak.conf:ro
       # Live-reloadable custom themes and SPI provider JARs.
@@ -114,14 +120,48 @@ services:
       # (the store isn't namespaced); see keycloak/README.md "Per-app DB role" and
       # the commented mapper in terraform/client.authz-api.tf, then uncomment this.
       # DB_ROLE_CLAIM: db_role
+      # Delegated actor (examples/agentic): a token whose act.client_id names an
+      # agent is checked AS THAT AGENT (type agent), the user it acts for is
+      # on_behalf_of. Same two values on the pgauthzd instances below — both
+      # derive the subject from the token.
+      ACTOR_CLAIM: act.client_id
+      ACTOR_SUBJECT_TYPE: agent
 
   # The keycloak example routes api.pgauthz.test through pgauthzd (the front door,
-  # via the nginx proxy above). Since OPA runs in token-mode here
-  # (REQUIRE_TOKEN_FOR_READS=true), pgauthzd must FORWARD the verified bearer token
-  # to OPA so it re-validates via the input.token path (no tokenless subject-trust).
+  # via the nginx proxy above). pgauthzd trusts BOTH issuers: the self-minted demo
+  # issuer (tests/test-authzen.sh, bound to the demo store) and Keycloak, which
+  # gets ".*" so the examples and the playground can pick any store — do NOT copy
+  # that wildcard into a real multi-tenant deployment (bind each IdP to its
+  # tenant's stores). Since OPA runs in token-mode here (REQUIRE_TOKEN_FOR_READS=
+  # true), pgauthzd must FORWARD the verified bearer token to OPA so it
+  # re-validates via the input.token path (no tokenless subject-trust).
   pgauthzd-opa:
     environment:
+      # Blank the legacy single-issuer form so it is not ALSO appended as an
+      # unbound issuer; both issuers live in JWT_ISSUERS.
+      JWKS_FILE: ""
+      JWT_ISSUERS: >-
+        [{"issuer":"${JWT_ISSUER:-https://auth.example.com}","audience":"${JWT_AUDIENCE:-authz-api}","jwks_file":"/jwks/jwks.json","stores":["${DEFAULT_STORE:-demo}"]},
+         {"issuer":"https://id.pgauthz.test/realms/pgauthz","audience":"authz-api","jwks_url":"http://keycloak:8080/realms/pgauthz/protocol/openid-connect/certs","stores":[".*"]}]
+      # `roles` first so the demo issuer's test tokens keep their claims; the
+      # Keycloak realm + authz-api client paths follow (aggregated).
+      JWT_ROLES_CLAIM: roles,realm_access.roles,resource_access.authz-api.roles
       FORWARD_TOKEN_TO_OPA: "true"
+      ACTOR_CLAIM: act.client_id
+      ACTOR_SUBJECT_TYPE: agent
+
+  # The writer trusts the same two issuers (examples/agentic's PEP writes the
+  # task scope with a Keycloak service-account token; the playground records
+  # events with the user's token).
+  pgauthzd-full:
+    environment:
+      JWKS_FILE: ""
+      JWT_ISSUERS: >-
+        [{"issuer":"${JWT_ISSUER:-https://auth.example.com}","audience":"${JWT_AUDIENCE:-authz-api}","jwks_file":"/jwks/jwks.json","stores":["${DEFAULT_STORE:-demo}"]},
+         {"issuer":"https://id.pgauthz.test/realms/pgauthz","audience":"authz-api","jwks_url":"http://keycloak:8080/realms/pgauthz/protocol/openid-connect/certs","stores":[".*"]}]
+      JWT_ROLES_CLAIM: roles,realm_access.roles,resource_access.authz-api.roles
+      ACTOR_CLAIM: act.client_id
+      ACTOR_SUBJECT_TYPE: agent
 
 volumes:
   keycloak-db-data:
