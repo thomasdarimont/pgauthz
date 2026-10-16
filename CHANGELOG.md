@@ -26,7 +26,8 @@ pre-1.0, minor versions may include breaking changes.
   (evaluation, evaluations, subject/resource/action search) plus the
   short-circuit comprehensive plan as Go subtests, failing with the suite's
   log and link. Variant `api_key` / `static` / `core`; `discovery` and
-  `properties` are documented as not covered yet.
+  `properties` are documented as not covered yet. CI runs it on every push
+  (`conformance-test` job) against the stack's `pgauthzd-decision`.
 
 - **Agentic authorization demos.** Alongside the `agents` model
   (`examples/models/agents/`, the *Authorization in Action* ch. 18 scenario),

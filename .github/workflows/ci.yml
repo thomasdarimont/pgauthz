@@ -142,6 +142,53 @@ jobs:
         if: always()
         run: docker compose -f compose.yml -f compose-opa.yml -f compose-authzen.yml down -v || true
 
+  # The OpenID conformance suite's AuthZEN PDP plans (conformance/): the suite
+  # runs in Testcontainers on the runner and calls the stack's pgauthzd-decision
+  # through the harness's https front; a failed module fails with the suite's
+  # log and link. A few minutes once the suite images (~1.5 GB) are pulled.
+  conformance-test:
+    name: AuthZEN conformance (OpenID suite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: conformance/go.mod
+          cache-dependency-path: conformance/go.sum
+      - name: Harness unit tests
+        working-directory: conformance
+        run: |
+          go vet ./...
+          go test ./...
+      - name: Cache sqlx-cli
+        id: cache-sqlx
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/sqlx
+          key: sqlx-cli-0.9.0-${{ runner.os }}
+      - name: Install sqlx-cli
+        if: steps.cache-sqlx.outputs.cache-hit != 'true'
+        run: cargo install sqlx-cli --version 0.9.0 --no-default-features --features rustls,postgres --locked
+
+      # env.sh's ALLOW_SUBJECT_OVERRIDE=true default is what the suite needs:
+      # it names alice and bob in the request body under one PEP credential.
+      - name: Initialize database and bring up the stack
+        run: ./init.sh
+
+      # Loads the authzen_cert fixture, then runs every module of the six plans.
+      - name: Run the conformance suite against pgauthzd-decision
+        run: ./tests/test-conformance.sh
+
+      - name: Service logs on failure
+        if: failure()
+        run: docker compose -f compose.yml -f compose-authzen.yml logs --no-color --tail=300 || true
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f compose.yml -f compose-authzen.yml down -v || true
+
   # Proves the non-destructive upgrade path (ADR 0001): install the most recent
   # release tag, seed data, then upgrade in place to HEAD and assert the data
   # survived and the engine still works. Skips cleanly until the first v* tag.

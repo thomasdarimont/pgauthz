@@ -22,6 +22,8 @@ The plan tests are skipped unless `PGAUTHZ_CONFORMANCE_TESTS=true` (the script s
 takes a few minutes, and the suite images (about 1.5 GB) are pulled on first use. While the
 tests run, the suite's UI at `https://localhost:18444` shows the plans and every module's log;
 a failed module fails with the failures and warnings the suite logged and the link to that log.
+CI runs the same script in the `conformance-test` job of `.github/workflows/ci.yml` against
+the stack's `pgauthzd-decision`.
 
 | Test | Plan | Level |
 |---|---|---|
