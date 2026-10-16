@@ -920,14 +920,7 @@ func (h *Handler) SearchAction(w http.ResponseWriter, r *http.Request) {
 
 // WellKnown handles GET /.well-known/authzen-configuration
 func (h *Handler) WellKnown(w http.ResponseWriter, r *http.Request) {
-	base := h.cfg.BaseURL
-	if base == "" {
-		scheme := "http"
-		if r.TLS != nil {
-			scheme = "https"
-		}
-		base = scheme + "://" + r.Host
-	}
+	base := h.publicBaseURL(r)
 
 	// Store-scoped (tenant) discovery: the PDP identifier and every endpoint
 	// carry the /stores/{store} path, so each store presents as its own
@@ -947,6 +940,33 @@ func (h *Handler) WellKnown(w http.ResponseWriter, r *http.Request) {
 		SearchActionEndpoint:   base + "/access/v1/search/action",
 		Capabilities:           []string{"evaluation", "evaluations", "subject-search", "resource-search", "action-search"},
 	})
+}
+
+// publicBaseURL is the scheme and host the PDP is reachable under, for the
+// discovery document (AuthZEN 1.0 §9.2.3: the advertised policy_decision_point
+// must be identical to the URL the caller fetched the metadata from):
+// BASE_URL when set; else, with TRUST_FORWARDED_HEADERS, what a TLS-terminating
+// proxy reports in X-Forwarded-Proto / X-Forwarded-Host; else the request's own
+// scheme and host.
+func (h *Handler) publicBaseURL(r *http.Request) string {
+	if h.cfg.BaseURL != "" {
+		return strings.TrimRight(h.cfg.BaseURL, "/")
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	host := r.Host
+	if h.cfg.TrustForwardedHeaders {
+		// A proxy chain may append values; the first is the client-facing one.
+		if p := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]); p == "http" || p == "https" {
+			scheme = p
+		}
+		if fh := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Host"), ",")[0]); fh != "" {
+			host = fh
+		}
+	}
+	return scheme + "://" + host
 }
 
 // Healthz handles GET /healthz

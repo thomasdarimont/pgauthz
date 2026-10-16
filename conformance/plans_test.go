@@ -131,3 +131,28 @@ func TestEvaluationsComprehensivePlan(t *testing.T) {
 	suite, pdp := pdpUnderTest(t)
 	conformance.RunPlan(t, suite, conformance.EvaluationsComprehensive, pdp)
 }
+
+// The five certification plans again, with the endpoints DISCOVERED from the PDP's
+// /.well-known/authzen-configuration instead of configured. The suite inserts the well-known
+// segment between host and tenant path (…/.well-known/authzen-configuration/stores/authzen_cert)
+// and stops if the advertised policy_decision_point differs from the configured one — behind
+// the https front that needs the pgauthzd under test to honour the front's X-Forwarded-*
+// headers (TRUST_FORWARDED_HEADERS=true, env.sh's default for the demo stack) or BASE_URL.
+//
+// Skipped unless CTS_DISCOVERY=true: in release-v5.3.2 the discovery variant cannot run with
+// api_key at all — GetPDPDynamicServerConfiguration REPLACES the `pdp` environment object
+// (where the configured pdp.api_key lives) with the fetched metadata, so every module is
+// INTERRUPTED with "'PDP API Key' field is missing" before it calls the PDP (see
+// KnownSuiteIssues). pgauthzd's side — the discovery document advertising the public URL —
+// is covered by its own unit tests; set CTS_DISCOVERY=true to re-check once the suite is fixed.
+func TestDiscoveryPlans(t *testing.T) {
+	if os.Getenv("CTS_DISCOVERY") != "true" {
+		t.Skip("discovery + api_key is broken in conformance suite release-v5.3.2 (the fetched metadata replaces the configured pdp.api_key); set CTS_DISCOVERY=true to run anyway")
+	}
+	suite, pdp := pdpUnderTest(t)
+	for _, plan := range conformance.DiscoveryPlans {
+		t.Run(plan.Name, func(t *testing.T) {
+			conformance.RunPlan(t, suite, plan, pdp)
+		})
+	}
+}

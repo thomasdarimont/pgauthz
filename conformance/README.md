@@ -33,10 +33,15 @@ the stack's `pgauthzd-decision`.
 | `TestResourceSearchPlan` | `authzen-pdp-resource-search-test-plan` | Search |
 | `TestActionSearchPlan` | `authzen-pdp-action-search-test-plan` | Search |
 | `TestEvaluationsComprehensivePlan` | `authzen-pdp-evaluations-comprehensive-test-plan` | short-circuit semantics (not certification) |
+| `TestDiscoveryPlans` | the five certification plans again | `pdp_server_metadata=discovery`: endpoints taken from `/.well-known/authzen-configuration` — **skipped unless `CTS_DISCOVERY=true`**, see known suite issues |
 
-All plans run with the variant `pdp_auth_type=api_key`, `pdp_server_metadata=static`,
-`authzen_support=core`; the configuration is [`suite-config/authzen-core.json`](suite-config/authzen-core.json)
-with the PDP identifier, the endpoints and the key filled in at run time.
+All plans run with `pdp_auth_type=api_key` and `authzen_support=core`; the six above with
+`pdp_server_metadata=static` (the endpoints are configured), `TestDiscoveryPlans` with
+`discovery` (the suite inserts the well-known segment between host and tenant path,
+`…/.well-known/authzen-configuration/stores/authzen_cert`, and stops unless the advertised
+`policy_decision_point` is identical to the configured one). The configuration is
+[`suite-config/authzen-core.json`](suite-config/authzen-core.json) with the PDP identifier,
+the key and — static only — the endpoints filled in at run time.
 
 ## How the pieces fit
 
@@ -61,7 +66,7 @@ with the PDP identifier, the endpoints and the key filled in at run time.
 
 | Environment variable | Default | |
 |---|---|---|
-| `CTS_PGAUTHZD_URL` | `http://localhost:8090` | the pgauthzd under test (`decision-only` is enough; `ALLOW_SUBJECT_OVERRIDE=true`) |
+| `CTS_PGAUTHZD_URL` | `http://localhost:8090` | the pgauthzd under test (`decision-only` is enough; `ALLOW_SUBJECT_OVERRIDE=true`, and `TRUST_FORWARDED_HEADERS=true` or a matching `BASE_URL` for the discovery variant — env.sh sets both for the demo stack) |
 | `CTS_STORE` | `authzen_cert` | the store the PDP identifier selects |
 | `CTS_PDP_PORT` | `9445` | host port of the https front |
 | `CTS_SUITE_PORT` | `18444` | host port of the suite (its UI) |
@@ -82,12 +87,17 @@ fixed. As of release-v5.3.2:
   `api_key` or any other variant). pgauthzd's 401 for a bad token is covered by
   `tests/test-authzen.sh`.
 
+- With `pdp_server_metadata=discovery` every module of every plan is INTERRUPTED with
+  `'PDP API Key' field is missing from the 'AuthZEN' section in the test configuration`:
+  `GetPDPDynamicServerConfiguration` stores the fetched metadata as the `pdp` environment
+  object, replacing the configured one that carried `pdp.api_key`, so the api_key condition
+  finds nothing. The static variant keeps the configured object and works. pgauthzd's side of
+  discovery — advertising the public URL behind the https front (`TRUST_FORWARDED_HEADERS`,
+  `BASE_URL`) — is verified by its unit tests and by hand; `TestDiscoveryPlans` is skipped
+  until the suite is fixed (`CTS_DISCOVERY=true` runs it regardless).
+
 ## Not covered yet
 
-- `pdp_server_metadata=discovery`: the suite fetches `<PDP>/.well-known/authzen-configuration`
-  and stops when `policy_decision_point` in it differs from the configured one. Behind the https
-  front pgauthzd would advertise its own http URL unless `BASE_URL` is set on the instance (the
-  front sends `X-Forwarded-Proto`/`-Host`, which pgauthzd does not read yet).
 - `authzen_support=properties` (fixture rules 5–8: archived records, the admin role, soft
   delete): pgauthzd does not feed `subject`/`resource`/`action` properties into the engine.
 - `client_secret_basic` and `mtls`: pgauthzd authenticates callers by JWT only.

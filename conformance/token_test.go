@@ -92,4 +92,23 @@ func TestPlanConfig(t *testing.T) {
 	if !strings.HasPrefix(string(config), "{") {
 		t.Fatal("config is not a JSON object")
 	}
+
+	// Discovery: the identifier and key only — the endpoints come from the PDP's metadata.
+	config, err = Evaluation.WithMetadata(Discovery).Config(PDP{BaseURL: "https://h:9445/stores/authzen_cert", APIKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed.PDP = nil // Unmarshal merges into an existing map
+	if err := json.Unmarshal(config, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.PDP) != 2 || parsed.PDP["policy_decision_point"] != "https://h:9445/stores/authzen_cert" || parsed.PDP["api_key"] != "k" {
+		t.Fatalf("discovery config: %v", parsed.PDP)
+	}
+	if v := Evaluation.WithMetadata(Discovery).Variant()["pdp_server_metadata"]; v != "discovery" {
+		t.Fatalf("variant: %q", v)
+	}
+	if v := Evaluation.Variant()["pdp_server_metadata"]; v != "static" {
+		t.Fatalf("static variant: %q", v)
+	}
 }

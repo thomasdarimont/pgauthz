@@ -397,7 +397,8 @@ All configuration is via environment variables.
 | Variable | Default | Description |
 |---|---|---|
 | `LISTEN_ADDR` | `:8080` | HTTP bind address |
-| `BASE_URL` | auto-detect | Base URL for `.well-known` response |
+| `BASE_URL` | auto-detect | Base URL for `.well-known` response (scheme + host the PDP is reachable under) |
+| `TRUST_FORWARDED_HEADERS` | `false` | Build the `.well-known` base from `X-Forwarded-Proto` / `X-Forwarded-Host` (an instance behind a TLS-terminating proxy that sets them). Off by default — a client could otherwise choose what the PDP advertises as its identifier. `BASE_URL` wins when set |
 | `JWKS_URL` | | URL to JWKS endpoint (required if `JWKS_FILE` not set) |
 | `JWKS_FILE` | | Path to local JWKS file (required if `JWKS_URL` not set) |
 | `JWT_ISSUER` | | Expected `iss` claim (optional) |

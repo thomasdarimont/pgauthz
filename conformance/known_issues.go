@@ -29,12 +29,24 @@ var KnownSuiteIssues = []KnownSuiteIssue{
 			"(tests/test-authzen.sh) until the suite is fixed.",
 		Issue: "https://gitlab.com/openid/conformance-suite/-/work_items/2040",
 	},
+	{
+		// Every module of a discovery-variant plan; TestDiscoveryPlans is skipped as a whole
+		// until the suite is fixed (CTS_DISCOVERY=true runs it anyway), this entry documents why.
+		Module:  "*",
+		Failure: "'PDP API Key' field is missing from the 'AuthZEN' section in the test configuration",
+		Reason: "With pdp_server_metadata=discovery, GetPDPDynamicServerConfiguration stores the fetched metadata " +
+			"as the `pdp` environment object, replacing the configured one that carried pdp.api_key; " +
+			"AddApiKeyAuthenticationParametersToAuthzenApiRequest then finds no key and the module is " +
+			"INTERRUPTED before it calls the PDP. The static variant keeps the configured object " +
+			"(GetPDPStaticServerConfiguration) and works.",
+		Issue: "reported together with #2040; see conformance/README.md",
+	},
 }
 
 // knownIssue returns the known suite issue a failed module matches, if any.
 func knownIssue(result ModuleResult) (KnownSuiteIssue, bool) {
 	for _, issue := range KnownSuiteIssues {
-		if issue.Module != result.Module.Name {
+		if issue.Module != "*" && issue.Module != result.Module.Name {
 			continue
 		}
 		for _, problem := range result.Problems() {

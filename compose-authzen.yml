@@ -50,6 +50,11 @@ services:
       # demo/test stack opts into true via env.sh — NOT this file — so this
       # compose is safe to copy to production as-is.
       ALLOW_SUBJECT_OVERRIDE: "${ALLOW_SUBJECT_OVERRIDE:-false}"
+      # Discovery behind a TLS-terminating proxy: build the .well-known base
+      # from X-Forwarded-Proto/-Host. Off by default (a client could otherwise
+      # pick the advertised PDP identifier); the demo stack opts in via env.sh
+      # so the conformance suite's discovery variant can run (conformance/).
+      TRUST_FORWARDED_HEADERS: "${TRUST_FORWARDED_HEADERS:-false}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       DECISION_LOG: "${DECISION_LOG:-off}"
       DECISION_LOG_SAMPLE: "${DECISION_LOG_SAMPLE:-1}"
@@ -95,6 +100,11 @@ services:
       JWT_AUDIENCE: "${JWT_AUDIENCE:-authz-api}"
       DEFAULT_STORE: "${DEFAULT_STORE:-demo}"
       ALLOW_SUBJECT_OVERRIDE: "${ALLOW_SUBJECT_OVERRIDE:-false}"
+      # Discovery behind a TLS-terminating proxy: build the .well-known base
+      # from X-Forwarded-Proto/-Host. Off by default (a client could otherwise
+      # pick the advertised PDP identifier); the demo stack opts in via env.sh
+      # so the conformance suite's discovery variant can run (conformance/).
+      TRUST_FORWARDED_HEADERS: "${TRUST_FORWARDED_HEADERS:-false}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       DECISION_LOG: "${DECISION_LOG:-off}"
       DECISION_LOG_SAMPLE: "${DECISION_LOG_SAMPLE:-1}"

@@ -43,7 +43,7 @@ func RunPlan(t *testing.T, suite *Suite, plan PlanDefinition, pdp PDP) {
 			case result.FinishedWith("PASSED"):
 				t.Logf("PASSED %s", result.URL)
 				for _, issue := range KnownSuiteIssues {
-					if issue.Module == module.Name {
+					if issue.Module == module.Name || (issue.Module == "*" && plan.Metadata == Discovery) {
 						t.Logf("NOTE: %s passed although a known suite issue is recorded for it — the suite may be fixed, remove the KnownSuiteIssues entry", module.Name)
 					}
 				}

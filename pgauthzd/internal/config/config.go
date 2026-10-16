@@ -94,10 +94,17 @@ type Config struct {
 	InternalTLSKey   string
 	InternalClientCA string
 	BaseURL          string
-	JWKSURL          string
-	JWKSFile         string
-	JWTIssuer        string
-	JWTAudience      string
+	// TrustForwardedHeaders (TRUST_FORWARDED_HEADERS, default false) lets the
+	// discovery document take its scheme and host from X-Forwarded-Proto /
+	// X-Forwarded-Host, for an instance behind a TLS-terminating proxy that
+	// sets them. Off by default: trusting them from arbitrary clients would
+	// let a caller choose what the PDP advertises as its identifier. BASE_URL,
+	// when set, wins over both.
+	TrustForwardedHeaders bool
+	JWKSURL               string
+	JWKSFile              string
+	JWTIssuer             string
+	JWTAudience           string
 
 	// Issuers is the resolved set of trusted issuers (the legacy single-issuer
 	// env vars plus any from JWT_ISSUERS).
@@ -383,6 +390,7 @@ func Load() (*Config, error) {
 		InternalTLSKey:               env("INTERNAL_TLS_KEY", ""),
 		InternalClientCA:             env("INTERNAL_CLIENT_CA", ""),
 		BaseURL:                      env("BASE_URL", ""),
+		TrustForwardedHeaders:        envBool("TRUST_FORWARDED_HEADERS", false),
 		JWKSURL:                      env("JWKS_URL", ""),
 		JWKSFile:                     env("JWKS_FILE", ""),
 		JWTIssuer:                    env("JWT_ISSUER", ""),

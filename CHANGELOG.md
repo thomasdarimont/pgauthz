@@ -9,6 +9,18 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **`TRUST_FORWARDED_HEADERS`** (pgauthzd, default `false`): build the
+  discovery document's base from `X-Forwarded-Proto` / `X-Forwarded-Host`,
+  for an instance behind a TLS-terminating proxy that sets them — AuthZEN
+  1.0 §9.2.3 wants the advertised `policy_decision_point` identical to the
+  URL the metadata was fetched from, which a proxied instance cannot know
+  from its own request. Off by default (a client could otherwise choose the
+  advertised identifier); `BASE_URL` still wins when set. The demo stack opts
+  in (env.sh) and the conformance harness carries the `discovery` variant
+  of the five certification plans (`TestDiscoveryPlans`); it stays skipped
+  until the suite can run discovery with an api_key at all (the fetched
+  metadata currently replaces the configured key — a second suite defect,
+  documented in `conformance/README.md`).
 - **AuthZEN certification fixture** (`examples/models/authzen-cert/`): the
   PDP data the OpenID Foundation's conformance suite expects
   ([openid/authzen #433](https://github.com/openid/authzen/issues/433)) —

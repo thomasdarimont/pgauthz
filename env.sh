@@ -122,6 +122,10 @@ fi
 # so a copied-to-production compose isn't permissive by accident — the demo
 # opts in here, explicitly.
 export ALLOW_SUBJECT_OVERRIDE="${ALLOW_SUBJECT_OVERRIDE:-true}"
+# The conformance suite (conformance/) reaches the daemon through a TLS front
+# and fetches discovery through it; the demo stack trusts the front's
+# X-Forwarded-* headers so the advertised PDP identifier matches (prod: false).
+export TRUST_FORWARDED_HEADERS="${TRUST_FORWARDED_HEADERS:-true}"
 
 # Same for the OPA read path: the demo's OPA integration tests evaluate access
 # for explicit subjects with no JWT, so the demo opts into trusted-PEP mode
