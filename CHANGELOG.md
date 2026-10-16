@@ -20,6 +20,7 @@ pre-1.0, minor versions may include breaking changes.
   of the five certification plans (`TestDiscoveryPlans`); it stays skipped
   until the suite can run discovery with an api_key at all (the fetched
   metadata currently replaces the configured key — a second suite defect,
+  [conformance-suite#2041](https://gitlab.com/openid/conformance-suite/-/work_items/2041),
   documented in `conformance/README.md`).
 - **AuthZEN certification fixture** (`examples/models/authzen-cert/`): the
   PDP data the OpenID Foundation's conformance suite expects

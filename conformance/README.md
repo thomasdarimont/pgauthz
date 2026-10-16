@@ -87,7 +87,9 @@ fixed. As of release-v5.3.2:
   `api_key` or any other variant). pgauthzd's 401 for a bad token is covered by
   `tests/test-authzen.sh`.
 
-- With `pdp_server_metadata=discovery` every module of every plan is INTERRUPTED with
+- With `pdp_server_metadata=discovery`
+  ([conformance-suite#2041](https://gitlab.com/openid/conformance-suite/-/work_items/2041))
+  every module of every plan is INTERRUPTED with
   `'PDP API Key' field is missing from the 'AuthZEN' section in the test configuration`:
   `GetPDPDynamicServerConfiguration` stores the fetched metadata as the `pdp` environment
   object, replacing the configured one that carried `pdp.api_key`, so the api_key condition

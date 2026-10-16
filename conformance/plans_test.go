@@ -142,12 +142,12 @@ func TestEvaluationsComprehensivePlan(t *testing.T) {
 // Skipped unless CTS_DISCOVERY=true: in release-v5.3.2 the discovery variant cannot run with
 // api_key at all — GetPDPDynamicServerConfiguration REPLACES the `pdp` environment object
 // (where the configured pdp.api_key lives) with the fetched metadata, so every module is
-// INTERRUPTED with "'PDP API Key' field is missing" before it calls the PDP (see
-// KnownSuiteIssues). pgauthzd's side — the discovery document advertising the public URL —
+// INTERRUPTED with "'PDP API Key' field is missing" before it calls the PDP
+// (https://gitlab.com/openid/conformance-suite/-/work_items/2041, see KnownSuiteIssues). pgauthzd's side — the discovery document advertising the public URL —
 // is covered by its own unit tests; set CTS_DISCOVERY=true to re-check once the suite is fixed.
 func TestDiscoveryPlans(t *testing.T) {
 	if os.Getenv("CTS_DISCOVERY") != "true" {
-		t.Skip("discovery + api_key is broken in conformance suite release-v5.3.2 (the fetched metadata replaces the configured pdp.api_key); set CTS_DISCOVERY=true to run anyway")
+		t.Skip("discovery + api_key is broken in conformance suite release-v5.3.2 (the fetched metadata replaces the configured pdp.api_key, https://gitlab.com/openid/conformance-suite/-/work_items/2041); set CTS_DISCOVERY=true to run anyway")
 	}
 	suite, pdp := pdpUnderTest(t)
 	for _, plan := range conformance.DiscoveryPlans {

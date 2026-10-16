@@ -39,7 +39,7 @@ var KnownSuiteIssues = []KnownSuiteIssue{
 			"AddApiKeyAuthenticationParametersToAuthzenApiRequest then finds no key and the module is " +
 			"INTERRUPTED before it calls the PDP. The static variant keeps the configured object " +
 			"(GetPDPStaticServerConfiguration) and works.",
-		Issue: "reported together with #2040; see conformance/README.md",
+		Issue: "https://gitlab.com/openid/conformance-suite/-/work_items/2041",
 	},
 }
 
