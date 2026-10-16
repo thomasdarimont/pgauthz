@@ -75,8 +75,9 @@ with the PDP identifier, the endpoints and the key filled in at run time.
 skipped with the reason, and reported if it passes, so the entry is removed once the suite is
 fixed. As of release-v5.3.2:
 
-- `authzen-pdp-evaluation-invalid-credentials-returns-401` is INTERRUPTED before it calls the
-  PDP: `CorruptAuthzenClientCredentials` requires a `client` environment object, but nothing in
+- `authzen-pdp-evaluation-invalid-credentials-returns-401`
+  ([conformance-suite#2040](https://gitlab.com/openid/conformance-suite/-/work_items/2040))
+  is INTERRUPTED before it calls the PDP: `CorruptAuthzenClientCredentials` requires a `client` environment object, but nothing in
   the AuthZEN flow creates one (no condition copies `config.client` into the environment, for
   `api_key` or any other variant). pgauthzd's 401 for a bad token is covered by
   `tests/test-authzen.sh`.

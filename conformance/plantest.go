@@ -51,7 +51,7 @@ func RunPlan(t *testing.T, suite *Suite, plan PlanDefinition, pdp PDP) {
 				t.Logf("WARNING (accepted; CTS_STRICT=true fails it): %s", result.Summary())
 			default:
 				if issue, ok := knownIssue(result); ok {
-					t.Skipf("known conformance suite issue, not a PDP failure (%s): %s", result.URL, issue.Reason)
+					t.Skipf("known conformance suite issue %s, not a PDP failure (%s): %s", issue.Issue, result.URL, issue.Reason)
 				}
 				logs, _ := json.MarshalIndent(result.Logs, "", "  ")
 				t.Logf("Full log of the failed module %s:\n%s", module, logs)

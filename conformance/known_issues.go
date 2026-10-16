@@ -13,6 +13,8 @@ type KnownSuiteIssue struct {
 	Failure string
 	// Reason says what is wrong, for the skip message.
 	Reason string
+	// Issue is the suite's issue tracking the defect.
+	Issue string
 }
 
 // KnownSuiteIssues as of release-v5.3.2.
@@ -25,6 +27,7 @@ var KnownSuiteIssues = []KnownSuiteIssue{
 			"for pdp_auth_type=api_key (which has no client section) or otherwise — so the module is INTERRUPTED " +
 			"before it calls the PDP. The PDP's 401 for a bad token is covered by pgauthzd's own tests " +
 			"(tests/test-authzen.sh) until the suite is fixed.",
+		Issue: "https://gitlab.com/openid/conformance-suite/-/work_items/2040",
 	},
 }
 
