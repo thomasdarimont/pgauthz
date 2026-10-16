@@ -239,6 +239,7 @@ Each topic has exactly one owner. Read the owner, not this file, for detail.
 | [`pgauthzctl/README.md`](pgauthzctl/README.md) | model-as-code CLI: import, test, publish, roll out | your models live in git |
 | [`playground/README.md`](playground/README.md) | the web UI | you want to see a resolution path |
 | [`examples/models/README.md`](examples/models/README.md) | the example models and what each shows | you want a starting point |
+| [`conformance/README.md`](conformance/README.md) | the OpenID conformance suite's AuthZEN PDP plans run against pgauthzd | you want proof the AuthZEN surface is conformant |
 | [`examples/filtering/README.md`](examples/filtering/README.md) | authorization as a JOIN (data filtering) | you list what a user may see |
 | [`examples/agentic/README.md`](examples/agentic/README.md) | human → agent delegation: Keycloak token exchange + a task-bounded agent, end to end | an agent acts on a user's behalf |
 | [`opa/README.md`](opa/README.md) | the optional OPA overlay and policy hooks | you need policy-as-code on top |

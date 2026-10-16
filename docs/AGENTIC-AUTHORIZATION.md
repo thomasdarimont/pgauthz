@@ -93,7 +93,7 @@ curl -s -X POST http://pgauthzd:8080/stores/agents/access/v1/search/action \
   -H "Authorization: Bearer $AGENT_JWT" -d '{
   "subject":  {"type": "agent", "id": "acme_assist"},
   "resource": {"type": "customer_doc", "id": "custco-briefing"}}'
-# {"results": [{"action": {"name": "documents_read"}}, {"action": {"name": "documents_search"}},
+# {"results": [{"name": "documents_read"}, {"name": "documents_search"},
 #              {"action": {"name": "documents_summarize"}}]}
 ```
 

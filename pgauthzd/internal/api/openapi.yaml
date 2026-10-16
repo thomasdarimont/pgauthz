@@ -1807,38 +1807,34 @@ components:
       required: [subject, resource]
     SearchSubjectResponse:
       type: object
+      description: >
+        AuthZEN 1.0 §8.4.2: results are the subject objects themselves
+        ({type, id}), not wrapped items. `page` comes first on the wire.
       properties:
+        page: { $ref: '#/components/schemas/PageResult' }
         results:
           type: array
-          items:
-            type: object
-            properties:
-              subject: { $ref: '#/components/schemas/Subject' }
-            required: [subject]
-        page: { $ref: '#/components/schemas/PageResult' }
+          items: { $ref: '#/components/schemas/Subject' }
       required: [results]
     SearchResourceResponse:
       type: object
+      description: >
+        AuthZEN 1.0 §8.5.2: results are the resource objects themselves
+        ({type, id}). `page` comes first on the wire.
       properties:
+        page: { $ref: '#/components/schemas/PageResult' }
         results:
           type: array
-          items:
-            type: object
-            properties:
-              resource: { $ref: '#/components/schemas/Resource' }
-            required: [resource]
-        page: { $ref: '#/components/schemas/PageResult' }
+          items: { $ref: '#/components/schemas/Resource' }
       required: [results]
     SearchActionResponse:
       type: object
+      description: >
+        AuthZEN 1.0 §8.6.2: results are the action objects themselves ({name}).
       properties:
         results:
           type: array
-          items:
-            type: object
-            properties:
-              action: { $ref: '#/components/schemas/Action' }
-            required: [action]
+          items: { $ref: '#/components/schemas/Action' }
       required: [results]
     WellKnownResponse:
       type: object

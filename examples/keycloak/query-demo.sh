@@ -96,13 +96,13 @@ echo
 echo "==> action search — what may alice do on document:doc_payroll_001?"
 call "$TOK_alice" "access/v1/search/action" \
   "{\"resource\":{\"type\":\"document\",\"id\":\"doc_payroll_001\"}}" \
-  | jq -c '[.results[].action.name]'
+  | jq -c '[.results[].name]'
 
 echo
 echo "==> resource search — which documents can bob (advisor on eng_42) read?"
 call "$TOK_bob" "access/v1/search/resource" \
   "{\"action\":{\"name\":\"can_read\"},\"resource\":{\"type\":\"document\"}}" \
-  | jq -c '[.results[].resource.id]'
+  | jq -c '[.results[].id]'
 
 echo
 echo "==> client_credentials — the app-dms SERVICE (no human) reads a document."

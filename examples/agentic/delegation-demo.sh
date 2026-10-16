@@ -172,7 +172,7 @@ evaluate_detailed() {
 actions() {
   "${CURL[@]}" "$BASE/stores/$STORE/access/v1/search/action" -H 'Content-Type: application/json' \
     -H 'Cache-Control: no-cache' -H "Authorization: Bearer $1" -d "{\"resource\":{\"type\":\"$2\",\"id\":\"$3\"}}" \
-    | jq -c 'if .results then [.results[].action.name] | sort else . end'
+    | jq -c 'if .results then [.results[].name] | sort else . end'
 }
 # pep_check <type> <id> <action> <obj-type> <obj-id> → ALLOW | DENY, asserting the subject
 # (the INTERNAL listener trusts its caller — this is how a PEP in front of a

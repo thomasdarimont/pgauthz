@@ -1,0 +1,13 @@
+{
+  "description": "pgauthzd: AuthZEN 1.0 PDP, Core level (store authzen_cert, the certification fixture of examples/models/authzen-cert)",
+  "publish": "none",
+  "pdp": {
+    "policy_decision_point": "https://host.testcontainers.internal:9445/stores/authzen_cert",
+    "access_evaluation_endpoint": "https://host.testcontainers.internal:9445/stores/authzen_cert/access/v1/evaluation",
+    "access_evaluations_endpoint": "https://host.testcontainers.internal:9445/stores/authzen_cert/access/v1/evaluations",
+    "search_subject_endpoint": "https://host.testcontainers.internal:9445/stores/authzen_cert/access/v1/search/subject",
+    "search_resource_endpoint": "https://host.testcontainers.internal:9445/stores/authzen_cert/access/v1/search/resource",
+    "search_action_endpoint": "https://host.testcontainers.internal:9445/stores/authzen_cert/access/v1/search/action",
+    "api_key": "<minted at run time: a subject-less ES256 JWT from opa/keys/demo.key.txt>"
+  }
+}

@@ -82,33 +82,24 @@ type SearchActionRequest struct {
 	Context  map[string]any `json:"context,omitempty"`
 }
 
-// The search responses put `page` before `results` on the wire, as AuthZEN
-// 1.0 §8.3 recommends (so a streaming reader sees the cursor first).
+// The search responses carry the entities THEMSELVES in `results` — subject
+// objects {type, id}, resource objects {type, id}, action objects {name}
+// (AuthZEN 1.0 §8.4.2, §8.5.2, §8.6.2) — not the pre-1.0 draft's wrapped
+// {"subject": {…}} items, and put `page` before `results` on the wire, as
+// §8.3 recommends (so a streaming reader sees the cursor first).
 
 type SearchSubjectResponse struct {
-	Page    *PageResult     `json:"page,omitempty"`
-	Results []SubjectResult `json:"results"`
+	Page    *PageResult `json:"page,omitempty"`
+	Results []Subject   `json:"results"`
 }
 
 type SearchResourceResponse struct {
-	Page    *PageResult      `json:"page,omitempty"`
-	Results []ResourceResult `json:"results"`
+	Page    *PageResult `json:"page,omitempty"`
+	Results []Resource  `json:"results"`
 }
 
 type SearchActionResponse struct {
-	Results []ActionResult `json:"results"`
-}
-
-type SubjectResult struct {
-	Subject Subject `json:"subject"`
-}
-
-type ResourceResult struct {
-	Resource Resource `json:"resource"`
-}
-
-type ActionResult struct {
-	Action Action `json:"action"`
+	Results []Action `json:"results"`
 }
 
 // --- Shared types ---

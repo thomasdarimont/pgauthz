@@ -16,9 +16,17 @@ pre-1.0, minor versions may include breaking changes.
   a pgauthz store (`authzen_cert`), so the `authzen-pdp-*-test-plan`s can run
   against `/stores/authzen_cert/access/v1`. `tests.sql` pins the Core-level
   decisions and searches the suite validates; `test.sh` loads it as a
-  fixture. Running the suite itself (Testcontainers harness, as easyssf-go
-  does for SSF) is the next step — design notes in
-  `scratch/notes/authzen-conformance.md`.
+  fixture.
+- **Conformance harness** (`conformance/`, `tests/test-conformance.sh`): a
+  Go module that starts the OpenID conformance suite with Testcontainers
+  (release-v5.3.2, pinned by digest — the bootstrap of easyssf-go's
+  conformance module), puts an https front in front of pgauthzd (the suite
+  refuses plain http), mints the subject-less `api_key` JWT the suite
+  authenticates with, and runs every module of the five AuthZEN PDP plans
+  (evaluation, evaluations, subject/resource/action search) plus the
+  short-circuit comprehensive plan as Go subtests, failing with the suite's
+  log and link. Variant `api_key` / `static` / `core`; `discovery` and
+  `properties` are documented as not covered yet.
 
 - **Agentic authorization demos.** Alongside the `agents` model
   (`examples/models/agents/`, the *Authorization in Action* ch. 18 scenario),
@@ -103,6 +111,17 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- **BREAKING (AuthZEN search responses): `results` now holds the entity
+  objects themselves.** AuthZEN 1.0 §8.4.2/§8.5.2/§8.6.2 define the search
+  results as arrays of subject objects `{type, id}`, resource objects
+  `{type, id}` and action objects `{name}`; pgauthzd returned the pre-1.0
+  draft's wrapped items (`{"subject": {…}}`, `{"resource": {…}}`,
+  `{"action": {…}}`), which failed every result-bearing module of the
+  conformance suite's three search plans. Clients that read
+  `.results[].subject.id`, `.results[].resource.id` or `.results[].action.name`
+  change to `.results[].id` / `.results[].name` (the repository's own scripts,
+  demos and docs are updated; the native `/pgauthz/v1/list-*` endpoints are
+  unchanged).
 - **PostgreSQL 18.6.** Every image pin moves from 18.4 to 18.6 (compose
   stack, replication/scaling demos, Keycloak and playground databases, the
   pg_cel build, the migrations runner image, the Helm CNPG tag, CI,
@@ -227,8 +246,14 @@ pre-1.0, minor versions may include breaking changes.
   JSON); and a search naming an **unknown subject/resource type or action**
   returns an empty `results` array (§8.3) instead of a 500 from the engine's
   `Unknown type` RAISE (the check path keeps raising). Also: `page.limit` is
-  accepted as the page size (§8.2; `size` still read), and a 401 carries a
-  `WWW-Authenticate: Bearer` challenge (§11.3).
+  accepted as the page size (§8.2; `size` still read), a 401 carries a
+  `WWW-Authenticate: Bearer` challenge (§11.3), and search responses put
+  `page` before `results` (§8.3 RECOMMENDED). Found by the first suite run: in
+  trusted-PEP mode (`ALLOW_SUBJECT_OVERRIDE=true`) a **partial body subject**
+  — `{"id": "alice"}` without a type, or a type without an id — was completed
+  from the token's subject, so the engine was asked about a principal nobody
+  named (`Unknown type: internal_user` → 500); it is now a 400. The token's
+  subject still stands in for a body that names no subject at all.
 
 - **pgauthzd no longer crash-loops on a fresh database.** The startup profile
   assertions (`decision-only` → read-only role, `full` → writer role) ran

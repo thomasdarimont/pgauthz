@@ -31,6 +31,10 @@ func TestResolveSubjectPair(t *testing.T) {
 		{"override_body_wins_over_jwt", true, "internal_user", "bob", "internal_user", "alice", "internal_user", "bob", nil},
 		{"override_jwt_fallback", true, "", "", "internal_user", "alice", "internal_user", "alice", nil},
 		{"override_nothing_supplied", true, "", "", "", "", "", "", errSubjectRequired},
+		// A partial body subject is malformed, never completed from the token
+		// (the token's type does not describe the body's id).
+		{"override_partial_id_only", true, "", "bob", "internal_user", "alice", "", "", errSubjectRequired},
+		{"override_partial_type_only", true, "user", "", "internal_user", "alice", "", "", errSubjectRequired},
 	}
 
 	for _, tc := range cases {

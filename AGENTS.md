@@ -71,6 +71,7 @@ With OPA overlay: Application → pgauthzd (validates JWT) → OPA (Rego policy-
 ./tests/test.sh          # SQL unit tests only
 ./tests/test-opa.sh      # OPA integration tests
 ./tests/test-authzen.sh  # AuthZEN API tests
+./tests/test-conformance.sh  # OpenID conformance suite AuthZEN PDP plans (Docker, minutes; conformance/)
 ./tests/test-all.sh      # init.sh + all test suites
 ```
 
@@ -93,6 +94,7 @@ cd pgauthzd && go build ./... && go test ./...
 - `db/openfga/` — Import functions for existing OpenFGA JSON models/tuples
 - `db/replication/` — Logical replication and materialized permissions patterns
 - `pgauthzd/` — The Go daemon (cmd/, internal/api/, internal/app/, internal/authz/, internal/config/, internal/metrics/, internal/pgbackend/, internal/opabackend/)
+- `conformance/` — Go module running the OpenID conformance suite's AuthZEN PDP test plans against pgauthzd (Testcontainers suite, https front, subject-less api_key JWT, one test per plan); fixture is `examples/models/authzen-cert/`
 - `opa/policies/` — Rego policies (pgauthz client, application policy, JWT authn, system authz)
 
 ## SQL Engine Conventions

@@ -177,7 +177,7 @@ check_keyset_paging() {
             return
         }
 
-        collected+=$(echo "$resp" | jq -rc '.results[].resource.id')$'\n'
+        collected+=$(echo "$resp" | jq -rc '.results[].id')$'\n'
         token=$(echo "$resp" | jq -rc '.page.next_token // ""')
         [ -z "$token" ] && break
     done
@@ -314,6 +314,14 @@ run_tests() {
         '.results | length' \
         "5"
 
+    # AuthZEN 1.0 §8.5.2: results are the resource objects themselves, not
+    # the pre-1.0 wrapped {"resource": {...}} items.
+    check_json "Resource search results are {type, id} objects" \
+        "$base_url/access/v1/search/resource" "$AUTH_BOB" \
+        '{"subject":{"type":"internal_user","id":"bob"},"action":{"name":"can_read"},"resource":{"type":"document"}}' \
+        '[.results[0] | has("type"), has("id"), has("resource")]' \
+        "[true,true,false]"
+
     check_keyset_paging "Keyset paging covers all 5 of Bob's documents (size 1)" \
         "$base_url" "$AUTH_BOB" \
         '{"subject":{"type":"internal_user","id":"bob"},"action":{"name":"can_read"},"resource":{"type":"document"}}' \
@@ -329,6 +337,12 @@ run_tests() {
         '{"subject":{"type":"internal_user","id":"alice"},"resource":{"type":"document","id":"doc_payroll_001"}}' \
         '.results | length' \
         "2"
+
+    check_json "Action search results are {name} objects" \
+        "$base_url/access/v1/search/action" "$AUTH_ALICE" \
+        '{"subject":{"type":"internal_user","id":"alice"},"resource":{"type":"document","id":"doc_payroll_001"}}' \
+        '[.results[].name] | sort' \
+        '["can_edit","can_read"]'
 
     # --- Well-known configuration (exempt from JWT) ---
     echo ""

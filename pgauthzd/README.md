@@ -140,7 +140,7 @@ curl -X POST http://localhost:8090/access/v1/search/resource \
     "action":   {"name": "can_read"},
     "resource": {"type": "document"}
   }'
-# => {"results": [{"resource": {"type": "document", "id": "doc_payroll_001"}}, ...]}
+# => {"results": [{"type": "document", "id": "doc_payroll_001"}, ...]}
 ```
 
 Add `"page": {"size": 10}` to paginate. The response then carries
@@ -163,7 +163,7 @@ curl -X POST http://localhost:8090/access/v1/search/subject \
     "action":   {"name": "can_read"},
     "resource": {"type": "document", "id": "doc_payroll_001"}
   }'
-# => {"results": [{"subject": {"type": "internal_user", "id": "alice"}}, ...]}
+# => {"results": [{"type": "internal_user", "id": "alice"}, ...]}
 ```
 
 ### Action search
@@ -178,7 +178,7 @@ curl -X POST http://localhost:8090/access/v1/search/action \
     "subject":  {"type": "internal_user", "id": "alice"},
     "resource": {"type": "document", "id": "doc_payroll_001"}
   }'
-# => {"results": [{"action": {"name": "can_edit"}}, {"action": {"name": "can_read"}}]}
+# => {"results": [{"name": "can_edit"}, {"name": "can_read"}]}
 ```
 
 ## Authentication
@@ -261,10 +261,13 @@ only if it matches the token, and a *differing* one is rejected with `403`
 
 Set `ALLOW_SUBJECT_OVERRIDE=true` for **trusted PEP/PDP** deployments — where
 the caller is an enforcement point evaluating access for arbitrary subjects.
-Then the request-body `subject` is authoritative (JWT subject as fallback),
-which is also what batch `evaluations` with per-evaluation subjects requires.
+Then the request-body `subject` is authoritative, which is also what batch
+`evaluations` with per-evaluation subjects requires. The JWT subject stands
+in only for a body that names *no* subject at all; a partial one (`id`
+without `type`, or the reverse) is a `400`, never completed from the token.
 When no JWT subject is present (e.g. a no-auth/system deployment), the body
-subject is used regardless of the flag.
+subject is used regardless of the flag. A PEP credential for the OpenID
+conformance suite therefore carries no `sub` (see `conformance/`).
 
 ## Multi-Store Support
 

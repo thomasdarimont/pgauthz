@@ -316,6 +316,54 @@ func TestAuthZENContentType(t *testing.T) {
 	}
 }
 
+// §8.4.2 / §8.5.2 / §8.6.2: `results` holds the entity objects themselves —
+// {type, id} for subjects and resources, {name} for actions — not the pre-1.0
+// draft's wrapped {"subject": {…}} items, and `page` precedes `results`
+// (the three search plans failed every result-bearing module on the old shape).
+func TestSearchResultsAreEntityObjects(t *testing.T) {
+	mux, _ := certMux(t, true)
+	cases := []struct {
+		path, body string
+		want       []map[string]any
+	}{
+		{"/access/v1/search/subject", `{"subject":{"type":"user"},"action":{"name":"read"},"resource":{"type":"record","id":"record-1"},"page":{"limit":1}}`,
+			[]map[string]any{{"type": "user", "id": "alice"}, {"type": "user", "id": "bob"}}},
+		{"/access/v1/search/resource", `{"subject":{"type":"user","id":"alice"},"action":{"name":"read"},"resource":{"type":"record"}}`,
+			[]map[string]any{{"type": "record", "id": "record-1"}}},
+		{"/access/v1/search/action", `{"subject":{"type":"user","id":"alice"},"resource":{"type":"record","id":"record-1"}}`,
+			[]map[string]any{{"name": "read"}, {"name": "write"}}},
+	}
+	for _, c := range cases {
+		t.Run(c.path, func(t *testing.T) {
+			w := pep(mux, http.MethodPost, c.path, "application/json", c.body)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", w.Code, w.Body.String())
+			}
+			var resp struct {
+				Results []map[string]any `json:"results"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatal(err)
+			}
+			if len(resp.Results) != len(c.want) {
+				t.Fatalf("want %d results, got %s", len(c.want), w.Body.String())
+			}
+			for i, want := range c.want {
+				for k, v := range want {
+					if resp.Results[i][k] != v {
+						t.Fatalf("result %d: want %v, got %v (%s)", i, want, resp.Results[i], w.Body.String())
+					}
+				}
+				for _, wrapped := range []string{"subject", "resource", "action"} {
+					if _, has := resp.Results[i][wrapped]; has {
+						t.Fatalf("result %d is still wrapped in %q: %s", i, wrapped, w.Body.String())
+					}
+				}
+			}
+		})
+	}
+}
+
 // §10.1 transport negatives the mux answers on its own: GET/PUT on a POST
 // route is a 405, a top-level array / string subject / empty body a 400.
 func TestAuthZENTransportNegatives(t *testing.T) {
@@ -326,11 +374,13 @@ func TestAuthZENTransportNegatives(t *testing.T) {
 		}
 	}
 	for name, body := range map[string]string{
-		"top-level array": `[{"subject":{"type":"user","id":"alice"}}]`,
-		"subject string":  `{"subject":"alice","action":{"name":"read"},"resource":{"type":"record","id":"record-1"}}`,
-		"action number":   `{"subject":{"type":"user","id":"alice"},"action":{"name":1},"resource":{"type":"record","id":"record-1"}}`,
-		"empty body":      ``,
-		"missing subject": `{"action":{"name":"read"},"resource":{"type":"record","id":"record-1"}}`,
+		"top-level array":      `[{"subject":{"type":"user","id":"alice"}}]`,
+		"subject string":       `{"subject":"alice","action":{"name":"read"},"resource":{"type":"record","id":"record-1"}}`,
+		"action number":        `{"subject":{"type":"user","id":"alice"},"action":{"name":1},"resource":{"type":"record","id":"record-1"}}`,
+		"empty body":           ``,
+		"missing subject":      `{"action":{"name":"read"},"resource":{"type":"record","id":"record-1"}}`,
+		"subject without type": `{"subject":{"id":"alice"},"action":{"name":"read"},"resource":{"type":"record","id":"record-1"}}`,
+		"subject without id":   `{"subject":{"type":"user"},"action":{"name":"read"},"resource":{"type":"record","id":"record-1"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := pep(mux, http.MethodPost, "/access/v1/evaluation", "application/json", body)
@@ -338,6 +388,27 @@ func TestAuthZENTransportNegatives(t *testing.T) {
 				t.Fatalf("want 400, got %d: %s", w.Code, w.Body.String())
 			}
 		})
+	}
+}
+
+// A subject without a type is a 400 even when the credential carries a
+// subject: the token's type must not complete the body's id (module
+// authzen-pdp-evaluation-subject-missing-type ran into a 500 from the engine's
+// 'Unknown type: internal_user' before this rule).
+func TestPartialBodySubjectIsNotCompletedFromToken(t *testing.T) {
+	mux, b := certMux(t, true)
+	r := httptest.NewRequest(http.MethodPost, "/access/v1/evaluation", strings.NewReader(
+		`{"subject":{"id":"alice"},"action":{"name":"read"},"resource":{"type":"record","id":"record-1"}}`))
+	r.Header.Set("Content-Type", "application/json")
+	ctx := context.WithValue(r.Context(), ctxSubjectType, "internal_user")
+	ctx = context.WithValue(ctx, ctxSubjectID, "pep")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r.WithContext(ctx))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(b.batches) != 0 {
+		t.Fatalf("nothing must reach the engine: %v", b.batches)
 	}
 }
 

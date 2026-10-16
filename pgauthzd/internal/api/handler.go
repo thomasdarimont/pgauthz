@@ -344,20 +344,21 @@ func (h *Handler) store(r *http.Request) string {
 //     be an impersonation attempt. When no JWT subject is present (e.g. a
 //     no-auth/system deployment), the body subject is the only source.
 //   - Override (AllowSubjectOverride=true): the trusted-PEP/PDP mode — the
-//     body subject wins, with the JWT subject as a fallback.
+//     body subject wins, with the JWT subject as a fallback when the body
+//     names NO subject at all. A partial body subject (type without id, or
+//     id without type) is a malformed request, not half of one to complete
+//     from the token: a type describes its id, so mixing the body's id with
+//     the token's type would check a principal nobody named (AuthZEN 1.0
+//     §10.1 wants a 400 for a subject without type).
 func (h *Handler) resolveSubjectPair(bodyType, bodyID, jwtType, jwtID string) (subjectType, subjectID string, err error) {
 	if h.cfg.AllowSubjectOverride {
-		subjectType, subjectID = bodyType, bodyID
-		if subjectType == "" {
-			subjectType = jwtType
+		if bodyType == "" && bodyID == "" {
+			bodyType, bodyID = jwtType, jwtID
 		}
-		if subjectID == "" {
-			subjectID = jwtID
-		}
-		if subjectType == "" || subjectID == "" {
+		if bodyType == "" || bodyID == "" {
 			return "", "", errSubjectRequired
 		}
-		return subjectType, subjectID, nil
+		return bodyType, bodyID, nil
 	}
 
 	// Secure default: the JWT subject is authoritative when present.
@@ -792,10 +793,10 @@ func (h *Handler) SearchSubject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := SearchSubjectResponse{
-		Results: make([]SubjectResult, len(subjects)),
+		Results: make([]Subject, len(subjects)),
 	}
 	for i, id := range subjects {
-		resp.Results[i] = SubjectResult{Subject: Subject{Type: req.Subject.Type, ID: id}}
+		resp.Results[i] = Subject{Type: req.Subject.Type, ID: id}
 	}
 	if pageResp != nil && pageResp.HasMore {
 		resp.Page = &PageResult{NextToken: bindCursor(pageResp.NextToken, freshTok)}
@@ -859,10 +860,10 @@ func (h *Handler) SearchResource(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := SearchResourceResponse{
-		Results: make([]ResourceResult, len(resources)),
+		Results: make([]Resource, len(resources)),
 	}
 	for i, id := range resources {
-		resp.Results[i] = ResourceResult{Resource: Resource{Type: req.Resource.Type, ID: id}}
+		resp.Results[i] = Resource{Type: req.Resource.Type, ID: id}
 	}
 	if pageResp != nil && pageResp.HasMore {
 		resp.Page = &PageResult{NextToken: bindCursor(pageResp.NextToken, freshTok)}
@@ -908,10 +909,10 @@ func (h *Handler) SearchAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := SearchActionResponse{
-		Results: make([]ActionResult, len(actions)),
+		Results: make([]Action, len(actions)),
 	}
 	for i, a := range actions {
-		resp.Results[i] = ActionResult{Action: Action{Name: a}}
+		resp.Results[i] = Action{Name: a}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
