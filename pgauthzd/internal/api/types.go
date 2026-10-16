@@ -29,7 +29,29 @@ type EvalsBatchRequest struct {
 	Resource    *Resource         `json:"resource,omitempty"`
 	Evaluations []EvalRequestBody `json:"evaluations"`
 	Context     map[string]any    `json:"context,omitempty"`
-	Semantic    string            `json:"semantic,omitempty"`
+	// Options carries the AuthZEN 1.0 §7.1.2 request options
+	// (options.evaluations_semantic).
+	Options *EvalsOptions `json:"options,omitempty"`
+	// Semantic is the pre-1.0 top-level spelling of the evaluations semantic,
+	// still accepted; options.evaluations_semantic wins when both are sent.
+	Semantic string `json:"semantic,omitempty"`
+}
+
+// EvalsOptions is the AuthZEN 1.0 `options` object of a batch request.
+type EvalsOptions struct {
+	EvaluationsSemantic string `json:"evaluations_semantic,omitempty"`
+}
+
+// semantic is the effective evaluations semantic: options.evaluations_semantic,
+// else the legacy top-level `semantic`, else execute_all.
+func (r *EvalsBatchRequest) semantic() string {
+	if r.Options != nil && r.Options.EvaluationsSemantic != "" {
+		return r.Options.EvaluationsSemantic
+	}
+	if r.Semantic != "" {
+		return r.Semantic
+	}
+	return "execute_all"
 }
 
 type EvalsBatchResponse struct {
@@ -60,14 +82,17 @@ type SearchActionRequest struct {
 	Context  map[string]any `json:"context,omitempty"`
 }
 
+// The search responses put `page` before `results` on the wire, as AuthZEN
+// 1.0 §8.3 recommends (so a streaming reader sees the cursor first).
+
 type SearchSubjectResponse struct {
-	Results []SubjectResult `json:"results"`
 	Page    *PageResult     `json:"page,omitempty"`
+	Results []SubjectResult `json:"results"`
 }
 
 type SearchResourceResponse struct {
-	Results []ResourceResult `json:"results"`
 	Page    *PageResult      `json:"page,omitempty"`
+	Results []ResourceResult `json:"results"`
 }
 
 type SearchActionResponse struct {
@@ -104,7 +129,19 @@ type Resource struct {
 
 type PageToken struct {
 	Token string `json:"token,omitempty"`
-	Size  int    `json:"size,omitempty"`
+	// Limit is the AuthZEN 1.0 §8.2 page size; Size is the pre-1.0 spelling,
+	// still accepted (limit wins when both are sent).
+	Limit int `json:"limit,omitempty"`
+	Size  int `json:"size,omitempty"`
+}
+
+// size is the requested page size: limit, else the legacy size, else 0
+// (the caller applies the default).
+func (p *PageToken) size() int {
+	if p.Limit > 0 {
+		return p.Limit
+	}
+	return p.Size
 }
 
 type PageResult struct {

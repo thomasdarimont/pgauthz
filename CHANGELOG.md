@@ -9,6 +9,17 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **AuthZEN certification fixture** (`examples/models/authzen-cert/`): the
+  PDP data the OpenID Foundation's conformance suite expects
+  ([openid/authzen #433](https://github.com/openid/authzen/issues/433)) —
+  users alice/bob, records record-1/record-2, actions read/write/delete — as
+  a pgauthz store (`authzen_cert`), so the `authzen-pdp-*-test-plan`s can run
+  against `/stores/authzen_cert/access/v1`. `tests.sql` pins the Core-level
+  decisions and searches the suite validates; `test.sh` loads it as a
+  fixture. Running the suite itself (Testcontainers harness, as easyssf-go
+  does for SSF) is the next step — design notes in
+  `scratch/notes/authzen-conformance.md`.
+
 - **Agentic authorization demos.** Alongside the `agents` model
   (`examples/models/agents/`, the *Authorization in Action* ch. 18 scenario),
   the repository now carries runnable demos of a human delegating to an
@@ -195,6 +206,29 @@ pre-1.0, minor versions may include breaking changes.
   memo off, and against `list_objects` / `list_subjects` membership.
 
 ### Fixed
+
+- **AuthZEN 1.0 conformance of the HTTP surface** — read against the OpenID
+  conformance suite's PDP test plans, pgauthzd deviated in five places, all
+  fixed with unit tests (`internal/api/authzen_conformance_test.go`):
+  a batch request **without an `evaluations` array** (absent or empty) is now
+  answered like the single Access Evaluation API, `{"decision": …}` (§7.1),
+  instead of a 400; a batch item that **cannot be resolved** after the shared
+  defaults are merged (no subject/action/resource, e.g. `{}`) is now a
+  `{"decision": false}` entry with the batch answered 200 (§7.1.1,
+  certification profile 3.4.1) instead of failing the whole request — a
+  rejected subject override stays a 403; the evaluations semantic is read
+  from **`options.evaluations_semantic`** (§7.1.2; the pre-1.0 top-level
+  `semantic` still works) so an unknown value is a 400 rather than ignored,
+  and a short-circuit is now visible on the wire — the response array ends
+  with the decision that stopped processing (§7.1.2.1) instead of padding
+  the rest with `false`; a request declaring a **non-JSON `Content-Type`**
+  is refused with 415 on every `/access/v1` route (§10.1; `charset`
+  parameters and `+json` suffixes accepted, a missing header still read as
+  JSON); and a search naming an **unknown subject/resource type or action**
+  returns an empty `results` array (§8.3) instead of a 500 from the engine's
+  `Unknown type` RAISE (the check path keeps raising). Also: `page.limit` is
+  accepted as the page size (§8.2; `size` still read), and a 401 carries a
+  `WWW-Authenticate: Bearer` challenge (§11.3).
 
 - **pgauthzd no longer crash-loops on a fresh database.** The startup profile
   assertions (`decision-only` → read-only role, `full` → writer role) ran

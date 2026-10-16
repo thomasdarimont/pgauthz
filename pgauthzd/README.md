@@ -98,11 +98,19 @@ curl -X POST http://localhost:8090/access/v1/evaluation \
 
 ### Batch evaluations
 
-Check multiple permissions in a single call. The `semantic` field controls
+Check multiple permissions in a single call. `options.evaluations_semantic`
+(AuthZEN 1.0 §7.1.2; the pre-1.0 top-level `semantic` is still read) controls
 short-circuit behavior:
 - `execute_all` (default) — evaluate all, return all results
 - `deny_on_first_deny` — stop on first denial
 - `permit_on_first_permit` — stop on first permit
+
+With a short-circuit the response array ends with the decision that stopped
+processing. An evaluation that lacks a subject, action or resource after the
+shared defaults are merged in comes back as `{"decision": false}` in its place
+(§7.1.1) rather than failing the batch; a request without an `evaluations`
+array is handled like the single Access Evaluation API and answered as
+`{"decision": …}` (§7.1).
 
 ```bash
 curl -X POST http://localhost:8090/access/v1/evaluations \

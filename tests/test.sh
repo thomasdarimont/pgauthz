@@ -85,6 +85,13 @@ psql_file "$PG_DB" "$PG_DIR/examples/models/agents/seed.sql"
 psql_file "$PG_DB" "$PG_DIR/examples/models/agents/tests.sql"
 
 echo ""
+echo "==> Loading authzen-cert model (OpenID conformance fixture) + checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/examples/models/authzen-cert/model.sql"
+psql_file "$PG_DB" "$PG_DIR/examples/models/authzen-cert/seed.sql"
+psql_file "$PG_DB" "$PG_DIR/examples/models/authzen-cert/tests.sql"
+
+echo ""
 echo "==> Loading fourquestions model (the pitch example: team, exclusion, expiry, three gates) + checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/examples/models/fourquestions/model.sql"

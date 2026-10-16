@@ -83,6 +83,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/EvaluationOK' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/FreshnessConflict' }
@@ -101,6 +102,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/EvaluationOK' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/FreshnessConflict' }
@@ -119,6 +121,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/EvaluationsOK' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/EvaluationsForbidden' }
         '409': { $ref: '#/components/responses/FreshnessConflict' }
@@ -136,6 +139,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/EvaluationsOK' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/EvaluationsForbidden' }
         '409': { $ref: '#/components/responses/FreshnessConflict' }
@@ -154,6 +158,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/SearchSubjectOK' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/FreshnessConflict' }
@@ -171,6 +176,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/SearchSubjectOK' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/FreshnessConflict' }
@@ -189,6 +195,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/SearchResourceOK' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/FreshnessConflict' }
@@ -206,6 +213,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/SearchResourceOK' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/FreshnessConflict' }
@@ -224,6 +232,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/SearchActionOK' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/FreshnessConflict' }
@@ -241,6 +250,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/SearchActionOK' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/FreshnessConflict' }
@@ -1564,6 +1574,14 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ReserveEventResponse' }
+    UnsupportedMediaType:
+      description: >
+        The request declared a Content-Type other than application/json
+        (AuthZEN 1.0 §10.1). A charset parameter and +json suffixes are fine;
+        a request without a Content-Type header is read as JSON.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
     BadRequest:
       description: >
         Malformed request — invalid JSON, missing required fields, an invalid
@@ -1680,7 +1698,15 @@ components:
             Opaque cursor from the previous page's next_token. Under
             at_least_as_fresh the freshness floor is BOUND into this cursor,
             so later pages stay at least as fresh as the first.
-        size: { type: integer, minimum: 1 }
+        limit:
+          type: integer
+          minimum: 1
+          description: Page size (AuthZEN 1.0 §8.2).
+        size:
+          type: integer
+          minimum: 1
+          deprecated: true
+          description: Pre-1.0 spelling of limit, still read (limit wins).
     PageResult:
       type: object
       properties:
@@ -1717,16 +1743,32 @@ components:
         action: { $ref: '#/components/schemas/Action' }
         resource: { $ref: '#/components/schemas/Resource' }
         context: { $ref: '#/components/schemas/Context' }
+        options:
+          type: object
+          properties:
+            evaluations_semantic:
+              type: string
+              enum: [execute_all, deny_on_first_deny, permit_on_first_permit]
+              default: execute_all
+          description: >
+            AuthZEN 1.0 §7.1.2 request options. With deny_on_first_deny /
+            permit_on_first_permit the response array ends with the decision
+            that stopped processing (§7.1.2.1); an unknown value is a 400.
         semantic:
           type: string
           enum: [execute_all, deny_on_first_deny, permit_on_first_permit]
+          deprecated: true
+          description: Pre-1.0 spelling of options.evaluations_semantic, still read.
         evaluations:
           type: array
           items: { $ref: '#/components/schemas/EvaluationRequest' }
-      required: [evaluations]
       description: >
         Top-level subject/action/resource/context are shared defaults merged
-        into each evaluation.
+        into each evaluation. An evaluation that still lacks a subject, action
+        or resource after merging is answered as {"decision": false} in its
+        place (§7.1.1), not as a 400. Without an evaluations array — absent or
+        empty — the request is handled exactly like the single Access
+        Evaluation API and answered in the single-decision form (§7.1).
     EvaluationsResponse:
       type: object
       properties:

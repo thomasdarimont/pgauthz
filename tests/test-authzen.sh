@@ -287,6 +287,25 @@ run_tests() {
     echo "  --- Resource search ---"
     echo ""
 
+    # §8.3: an unknown entity type or action is an empty result, not an error.
+    check_json "Resource search: unknown resource type is empty, not an error" \
+        "$base_url/access/v1/search/resource" "$AUTH_ALICE" \
+        '{"subject":{"type":"internal_user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"spaceship"}}' \
+        '.results' \
+        "[]"
+
+    check_json "Subject search: unknown subject type is empty, not an error" \
+        "$base_url/access/v1/search/subject" "$AUTH_ALICE" \
+        '{"subject":{"type":"spaceship"},"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}' \
+        '.results' \
+        "[]"
+
+    check_json "Action search: unknown subject type is empty, not an error" \
+        "$base_url/access/v1/search/action" "$AUTH_ALICE" \
+        '{"subject":{"type":"spaceship","id":"zed"},"resource":{"type":"document","id":"doc_payroll_001"}}' \
+        '.results' \
+        "[]"
+
     # 5 = 3 engagement docs (advisor → internal_collaborator) + 2 folder docs
     # (bob owns folder:workpapers).
     check_json "Bob can read 5 documents" \
@@ -389,12 +408,65 @@ run_tests() {
         '.decision' \
         "true"
 
-    check_http "400 on empty evaluations array" \
+    # AuthZEN 1.0 §7.1: without an evaluations array (absent or empty) the
+    # batch endpoint behaves like the single Access Evaluation API — a
+    # {"decision"} response, never an evaluations array.
+    check_json "Batch: empty evaluations array answers in the single form" \
+        "$base_url/access/v1/evaluations" "$AUTH_ALICE" \
+        '{"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"},"evaluations":[]}' \
+        '[.decision, has("evaluations")]' \
+        "[true,false]"
+
+    check_json "Batch: missing evaluations array answers in the single form" \
+        "$base_url/access/v1/evaluations" "$AUTH_ALICE" \
+        '{"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}' \
+        '[.decision, has("evaluations")]' \
+        "[true,false]"
+
+    check_http "400 on empty evaluations array with nothing to decide" \
         "400" \
         -X POST "$base_url/access/v1/evaluations" \
         -H "Content-Type: application/json" \
         -H "$AUTH_ALICE" \
         -d '{"evaluations":[]}'
+
+    # §7.1.1 / certification profile 3.4.1: an item that cannot be resolved is
+    # a decision-false entry, not a 400 for the batch.
+    check_json "Batch: unresolvable item is decision false" \
+        "$base_url/access/v1/evaluations" "$AUTH_ALICE" \
+        '{"action":{"name":"can_read"},"evaluations":[{"resource":{"type":"document","id":"doc_payroll_001"}},{}]}' \
+        '[.evaluations[].decision]' \
+        "[true,false]"
+
+    # §7.1.2.1: the semantic lives in options.evaluations_semantic; a
+    # short-circuit truncates the response array at the triggering decision.
+    check_json "Batch: options.evaluations_semantic deny_on_first_deny truncates" \
+        "$base_url/access/v1/evaluations" "$AUTH_ALICE" \
+        '{"subject":{"type":"internal_user","id":"eva"},"options":{"evaluations_semantic":"deny_on_first_deny"},"evaluations":[{"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}},{"action":{"name":"can_edit"},"resource":{"type":"document","id":"doc_payroll_001"}}]}' \
+        '[.evaluations[].decision]' \
+        "[false]"
+
+    check_http "400 on unknown evaluations_semantic" \
+        "400" \
+        -X POST "$base_url/access/v1/evaluations" \
+        -H "Content-Type: application/json" \
+        -H "$AUTH_ALICE" \
+        -d '{"subject":{"type":"internal_user","id":"alice"},"options":{"evaluations_semantic":"bogus"},"evaluations":[{"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}]}'
+
+    # §10.1: a declared non-JSON media type is refused before the body is read.
+    check_http "415 on a non-JSON Content-Type" \
+        "415" \
+        -X POST "$base_url/access/v1/evaluation" \
+        -H "Content-Type: text/plain" \
+        -H "$AUTH_ALICE" \
+        -d '{"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}'
+
+    check_http "application/json with a charset parameter is accepted" \
+        "200" \
+        -X POST "$base_url/access/v1/evaluation" \
+        -H "Content-Type: application/json; charset=utf-8" \
+        -H "$AUTH_ALICE" \
+        -d '{"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}'
 
     check_http "400 on invalid JSON" \
         "400" \

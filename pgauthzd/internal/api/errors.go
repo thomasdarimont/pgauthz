@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 )
@@ -24,8 +25,18 @@ func writeBadRequest(w http.ResponseWriter, msg string) {
 	writeError(w, http.StatusBadRequest, msg)
 }
 
+// writeUnauthorized is the 401 for a missing, malformed or unverifiable
+// bearer token. It names the expected scheme in WWW-Authenticate (RFC 6750
+// §3; AuthZEN 1.0 §11.3 SHOULD).
 func writeUnauthorized(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Bearer realm="pgauthz"`)
 	writeError(w, http.StatusUnauthorized, "invalid or missing authorization token")
+}
+
+// writeUnsupportedMediaType is the 415 for a request body whose Content-Type
+// is not JSON (AuthZEN 1.0 §10.1: requests MUST carry application/json).
+func writeUnsupportedMediaType(w http.ResponseWriter, got string) {
+	writeError(w, http.StatusUnsupportedMediaType, "unsupported Content-Type "+strconv.Quote(got)+": the request body must be application/json")
 }
 
 func writeForbidden(w http.ResponseWriter, msg string) {

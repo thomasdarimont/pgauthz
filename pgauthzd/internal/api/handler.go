@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"mime"
 	"net/http"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -181,15 +183,40 @@ func MaxBody(n int64) func(http.Handler) http.Handler {
 	}
 }
 
+// requireJSON refuses a request whose declared Content-Type is not JSON with
+// 415 (AuthZEN 1.0 §10.1: requests MUST carry application/json). Media-type
+// parameters (application/json; charset=utf-8) and +json structured suffixes
+// are accepted. A request WITHOUT a Content-Type header is let through — its
+// body is parsed as JSON regardless — so clients that never set the header
+// keep working; only an explicit, different media type is an error.
+func requireJSON(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if ct := r.Header.Get("Content-Type"); ct != "" {
+			mt, _, err := mime.ParseMediaType(ct)
+			if err != nil || !isJSONMediaType(mt) {
+				writeUnsupportedMediaType(w, ct)
+				return
+			}
+		}
+		next(w, r)
+	}
+}
+
+func isJSONMediaType(mt string) bool {
+	return mt == "application/json" || strings.HasSuffix(mt, "+json")
+}
+
 // registerAuthZEN wires the spec-compliant AuthZEN surface + tenant discovery.
 func registerAuthZEN(mux *http.ServeMux, h *Handler) {
 	// Read routes carry the freshness guard (ADR 0009): a no-op unless the caller
 	// sends X-PGAuthz-Consistency: at_least_as_fresh + a token.
-	eval := h.readGuard(h.Evaluation)
-	evals := h.readGuard(h.Evaluations)
-	searchSub := h.readGuard(h.SearchSubject)
-	searchRes := h.readGuard(h.SearchResource)
-	searchAct := h.readGuard(h.SearchAction)
+	// Every AuthZEN request body is JSON (§10.1); a declared other media type
+	// is refused with 415 before the body is read.
+	eval := requireJSON(h.readGuard(h.Evaluation))
+	evals := requireJSON(h.readGuard(h.Evaluations))
+	searchSub := requireJSON(h.readGuard(h.SearchSubject))
+	searchRes := requireJSON(h.readGuard(h.SearchResource))
+	searchAct := requireJSON(h.readGuard(h.SearchAction))
 
 	mux.HandleFunc("POST /access/v1/evaluation", eval)
 	mux.HandleFunc("POST /access/v1/evaluations", evals)
@@ -476,7 +503,14 @@ func (h *Handler) Evaluation(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, "invalid JSON: "+err.Error())
 		return
 	}
+	h.evaluateSingle(w, r, req)
+}
 
+// evaluateSingle answers one access evaluation in the single-decision form
+// ({"decision": …}). Shared by POST /access/v1/evaluation and by the batch
+// endpoint for a request without an evaluations array, which AuthZEN 1.0 §7.1
+// defines to behave exactly like the single Access Evaluation API.
+func (h *Handler) evaluateSingle(w http.ResponseWriter, r *http.Request, req EvalRequestBody) {
 	subjectType, subjectID, err := h.resolveSubject(r, req.Subject)
 	if err != nil {
 		writeSubjectError(w, err)
@@ -551,19 +585,29 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// §7.1: a request without an evaluations array (absent or empty) IS a
+	// single Access Evaluation request — answered in the single-decision
+	// form, never with an evaluations array.
 	if len(req.Evaluations) == 0 {
-		writeBadRequest(w, "evaluations array is required and must not be empty")
+		single := EvalRequestBody{Context: req.Context}
+		if req.Subject != nil {
+			single.Subject = *req.Subject
+		}
+		if req.Action != nil {
+			single.Action = *req.Action
+		}
+		if req.Resource != nil {
+			single.Resource = *req.Resource
+		}
+		h.evaluateSingle(w, r, single)
 		return
 	}
 
-	semantic := req.Semantic
-	if semantic == "" {
-		semantic = "execute_all"
-	}
+	semantic := req.semantic()
 	switch semantic {
 	case "execute_all", "deny_on_first_deny", "permit_on_first_permit":
 	default:
-		writeBadRequest(w, "invalid semantic: "+semantic)
+		writeBadRequest(w, "invalid evaluations_semantic: "+semantic)
 		return
 	}
 
@@ -573,8 +617,17 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 	}
 	jwtType, jwtID := SubjectFromContext(r.Context())
 
-	// Build individual eval requests, merging shared subject/action/resource
-	evals := make([]authz.EvalRequest, len(req.Evaluations))
+	// Build the per-evaluation requests, merging the shared subject/action/
+	// resource defaults. An evaluation that cannot be resolved after merging
+	// (no subject, action or resource) is NOT a request error: §7.1.1 and
+	// certification profile 3.4.1 make it a {"decision": false} entry in the
+	// response array, with the batch still answered 200 — only a rejected
+	// subject override stays a 403 for the whole request (it is the caller's
+	// authorization problem, not a malformed item). Under deny_on_first_deny
+	// an unresolvable item is the first deny: nothing after it is evaluated.
+	n := len(req.Evaluations)
+	evals := make([]authz.EvalRequest, 0, n)
+	unresolved := make([]bool, n)
 	for i, e := range req.Evaluations {
 		// Effective body subject: per-evaluation, falling back to the
 		// batch-level subject. The override policy (vs the JWT subject) is
@@ -589,22 +642,14 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 		}
 
 		subType, subID, serr := h.resolveSubjectPair(bodyType, bodyID, jwtType, jwtID)
-		if serr != nil {
-			if errors.Is(serr, errSubjectForbidden) {
-				writeForbidden(w, fmt.Sprintf("evaluation[%d]: %s", i, serr.Error()))
-			} else {
-				writeBadRequest(w, fmt.Sprintf("evaluation[%d]: %s", i, serr.Error()))
-			}
+		if serr != nil && errors.Is(serr, errSubjectForbidden) {
+			writeForbidden(w, fmt.Sprintf("evaluation[%d]: %s", i, serr.Error()))
 			return
 		}
 
 		action := e.Action.Name
 		if action == "" && req.Action != nil {
 			action = req.Action.Name
-		}
-		if action == "" {
-			writeBadRequest(w, fmt.Sprintf("evaluation[%d]: action.name is required", i))
-			return
 		}
 
 		resType := e.Resource.Type
@@ -615,24 +660,34 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 		if resID == "" && req.Resource != nil {
 			resID = req.Resource.ID
 		}
-		if resType == "" || resID == "" {
-			writeBadRequest(w, fmt.Sprintf("evaluation[%d]: resource.type and resource.id are required", i))
-			return
+
+		if serr != nil || action == "" || resType == "" || resID == "" {
+			unresolved[i] = true
+			if semantic == "deny_on_first_deny" {
+				break
+			}
+			continue
 		}
 
-		evals[i] = authz.EvalRequest{
+		evals = append(evals, authz.EvalRequest{
 			Store:       store,
 			SubjectType: subType,
 			SubjectID:   subID,
 			Action:      action,
 			ObjectType:  resType,
 			ObjectID:    resID,
-		}
+		})
 	}
 
+	var (
+		results []authz.EvalResult
+		err     error
+	)
 	start := time.Now()
-	results, err := h.backend.CheckAccessBatch(r.Context(), store, evals, req.Context, semantic)
-	h.logBatch(r, "evaluations", h.viaLabel(), evals, req.Context, results, start, err)
+	if len(evals) > 0 {
+		results, err = h.backend.CheckAccessBatch(r.Context(), store, evals, req.Context, semantic)
+		h.logBatch(r, "evaluations", h.viaLabel(), evals, req.Context, results, start, err)
+	}
 	if err != nil {
 		// A policy-hook veto (ADR 0011) rejects the whole batch: 403, never a
 		// fake all-false result. The structured `denials` disclose hook
@@ -657,9 +712,26 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := EvalsBatchResponse{Evaluations: make([]EvalResponseBody, len(results))}
-	for i, res := range results {
-		resp.Evaluations[i] = EvalResponseBody{Decision: res.Decision}
+	// Merge the decisions back in request order (unresolved items are false),
+	// then apply the short-circuit on the wire (§7.1.2.1): the response array
+	// ends with the decision that stopped processing — the engine evaluates
+	// nothing past it, and the caller must not mistake its placeholders for
+	// decisions.
+	resp := EvalsBatchResponse{Evaluations: make([]EvalResponseBody, 0, n)}
+	next := 0
+	for i := 0; i < n; i++ {
+		decision := false
+		if !unresolved[i] {
+			if next >= len(results) {
+				break // past the point the batch was cut short
+			}
+			decision = results[next].Decision
+			next++
+		}
+		resp.Evaluations = append(resp.Evaluations, EvalResponseBody{Decision: decision})
+		if (semantic == "deny_on_first_deny" && !decision) || (semantic == "permit_on_first_permit" && decision) {
+			break
+		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -960,7 +1032,7 @@ func decodePage(p *PageToken, aad string) *authz.PageRequest {
 	if p == nil {
 		return nil
 	}
-	size := p.Size
+	size := p.size()
 	if size <= 0 {
 		size = defaultPageSize
 	}

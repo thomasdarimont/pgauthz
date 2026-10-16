@@ -351,6 +351,22 @@ func (b *Backend) checkRecorderRole(ctx context.Context, role string) error {
 	return nil
 }
 
+// isUnknownEntity reports an engine RAISE about an entity the request names
+// but the store does not know: 'Unknown type: …' (a subject/resource type) or
+// 'Unknown relation: …' (an action). For the search functions that is not a
+// fault but an empty answer — AuthZEN 1.0 §8.3: a PDP MUST return an empty
+// results array, not an error, for an unknown entity type or identifier
+// (the engine already answers an unknown identifier with no rows). Decisions
+// keep surfacing it: an unknown type on the check path stays an error so a
+// mis-modelled PEP is noticed, not silently denied.
+func isUnknownEntity(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "P0001" {
+		return false
+	}
+	return strings.HasPrefix(pgErr.Message, "Unknown type:") || strings.HasPrefix(pgErr.Message, "Unknown relation:")
+}
+
 // mapEngineError classifies a PostgreSQL error from an engine function into
 // the caller-error sentinels the HTTP layer maps to 4xx: an EXECUTE denial or
 // a namespace-isolation refusal is the caller's authorization problem (403);
@@ -823,6 +839,9 @@ func (b *Backend) ListResources(ctx context.Context, store string,
 		return err
 	})
 	if err != nil {
+		if isUnknownEntity(err) {
+			return buildPage(nil, limit)
+		}
 		return nil, nil, err
 	}
 
@@ -860,6 +879,9 @@ func (b *Backend) ListSubjects(ctx context.Context, store string,
 		return err
 	})
 	if err != nil {
+		if isUnknownEntity(err) {
+			return buildPage(nil, limit)
+		}
 		return nil, nil, err
 	}
 
@@ -893,6 +915,9 @@ func (b *Backend) ListActions(ctx context.Context, store string,
 		return err
 	})
 	if err != nil {
+		if isUnknownEntity(err) {
+			return []string{}, nil
+		}
 		return nil, err
 	}
 	return actions, nil
