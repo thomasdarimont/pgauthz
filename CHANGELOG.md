@@ -181,6 +181,31 @@ pre-1.0, minor versions may include breaking changes.
   --sql` renders a model as the engine calls that rebuild it (complete,
   unlike `--dsl`).
 
+### Security
+
+- **Console: changes are re-authorized inside their transaction, under a
+  per-object lock.** Every console write (role grants and removals, model and
+  data changes, store creation/adoption/deletion, recorded tests) now takes a
+  transaction-scoped advisory lock on the console object it concerns
+  (`store:X`, `platform:default`) and asks the console store again whether
+  the person may still do it, in the same transaction — so a role revoked
+  between the screen's check and the click is honoured, and two owners
+  removing each other at the same time leave one owner, never zero (the
+  last-owner count runs under the same lock). A Go regression test
+  (`console/backend`, `PGAUTHZ_TEST_DATABASE_URL`) races two removals.
+- **Console: an expired session is no session.** The BFF refreshed the
+  access token only when a refresh token existed; without one it kept
+  serving the stale memberships until the 8-hour cookie ran out. A session
+  whose token has expired and cannot be renewed is now deleted and answered
+  with 401. Membership changes in the IdP therefore reach the console within
+  the access-token lifetime.
+- **Console test policy: "your own access" binds the subject type.** The
+  self-subject check compared ids only, so a tester without
+  `can_test_others` could ask about `agent:alice` or `service_account:alice`.
+  The subject must now be the person's id under the console subject type or
+  one of `CONSOLE_SELF_SUBJECT_TYPES` (the types that denote people in the
+  managed stores; the demo stack lists `user,internal_user`).
+
 ### Changed
 
 - `publish_model` and `apply_model` attribute `created_by` / `applied_by`

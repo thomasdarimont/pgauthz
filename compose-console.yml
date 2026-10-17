@@ -64,6 +64,9 @@ services:
       CONSOLE_PLATFORM_ID: default
       CONSOLE_REGISTRY_ID: default
       CONSOLE_SUBJECT_TYPE: user
+      # Subject types that denote a person in the managed stores (the test
+      # policy's "your own access"): demo uses internal_user, the rest user.
+      CONSOLE_SELF_SUBJECT_TYPES: user,internal_user
       CONSOLE_TEAM_CLAIMS: role=realm_access.roles,group=groups,org=organization
       # Shown on the Settings page (readiness of the writer instance).
       PGAUTHZD_URL: http://pgauthzd-full:8080

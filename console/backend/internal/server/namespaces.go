@@ -88,7 +88,11 @@ func (e scopeError) Error() string {
 // every touched namespace grants it; a store-wide change (ns == "") needs
 // the store role.
 func (s *Server) authorizeScoped(ctx context.Context, p *principal, cap, store string, namespaces []string) error {
-	ok, err := s.can(ctx, p, cap, "store", store)
+	return s.authorizeScopedQ(ctx, s.engine, p, cap, store, namespaces)
+}
+
+func (s *Server) authorizeScopedQ(ctx context.Context, q querier, p *principal, cap, store string, namespaces []string) error {
+	ok, err := s.canQ(ctx, q, p, cap, "store", store)
 	if err != nil || ok {
 		return err
 	}
@@ -104,7 +108,7 @@ func (s *Server) authorizeScoped(ctx context.Context, p *principal, cap, store s
 			continue
 		}
 		seen[ns] = true
-		ok, err := s.can(ctx, p, cap, "namespace", nsObject(store, ns))
+		ok, err := s.canQ(ctx, q, p, cap, "namespace", nsObject(store, ns))
 		if err != nil {
 			return err
 		}

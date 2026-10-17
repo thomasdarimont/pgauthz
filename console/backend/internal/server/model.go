@@ -240,7 +240,7 @@ func (s *Server) handleModelEdit(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	err = s.asPerson(ctx, p, "can_edit_model", "store", store, map[string]any{"op": op, "edit": e}, func(tx pgx.Tx) error {
+	err = s.asPersonScoped(ctx, p, "can_edit_model", "store", store, []string{ns}, map[string]any{"op": op, "edit": e}, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, sql, args...)
 		return err
 	})
@@ -303,7 +303,7 @@ func (s *Server) handleModelBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	err := s.asPerson(ctx, p, "can_edit_model", "store", store, map[string]any{"op": "batch", "ops": req.Ops}, func(tx pgx.Tx) error {
+	err := s.asPersonScoped(ctx, p, "can_edit_model", "store", store, touched, map[string]any{"op": "batch", "ops": req.Ops}, func(tx pgx.Tx) error {
 		for i, pl := range plan {
 			if _, err := tx.Exec(ctx, pl.sql, pl.args...); err != nil {
 				return fmt.Errorf("ops[%d] (%s): %w", i, req.Ops[i].Op, err)

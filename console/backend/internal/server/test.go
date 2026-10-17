@@ -128,9 +128,24 @@ func (s *Server) testPolicyFor(ctx context.Context, p *principal, store string) 
 	return testPolicy{Others: c["can_test_others"], ExplainFull: c["can_test_explain_full"], Search: c["can_test_search"], History: c["can_test_history"]}, nil
 }
 
-// isSelf: the subject is the person — same id, whatever subject type the
-// managed store uses for people.
-func (p *principal) isSelf(subjectID string) bool { return subjectID == p.id }
+// isSelf: the subject is the person — the person's id under one of the
+// subject types that denote people (the console's own type plus
+// CONSOLE_SELF_SUBJECT_TYPES). Another type with the same id (agent:alice,
+// service_account:alice) is another principal and needs can_test_others.
+func (s *Server) isSelf(p *principal, subjectType, subjectID string) bool {
+	if subjectID != p.id {
+		return false
+	}
+	if subjectType == p.typ {
+		return true
+	}
+	for _, t := range s.cfg.SelfSubjectTypes {
+		if t == subjectType {
+			return true
+		}
+	}
+	return false
+}
 
 func writePolicyDenied(w http.ResponseWriter, required, why string) {
 	writeJSON(w, http.StatusForbidden, map[string]any{"error": why, "required": required, "policy": true})
@@ -157,8 +172,8 @@ func (s *Server) checkInput(w http.ResponseWriter, r *http.Request) (*principal,
 		writeEngineError(w, err)
 		return nil, "", q, parts, false
 	}
-	if !pol.Others && !p.isSelf(sid) {
-		writePolicyDenied(w, "can_test_others", "the test policy limits you to your own access: the subject must be "+p.id)
+	if !pol.Others && !s.isSelf(p, st, sid) {
+		writePolicyDenied(w, "can_test_others", "the test policy limits you to your own access: the subject must be you ("+p.typ+":"+p.id+" or a configured person type with that id)")
 		return nil, "", q, parts, false
 	}
 	if q.At != "" && !pol.History {
@@ -277,8 +292,8 @@ func (s *Server) handleCheckBatch(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "subject must be type:id: "+sub)
 			return
 		}
-		if !pol.Others && !p.isSelf(sid) {
-			writePolicyDenied(w, "can_test_others", "the test policy limits you to your own access: every subject must be "+p.id)
+		if !pol.Others && !s.isSelf(p, st, sid) {
+			writePolicyDenied(w, "can_test_others", "the test policy limits you to your own access: every subject must be you ("+p.typ+":"+p.id+" or a configured person type with that id)")
 			return
 		}
 		for _, act := range q.Actions {

@@ -137,7 +137,7 @@ func (s *Server) handleWriteTuple(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	err = s.asPerson(r.Context(), p, "can_grant", "store", store, map[string]any{"op": "write", "tuple": t}, func(tx pgx.Tx) error {
+	err = s.asPersonScoped(r.Context(), p, "can_grant", "store", store, []string{ns}, map[string]any{"op": "write", "tuple": t}, func(tx pgx.Tx) error {
 		_, err := tx.Exec(r.Context(),
 			`SELECT authz.write_tuple($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11::timestamptz)`,
 			store, t.UserType, t.UserID, t.Relation, t.ObjectType, t.ObjectID, nullable(t.UserRelation),
@@ -207,7 +207,7 @@ func (s *Server) handleDeleteTuple(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	err := s.asPerson(r.Context(), p, "can_grant", "store", store, map[string]any{"op": "delete", "tuples": tuples}, func(tx pgx.Tx) error {
+	err := s.asPersonScoped(r.Context(), p, "can_grant", "store", store, touched, map[string]any{"op": "delete", "tuples": tuples}, func(tx pgx.Tx) error {
 		for _, t := range tuples {
 			var ok bool
 			if err := tx.QueryRow(r.Context(), `SELECT authz.delete_tuple($1, $2, $3, $4, $5, $6, $7, $8)`,

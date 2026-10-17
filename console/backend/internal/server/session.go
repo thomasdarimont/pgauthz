@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -59,8 +60,17 @@ func (s *Server) getSession(ctx context.Context, id string) (*session, error) {
 		return nil, err
 	}
 	// Refresh when the access token is about to expire: the memberships that
-	// drive authorization come from the token, so they stay current too.
-	if time.Until(se.expiresAt) < 30*time.Second && se.refreshToken != "" {
+	// drive authorization come from the token, so they stay current too. An
+	// expired token that cannot be renewed ends the session — the browser
+	// cookie may live longer, the authorization data behind it may not.
+	if time.Until(se.expiresAt) < 30*time.Second {
+		if se.refreshToken == "" {
+			if time.Now().After(se.expiresAt) {
+				s.deleteSession(ctx, se.id)
+				return nil, errSessionExpired
+			}
+			return &se, nil
+		}
 		t, err := s.oidc.Refresh(ctx, se.refreshToken)
 		if err != nil {
 			s.deleteSession(ctx, se.id)
@@ -76,6 +86,8 @@ func (s *Server) getSession(ctx context.Context, id string) (*session, error) {
 	}
 	return &se, nil
 }
+
+var errSessionExpired = errors.New("session expired")
 
 func (s *Server) deleteSession(ctx context.Context, id string) {
 	_, _ = s.db.Exec(ctx, `DELETE FROM sessions WHERE id=$1`, id)

@@ -59,6 +59,12 @@ type Config struct {
 	// says OPA is not configured.
 	OPAURL   string
 	OPAToken string
+	// SelfSubjectTypes are the subject types that denote a PERSON in the
+	// managed stores (CONSOLE_SELF_SUBJECT_TYPES, comma-separated; the console
+	// subject type is always included). The test policy's "your own access"
+	// means one of these types with the person's id — not any type that
+	// happens to use the same id (agent:alice is not alice).
+	SelfSubjectTypes []string
 	// DeploymentEnvironment mirrors pgauthzd's flag so Settings can say which
 	// stack this is.
 	DeploymentEnvironment string
@@ -115,6 +121,18 @@ func Load() Config {
 		I18nDir:               env("CONSOLE_I18N_DIR", ""),
 		OPAURL:                env("CONSOLE_OPA_URL", ""),
 		OPAToken:              env("CONSOLE_OPA_TOKEN", ""),
+		SelfSubjectTypes:      splitList(env("CONSOLE_SELF_SUBJECT_TYPES", "")),
 		DeploymentEnvironment: env("DEPLOYMENT_ENVIRONMENT", "dev"),
 	}
+}
+
+// splitList splits a comma-separated env value, trimming blanks.
+func splitList(v string) []string {
+	var out []string
+	for _, x := range strings.Split(v, ",") {
+		if x = strings.TrimSpace(x); x != "" {
+			out = append(out, x)
+		}
+	}
+	return out
 }

@@ -64,13 +64,38 @@ func (s *Server) principal(r *http.Request) *principal {
 	return p
 }
 
+// querier is what a console-store question needs: the pool, or the
+// transaction a change runs in (so the check sees the same snapshot and
+// waits on the same lock as a competing access change).
+type querier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 // can asks the console store one question.
 func (s *Server) can(ctx context.Context, p *principal, relation, objectType, objectID string) (bool, error) {
+	return s.canQ(ctx, s.engine, p, relation, objectType, objectID)
+}
+
+func (s *Server) canQ(ctx context.Context, q querier, p *principal, relation, objectType, objectID string) (bool, error) {
 	var ok bool
-	err := s.engine.QueryRow(ctx,
+	err := q.QueryRow(ctx,
 		`SELECT authz.check_access_with_contextual_tuples_jsonb($1, $2, $3, $4, $5, $6, NULL, $7::jsonb)`,
 		s.cfg.ConsoleStore, p.typ, p.id, relation, objectType, objectID, p.ctxTuples).Scan(&ok)
 	return ok, err
+}
+
+// accessLock serializes, per console object (store:X, platform:default),
+// every change that is authorized by or changes that object's roles: role
+// grants and removals, model and data changes, tests being recorded. The
+// transaction-scoped advisory lock is taken before the capability is
+// re-checked inside the transaction, so a removal committed by another
+// session is seen (it released the lock after committing) and a competing
+// removal waits — the last-owner count and the "may this person still do
+// this" question are answered under the same lock.
+func accessLock(ctx context.Context, tx pgx.Tx, objectType, objectID string) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "pgauthz-console:"+objectType+":"+objectID)
+	return err
 }
 
 // capabilities answers objects × relations in ONE round trip: for every
@@ -152,12 +177,54 @@ func (s *Server) requireStore(w http.ResponseWriter, r *http.Request, relation s
 // the audit triggers), and the console store's action log gets one event
 // naming what they did to which object — before the managed-store work, so a
 // failure rolls both back together.
+//
+// The capability named by action on the object is re-checked INSIDE the
+// transaction, after the per-object access lock: the handler's earlier
+// check decided whether to start at all, this one decides whether to
+// commit, so a role revoked in between denies the change (the review's
+// check/use race). Handlers whose authorization is namespace-scoped use
+// asPersonScoped with the namespaces they touch.
 func (s *Server) asPerson(ctx context.Context, p *principal, action, objectType, objectID string, payload any, fn func(tx pgx.Tx) error) error {
+	return s.asPersonScoped(ctx, p, action, objectType, objectID, nil, payload, fn)
+}
+
+// asPersonScoped — asPerson for a change scoped by namespaces (see
+// authorizeScoped): a store capability allows everything, otherwise every
+// touched namespace must grant it. namespaces == nil means store-level.
+func (s *Server) asPersonScoped(ctx context.Context, p *principal, action, objectType, objectID string, namespaces []string, payload any, fn func(tx pgx.Tx) error) error {
+	authorize := func(tx pgx.Tx) error {
+		if namespaces != nil {
+			return s.authorizeScopedQ(ctx, tx, p, action, objectID, namespaces)
+		}
+		ok, err := s.canQ(ctx, tx, p, action, objectType, objectID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return scopeError{action, objectType + ":" + objectID}
+		}
+		return nil
+	}
+	return s.asPersonAuthorized(ctx, p, authorize, action, objectType, objectID, payload, fn)
+}
+
+// asPersonAuthorized is the general form: authorize runs inside the
+// transaction, after the access lock on (objectType, objectID), and decides
+// whether the change may commit — for the handlers whose gate is not simply
+// "action on that object" (creating, adopting or deleting a store is decided
+// on the platform object). It returns a scopeError to deny (→ 403).
+func (s *Server) asPersonAuthorized(ctx context.Context, p *principal, authorize func(tx pgx.Tx) error, action, objectType, objectID string, payload any, fn func(tx pgx.Tx) error) error {
 	tx, err := s.engine.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := accessLock(ctx, tx, objectType, objectID); err != nil {
+		return err
+	}
+	if err := authorize(tx); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `SELECT set_config('authz.performed_by', $1, true)`, p.typ+":"+p.id); err != nil {
 		return err
 	}

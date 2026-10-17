@@ -33,6 +33,9 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 // RAISE EXCEPTION messages (validation, unknown names, blocked operations)
 // are a 400 with the message and hint; anything else is a 502.
 func writeEngineError(w http.ResponseWriter, err error) {
+	if writeScopeError(w, err) { // the in-transaction re-authorization said no
+		return
+	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		msg := pgErr.Message

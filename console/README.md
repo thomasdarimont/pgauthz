@@ -151,6 +151,20 @@ stores where nothing is shared (and always per tenant).
   Access tab (`user:bob tester store:demo`). The creator of a store becomes
   its first owner; ownership is transferable; the last owner cannot be
   removed.
+- **Decided twice, the second time for real.** The screen asks before it
+  shows a button; the BFF asks again *inside* the transaction that makes the
+  change, after taking a per-object lock (`pg_advisory_xact_lock` on
+  `store:X` / `platform:default`). A role revoked in between denies the
+  change, and two owners removing each other at once leave one owner — the
+  last-owner rule is counted under the same lock.
+- **Sessions live as long as the access token.** Memberships come from the
+  token, so the BFF renews it with the refresh token shortly before expiry
+  and ends the session (401, sign in again) when it cannot. The cookie's 8
+  hours are an upper bound, not a promise.
+- **"Your own access" in the test policy** means the person's id under the
+  console subject type or one of `CONSOLE_SELF_SUBJECT_TYPES` (the types
+  that denote people in the managed stores); `agent:alice` is another
+  principal and needs `can_test_others`.
 - **The platform admin** reaches every store through `store:X platform
   platform:default`: they can see it, adopt unclaimed stores and reassign
   owners, but editing, publishing or sharing still needs a store role.
@@ -187,7 +201,7 @@ stores where nothing is shared (and always per tenant).
 Configuration (environment): `ENGINE_DSN`, `PG_DSN` (sessions), `ISSUER`,
 `CLIENT_ID`/`CLIENT_SECRET`, `REDIRECT_URI`, `BASE_URL`, `BASE_PATH`,
 `TLS_CA_FILE`, `CONSOLE_STORE` (default `console`), `CONSOLE_PLATFORM_ID`,
-`CONSOLE_REGISTRY_ID`, `CONSOLE_SUBJECT_TYPE`, `CONSOLE_TEAM_CLAIMS`,
+`CONSOLE_REGISTRY_ID`, `CONSOLE_SUBJECT_TYPE`, `CONSOLE_SELF_SUBJECT_TYPES`, `CONSOLE_TEAM_CLAIMS`,
 `CONSOLE_I18N_DIR` (translation overrides), `CONSOLE_OPA_URL` / `CONSOLE_OPA_TOKEN` (Policies tab), `PGAUTHZD_URL` (readiness shown on Settings), `PGAUTHZD_DECISION_URL` (the
 "as me" test mode; empty hides it).
 
@@ -212,6 +226,13 @@ Configuration (environment): `ENGINE_DSN`, `PG_DSN` (sessions), `ISSUER`,
   as a tree here, not drawn), the DOT export, and the "act as the PEP" bar
   (record / reserve events against a store's gates). Then the playground,
   its Keycloak client and its compose overlay are removed.
+- **Identities are usernames.** People are `user:<preferred_username>`,
+  so a username reassigned in the IdP inherits the old holder's console
+  roles. The durable key is `(issuer, sub)`; moving to it means a mapping
+  table (or `user:<issuer-alias>|<sub>` ids) and a display-name lookup for
+  the Access tab, and it changes every tuple in the console store — a
+  deliberate open item while there are no deployments to migrate. Until
+  then, treat username reuse as an IdP policy question.
 - **End-user sharing semantics.** The Data tab writes tuples directly for
   console sharers; `authz.grant`/`revoke` under per-object grant rules stays
   the application's path through pgauthzd.

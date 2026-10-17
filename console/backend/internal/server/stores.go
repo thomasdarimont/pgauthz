@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -48,7 +49,11 @@ func (s *Server) allStores(ctx context.Context) ([]storeRow, error) {
 // claimedStores are the store ids that report to the platform in the console
 // store (store:X platform platform:default).
 func (s *Server) claimedStores(ctx context.Context) (map[string]bool, error) {
-	rows, err := s.engine.Query(ctx, `
+	return s.claimedStoresQ(ctx, s.engine)
+}
+
+func (s *Server) claimedStoresQ(ctx context.Context, q querier) (map[string]bool, error) {
+	rows, err := q.Query(ctx, `
 		SELECT t.object_id FROM authz.tuples t
 		  JOIN authz.stores s ON s.id = t.store_id
 		  JOIN authz.types ot ON ot.id = t.object_type
@@ -177,7 +182,7 @@ func (s *Server) handleCreateStore(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "store name must match ^[a-zA-Z_][a-zA-Z0-9_]*$")
 		return
 	}
-	err := s.asPerson(r.Context(), p, "can_create_store", "store", req.Name, map[string]any{"description": req.Description}, func(tx pgx.Tx) error {
+	err := s.asPersonAuthorized(r.Context(), p, s.platformGate(r.Context(), p, "can_create_store"), "can_create_store", "store", req.Name, map[string]any{"description": req.Description}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(r.Context(), `SELECT authz.create_store($1, $2)`, req.Name, nullable(req.Description)); err != nil {
 			return err
 		}
@@ -233,9 +238,26 @@ func (s *Server) handleAdoptStore(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "store is already managed; use its Access tab")
 		return
 	}
-	err = s.asPerson(ctx, p, "can_manage_access", "store", store, map[string]any{"adopted": true}, func(tx pgx.Tx) error {
+	adoptGate := func(tx pgx.Tx) error {
+		if err := s.platformGate(ctx, p, "can_view_all_stores")(tx); err != nil {
+			return err
+		}
+		claimed, err := s.claimedStoresQ(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if claimed[store] {
+			return errAlreadyClaimed
+		}
+		return nil
+	}
+	err = s.asPersonAuthorized(ctx, p, adoptGate, "can_manage_access", "store", store, map[string]any{"adopted": true}, func(tx pgx.Tx) error {
 		return s.claimStore(ctx, tx, p, store)
 	})
+	if errors.Is(err, errAlreadyClaimed) {
+		writeError(w, http.StatusConflict, "store is already managed; use its Access tab")
+		return
+	}
 	if err != nil {
 		writeEngineError(w, err)
 		return
@@ -329,7 +351,21 @@ func (s *Server) handleDeleteStore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	err = s.asPerson(ctx, p, "can_manage_access", "store", store, map[string]any{"op": "delete_store", "purge_audit": req.PurgeAudit}, func(tx pgx.Tx) error {
+	deleteGate := func(tx pgx.Tx) error {
+		ok, err := s.canQ(ctx, tx, p, "can_manage_access", "store", store)
+		if err != nil || ok {
+			return err
+		}
+		claimed, err := s.claimedStoresQ(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if claimed[store] {
+			return scopeError{"can_manage_access", "store:" + store}
+		}
+		return s.platformGate(ctx, p, "can_create_store")(tx)
+	}
+	err = s.asPersonAuthorized(ctx, p, deleteGate, "can_manage_access", "store", store, map[string]any{"op": "delete_store", "purge_audit": req.PurgeAudit}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SELECT authz.delete_store($1, $2)`, store, req.PurgeAudit); err != nil {
 			return err
 		}
@@ -370,4 +406,21 @@ func (s *Server) handleDeleteStore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": store})
+}
+
+var errAlreadyClaimed = errors.New("store is already managed")
+
+// platformGate is an in-transaction authorization (see asPersonAuthorized)
+// for a capability on the platform object.
+func (s *Server) platformGate(ctx context.Context, p *principal, cap string) func(tx pgx.Tx) error {
+	return func(tx pgx.Tx) error {
+		ok, err := s.canQ(ctx, tx, p, cap, "platform", s.cfg.PlatformID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return scopeError{cap, "platform:" + s.cfg.PlatformID}
+		}
+		return nil
+	}
 }
