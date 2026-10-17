@@ -199,22 +199,22 @@ BEGIN
 
     IF TG_OP = 'UPDATE' THEN
         INSERT INTO authz.conditions_audit (
-            action, performed_at, performed_by, condition_id, store_id, name, expression, lang, required_context, time_source
+            action, performed_at, performed_by, condition_id, store_id, name, expression, lang, required_context, time_source, description
         ) VALUES
-            ('DELETE', transaction_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.name, OLD.expression, OLD.lang, OLD.required_context, OLD.time_source),
-            ('INSERT', transaction_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.name, NEW.expression, NEW.lang, NEW.required_context, NEW.time_source);
+            ('DELETE', transaction_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.name, OLD.expression, OLD.lang, OLD.required_context, OLD.time_source, OLD.description),
+            ('INSERT', transaction_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.name, NEW.expression, NEW.lang, NEW.required_context, NEW.time_source, NEW.description);
         RETURN NEW;
     ELSIF TG_OP = 'INSERT' THEN
         INSERT INTO authz.conditions_audit (
-            action, performed_at, performed_by, condition_id, store_id, name, expression, lang, required_context, time_source
+            action, performed_at, performed_by, condition_id, store_id, name, expression, lang, required_context, time_source, description
         ) VALUES
-            ('INSERT', transaction_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.name, NEW.expression, NEW.lang, NEW.required_context, NEW.time_source);
+            ('INSERT', transaction_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.name, NEW.expression, NEW.lang, NEW.required_context, NEW.time_source, NEW.description);
         RETURN NEW;
     ELSIF TG_OP = 'DELETE' THEN
         INSERT INTO authz.conditions_audit (
-            action, performed_at, performed_by, condition_id, store_id, name, expression, lang, required_context, time_source
+            action, performed_at, performed_by, condition_id, store_id, name, expression, lang, required_context, time_source, description
         ) VALUES
-            ('DELETE', transaction_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.name, OLD.expression, OLD.lang, OLD.required_context, OLD.time_source);
+            ('DELETE', transaction_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.name, OLD.expression, OLD.lang, OLD.required_context, OLD.time_source, OLD.description);
         RETURN OLD;
     END IF;
 

@@ -99,9 +99,24 @@ psql_file "$PG_DB" "$PG_DIR/examples/models/fourquestions/seed.sql"
 psql_file "$PG_DB" "$PG_DIR/examples/models/fourquestions/tests.sql"
 
 echo ""
+echo "==> Loading console model (the management console's own access model) + checks..."
+echo ""
+# As store console_test: the console store a running console uses is never
+# the fixture, so a test run cannot wipe the live grants (dropped at the end).
+psql_file "$PG_DB" "$PG_DIR/examples/models/console/model.sql" -v cs=console_test
+psql_file "$PG_DB" "$PG_DIR/examples/models/console/seed.sql" -v cs=console_test
+psql_file "$PG_DB" "$PG_DIR/examples/models/console/tests.sql" -v cs=console_test
+
+echo ""
 echo "==> Running contextual / condition checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_contextual.sql"
+
+echo ""
+echo "==> Running relation kind checks (what a subject IS vs CAN DO)..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_relation_kind.sql"
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_condition_description.sql"
 
 echo ""
 echo "==> Running search API checks..."
@@ -307,6 +322,9 @@ else
   echo "    FAIL  reserve_concurrency: expected 3 allowed / 5 denied, got $ALLOWED / $DENIED" >&2
   exit 1
 fi
+
+# The console fixture store of this run
+psql_exec "$PG_DB" -q -c "SELECT authz.delete_store('console_test', p_purge_audit => true);" >/dev/null
 
 # Clean up test helpers
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_helpers_cleanup.sql"

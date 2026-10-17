@@ -1,0 +1,222 @@
+# pgauthz Console — management UI (proof of concept)
+
+A web console for the people who run pgauthz: design and edit a store's
+model, test decisions for any subject, share objects, publish and roll out
+registry versions, and read what happened. Its distinguishing idea: **who may
+do what in the console is itself a pgauthz question**, answered by a pgauthz
+store (`examples/models/console`) before every screen and every action.
+
+```
+Browser ──OIDC code+PKCE──▶ Keycloak
+   │ http-only cookie
+   ▼
+console-bff (Go)  ──1. "may alice can_edit_model store:demo?"──▶ pgauthz (console store)
+                  ──2. model_add_rule('demo', …) as alice     ──▶ pgauthz (store demo)
+                  ──3. record_event('console', …)             ──▶ pgauthz (console store)
+```
+
+Status: **proof of concept** on branch `poc/console`. It works end to end on
+the dev stack; see *What is not there yet* before relying on it.
+
+## Run it
+
+```bash
+./keycloak/config/generate-mkcerts.sh          # once: *.pgauthz.test certs
+./start.sh --cel --console                      # implies --keycloak (and --opa)
+(cd keycloak/terraform && terraform init && terraform apply)   # console-bff client, console_admin role
+./init.sh                                       # engine + roles (creates authz_console)
+source env.sh
+psql_file "$PG_DB" examples/models/console/model.sql
+psql_file "$PG_DB" examples/models/console/seed.sql
+open https://app.pgauthz.test/console/
+```
+
+`tests/test.sh` loads the console store as a fixture, so after a full
+`./bootstrap.sh` the two `psql_file` lines are already done. Add
+`127.0.0.1 app.pgauthz.test` to `/etc/hosts` if it does not resolve.
+
+Demo users (password `password`) come in two kinds. The **console personas**
+each hold one realm role that the console turns into a team membership, so
+what they see follows from `examples/models/console/seed.sql`:
+
+| User | Realm role | Who they are | What they can do in the console |
+|---|---|---|---|
+| `platform-admin` | `console_admin` | IT / operations | platform admin: create, adopt and delete stores, reassign owners, health, issuers; owner of the `console` store |
+| `auditor` | `console_auditor` | audit | `auditor` on every demo store and registry viewer: Activity, decisions, point-in-time checks; read-only |
+| `iam-dev` | `console_iam_dev` | IAM developer, owns the models | `author` + `publisher` on every demo store, registry publisher: edits, publishes, rolls out |
+| `app-dev` | `console_app_dev` | application developer | `viewer` + `tester` on `demo` and `todo`: reads the model, tests their own access under the test policy |
+| `app-secarch` | `console_app_secarch` | application security architect | `author` on `demo` (their application's store), `tester` on `todo`, registry viewer |
+| `support` | `console_support` | support | `supporter` on `demo`, `todo`, `gdrive`: checks and explains anyone's access, never edits |
+
+**alice**, **bob**, **carol** and **eva** are the *application users* — the
+subjects the demo models decide about (alice also keeps `console_admin` and
+owns `demo`, `todo` and `gdrive`; bob tests `demo` and authors `todo`; carol
+views `demo`; eva audits it).
+
+## What you see
+
+| Area | Screen | Needs (console store) |
+|---|---|---|
+| **Stores** | the stores you can see, with your capabilities; unclaimed stores (platform admin) and *New store* | `store#can_view`; `platform#can_view_all_stores`, `platform#can_create_store` |
+| Store → **Model** | three read views of the live model (DSL, canonical JSON, SQL calls); "Edit as DSL" to write the whole model in that DSL (a starter model for an empty store); the structured editor (types, relations with their rules and type restrictions in one step, rules, type restrictions, conditions) | `can_view`; editing `can_edit_model` |
+| Store → **Data** | tuples with filter; grant/revoke | `can_view`; writes `can_grant` |
+| Store → **Test** | four modes: single check + explain; matrix (subjects × actions × resources, one batch call); reverse search (which objects can X reach / who can reach Y); "as me via pgauthzd" (your own token, with the detail envelope: OPA, hooks, veto). The **test policy** limits a plain tester to their own access with redacted trees, no enumeration and no history; every test is recorded in the console's action log | `can_run_tests`; `can_test_others`, `can_test_explain_full`, `can_test_search`, `can_test_history` widen it |
+| Store → **Rollout** | managed-model state and drift, the versions of the store's model (an unmanaged store picks a registry model first), plan (dry run), apply; publish the live model | `can_view`; `can_rollout` to apply; `can_publish` on the store **and** `registry#can_publish` to publish |
+| Store → **Activity** | console actions on this store, the relationship audit trail, the store's action log | `can_view_audit` |
+| Store → **Access** | who has which console role on the store; grant/remove; a store never loses its last owner. **Namespaces**: `author` / `viewer` on one namespace of the store (an application team's slice) | `can_view`; `can_manage_access` to change |
+| Store → **Policies** | when OPA fronts the deployment: the Rego that applies to this store — its hooks, the global hooks, shared libraries, platform policy — with sources, plus OPA's version and bundle revisions; read-only (policies are authored in git and shipped as validated bundles) | `can_view`; `CONSOLE_OPA_URL` + `CONSOLE_OPA_TOKEN` on the BFF |
+| Store → **Admin** | the store's lifecycle: delete it (typed name, optional audit purge) | `can_manage_access` |
+| **Registry** | every model name, its versions and the fleet running each | `registry#can_view` |
+| **Platform** | admins (grant/remove; never zero), configuration and health | `platform#can_view_health`, `platform#can_manage_access` |
+
+Relations carry a kind (migration 0019): **what a subject is** (a relation:
+viewer, owner, member) versus **what a subject can do** (a permission:
+can_read, or a directly granted capability such as `run: [agent]`). The Test tab groups the action
+picker by kind, words the question accordingly ("is alice *a viewer of*
+doc:x?" versus "is alice *allowed can_read on* doc:x?"), and explains a "no"
+on a relation by offering the type's permissions; the Data tab's Add form
+completes only assignable relations, since the engine refuses tuples on a
+permission.
+
+Removing anything (model parts, tuples, role assignments) is select →
+"Remove selected…" → an inline confirmation that lists what goes → one
+transaction; there is no single-click delete. Deleting a whole store is the
+"Danger zone" on its Admin tab (owners and platform admins): an owner types
+the store's name, chooses whether to purge the audit history too (`authz.delete_store`),
+and the console roles on that store go with it. Stores carry a description
+and a documentation link (`authz.update_store`), edited by owners on the
+store header. The home page lists the stores you can see as a table with
+their model status, your access, the creation time (`stores.created_at`)
+and the last model, condition or tuple change from the audit trail; platform
+admins also see stores nobody manages in the console yet and can adopt or
+delete them there (typed confirmation as well). Conditions and temporal
+gates are listed with their description, mode and clauses, created and
+last-changed times, and a *Details* row showing the SQL call that recreates
+the item and its JSON (a condition's row also has *Try it*: a request
+context and a mocked stored context evaluated without any tuple); both are edited in place (a save under the same name
+replaces the definition; gate clauses are JSON with one template per
+primitive). The UI is in English by default with a German translation
+(chosen on the personal Settings page behind the gear in the top bar), and
+columns and sections carry (?) help texts. Dictionaries are plain JSON
+(`frontend/src/i18n/<lang>.json`, English strings are the keys). An operator
+overrides entries, or adds a language, without rebuilding: put `<lang>.json`
+files in a directory and point `CONSOLE_I18N_DIR` at it — the BFF serves them
+at `api/i18n/<lang>` and the SPA merges them over the built-in dictionary; an
+`"@language": "Français"` entry names a new language in the picker.
+
+The console's own store is created by `./start.sh --console` from
+`examples/models/console/model.sql` + `seed.sql` when it is missing, and
+never reset afterwards; the test suite loads the same fixture under the name
+`console_test` (psql variable `cs`), so a test run leaves the live grants
+alone.
+
+The console store's model, in OpenFGA style, is in
+[`examples/models/console/model.sql`](../examples/models/console/model.sql);
+the roles are `owner`, `author`, `publisher`, `sharer`, `tester`, `supporter` (tests anyone's access with full trees, edits nothing), `auditor`,
+`viewer` on a store, `admin` on the platform, `publisher`/`viewer` on the
+registry, and `author`/`viewer` on a **namespace** (`namespace:<store>/<name>`).
+A namespace role is how an application team owns its slice of a shared
+store: types carry a namespace, and the console checks every model or data
+change against the namespace of the type it touches — a namespace author may
+add types, rules, restrictions, gates and tuples inside their namespace,
+while relations, conditions, the DSL apply and types without a namespace are
+store-wide and need the store role. Both namespace roles open the store (two
+link tuples written on the first grant make the store's `can_view` reach the
+namespace). Namespaces themselves are managed on the Model tab: a type gets
+one on creation or through "Namespace…" on its row (empty = store-wide), the
+summary under the types table renames a namespace, moving its types and its
+role assignments together — a namespace exists exactly as long as a type
+names it.
+
+Who should use the console for what: the **platform team** creates and
+retires stores and owns shared core types (`platform:admin`, store `owner`);
+**model owners** per bounded context are `author`/`publisher` on their store
+or namespace; **application developers** are `viewer` plus `tester` and use
+the Test tab under the test policy; **auditors** are `auditor`. One store per
+cluster of bounded contexts that share identity and vocabulary and need
+decisions across applications, namespaces for ownership inside it; separate
+stores where nothing is shared (and always per tenant).
+
+## How the access works
+
+- **People** are `user:<preferred_username>` in the console store.
+- **Directory memberships come from the token, as contextual tuples.** For
+  every realm role, group and organization in the access token the BFF adds
+  `user:alice member team:role_<name>` / `team:group_<path>` / `team:org_<alias>`
+  to each console check (`CONSOLE_TEAM_CLAIMS`, default
+  `role=realm_access.roles,groups,organization`). Nothing is written: the
+  IdP stays the source of truth for membership, and the Access tab can grant
+  a role to a team that only exists there.
+- **Explicit roles** are ordinary tuples of the console store, written by the
+  Access tab (`user:bob tester store:demo`). The creator of a store becomes
+  its first owner; ownership is transferable; the last owner cannot be
+  removed.
+- **The platform admin** reaches every store through `store:X platform
+  platform:default`: they can see it, adopt unclaimed stores and reassign
+  owners, but editing, publishing or sharing still needs a store role.
+- **Every action is attributed and recorded.** Writes run in one
+  transaction with `authz.performed_by = user:alice`, so the tuple audit
+  trail, `created_by` of a published version and `applied_by` of a rollout
+  name the person, not the service role. Each console action is also an
+  event in the console store's action log (`record_event('console', 'user',
+  'alice', 'can_edit_model', 'store', 'demo', …)`), which the Activity tab
+  shows.
+- A **403** from the BFF names the missing capability and object, and the UI
+  says so ("This needs *edit model* on store:demo").
+
+## Pieces
+
+- `backend/` — the Go BFF (`cmd/console`, `internal/{config,oidc,server}`):
+  OIDC login (code + PKCE, confidential client), sessions in its own
+  Postgres, the gate (`internal/server/authz.go`), one handler file per tab.
+  Talks to the engine as the `authz_console` role
+  (`db/security/roles.sql`): admin tier + contextual-tuple checks + SELECT on
+  the metadata and audit tables — the console store is the gate in front of
+  that privilege.
+- `frontend/` — a Lit 3 SPA with no build step (import map pins `lit`);
+  `npm run check` lints. Light DOM, styled by `styles.css`; the explain tree
+  is the playground's component.
+- [`../pgauthzadm`](../pgauthzadm) — the embeddable library the BFF uses for
+  model export, the SQL rendering and the registry lifecycle; `pgauthzctl`
+  uses the same code (no subprocesses in the container).
+- `compose-console.yml`, `Dockerfile` (build context = repo root, for
+  `pgauthzadm`), `proxy.conf` (serves `/console/` and `/playground/` on
+  `app.pgauthz.test`, so both overlays compose), Keycloak client
+  `keycloak/terraform/client.console-bff.tf`.
+
+Configuration (environment): `ENGINE_DSN`, `PG_DSN` (sessions), `ISSUER`,
+`CLIENT_ID`/`CLIENT_SECRET`, `REDIRECT_URI`, `BASE_URL`, `BASE_PATH`,
+`TLS_CA_FILE`, `CONSOLE_STORE` (default `console`), `CONSOLE_PLATFORM_ID`,
+`CONSOLE_REGISTRY_ID`, `CONSOLE_SUBJECT_TYPE`, `CONSOLE_TEAM_CLAIMS`,
+`CONSOLE_I18N_DIR` (translation overrides), `CONSOLE_OPA_URL` / `CONSOLE_OPA_TOKEN` (Policies tab), `PGAUTHZD_URL` (readiness shown on Settings), `PGAUTHZD_DECISION_URL` (the
+"as me" test mode; empty hides it).
+
+## What is not there yet
+
+- **Decisions.** `can_view_decisions` is modelled but the decision log
+  (ADR 0013) lives in pgauthzd's stdout, not in the database; the tab is
+  not built. The "as me" test mode shows OPA's part for one decision; the
+  log line (`via`, `policy`, `hooks`, `hook_denials`) is where it is kept.
+- **Arbitrary subjects through OPA.** With `FORWARD_TOKEN_TO_OPA`, OPA takes
+  the subject from the token, so the OPA path is self-subject only; other
+  subjects are decided engine-direct (no hooks). A tester-grade PEP client
+  (ADR 0014) with a service token would lift that.
+- **Saved test scenarios.** The matrix a tester builds is not yet saved as a
+  `tests.authz.yaml` fixture; the runner lives in pgauthzctl.
+- **Gates, grant rules, namespaces, payload schemas** are shown (SQL view)
+  but not edited; the editor covers types, relations, rules, type
+  restrictions and conditions.
+- **End-user sharing semantics.** The Data tab writes tuples directly for
+  console sharers; `authz.grant`/`revoke` under per-object grant rules stays
+  the application's path through pgauthzd.
+- **pgauthzd as the data plane.** The BFF goes to the engine directly (one
+  service role, gated by the console store). Routing writes through
+  pgauthzd-full with the person's token as an ADR 0014 PEP client would add
+  the daemon's decision log and claim gates; the Keycloak client already
+  carries the API audience for that.
+- **Model import from files** and the playground's graphs are not absorbed
+  yet (pasting `.fga` content into "Edit as DSL" works, since it is the same
+  parser pgauthzctl uses); the playground overlay still runs alongside
+  (`--playground --console`).
+- No model-change preview: edits are live in the store (publish the model
+  first, then roll back by applying the previous version).

@@ -140,4 +140,5 @@ SELECT pg_temp._bench('list_subjects exclusion on hot resource (editors - banned
     $$ SELECT count(*) FROM authz.list_subjects('bench_rules','user','can_edit','resource','r_hot') $$, 20);
 
 -- Tidy up (idempotent; the suite also resets at the top).
-DO $$ BEGIN PERFORM authz.delete_store('bench_rules', p_purge_audit => true); EXCEPTION WHEN OTHERS THEN NULL; END $$;
+-- tidy up — unless KEEP=1 (bench.keep) asked to leave the data for a look
+DO $$ BEGIN IF current_setting('bench.keep', true) IS DISTINCT FROM 'true' THEN PERFORM authz.delete_store('bench_rules', p_purge_audit => true); END IF; EXCEPTION WHEN OTHERS THEN NULL; END $$;

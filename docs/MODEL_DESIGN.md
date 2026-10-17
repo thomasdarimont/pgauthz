@@ -188,6 +188,46 @@ Keeping structural links separate from action permissions makes the model easier
 to reason about. Structural links are used by TTU rules to navigate the object
 graph; action permissions are what you check in application code.
 
+### Relation kinds: what a subject IS versus what it CAN DO
+
+The convention above is also a declaration. Every relation carries a
+`metadata` document (migration 0019) whose `kind` key the engine understands:
+
+| kind | meaning | the engine enforces |
+|---|---|---|
+| `relation` (default) | what a subject **is**: a role or link — `viewer`, `owner`, `member`, `parent`. Usually assignable by a tuple; may also be derived (`viewer: [user] or viewer from parent`). | nothing extra |
+| `permission` | what a subject **can do** — `can_read`, `can_share`; also a directly granted capability such as a tool an agent may use (`run: [agent]`). | a tuple may name it only where its model has a direct rule on that object type; without one it is derived and a tuple is refused |
+
+```sql
+SELECT authz.model_register_relation('gdrive', 'viewer');                                   -- kind defaults to relation
+SELECT authz.model_register_relation('gdrive', 'can_read', p_metadata => '{"kind": "permission"}');
+SELECT authz.model_set_relation_metadata('gdrive', 'viewer', '{"label": "Viewer", "docs_url": "https://wiki…"}');
+SELECT * FROM authz.infer_relation_kinds('gdrive', true);   -- rules but no direct rule → permission; otherwise the declared kind
+```
+
+Why declare it: a check against `viewer` on a document asks "is alice a viewer
+of this document" and is **no** when her access comes through the folder; a
+check against `can_read` follows the inheritance and is **yes**. Tools can only
+steer people to the right question when the model says which is which, and the
+engine keeps the two from blurring: a tuple on a derived permission is
+refused with a message naming the relation it should go on. The kind is a
+declaration, not a structural rule: whether a relation takes tuples follows
+from its rules (a direct rule on the object type), so a capability that is
+granted directly — delegation as data, `run: [agent, user]` in the agents
+example — is declared a permission and still takes tuples. Inference cannot
+tell such a capability from a role, so it keeps the declaration and only
+calls a derived-only relation a permission. `describe_model` marks permissions
+(`define can_read: viewer or owner  # permission`), `export_model` carries the
+metadata, and the registry applies it. A second key the engine
+checks but does not interpret is `ui_order` (a number): tools list relations
+by it, lowest first, unset ones after, so a model can say that `can_read`
+comes before `can_change_owner` on screen. The name says it: display only,
+never part of evaluation. Other metadata keys are yours (a display
+label, a documentation link); the engine stores them untouched. The example
+models declare their permissions explicitly and let inference fill in the
+rest; the OpenFGA importer infers everything. Inference never overrides a
+declaration.
+
 ---
 
 ## 5. Step 4 -- Define Model Rules
@@ -922,6 +962,11 @@ INSERT INTO authz.conditions (store_id, name, expression, required_context) VALU
   reports it (`condition_missing_keys` in `explain_access`,
   `missing_context` in `check_access_detailed`) — see
   [Missing context](#missing-context).
+- `description` (`p_description` on `create_condition`, migration 0021): what
+  the condition is for, in words. `NULL` keeps an existing one, `''` clears
+  it; a description-only change is a new audit version. `created_at` /
+  `updated_at` record when the condition appeared and last changed. The
+  export carries the description (only when set) and the registry applies it.
 - `time_source` (`p_time_source` on `create_condition*`, default `server`):
   which clock `current_time` comes from. **`server`** (the default): the
   engine sets `current_time` from its own clock before evaluating this
@@ -1343,6 +1388,11 @@ Write namespace enforcement applies to: `write_tuple`, `delete_tuple`, `write_tu
 Read namespace enforcement applies to: `check_access`, `check_access_with_context`,
 `check_access_with_contextual_tuples`, `list_objects`, `list_subjects`, `list_actions`,
 `explain_access`, `audit_check_access`, `audit_list_actions`.
+
+A member of the role `authz_namespace_bypass` skips these checks: it is for a
+caller that decides namespace access by other means — the management console,
+whose own store says which person may touch which namespace — and is granted
+to `authz_console` only.
 
 Namespace read checks apply only to the **top-level object type** being queried.
 Internal TTU traversals across type boundaries are not restricted — this ensures

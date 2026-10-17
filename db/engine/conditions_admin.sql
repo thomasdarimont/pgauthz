@@ -104,13 +104,17 @@ CREATE OR REPLACE TRIGGER trg_conditions_validate_expression
 -- assertion — the explicit choice for tests, demos and "as of T" questions).
 -- Part of the policy: versioned, exported, rendered.
 DROP FUNCTION IF EXISTS authz.create_condition(text, text, text, text, jsonb);
+-- p_description (migration 0021): what the condition is for, in words. NULL
+-- keeps an existing description on re-create, '' clears it.
+DROP FUNCTION IF EXISTS authz.create_condition(text, text, text, text, jsonb, text);
 CREATE OR REPLACE FUNCTION authz.create_condition(
     p_store            text,
     p_name             text,
     p_expression       text,
     p_lang             text  DEFAULT authz._cond_lang_sql(),
     p_required_context jsonb DEFAULT NULL,
-    p_time_source      text  DEFAULT 'server'
+    p_time_source      text  DEFAULT 'server',
+    p_description      text  DEFAULT NULL
 ) RETURNS integer
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -122,18 +126,27 @@ BEGIN
             USING ERRCODE = 'invalid_parameter_value';
     END IF;
 
-    INSERT INTO authz.conditions (store_id, name, expression, lang, required_context, time_source)
-    VALUES (v_store_id, p_name, p_expression, p_lang, p_required_context, p_time_source)
+    -- Expressions are stored trimmed (migration 0022 trimmed existing rows):
+    -- surrounding whitespace from dollar-quoted SQL carries no meaning and
+    -- would make an identical re-create look like a change.
+    p_expression := btrim(p_expression, E' \t\r\n');
+    INSERT INTO authz.conditions (store_id, name, expression, lang, required_context, time_source, description)
+    VALUES (v_store_id, p_name, p_expression, p_lang, p_required_context, p_time_source, NULLIF(p_description, ''))
     ON CONFLICT (store_id, name) DO UPDATE
         SET expression       = EXCLUDED.expression,
             lang             = EXCLUDED.lang,
             required_context = EXCLUDED.required_context,
-            time_source      = EXCLUDED.time_source
+            time_source      = EXCLUDED.time_source,
+            description      = CASE WHEN p_description IS NULL THEN authz.conditions.description
+                                    ELSE NULLIF(p_description, '') END,
+            updated_at       = clock_timestamp()   -- when the row changed, even inside a longer transaction
         -- Skip a no-op rewrite so an unchanged re-run adds no audit version.
         WHERE authz.conditions.expression       IS DISTINCT FROM EXCLUDED.expression
            OR authz.conditions.lang             IS DISTINCT FROM EXCLUDED.lang
            OR authz.conditions.required_context IS DISTINCT FROM EXCLUDED.required_context
            OR authz.conditions.time_source      IS DISTINCT FROM EXCLUDED.time_source
+           OR (p_description IS NOT NULL
+               AND authz.conditions.description IS DISTINCT FROM NULLIF(p_description, ''))
     RETURNING id INTO v_id;
 
     -- DO UPDATE ... WHERE that matched nothing (identical re-run) returns no

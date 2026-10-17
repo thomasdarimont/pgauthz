@@ -225,3 +225,52 @@ BEGIN
     RETURN v_count;
 END;
 $$;
+
+------------------------------------------------------------------------
+-- tuple_stats: what a store's relationship data looks like, for operators
+-- and the console's Data tab. Live counts honour expiry like every read;
+-- `expired` counts the rows expiry already hides but cleanup has not yet
+-- removed (via the bypass helper, count only). Identifiers are never
+-- returned — just numbers and type names.
+--
+--   {"total": 44, "with_expiry": 2, "expiring_24h": 1, "expired": 3,
+--    "wildcard_subject": 2, "wildcard_object": 0, "conditional": 1,
+--    "usersets": 5, "subjects": 20, "objects": 18,
+--    "by_object_type": [{"type": "document", "count": 12}, ...]}
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.tuple_stats(p_store text) RETURNS jsonb
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store);
+    v_out      jsonb;
+BEGIN
+    SELECT jsonb_build_object(
+        'total',            count(*),
+        'with_expiry',      count(*) FILTER (WHERE t.expires_at IS NOT NULL),
+        'expiring_24h',     count(*) FILTER (WHERE t.expires_at IS NOT NULL AND t.expires_at <= statement_timestamp() + interval '24 hours'),
+        'wildcard_subject', count(*) FILTER (WHERE t.user_id = '*'),
+        'wildcard_object',  count(*) FILTER (WHERE t.object_id = '*'),
+        'conditional',      count(*) FILTER (WHERE t.condition_id IS NOT NULL),
+        'usersets',         count(*) FILTER (WHERE t.user_relation IS NOT NULL)
+    ) INTO v_out
+      FROM authz.tuples t
+     WHERE t.store_id = v_store_id;
+
+    -- Distinct subjects / objects as hash-aggregated subqueries: count(DISTINCT
+    -- (row)) sorts every row (≈ 10× slower on a 60k-tuple store).
+    v_out := v_out || jsonb_build_object(
+        'subjects', (SELECT count(*) FROM (SELECT DISTINCT t.user_type, t.user_id, t.user_relation
+                                             FROM authz.tuples t WHERE t.store_id = v_store_id) d),
+        'objects',  (SELECT count(*) FROM (SELECT DISTINCT t.object_type, t.object_id
+                                             FROM authz.tuples t WHERE t.store_id = v_store_id) d));
+
+    v_out := v_out
+        || jsonb_build_object('expired', authz._rls_count_expired(v_store_id))
+        || jsonb_build_object('by_object_type', COALESCE((
+               SELECT jsonb_agg(jsonb_build_object('type', ot.name, 'count', c.n) ORDER BY c.n DESC, ot.name)
+                 FROM (SELECT t.object_type, count(*) AS n FROM authz.tuples t
+                        WHERE t.store_id = v_store_id GROUP BY t.object_type) c
+                 JOIN authz.types ot ON ot.id = c.object_type), '[]'::jsonb));
+    RETURN v_out;
+END;
+$$;

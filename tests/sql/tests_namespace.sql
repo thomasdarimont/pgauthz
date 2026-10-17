@@ -445,4 +445,26 @@ DROP FUNCTION IF EXISTS _test_setup_ns_read();
 DROP FUNCTION IF EXISTS _test_teardown_ns_write();
 DROP FUNCTION IF EXISTS _test_setup_ns_write();
 
+-- model_set_type_namespace: move a type into / out of a namespace (store-wide)
+DO $$
+DECLARE v_err text;
+BEGIN
+    PERFORM authz.model_register_type('test_ns_set', 'thing') FROM (SELECT authz.create_store('test_ns_set')) x;
+    PERFORM _test_assert('ns_s_01_set', authz.model_set_type_namespace('test_ns_set', 'thing', 'billing'), 'billing');
+    PERFORM _test_assert('ns_s_02_stored',
+        (SELECT namespace FROM authz.types t JOIN authz.stores s ON s.id = t.store_id WHERE s.name = 'test_ns_set' AND t.name = 'thing'), 'billing');
+    PERFORM _test_assert_true('ns_s_03_clear', authz.model_set_type_namespace('test_ns_set', 'thing', '') IS NULL, 'cleared');
+    BEGIN
+        PERFORM authz.model_set_type_namespace('test_ns_set', 'thing', 'bad name');
+        v_err := 'no error';
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert_true('ns_s_04_bad_name_refused', v_err LIKE '%must be an identifier%', v_err);
+    BEGIN
+        PERFORM authz.model_set_type_namespace('test_ns_set', 'nope', 'billing');
+        v_err := 'no error';
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert_true('ns_s_05_unknown_type', v_err LIKE '%Unknown type%', v_err);
+    PERFORM authz.delete_store('test_ns_set', p_purge_audit => true);
+END $$;
+
 SELECT _test_report('namespace checks');

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/openfga/language/pkg/go/transformer"
+	"thomasdarimont.de/authz/pgauthzadm"
 )
 
 // loadModelJSON reads a model file and returns OpenFGA authorization-model
@@ -30,11 +30,12 @@ func loadModelJSON(path string) (modelJSON []byte, warnings []string, err error)
 	case ".json":
 		modelJSON = raw
 	case ".fga", ".dsl", ".openfga":
-		out, terr := transformer.TransformDSLToJSON(string(raw))
-		if terr != nil {
-			return nil, nil, fmt.Errorf("parsing %s: %w", path, terr)
+		// shared with the console's "Edit as DSL" (pgauthzadm.ParseDSL)
+		out, w, perr := pgauthzadm.ParseDSL(string(raw))
+		if perr != nil {
+			return nil, nil, fmt.Errorf("parsing %s: %w", path, perr)
 		}
-		modelJSON = []byte(out)
+		return out, w, nil
 	default:
 		return nil, nil, fmt.Errorf("unsupported model file %s (want .fga, .dsl or .json)", path)
 	}

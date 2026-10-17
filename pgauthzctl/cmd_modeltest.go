@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"gopkg.in/yaml.v3"
+	"thomasdarimont.de/authz/pgauthzadm"
 )
 
 // Fixture file format — a superset of OpenFGA's store-test YAML, so existing
@@ -126,12 +127,12 @@ func cmdTest(args []string) error {
 			return err
 		}
 	} else {
-		name, version, err := parseModelRef(fix.Model)
+		name, version, err := pgauthzadm.ParseModelRef(fix.Model)
 		if err != nil {
 			return err
 		}
 		if _, err := conn.Exec(ctx,
-			"SELECT authz.apply_model($1, $2, $3)", store, name, versionArg(version)); err != nil {
+			"SELECT authz.apply_model($1, $2, $3)", store, name, pgauthzadm.VersionArg(version)); err != nil {
 			return err
 		}
 	}

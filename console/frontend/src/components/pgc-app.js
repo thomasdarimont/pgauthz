@@ -1,0 +1,185 @@
+import { html, nothing } from 'lit';
+import { PgcElement } from '../base.js';
+import { api } from '../api.js';
+import { t, initI18n } from '../i18n.js';
+import { forbiddenText } from '../util.js';
+import './pgc-stores.js';
+import './pgc-store.js';
+import './pgc-registry.js';
+import './pgc-platform.js';
+import './pgc-settings.js';
+
+// The shell: top bar with the three areas, language switch, login gate, and
+// a tiny path router under <base href>. Routes: "" (stores),
+// "stores/<name>/<tab>", "registry", "platform/<tab>", "settings". Links are plain <a href>
+// relative to the base; clicks become pushState so the BFF's SPA fallback
+// serves index.html on reload.
+export class PgcApp extends PgcElement {
+  static properties = {
+    me: { state: true },
+    path: { state: true },
+    error: { state: true },
+    version: { state: true },
+  };
+
+  constructor() {
+    super();
+    this.me = undefined; // undefined = loading, null = logged out
+    this.path = this._currentPath();
+    this.error = '';
+    this.version = null;
+    this._onPop = () => (this.path = this._currentPath());
+    this._onClick = (e) => this._intercept(e);
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    window.addEventListener('popstate', this._onPop);
+    this.addEventListener('click', this._onClick);
+    initI18n(); // dictionaries + operator overrides; re-renders everything once loaded
+    this._load();
+    api
+      .version()
+      .then((v) => (this.version = v))
+      .catch(() => {});
+  }
+  disconnectedCallback() {
+    window.removeEventListener('popstate', this._onPop);
+    this.removeEventListener('click', this._onClick);
+    super.disconnectedCallback();
+  }
+
+  get base() {
+    return new URL(document.baseURI).pathname; // "/console/"
+  }
+  _currentPath() {
+    const p = location.pathname;
+    return p.startsWith(this.base) ? p.slice(this.base.length) : '';
+  }
+  _intercept(e) {
+    const a = e.composedPath().find((n) => n.tagName === 'A');
+    if (!a || a.target || a.hasAttribute('download') || e.metaKey || e.ctrlKey || e.button !== 0) return;
+    const href = a.getAttribute('href');
+    if (!href || href.startsWith('http') || href.startsWith('auth/') || href.startsWith('#')) return;
+    e.preventDefault();
+    this.navigate(href);
+  }
+  navigate(rel) {
+    history.pushState(null, '', this.base + rel);
+    this.path = rel;
+    window.scrollTo(0, 0);
+  }
+
+  async _load() {
+    try {
+      this.me = await api.me();
+      if (this.me && this.me.authenticated === false) this.me = null;
+    } catch (e) {
+      this.me = null;
+      this.error = forbiddenText(e);
+    }
+  }
+
+  _area() {
+    if (this.path.startsWith('registry')) return 'registry';
+    if (this.path.startsWith('platform')) return 'platform';
+    if (this.path.startsWith('settings')) return 'settings';
+    return 'stores';
+  }
+
+  _page() {
+    const parts = this.path.split('/').filter(Boolean);
+    if (parts[0] === 'registry') return html`<pgc-registry .me=${this.me}></pgc-registry>`;
+    if (parts[0] === 'settings') return html`<pgc-settings .me=${this.me}></pgc-settings>`;
+    if (parts[0] === 'platform')
+      return html`<pgc-platform .me=${this.me} tab=${parts[1] ?? 'access'}></pgc-platform>`;
+    if (parts[0] === 'stores' && parts[1])
+      return html`<pgc-store
+        .me=${this.me}
+        store=${parts[1]}
+        tab=${parts[2] ?? 'model'}
+        @navigate=${(e) => this.navigate(e.detail)}
+      ></pgc-store>`;
+    return html`<pgc-stores .me=${this.me} @navigate=${(e) => this.navigate(e.detail)}></pgc-stores>`;
+  }
+
+  render() {
+    const me = this.me;
+    const area = this._area();
+    return html`
+      <header class="topbar">
+        <div class="inner">
+          <a class="brand" href=""><span class="dot"></span>pgauthz <small>${t('console')}</small></a>
+          ${
+            me
+              ? html`<nav class="areas">
+                  <a href="" class=${area === 'stores' ? 'active' : ''}>${t('Stores')}</a>
+                  ${me.registry?.can_view ? html`<a href="registry" class=${area === 'registry' ? 'active' : ''}>${t('Registry')}</a>` : nothing}
+                  ${
+                    me.platform?.can_view_health || me.platform?.can_manage_access
+                      ? html`<a href="platform" class=${area === 'platform' ? 'active' : ''}
+                          >${t('Platform')}</a
+                        >`
+                      : nothing
+                  }
+                </nav>`
+              : html`<nav class="areas"></nav>`
+          }
+          <div class="who">
+            ${
+              me
+                ? html`<span
+                      class="name"
+                      title=${me.teams?.length ? t('teams: {teams}', { teams: me.teams.join(', ') }) : t('no team memberships')}
+                    >
+                      <b>${me.name || me.username}</b> <span class="mono">${me.subject}</span></span
+                    >
+                    <a
+                      class="settings ${area === 'settings' ? 'active' : ''}"
+                      href="settings"
+                      title=${t('Settings')}
+                      aria-label=${t('Settings')}
+                      >⚙</a
+                    >
+                    <button class="sm" @click=${api.logout}>${t('Sign out')}</button>`
+                : me === null
+                  ? html`<button class="sm primary" @click=${() => api.login()}>${t('Sign in')}</button>`
+                  : nothing
+            }
+          </div>
+        </div>
+      </header>
+      ${
+        me === undefined
+          ? html`<main><p class="muted">${t('Loading…')}</p></main>`
+          : me === null
+            ? html`<main class="login">
+                <h1>pgauthz ${t('Console')}</h1>
+                <p class="muted">
+                  ${t('Design, test, share and roll out authorization models — with your access decided by pgauthz itself.')}
+                </p>
+                ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
+                <p>
+                  <button class="primary" @click=${() => api.login()}>${t('Sign in with Keycloak')}</button>
+                </p>
+              </main>`
+            : html`<main>${this._page()}</main>`
+      }
+      <footer class="footer">
+        <span>pgauthz ${t('console')}</span>
+        ${
+          this.version
+            ? html`<span
+                class="mono"
+                title=${this.version.built_at ? t('built {when}', { when: this.version.built_at }) : ''}
+              >
+                ${this.version.version}${this.version.revision ? ` (${this.version.revision})` : ''}
+              </span>`
+            : nothing
+        }
+        <a href="https://github.com/thomasdarimont/pgauthz" target="_blank" rel="noopener">pgauthz</a>
+      </footer>
+    `;
+  }
+}
+customElements.define('pgc-app', PgcApp);

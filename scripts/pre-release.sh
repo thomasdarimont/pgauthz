@@ -49,8 +49,12 @@ step "Go build + vet + tests (pgauthzd)"
 # spec↔route coverage in BOTH directions + response-schema validation, so a
 # release cannot ship an openapi.yaml that drifted from the actual routes.
 (cd pgauthzd && go build ./... && go vet ./... && go test ./...) || die "pgauthzd build/vet/test failed"
+step "Go build + vet + test (pgauthzadm)"
+(cd pgauthzadm && go build ./... && go vet ./... && go test ./...) || die "pgauthzadm build/vet/test failed"
 step "Go build + vet (pgauthzctl)"
 (cd pgauthzctl && go build ./... && go vet ./...) || die "pgauthzctl build/vet failed"
+step "Go build + vet + test (console)"
+(cd console/backend && go build ./... && go vet ./... && go test ./...) || die "console build/vet/test failed"
 
 step "Markdown links + anchors"
 ./scripts/check-links.sh || die "broken markdown links (see above)"

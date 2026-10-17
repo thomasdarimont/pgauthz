@@ -167,3 +167,11 @@ SELECT authz.add_gate('fourq', 'payment', 'execute_large', 'four_eyes', '{
   ]}');
 
 SELECT authz.describe_model('fourq');
+
+-- Relation kinds (migration 0019), declared: what a subject CAN DO (permissions)
+-- versus what it IS (relations). The kind is a declaration; whether a relation
+-- takes tuples follows from its rules. Inference below only fills in what is
+-- left undeclared.
+SELECT authz.model_set_relation_metadata('fourq', r, '{"kind": "permission"}')
+  FROM unnest(ARRAY['can_edit', 'can_read', 'download', 'execute', 'execute_large', 'review', 'accept_nda', 'approval_received']) AS r;
+SELECT * FROM authz.infer_relation_kinds('fourq', true);

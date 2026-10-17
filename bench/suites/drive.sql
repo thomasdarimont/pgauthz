@@ -156,4 +156,5 @@ SELECT pg_temp._bench('audit_check_access (time-travel, replay)',
     $$ SELECT authz.audit_check_access('bench_drive','user','u1','can_view','document','priv_1', clock_timestamp()) $$, 20);
 
 -- Tidy up (idempotent; the suite also resets at the top).
-DO $$ BEGIN PERFORM authz.delete_store('bench_drive', p_purge_audit => true); EXCEPTION WHEN OTHERS THEN NULL; END $$;
+-- tidy up — unless KEEP=1 (bench.keep) asked to leave the data for a look
+DO $$ BEGIN IF current_setting('bench.keep', true) IS DISTINCT FROM 'true' THEN PERFORM authz.delete_store('bench_drive', p_purge_audit => true); END IF; EXCEPTION WHEN OTHERS THEN NULL; END $$;

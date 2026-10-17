@@ -88,4 +88,5 @@ SELECT pg_temp._bench('check_access DENY  wide fan-out (500 converging parents)'
     $$ SELECT authz.check_access('bench_adv','user','nobody','can_view','node','wroot') $$, 30);
 
 -- Tidy up (idempotent; the suite also resets at the top).
-DO $$ BEGIN PERFORM authz.delete_store('bench_adv', p_purge_audit => true); EXCEPTION WHEN OTHERS THEN NULL; END $$;
+-- tidy up — unless KEEP=1 (bench.keep) asked to leave the data for a look
+DO $$ BEGIN IF current_setting('bench.keep', true) IS DISTINCT FROM 'true' THEN PERFORM authz.delete_store('bench_adv', p_purge_audit => true); END IF; EXCEPTION WHEN OTHERS THEN NULL; END $$;

@@ -22,7 +22,13 @@ bench/
 ./bench/run.sh         # run every suite in bench/suites/
 ./bench/run.sh drive   # run one suite by name
 ./bench/run.sh drive github   # run several
+KEEP=1 ./bench/run.sh drive   # leave the suite's store and data in place afterwards
 ```
+
+`KEEP=1` skips the suite's final tidy-up, so the store (`bench_<name>`) stays
+with all its tuples — a large dataset to try the console or psql against.
+Re-running the suite resets it; `authz.delete_store('bench_drive', p_purge_audit => true)`
+removes it.
 
 Each suite builds its own store + data and prints a `ms/op` table. See
 [`docs/BENCHMARKS.md`](../docs/BENCHMARKS.md) for methodology, environment, and

@@ -129,3 +129,11 @@ SELECT authz.create_condition_sql('authzen_cert', 'soft_requested',
 
 -- Render the model as OpenFGA-style DSL text to verify what was built.
 SELECT authz.describe_model('authzen_cert');
+
+-- Relation kinds (migration 0019), declared: what a subject CAN DO (permissions)
+-- versus what it IS (relations). The kind is a declaration; whether a relation
+-- takes tuples follows from its rules. Inference below only fills in what is
+-- left undeclared.
+SELECT authz.model_set_relation_metadata('authzen_cert', r, '{"kind": "permission"}')
+  FROM unnest(ARRAY['delete', 'read', 'write']) AS r;
+SELECT * FROM authz.infer_relation_kinds('authzen_cert', true);

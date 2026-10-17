@@ -171,6 +171,16 @@ BEGIN
         RETURN;
     END IF;
 
+    -- authz_namespace_bypass: a role that decides access by other means
+    -- (the management console, whose console store says who may touch
+    -- which namespace) is not bound to the per-application grants below.
+    -- (pg_has_role is true for every role when v_role is a superuser, so the
+    -- membership must be explicit: superusers follow the grants like anyone.)
+    IF pg_has_role(v_role, 'authz_namespace_bypass', 'MEMBER')
+       AND NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_role AND rolsuper) THEN
+        RETURN;
+    END IF;
+
     -- Check if the effective role is a member of any granted role with
     -- the required permission
     IF EXISTS (

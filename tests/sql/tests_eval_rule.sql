@@ -287,7 +287,8 @@ BEGIN
         negated       boolean,
         condition_name         text,
         condition_missing_keys text[],
-        matched_tuple text
+        matched_tuple text,
+        matched_expires_at timestamptz
     ) ON COMMIT DROP;
 
     v := authz._eval_direct(

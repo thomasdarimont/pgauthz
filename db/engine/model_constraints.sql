@@ -77,3 +77,38 @@ $$;
 CREATE OR REPLACE TRIGGER trg_models_validate_group
     AFTER INSERT OR UPDATE OR DELETE ON authz.models
     FOR EACH ROW EXECUTE FUNCTION authz._validate_model_group();
+
+------------------------------------------------------------------------
+-- Tuple guard (migration 0019): a tuple can only name an assignable
+-- relation. A permission (relations.metadata.kind = 'permission') is derived
+-- by computed / ttu rules and is never granted directly — the chokepoint for
+-- write_tuple(s), write_tuples_checked, grant and the RLS bypass helpers alike.
+------------------------------------------------------------------------
+-- SECURITY DEFINER like the gate validator: the rule lookup must work for
+-- whoever runs the INSERT.
+CREATE OR REPLACE FUNCTION authz._tuple_relation_kind_guard() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+    v_name text;
+BEGIN
+    -- A permission may be granted directly when its model says so (a direct
+    -- rule on this object type: `run: [agent]`); without one a tuple could
+    -- never be matched, so it is refused with the relation it should go on.
+    SELECT r.name INTO v_name
+      FROM authz.relations r
+     WHERE r.store_id = NEW.store_id AND r.id = NEW.relation
+       AND r.metadata->>'kind' = 'permission'
+       AND NOT EXISTS (SELECT 1 FROM authz.models m
+                        WHERE m.store_id = NEW.store_id AND m.object_type = NEW.object_type
+                          AND m.relation = NEW.relation AND m.rule_type = authz._rel_direct());
+    IF v_name IS NOT NULL THEN
+        RAISE EXCEPTION 'relation % is a permission without a direct rule on this type: it is derived, not granted by a tuple', v_name
+            USING HINT = 'Grant the relation the permission is derived from, or add a direct rule if it should be grantable.';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE TRIGGER trg_tuples_relation_kind
+    BEFORE INSERT OR UPDATE OF relation ON authz.tuples
+    FOR EACH ROW EXECUTE FUNCTION authz._tuple_relation_kind_guard();

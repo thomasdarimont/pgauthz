@@ -238,6 +238,7 @@ Each topic has exactly one owner. Read the owner, not this file, for detail.
 | [`pgauthzd/README.md`](pgauthzd/README.md) | the HTTP daemon: profiles, env, AuthZEN, native API, JWT | you deploy or call pgauthzd |
 | [`pgauthzctl/README.md`](pgauthzctl/README.md) | model-as-code CLI: import, test, publish, roll out | your models live in git |
 | [`playground/README.md`](playground/README.md) | the web UI | you want to see a resolution path |
+| [`console/README.md`](console/README.md) | the management console (PoC): edit, test, share, roll out — access decided by pgauthz | you manage stores with a team |
 | [`examples/models/README.md`](examples/models/README.md) | the example models and what each shows | you want a starting point |
 | [`conformance/README.md`](conformance/README.md) | the OpenID conformance suite's AuthZEN PDP plans run against pgauthzd | you want proof the AuthZEN surface is conformant |
 | [`examples/filtering/README.md`](examples/filtering/README.md) | authorization as a JOIN (data filtering) | you list what a user may see |

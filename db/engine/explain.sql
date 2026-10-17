@@ -114,6 +114,9 @@ BEGIN
         -- the exact stored tuple that granted this step, in `subject → relation →
         -- object` form with * wildcards (NULL for non-tuple / denied steps).
         matched_tuple text,
+        -- when the stored tuple that granted this step expires (NULL = never
+        -- or not a tuple step): what makes an allow time-bound
+        matched_expires_at timestamptz,
         -- temporal gate steps (ADR 0012; rule_type = 'temporal_gate', depth 0):
         -- counts and thresholds only — never matched payloads or object ids.
         gate_name      text,
@@ -268,6 +271,8 @@ BEGIN
             -- exact stored tuple that granted this step (null on non-tuple steps);
             -- redacted along with other identifiers.
             'matched_tuple', CASE WHEN p_redact THEN NULL ELSE s.matched_tuple END,
+            -- expiry of that tuple (structural: no identifier, not redacted)
+            'expires_at', s.matched_expires_at,
             'duration_ms', round(s.duration_ms::numeric, 3)
         )
         -- temporal gate steps carry their gate/clause/window/observed/threshold

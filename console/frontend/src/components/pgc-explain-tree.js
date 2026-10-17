@@ -1,0 +1,142 @@
+import { LitElement, html, css } from 'lit';
+
+// Renders one node of the explain_access resolution tree, recursively. Green =
+// the step contributed an allow, red = denied. Collapsible.
+export class PgcExplainTree extends LitElement {
+  static properties = { node: { type: Object }, open: { state: true }, root: { type: Boolean } };
+  constructor() {
+    super();
+    this.open = true;
+    this.root = false;
+  }
+
+  // Reads the shared design tokens (inherited from :root into shadow DOM);
+  // each var() has a fallback so the component still renders standalone.
+  static styles = css`
+    :host {
+      display: block;
+      font: var(--pg-text-code, 13px)/1.5 var(--pg-font-mono, ui-monospace, monospace);
+    }
+    .node {
+      display: flex;
+      align-items: baseline;
+      gap: var(--pg-space-2, 0.5rem);
+      padding: 1px 0;
+    }
+    .toggle {
+      cursor: pointer;
+      width: 1rem;
+      color: var(--pg-muted, #888);
+      user-select: none;
+    }
+    .badge {
+      width: 1rem;
+      text-align: center;
+      font-weight: 700;
+    }
+    .allow > .badge {
+      color: var(--pg-allow-fg, #1a7f37);
+    }
+    .deny > .badge {
+      color: var(--pg-deny-fg, #cf222e);
+    }
+    .shadow > .badge {
+      color: var(--pg-muted, #888);
+    }
+    .children {
+      margin-left: 1.1rem;
+      border-left: 1px dotted var(--pg-tree-guide, #ccc);
+      padding-left: var(--pg-space-2, 0.4rem);
+    }
+    .label .reason {
+      color: var(--pg-reason-fg, #6639ba);
+    }
+    .label .muted {
+      color: var(--pg-muted, #888);
+    }
+    .label .expiry {
+      color: var(--c-warn, #b45309);
+    }
+  `;
+
+  _allowed(n) {
+    return n.allowed === true || n.result === true;
+  }
+  // A shadow temporal-gate clause that would have denied: reported, never decides.
+  static isShadowMiss(n) {
+    return n.rule_type === 'temporal_gate' && n.shadow === true && !(n.allowed === true || n.result === true);
+  }
+  static mark(n) {
+    return PgcExplainTree.isShadowMiss(n) ? '○' : n.allowed === true || n.result === true ? '✔' : '✘';
+  }
+
+  // The step's main label text — matched tuple (exact granting tuple, wildcards
+  // resolved), else detail, else the sub-goal "<rel> on <obj>". Shared by the
+  // rendered tree and the text export.
+  // Appended to a granting tuple step whose tuple expires: "⏱ until <when>".
+  static expiryText(n) {
+    if (!n?.expires_at) return '';
+    const d = new Date(n.expires_at);
+    return ` ⏱ ${d.toLocaleString(document.documentElement.lang || undefined, { dateStyle: 'medium', timeStyle: 'short' })}`;
+  }
+
+  static labelText(n) {
+    return (
+      n.matched_tuple ||
+      n.detail ||
+      [n.relation, n.object && `on ${n.object}`].filter(Boolean).join(' ') ||
+      [n.subject, n.relation, n.object].filter(Boolean).join(' ') ||
+      JSON.stringify(n)
+    );
+  }
+
+  // Render the whole tree to indented text (mirrors the on-screen tree), for the
+  // playground's "copy resolution path as text" action.
+  static toText(node) {
+    const walk = (n, depth, isRoot) => {
+      if (!n) return '';
+      const reason = n.reason && !isRoot ? ` [${n.reason}]` : '';
+      const line =
+        '  '.repeat(depth) +
+        PgcExplainTree.mark(n) +
+        ' ' +
+        PgcExplainTree.labelText(n) +
+        PgcExplainTree.expiryText(n) +
+        reason;
+      return line + '\n' + (n.children || []).map((c) => walk(c, depth + 1, false)).join('');
+    };
+    return walk(node, 0, true);
+  }
+
+  _label(n) {
+    // The synthetic root is the decision/query node; its reason just repeats the
+    // granting leaf's, so don't tag it (matches the access graph's query node).
+    return html`<span class="label"
+      >${PgcExplainTree.labelText(n)}${n.expires_at ? html`<span class="expiry">${PgcExplainTree.expiryText(n)}</span>` : ''}
+      ${n.reason && !this.root ? html`<span class="reason">[${n.reason}]</span>` : ''}</span
+    >`;
+  }
+
+  render() {
+    const n = this.node;
+    if (!n) return html``;
+    const kids = n.children || [];
+    return html`
+      <div class="node ${PgcExplainTree.isShadowMiss(n) ? 'shadow' : this._allowed(n) ? 'allow' : 'deny'}">
+        <span class="toggle" @click=${() => (this.open = !this.open)}>
+          ${kids.length ? (this.open ? '▾' : '▸') : '•'}</span
+        >
+        <span class="badge">${PgcExplainTree.mark(n)}</span>
+        ${this._label(n)}
+      </div>
+      ${
+        this.open && kids.length
+          ? html`<div class="children">
+              ${kids.map((c) => html`<pgc-explain-tree .node=${c}></pgc-explain-tree>`)}
+            </div>`
+          : ''
+      }
+    `;
+  }
+}
+customElements.define('pgc-explain-tree', PgcExplainTree);

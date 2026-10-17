@@ -1,0 +1,99 @@
+# Optional overlay: the pgauthz management console (Lit SPA + Go BFF, see
+# console/README.md). Requires the keycloak overlay (proxy, realm) —
+# `--console` implies `--keycloak`.
+#
+#   ./start.sh --console
+#   (cd keycloak/terraform && terraform apply)   # provision the console-bff client + console_admin role
+#   ./init.sh                                    # creates the authz_console role; then load the console store:
+#   source env.sh; for f in model seed; do psql_file "$PG_DB" examples/models/console/$f.sql; done
+#   open https://app.pgauthz.test/console/       # alice (console_admin) sees everything
+#
+# /etc/hosts: 127.0.0.1 app.pgauthz.test  (the mkcert *.pgauthz.test cert covers it)
+name: pgauthz
+
+services:
+  # Dedicated DB for BFF sessions, kept SEPARATE from the pgauthz engine DB.
+  console-db:
+    image: postgres:18.6
+    environment:
+      POSTGRES_DB: pgauthz_console
+      POSTGRES_USER: console
+      POSTGRES_PASSWORD: ${CONSOLE_DB_PASSWORD:-console}
+    volumes:
+      - console-db-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U console -d pgauthz_console"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  console-bff:
+    build:
+      # Repo root: the backend embeds the sibling module pgauthzadm/ (go.mod replace).
+      context: .
+      dockerfile: console/Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}   # `VERSION=0.2.2 docker compose build` stamps it; else dev
+        REVISION: ${REVISION:-}    # start.sh passes the git revision; the image build has no .git
+    image: pgauthz-console-bff:dev
+    depends_on:
+      console-db:
+        condition: service_healthy
+      authz-db:
+        condition: service_healthy
+    environment:
+      PG_DSN: postgres://console:${CONSOLE_DB_PASSWORD:-console}@console-db:5432/pgauthz_console
+      # The engine, as the console's dedicated LOGIN role (db/security/roles.sql,
+      # authz_console: admin tier + contextual-tuple checks + metadata SELECT).
+      # The console's own store is the gate in front of this privilege.
+      ENGINE_DSN: postgres://authz_console:${CONSOLE_ENGINE_PASSWORD:-authz}@authz-db:5432/authz
+      CLIENT_ID: console-bff
+      CLIENT_SECRET: ${CONSOLE_BFF_CLIENT_SECRET:-console-bff-demo-secret}
+      ISSUER: https://id.pgauthz.test/realms/pgauthz
+      TLS_CA_FILE: /etc/pgauthz/rootCA.pem
+      REDIRECT_URI: https://app.pgauthz.test/console/auth/callback
+      BASE_URL: https://app.pgauthz.test
+      BASE_PATH: /console
+      COOKIE_SECURE: "true"
+      DEPLOYMENT_ENVIRONMENT: "${DEPLOYMENT_ENVIRONMENT:-dev}"
+      # The console's authorization store and its singleton objects
+      # (examples/models/console). Directory memberships from the token become
+      # contextual tuples: realm roles → team:role_<name>, groups → team:group_<path>,
+      # Keycloak organizations → team:org_<alias>.
+      CONSOLE_STORE: console
+      CONSOLE_PLATFORM_ID: default
+      CONSOLE_REGISTRY_ID: default
+      CONSOLE_SUBJECT_TYPE: user
+      CONSOLE_TEAM_CLAIMS: role=realm_access.roles,group=groups,org=organization
+      # Shown on the Settings page (readiness of the writer instance).
+      PGAUTHZD_URL: http://pgauthzd-full:8080
+      # The Test tab's "as me through pgauthzd" mode: the person's own token
+      # goes to the OPA-fronted instance with X-PGAuthz-Detail, so the result
+      # shows whether OPA and which hooks took part. Self-subject only — OPA
+      # takes the subject from the forwarded token (REQUIRE_TOKEN_FOR_READS).
+      PGAUTHZD_DECISION_URL: http://pgauthzd-opa:8080
+      # Policies tab: the OPA sidecar's policy list (admin-only in OPA's system
+      # authorization policy) and provenance. Unset = the tab says OPA is not configured.
+      CONSOLE_OPA_URL: http://opa:8181
+      CONSOLE_OPA_TOKEN: ${OPA_ADMIN_TOKEN:-change-me-in-production}
+      # Translation overrides: <lang>.json files merged over the built-in
+      # dictionaries (mount a directory and set this to it; see console/README.md).
+      # CONSOLE_I18N_DIR: /i18n
+    volumes:
+      # SPA mounted for live editing; the binary serves it from /web.
+      - ./console/frontend:/web:ro
+      # mkcert dev root, so the BFF trusts the proxy's TLS for the issuer.
+      - ./keycloak/config/certs/rootCA.pem:/etc/pgauthz/rootCA.pem:ro
+    extra_hosts:
+      - "id.pgauthz.test:host-gateway"
+    # Reached only through the proxy at app.pgauthz.test/console/ — no host port.
+
+  # Route app.pgauthz.test/console/ through the keycloak overlay's nginx proxy.
+  # Deliberately mounted at the playground overlay's target path: console/proxy.conf
+  # serves BOTH /console/ and /playground/, so the two overlays compose.
+  proxy:
+    volumes:
+      - ./console/proxy.conf:/etc/nginx/conf.d/playground.conf:ro
+
+volumes:
+  console-db-data:

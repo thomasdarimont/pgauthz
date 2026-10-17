@@ -57,6 +57,37 @@ END;
 $$;
 
 ------------------------------------------------------------------------
+-- model_set_type_namespace: move an existing type into a namespace (or out
+-- of every namespace with NULL / ''). A namespace is nothing but the set of
+-- types that name it, so this is also how one is created or renamed (move
+-- its types). Namespaces bound which application roles may read or write
+-- the type (namespace_access) and, in the management console, which
+-- people may change it — a store-wide decision, hence admin tier.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.model_set_type_namespace(
+    p_store     text,
+    p_type_name text,
+    p_namespace text
+) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store);
+    v_ns       text    := NULLIF(p_namespace, '');
+BEGIN
+    IF v_ns IS NOT NULL AND (v_ns !~ '^[A-Za-z_][A-Za-z0-9_.-]*$' OR length(v_ns) > 63) THEN
+        RAISE EXCEPTION 'namespace "%" must be an identifier (letters, digits, _ . -; max 63)', v_ns
+            USING ERRCODE = 'check_violation';
+    END IF;
+    UPDATE authz.types SET namespace = v_ns
+     WHERE store_id = v_store_id AND name = p_type_name;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Unknown type: %', p_type_name;
+    END IF;
+    RETURN v_ns;
+END;
+$$;
+
+------------------------------------------------------------------------
 -- model_set_type_labels: replace the logical-grouping labels on an existing
 -- type. Labels are advisory key:value metadata (see migration 0003); they have
 -- no access-control effect. Passing NULL/'{}' clears them.
@@ -332,22 +363,143 @@ $$;
 --   SELECT authz.model_register_relation('demo', 'can_archive');
 --   SELECT authz.model_register_relation('demo', 'can_approve', 'Approval permission');
 ------------------------------------------------------------------------
+-- The pre-0019 three-argument signature would make calls with two or three
+-- arguments ambiguous next to the new one; drop it on reload.
+DROP FUNCTION IF EXISTS authz.model_register_relation(text, text, text);
 CREATE OR REPLACE FUNCTION authz.model_register_relation(
     p_store       text,
     p_name        text,
-    p_description text DEFAULT NULL
+    p_description text  DEFAULT NULL,
+    p_metadata    jsonb DEFAULT NULL   -- e.g. '{"kind": "permission"}' (migration 0019)
 ) RETURNS integer
 LANGUAGE plpgsql AS $$
 DECLARE
     v_store_id    integer := authz._s(p_store);
     v_relation_id integer;
 BEGIN
-    INSERT INTO authz.relations (store_id, name, description)
-    VALUES (v_store_id, p_name, p_description)
-    ON CONFLICT (store_id, name) DO UPDATE SET name = EXCLUDED.name
+    IF p_metadata IS NOT NULL THEN
+        PERFORM authz._validate_relation_metadata(p_metadata);
+    END IF;
+    INSERT INTO authz.relations (store_id, name, description, metadata)
+    VALUES (v_store_id, p_name, p_description, COALESCE(p_metadata, '{}'::jsonb))
+    ON CONFLICT (store_id, name) DO UPDATE
+        SET description = COALESCE(EXCLUDED.description, authz.relations.description),
+            metadata    = CASE WHEN p_metadata IS NULL THEN authz.relations.metadata
+                               ELSE jsonb_strip_nulls(authz.relations.metadata || p_metadata) END
     RETURNING id INTO v_relation_id;
 
     RETURN v_relation_id;
+END;
+$$;
+
+------------------------------------------------------------------------
+-- Relation metadata (migration 0019). The engine interprets one key:
+--   kind = 'relation'   what a subject IS — assignable by a tuple (viewer,
+--                       owner, member); may also be derived (inherited)
+--   kind = 'permission' what a subject CAN DO — derived only: computed/ttu
+--                       rules, never a direct rule, type restriction or tuple
+--   ui_order = <number> display order for tools (lower first; unset last); never affects evaluation
+-- Other keys (label, docs_url, …) are carried untouched for tooling.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._validate_relation_metadata(p_metadata jsonb) RETURNS void
+LANGUAGE plpgsql IMMUTABLE AS $$
+BEGIN
+    IF jsonb_typeof(p_metadata) <> 'object' THEN
+        RAISE EXCEPTION 'relation metadata must be a JSON object, got %', jsonb_typeof(p_metadata);
+    END IF;
+    IF p_metadata ? 'kind' AND p_metadata->>'kind' NOT IN ('relation', 'permission') THEN
+        RAISE EXCEPTION 'invalid relation kind %: must be relation or permission', p_metadata->>'kind';
+    END IF;
+    -- ui_order: a number tools sort by (lower first; unset sorts last, then
+    -- by name). Display only — it never influences evaluation.
+    IF p_metadata ? 'ui_order' AND jsonb_typeof(p_metadata->'ui_order') NOT IN ('number', 'null') THEN
+        RAISE EXCEPTION 'invalid relation ui_order %: must be a number', p_metadata->'ui_order';
+    END IF;
+END;
+$$;
+
+-- _relation_kind: the declared kind, 'relation' when none is declared.
+CREATE OR REPLACE FUNCTION authz._relation_kind(p_store_id integer, p_relation_id integer) RETURNS text
+LANGUAGE sql STABLE AS $$
+    SELECT COALESCE(r.metadata->>'kind', 'relation')
+      FROM authz.relations r WHERE r.store_id = p_store_id AND r.id = p_relation_id;
+$$;
+
+-- The kind is a semantic declaration (what a subject IS versus what it CAN
+-- DO); whether a relation takes tuples is structural (a direct rule on the
+-- object type). The two used to be coupled — a permission could not have a
+-- direct rule — which misclassified directly granted capabilities such as a
+-- tool an agent may run (`run: [agent]`). Dropped with that coupling.
+DROP FUNCTION IF EXISTS authz._assert_permission_unassigned(integer, integer, text);
+
+------------------------------------------------------------------------
+-- model_set_relation_metadata: merge p_metadata into the relation's
+-- metadata (a key with a JSON null removes it). Declaring kind =
+-- permission is refused while anything assignable exists.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.model_set_relation_metadata(
+    p_store    text,
+    p_name     text,
+    p_metadata jsonb
+) RETURNS jsonb
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id    integer := authz._s(p_store);
+    v_relation_id integer := authz._r(v_store_id, p_name);
+    v_new         jsonb;
+BEGIN
+    PERFORM authz._validate_relation_metadata(COALESCE(p_metadata, '{}'::jsonb));
+    UPDATE authz.relations r
+       SET metadata = jsonb_strip_nulls(r.metadata || COALESCE(p_metadata, '{}'::jsonb))
+     WHERE r.store_id = v_store_id AND r.id = v_relation_id
+    RETURNING r.metadata INTO v_new;
+    RETURN v_new;
+END;
+$$;
+
+------------------------------------------------------------------------
+-- infer_relation_kinds: what the rules say each relation is — a relation
+-- with rules but no direct rule on any type is a permission, anything
+-- assignable (or unused) is a relation. p_apply = true writes the inferred
+-- kind into the metadata of every relation that has rules; false only
+-- reports. Used by the example models and the OpenFGA importer, where the
+-- source has no notion of kind.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.infer_relation_kinds(
+    p_store text,
+    p_apply boolean DEFAULT false
+) RETURNS TABLE (relation text, declared text, inferred text, applied boolean)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store);
+    v_row      record;
+BEGIN
+    FOR v_row IN
+        SELECT r.id, r.name, r.metadata->>'kind' AS declared,
+               EXISTS (SELECT 1 FROM authz.models m WHERE m.store_id = v_store_id AND m.relation = r.id) AS has_rules,
+               EXISTS (SELECT 1 FROM authz.models m WHERE m.store_id = v_store_id AND m.relation = r.id
+                                                       AND m.rule_type = authz._rel_direct()) AS has_direct
+          FROM authz.relations r
+         WHERE r.store_id = v_store_id
+         ORDER BY r.name
+    LOOP
+        relation := v_row.name;
+        declared := v_row.declared;
+        -- Derived only (rules, none direct) is certainly a permission. With a
+        -- direct rule the rules cannot tell a role from a directly granted
+        -- capability (`run: [agent]`), so a declaration is kept and only an
+        -- undeclared relation defaults to 'relation'.
+        inferred := CASE WHEN v_row.has_rules AND NOT v_row.has_direct THEN 'permission'
+                         ELSE COALESCE(v_row.declared, 'relation') END;
+        applied  := false;
+        -- A declaration always wins: apply only where nothing is declared yet.
+        IF p_apply AND v_row.has_rules AND v_row.declared IS NULL THEN
+            UPDATE authz.relations r SET metadata = r.metadata || jsonb_build_object('kind', inferred)
+             WHERE r.store_id = v_store_id AND r.id = v_row.id;
+            applied := true;
+        END IF;
+        RETURN NEXT;
+    END LOOP;
 END;
 $$;
 
@@ -651,7 +803,6 @@ BEGIN
     IF p_allow_wildcard AND p_allowed_user_relation IS NOT NULL THEN
         RAISE EXCEPTION 'allow_wildcard and allowed_user_relation cannot be combined';
     END IF;
-
     IF p_allowed_user_relation IS NOT NULL THEN
         v_allowed_user_rel := authz._r(v_store_id, p_allowed_user_relation);
     END IF;
@@ -888,7 +1039,9 @@ BEGIN
                     END IF;
                     v_expr := CASE WHEN v_expr IS NULL THEN v_group ELSE v_expr || ' or ' || v_group END;
                 END LOOP;
-                v_out := v_out || '    define ' || v_rel.name || ': ' || v_expr || E'\n'
+                v_out := v_out || '    define ' || v_rel.name || ': ' || v_expr
+                         || CASE WHEN authz._relation_kind(v_store_id, v_rel.id) = 'permission' THEN '  # permission' ELSE '' END
+                         || E'\n'
                          || authz._describe_gates(v_store_id, v_type.id, v_rel.id, false);
                 -- Grant rule (migration 0017): who may hand this relation out.
                 SELECT '    # grant requires ' || rq.name

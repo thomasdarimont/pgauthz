@@ -262,3 +262,14 @@ BEGIN
         '{"request": ["time"]}'::jsonb);
 END;
 $$;
+
+-- Relation kinds (migration 0019), declared: what a subject CAN DO (permissions)
+-- versus what it IS (relations). The kind is a declaration; whether a relation
+-- takes tuples follows from its rules. Inference below only fills in what is
+-- left undeclared.
+SELECT authz.model_set_relation_metadata('aia_acme', r, '{"kind": "permission"}')
+  FROM unnest(ARRAY['edit', 'employee_can_edit', 'employee_can_share', 'employee_can_view', 'employee_reach', 'share', 'view']) AS r;
+-- derived, yet a role or link rather than a capability
+SELECT authz.model_set_relation_metadata('aia_acme', r, '{"kind": "relation"}')
+  FROM unnest(ARRAY['owner_manager']) AS r;
+SELECT * FROM authz.infer_relation_kinds('aia_acme', true);

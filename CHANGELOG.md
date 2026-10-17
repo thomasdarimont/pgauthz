@@ -9,6 +9,181 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Management console (proof of concept, `console/`).** A Lit + Go BFF web
+  UI for the people who run pgauthz: per store, the live model in three
+  read views (OpenFGA-style DSL, canonical JSON, the SQL calls that rebuild
+  it) and a structured editor over the `model_*` API; check/explain for any
+  subject; tuples with grant/revoke; registry publish, plan and apply with
+  drift and fleet views; the audit trail and action logs; and who may do
+  what with the store. Access to the console is decided by pgauthz itself:
+  a `console` store (`examples/models/console`, with SQL tests) answers
+  "may alice edit the model of store:demo?" before every screen and action,
+  with the token's realm roles, groups and organizations injected as
+  contextual `team#member` tuples; explicit roles (owner, author, publisher,
+  sharer, tester, auditor, viewer) are tuples the Access tab writes, a
+  platform admin reaches every store, and a store never loses its last
+  owner. Actions run as the person (`authz.performed_by`) and are recorded
+  in the console store's action log. New `authz_console` role,
+  `compose-console.yml` / `./start.sh --console`, Keycloak client
+  `console-bff` + realm role `console_admin`. See `console/README.md`.
+  The Test tab asks four ways: a single check with the resolution tree, a
+  matrix (subjects × actions × resources in one `check_access_batch`), a
+  reverse search (`list_objects` / `list_subjects`), and "as me via
+  pgauthzd" (the person's own token with `X-PGAuthz-Detail`, showing
+  whether OPA and which hooks took part). Removal of model parts, tuples
+  and role assignments goes through selection and an inline confirmation,
+  one transaction for all selected items. The UI is internationalized
+  (English, German) with help icons on columns and sections.
+- **Decision log names the policy hooks.** An OPA-fronted decision line now
+  carries `hooks` (the hook packages consulted) and `hook_denials` (tier,
+  store, hook, code, message of each veto), copied from OPA's detail — so
+  the log says not only that OPA took part (`via`, `policy`) but which
+  custom policies did, and which one denied. The `X-PGAuthz-Detail`
+  response context now carries `via` (`engine` | `opa`) as well, so a
+  caller sees who decided without reading the log.
+- **Relation kinds: what a subject IS versus what it CAN DO.** Every
+  relation carries a `metadata` document (migration 0019); its `kind` is
+  `relation` (assignable by a tuple — viewer, owner, member; the default) or
+  `permission` (what it can do — can_read, can_share, or a directly granted
+  capability such as `run: [agent]`). The kind is a declaration; whether a
+  relation takes tuples is decided by its rules: a permission without a
+  direct rule on the object type refuses tuples (it is derived), one with a
+  direct rule takes them. `infer_relation_kinds` calls a derived-only
+  relation a permission, otherwise keeps what is declared, and never
+  overrides a declaration; the example models declare their permissions.
+  `model_register_relation` takes
+  `p_metadata`, `model_set_relation_metadata` merges keys (`ui_order` is a
+  number tools sort by, display only; label, docs_url are yours), `infer_relation_kinds` derives kinds from the rules (used by
+  the example models and the OpenFGA importer). `describe_model` marks
+  permissions, `export_model` carries the metadata, the registry applies it
+  and the plan reports metadata changes as relation updates. The console's
+  Test tab groups actions by kind and explains a "no" on a relation.
+- **Explain reports time-bound grants.** Every granting tuple step in
+  `explain_access` carries `expires_at` (the matched tuple's expiry, null
+  for never), so a caller can tell an allow that ends from one that does
+  not; the console shows it as a ⏱ badge on the decision and on the tree.
+- **`tuple_stats(store)`.** Live totals, expiry (with expiry, expiring
+  within 24 h, expired-but-not-yet-cleaned via a count-only bypass helper),
+  wildcards, conditional tuples, usersets, distinct subjects and objects,
+  rows per object type — the console's Data tab shows them.
+- **Console personas.** Keycloak demo users named for their role —
+  `platform-admin`, `auditor`, `iam-dev`, `app-dev`, `app-secarch`,
+  `support` — each with one `console_*` realm role the console seed grants
+  per team; alice/bob/carol/eva stay the application users. New store role
+  `supporter` (tests anyone's access with full trees, never edits).
+- **Rollout tab tightened**: the registry model picker, the version list
+  of an unmanaged store and the Plan dry run need `can_rollout`; viewers,
+  testers, supporters and auditors see only the versions of the store's
+  own model, without Plan.
+- **Code views with line numbers** (console): DSL, SQL, JSON and Rego views
+  number their lines with a CSS counter (copies stay clean); the DSL editor
+  has a scroll-synced gutter.
+- **Policies tab** (console): when OPA fronts the deployment, the Rego that
+  applies to a store — its hooks, the global hooks, shared libraries and
+  platform policy with sources — plus OPA's version and bundle revisions,
+  read from the sidecar (`CONSOLE_OPA_URL`, `CONSOLE_OPA_TOKEN`). Read-only.
+  Design note for executing hooks in process (Wasm via wazero) in
+  `scratch/notes/in-process-policy-hooks.md`.
+- **Version diff on Rollout.** Planning a registry version also shows what
+  that version changes compared to the version the store runs (or the live
+  model when unmanaged): `pgauthzadm.DiffModels` compares two definitions
+  section by section (types, relations, rules, type restrictions,
+  conditions, gates, grant rules).
+- **Test page placeholders come from the store** (its types, a subject and
+  an object that exist, its relations); the completion lists sample up to
+  100 subjects and objects per type instead of the first 500 overall.
+- **Test runs no longer reset the console store**: the console fixture
+  takes its store name from the psql variable `cs` and `tests/test.sh` loads
+  it as `console_test`; `./start.sh --console` creates the live `console`
+  store once when missing.
+- **Console performance on large stores.** The stores home computes a
+  person's capabilities with one engine call
+  (`check_access_batch_with_contextual_tuples_jsonb`: many checks, the
+  contextual tuples loaded once; capped by the GUC `authz.max_batch_checks`,
+  default 5000) and asks only for the capabilities it shows;
+  `tuple_stats` counts distinct subjects and objects with hash aggregates
+  (60k tuples: 263 → 60 ms). The Data tab pages server-side (offset,
+  total, sort order applied to the whole store, not the visible rows).
+- **`KEEP=1 ./bench/run.sh <suite>`** leaves the suite's store and data in
+  place after the run, as a large dataset for the console or psql.
+- **Condition expressions are stored trimmed** (`create_condition`; migration
+  0022 trims existing rows).
+- **Try a condition** from its Details row: a request context and a
+  mocked stored context, evaluated by the new `authz.evaluate_condition`
+  without a tuple (needs `can_run_tests`, recorded like any test). The
+  placeholder `__now__` (with offsets such as `__now__-30m`, `__now__+1d`)
+  becomes the current instant before the JSON is parsed; both contexts are
+  validated live. Server-time conditions take `current_time` from the
+  engine's clock exactly as a check does.
+- **Model tab filters**: every section (types, relations, rules, type
+  restrictions, conditions, gates) has a filter box that also matches the
+  rendered forms (`team#member`, `user:*`, `viewer from parent`); rules and
+  type restrictions show their engine id and `#id` in a filter addresses
+  exactly that one; the definition card starts collapsed.
+- **`model_set_type_namespace`**: move a type into or out of a namespace
+  (create, rename and dissolve namespaces by moving types); the console's
+  Model tab edits a type's namespace and renames a namespace, moving its
+  role assignments along.
+- **`authz_namespace_bypass`** role: skips the per-application namespace
+  gate (`_check_namespace_access`); granted to `authz_console`, whose console
+  store decides namespace access per person instead.
+- **Namespace roles in the console.** `namespace:<store>/<name>` objects
+  with `author` / `viewer`; the BFF checks each model or data change against
+  the namespace of the type it touches (store roles allow everything,
+  store-wide changes need them). Types get a namespace on creation; the
+  Access tab grants namespace roles. Table columns are resizable (drag a
+  header's right edge, double-click to reset); the conditions list shows
+  the expression and required context in its Details row only.
+- **Console test policy.** `can_run_tests` opens the Test tab; four further
+  console-store permissions say what a tester may ask beyond their own
+  access — `can_test_others` (other subjects), `can_test_explain_full`
+  (unredacted trees; otherwise `p_redact` is forced), `can_test_search`
+  (enumeration), `can_test_history` (point-in-time checks). A plain
+  `tester` has none of them; authors, publishers and owners have all,
+  auditors history. The BFF enforces the policy server-side and records
+  every test (the question, never the answer) in the console's action log.
+- **`stores.created_at`** (migration 0020, backfilled from the earliest
+  audit entry); the console lists stores as a table with created and
+  last-change times and lets owners delete a store (Admin tab, typed confirmation,
+  audit history kept unless purged); platform admins can delete unclaimed
+  stores.
+- **Condition descriptions and times** (migration 0021): `create_condition`
+  takes `p_description` (NULL keeps, `''` clears; a description-only change
+  is an audit version), `conditions.created_at` / `updated_at`, export and
+  the registry carry the description. The console lists them, edits
+  conditions and temporal gates in place (add / replace / remove, mode
+  enforce|shadow|off, clause templates), and shows each one's SQL
+  definition and JSON.
+- **Console translations are JSON** (`frontend/src/i18n/<lang>.json`) and
+  an operator can override entries or add a language with `<lang>.json`
+  files in `CONSOLE_I18N_DIR` (served at `api/i18n/<lang>`; `@language`
+  names a new one).
+- **Store documentation link.** `authz.stores.docs_url` (migration 0018) and
+  `authz.update_store(store, description, docs_url)` (admin tier): where the
+  owners keep the longer description of a model; the console shows it on
+  the store card and header, owners edit it there.
+- **Console: define a model as DSL.** The Model tab's "Edit as DSL" takes
+  the OpenFGA-style DSL the DSL view shows (an empty store starts from a
+  small template) and applies it through the OpenFGA importer: types and
+  relations added, rules and type restrictions replaced, relation kinds
+  inferred. The parser moved from pgauthzctl into `pgauthzadm.ParseDSL`,
+  which also accepts `describe_model` output (store line, `# permission`
+  markers). "+ relation" defines a relation on its object types with its
+  type restrictions (or a permission with what it derives from) in one
+  step; editor forms carry titles and open with a cleared selection.
+- **`pgauthzadm` — the embeddable admin library.** The registry and export
+  code of `pgauthzctl` (status, versions, plan, publish, apply, rollout,
+  export, DSL) moved into a Go module the console uses in-process;
+  `pgauthzctl` is now a thin shell over it. New `pgauthzctl model export
+  --sql` renders a model as the engine calls that rebuild it (complete,
+  unlike `--dsl`).
+
+### Changed
+
+- `publish_model` and `apply_model` attribute `created_by` / `applied_by`
+  to the `authz.performed_by` session setting when it is set (the same
+  convention as the tuple audit trail), else to the connection's role.
+
 - **Per-client, per-store subject assertion (ADR 0014).** `ALLOW_SUBJECT_OVERRIDE`
   was process-wide: every token could assert any subject, or none could.
   Each `JWT_ISSUERS` entry now takes `pep_clients` — client id (the token's

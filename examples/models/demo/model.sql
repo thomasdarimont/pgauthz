@@ -451,3 +451,14 @@ BEGIN
 
 END;
 $$;
+
+-- Relation kinds (migration 0019), declared: what a subject CAN DO (permissions)
+-- versus what it IS (relations). The kind is a declaration; whether a relation
+-- takes tuples follows from its rules. Inference below only fills in what is
+-- left undeclared.
+SELECT authz.model_set_relation_metadata('demo', r, '{"kind": "permission"}')
+  FROM unnest(ARRAY['can_approve', 'can_delete', 'can_edit', 'can_manage', 'can_manage_access', 'can_manage_client_collaboration', 'can_manage_sharing', 'can_read', 'can_share', 'can_share_with_client', 'can_submit', 'can_upload', 'can_view']) AS r;
+-- derived, yet a role or link rather than a capability
+SELECT authz.model_set_relation_metadata('demo', r, '{"kind": "relation"}')
+  FROM unnest(ARRAY['client_member', 'internal_collaborator']) AS r;
+SELECT * FROM authz.infer_relation_kinds('demo', true);

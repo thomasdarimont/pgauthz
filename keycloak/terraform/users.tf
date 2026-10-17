@@ -33,6 +33,7 @@ resource "keycloak_user_roles" "alice" {
     keycloak_role.authzen_auditor_realm.id,
     keycloak_role.authz_recorder_realm.id,
     keycloak_role.playground_admin_realm.id,
+    keycloak_role.console_admin_realm.id, # management console platform admin
   ]
 }
 

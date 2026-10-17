@@ -71,3 +71,10 @@ variable "acme_other_agent_client_secret" {
   default     = "acme-other-agent-demo-secret"
   sensitive   = true
 }
+
+variable "console_bff_client_secret" {
+  description = "Client secret for the console BFF client (must match the BFF's CLIENT_SECRET env). Override for anything real."
+  type        = string
+  default     = "console-bff-demo-secret"
+  sensitive   = true
+}

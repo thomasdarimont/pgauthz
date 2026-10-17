@@ -403,6 +403,10 @@ BEGIN
 
     SELECT count(*) INTO v_rules_after FROM authz.models WHERE store_id = v_store_id;
 
+    -- Relation kinds (migration 0019): OpenFGA has no notion of them, so
+    -- infer from the imported rules (no direct rule anywhere = permission).
+    PERFORM authz.infer_relation_kinds(p_store, true);
+
     RETURN jsonb_build_object(
         'store',          p_store,
         'types',          to_jsonb(v_types),

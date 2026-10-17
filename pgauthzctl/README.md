@@ -17,6 +17,11 @@ tests.authz.yaml ──pgauthzctl test──▶ ephemeral store → check/list/e
 registry ──pgauthzctl plan / apply──▶ canary store → tenant fleet
 ```
 
+The registry verbs (`export`, `status`, `versions`, `plan`, `diff`, `apply`,
+`rollout`) are thin shells over [`pgauthzadm`](../pgauthzadm), the embeddable
+library the [management console](../console/README.md) uses in-process — one
+implementation for the CLI and the UI.
+
 `pgauthzctl version` prints the version plus the VCS revision it was built
 from. Like the authzen binaries, the version is stamped at build time
 (`go build -ldflags "-X main.version=0.7.0"`); a plain `go build` reports
@@ -52,6 +57,7 @@ pgauthzctl model status --store tenant_a
 pgauthzctl model diff saas_core@3 --store tenant_a
 pgauthzctl model export --store tenant_a          # canonical JSON (round-trippable)
 pgauthzctl model export --store tenant_a --dsl    # human-readable (display only)
+pgauthzctl model export --store tenant_a --sql    # the engine calls that rebuild it (runnable in psql)
 pgauthzctl model versions saas_core
 ```
 

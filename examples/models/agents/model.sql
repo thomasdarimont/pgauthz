@@ -215,3 +215,14 @@ SELECT authz.add_gate('agents', 'partner_agent', 'delegate_pay', 'broken_promise
   "description": "stop delegating to a partner that broke more than 2 promises in 30 days",
   "all_of": [{"count_within": {"window": "30d", "scope": "object", "action": "pay", "kind": "response",
                                "match": {"output": {"promise_kept": false}}, "max": 2}}]}');
+
+-- Relation kinds (migration 0019), declared: what a subject CAN DO (permissions)
+-- versus what it IS (relations). The kind is a declaration; whether a relation
+-- takes tuples follows from its rules. Inference below only fills in what is
+-- left undeclared.
+SELECT authz.model_set_relation_metadata('agents', r, '{"kind": "permission"}')
+  FROM unnest(ARRAY['documents_read', 'documents_search', 'documents_summarize', 'create', 'delegate_pay', 'delete', 'pay', 'run', 'send_email', 'update']) AS r;
+-- derived, yet a role or link rather than a capability
+SELECT authz.model_set_relation_metadata('agents', r, '{"kind": "relation"}')
+  FROM unnest(ARRAY['agent_scope']) AS r;
+SELECT * FROM authz.infer_relation_kinds('agents', true);

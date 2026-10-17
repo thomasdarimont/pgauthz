@@ -5,6 +5,8 @@
 #   ./bench/run.sh                 # run all suites in bench/suites/
 #   ./bench/run.sh drive           # run one suite
 #   ./bench/run.sh drive github    # run several
+#   KEEP=1 ./bench/run.sh drive    # keep the suite's store + data afterwards
+#                                  # (a large dataset to poke at: console, psql)
 #
 # Each suite (bench/suites/<name>.sql) builds its own model + data and times
 # scenarios via the shared harness (bench/lib/harness.sql). Requires init.sh to
@@ -36,7 +38,8 @@ for name in "${suites[@]}"; do
     echo "==> Benchmark suite: $name"
     echo ""
     # Harness + suite in one psql session so the suite can call pg_temp helpers.
-    cat "$BENCH_DIR/lib/harness.sql" "$file" \
+    # KEEP=1: the suite's final tidy-up checks bench.keep and leaves the store.
+    { [ "${KEEP:-0}" = "1" ] && echo "SET bench.keep = 'true';"; cat "$BENCH_DIR/lib/harness.sql" "$file"; } \
       | docker exec -i -e PGPASSWORD=authz "$DB_CONTAINER" \
           psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d "$PG_DB" 2>&1 \
       | sed -n 's/^INFO:  //p'

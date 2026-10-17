@@ -14,6 +14,9 @@
 #   --playground  Also start the playground (Lit SPA + Go BFF) at
 #                 https://app.pgauthz.test. Implies --keycloak; run terraform
 #                 apply afterwards to provision the playground-bff client.
+#   --console   Also start the management console (Lit SPA + Go BFF) at
+#               https://app.pgauthz.test/console/. Implies --keycloak; run
+#               terraform apply afterwards to provision the console-bff client.
 #   --metrics   Also start Prometheus + Grafana scraping the pgauthzd /metrics
 #               (compose-metrics.yml). UIs: :9095 (Prometheus) / :9096 (Grafana).
 #
@@ -24,6 +27,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OPA=0
 KEYCLOAK=0
 PLAYGROUND=0
+CONSOLE=0
 METRICS=0
 for arg in "$@"; do
   case "$arg" in
@@ -31,13 +35,14 @@ for arg in "$@"; do
     --opa)        OPA=1 ;;
     --keycloak)   KEYCLOAK=1 ;;
     --playground) PLAYGROUND=1 ;;
+    --console)    CONSOLE=1 ;;
     --metrics)    METRICS=1 ;;
-    -h|--help)    sed -n '2,19p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "Unknown option: $arg" >&2; exit 2 ;;
   esac
 done
 # The playground depends on keycloak; keycloak routes through the OPA overlay.
-if [ "$PLAYGROUND" = 1 ]; then KEYCLOAK=1; fi
+if [ "$PLAYGROUND" = 1 ] || [ "$CONSOLE" = 1 ]; then KEYCLOAK=1; fi
 if [ "$KEYCLOAK" = 1 ]; then OPA=1; fi
 
 # Persist the overlay selection so env.sh (sourced by init.sh, test.sh,
@@ -53,6 +58,7 @@ if [ "$KEYCLOAK" = 1 ]; then OPA=1; fi
   echo "export PGAUTHZ_OPA=\"\${PGAUTHZ_OPA:-$OPA}\""
   echo "export PGAUTHZ_KEYCLOAK=\"\${PGAUTHZ_KEYCLOAK:-$KEYCLOAK}\""
   echo "export PGAUTHZ_PLAYGROUND=\"\${PGAUTHZ_PLAYGROUND:-$PLAYGROUND}\""
+  echo "export PGAUTHZ_CONSOLE=\"\${PGAUTHZ_CONSOLE:-$CONSOLE}\""
   echo "export PGAUTHZ_METRICS=\"\${PGAUTHZ_METRICS:-$METRICS}\""
 } > "$SCRIPT_DIR/.pgauthz-overlays"
 
@@ -95,17 +101,44 @@ if [ "$PLAYGROUND" = 1 ]; then
   echo "==> Playground enabled (compose-playground.yml)"
 fi
 
+# Optional console overlay (management console: Lit SPA + Go BFF; needs keycloak).
+if [ "$CONSOLE" = 1 ]; then
+  COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-console.yml")
+  echo "==> Console enabled (compose-console.yml)"
+fi
+
 # Optional metrics overlay (Prometheus + Grafana scraping pgauthzd /metrics).
 if [ "$METRICS" = 1 ]; then
   COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-metrics.yml")
   echo "==> Metrics enabled (compose-metrics.yml: Prometheus + Grafana)"
 fi
 
+# Git revision for the console footer (compose-console.yml build arg).
+export REVISION="${REVISION:-$(git -C "$SCRIPT_DIR" rev-parse --short=12 HEAD 2>/dev/null || true)}"
+
 echo "==> Starting pgauthz stack..."
 docker compose "${COMPOSE_FILES[@]}" up -d --build --wait
 
 echo "==> Stack is running."
 docker compose "${COMPOSE_FILES[@]}" ps
+
+if [ "$CONSOLE" = 1 ]; then
+  # The console's own store: created once from the example model + seed when
+  # the engine is installed and the store is missing (never reset afterwards;
+  # test.sh uses its own copy, console_test).
+  db_psql() { docker compose "${COMPOSE_FILES[@]}" exec -T -e PGPASSWORD="${PG_PASSWORD:-authz}" "${DB_SERVICE:-authz-db}" psql -v ON_ERROR_STOP=1 -U "${PG_USER:-authz}" -d "${PG_DB:-authz}" "$@"; }
+  if db_psql -Atc "SELECT 1 FROM authz.stores LIMIT 1" >/dev/null 2>&1; then
+    if [ "$(db_psql -Atc "SELECT count(*) FROM authz.stores WHERE name = 'console'")" = "0" ]; then
+      echo "==> Creating the console store (examples/models/console: model + seed)"
+      db_psql -q < "$SCRIPT_DIR/examples/models/console/model.sql" >/dev/null
+      db_psql -q < "$SCRIPT_DIR/examples/models/console/seed.sql" >/dev/null
+    fi
+  else
+    echo "==> Console store not created yet: run ./init.sh, then ./start.sh --console again"
+  fi
+  echo ""
+  echo "==> Console: https://app.pgauthz.test/console/  (console-bff client: terraform apply)"
+fi
 
 if [ "$KEYCLOAK" = 1 ]; then
   echo ""

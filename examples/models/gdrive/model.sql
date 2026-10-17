@@ -245,3 +245,8 @@ SELECT authz.add_gate('gdrive', 'doc', 'download', 'per_file_limit', '{
 -- sharing: only the owner may take a viewer away (p_requires_revoke).
 SELECT authz.model_add_grant_rule('gdrive', 'folder', 'viewer', 'can_share');
 SELECT authz.model_add_grant_rule('gdrive', 'doc',    'viewer', 'can_share', p_requires_revoke => 'owner');
+
+-- Relation kinds (migration 0019): what a subject IS (assignable) versus what
+-- it CAN DO (derived). Inferred from the rules: a relation without any
+-- direct rule is a permission.
+SELECT * FROM authz.infer_relation_kinds('gdrive', true);

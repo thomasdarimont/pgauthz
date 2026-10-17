@@ -42,6 +42,12 @@ type Entry struct {
 	Conditions     []string `json:"conditions,omitempty"`
 	// Gates: per-clause outcomes when the endpoint reports them (reserve).
 	Gates []Gate `json:"gates,omitempty"`
+	// Hooks: the policy-hook packages OPA consulted for an OPA-fronted
+	// decision (ADR 0011; the detail's hooks_loaded), and HookDenials the
+	// hooks that vetoed — so a line says not only THAT OPA took part (Via,
+	// Policy) but which custom policies did, and which one denied.
+	Hooks       []string     `json:"hooks,omitempty"`
+	HookDenials []HookDenial `json:"hook_denials,omitempty"`
 	// ContextKeys: names of the request-context keys supplied, sorted. Never values.
 	ContextKeys []string `json:"context_keys,omitempty"`
 	Actor       string   `json:"actor,omitempty"` // authenticated caller, "type:id"
@@ -300,6 +306,42 @@ func (e *Entry) FromDetail(detail map[string]any) {
 	}
 	e.MissingContext = stringsOf(detail["missing_context"])
 	e.Conditions = stringsOf(detail["conditions"])
+	e.Hooks = stringsOf(detail["hooks_loaded"])
+	e.HookDenials = hookDenialsOf(detail["hook_denials"])
+}
+
+// HookDenial is one policy-hook veto as OPA reports it: the hook's tier
+// (global | store | platform), its package name, a code and a bounded message.
+type HookDenial struct {
+	Tier    string `json:"tier,omitempty"`
+	Store   string `json:"store,omitempty"`
+	Hook    string `json:"hook,omitempty"`
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// hookDenialsOf normalizes the detail's hook_denials list; anything that is
+// not a list of objects yields nil.
+func hookDenialsOf(v any) []HookDenial {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]HookDenial, 0, len(arr))
+	for _, it := range arr {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		d := HookDenial{}
+		d.Tier, _ = m["tier"].(string)
+		d.Store, _ = m["store"].(string)
+		d.Hook, _ = m["hook"].(string)
+		d.Code, _ = m["code"].(string)
+		d.Message, _ = m["message"].(string)
+		out = append(out, d)
+	}
+	return out
 }
 
 // GatesOf normalizes a reserve/explain `gates` array ([{gate, clause,

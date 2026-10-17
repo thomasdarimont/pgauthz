@@ -204,6 +204,88 @@ $$;
 --       {"user_type":"internal_user","user_id":"bob","relation":"can_edit","object_type":"document","object_id":"doc1"}
 --   ]}
 ------------------------------------------------------------------------
+------------------------------------------------------------------------
+-- check_access_batch_with_contextual_tuples_jsonb: many checks, one set of
+-- contextual tuples, one call. The contextual tuples are validated and
+-- loaded into the per-transaction temp table ONCE; every check then runs
+-- through _decide against the same snapshot. The management console asks
+-- "which of these capabilities does this person hold on each of these
+-- stores" this way — hundreds of checks that would otherwise each pay for
+-- their own setup.
+--
+--   p_checks: [{"user_type","user_id","relation","object_type","object_id"}, …]
+--   p_contextual_tuples: as for check_access_with_contextual_tuples_jsonb
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.check_access_batch_with_contextual_tuples_jsonb(
+    p_store             text,
+    p_checks            jsonb,
+    p_context           jsonb DEFAULT NULL,
+    p_contextual_tuples jsonb DEFAULT NULL
+) RETURNS SETOF authz.access_check_result
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store);
+    v_has_ctx  boolean := false;
+    v_c        record;
+    v_row      authz.access_check_result;
+    v_n        integer := COALESCE(jsonb_array_length(p_checks), 0);
+BEGIN
+    IF v_n = 0 THEN
+        RETURN;
+    END IF;
+    -- Cap per call (a runaway caller must not pin a backend): the GUC
+    -- authz.max_batch_checks, default 5000; set it per session or per role.
+    IF v_n > COALESCE(NULLIF(current_setting('authz.max_batch_checks', true), '')::int, 5000) THEN
+        RAISE EXCEPTION 'at most % checks per batch (got %); raise authz.max_batch_checks to allow more',
+            COALESCE(NULLIF(current_setting('authz.max_batch_checks', true), '')::int, 5000), v_n
+            USING ERRCODE = 'check_violation';
+    END IF;
+    PERFORM authz._validate_tuple_jsonb(p_checks);
+
+    IF p_contextual_tuples IS NOT NULL AND jsonb_array_length(p_contextual_tuples) > 0 THEN
+        PERFORM authz._validate_tuple_jsonb(p_contextual_tuples);
+        PERFORM authz._check_namespace_access(v_store_id, authz._t(v_store_id, x.object_type), 'can_read')
+           FROM (SELECT DISTINCT t->>'object_type' AS object_type FROM jsonb_array_elements(p_contextual_tuples) t) x;
+        CREATE TEMP TABLE IF NOT EXISTS ctx_tuples (
+            user_type     integer,
+            user_id       text,
+            user_relation integer,
+            relation      integer,
+            object_type   integer,
+            object_id     text
+        ) ON COMMIT DROP;
+        TRUNCATE pg_temp.ctx_tuples;
+        INSERT INTO pg_temp.ctx_tuples (user_type, user_id, user_relation, relation, object_type, object_id)
+        SELECT authz._t(v_store_id, t->>'user_type'),
+               t->>'user_id',
+               CASE WHEN t->>'user_relation' IS NULL THEN NULL ELSE authz._r(v_store_id, t->>'user_relation') END,
+               authz._r(v_store_id, t->>'relation'),
+               authz._t(v_store_id, t->>'object_type'),
+               t->>'object_id'
+          FROM jsonb_array_elements(p_contextual_tuples) t;
+        v_has_ctx := true;
+    END IF;
+
+    FOR v_c IN
+        SELECT c->>'user_type' AS user_type, c->>'user_id' AS user_id, c->>'relation' AS relation,
+               c->>'object_type' AS object_type, c->>'object_id' AS object_id
+          FROM jsonb_array_elements(p_checks) c
+    LOOP
+        PERFORM authz._check_namespace_access(v_store_id, authz._t(v_store_id, v_c.object_type), 'can_read');
+        v_row.user_type   := v_c.user_type;
+        v_row.user_id     := v_c.user_id;
+        v_row.relation    := v_c.relation;
+        v_row.object_type := v_c.object_type;
+        v_row.object_id   := v_c.object_id;
+        v_row.decision    := authz._decide(
+            v_store_id, authz._t(v_store_id, v_c.user_type), v_c.user_id,
+            authz._r(v_store_id, v_c.relation), authz._t(v_store_id, v_c.object_type), v_c.object_id,
+            p_context, v_has_ctx);
+        RETURN NEXT v_row;
+    END LOOP;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION authz.check_access_batch_typed_jsonb(
     p_store    text,
     p_checks   jsonb,
@@ -465,6 +547,40 @@ BEGIN
     END;
 
     RETURN true;
+END;
+$$;
+
+------------------------------------------------------------------------
+-- evaluate_condition: the condition's actual verdict for a request context
+-- and a (mocked) stored context, with no tuple involved — what a tuple
+-- carrying this condition would decide. Same checks as validate_condition
+-- (unknown condition, missing required keys, evaluation errors raise), but
+-- returns the expression's result instead of "it is well-formed".
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.evaluate_condition(
+    p_store             text,
+    p_condition_name    text,
+    p_request_context   jsonb DEFAULT '{}'::jsonb,
+    p_condition_context jsonb DEFAULT '{}'::jsonb
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_cond record;
+    v_req  jsonb := COALESCE(p_request_context, '{}'::jsonb);
+BEGIN
+    SELECT expression, lang, time_source INTO v_cond
+      FROM authz.conditions
+     WHERE store_id = authz._s(p_store) AND name = p_condition_name;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Unknown condition: %', p_condition_name;
+    END IF;
+    -- As in a real check: a server-time condition takes `current_time` from
+    -- the engine's clock, whatever the caller sent (and need not send it).
+    IF v_cond.time_source = 'server' THEN
+        v_req := authz._with_server_time(v_req);
+    END IF;
+    PERFORM authz.validate_condition(p_store, p_condition_name, p_condition_context, v_req);
+    RETURN COALESCE(authz._eval_condition_expr(v_cond.lang, v_cond.expression, v_req, p_condition_context), false);
 END;
 $$;
 

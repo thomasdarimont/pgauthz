@@ -30,21 +30,3 @@ func parseRef(s string) (ref, error) {
 }
 
 // parseModelRef splits "name@version" (version optional → 0 = latest).
-func parseModelRef(s string) (name string, version int, err error) {
-	if i := strings.Index(s, "@"); i >= 0 {
-		name = s[:i]
-		if _, e := fmt.Sscanf(s[i+1:], "%d", &version); e != nil {
-			return "", 0, fmt.Errorf("bad model reference %q (want name or name@version)", s)
-		}
-		return name, version, nil
-	}
-	return s, 0, nil
-}
-
-// versionArg maps 0 → nil so SQL defaults resolve "latest".
-func versionArg(v int) any {
-	if v == 0 {
-		return nil
-	}
-	return v
-}

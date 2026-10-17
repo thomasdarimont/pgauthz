@@ -191,6 +191,40 @@ END
 $$;
 GRANT USAGE ON SCHEMA authz TO authz_playground_reset;
 
+-- Management console role (console/): the LOGIN role behind the console BFF's
+-- ENGINE_DSN. The console authorizes every screen and action against its own
+-- store first (examples/models/console — "may alice edit the model of
+-- store:demo?", with the person's directory memberships as contextual tuples)
+-- and only then performs it in the managed store, attributing the write to the
+-- person via the authz.performed_by GUC. The role therefore needs the admin
+-- tier (model_* functions, registry publish/apply, store creation, tuple
+-- writes), contextual-tuple checks for its own gate, and SELECT on the
+-- metadata tables for browsing — the console store is the actual gate. Keep
+-- it off any instance that is not running the console.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authz_console') THEN
+        -- Dev password — override in production deployments.
+        CREATE ROLE authz_console LOGIN PASSWORD 'authz';
+    END IF;
+END
+$$;
+GRANT authz_admin             TO authz_console;
+GRANT authz_contextual_reader TO authz_console;
+-- The console decides namespace access per person (its console store), so it
+-- is not bound to the per-application namespace grants (namespace_access).
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authz_namespace_bypass') THEN
+        CREATE ROLE authz_namespace_bypass NOLOGIN;
+    END IF;
+END
+$$;
+GRANT authz_namespace_bypass  TO authz_console;
+GRANT SELECT ON authz.stores, authz.types, authz.relations, authz.conditions, authz.tuples,
+                authz.models_view, authz.type_restrictions_view, authz.model_registry,
+                authz.tuples_audit, authz.models_audit, authz.conditions_audit TO authz_console;  -- store-wide audit listing (Activity tab), last-change times
+
 -- Watch/changefeed consumer role: a dedicated read-only LOGIN role for the
 -- watch-API example (examples/watch). Granted authz_auditor (which INHERITs
 -- authz_reader) so the consumer can SET ROLE authz_auditor and read the
@@ -240,6 +274,7 @@ ALTER ROLE authzen_direct      SET statement_timeout = '60s';
 ALTER ROLE pgauthzd_rw         SET statement_timeout = '60s';
 ALTER ROLE authz_metadata      SET statement_timeout = '60s';
 ALTER ROLE authz_watcher       SET statement_timeout = '60s';
+ALTER ROLE authz_console       SET statement_timeout = '60s';
 ALTER ROLE authz_recorder_svc  SET statement_timeout = '60s';
 
 -- 2. Capability — pg_sleep is a PUBLIC builtin and the one obvious
@@ -312,6 +347,7 @@ REVOKE EXECUTE ON FUNCTION authz.check_access_with_contextual_tuples(text, text,
 REVOKE EXECUTE ON FUNCTION authz.check_access_with_contextual_tuples_jsonb(text, text, text, text, text, text, jsonb, jsonb) FROM authz_reader;
 GRANT EXECUTE ON FUNCTION authz.check_access_with_contextual_tuples(text, text, text, text, text, text, jsonb, authz.tuple_input[]) TO authz_contextual_reader;
 GRANT EXECUTE ON FUNCTION authz.check_access_with_contextual_tuples_jsonb(text, text, text, text, text, text, jsonb, jsonb) TO authz_contextual_reader;
+GRANT EXECUTE ON FUNCTION authz.check_access_batch_with_contextual_tuples_jsonb(text, jsonb, jsonb, jsonb) TO authz_contextual_reader;
 GRANT EXECUTE ON FUNCTION authz.check_access_batch(text, jsonb, jsonb, text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.check_access_batch_typed(text, authz.access_check[], jsonb, text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.check_access_batch_typed_jsonb(text, jsonb, jsonb, text) TO authz_reader;
@@ -319,6 +355,7 @@ GRANT EXECUTE ON FUNCTION authz.list_objects(text, text, text, text, text, jsonb
 GRANT EXECUTE ON FUNCTION authz.list_subjects(text, text, text, text, text, jsonb, int, int, text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.list_actions(text, text, text, text, text, jsonb) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.validate_condition(text, text, jsonb, jsonb) TO authz_reader;
+GRANT EXECUTE ON FUNCTION authz.evaluate_condition(text, text, jsonb, jsonb) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.explain_access(text, text, text, text, text, text, jsonb, boolean, boolean) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.check_access_detailed(text, text, text, text, text, text, jsonb) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.describe_model(text) TO authz_reader;
@@ -331,6 +368,7 @@ GRANT EXECUTE ON FUNCTION authz.plan_model_apply(text, text, integer) TO authz_r
 GRANT EXECUTE ON FUNCTION authz.assert_fresh(int, pg_lsn) TO authz_reader;
 -- Engine/tenant stats (ADR 0010): pgauthzd samples this for per-store gauges.
 GRANT EXECUTE ON FUNCTION authz.store_stats(int) TO authz_reader;
+GRANT EXECUTE ON FUNCTION authz.tuple_stats(text) TO authz_reader;
 -- Temporal gate retention requirement (ADR 0012): readiness runbooks compare it with the retention schedule.
 GRANT EXECUTE ON FUNCTION authz.gate_windows(text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.max_gate_window(text) TO authz_reader;
@@ -371,6 +409,7 @@ GRANT EXECUTE ON FUNCTION authz.drop_event_partitions_before(date, boolean) TO a
 GRANT EXECUTE ON FUNCTION authz.purge_events(text, timestamptz, boolean) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.purge_events(text, timestamptz, boolean) TO authz_playground_reset;   -- demo reset (see above)
 GRANT EXECUTE ON FUNCTION authz.create_store(text, text) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.update_store(text, text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.retire_store(text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.delete_store(text, boolean) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_register_type(text, text, int, text, text, text[]) TO authz_admin;
@@ -380,7 +419,10 @@ GRANT EXECUTE ON FUNCTION authz.model_drop_grant_rule(text, text, text) TO authz
 GRANT EXECUTE ON FUNCTION authz.model_set_type_labels(text, text, text[]) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_add_type_labels(text, text, text[]) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_remove_type_labels(text, text, text[]) TO authz_admin;
-GRANT EXECUTE ON FUNCTION authz.model_register_relation(text, text, text) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.model_register_relation(text, text, text, jsonb) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.model_set_relation_metadata(text, text, jsonb) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.model_set_type_namespace(text, text, text) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.infer_relation_kinds(text, boolean) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_set_payload_schema(text, text, jsonb) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_add_rule(text, text, text, text, text, text, text, integer, text, boolean, boolean) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_remove_rule(text, integer) TO authz_admin;
@@ -390,7 +432,7 @@ GRANT EXECUTE ON FUNCTION authz.model_remove_type_restriction(text, integer) TO 
 GRANT EXECUTE ON FUNCTION authz.model_remove_type_restrictions(text, text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.import_openfga_model(text, jsonb) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.import_openfga_tuples(text, jsonb) TO authz_admin;
-GRANT EXECUTE ON FUNCTION authz.create_condition(text, text, text, text, jsonb, text) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.create_condition(text, text, text, text, jsonb, text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.create_condition_sql(text, text, text, jsonb, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.create_condition_cel(text, text, text, jsonb, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.delete_condition(text, text) TO authz_admin;
@@ -415,11 +457,13 @@ ALTER FUNCTION authz.check_access_batch(text, jsonb, jsonb, text) SECURITY DEFIN
 -- (they only validate + delegate to the variants above, but this makes the
 -- posture explicit and gets them search_path pinning below). See SECURITY-AUDIT F1.
 ALTER FUNCTION authz.check_access_with_contextual_tuples_jsonb(text, text, text, text, text, text, jsonb, jsonb) SECURITY DEFINER;
+ALTER FUNCTION authz.check_access_batch_with_contextual_tuples_jsonb(text, jsonb, jsonb, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.check_access_batch_typed_jsonb(text, jsonb, jsonb, text) SECURITY DEFINER;
 ALTER FUNCTION authz.list_objects(text, text, text, text, text, jsonb, int, int, text) SECURITY DEFINER;
 ALTER FUNCTION authz.list_subjects(text, text, text, text, text, jsonb, int, int, text) SECURITY DEFINER;
 ALTER FUNCTION authz.list_actions(text, text, text, text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.validate_condition(text, text, jsonb, jsonb) SECURITY DEFINER;
+ALTER FUNCTION authz.evaluate_condition(text, text, jsonb, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.audit_check_access(text, text, text, text, text, text, timestamptz, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.audit_list_actions(text, text, text, text, text, timestamptz, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.audit_list_user(text, text, text, timestamptz, timestamptz) SECURITY DEFINER;
@@ -433,6 +477,7 @@ ALTER FUNCTION authz.check_access_detailed(text, text, text, text, text, text, j
 ALTER FUNCTION authz.freshness_token() SECURITY DEFINER;
 ALTER FUNCTION authz.assert_fresh(int, pg_lsn) SECURITY DEFINER;
 ALTER FUNCTION authz.store_stats(int) SECURITY DEFINER;
+ALTER FUNCTION authz.tuple_stats(text) SECURITY DEFINER;
 ALTER FUNCTION authz.gate_windows(text) SECURITY DEFINER;
 ALTER FUNCTION authz.max_gate_window(text) SECURITY DEFINER;
 ALTER FUNCTION authz.events_readiness(text) SECURITY DEFINER;
@@ -462,6 +507,7 @@ ALTER FUNCTION authz.ensure_event_partitions(int) SECURITY DEFINER;
 ALTER FUNCTION authz.drop_event_partitions_before(date, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.purge_events(text, timestamptz, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.create_store(text, text) SECURITY DEFINER;
+ALTER FUNCTION authz.update_store(text, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.retire_store(text) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_store(text, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.model_register_type(text, text, int, text, text, text[]) SECURITY DEFINER;
@@ -479,7 +525,10 @@ ALTER FUNCTION authz.grant_options_batch(text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.model_set_type_labels(text, text, text[]) SECURITY DEFINER;
 ALTER FUNCTION authz.model_add_type_labels(text, text, text[]) SECURITY DEFINER;
 ALTER FUNCTION authz.model_remove_type_labels(text, text, text[]) SECURITY DEFINER;
-ALTER FUNCTION authz.model_register_relation(text, text, text) SECURITY DEFINER;
+ALTER FUNCTION authz.model_register_relation(text, text, text, jsonb) SECURITY DEFINER;
+ALTER FUNCTION authz.model_set_relation_metadata(text, text, jsonb) SECURITY DEFINER;
+ALTER FUNCTION authz.model_set_type_namespace(text, text, text) SECURITY DEFINER;
+ALTER FUNCTION authz.infer_relation_kinds(text, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.model_set_payload_schema(text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.model_add_rule(text, text, text, text, text, text, text, integer, text, boolean, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.model_remove_rule(text, integer) SECURITY DEFINER;
@@ -489,7 +538,7 @@ ALTER FUNCTION authz.model_remove_type_restriction(text, integer) SECURITY DEFIN
 ALTER FUNCTION authz.model_remove_type_restrictions(text, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.import_openfga_model(text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.import_openfga_tuples(text, jsonb) SECURITY DEFINER;
-ALTER FUNCTION authz.create_condition(text, text, text, text, jsonb, text) SECURITY DEFINER;
+ALTER FUNCTION authz.create_condition(text, text, text, text, jsonb, text, text) SECURITY DEFINER;
 -- The lang-specific wrappers delegate to create_condition; making them definer
 -- keeps the API uniform and prevents inlining from running them as the caller.
 -- See SECURITY-AUDIT F2.

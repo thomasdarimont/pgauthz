@@ -72,6 +72,7 @@ else
   # (the override is persisted, so the whole chain stays in demo mode);
   # restore with ./start.sh --cel --keycloak --playground.
   case "${PGAUTHZ_PLAYGROUND:-}" in 1|true|yes|on) PGAUTHZ_KEYCLOAK=1 ;; esac
+  case "${PGAUTHZ_CONSOLE:-}" in 1|true|yes|on) PGAUTHZ_KEYCLOAK=1 ;; esac
   case "${PGAUTHZ_KEYCLOAK:-}" in 1|true|yes|on) PGAUTHZ_OPA=1 ;; esac
   # compose-opa.yml must precede keycloak/playground: it DEFINES pgauthzd-opa,
   # which those overlays then override.
@@ -88,6 +89,13 @@ else
   case "${PGAUTHZ_PLAYGROUND:-}" in
     1|true|yes|on)
       COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-playground.yml")
+      ;;
+  esac
+  # Console overlay (management console, console/): after the playground so its
+  # proxy route (serving both apps) wins when both are active.
+  case "${PGAUTHZ_CONSOLE:-}" in
+    1|true|yes|on)
+      COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-console.yml")
       ;;
   esac
 
@@ -112,6 +120,7 @@ else
     echo "export PGAUTHZ_OPA=\"\${PGAUTHZ_OPA:-${PGAUTHZ_OPA:-0}}\""
     echo "export PGAUTHZ_KEYCLOAK=\"\${PGAUTHZ_KEYCLOAK:-${PGAUTHZ_KEYCLOAK:-0}}\""
     echo "export PGAUTHZ_PLAYGROUND=\"\${PGAUTHZ_PLAYGROUND:-${PGAUTHZ_PLAYGROUND:-0}}\""
+    echo "export PGAUTHZ_CONSOLE=\"\${PGAUTHZ_CONSOLE:-${PGAUTHZ_CONSOLE:-0}}\""
     echo "export PGAUTHZ_METRICS=\"\${PGAUTHZ_METRICS:-${PGAUTHZ_METRICS:-0}}\""
   } > "$SCRIPT_DIR/.pgauthz-overlays"
 fi
@@ -178,7 +187,10 @@ psql_exec() {
 psql_file() {
   local db="$1"
   local file="$2"
-  docker exec -i -e PGPASSWORD="$PG_PASSWORD" "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d "$db" < "$file"
+  shift 2
+  # Further arguments go to psql (e.g. -v cs=console_test for a fixture that
+  # takes its store name from a variable).
+  docker exec -i -e PGPASSWORD="$PG_PASSWORD" "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d "$db" "$@" < "$file"
 }
 
 # Preflight: a data volume created by the pg_cel image (compose-cel.yml) keeps

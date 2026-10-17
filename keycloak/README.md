@@ -95,6 +95,7 @@ keep it **off** (unset `TOKEN_DEBUG`) in production.
 | `bob` | internal_user | realm role | writer via `realm_access.roles` |
 | `carol` | client_user | — | client subject type |
 | `eva` | internal_user | client role | writer via `resource_access.authz-api.roles` |
+| `platform-admin`, `auditor`, `iam-dev`, `app-dev`, `app-secarch`, `support` | internal_user | — | console personas (`keycloak/terraform/users.console.tf`), one `console_*` realm role each — see [console/README.md](../console/README.md) |
 
 bob and eva together exercise OPA's role aggregation across **both** claim paths.
 Password for all: `password` (override `demo_user_password`).

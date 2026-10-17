@@ -715,6 +715,12 @@ func (h *Handler) evaluateSingle(w http.ResponseWriter, r *http.Request, req Eva
 			return
 		}
 		if wantDetail {
+			// The envelope says who decided: "engine" or "opa" — with OPA, the
+			// detail also carries hooks_loaded / hook_denials from the policy.
+			if detail == nil {
+				detail = map[string]any{}
+			}
+			detail["via"] = h.viaLabel()
 			writeJSON(w, http.StatusOK, EvalResponseBody{Decision: decision, Context: detail})
 		} else {
 			writeJSON(w, http.StatusOK, EvalResponseBody{Decision: decision})

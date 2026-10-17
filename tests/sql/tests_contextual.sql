@@ -707,4 +707,26 @@ SELECT * FROM _test_teardown_contextual();
 DROP FUNCTION IF EXISTS _test_teardown_contextual();
 DROP FUNCTION IF EXISTS _test_setup_contextual();
 
+-- batch with contextual tuples: one setup, many checks, same answers as one by one
+DO $$
+DECLARE v_rows jsonb;
+BEGIN
+    SELECT jsonb_agg(jsonb_build_object('rel', relation, 'obj', object_id, 'd', decision) ORDER BY relation, object_id) INTO v_rows
+      FROM authz.check_access_batch_with_contextual_tuples_jsonb('console_test',
+        '[{"user_type":"user","user_id":"zed","relation":"can_view","object_type":"store","object_id":"demo"},
+          {"user_type":"user","user_id":"zed","relation":"can_manage_access","object_type":"store","object_id":"demo"},
+          {"user_type":"user","user_id":"zed","relation":"can_view","object_type":"store","object_id":"todo"}]',
+        NULL,
+        '[{"user_type":"user","user_id":"zed","relation":"member","object_type":"team","object_id":"role_console_admin"}]');
+    PERFORM _test_assert('ctx_b_01_batch_rows', jsonb_array_length(v_rows)::text, '3');
+    PERFORM _test_assert('ctx_b_02_admin_via_contextual_team',
+        (SELECT string_agg((x->>'d'), ',' ORDER BY x->>'rel', x->>'obj') FROM jsonb_array_elements(v_rows) x), 'true,true,true');
+    PERFORM _test_assert('ctx_b_03_same_as_single',
+        authz.check_access_with_contextual_tuples_jsonb('console_test','user','zed','can_manage_access','store','demo', NULL,
+            '[{"user_type":"user","user_id":"zed","relation":"member","object_type":"team","object_id":"role_console_admin"}]')::text, 'true');
+    PERFORM _test_assert('ctx_b_04_without_contextual_denied',
+        (SELECT decision::text FROM authz.check_access_batch_with_contextual_tuples_jsonb('console_test',
+            '[{"user_type":"user","user_id":"zed","relation":"can_view","object_type":"store","object_id":"demo"}]') LIMIT 1), 'false');
+END $$;
+
 SELECT _test_report('checks');

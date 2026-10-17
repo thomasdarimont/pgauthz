@@ -77,6 +77,17 @@ $$;
 -- Excluded: tuples (per-tenant data) and namespace_access (DB-role grants
 -- are deployment-specific, not part of the model).
 ------------------------------------------------------------------------
+------------------------------------------------------------------------
+-- _actor: who publishes / applies, for created_by and applied_by. The
+-- authz.performed_by session setting names the person when an application
+-- acts on their behalf (the same convention as the tuple audit trail and
+-- tuple writes' p_performed_by); otherwise the connection's role.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._actor() RETURNS text
+LANGUAGE sql STABLE AS $$
+    SELECT COALESCE(NULLIF(current_setting('authz.performed_by', true), ''), current_user::text);
+$$;
+
 CREATE OR REPLACE FUNCTION authz.export_model(p_store text) RETURNS jsonb
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
@@ -104,6 +115,8 @@ BEGIN
                            'description',    r.description,
                            'payload_schema', r.payload_schema
                        )) || jsonb_build_object('description', r.description)
+                          -- metadata (migration 0019): kind + tooling keys; always present
+                          || jsonb_build_object('metadata', r.metadata)
                    ORDER BY r.name)
               FROM authz.relations r
              WHERE r.store_id = v_store_id), '[]'::jsonb),
@@ -167,6 +180,9 @@ BEGIN
                    -- so existing definitions and checksums do not move
                    || CASE WHEN c.time_source = 'server'
                            THEN jsonb_build_object('time_source', 'server') ELSE '{}'::jsonb END
+                   -- description (migration 0021): emitted only when set
+                   || CASE WHEN c.description IS NOT NULL
+                           THEN jsonb_build_object('description', c.description) ELSE '{}'::jsonb END
                    ORDER BY c.name)
               FROM authz.conditions c
              WHERE c.store_id = v_store_id), '[]'::jsonb),
@@ -237,8 +253,8 @@ BEGIN
         RETURN v_latest;  -- unchanged — no new version
     END IF;
 
-    INSERT INTO authz.model_registry (name, version, definition, checksum, description)
-    VALUES (p_name, COALESCE(v_latest, 0) + 1, v_def, v_sum, p_description);
+    INSERT INTO authz.model_registry (name, version, definition, checksum, description, created_by)
+    VALUES (p_name, COALESCE(v_latest, 0) + 1, v_def, v_sum, p_description, authz._actor());
 
     RETURN COALESCE(v_latest, 0) + 1;
 END;
@@ -347,9 +363,11 @@ BEGIN
     LOOP
         PERFORM authz.model_register_relation(p_store, v_row->>'name', v_row->>'description');
         UPDATE authz.relations r
-           SET description = v_row->>'description'
+           SET description = v_row->>'description',
+               metadata    = COALESCE(v_row->'metadata', '{}'::jsonb)   -- absent = none (migration 0019)
          WHERE r.store_id = v_store_id AND r.name = v_row->>'name'
-           AND r.description IS DISTINCT FROM (v_row->>'description');
+           AND (r.description IS DISTINCT FROM (v_row->>'description')
+                OR r.metadata IS DISTINCT FROM COALESCE(v_row->'metadata', '{}'::jsonb));
         -- payload schema (migration 0014): absent in the definition = none
         PERFORM authz.model_set_payload_schema(p_store, v_row->>'name', v_row->'payload_schema');
     END LOOP;
@@ -411,7 +429,8 @@ BEGIN
         PERFORM authz.create_condition(
             p_store, v_row->>'name', v_row->>'expression',
             v_row->>'lang', v_row->'required_context',
-            COALESCE(v_row->>'time_source', 'caller'));
+            COALESCE(v_row->>'time_source', 'caller'),
+            COALESCE(v_row->>'description', ''));   -- a definition without one clears it
     END LOOP;
 
     -- Type restrictions: exact diff (delete stale, add all desired). The
@@ -516,7 +535,7 @@ BEGIN
     -- Record the applied state.
     INSERT INTO authz.store_model_state (store_id, model_name, model_version, applied_checksum,
                                          applied_at, applied_by)
-    VALUES (v_store_id, p_name, v_version, v_sum, now(), current_user)
+    VALUES (v_store_id, p_name, v_version, v_sum, now(), authz._actor())
     ON CONFLICT (store_id) DO UPDATE
         SET model_name       = EXCLUDED.model_name,
             model_version    = EXCLUDED.model_version,
@@ -876,6 +895,12 @@ BEGIN
                 'add', (SELECT COALESCE(jsonb_agg(x.e->>'name' ORDER BY x.e->>'name'), '[]'::jsonb)
                           FROM jsonb_array_elements(authz._jsonb_array_except_by_name(
                                    v_def->'relations', v_live->'relations')) AS x(e)),
+                -- same name, different description / metadata / payload schema
+                'update', (SELECT COALESCE(jsonb_agg(d.e->>'name' ORDER BY d.e->>'name'), '[]'::jsonb)
+                             FROM jsonb_array_elements(v_def->'relations') AS d(e)
+                             JOIN jsonb_array_elements(v_live->'relations') AS l(e)
+                               ON l.e->>'name' = d.e->>'name'
+                            WHERE d.e <> l.e),
                 'remove', (SELECT COALESCE(jsonb_agg(x.e->>'name' ORDER BY x.e->>'name'), '[]'::jsonb)
                              FROM jsonb_array_elements(v_rel_remove) AS x(e))),
             'rules', jsonb_build_object(

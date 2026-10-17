@@ -296,7 +296,7 @@ but its required context was missing" — supply it and re-check (step-up)
 instead of treating the deny as final. Without the header the response is
 the plain boolean (the detailed path runs the engine's explain machinery,
 so it is per-decision opt-in). Both backends support it (direct → 
-`check_access_detailed`, OPA → the `allow_detailed` rule).
+`check_access_detailed`, OPA → the `allow_detailed` rule). The context also names who decided: `via` is `engine` or `opa`, and an OPA-fronted decision with policy hooks adds `hooks_loaded` and, on a veto, `hook_denials`.
 
 **Subject override.** By default (`ALLOW_SUBJECT_OVERRIDE=false`) the
 JWT-derived subject is authoritative: a request-body `subject` is accepted
@@ -539,7 +539,7 @@ All configuration is via environment variables.
 | `HTTP_IDLE_TIMEOUT` | `60s` | Max keep-alive idle time on every listener |
 | `HTTP_MAX_BODY_BYTES` | `10485760` (10 MiB) | Request-body cap (`http.MaxBytesReader`); generous — batch writes are legitimately large. `0` disables |
 | `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
-| `DECISION_LOG` | `off` | Decision log sink ([ADR 0013](../docs/adr/0013-decision-log.md)): `off`, `stdout`, `stderr`, or `file:<path>` (append-only; rotate externally with copy-truncate). One JSON line per decision on `evaluation(s)`, `check(-batch)`, `explain`, `events/reserve`, both listeners, with provenance (`pgauthzd_version`, the store's `model` name/version/checksum, OPA `policy` version + bundle revisions when fronted). Context **keys** only, never values |
+| `DECISION_LOG` | `off` | Decision log sink ([ADR 0013](../docs/adr/0013-decision-log.md)): `off`, `stdout`, `stderr`, or `file:<path>` (append-only; rotate externally with copy-truncate). One JSON line per decision on `evaluation(s)`, `check(-batch)`, `explain`, `events/reserve`, both listeners, with provenance (`pgauthzd_version`, the store's `model` name/version/checksum, OPA `policy` version + bundle revisions when fronted, and for OPA-fronted decisions with policy hooks the `hooks` consulted and any `hook_denials`). Context **keys** only, never values |
 | `DECISION_LOG_SAMPLE` | `1` | Fraction (0–1) of **allow** lines written; denies, conditionals and errors are always written |
 | `DECISION_LOG_DETAIL` | `false` | Run the detailed evaluation for plain checks **for the log only** (every line gets `state`/`reason`); responses are unchanged. Costs the detailed check's second pass on conditional outcomes |
 | `DECISION_LOG_REQUIRED` | `false` | Evidence mode: after a failed log write, `/readyz` is 503 and every decision endpoint refuses with 503 until the sink accepts a line again (retried with a marker line at most once per second) — no decision without its record. Needs a sink and `DECISION_LOG_SAMPLE=1`. Regulated deployments only; the default stays best-effort |

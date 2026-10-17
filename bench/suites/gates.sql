@@ -158,4 +158,5 @@ SELECT pg_temp._bench('list_events  page of 100 (auditor)',
     $$ SELECT count(*) FROM authz.list_events('bench_gates', p_subject_type => 'user', p_subject_id => 'heavy', p_limit => 100) $$, 200);
 
 -- Tidy up (idempotent; the suite also resets at the top).
-DO $$ BEGIN PERFORM authz.delete_store('bench_gates', p_purge_audit => true); EXCEPTION WHEN OTHERS THEN NULL; END $$;
+-- tidy up — unless KEEP=1 (bench.keep) asked to leave the data for a look
+DO $$ BEGIN IF current_setting('bench.keep', true) IS DISTINCT FROM 'true' THEN PERFORM authz.delete_store('bench_gates', p_purge_audit => true); END IF; EXCEPTION WHEN OTHERS THEN NULL; END $$;

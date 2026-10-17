@@ -58,3 +58,8 @@ SELECT authz.model_add_rule('helloworld', 'document', 'can_write', 'computed', '
 
 -- Render the model as OpenFGA-style DSL text to verify what was built.
 SELECT authz.describe_model('helloworld');
+
+-- Relation kinds (migration 0019): what a subject IS (assignable) versus what
+-- it CAN DO (derived). Inferred from the rules: a relation without any
+-- direct rule is a permission.
+SELECT * FROM authz.infer_relation_kinds('helloworld', true);

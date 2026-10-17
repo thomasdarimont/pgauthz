@@ -80,6 +80,33 @@ $$;
 -- Called by _eval_rule; trace name lookups are done once in the
 -- dispatcher and passed in to avoid redundant queries.
 ------------------------------------------------------------------------
+------------------------------------------------------------------------
+-- _matched_expiry: when the tuple(s) that satisfied a direct probe expire.
+-- Several stored tuples can satisfy one probe (conditional and plain,
+-- exact and wildcard subject): the grant lasts as long as the longest-lived
+-- of them, and an unbounded one makes it NULL (never). Trace-only.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._matched_expiry(
+    p_store_id      integer,
+    p_object_type   integer,
+    p_object_ids    text[],
+    p_relation      integer,
+    p_user_type     integer,
+    p_user_ids      text[],
+    p_user_relation integer DEFAULT NULL
+) RETURNS timestamptz
+LANGUAGE sql STABLE AS $$
+    SELECT CASE WHEN bool_or(t.expires_at IS NULL) THEN NULL ELSE max(t.expires_at) END
+      FROM authz.tuples t
+     WHERE t.store_id    = p_store_id
+       AND t.object_type = p_object_type
+       AND t.object_id   = ANY (p_object_ids)
+       AND t.relation    = p_relation
+       AND t.user_type   = p_user_type
+       AND t.user_id     = ANY (p_user_ids)
+       AND t.user_relation IS NOT DISTINCT FROM p_user_relation;
+$$;
+
 CREATE OR REPLACE FUNCTION authz._eval_direct(
     p_store_id          integer,
     p_user_type         integer,
@@ -162,6 +189,9 @@ BEGIN
                     extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated,
                     p_user_type_name || ':' || p_user_id || ' → ' || p_relation_name || ' → ' || p_object_type_name || ':' || p_object_id,
                     v_cond_name, v_assumed_keys);
+            UPDATE _access_trace SET matched_expires_at = authz._matched_expiry(
+                p_store_id, p_object_type, ARRAY[p_object_id], p_relation, p_user_type, ARRAY[p_user_id])
+             WHERE step = (SELECT max(step) FROM _access_trace);
         END IF;
         RETURN true;
     END IF;
@@ -202,6 +232,9 @@ BEGIN
                     extract(epoch from clock_timestamp() - p_step_start) * 1000, p_model_rule_id, p_group_id, p_group_op, p_negated,
                     p_user_type_name || ':* → ' || p_relation_name || ' → ' || p_object_type_name || ':' || p_object_id,
                     v_cond_name, v_assumed_keys);
+            UPDATE _access_trace SET matched_expires_at = authz._matched_expiry(
+                p_store_id, p_object_type, ARRAY[p_object_id], p_relation, p_user_type, ARRAY['*'])
+             WHERE step = (SELECT max(step) FROM _access_trace);
         END IF;
         RETURN true;
     END IF;
@@ -253,6 +286,9 @@ BEGIN
                         ORDER BY (t2.user_id = p_user_id) DESC LIMIT 1)
                       || ' → ' || p_relation_name || ' → ' || p_object_type_name || ':*',
                     v_cond_name, v_assumed_keys);
+            UPDATE _access_trace SET matched_expires_at = authz._matched_expiry(
+                p_store_id, p_object_type, ARRAY['*'], p_relation, p_user_type, ARRAY[p_user_id, '*'])
+             WHERE step = (SELECT max(step) FROM _access_trace);
         END IF;
         RETURN true;
     END IF;

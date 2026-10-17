@@ -104,6 +104,19 @@ BEGIN
 END;
 $$;
 
+-- _rls_count_expired: how many of a store's tuples have expired but are
+-- still stored (until cleanup_expired_tuples). Runs as authz_rls_bypass,
+-- the only way to see them; returns a count, never the rows.
+CREATE OR REPLACE FUNCTION authz._rls_count_expired(
+    p_store_id int
+) RETURNS bigint
+LANGUAGE sql STABLE AS $$
+    SELECT count(*) FROM authz.tuples t
+     WHERE t.store_id = p_store_id
+       AND t.expires_at IS NOT NULL
+       AND t.expires_at <= statement_timestamp();
+$$;
+
 CREATE OR REPLACE FUNCTION authz._rls_delete_store_tuples(
     p_store_id int
 ) RETURNS void

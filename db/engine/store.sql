@@ -45,6 +45,30 @@ END;
 $$;
 
 ------------------------------------------------------------------------
+-- update_store: the store's description and documentation link (migration
+-- 0018). NULL leaves a value unchanged; an empty string clears it. The link
+-- must be an http(s) URL — it is rendered as a link by the console.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.update_store(
+    p_store       text,
+    p_description text DEFAULT NULL,
+    p_docs_url    text DEFAULT NULL
+) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store);
+BEGIN
+    IF p_docs_url IS NOT NULL AND p_docs_url <> '' AND p_docs_url !~ '^https?://[^[:space:]]+$' THEN
+        RAISE EXCEPTION 'invalid docs_url %: must be an http(s) URL', p_docs_url;
+    END IF;
+    UPDATE authz.stores
+       SET description = CASE WHEN p_description IS NULL THEN description ELSE NULLIF(p_description, '') END,
+           docs_url    = CASE WHEN p_docs_url    IS NULL THEN docs_url    ELSE NULLIF(p_docs_url, '')    END
+     WHERE id = v_store_id;
+END;
+$$;
+
+------------------------------------------------------------------------
 -- _drop_store_tuple_partitions: detaches and drops the per-type tuple
 -- partitions of a store (reclaiming the hot storage). Shared by
 -- delete_store and retire_store. Partition names mirror the convention

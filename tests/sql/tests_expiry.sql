@@ -160,6 +160,28 @@ BEGIN
     PERFORM _test_assert('exp_15_timetravel_survives_cleanup',
         authz.audit_check_access('test_exp', 'user', 'tt_user', 'can_read', 'doc', 'd9',
                                  current_setting('test.exp_t1')::timestamptz)::text, 'true');
+
+    -- explain reports when the granting tuple expires (time-bound access);
+    -- an unbounded tuple reports null
+    PERFORM authz.write_tuple('test_exp', 'user', 'exp_user', 'viewer', 'doc', 'd10', p_expires_at => now() + interval '2 hours');
+    PERFORM authz.write_tuple('test_exp', 'user', 'perm_user', 'viewer', 'doc', 'd10');
+    PERFORM _test_assert_true('exp_explain_reports_expiry',
+        (SELECT (x->>'expires_at')::timestamptz > now() + interval '1 hour'
+           FROM jsonb_array_elements(authz.explain_access('test_exp', 'user', 'exp_user', 'viewer', 'doc', 'd10')->'trace') x
+          WHERE x->>'matched_tuple' IS NOT NULL LIMIT 1),
+        authz.explain_access('test_exp', 'user', 'exp_user', 'viewer', 'doc', 'd10')::text);
+    -- tuple_stats: live counts hide expired rows, `expired` counts them
+    PERFORM authz.write_tuple('test_exp', 'user', 'gone_user', 'viewer', 'doc', 'd10', p_expires_at => now() + interval '1 hour');
+    UPDATE authz.tuples SET expires_at = now() - interval '1 second'
+     WHERE store_id = authz._s('test_exp') AND user_id = 'gone_user';  -- backdate: the write path refuses past expiries
+    PERFORM _test_assert('exp_stats_total_is_live',
+        ((authz.tuple_stats('test_exp')->>'total')::int >= 2 AND (authz.tuple_stats('test_exp')->>'with_expiry')::int >= 1)::text, 'true');
+    PERFORM _test_assert('exp_stats_counts_expired',
+        ((authz.tuple_stats('test_exp')->>'expired')::int >= 1)::text, 'true');
+    PERFORM _test_assert('exp_explain_unbounded_is_null',
+        (SELECT COALESCE(x->>'expires_at', 'null')
+           FROM jsonb_array_elements(authz.explain_access('test_exp', 'user', 'perm_user', 'viewer', 'doc', 'd10')->'trace') x
+          WHERE x->>'matched_tuple' IS NOT NULL LIMIT 1), 'null');
 END;
 $$;
 

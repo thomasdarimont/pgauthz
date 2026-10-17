@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Served under a path prefix (BASE_PATH on the BFF); every relative URL
+       (assets, imports, fetches, links) resolves under it. -->
+  <base href="/console/">
+  <title>pgauthz Console</title>
+  <link rel="stylesheet" href="styles.css">
+  <!-- Third-party libraries pinned in one place; components import bare names. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "lit": "https://esm.sh/lit@3.3.3",
+      "lit/": "https://esm.sh/lit@3.3.3/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <pgc-app></pgc-app>
+  <script type="module" src="src/components/pgc-app.js"></script>
+</body>
+</html>

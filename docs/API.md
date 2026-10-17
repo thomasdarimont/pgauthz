@@ -40,6 +40,9 @@ always uses explicit separate parameters for type, ID, and relation.
   - [write_tuples / delete_tuples — Batch operations](#write_tuples--delete_tuples--batch-operations)
   - [delete_user_tuples — Remove all tuples for a user](#delete_user_tuples--remove-all-tuples-for-a-user)
   - [grant / revoke — Share on behalf of an actor](#grant--revoke--share-on-behalf-of-an-actor)
+  - [model_register_relation / model_set_relation_metadata — Relations and their kind](#model_register_relation--model_set_relation_metadata--relations-and-their-kind)
+  - [tuple_stats — What a store's data looks like](#tuple_stats--what-a-stores-data-looks-like)
+  - [update_store — Description and documentation link](#update_store--description-and-documentation-link)
   - [model_remove_type — Remove a type and everything about it](#model_remove_type--remove-a-type-and-everything-about-it)
   - [audit_check_access — Point-in-time permission check](#audit_check_access--point-in-time-permission-check)
   - [audit_list_user / audit_list_object — Audit trail queries](#audit_list_user--audit_list_object--audit-trail-queries)
@@ -190,6 +193,7 @@ Returns JSON:
       "subject": "internal_user:alice", "relation": "member",
       "object": "team:payroll_team", "result": true, "detail": "tuple found",
       "matched_tuple": "internal_user:alice → member → team:payroll_team",
+      "expires_at": null,              // when that tuple expires (time-bound access); null = never
       //               ^ the exact stored tuple that granted this step
       //                 (wildcards resolved; null when redacted)
       "model_rule_id": 1889, "group_id": 0, "group_op": "or", "negated": false,
@@ -426,6 +430,109 @@ the whole dialog; "which of my documents can I share" is `list_objects` on
 the required relation. The read helpers are granted to `authz_reader` and
 `authz_sharer`; `apply_grants` to `authz_sharer`. Over HTTP:
 `POST /pgauthz/v1/grant-options` and `/apply-grants`.
+
+### model_register_relation / model_set_relation_metadata — Relations and their kind
+
+```sql
+authz.model_register_relation(p_store text, p_name text, p_description text DEFAULT NULL, p_metadata jsonb DEFAULT NULL) RETURNS integer
+authz.model_set_relation_metadata(p_store text, p_name text, p_metadata jsonb) RETURNS jsonb
+authz.infer_relation_kinds(p_store text, p_apply boolean DEFAULT false) RETURNS TABLE (relation text, declared text, inferred text, applied boolean)
+```
+
+A relation's `metadata` (migration 0019) is a JSON object; the engine interprets
+`kind`: `relation` (what a subject is, assignable by a tuple; the default) or
+`permission` (what a subject can do) and checks `ui_order` (a number tools
+sort by; lowest first; display only). The kind is a declaration; whether a
+relation takes tuples follows from its rules: a permission with no direct rule
+on the object type refuses tuples (it is derived), one with a direct rule — a
+directly granted capability such as `run: [agent]` — takes them.
+`model_set_relation_metadata` merges keys (a JSON `null` removes one) and
+returns the result. `infer_relation_kinds` reports what the rules imply (rules
+but no direct rule → permission; otherwise the declared kind, `relation` when
+undeclared) and with `p_apply = true` writes it for every relation that has
+rules and no declared kind yet — a declaration always wins. Admin tier.
+See [MODEL_DESIGN → Relation kinds](MODEL_DESIGN.md#relation-kinds-what-a-subject-is-versus-what-it-can-do).
+
+```sql
+SELECT authz.model_register_relation('documents', 'can_read', p_metadata => '{"kind": "permission"}');
+SELECT authz.model_set_relation_metadata('documents', 'viewer', '{"label": "Viewer"}');
+```
+
+### tuple_stats — What a store's data looks like
+
+```sql
+authz.tuple_stats(p_store text) RETURNS jsonb
+```
+
+Counts for operators and the console's Data tab, never identifiers: `total`
+(live tuples, expiry applied like every read), `with_expiry`,
+`expiring_24h`, `expired` (already hidden by expiry but still stored until
+`cleanup_expired_tuples`), `wildcard_subject`, `wildcard_object`,
+`conditional`, `usersets`, distinct `subjects` and `objects`, and
+`by_object_type` (`[{type, count}]`). Reader tier.
+
+### check_access_batch_with_contextual_tuples_jsonb — Many checks, one set of contextual tuples
+
+```sql
+authz.check_access_batch_with_contextual_tuples_jsonb(p_store text, p_checks jsonb,
+    p_context jsonb DEFAULT NULL, p_contextual_tuples jsonb DEFAULT NULL)
+  RETURNS SETOF authz.access_check_result
+```
+
+`p_checks` is a JSON array of `{user_type, user_id, relation, object_type,
+object_id}`; the contextual tuples (same shape as for
+`check_access_with_contextual_tuples_jsonb`) are validated and loaded once,
+and every check is decided against the same snapshot. One row per check, in
+order. At most `authz.max_batch_checks` checks per call (a GUC, default
+5000: `SET authz.max_batch_checks = 20000` or `ALTER ROLE … SET`).
+Contextual-reader tier, like the single-check variant. The management
+console computes a person's capabilities on every store this way.
+
+### evaluate_condition — A condition's verdict for mocked contexts
+
+```sql
+authz.evaluate_condition(p_store text, p_condition_name text,
+                         p_request_context jsonb DEFAULT '{}', p_condition_context jsonb DEFAULT '{}') RETURNS boolean
+```
+
+What a tuple carrying this condition would decide for the given request
+context (`$1`) and stored context (`$2`), with no tuple involved. A
+server-time condition (`time_source = 'server'`) takes `current_time` from
+the engine's clock exactly as a check does, so the caller need not (and
+cannot) supply it. Unknown condition, missing required keys and evaluation
+errors raise like `validate_condition`, which only answers "is it
+well-formed". Reader tier.
+The console's condition Details row uses it ("Try it").
+
+### model_set_type_namespace — Move a type into or out of a namespace
+
+```sql
+authz.model_set_type_namespace(p_store text, p_type_name text, p_namespace text) RETURNS text
+```
+
+Sets the namespace of an existing type (`NULL` or `''` removes it). A
+namespace is nothing but the set of types that name it, so this is also how
+one is created or renamed (move its types). Namespaces bound which
+application roles may read or write the type (`namespace_access`) and, in
+the management console, which people may change it. Admin tier.
+
+### update_store — Description and documentation link
+
+```sql
+authz.update_store(p_store text, p_description text DEFAULT NULL, p_docs_url text DEFAULT NULL) RETURNS void
+```
+
+Sets what a store is for and where it is documented (migration 0018 adds
+`authz.stores.docs_url`). `NULL` leaves a value unchanged, an empty string
+clears it; `p_docs_url` must be an http(s) URL. Admin tier (`authz_admin`).
+The management console shows both in the stores table and on the store
+header and lets owners edit them; `create_store(p_name, p_description)` sets
+the description at creation. `authz.stores.created_at` (migration 0020,
+backfilled from the earliest audit entry) records when a store was created.
+
+```sql
+SELECT authz.update_store('documents', 'Document sharing for the DMS', 'https://wiki.example.com/authz/documents');
+```
 
 ### model_remove_type — Remove a type and everything about it
 
