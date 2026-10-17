@@ -36,6 +36,9 @@ func MintAPIKey(keyFile, keyID, issuer, audience string, ttl time.Duration) (str
 	claims, _ := json.Marshal(map[string]any{
 		"iss": issuer,
 		"aud": audience,
+		// the calling application (ADR 0014): what a pgauthzd would list as a
+		// pep_client, and what its decision log shows as `client`
+		"azp": "conformance-suite",
 		"iat": now.Unix(),
 		"nbf": now.Add(-time.Minute).Unix(),
 		"exp": now.Add(ttl).Unix(),

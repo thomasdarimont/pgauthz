@@ -19,6 +19,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -166,6 +167,7 @@ func (h *Handler) NativeCheckBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jwtType, jwtID := SubjectFromContext(r.Context())
+	assert := h.mayAssertSubject(r, store)
 
 	evals := make([]authz.EvalRequest, len(req.Checks))
 	for i, c := range req.Checks {
@@ -176,8 +178,11 @@ func (h *Handler) NativeCheckBatch(w http.ResponseWriter, r *http.Request) {
 		if sid == "" && req.Subject != nil {
 			sid = req.Subject.ID
 		}
-		subType, subID, serr := h.resolveSubjectPair(st, sid, jwtType, jwtID)
+		subType, subID, serr := h.resolveSubjectPair(st, sid, jwtType, jwtID, assert, authenticated(r))
 		if serr != nil {
+			if errors.Is(serr, errSubjectForbidden) {
+				serr = h.assertionDenied(r, store)
+			}
 			writeSubjectError(w, serr)
 			return
 		}

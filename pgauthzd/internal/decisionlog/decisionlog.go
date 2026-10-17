@@ -45,6 +45,10 @@ type Entry struct {
 	// ContextKeys: names of the request-context keys supplied, sorted. Never values.
 	ContextKeys []string `json:"context_keys,omitempty"`
 	Actor       string   `json:"actor,omitempty"` // authenticated caller, "type:id"
+	// Client: the calling application — the token's azp (else client_id). Set
+	// even when the credential names no user subject (a PEP's service token),
+	// so every line says which app asked about whom (ADR 0014).
+	Client string `json:"client,omitempty"`
 	// OnBehalfOf: the token subject a delegated actor acts for ("type:id"),
 	// when the caller's token named an actor (ACTOR_CLAIM). The decision was
 	// made for Actor/Subject; this records whose task it served.

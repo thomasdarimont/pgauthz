@@ -37,6 +37,15 @@ type Issuer struct {
 	// per-issuer map avoids cross-tenant azp collisions that the global
 	// CLIENT_DB_ROLES map (kept for single-issuer setups) cannot.
 	ClientDBRoles map[string]string `json:"client_db_roles"`
+	// PEPClients (ADR 0014) names the clients of this issuer — token `azp`,
+	// else `client_id` — that may ASSERT a request-body subject (and a
+	// differing performed_by / recorded_by), and in which stores: client id →
+	// anchored store patterns, the Stores syntax. A pattern may not reach
+	// beyond the issuer's Stores binding. Everything not listed is
+	// self-subject: the token's subject is authoritative. ALLOW_SUBJECT_OVERRIDE
+	// =true makes the map irrelevant (and is refused alongside it in
+	// production).
+	PEPClients map[string][]string `json:"pep_clients"`
 }
 
 // Profile selects an instance's DB CAPABILITY (PGAUTHORIZER_PROFILE): read-only
@@ -575,6 +584,9 @@ func Load() (*Config, error) {
 		if iss.JWKSURL == "" && iss.JWKSFile == "" {
 			return nil, fmt.Errorf("issuer %d (%q) has no jwks_url or jwks_file", i, iss.Issuer)
 		}
+		if err := validatePEPClients(iss); err != nil {
+			return nil, fmt.Errorf("issuer %d (%q): %w", i, iss.Issuer, err)
+		}
 		// Audience is required (F21): an issuer without one accepts every token
 		// its IdP mints for any other API. Fail closed at startup unless the
 		// operator overrides deliberately.
@@ -697,6 +709,16 @@ func Load() (*Config, error) {
 		}
 	}
 
+	// Subject assertion (ADR 0014): the coarse switch and the per-client map
+	// together mean the map is dead configuration — every token may assert.
+	// Say so; in production refuse, like the other ALLOW_* overrides.
+	if c.AllowSubjectOverride && c.HasPEPClients() {
+		if c.IsProduction() {
+			return nil, fmt.Errorf("ALLOW_SUBJECT_OVERRIDE=true together with pep_clients in JWT_ISSUERS: the switch lets EVERY token assert any subject and makes the per-client map meaningless; drop one (DEPLOYMENT_ENVIRONMENT=%s refuses the combination)", c.DeploymentEnvironment)
+		}
+		log.Printf("WARNING: ALLOW_SUBJECT_OVERRIDE=true makes pep_clients in JWT_ISSUERS meaningless — every token may assert any subject; drop the switch to enforce the per-client map")
+	}
+
 	// PRODUCTION PROFILE (external review): a production-labelled instance must
 	// not expose graph enumeration (search), model structure + traces (explain)
 	// or the changefeed (watch) to every authenticated caller. Fail closed at
@@ -804,6 +826,60 @@ func envFloat(key string, fallback float64) float64 {
 		return f
 	}
 	return fallback
+}
+
+// HasPEPClients reports whether any issuer names clients that may assert
+// subjects (ADR 0014).
+func (c *Config) HasPEPClients() bool {
+	for _, iss := range c.Issuers {
+		if len(iss.PEPClients) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// regexMeta are the characters that make a store pattern a pattern rather
+// than a plain name.
+const regexMeta = `.*+?()[]{}|^$\`
+
+// validatePEPClients checks an issuer's pep_clients (ADR 0014): every pattern
+// compiles anchored, and none reaches beyond the issuer's stores binding — a
+// pattern is accepted when the issuer is unbound, when it is literally one of
+// the issuer's stores patterns, or when it is a plain store name that one of
+// them matches. Assertion must never widen where a token may ask.
+func validatePEPClients(iss Issuer) error {
+	for client, patterns := range iss.PEPClients {
+		if strings.TrimSpace(client) == "" {
+			return fmt.Errorf("pep_clients has an empty client id")
+		}
+		if len(patterns) == 0 {
+			return fmt.Errorf("pep_clients[%q] lists no stores (use [\".*\"] for every store of the binding)", client)
+		}
+		for _, p := range patterns {
+			if _, err := regexp.Compile("^(?:" + p + ")$"); err != nil {
+				return fmt.Errorf("pep_clients[%q]: invalid store pattern %q: %w", client, p, err)
+			}
+			if len(iss.Stores) == 0 {
+				continue
+			}
+			covered := false
+			for _, sp := range iss.Stores {
+				if sp == p {
+					covered = true
+					break
+				}
+				if !strings.ContainsAny(p, regexMeta) && regexp.MustCompile("^(?:"+sp+")$").MatchString(p) {
+					covered = true
+					break
+				}
+			}
+			if !covered {
+				return fmt.Errorf("pep_clients[%q]: store pattern %q is not covered by the issuer's stores binding %v — assertion cannot widen where tokens may ask", client, p, iss.Stores)
+			}
+		}
+	}
+	return nil
 }
 
 // SwaggerUIOIDC reports whether the embedded Swagger UI logs in via OIDC.

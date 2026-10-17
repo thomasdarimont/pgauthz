@@ -18,6 +18,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -129,6 +130,31 @@ func Run(ctx context.Context, opts Options) *Report {
 		} else {
 			add("issuer bindings", StatusOK, "every issuer carries a stores binding")
 		}
+	}
+
+	// ── subject assertion (ADR 0014) ─────────────────────────────────────
+	// Who may name a subject other than their token's: nobody (default), the
+	// listed clients per store, or everybody (the coarse switch).
+	switch {
+	case cfg.AllowSubjectOverride && cfg.HasPEPClients():
+		add("subject assertion", StatusWarn, "ALLOW_SUBJECT_OVERRIDE=true makes the pep_clients map meaningless — every token may assert any subject; drop the switch to enforce the map (refused in production)")
+	case cfg.AllowSubjectOverride:
+		status := StatusOK
+		if prod {
+			status = StatusWarn
+		}
+		add("subject assertion", status, "ALLOW_SUBJECT_OVERRIDE=true: every token may assert any subject in the stores its issuer is bound to — a PDP for trusted callers only; prefer per-client pep_clients in JWT_ISSUERS")
+	case cfg.HasPEPClients():
+		var matrix []string
+		for _, iss := range cfg.Issuers {
+			for client, stores := range iss.PEPClients {
+				matrix = append(matrix, fmt.Sprintf("%s client %q → stores %v", iss.Issuer, client, stores))
+			}
+		}
+		sort.Strings(matrix)
+		add("subject assertion", StatusOK, "self-subject by default; asserting clients: "+strings.Join(matrix, "; "))
+	default:
+		add("subject assertion", StatusOK, "self-subject only: the token's subject is authoritative, no client may assert another")
 	}
 
 	// ── diagnostic surfaces ──────────────────────────────────────────────

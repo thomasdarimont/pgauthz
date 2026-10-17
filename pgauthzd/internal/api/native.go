@@ -99,10 +99,10 @@ type writeTuplesBody struct {
 //     authenticated — that is the field's purpose there; body wins.
 //   - PUBLIC (JWT) listener: the authenticated subject is authoritative. A
 //     body value equal to it is harmless; a DIFFERING value is rejected (403)
-//     unless ALLOW_SUBJECT_OVERRIDE — the flag that already means "callers are
-//     trusted PEPs asserting other subjects" on the decision path. Without the
-//     guard, any authorized writer could stamp another user into the immutable
-//     audit trail.
+//     unless the caller may assert subjects for this store (mayAssertSubject,
+//     ADR 0014: ALLOW_SUBJECT_OVERRIDE or a pep_clients entry) — the very same
+//     trust as asserting the decision's subject. Without the guard, any
+//     authorized writer could stamp another user into the immutable audit trail.
 //
 // maxPerformedByLen bounds the audit-actor string: long enough for any real
 // subject identifier (UUIDs, emails, SPIFFE IDs), short enough that the
@@ -138,11 +138,12 @@ func (h *Handler) resolveActor(w http.ResponseWriter, r *http.Request, bodyValue
 		return jwtSubject, true
 	case !h.requireWriterRole: // internal callback listener (trusted PEP upstream)
 		return bodyValue, true
-	case bodyValue == jwtSubject || h.cfg.AllowSubjectOverride:
+	case bodyValue == jwtSubject || h.mayAssertSubject(r, h.store(r)):
+		// the same trust as asserting the decision's subject (ADR 0014)
 		return bodyValue, true
 	default:
 		writeForbidden(w, field+" differs from the authenticated subject; "+
-			"audit attribution is token-derived (ALLOW_SUBJECT_OVERRIDE enables trusted-PEP assertion)")
+			"audit attribution is token-derived — "+h.assertionDenied(r, h.store(r)).Error())
 		return "", false
 	}
 }

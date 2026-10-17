@@ -125,6 +125,7 @@ func (h *Handler) decisionEntry(r *http.Request, endpoint string, req authz.Eval
 		Resource:    decisionlog.Ref{Type: req.ObjectType, ID: req.ObjectID},
 		RequestID:   RequestIDFromContext(r.Context()),
 		Issuer:      IssuerFromContext(r.Context()),
+		Client:      ClientFromContext(r.Context()),
 		ContextKeys: decisionlog.Keys(req.Context),
 	}
 	if st, sid := SubjectFromContext(r.Context()); st != "" && sid != "" {

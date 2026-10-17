@@ -14,6 +14,8 @@
 #                                                        # what the conformance suite uses)
 #   SUBJECT_TYPE=client_user ./scripts/mint-demo-token.sh carol
 #   TTL=86400 ./scripts/mint-demo-token.sh               # seconds, default 3600
+#   AZP=document-service ./scripts/mint-demo-token.sh --pep   # name the calling app
+#                                                        # (the pep_clients key, ADR 0014)
 #
 set -euo pipefail
 
@@ -24,6 +26,7 @@ AUDIENCE="${AUDIENCE:-authz-api}"
 KID="${KID:-my-kid}"
 TTL="${TTL:-3600}"
 SUBJECT_TYPE="${SUBJECT_TYPE:-internal_user}"
+AZP="${AZP:-}"
 
 subject="${1:-alice}"
 roles_csv="${2:-}"
@@ -42,12 +45,12 @@ roles_json=$(jq -nc --arg r "$roles_csv" '$r | split(",") | map(select(length > 
 
 header=$(printf '{"alg":"ES256","typ":"JWT","kid":"%s"}' "$KID" | b64url)
 if [ "$pep" = 1 ]; then
-  payload=$(jq -nc --arg iss "$ISSUER" --arg aud "$AUDIENCE" --argjson iat "$now" --argjson exp "$exp" \
-    '{iss:$iss,aud:$aud,iat:$iat,exp:$exp}' | b64url)
+  payload=$(jq -nc --arg iss "$ISSUER" --arg aud "$AUDIENCE" --argjson iat "$now" --argjson exp "$exp" --arg azp "$AZP" \
+    '{iss:$iss,aud:$aud,iat:$iat,exp:$exp} + (if ($azp|length) > 0 then {azp:$azp} else {} end)' | b64url)
 else
-  payload=$(jq -nc --arg iss "$ISSUER" --arg aud "$AUDIENCE" --argjson iat "$now" --argjson exp "$exp" \
+  payload=$(jq -nc --arg iss "$ISSUER" --arg aud "$AUDIENCE" --argjson iat "$now" --argjson exp "$exp" --arg azp "$AZP" \
     --arg sub "$subject" --arg st "$SUBJECT_TYPE" --argjson roles "$roles_json" \
-    '{iss:$iss,aud:$aud,iat:$iat,exp:$exp,sub:$sub,preferred_username:$sub,subject_type:$st} + (if ($roles|length) > 0 then {roles:$roles} else {} end)' | b64url)
+    '{iss:$iss,aud:$aud,iat:$iat,exp:$exp,sub:$sub,preferred_username:$sub,subject_type:$st} + (if ($roles|length) > 0 then {roles:$roles} else {} end) + (if ($azp|length) > 0 then {azp:$azp} else {} end)' | b64url)
 fi
 
 signing_input="${header}.${payload}"

@@ -322,10 +322,10 @@ pgauthzd. Both are first-class; pick per instance, not per request.
 | | **Forward the user's token** (self-subject) | **Ask as a PEP** (trusted PEP) |
 |---|---|---|
 | Who calls | the application, with the end user's access token (a BFF, a gateway, Swagger UI after login) | a backend with its **own** credential (service account, workload identity), on behalf of whichever user it serves |
-| `ALLOW_SUBJECT_OVERRIDE` | `false` (default) | `true` |
+| Configuration | the default | per client and store: the issuer's `pep_clients` (`"document-service": ["documents", "tenant-.*"]`, keyed by the token's `azp`); or `ALLOW_SUBJECT_OVERRIDE=true` for every token of every issuer |
 | Subject of the decision | the token: `preferred_username` + `subject_type` (configurable claims) | the request body: `subject`, per item in a batch |
 | Body `subject` | optional; if present it must equal the token's (else `403`) | required (a missing one is `400`, an unresolvable batch item `decision: false`) |
-| Can ask about other users? | no — that is the point | yes — that is the point; the token proves the caller is a PEP you trust |
+| Can ask about other users? | no — that is the point (a token without any subject claim cannot name one either) | yes — that is the point; the token proves the caller is a PEP you trust |
 | Writes / recorded events attributed to | the token's subject (`performed_by` / `recorded_by` must match it) | the body's assertion (same trust) |
 | Decision log | `actor` = `subject` | `actor` = the PEP's identity, `subject` = who was decided about |
 | Typical | user-facing APIs, the playground, the Keycloak demo on :8091 | a PDP for many apps, batch pre-authorization, the OpenID conformance suite |
@@ -342,16 +342,28 @@ curl -s -X POST http://pdp.internal/stores/demo/access/v1/evaluation \
   -d '{"subject":{"type":"internal_user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}'
 ```
 
-Scoping a PEP's credential is what keeps the second mode safe: a dedicated
-client or issuer for PEPs, bound to its stores through the per-issuer store
-binding, `REQUIRED_SCOPE`, the writer/recorder roles only where writes are
-intended, and network reachability. If one deployment needs both patterns, run
-two instances (or two issuers with store bindings) rather than switching an
-instance that also sees end-user tokens to `true`. The decision log
-([ADR 0013](../docs/adr/0013-decision-log.md)) records `actor` and `subject`
-separately, so "who asked about whom" is answered on every line in either
-mode. The operational side — which value to run with and why — is in
-[PRODUCTION.md → AuthZEN subject policy](../docs/PRODUCTION.md#authzen-subject-policy).
+Both patterns can share one instance: list the PEPs in their issuer's
+`pep_clients` and leave `ALLOW_SUBJECT_OVERRIDE` off — a listed client asserts
+subjects in its stores, every other token (end users, other services) is
+self-subject, and a listed client asking in a store it is not listed for gets a
+`403` that names client and store. A `pep_clients` pattern may not reach
+beyond the issuer's `stores` binding (startup error), and the same predicate
+gates `performed_by` / `recorded_by`, so asserting *who acts* follows the same
+grant as asserting *who asks* ([ADR 0014](../docs/adr/0014-subject-assertion-policy.md)).
+
+```json
+[{"issuer": "https://id.example.com/realms/corp", "audience": "authz-api",
+  "jwks_url": "https://id.example.com/realms/corp/protocol/openid-connect/certs",
+  "stores": ["documents", "hr", "tenant-.*"],
+  "pep_clients": {"document-service": ["documents", "tenant-.*"], "pep-gateway": [".*"]}}]
+```
+
+The client is the token's `azp` claim (else `client_id`) — a token without one
+cannot be a PEP client. The decision log ([ADR 0013](../docs/adr/0013-decision-log.md))
+records `actor`, `client` and `subject` separately, so "which app asked about
+whom" is answered on every line in either mode; `pgauthzd doctor` prints the
+assertion matrix. The operational side — which setting to run with and why —
+is in [PRODUCTION.md → AuthZEN subject policy](../docs/PRODUCTION.md#authzen-subject-policy).
 
 ## Multi-Store Support
 
@@ -493,7 +505,7 @@ All configuration is via environment variables.
 | `JWKS_FILE` | | Path to local JWKS file (required if `JWKS_URL` not set) |
 | `JWT_ISSUER` | | Expected `iss` claim (optional) |
 | `JWT_AUDIENCE` | | Expected `aud` claim — **required** for the legacy single issuer (every issuer must pin an audience; see `ALLOW_MISSING_AUDIENCE`) |
-| `JWT_ISSUERS` | | Additional trusted issuers: JSON array of `{issuer, audience, jwks_url, jwks_file, stores, db_roles, client_db_roles}`; `iss` selects the validator; `stores` / `db_roles` (anchored regex lists) bind the issuer to specific stores / per-app DB roles; `client_db_roles` maps this issuer's client ids to roles |
+| `JWT_ISSUERS` | | Additional trusted issuers: JSON array of `{issuer, audience, jwks_url, jwks_file, stores, db_roles, client_db_roles, pep_clients}`; `iss` selects the validator; `stores` / `db_roles` (anchored regex lists) bind the issuer to specific stores / per-app DB roles; `client_db_roles` maps this issuer's client ids to roles; `pep_clients` (client id → store patterns) names the clients that may assert a request-body subject, and where — see [Two ways to call pgauthzd](#two-ways-to-call-pgauthzd) |
 | `JWT_ROLES_CLAIM` | | Comma-separated dotted claim paths aggregated into the caller's roles (e.g. `realm_access.roles,resource_access.authz-api.roles`) |
 | `SEARCH_REQUIRED_ROLE` | | If set, the `search/*` endpoints require this role (`403` otherwise); empty = search open to any authenticated caller |
 | `WATCH_REQUIRED_ROLE` | *unset = watch disabled* | Gates the native changefeed on the public listener (review #10) — the feed exposes authorization topology. Unset: 403. A role name: JWT-role gate. `"*"`: explicitly open (discouraged). Callback listener unaffected |
@@ -512,7 +524,7 @@ All configuration is via environment variables.
 | `SUBJECT_TYPE_DEFAULT` | `internal_user` | Default subject type if claim missing |
 | `ACTOR_CLAIM` | *(unset)* | Dotted path of a claim naming a **delegated actor** (RFC 8693 `act.client_id`; Keycloak token-exchange delegation). When it resolves to a non-empty string, the principal is `ACTOR_SUBJECT_TYPE:<value>` and the token's own subject is carried as `on_behalf_of` (decision log). Unset = such tokens are their subject |
 | `ACTOR_SUBJECT_TYPE` | `agent` | Subject type of a delegated actor |
-| `ALLOW_SUBJECT_OVERRIDE` | `false` | Allow a request-body subject to override the JWT subject (trusted PEP/PDP mode). Default false = token-only; a mismatched body subject is rejected with `403` |
+| `ALLOW_SUBJECT_OVERRIDE` | `false` | Let EVERY token assert a request-body subject (a PDP for trusted callers only). Default false = self-subject: a mismatched body subject is `403` — unless the token's client is a `pep_clients` entry of its issuer for that store ([ADR 0014](../docs/adr/0014-subject-assertion-policy.md)). Refused in production next to `pep_clients` |
 | `DEFAULT_STORE` | `demo` | Default authorization store |
 | `STORE_HEADER` | `X-PGAuthz-Store` | HTTP header for store selection |
 | `REQUIRE_STORE_BINDING` | `false` | Refuse to start unless **every** trusted issuer has a `stores` binding (recommended `true` for multi-tenant deployments); off = unbound issuers are unrestricted, with a startup warning when several issuers are configured |

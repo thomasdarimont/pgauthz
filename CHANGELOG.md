@@ -9,6 +9,21 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Per-client, per-store subject assertion (ADR 0014).** `ALLOW_SUBJECT_OVERRIDE`
+  was process-wide: every token could assert any subject, or none could.
+  Each `JWT_ISSUERS` entry now takes `pep_clients` — client id (the token's
+  `azp`, else `client_id`) → anchored store patterns — so that *this* service
+  may speak for users in *these* stores and nowhere else, while every other
+  token stays self-subject. One predicate decides for the decision path, the
+  batch and the native checks AND for `performed_by` / `recorded_by` on
+  writes; a refused assertion is a `403` naming client and store; a pattern
+  that reaches beyond the issuer's `stores` binding is a startup error; the
+  coarse switch next to a map is a warning and is refused in production;
+  `pgauthzd doctor` reports the assertion matrix. The decision log gains
+  `client` (the token's `azp`) on every line, so a PEP's service credential
+  is attributed even without a user subject. Deny by default — no behaviour
+  change for existing deployments. The conformance harness's api_key carries
+  `azp: conformance-suite`.
 - **Embedded Swagger UI (`SWAGGER_UI_ENABLED`, default off)** at
   `GET /pgauthz/v1/docs`: renders the instance's OpenAPI document same-origin,
   so "Try it out" needs no CORS — Authorize with a bearer JWT. The assets
@@ -404,6 +419,15 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Security
 
+- **A verified token without a subject claim could assert any subject.** In
+  self-subject mode (`ALLOW_SUBJECT_OVERRIDE=false`) the rule "no token
+  subject, so the body is the only source" was meant for deployments without
+  tokens, but it also applied to an authenticated service credential that
+  carries no `sub`/`preferred_username` — the one credential that could then
+  name anyone. Such a token now gets the same `403` as any other mismatch
+  unless its client may assert (ADR 0014); the body-only fallback applies
+  only when no token was verified at all. Found by probing ADR 0014's grant
+  against the live engine.
 - **The production profile refuses the audience override.** With
   `DEPLOYMENT_ENVIRONMENT=production`/`prod`, `ALLOW_MISSING_AUDIENCE=true`
   fails startup outright — even when every issuer currently pins an audience,

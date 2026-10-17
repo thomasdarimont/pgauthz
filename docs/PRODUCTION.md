@@ -344,11 +344,24 @@ the JWT-derived subject:
   differing body subject is rejected with `403`. Use this for **user-facing**
   deployments where the JWT identifies the end user.
 - **`true` (trusted PEP/PDP):** the body subject is authoritative (JWT as
-  fallback) — required for batch evaluations with per-evaluation subjects. Set
-  this **only** when the caller is a trusted enforcement point.
+  fallback) for **every** token of every issuer — a PDP whose callers are all
+  trusted enforcement points. Set this **only** then; production refuses it
+  next to `pep_clients`.
 
-The compose file defaults to `false`; the demo/test stack opts into `true`
-via `env.sh`, so the shipped compose is safe to copy to production as-is.
+**Prefer the per-client grant** ([ADR 0014](adr/0014-subject-assertion-policy.md)):
+leave the switch off and list, per issuer in `JWT_ISSUERS`, the clients (token
+`azp`) that may assert subjects and in which stores —
+`"pep_clients": {"document-service": ["documents", "tenant-.*"]}`. Everything
+else stays self-subject; a pattern cannot reach beyond the issuer's `stores`
+binding; the same grant governs `performed_by` / `recorded_by` on writes; a
+refused assertion is a `403` naming client and store; `pgauthzd doctor` prints
+the effective matrix. Mixed deployments — a document service asserting for its
+users, a BFF forwarding end-user tokens, an HR system that may read but never
+assert — then share one instance.
+
+The compose file defaults to `false` with no `pep_clients`; the demo/test stack
+opts into `true` via `env.sh` (its self-minted test tokens carry no `azp`), so
+the shipped compose is safe to copy to production as-is.
 
 ### OPA read subject policy (`REQUIRE_TOKEN_FOR_READS`)
 

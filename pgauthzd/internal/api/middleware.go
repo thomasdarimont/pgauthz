@@ -72,6 +72,7 @@ const (
 	ctxNoCache
 	ctxDetail
 	ctxOnBehalfOf
+	ctxClient
 )
 
 // onBehalfOf is the token subject a delegated actor acts for (ACTOR_CLAIM).
@@ -131,6 +132,17 @@ func DetailFromContext(ctx context.Context) bool {
 // can re-validate rather than trust a forwarded subject.
 func TokenFromContext(ctx context.Context) string {
 	if v, ok := ctx.Value(ctxRawToken).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// ClientFromContext returns the token's client id — `azp`, else `client_id`
+// (RFC 9068 / RFC 8693 service tokens) — or "" when the token names none. It
+// identifies the calling application: the key of the per-issuer pep_clients
+// map (ADR 0014) and the `client` field of every decision-log line.
+func ClientFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(ctxClient).(string); ok {
 		return v
 	}
 	return ""
@@ -322,6 +334,11 @@ func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 		// and its (verified) issuer for per-issuer authorization (store binding).
 		ctx = context.WithValue(ctx, ctxRawToken, tokenStr)
 		ctx = context.WithValue(ctx, ctxIssuer, claimString(claims, "iss"))
+		if client := claimString(claims, "azp"); client != "" {
+			ctx = context.WithValue(ctx, ctxClient, client)
+		} else if client := claimString(claims, "client_id"); client != "" {
+			ctx = context.WithValue(ctx, ctxClient, client)
+		}
 
 		// Standard freshness request: Cache-Control: no-cache asks the PDP not
 		// to serve a cached decision (forwarded as input.no_cache to OPA).

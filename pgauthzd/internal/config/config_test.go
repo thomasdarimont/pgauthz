@@ -428,3 +428,58 @@ func TestAudienceRequiredLegacyForm(t *testing.T) {
 		t.Fatalf("legacy issuer with JWT_AUDIENCE must load, got %v", err)
 	}
 }
+
+// ADR 0014: pep_clients patterns must compile and may not reach beyond the
+// issuer's stores binding; the coarse switch next to a map is a warning, and
+// refused in production.
+func TestPEPClientsValidation(t *testing.T) {
+	bound := Issuer{Issuer: "https://idp", Stores: []string{"demo", "tenant-.*"}}
+	cases := []struct {
+		name    string
+		iss     Issuer
+		wantErr string
+	}{
+		{"literal store of the binding", withPEP(bound, map[string][]string{"a": {"demo"}}), ""},
+		{"same pattern as the binding", withPEP(bound, map[string][]string{"a": {"tenant-.*"}}), ""},
+		{"plain name matched by a binding pattern", withPEP(bound, map[string][]string{"a": {"tenant-7"}}), ""},
+		{"wildcard on an unbound issuer", withPEP(Issuer{Issuer: "https://idp"}, map[string][]string{"a": {".*"}}), ""},
+		{"wildcard wider than the binding", withPEP(bound, map[string][]string{"a": {".*"}}), "not covered"},
+		{"store outside the binding", withPEP(bound, map[string][]string{"a": {"hr"}}), "not covered"},
+		{"invalid pattern", withPEP(bound, map[string][]string{"a": {"tenant-("}}), "invalid store pattern"},
+		{"no stores", withPEP(bound, map[string][]string{"a": {}}), "lists no stores"},
+		{"empty client", withPEP(bound, map[string][]string{" ": {"demo"}}), "empty client id"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := validatePEPClients(c.iss)
+			if c.wantErr == "" && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)) {
+				t.Fatalf("want error containing %q, got %v", c.wantErr, err)
+			}
+		})
+	}
+}
+
+func withPEP(iss Issuer, pep map[string][]string) Issuer {
+	iss.PEPClients = pep
+	return iss
+}
+
+func TestPEPClientsWithCoarseSwitch(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://u:p@h/db")
+	t.Setenv("JWKS_FILE", "")
+	t.Setenv("JWKS_URL", "")
+	t.Setenv("JWT_ISSUERS", `[{"issuer":"https://idp","audience":"api","jwks_file":"/dev/null","stores":["demo"],"pep_clients":{"svc":["demo"]}}]`)
+	t.Setenv("ALLOW_SUBJECT_OVERRIDE", "true")
+	t.Setenv("DEPLOYMENT_ENVIRONMENT", "production")
+	t.Setenv("CURSOR_SEAL_KEY", "0123456789abcdef0123456789abcdef")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "pep_clients") {
+		t.Fatalf("production must refuse the switch next to pep_clients, got %v", err)
+	}
+	t.Setenv("DEPLOYMENT_ENVIRONMENT", "dev")
+	if _, err := Load(); err != nil && strings.Contains(err.Error(), "pep_clients") {
+		t.Fatalf("outside production the combination is a warning, got %v", err)
+	}
+}

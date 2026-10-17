@@ -33,6 +33,10 @@ type Handler struct {
 	// regexes) its tokens may access. Only issuers with a non-empty `stores`
 	// list appear here; absent = unrestricted.
 	issuerStores map[string][]*regexp.Regexp
+	// issuerPEPClients (ADR 0014): verified issuer → client id (azp) → the
+	// store patterns in which that client may assert a body subject. Absent =
+	// may not; ALLOW_SUBJECT_OVERRIDE=true bypasses the map.
+	issuerPEPClients map[string]map[string][]*regexp.Regexp
 	// backend serves the AuthZEN surface (/access/v1): the OPA backend when
 	// OPA_URL is set (policy enrichment), else the direct pgx backend.
 	backend authz.Backend
@@ -77,18 +81,77 @@ func NewHandler(backend, raw, rawWrite authz.Backend, cfg *config.Config, opts .
 		o(h)
 	}
 	for _, iss := range cfg.Issuers {
-		if iss.Issuer == "" || len(iss.Stores) == 0 {
+		if iss.Issuer == "" {
 			continue
 		}
-		pats := make([]*regexp.Regexp, len(iss.Stores))
-		for i, p := range iss.Stores {
-			// validated in config.Load — anchored so plain names match exactly
-			pats[i] = regexp.MustCompile("^(?:" + p + ")$")
+		if len(iss.Stores) > 0 {
+			pats := make([]*regexp.Regexp, len(iss.Stores))
+			for i, p := range iss.Stores {
+				// validated in config.Load — anchored so plain names match exactly
+				pats[i] = regexp.MustCompile("^(?:" + p + ")$")
+			}
+			h.issuerStores[iss.Issuer] = pats
 		}
-		h.issuerStores[iss.Issuer] = pats
+		if len(iss.PEPClients) > 0 {
+			clients := make(map[string][]*regexp.Regexp, len(iss.PEPClients))
+			for client, patterns := range iss.PEPClients {
+				pats := make([]*regexp.Regexp, len(patterns))
+				for i, p := range patterns {
+					pats[i] = regexp.MustCompile("^(?:" + p + ")$")
+				}
+				clients[client] = pats
+			}
+			if h.issuerPEPClients == nil {
+				h.issuerPEPClients = map[string]map[string][]*regexp.Regexp{}
+			}
+			h.issuerPEPClients[iss.Issuer] = clients
+		}
 	}
 	return h
 }
+
+// mayAssertSubject (ADR 0014) says whether this request's caller may name a
+// subject other than its token's — on the decision path (a body subject) and
+// on the write path (performed_by / recorded_by) alike. Yes when the coarse
+// ALLOW_SUBJECT_OVERRIDE is on, else when the token's client (azp) is listed
+// in its issuer's pep_clients for this store. Deny by default.
+func (h *Handler) mayAssertSubject(r *http.Request, store string) bool {
+	if h.cfg.AllowSubjectOverride {
+		return true
+	}
+	clients := h.issuerPEPClients[IssuerFromContext(r.Context())]
+	if clients == nil {
+		return false
+	}
+	client := ClientFromContext(r.Context())
+	if client == "" {
+		return false
+	}
+	for _, p := range clients[client] {
+		if p.MatchString(store) {
+			return true
+		}
+	}
+	return false
+}
+
+// assertionDenied explains a refused assertion: who tried, for which store.
+// It IS an errSubjectForbidden (errors.Is), so the 403 mapping applies.
+func (h *Handler) assertionDenied(r *http.Request, store string) error {
+	client := ClientFromContext(r.Context())
+	if client == "" {
+		client = "(no azp/client_id claim)"
+	}
+	return &assertionDeniedError{client: client, store: store}
+}
+
+type assertionDeniedError struct{ client, store string }
+
+func (e *assertionDeniedError) Error() string {
+	return fmt.Sprintf("request subject does not match the authenticated subject, and client %q may not assert subjects in store %q (ADR 0014: list it in the issuer's pep_clients, or ALLOW_SUBJECT_OVERRIDE)", e.client, e.store)
+}
+
+func (e *assertionDeniedError) Is(target error) bool { return target == errSubjectForbidden }
 
 // NewRouter returns the main JWT-authed listener: the AuthZEN /access/v1 surface
 // (served by `backend` — the OPA sidecar when OPA_URL is set, else direct pgx).
@@ -345,23 +408,29 @@ func (h *Handler) store(r *http.Request) string {
 	return h.cfg.DefaultStore
 }
 
-// resolveSubjectPair applies the subject-override policy to a body-supplied
-// subject and the JWT-derived subject.
+// resolveSubjectPair applies the subject-assertion policy to a body-supplied
+// subject and the JWT-derived subject. `assert` is mayAssertSubject for the
+// request's store (ADR 0014).
 //
-//   - Secure default (AllowSubjectOverride=false): the authenticated JWT
+//   - Self-subject (assert=false, the default): the authenticated JWT
 //     subject is authoritative. A body subject is accepted only if it matches
 //     the token; a differing one is rejected (errSubjectForbidden) — it would
-//     be an impersonation attempt. When no JWT subject is present (e.g. a
-//     no-auth/system deployment), the body subject is the only source.
-//   - Override (AllowSubjectOverride=true): the trusted-PEP/PDP mode — the
-//     body subject wins, with the JWT subject as a fallback when the body
-//     names NO subject at all. A partial body subject (type without id, or
-//     id without type) is a malformed request, not half of one to complete
-//     from the token: a type describes its id, so mixing the body's id with
-//     the token's type would check a principal nobody named (AuthZEN 1.0
-//     §10.1 wants a 400 for a subject without type).
-func (h *Handler) resolveSubjectPair(bodyType, bodyID, jwtType, jwtID string) (subjectType, subjectID string, err error) {
-	if h.cfg.AllowSubjectOverride {
+//     be an impersonation attempt. An AUTHENTICATED token that names no
+//     subject (a service credential without sub/preferred_username) is a
+//     caller that may not speak for anyone: a body subject is refused too —
+//     it would otherwise be the one credential that bypasses the assertion
+//     grant. Only when no token was verified at all (a no-auth/system
+//     deployment, authenticated=false) is the body the only source.
+//   - Assertion allowed (assert=true — ALLOW_SUBJECT_OVERRIDE, or the client
+//     is a pep_client for the store): the trusted-PEP/PDP mode — the body
+//     subject wins, with the JWT subject as a fallback when the body names NO
+//     subject at all. A partial body subject (type without id, or id without
+//     type) is a malformed request, not half of one to complete from the
+//     token: a type describes its id, so mixing the body's id with the
+//     token's type would check a principal nobody named (AuthZEN 1.0 §10.1
+//     wants a 400 for a subject without type).
+func (h *Handler) resolveSubjectPair(bodyType, bodyID, jwtType, jwtID string, assert, authenticated bool) (subjectType, subjectID string, err error) {
+	if assert {
 		if bodyType == "" && bodyID == "" {
 			bodyType, bodyID = jwtType, jwtID
 		}
@@ -371,7 +440,7 @@ func (h *Handler) resolveSubjectPair(bodyType, bodyID, jwtType, jwtID string) (s
 		return bodyType, bodyID, nil
 	}
 
-	// Secure default: the JWT subject is authoritative when present.
+	// Self-subject: the JWT subject is authoritative when present.
 	if jwtType != "" && jwtID != "" {
 		if (bodyType != "" && bodyType != jwtType) || (bodyID != "" && bodyID != jwtID) {
 			return "", "", errSubjectForbidden
@@ -379,18 +448,36 @@ func (h *Handler) resolveSubjectPair(bodyType, bodyID, jwtType, jwtID string) (s
 		return jwtType, jwtID, nil
 	}
 
-	// No authenticated subject: the body is the only available source.
+	// A verified token without a subject may not name one.
+	if authenticated {
+		if bodyType != "" || bodyID != "" {
+			return "", "", errSubjectForbidden
+		}
+		return "", "", errSubjectRequired
+	}
+
+	// No token at all: the body is the only available source.
 	if bodyType == "" || bodyID == "" {
 		return "", "", errSubjectRequired
 	}
 	return bodyType, bodyID, nil
 }
 
+// authenticated reports whether the request carries a verified token (the JWT
+// middleware records its issuer).
+func authenticated(r *http.Request) bool { return IssuerFromContext(r.Context()) != "" }
+
 // resolveSubject resolves the effective subject for single-subject endpoints,
-// applying the override policy against the JWT-derived subject.
+// applying the assertion policy for the request's store against the
+// JWT-derived subject.
 func (h *Handler) resolveSubject(r *http.Request, body Subject) (subjectType, subjectID string, err error) {
 	jwtType, jwtID := SubjectFromContext(r.Context())
-	return h.resolveSubjectPair(body.Type, body.ID, jwtType, jwtID)
+	store := h.store(r)
+	st, sid, err := h.resolveSubjectPair(body.Type, body.ID, jwtType, jwtID, h.mayAssertSubject(r, store), authenticated(r))
+	if errors.Is(err, errSubjectForbidden) {
+		return "", "", h.assertionDenied(r, store)
+	}
+	return st, sid, err
 }
 
 // requireSearchRole gates the reverse-search endpoints: if SearchRequiredRole is
@@ -688,6 +775,7 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jwtType, jwtID := SubjectFromContext(r.Context())
+	assert := h.mayAssertSubject(r, store)
 
 	// Build the per-evaluation requests, merging the shared subject/action/
 	// resource defaults. An evaluation that cannot be resolved after merging
@@ -713,9 +801,9 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 			bodyID = req.Subject.ID
 		}
 
-		subType, subID, serr := h.resolveSubjectPair(bodyType, bodyID, jwtType, jwtID)
+		subType, subID, serr := h.resolveSubjectPair(bodyType, bodyID, jwtType, jwtID, assert, authenticated(r))
 		if serr != nil && errors.Is(serr, errSubjectForbidden) {
-			writeForbidden(w, fmt.Sprintf("evaluation[%d]: %s", i, serr.Error()))
+			writeForbidden(w, fmt.Sprintf("evaluation[%d]: %s", i, h.assertionDenied(r, store).Error()))
 			return
 		}
 		subProps := e.Subject.Properties
