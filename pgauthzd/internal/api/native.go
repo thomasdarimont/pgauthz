@@ -551,7 +551,7 @@ func (h *Handler) Explain(w http.ResponseWriter, r *http.Request) {
 		h.logDecision(r.Context(), entry, start, parsed.Decision.Allowed, map[string]any{"reason": parsed.Decision.Reason}, err)
 	}
 	if err != nil {
-		writeInternalError(w, err)
+		writeDecisionError(w, err)
 		return
 	}
 	recordExplainGateClauses(out)

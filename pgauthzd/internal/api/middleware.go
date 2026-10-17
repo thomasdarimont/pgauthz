@@ -267,10 +267,7 @@ func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 		// Exempt routes (incl. the store-scoped discovery variant). The OpenAPI
 		// document is public by design — it ships in the repository; serving it
 		// unauthenticated lets tooling discover the contract.
-		if r.URL.Path == "/healthz" || r.URL.Path == "/livez" || r.URL.Path == "/readyz" ||
-			strings.HasPrefix(r.URL.Path, "/.well-known/") ||
-			r.URL.Path == "/pgauthz/v1/openapi.json" || r.URL.Path == "/pgauthz/v1/openapi.yaml" ||
-			(strings.HasPrefix(r.URL.Path, "/stores/") && strings.HasSuffix(r.URL.Path, "/.well-known/authzen-configuration")) {
+		if isPublicPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -156,6 +156,15 @@ services:
       # Keycloak realm + authz-api client paths follow (aggregated).
       JWT_ROLES_CLAIM: roles,realm_access.roles,resource_access.authz-api.roles
       FORWARD_TOKEN_TO_OPA: "true"
+      # The embedded Swagger UI (/pgauthz/v1/docs) logs in at Keycloak —
+      # authorization code + PKCE with the public `swagger-ui` client
+      # (keycloak/terraform/client.swagger-ui.tf) — instead of a pasted token.
+      SWAGGER_UI_OIDC_ISSUER: https://id.pgauthz.test/realms/pgauthz
+      SWAGGER_UI_OIDC_CLIENT_ID: swagger-ui
+      # Name the two endpoints so the document describes the ONE flow the UI
+      # uses (one Authorize section) instead of every grant type Keycloak lists.
+      SWAGGER_UI_OIDC_AUTHORIZATION_URL: https://id.pgauthz.test/realms/pgauthz/protocol/openid-connect/auth
+      SWAGGER_UI_OIDC_TOKEN_URL: https://id.pgauthz.test/realms/pgauthz/protocol/openid-connect/token
       ACTOR_CLAIM: act.client_id
       ACTOR_SUBJECT_TYPE: agent
 
@@ -171,6 +180,12 @@ services:
       JWT_ROLES_CLAIM: roles,realm_access.roles,resource_access.authz-api.roles
       ACTOR_CLAIM: act.client_id
       ACTOR_SUBJECT_TYPE: agent
+      SWAGGER_UI_OIDC_ISSUER: https://id.pgauthz.test/realms/pgauthz
+      SWAGGER_UI_OIDC_CLIENT_ID: swagger-ui
+      # Name the two endpoints so the document describes the ONE flow the UI
+      # uses (one Authorize section) instead of every grant type Keycloak lists.
+      SWAGGER_UI_OIDC_AUTHORIZATION_URL: https://id.pgauthz.test/realms/pgauthz/protocol/openid-connect/auth
+      SWAGGER_UI_OIDC_TOKEN_URL: https://id.pgauthz.test/realms/pgauthz/protocol/openid-connect/token
 
 volumes:
   keycloak-db-data:

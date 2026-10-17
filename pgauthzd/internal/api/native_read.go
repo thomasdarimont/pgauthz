@@ -88,7 +88,7 @@ func (h *Handler) NativeCheck(w http.ResponseWriter, r *http.Request) {
 		recordDecision(store, metrics.APINative, decision, err)
 		h.logDecision(r.Context(), entry, start, decision, nil, err)
 		if err != nil {
-			writeInternalError(w, err)
+			writeDecisionError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"allowed": decision})
@@ -100,7 +100,7 @@ func (h *Handler) NativeCheck(w http.ResponseWriter, r *http.Request) {
 			recordDecisionDetail(store, metrics.APINative, detail, err)
 			h.logDecision(r.Context(), entry, start, decision, detail, err)
 			if err != nil {
-				writeInternalError(w, err)
+				writeDecisionError(w, err)
 				return
 			}
 			if req.Detail {
@@ -116,7 +116,7 @@ func (h *Handler) NativeCheck(w http.ResponseWriter, r *http.Request) {
 	recordDecision(store, metrics.APINative, decision, err)
 	h.logDecision(r.Context(), entry, start, decision, nil, err)
 	if err != nil {
-		writeInternalError(w, err)
+		writeDecisionError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"allowed": decision})
@@ -205,7 +205,7 @@ func (h *Handler) NativeCheckBatch(w http.ResponseWriter, r *http.Request) {
 	results, err := h.raw.CheckAccessBatch(r.Context(), store, evals, req.Context, semantic)
 	h.logBatch(r, "check-batch", "engine", evals, req.Context, results, start, err)
 	if err != nil {
-		writeInternalError(w, err)
+		writeDecisionError(w, err)
 		return
 	}
 	out := make([]bool, len(results))

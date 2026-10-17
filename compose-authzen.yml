@@ -55,6 +55,12 @@ services:
       # pick the advertised PDP identifier); the demo stack opts in via env.sh
       # so the conformance suite's discovery variant can run (conformance/).
       TRUST_FORWARDED_HEADERS: "${TRUST_FORWARDED_HEADERS:-false}"
+      # Browser origins allowed on the authenticated API (Swagger UI "Try it
+      # out" from another port, a browser PEP). Empty = none.
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
+      # Embedded Swagger UI at /pgauthz/v1/docs (developer convenience; the
+      # demo stack turns it on via env.sh, production leaves it off).
+      SWAGGER_UI_ENABLED: "${SWAGGER_UI_ENABLED:-false}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       DECISION_LOG: "${DECISION_LOG:-off}"
       DECISION_LOG_SAMPLE: "${DECISION_LOG_SAMPLE:-1}"
@@ -105,6 +111,12 @@ services:
       # pick the advertised PDP identifier); the demo stack opts in via env.sh
       # so the conformance suite's discovery variant can run (conformance/).
       TRUST_FORWARDED_HEADERS: "${TRUST_FORWARDED_HEADERS:-false}"
+      # Browser origins allowed on the authenticated API (Swagger UI "Try it
+      # out" from another port, a browser PEP). Empty = none.
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
+      # Embedded Swagger UI at /pgauthz/v1/docs (developer convenience; the
+      # demo stack turns it on via env.sh, production leaves it off).
+      SWAGGER_UI_ENABLED: "${SWAGGER_UI_ENABLED:-false}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       DECISION_LOG: "${DECISION_LOG:-off}"
       DECISION_LOG_SAMPLE: "${DECISION_LOG_SAMPLE:-1}"

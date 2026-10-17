@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -449,8 +450,8 @@ func TestPageLimit(t *testing.T) {
 	}
 }
 
-// path reads a nested value out of a context map.
-func path(m map[string]any, keys ...string) any {
+// ctxPath reads a nested value out of a context map.
+func ctxPath(m map[string]any, keys ...string) any {
 	var cur any = m
 	for _, k := range keys {
 		mm, ok := cur.(map[string]any)
@@ -473,7 +474,7 @@ func TestPropertiesBecomeConditionContext(t *testing.T) {
 	pep(mux, http.MethodPost, "/access/v1/evaluation", "application/json",
 		`{"subject":{"type":"user","id":"alice"},"action":{"name":"delete","properties":{"soft":true}},"resource":{"type":"record","id":"record-1"}}`)
 	got := b.singles[len(b.singles)-1].Context
-	if path(got, "action", "properties", "soft") != true || path(got, "action", "name") != "delete" {
+	if ctxPath(got, "action", "properties", "soft") != true || ctxPath(got, "action", "name") != "delete" {
 		t.Fatalf("action block: %v", got)
 	}
 	if _, has := got["subject"]; has {
@@ -486,10 +487,10 @@ func TestPropertiesBecomeConditionContext(t *testing.T) {
 	pep(mux, http.MethodPost, "/access/v1/evaluation", "application/json",
 		`{"subject":{"type":"user","id":"bob","properties":{"role":"admin"}},"action":{"name":"write"},"resource":{"type":"record","id":"record-2","properties":{"status":"archived"}},"context":{"time":"2025-06-27T18:03-07:00","resource":"stale"}}`)
 	got = b.singles[len(b.singles)-1].Context
-	if path(got, "subject", "properties", "role") != "admin" || path(got, "subject", "id") != "bob" || path(got, "subject", "type") != "user" {
+	if ctxPath(got, "subject", "properties", "role") != "admin" || ctxPath(got, "subject", "id") != "bob" || ctxPath(got, "subject", "type") != "user" {
 		t.Fatalf("subject block: %v", got)
 	}
-	if path(got, "resource", "properties", "status") != "archived" || path(got, "resource", "id") != "record-2" {
+	if ctxPath(got, "resource", "properties", "status") != "archived" || ctxPath(got, "resource", "id") != "record-2" {
 		t.Fatalf("resource block replaces the caller's key: %v", got)
 	}
 	if got["time"] != "2025-06-27T18:03-07:00" {
@@ -527,16 +528,16 @@ func TestBatchItemsCarryTheirOwnContext(t *testing.T) {
 		t.Fatalf("want one batch of 3, got %v", b.batches)
 	}
 	items := b.batches[0]
-	if items[0].ObjectType != "record" || path(items[0].Context, "resource", "type") != "record" || path(items[0].Context, "resource", "properties", "status") != "active" {
+	if items[0].ObjectType != "record" || ctxPath(items[0].Context, "resource", "type") != "record" || ctxPath(items[0].Context, "resource", "properties", "status") != "active" {
 		t.Fatalf("item 0 (type inherited, own properties): %+v", items[0])
 	}
 	if items[0].Context["source"] != "batch" || items[0].Context["time"] != "t0" {
 		t.Fatalf("item 0 inherits the shared context: %v", items[0].Context)
 	}
-	if path(items[1].Context, "resource", "properties", "status") != "archived" || items[1].Context["source"] != "item" || items[1].Context["time"] != "t0" {
+	if ctxPath(items[1].Context, "resource", "properties", "status") != "archived" || items[1].Context["source"] != "item" || items[1].Context["time"] != "t0" {
 		t.Fatalf("item 1 overrides one shared key and keeps the other: %v", items[1].Context)
 	}
-	if items[2].SubjectID != "bob" || path(items[2].Context, "subject", "properties", "role") != "admin" {
+	if items[2].SubjectID != "bob" || ctxPath(items[2].Context, "subject", "properties", "role") != "admin" {
 		t.Fatalf("item 2 subject properties: %+v", items[2])
 	}
 	if _, has := items[2].Context["resource"]; has {
@@ -560,16 +561,45 @@ func TestSearchesCarryProperties(t *testing.T) {
 	if len(b.searches) != 4 {
 		t.Fatalf("want 4 searches, got %d", len(b.searches))
 	}
-	if path(b.searches[0], "resource", "properties", "status") != "archived" || path(b.searches[0], "resource", "id") != "record-2" {
+	if ctxPath(b.searches[0], "resource", "properties", "status") != "archived" || ctxPath(b.searches[0], "resource", "id") != "record-2" {
 		t.Fatalf("subject search: %v", b.searches[0])
 	}
-	if path(b.searches[1], "subject", "properties", "role") != "admin" || path(b.searches[1], "subject", "id") != "bob" {
+	if ctxPath(b.searches[1], "subject", "properties", "role") != "admin" || ctxPath(b.searches[1], "subject", "id") != "bob" {
 		t.Fatalf("resource search: %v", b.searches[1])
 	}
-	if path(b.searches[2], "subject", "properties", "role") != "admin" || path(b.searches[2], "resource", "properties", "status") != "archived" {
+	if ctxPath(b.searches[2], "subject", "properties", "role") != "admin" || ctxPath(b.searches[2], "resource", "properties", "status") != "archived" {
 		t.Fatalf("action search: %v", b.searches[2])
 	}
 	if b.searches[3] != nil {
 		t.Fatalf("no properties → nil context, got %v", b.searches[3])
+	}
+}
+
+// unknownTypeBackend answers every decision the way the engine does for a type
+// the model does not declare: authz.ErrInvalidRequest with the engine message.
+type unknownTypeBackend struct{ authz.Backend }
+
+func (unknownTypeBackend) CheckAccess(context.Context, authz.EvalRequest) (bool, error) {
+	return false, fmt.Errorf("%w: Unknown type: string", authz.ErrInvalidRequest)
+}
+func (unknownTypeBackend) CheckAccessBatch(context.Context, string, []authz.EvalRequest, map[string]any, string) ([]authz.EvalResult, error) {
+	return nil, fmt.Errorf("%w: Unknown relation: fly", authz.ErrInvalidRequest)
+}
+
+// A subject/resource type or action the store's model does not declare is the
+// caller's error: 400 with the engine's message, not an opaque 500 (what
+// Swagger UI's placeholder body "string" ran into).
+func TestUnknownTypeIsBadRequest(t *testing.T) {
+	h := NewHandler(unknownTypeBackend{}, unknownTypeBackend{}, nil, &config.Config{DefaultStore: "demo", AllowSubjectOverride: true})
+	mux := newPublicMux(h, false)
+	w := pep(mux, http.MethodPost, "/access/v1/evaluation", "application/json",
+		`{"subject":{"type":"string","id":"string"},"action":{"name":"string"},"resource":{"type":"string","id":"string"}}`)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "Unknown type: string") {
+		t.Fatalf("evaluation: want 400 naming the type, got %d %s", w.Code, w.Body.String())
+	}
+	w = pep(mux, http.MethodPost, "/access/v1/evaluations", "application/json",
+		`{"subject":{"type":"user","id":"alice"},"evaluations":[{"action":{"name":"fly"},"resource":{"type":"record","id":"record-1"}}]}`)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "Unknown relation: fly") {
+		t.Fatalf("evaluations: want 400 naming the relation, got %d %s", w.Code, w.Body.String())
 	}
 }

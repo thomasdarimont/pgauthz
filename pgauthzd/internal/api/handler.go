@@ -105,7 +105,7 @@ func NewRouter(backend, raw, rawWrite authz.Backend, cfg *config.Config, jwtMW *
 	h.listener = "public"
 	h.requireWriterRole = true
 	h.gateDiagnostics = true
-	return withMiddleware(newPublicMux(h, cfg.UsesOPA()), jwtMW, cfg.HTTPMaxBodyBytes)
+	return withMiddleware(newPublicMux(h, cfg.UsesOPA()), jwtMW, cfg.HTTPMaxBodyBytes, cfg.CORSAllowedOrigins)
 }
 
 // newPublicMux wires the PUBLIC listener's route set. Kept as its own function
@@ -128,6 +128,13 @@ func newPublicMux(h *Handler, usesOPA bool) *http.ServeMux {
 	if h.cfg.OpenAPIEnabled {
 		mux.HandleFunc("GET /pgauthz/v1/openapi.json", h.OpenAPIJSON)
 		mux.HandleFunc("GET /pgauthz/v1/openapi.yaml", h.OpenAPIYAML)
+		// The embedded Swagger UI for that document (SWAGGER_UI_ENABLED,
+		// default off): a developer convenience, same-origin, assets
+		// vendored into the binary (swaggerui.go).
+		if h.cfg.SwaggerUIEnabled {
+			mux.HandleFunc("GET /pgauthz/v1/docs", h.SwaggerUI)
+			mux.HandleFunc("GET /pgauthz/v1/docs/{asset}", h.SwaggerUIAsset)
+		}
 	}
 	return mux
 }
@@ -159,10 +166,13 @@ func NewCallbackRouter(h *Handler, serviceToken string) http.Handler {
 	return Metrics(mux, handler)
 }
 
-func withMiddleware(mux *http.ServeMux, jwtMW *JWTMiddleware, maxBodyBytes int64) http.Handler {
+func withMiddleware(mux *http.ServeMux, jwtMW *JWTMiddleware, maxBodyBytes int64, corsOrigins []string) http.Handler {
 	var handler http.Handler = mux
 	handler = MaxBody(maxBodyBytes)(handler)
 	handler = jwtMW.Middleware(handler)
+	// CORS sits OUTSIDE the JWT middleware: a browser's preflight carries no
+	// Authorization and must be answered before authentication.
+	handler = CORS(corsOrigins)(handler)
 	handler = RequestID(handler)
 	handler = Logging(handler)
 	handler = Recovery(handler)
@@ -614,7 +624,7 @@ func (h *Handler) evaluateSingle(w http.ResponseWriter, r *http.Request, req Eva
 		recordDecisionDetail(store, metrics.APIAuthZEN, detail, err)
 		h.logDecision(r.Context(), entry, start, decision, detail, err)
 		if err != nil {
-			writeInternalError(w, err)
+			writeDecisionError(w, err)
 			return
 		}
 		if wantDetail {
@@ -629,7 +639,7 @@ func (h *Handler) evaluateSingle(w http.ResponseWriter, r *http.Request, req Eva
 	recordDecision(store, metrics.APIAuthZEN, decision, err)
 	h.logDecision(r.Context(), entry, start, decision, nil, err)
 	if err != nil {
-		writeInternalError(w, err)
+		writeDecisionError(w, err)
 		return
 	}
 
@@ -790,7 +800,7 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusForbidden, body)
 			return
 		}
-		writeInternalError(w, err)
+		writeDecisionError(w, err)
 		return
 	}
 

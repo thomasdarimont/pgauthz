@@ -126,6 +126,9 @@ export ALLOW_SUBJECT_OVERRIDE="${ALLOW_SUBJECT_OVERRIDE:-true}"
 # and fetches discovery through it; the demo stack trusts the front's
 # X-Forwarded-* headers so the advertised PDP identifier matches (prod: false).
 export TRUST_FORWARDED_HEADERS="${TRUST_FORWARDED_HEADERS:-true}"
+# The embedded Swagger UI (GET /pgauthz/v1/docs) — a developer convenience the
+# demo stack has on; compose defaults it off for production copies.
+export SWAGGER_UI_ENABLED="${SWAGGER_UI_ENABLED:-true}"
 
 # Same for the OPA read path: the demo's OPA integration tests evaluate access
 # for explicit subjects with no JWT, so the demo opts into trusted-PEP mode

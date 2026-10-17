@@ -43,6 +43,42 @@ Postman / Swagger UI for typed clients and exploration:
 curl -s http://localhost:8090/pgauthz/v1/openapi.json | jq .info
 ```
 
+**Explore it with Swagger UI.** pgauthzd embeds Swagger UI behind a flag:
+with `SWAGGER_UI_ENABLED=true` (the demo stack's default via env.sh; off
+otherwise) it serves the UI at **`GET /pgauthz/v1/docs`** — same origin as the
+API, so "Try it out" works without CORS; click **Authorize** and paste a JWT
+(`./scripts/mint-demo-token.sh` mints one from the demo key — `alice` by
+default, `alice authz_writer` for writes, `--pep` for a subject-less PEP
+credential). The
+assets are vendored into the binary (`internal/api/swaggerui/`, swagger-ui-dist
+pinned by `scripts/vendor-swagger-ui.sh`, Apache-2.0), nothing is loaded from
+a CDN, and the page's Content-Security-Policy allows scripts from this origin
+only. The flag needs `OPENAPI_ENABLED`.
+
+```bash
+open http://localhost:8090/pgauthz/v1/docs      # e.g. GET /.well-known/authzen-configuration/stores/demo
+```
+
+**Log in instead of pasting a token.** With an OpenID Provider in front
+(`./start.sh --keycloak`), `SWAGGER_UI_OIDC_ISSUER` + `SWAGGER_UI_OIDC_CLIENT_ID`
+add an `oidc` scheme to the Authorize dialog: the UI runs the authorization
+code flow with PKCE against the issuer as a public client, lands back on its
+own `oauth2-redirect.html`, and sends the access token as the bearer. The
+Keycloak overlay sets both on the instances that trust Keycloak
+(`pgauthzd-opa` on :8091, `pgauthzd-full` on :8092) and provisions the
+`swagger-ui` client with those redirect URIs, the `authz-api` audience and the
+`subject_type` claim (`keycloak/terraform/client.swagger-ui.tf`); log in as
+`alice` / `password` at `http://localhost:8091/pgauthz/v1/docs`.
+
+An external UI works too: the served document's `servers` entry is stamped
+with the instance's public base URL (the same `BASE_URL` /
+`TRUST_FORWARDED_HEADERS` rules as discovery), so a Swagger UI or Postman that
+loads `/pgauthz/v1/openapi.json` calls pgauthzd, not itself. The public
+endpoints (discovery, health, the document) answer any browser origin; for the
+authenticated ones the browser needs pgauthzd to allow the UI's origin —
+`CORS_ALLOWED_ORIGINS=http://localhost:8095` for
+`docker run --rm -p 8095:8080 -e SWAGGER_JSON_URL=http://localhost:8090/pgauthz/v1/openapi.json swaggerapi/swagger-ui`.
+
 The document cannot silently drift from the code: `internal/api/openapi_test.go`
 enforces **bidirectional route coverage** (every documented path must resolve in
 the production router, every registered route must be documented) and validates
@@ -278,6 +314,45 @@ When no JWT subject is present (e.g. a no-auth/system deployment), the body
 subject is used regardless of the flag. A PEP credential for the OpenID
 conformance suite therefore carries no `sub` (see `conformance/`).
 
+### Two ways to call pgauthzd
+
+The flag encodes a choice every integration makes: **whose token** reaches
+pgauthzd. Both are first-class; pick per instance, not per request.
+
+| | **Forward the user's token** (self-subject) | **Ask as a PEP** (trusted PEP) |
+|---|---|---|
+| Who calls | the application, with the end user's access token (a BFF, a gateway, Swagger UI after login) | a backend with its **own** credential (service account, workload identity), on behalf of whichever user it serves |
+| `ALLOW_SUBJECT_OVERRIDE` | `false` (default) | `true` |
+| Subject of the decision | the token: `preferred_username` + `subject_type` (configurable claims) | the request body: `subject`, per item in a batch |
+| Body `subject` | optional; if present it must equal the token's (else `403`) | required (a missing one is `400`, an unresolvable batch item `decision: false`) |
+| Can ask about other users? | no — that is the point | yes — that is the point; the token proves the caller is a PEP you trust |
+| Writes / recorded events attributed to | the token's subject (`performed_by` / `recorded_by` must match it) | the body's assertion (same trust) |
+| Decision log | `actor` = `subject` | `actor` = the PEP's identity, `subject` = who was decided about |
+| Typical | user-facing APIs, the playground, the Keycloak demo on :8091 | a PDP for many apps, batch pre-authorization, the OpenID conformance suite |
+
+```bash
+# Forward the user's token: the token says who; the body may omit the subject.
+curl -s -X POST http://localhost:8091/stores/demo/access/v1/evaluation \
+  -H "Authorization: Bearer $ALICE_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}'
+
+# Ask as a PEP: the service's token authenticates the caller, the body names the user.
+curl -s -X POST http://pdp.internal/stores/demo/access/v1/evaluation \
+  -H "Authorization: Bearer $SERVICE_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"subject":{"type":"internal_user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}'
+```
+
+Scoping a PEP's credential is what keeps the second mode safe: a dedicated
+client or issuer for PEPs, bound to its stores through the per-issuer store
+binding, `REQUIRED_SCOPE`, the writer/recorder roles only where writes are
+intended, and network reachability. If one deployment needs both patterns, run
+two instances (or two issuers with store bindings) rather than switching an
+instance that also sees end-user tokens to `true`. The decision log
+([ADR 0013](../docs/adr/0013-decision-log.md)) records `actor` and `subject`
+separately, so "who asked about whom" is answered on every line in either
+mode. The operational side — which value to run with and why — is in
+[PRODUCTION.md → AuthZEN subject policy](../docs/PRODUCTION.md#authzen-subject-policy).
+
 ## Multi-Store Support
 
 Requests are scoped to an authorization store. The store is selected via
@@ -406,7 +481,13 @@ All configuration is via environment variables.
 | Variable | Default | Description |
 |---|---|---|
 | `LISTEN_ADDR` | `:8080` | HTTP bind address |
-| `BASE_URL` | auto-detect | Base URL for `.well-known` response (scheme + host the PDP is reachable under) |
+| `BASE_URL` | auto-detect | Base URL for `.well-known` response and the served OpenAPI `servers` entry (scheme + host the PDP is reachable under) |
+| `SWAGGER_UI_ENABLED` | `false` | Serve the embedded Swagger UI at `GET /pgauthz/v1/docs` (same-origin "Try it out"; assets vendored, no CDN). Needs `OPENAPI_ENABLED`. A developer convenience — leave off in production |
+| `SWAGGER_UI_OIDC_ISSUER` | | With `SWAGGER_UI_OIDC_CLIENT_ID`: the embedded UI logs in at this OpenID Provider (authorization code + PKCE) instead of a pasted token — the served document gains an `oidc` security scheme on every authenticated operation. Must be an issuer in `JWT_ISSUERS`; the client needs redirect URI `<public base>/pgauthz/v1/docs/oauth2-redirect.html` |
+| `SWAGGER_UI_OIDC_CLIENT_ID` | | The public client registered for the UI at that issuer (demo: `swagger-ui`, `keycloak/terraform/client.swagger-ui.tf`) |
+| `SWAGGER_UI_OIDC_SCOPES` | `openid` | Scopes the UI requests (space-separated) |
+| `SWAGGER_UI_OIDC_AUTHORIZATION_URL`, `SWAGGER_UI_OIDC_TOKEN_URL` | | Optional, both or neither: with them the document describes the one flow the UI uses (oauth2 `authorizationCode`), so Authorize shows a single login; without them it points at the issuer's discovery document and Swagger UI renders a section per grant type the provider advertises |
+| `CORS_ALLOWED_ORIGINS` | *empty* | Browser origins (comma-separated, `*` = any) that may call the **authenticated** API cross-origin — a browser-based PEP, Swagger UI's "Try it out". The public endpoints (discovery, health, the OpenAPI document) answer any origin regardless. Empty = no CORS on the authenticated surface |
 | `TRUST_FORWARDED_HEADERS` | `false` | Build the `.well-known` base from `X-Forwarded-Proto` / `X-Forwarded-Host` (an instance behind a TLS-terminating proxy that sets them). Off by default — a client could otherwise choose what the PDP advertises as its identifier. `BASE_URL` wins when set |
 | `JWKS_URL` | | URL to JWKS endpoint (required if `JWKS_FILE` not set) |
 | `JWKS_FILE` | | Path to local JWKS file (required if `JWKS_URL` not set) |

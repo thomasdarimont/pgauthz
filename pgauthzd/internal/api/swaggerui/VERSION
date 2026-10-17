@@ -1,0 +1,10 @@
+swagger-ui-dist 5.33.1 (npm, released 2026-10-01), Apache-2.0 — see LICENSE, NOTICE,
+swagger-ui-bundle.js.LICENSE.txt. Vendored by scripts/vendor-swagger-ui.sh, which pins
+the tarball's sha256; do not edit these files by hand.
+
+tarball sha256  b468ff5f49451f194a739bc245c85b28c7d3d33057a8409a9b2369da37e215b9
+swagger-ui.css  1ac324f7dcd27e4b9386b4bd6421271ec147e922a22c05ba24b11515e9aa6321
+swagger-ui-bundle.js  050bc415ee7048dcd881682678f720264e7da5e373f7461d7c58c755305255f7
+favicon-32x32.png  3ed612f41e050ca5e7000cad6f1cbe7e7da39f65fca99c02e99e6591056e5837
+oauth2-redirect.html  f3546c5b74b44eac7de5b4193a641b4f23365470c109b490c566bac0de446745
+oauth2-redirect.js  a5c8a34e09e49737382cc5019446eec7c3db3461963fc5bfe448361d3c5549e9

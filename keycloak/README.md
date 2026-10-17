@@ -117,6 +117,18 @@ eval "$(./keycloak/get-token.sh --service app-dms)"   # client_credentials token
 client also has its own service account (`get-token.sh --service`), but it has no
 `subject_type`, so — by the fail-closed rule — it is **denied** until granted one.
 
+### Swagger UI login: `swagger-ui`
+
+A **public** client (`terraform/client.swagger-ui.tf`) for pgauthzd's embedded
+Swagger UI (`/pgauthz/v1/docs`, `SWAGGER_UI_ENABLED`): authorization code +
+PKCE (S256 enforced) from the browser, redirect URIs the UI's own
+`oauth2-redirect.html` on `pgauthzd-opa` (:8091, also `api.pgauthz.test`) and
+`pgauthzd-full` (:8092), the `authz-api` audience and the `subject_type` claim
+like every other client. The overlay points those instances at it
+(`SWAGGER_UI_OIDC_ISSUER` / `SWAGGER_UI_OIDC_CLIENT_ID`), so **Authorize** in
+the UI opens the Keycloak login (`alice` / `password`) instead of asking for a
+pasted token.
+
 ### Agent delegation: `acme-app`, `acme_assist`, `acme-other-agent`
 
 Three more clients (`terraform/client.agentic.tf`) back

@@ -134,6 +134,12 @@ services:
       # SECURITY: token-only by default (see pgauthzd-decision). The demo/test
       # stack opts into trusted-PEP mode via env.sh, not this file.
       ALLOW_SUBJECT_OVERRIDE: "${ALLOW_SUBJECT_OVERRIDE:-false}"
+      # Same developer conveniences as the direct instances (compose-authzen.yml):
+      # discovery base from the proxy's X-Forwarded-*, browser origins, the
+      # embedded Swagger UI. All off unless env.sh (demo stack) turns them on.
+      TRUST_FORWARDED_HEADERS: "${TRUST_FORWARDED_HEADERS:-false}"
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
+      SWAGGER_UI_ENABLED: "${SWAGGER_UI_ENABLED:-false}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       DECISION_LOG: "${DECISION_LOG:-off}"
       DECISION_LOG_SAMPLE: "${DECISION_LOG_SAMPLE:-1}"

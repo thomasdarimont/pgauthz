@@ -27,6 +27,7 @@ combine several.
   - [Marker tuples and exclusion — archived, under legal hold, draft only](#marker-tuples-and-exclusion--archived-under-legal-hold-draft-only)
   - [Object wildcard, bulk delete, expiry — suspended, offboarded, break-glass](#object-wildcard-bulk-delete-expiry--suspended-offboarded-break-glass)
   - [Search API as a JOIN — show me only what I may see](#search-api-as-a-join--show-me-only-what-i-may-see)
+  - [Forward the user's token, or ask as a PEP — two ways to call the daemon](#forward-the-users-token-or-ask-as-a-pep--two-ways-to-call-the-daemon)
   - [Time travel and the audit trail — could Grace read payroll last Tuesday, and who revoked it?](#time-travel-and-the-audit-trail--could-grace-read-payroll-last-tuesday-and-who-revoked-it)
   - [Changefeed — react to changes: cache invalidation, sync](#changefeed--react-to-changes-cache-invalidation-sync)
   - [Policy hooks (OPA) — an org-wide rule that narrows but never widens](#policy-hooks-opa--an-org-wide-rule-that-narrows-but-never-widens)
@@ -788,6 +789,35 @@ SELECT d.* FROM documents d
  ORDER BY d.created_at DESC LIMIT 20;
 ```
 Shown in: [`examples/filtering/`](../examples/filtering/README.md).
+
+### Forward the user's token, or ask as a PEP — two ways to call the daemon
+
+**Scenario:** An application wants a decision for the user it is serving.
+Either the user's own access token is at hand (a BFF, a gateway, a browser
+client after login) or the application only has its own service identity and
+knows the user from its session.
+
+**Solution:** Both work against the same AuthZEN endpoint; the difference is
+whose token arrives and therefore who may name the subject. With the user's
+token forwarded, the token *is* the subject — the body's `subject` may be
+omitted and, if present, must match; nothing can ask about anyone else. With a
+service token the caller is a trusted enforcement point and names the subject
+in the body, per item in a batch; the instance runs with
+`ALLOW_SUBJECT_OVERRIDE=true` and the trust moves to the credential, which is
+scoped by issuer, store binding, scope and roles. The decision log records the
+authenticated `actor` and the decided `subject` separately in both cases.
+
+```bash
+# user's token: the body names no subject
+-d '{"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}'
+# service token (trusted PEP): the body names the user
+-d '{"subject":{"type":"internal_user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}'
+```
+
+**Shown in full:** [`pgauthzd/README.md` → Two ways to call pgauthzd](../pgauthzd/README.md#two-ways-to-call-pgauthzd)
+(the comparison table, both requests, attribution and logging);
+[`PRODUCTION.md` → AuthZEN subject policy](PRODUCTION.md#authzen-subject-policy)
+for the deployment decision.
 
 ### Time travel and the audit trail — could Grace read payroll last Tuesday, and who revoked it?
 

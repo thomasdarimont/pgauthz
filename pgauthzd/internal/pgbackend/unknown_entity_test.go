@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 )
 
 // The search functions turn the engine's 'Unknown type' / 'Unknown relation'
@@ -34,5 +36,18 @@ func TestIsUnknownEntity(t *testing.T) {
 				t.Fatalf("isUnknownEntity(%v) = %v, want %v", c.err, got, c.want)
 			}
 		})
+	}
+}
+
+// On the decision paths an unknown entity becomes authz.ErrInvalidRequest
+// carrying the engine's message; other failures keep their function prefix.
+func TestDecisionError(t *testing.T) {
+	unknown := decisionError("check_access", &pgconn.PgError{Code: "P0001", Message: "Unknown type: string"})
+	if !errors.Is(unknown, authz.ErrInvalidRequest) || unknown.Error() != "invalid request: Unknown type: string" {
+		t.Fatalf("unknown type: %v", unknown)
+	}
+	other := decisionError("check_access", errors.New("connection reset"))
+	if errors.Is(other, authz.ErrInvalidRequest) || other.Error() != "check_access: connection reset" {
+		t.Fatalf("other error: %v", other)
 	}
 }

@@ -214,6 +214,46 @@ type Config struct {
 	// minimization).
 	OpenAPIEnabled bool
 
+	// SwaggerUIEnabled (SWAGGER_UI_ENABLED, default false) serves an embedded
+	// Swagger UI at GET /pgauthz/v1/docs for the OpenAPI document above —
+	// same origin, so "Try it out" needs no CORS. The assets are vendored
+	// into the binary (internal/api/swaggerui, pinned version), never loaded
+	// from a CDN. Off by default: it is a developer convenience, not part of
+	// the API surface. Needs OPENAPI_ENABLED.
+	SwaggerUIEnabled bool
+	// SwaggerUIOIDCIssuer / SwaggerUIOIDCClientID / SwaggerUIOIDCScopes
+	// (SWAGGER_UI_OIDC_ISSUER, SWAGGER_UI_OIDC_CLIENT_ID, SWAGGER_UI_OIDC_SCOPES
+	// default "openid") let the embedded Swagger UI log a user in with the
+	// authorization code flow + PKCE against an OpenID Provider instead of a
+	// pasted token: the served OpenAPI document gains an `oidc` security
+	// scheme (openIdConnect, the issuer's discovery URL) on every
+	// authenticated operation, and the UI is initialised with the public
+	// client id. The issuer must be one pgauthzd trusts (JWT_ISSUERS) and the
+	// client must be registered there with redirect URI
+	// <public base>/pgauthz/v1/docs/oauth2-redirect.html (keycloak/terraform/
+	// client.swagger-ui.tf is the demo's).
+	SwaggerUIOIDCIssuer   string
+	SwaggerUIOIDCClientID string
+	SwaggerUIOIDCScopes   string
+	// SwaggerUIOIDCAuthorizationURL / SwaggerUIOIDCTokenURL
+	// (SWAGGER_UI_OIDC_AUTHORIZATION_URL, SWAGGER_UI_OIDC_TOKEN_URL, optional,
+	// both or neither): with them the served document describes exactly ONE
+	// flow — oauth2 authorizationCode with these endpoints — so the Authorize
+	// dialog shows one login. Without them it names the issuer's discovery URL
+	// (openIdConnect), which works but makes Swagger UI render a section per
+	// grant type the provider advertises.
+	SwaggerUIOIDCAuthorizationURL string
+	SwaggerUIOIDCTokenURL         string
+
+	// CORSAllowedOrigins (CORS_ALLOWED_ORIGINS, comma-separated, default empty)
+	// are the browser origins that may call the AUTHENTICATED API cross-origin
+	// — a browser-based PEP, or Swagger UI's "Try it out" from another port.
+	// "*" allows any origin. The public endpoints (discovery, health, the
+	// OpenAPI document) answer any origin regardless: they carry no
+	// credentials and are public by design. Empty = no CORS headers on the
+	// authenticated surface (browsers refuse cross-origin calls).
+	CORSAllowedOrigins []string
+
 	// DeploymentEnvironment (DEPLOYMENT_ENVIRONMENT, e.g. "production") is a
 	// SERVER-configured label forwarded to OPA policy hooks as
 	// input.deployment.environment (ADR 0011). Environment-gated hooks read it
@@ -382,69 +422,76 @@ var deploymentEnvRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,31}$`)
 func Load() (*Config, error) {
 	envErrs = nil // fresh collection per Load (tests call it repeatedly)
 	c := &Config{
-		Profile:                      Profile(env("PGAUTHORIZER_PROFILE", "")),
-		ListenAddr:                   env("LISTEN_ADDR", ":8080"),
-		InternalListenAddr:           env("INTERNAL_LISTEN_ADDR", ""),
-		InternalServiceToken:         env("INTERNAL_SERVICE_TOKEN", ""),
-		InternalTLSCert:              env("INTERNAL_TLS_CERT", ""),
-		InternalTLSKey:               env("INTERNAL_TLS_KEY", ""),
-		InternalClientCA:             env("INTERNAL_CLIENT_CA", ""),
-		BaseURL:                      env("BASE_URL", ""),
-		TrustForwardedHeaders:        envBool("TRUST_FORWARDED_HEADERS", false),
-		JWKSURL:                      env("JWKS_URL", ""),
-		JWKSFile:                     env("JWKS_FILE", ""),
-		JWTIssuer:                    env("JWT_ISSUER", ""),
-		JWTAudience:                  env("JWT_AUDIENCE", ""),
-		RequiredScope:                env("REQUIRED_SCOPE", ""),
-		RolesClaims:                  env("JWT_ROLES_CLAIM", "roles"),
-		SearchRequiredRole:           env("SEARCH_REQUIRED_ROLE", ""),
-		AllowUnboundMultiIssuer:      envBool("ALLOW_UNBOUND_MULTI_ISSUER", false),
-		WatchRequiredRole:            env("WATCH_REQUIRED_ROLE", ""),
-		ExplainRequiredRole:          env("EXPLAIN_REQUIRED_ROLE", ""),
-		WriterRole:                   env("WRITER_ROLE", "authz_writer"),
-		RecorderRole:                 env("RECORDER_ROLE", "authz_recorder"),
-		DBRoleClaim:                  env("DB_ROLE_CLAIM", ""),
-		SubjectTypeClaim:             env("SUBJECT_TYPE_CLAIM", "subject_type"),
-		SubjectTypeDefault:           env("SUBJECT_TYPE_DEFAULT", "internal_user"),
-		SubjectIDClaim:               env("SUBJECT_ID_CLAIM", "preferred_username"),
-		SubjectIDFallback:            env("SUBJECT_ID_FALLBACK_CLAIM", "sub"),
-		ActorClaim:                   env("ACTOR_CLAIM", ""),
-		ActorSubjectType:             env("ACTOR_SUBJECT_TYPE", "agent"),
-		FreshnessPrimaryURL:          env("FRESHNESS_PRIMARY_URL", ""),
-		FreshnessPrimaryPoolMax:      envInt("FRESHNESS_PRIMARY_POOL_MAX", 10),
-		OpenAPIEnabled:               envBool("OPENAPI_ENABLED", true),
-		DeploymentEnvironment:        env("DEPLOYMENT_ENVIRONMENT", ""),
-		AllowOpenDiagnostics:         envBool("ALLOW_OPEN_DIAGNOSTICS", false),
-		AllowMissingAudience:         envBool("ALLOW_MISSING_AUDIENCE", false),
-		OPAMaxResponseBytes:          int64(envInt("OPA_MAX_RESPONSE_BYTES", 10<<20)),
-		CursorSealKey:                env("CURSOR_SEAL_KEY", ""),
-		MetricsListenAddr:            env("METRICS_LISTEN_ADDR", ""),
-		MetricsSampleIntervalSeconds: envInt("METRICS_SAMPLE_INTERVAL_SECONDS", 30),
-		MetricsMaxStores:             envInt("METRICS_MAX_STORES", 100),
-		DefaultStore:                 env("DEFAULT_STORE", "demo"),
-		StoreHeader:                  env("STORE_HEADER", "X-PGAuthz-Store"),
-		RequireStoreBinding:          envBool("REQUIRE_STORE_BINDING", false),
-		RequireDBRoleBinding:         envBool("REQUIRE_DB_ROLE_BINDING", false),
-		AllowSubjectOverride:         envBool("ALLOW_SUBJECT_OVERRIDE", false),
-		DatabaseURL:                  env("DATABASE_URL", ""),
-		DBPoolMax:                    envInt("DB_POOL_MAX", 25),
-		DefaultDBRole:                env("DEFAULT_DB_ROLE", ""),
-		DBRoleCacheTTLSeconds:        envInt("DB_ROLE_CACHE_TTL_SECONDS", 60),
-		HTTPReadHeaderTimeout:        envDuration("HTTP_READ_HEADER_TIMEOUT", 5*time.Second),
-		HTTPIdleTimeout:              envDuration("HTTP_IDLE_TIMEOUT", 60*time.Second),
-		HTTPMaxBodyBytes:             int64(envInt("HTTP_MAX_BODY_BYTES", 10<<20)),
-		OPAURL:                       env("OPA_URL", ""),
-		OPAPackage:                   env("OPA_PACKAGE", "authz"),
-		OPARequestTimeout:            envDuration("OPA_REQUEST_TIMEOUT", 10*time.Second),
-		OPADeepReadinessRequired:     envBool("OPA_DEEP_READINESS_REQUIRED", false),
-		OPAEvalMetrics:               envBool("OPA_EVAL_METRICS", true),
-		ForwardTokenToOPA:            envBool("FORWARD_TOKEN_TO_OPA", false),
-		LogLevel:                     env("LOG_LEVEL", "info"),
-		DecisionLog:                  env("DECISION_LOG", "off"),
-		DecisionLogSample:            envFloat("DECISION_LOG_SAMPLE", 1),
-		DecisionLogDetail:            envBool("DECISION_LOG_DETAIL", false),
-		DecisionLogRequired:          envBool("DECISION_LOG_REQUIRED", false),
-		DecisionLogSearches:          envBool("DECISION_LOG_SEARCHES", false),
+		Profile:                       Profile(env("PGAUTHORIZER_PROFILE", "")),
+		ListenAddr:                    env("LISTEN_ADDR", ":8080"),
+		InternalListenAddr:            env("INTERNAL_LISTEN_ADDR", ""),
+		InternalServiceToken:          env("INTERNAL_SERVICE_TOKEN", ""),
+		InternalTLSCert:               env("INTERNAL_TLS_CERT", ""),
+		InternalTLSKey:                env("INTERNAL_TLS_KEY", ""),
+		InternalClientCA:              env("INTERNAL_CLIENT_CA", ""),
+		BaseURL:                       env("BASE_URL", ""),
+		TrustForwardedHeaders:         envBool("TRUST_FORWARDED_HEADERS", false),
+		JWKSURL:                       env("JWKS_URL", ""),
+		JWKSFile:                      env("JWKS_FILE", ""),
+		JWTIssuer:                     env("JWT_ISSUER", ""),
+		JWTAudience:                   env("JWT_AUDIENCE", ""),
+		RequiredScope:                 env("REQUIRED_SCOPE", ""),
+		RolesClaims:                   env("JWT_ROLES_CLAIM", "roles"),
+		SearchRequiredRole:            env("SEARCH_REQUIRED_ROLE", ""),
+		AllowUnboundMultiIssuer:       envBool("ALLOW_UNBOUND_MULTI_ISSUER", false),
+		WatchRequiredRole:             env("WATCH_REQUIRED_ROLE", ""),
+		ExplainRequiredRole:           env("EXPLAIN_REQUIRED_ROLE", ""),
+		WriterRole:                    env("WRITER_ROLE", "authz_writer"),
+		RecorderRole:                  env("RECORDER_ROLE", "authz_recorder"),
+		DBRoleClaim:                   env("DB_ROLE_CLAIM", ""),
+		SubjectTypeClaim:              env("SUBJECT_TYPE_CLAIM", "subject_type"),
+		SubjectTypeDefault:            env("SUBJECT_TYPE_DEFAULT", "internal_user"),
+		SubjectIDClaim:                env("SUBJECT_ID_CLAIM", "preferred_username"),
+		SubjectIDFallback:             env("SUBJECT_ID_FALLBACK_CLAIM", "sub"),
+		ActorClaim:                    env("ACTOR_CLAIM", ""),
+		ActorSubjectType:              env("ACTOR_SUBJECT_TYPE", "agent"),
+		FreshnessPrimaryURL:           env("FRESHNESS_PRIMARY_URL", ""),
+		FreshnessPrimaryPoolMax:       envInt("FRESHNESS_PRIMARY_POOL_MAX", 10),
+		OpenAPIEnabled:                envBool("OPENAPI_ENABLED", true),
+		CORSAllowedOrigins:            envList("CORS_ALLOWED_ORIGINS"),
+		SwaggerUIEnabled:              envBool("SWAGGER_UI_ENABLED", false),
+		SwaggerUIOIDCIssuer:           strings.TrimRight(env("SWAGGER_UI_OIDC_ISSUER", ""), "/"),
+		SwaggerUIOIDCClientID:         env("SWAGGER_UI_OIDC_CLIENT_ID", ""),
+		SwaggerUIOIDCScopes:           env("SWAGGER_UI_OIDC_SCOPES", "openid"),
+		SwaggerUIOIDCAuthorizationURL: env("SWAGGER_UI_OIDC_AUTHORIZATION_URL", ""),
+		SwaggerUIOIDCTokenURL:         env("SWAGGER_UI_OIDC_TOKEN_URL", ""),
+		DeploymentEnvironment:         env("DEPLOYMENT_ENVIRONMENT", ""),
+		AllowOpenDiagnostics:          envBool("ALLOW_OPEN_DIAGNOSTICS", false),
+		AllowMissingAudience:          envBool("ALLOW_MISSING_AUDIENCE", false),
+		OPAMaxResponseBytes:           int64(envInt("OPA_MAX_RESPONSE_BYTES", 10<<20)),
+		CursorSealKey:                 env("CURSOR_SEAL_KEY", ""),
+		MetricsListenAddr:             env("METRICS_LISTEN_ADDR", ""),
+		MetricsSampleIntervalSeconds:  envInt("METRICS_SAMPLE_INTERVAL_SECONDS", 30),
+		MetricsMaxStores:              envInt("METRICS_MAX_STORES", 100),
+		DefaultStore:                  env("DEFAULT_STORE", "demo"),
+		StoreHeader:                   env("STORE_HEADER", "X-PGAuthz-Store"),
+		RequireStoreBinding:           envBool("REQUIRE_STORE_BINDING", false),
+		RequireDBRoleBinding:          envBool("REQUIRE_DB_ROLE_BINDING", false),
+		AllowSubjectOverride:          envBool("ALLOW_SUBJECT_OVERRIDE", false),
+		DatabaseURL:                   env("DATABASE_URL", ""),
+		DBPoolMax:                     envInt("DB_POOL_MAX", 25),
+		DefaultDBRole:                 env("DEFAULT_DB_ROLE", ""),
+		DBRoleCacheTTLSeconds:         envInt("DB_ROLE_CACHE_TTL_SECONDS", 60),
+		HTTPReadHeaderTimeout:         envDuration("HTTP_READ_HEADER_TIMEOUT", 5*time.Second),
+		HTTPIdleTimeout:               envDuration("HTTP_IDLE_TIMEOUT", 60*time.Second),
+		HTTPMaxBodyBytes:              int64(envInt("HTTP_MAX_BODY_BYTES", 10<<20)),
+		OPAURL:                        env("OPA_URL", ""),
+		OPAPackage:                    env("OPA_PACKAGE", "authz"),
+		OPARequestTimeout:             envDuration("OPA_REQUEST_TIMEOUT", 10*time.Second),
+		OPADeepReadinessRequired:      envBool("OPA_DEEP_READINESS_REQUIRED", false),
+		OPAEvalMetrics:                envBool("OPA_EVAL_METRICS", true),
+		ForwardTokenToOPA:             envBool("FORWARD_TOKEN_TO_OPA", false),
+		LogLevel:                      env("LOG_LEVEL", "info"),
+		DecisionLog:                   env("DECISION_LOG", "off"),
+		DecisionLogSample:             envFloat("DECISION_LOG_SAMPLE", 1),
+		DecisionLogDetail:             envBool("DECISION_LOG_DETAIL", false),
+		DecisionLogRequired:           envBool("DECISION_LOG_REQUIRED", false),
+		DecisionLogSearches:           envBool("DECISION_LOG_SEARCHES", false),
 	}
 
 	// Freshness keyring: FRESHNESS_TOKEN_KEYS (ordered, comma-separated — first
@@ -565,6 +612,15 @@ func Load() (*Config, error) {
 	// in isolation).
 	if c.Profile == "" {
 		c.Profile = ProfileFull
+	}
+	if c.SwaggerUIEnabled && !c.OpenAPIEnabled {
+		return nil, fmt.Errorf("SWAGGER_UI_ENABLED=true needs OPENAPI_ENABLED=true — the UI renders the served OpenAPI document")
+	}
+	if (c.SwaggerUIOIDCIssuer == "") != (c.SwaggerUIOIDCClientID == "") {
+		return nil, fmt.Errorf("SWAGGER_UI_OIDC_ISSUER and SWAGGER_UI_OIDC_CLIENT_ID go together — the UI needs the issuer to discover endpoints and the client id to log in")
+	}
+	if (c.SwaggerUIOIDCAuthorizationURL == "") != (c.SwaggerUIOIDCTokenURL == "") {
+		return nil, fmt.Errorf("SWAGGER_UI_OIDC_AUTHORIZATION_URL and SWAGGER_UI_OIDC_TOKEN_URL go together")
 	}
 	switch {
 	case c.DecisionLog == "" || c.DecisionLog == "off" || c.DecisionLog == "stdout" || c.DecisionLog == "stderr":
@@ -748,6 +804,22 @@ func envFloat(key string, fallback float64) float64 {
 		return f
 	}
 	return fallback
+}
+
+// SwaggerUIOIDC reports whether the embedded Swagger UI logs in via OIDC.
+func (c *Config) SwaggerUIOIDC() bool {
+	return c.SwaggerUIOIDCIssuer != "" && c.SwaggerUIOIDCClientID != ""
+}
+
+// envList reads a comma-separated list, trimmed, empty entries dropped.
+func envList(key string) []string {
+	var out []string
+	for _, v := range strings.Split(os.Getenv(key), ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func envBool(key string, fallback bool) bool {

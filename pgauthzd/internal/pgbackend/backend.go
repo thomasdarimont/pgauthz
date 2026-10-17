@@ -351,6 +351,21 @@ func (b *Backend) checkRecorderRole(ctx context.Context, role string) error {
 	return nil
 }
 
+// decisionError wraps a decision-path failure (check, batch, explain). An
+// engine RAISE about an entity the request names but the model does not
+// declare — 'Unknown type: …', 'Unknown relation: …' — is the caller's error,
+// surfaced as authz.ErrInvalidRequest (HTTP 400 with the engine's message) so
+// a mis-modelled PEP sees WHAT is unknown instead of an opaque 500. Everything
+// else stays a server fault.
+func decisionError(fn string, err error) error {
+	if isUnknownEntity(err) {
+		var pgErr *pgconn.PgError
+		errors.As(err, &pgErr)
+		return fmt.Errorf("%w: %s", authz.ErrInvalidRequest, pgErr.Message)
+	}
+	return fmt.Errorf("%s: %w", fn, err)
+}
+
 // isUnknownEntity reports an engine RAISE about an entity the request names
 // but the store does not know: 'Unknown type: …' (a subject/resource type) or
 // 'Unknown relation: …' (an action). For the search functions that is not a
@@ -689,7 +704,7 @@ func (b *Backend) CheckAccess(ctx context.Context, req authz.EvalRequest) (bool,
 		).Scan(&decision)
 	})
 	if err != nil {
-		return false, fmt.Errorf("check_access: %w", err)
+		return false, decisionError("check_access", err)
 	}
 	return decision, nil
 }
@@ -715,7 +730,7 @@ func (b *Backend) CheckAccessDetailed(ctx context.Context, req authz.EvalRequest
 		).Scan(&raw)
 	})
 	if err != nil {
-		return false, nil, fmt.Errorf("check_access_detailed: %w", err)
+		return false, nil, decisionError("check_access_detailed", err)
 	}
 	var report map[string]any
 	if err := json.Unmarshal(raw, &report); err != nil {
@@ -747,7 +762,7 @@ func (b *Backend) CheckWithContextualTuples(ctx context.Context, req authz.EvalR
 		).Scan(&decision)
 	})
 	if err != nil {
-		return false, fmt.Errorf("check_access_with_contextual_tuples_jsonb: %w", err)
+		return false, decisionError("check_access_with_contextual_tuples_jsonb", err)
 	}
 	return decision, nil
 }
@@ -799,7 +814,7 @@ func (b *Backend) CheckAccessBatch(ctx context.Context, store string, reqs []aut
 		).Scan(&resultJSON)
 	})
 	if err != nil {
-		return nil, fmt.Errorf("check_access_batch: %w", err)
+		return nil, decisionError("check_access_batch", err)
 	}
 
 	var rawResults []struct {
@@ -961,7 +976,7 @@ func (b *Backend) Explain(ctx context.Context, req authz.EvalRequest) (json.RawM
 		).Scan(&raw)
 	})
 	if err != nil {
-		return nil, fmt.Errorf("explain_access: %w", err)
+		return nil, decisionError("explain_access", err)
 	}
 	return raw, nil
 }

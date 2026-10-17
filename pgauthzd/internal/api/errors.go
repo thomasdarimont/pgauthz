@@ -60,6 +60,18 @@ func writeSearchError(w http.ResponseWriter, err error) {
 	writeInternalError(w, err)
 }
 
+// writeDecisionError maps a decision-path failure (check, batch, explain):
+// a request naming a type or action the store's model does not declare is
+// the caller's 400, with the engine's message (authz.ErrInvalidRequest from
+// the backend); anything else is a 500.
+func writeDecisionError(w http.ResponseWriter, err error) {
+	if errors.Is(err, authz.ErrInvalidRequest) {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	writeInternalError(w, err)
+}
+
 func writeInternalError(w http.ResponseWriter, err error) {
 	slog.Error("internal error", "error", err)
 	writeError(w, http.StatusInternalServerError, "internal server error")

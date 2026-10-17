@@ -9,6 +9,39 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Embedded Swagger UI (`SWAGGER_UI_ENABLED`, default off)** at
+  `GET /pgauthz/v1/docs`: renders the instance's OpenAPI document same-origin,
+  so "Try it out" needs no CORS — Authorize with a bearer JWT. The assets
+  (swagger-ui-dist 5.33.1, Apache-2.0) are vendored into the binary by
+  `scripts/vendor-swagger-ui.sh`, which pins the tarball's sha256; nothing is
+  loaded from a CDN and the page's CSP allows scripts from this origin only.
+  Needs `OPENAPI_ENABLED`; the demo stack turns it on via env.sh. With
+  **`SWAGGER_UI_OIDC_ISSUER` + `SWAGGER_UI_OIDC_CLIENT_ID`** the Authorize
+  dialog logs the user in at an OpenID Provider (authorization code + PKCE,
+  public client, the vendored `oauth2-redirect.html` on the UI's origin)
+  instead of taking a pasted token: the served document gains an `oidc`
+  security scheme on every authenticated operation (with
+  `SWAGGER_UI_OIDC_AUTHORIZATION_URL`/`_TOKEN_URL` the one `authorizationCode`
+  flow, else the issuer's discovery document), and the page's CSP admits the
+  issuer. The Keycloak overlay provisions the `swagger-ui` public client
+  (`keycloak/terraform/client.swagger-ui.tf`, PKCE S256, the `authz-api`
+  audience, `subject_type`) and configures the instances that trust Keycloak;
+  verified end to end: login as alice, token exchanged by the UI, decision
+  returned.
+- **OpenAPI for external tools, discovery documented.** The served document
+  now carries a `servers` entry stamped with the instance's public base URL
+  (the `BASE_URL` / `TRUST_FORWARDED_HEADERS` rules of discovery), so a
+  Swagger UI or Postman loading `/pgauthz/v1/openapi.json` calls pgauthzd
+  rather than itself; the entity schemas carry demo-store examples so a
+  "Try it out" body is meaningful as generated; the public endpoints — discovery, health, the document,
+  the UI — answer any browser origin (CORS), and a new
+  **`CORS_ALLOWED_ORIGINS`** (default empty) opens the authenticated API to
+  listed origins (`*` = any) for browser PEPs or an external UI's "Try it
+  out". The three `/.well-known/authzen-configuration` operations
+  (instance-wide, the §9.2 tenant form `/.well-known/authzen-configuration/stores/{store}`,
+  the path-appended convenience form) and the metadata schema now describe
+  what they return, with a store-scoped example; the daemon README shows the
+  Swagger UI one-liner.
 - **AuthZEN `properties` reach the engine's conditions.** `subject.properties`,
   `resource.properties` and `action.properties` on `/access/v1` requests
   (evaluation, evaluations, the three searches) are put into the request
@@ -143,6 +176,12 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- **Docs: the two ways to call pgauthzd.** `pgauthzd/README.md` gains "Two
+  ways to call pgauthzd" — forward the user's token (self-subject, the
+  default) versus ask as a PEP with a service credential
+  (`ALLOW_SUBJECT_OVERRIDE=true`): who names the subject, what may be
+  omitted, how writes and the decision log attribute, how to scope a PEP's
+  credential — and `docs/USE-CASES.md` indexes it.
 - **BREAKING (AuthZEN search responses): `results` now holds the entity
   objects themselves.** AuthZEN 1.0 §8.4.2/§8.5.2/§8.6.2 define the search
   results as arrays of subject objects `{type, id}`, resource objects
@@ -258,6 +297,13 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **Unknown type or action on a decision is a 400, not a 500.** A check,
+  batch or explain naming a subject/resource type or an action the store's
+  model does not declare made the engine RAISE (`Unknown type: …`), which
+  pgauthzd surfaced as an opaque `500 internal server error`. It is the
+  caller's error and now answers `400` with the engine's message (found by
+  Swagger UI's placeholder body, `"type": "string"`). Searches already
+  answered an unknown entity with empty results (§8.3) and still do.
 - **AuthZEN 1.0 conformance of the HTTP surface** — read against the OpenID
   conformance suite's PDP test plans, pgauthzd deviated in five places, all
   fixed with unit tests (`internal/api/authzen_conformance_test.go`):

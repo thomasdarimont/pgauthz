@@ -52,7 +52,7 @@ func TestOpenAPISpecValidates(t *testing.T) {
 // fronting OPA, openapi endpoints on) — the configuration the document
 // describes.
 func fullMux() *http.ServeMux {
-	h := &Handler{cfg: &config.Config{Profile: config.ProfileFull, OpenAPIEnabled: true}}
+	h := &Handler{cfg: &config.Config{Profile: config.ProfileFull, OpenAPIEnabled: true, SwaggerUIEnabled: true}}
 	return newPublicMux(h, false)
 }
 

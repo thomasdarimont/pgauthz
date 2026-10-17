@@ -65,7 +65,18 @@ tags:
       Native pgauthz writes (full profile). Successful writes mint a freshness
       token (X-PGAuthz-Revision) when FRESHNESS_TOKEN_KEYS is configured.
   - name: meta
-    description: Health, discovery, and this document.
+    description: >
+      Health, AuthZEN PDP discovery (`/.well-known/authzen-configuration`, §9 —
+      per store in the §9.2 tenant form), and this document.
+
+# The server is the instance that serves this document: the SERVED copy stamps
+# this entry with the instance's public base URL (BASE_URL, or the forwarded
+# scheme/host with TRUST_FORWARDED_HEADERS, else the request's own), so a
+# Swagger UI / Postman loading it from /pgauthz/v1/openapi.json calls the right
+# place. The file on its own says "/" — same origin as wherever it is served.
+servers:
+  - url: /
+    description: The pgauthzd instance serving this document.
 
 paths:
   # ── AuthZEN 1.0 ────────────────────────────────────────────────────────────
@@ -261,18 +272,21 @@ paths:
     get:
       tags: [meta]
       operationId: wellKnown
-      summary: AuthZEN PDP metadata (§9.1)
+      summary: AuthZEN PDP metadata (§9.1, §9.2)
+      description: >
+        The PDP metadata document of AuthZEN 1.0 §9.1 for the instance as a
+        whole: `policy_decision_point` is this instance's base URL (its
+        identifier, §9.1.1), the five `*_endpoint` values are its `/access/v1`
+        endpoints, and `capabilities` lists what it implements. Served without
+        authentication (§9.2: a PEP fetches it before it has anything to
+        authenticate with). Requests to these endpoints resolve the store as
+        usual — `X-PGAuthz-Store`, else `DEFAULT_STORE`; for a document whose
+        endpoints are scoped to ONE store use the tenant form below.
+        §9.2.3: the `policy_decision_point` in the response must be identical
+        to the identifier the metadata was fetched for, so behind a reverse
+        proxy set `BASE_URL`, or `TRUST_FORWARDED_HEADERS=true` to take scheme
+        and host from `X-Forwarded-Proto` / `X-Forwarded-Host`.
       security: []
-      responses:
-        '200': { $ref: '#/components/responses/WellKnownOK' }
-  /stores/{store}/.well-known/authzen-configuration:
-    get:
-      tags: [meta]
-      operationId: wellKnownStorePath
-      summary: AuthZEN PDP metadata for one store (path-suffixed convenience form)
-      security: []
-      parameters:
-        - $ref: '#/components/parameters/StorePath'
       responses:
         '200': { $ref: '#/components/responses/WellKnownOK' }
   /.well-known/authzen-configuration/stores/{store}:
@@ -281,14 +295,90 @@ paths:
       operationId: wellKnownStoreInserted
       summary: AuthZEN PDP metadata for one store (§9.2 tenant form)
       description: >
-        AuthZEN 1.0 §9.2: the well-known URI is inserted between host and the
-        tenant path, so discovery for the PDP identified by /stores/{store}
-        lives here.
+        Each pgauthz store presents as its own AuthZEN PDP with the identifier
+        `<base>/stores/{store}`. AuthZEN 1.0 §9.2 forms the discovery URL by
+        INSERTING `/.well-known/authzen-configuration` between host and the
+        identifier's path (as RFC 8414 does for issuers with a path), so the
+        metadata of the PDP `https://pdp.example.com/stores/tenant1` lives at
+        `https://pdp.example.com/.well-known/authzen-configuration/stores/tenant1`.
+        The document's `policy_decision_point` and every endpoint carry the
+        `/stores/{store}` prefix, so a PEP configured with nothing but that
+        identifier discovers endpoints that decide in that store only — the
+        form the OpenID conformance suite uses (`conformance/`).
       security: []
       parameters:
         - $ref: '#/components/parameters/StorePath'
       responses:
         '200': { $ref: '#/components/responses/WellKnownOK' }
+  /stores/{store}/.well-known/authzen-configuration:
+    get:
+      tags: [meta]
+      operationId: wellKnownStorePath
+      summary: AuthZEN PDP metadata for one store (path-suffixed convenience form)
+      description: >
+        The same store-scoped document as the §9.2 form above, reachable by
+        appending the well-known path to the store's identifier — for clients
+        and gateways that concatenate rather than insert. Prefer the §9.2 form
+        for anything that follows the specification's discovery algorithm.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+      responses:
+        '200': { $ref: '#/components/responses/WellKnownOK' }
+
+  /pgauthz/v1/docs:
+    get:
+      tags: [meta]
+      operationId: swaggerUI
+      summary: Embedded Swagger UI for this document (SWAGGER_UI_ENABLED)
+      description: >
+        Renders this instance's OpenAPI document in Swagger UI, same origin as
+        the API so "Try it out" needs no CORS (Authorize with a bearer JWT).
+        A developer convenience, off by default: registered only with
+        SWAGGER_UI_ENABLED=true (which needs OPENAPI_ENABLED). The UI's assets
+        are vendored into the binary (swagger-ui-dist, pinned by
+        scripts/vendor-swagger-ui.sh) — nothing is loaded from a CDN, and the
+        page's Content-Security-Policy allows scripts from this origin only.
+        Public, like the document it renders.
+      security: []
+      x-pgauthz-availability:
+        listeners: [public]
+        flag: SWAGGER_UI_ENABLED
+      responses:
+        '200':
+          description: The Swagger UI page.
+          content:
+            text/html:
+              schema: { type: string }
+  /pgauthz/v1/docs/{asset}:
+    get:
+      tags: [meta]
+      operationId: swaggerUIAsset
+      summary: A Swagger UI asset (SWAGGER_UI_ENABLED)
+      description: >
+        One of the vendored Swagger UI files (swagger-ui.css,
+        swagger-ui-bundle.js, favicon-32x32.png, LICENSE, NOTICE,
+        swagger-ui-bundle.js.LICENSE.txt, VERSION) or pgauthzd's own
+        pgauthz-initializer.js; anything else is 404.
+      security: []
+      x-pgauthz-availability:
+        listeners: [public]
+        flag: SWAGGER_UI_ENABLED
+      parameters:
+        - name: asset
+          in: path
+          required: true
+          schema: { type: string }
+          description: File name, no path separators.
+      responses:
+        '200':
+          description: The asset.
+          content:
+            text/css: { schema: { type: string } }
+            application/javascript: { schema: { type: string } }
+            image/png: { schema: { type: string, format: binary } }
+            text/plain: { schema: { type: string } }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   # ── Native reads ───────────────────────────────────────────────────────────
   /pgauthz/v1/check:
@@ -1455,10 +1545,21 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/SearchActionResponse' }
     WellKnownOK:
-      description: AuthZEN PDP metadata.
+      description: AuthZEN PDP metadata (§9.1).
       content:
         application/json:
           schema: { $ref: '#/components/schemas/WellKnownResponse' }
+          examples:
+            store-scoped:
+              summary: GET /.well-known/authzen-configuration/stores/authzen_cert
+              value:
+                policy_decision_point: https://pdp.example.com/stores/authzen_cert
+                access_evaluation_endpoint: https://pdp.example.com/stores/authzen_cert/access/v1/evaluation
+                access_evaluations_endpoint: https://pdp.example.com/stores/authzen_cert/access/v1/evaluations
+                search_subject_endpoint: https://pdp.example.com/stores/authzen_cert/access/v1/search/subject
+                search_resource_endpoint: https://pdp.example.com/stores/authzen_cert/access/v1/search/resource
+                search_action_endpoint: https://pdp.example.com/stores/authzen_cert/access/v1/search/action
+                capabilities: [evaluation, evaluations, subject-search, resource-search, action-search]
     NativeCheckOK:
       description: The raw decision (plus optional rich detail).
       headers:
@@ -1574,6 +1675,13 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ReserveEventResponse' }
+    NotFound:
+      description: No such resource (an unknown Swagger UI asset name).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+        text/plain:
+          schema: { type: string }
     UnsupportedMediaType:
       description: >
         The request declared a Content-Type other than application/json
@@ -1584,7 +1692,9 @@ components:
           schema: { $ref: '#/components/schemas/Error' }
     BadRequest:
       description: >
-        Malformed request — invalid JSON, missing required fields, an invalid
+        Malformed request — invalid JSON, missing required fields, a subject,
+        resource type or action the store's model does not declare ("Unknown
+        type: …" / "Unknown relation: …" on the decision paths), an invalid
         consistency mode, or an invalid/forged/retired freshness token (one
         opaque message for every bad-token cause; the reason is logged
         server-side only).
@@ -1653,8 +1763,8 @@ components:
     Subject:
       type: object
       properties:
-        type: { type: string, description: Subject type (e.g. internal_user). }
-        id: { type: string, description: Subject identifier. }
+        type: { type: string, description: Subject type (e.g. internal_user)., example: internal_user }
+        id: { type: string, description: Subject identifier., example: alice }
         properties:
           type: object
           additionalProperties: true
@@ -1662,6 +1772,7 @@ components:
             Not matched by the graph, but condition input: passed to the engine
             as context.subject = {type, id, properties} (MODEL_DESIGN §8). A
             caller context key named like an entity is replaced by the block.
+          example: {}
       description: >
         On the public listener a request subject must match the JWT-derived
         subject unless ALLOW_SUBJECT_OVERRIDE is enabled (trusted-PEP mode);
@@ -1671,28 +1782,31 @@ components:
     Action:
       type: object
       properties:
-        name: { type: string, description: The relation/permission to test (e.g. can_read). }
+        name: { type: string, description: The relation/permission to test (e.g. can_read)., example: can_read }
         properties:
           type: object
           additionalProperties: true
           description: >
             Not matched by the graph, but condition input: passed to the engine
             as context.action = {name, properties} (MODEL_DESIGN §8).
+          example: {}
     Resource:
       type: object
       properties:
-        type: { type: string }
-        id: { type: string }
+        type: { type: string, example: document }
+        id: { type: string, example: doc_payroll_001 }
         properties:
           type: object
           additionalProperties: true
           description: >
             Not matched by the graph, but condition input: passed to the engine
             as context.resource = {type, id, properties} (MODEL_DESIGN §8).
+          example: {}
     Context:
       type: object
       additionalProperties: true
       description: Request context for conditional (ABAC) tuples.
+      example: {}
     PageToken:
       type: object
       properties:
@@ -1842,16 +1956,44 @@ components:
       required: [results]
     WellKnownResponse:
       type: object
+      description: >
+        AuthZEN 1.0 §9.1 PDP metadata. Every value is an absolute URL under the
+        PDP identifier; parameters without a value are omitted, never null or
+        empty (§9.2.2). `signed_metadata` (§9.1.3) is not issued.
       properties:
-        policy_decision_point: { type: string }
-        access_evaluation_endpoint: { type: string }
-        access_evaluations_endpoint: { type: string }
-        search_subject_endpoint: { type: string }
-        search_resource_endpoint: { type: string }
-        search_action_endpoint: { type: string }
+        policy_decision_point:
+          type: string
+          format: uri
+          description: >
+            The PDP identifier (§9.1.1): this instance's base URL, plus
+            `/stores/{store}` for a store-scoped document. Identical to the
+            identifier the metadata was fetched for (§9.2.3).
+        access_evaluation_endpoint:
+          type: string
+          format: uri
+          description: Access Evaluation API (§6), `<identifier>/access/v1/evaluation`.
+        access_evaluations_endpoint:
+          type: string
+          format: uri
+          description: Access Evaluations (batch) API (§7), `<identifier>/access/v1/evaluations`.
+        search_subject_endpoint:
+          type: string
+          format: uri
+          description: Subject Search API (§8.4), `<identifier>/access/v1/search/subject`.
+        search_resource_endpoint:
+          type: string
+          format: uri
+          description: Resource Search API (§8.5), `<identifier>/access/v1/search/resource`.
+        search_action_endpoint:
+          type: string
+          format: uri
+          description: Action Search API (§8.6), `<identifier>/access/v1/search/action`.
         capabilities:
           type: array
           items: { type: string }
+          description: >
+            What this PDP implements (§9.1.2): evaluation, evaluations,
+            subject-search, resource-search, action-search.
       required: [policy_decision_point]
 
     # ── native reads ─────────────────────────────────────────────────────────
