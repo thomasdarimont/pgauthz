@@ -1,5 +1,10 @@
 # pgauthz playground
 
+> **Being retired.** The [management console](../console/README.md) replaces
+> the playground; new work goes there. The playground stays until the console
+> draws the resolution graph and offers the "act as the PEP" event bar (see
+> the console README's open items), then it is removed.
+
 An OpenFGA-playground-style UI for pgauthz: pick a store, run access queries, and
 **visualize the resolution path** (`explain_access`) — running the real
 production path end to end.

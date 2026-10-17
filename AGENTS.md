@@ -5,7 +5,7 @@ convention). `CLAUDE.md` imports this file, so Claude Code reads the same instru
 
 ## Project Overview
 
-pgauthz is a **PostgreSQL-native authorization engine** implementing Google Zanzibar / OpenFGA relationship-based access control (ReBAC) in pure SQL, plus **pgauthzd**, a stateless Go daemon that serves the engine over HTTP (AuthZEN 1.0, native API, JWT). It answers "Can user X do action Y on object Z?" with a query for co-located applications and over HTTP for everyone else; the data and decisions stay in PostgreSQL, there is no separate authorization database.
+pgauthz is a **PostgreSQL-native authorization engine** implementing Google Zanzibar / OpenFGA relationship-based access control (ReBAC) in pure SQL, plus **pgauthzd**, a stateless Go daemon that serves the engine over HTTP (AuthZEN 1.0, native API, JWT), and a **management console** (`console/`: Go BFF + Lit SPA) whose own access is decided by a pgauthz store. It answers "Can user X do action Y on object Z?" with a query for co-located applications and over HTTP for everyone else; the data and decisions stay in PostgreSQL, there is no separate authorization database.
 
 ## Where to read
 
@@ -19,7 +19,7 @@ Do not read `README.md` or `CHANGELOG.md` whole. The README's
 - `docs/ARCHITECTURE.md` — how it works / how it is deployed (arc42)
 - `docs/PRODUCTION.md` — operations, roles, replicas, retention, upgrades
 - `docs/DEVELOPMENT.md` — HTTP write API, integration, debugging, repository layout
-- `pgauthzd/README.md`, `pgauthzctl/README.md`, `playground/README.md`, `opa/README.md` — the components
+- `pgauthzd/README.md`, `pgauthzctl/README.md`, `console/README.md`, `opa/README.md` — the components (`playground/README.md` is the earlier UI, being retired in favour of the console)
 - `CHANGELOG.md` — `grep -n '^## \[' CHANGELOG.md`, then read the one version block you need
 
 **One owner per topic.** A feature is documented in its owning doc; the README
@@ -94,6 +94,8 @@ cd pgauthzd && go build ./... && go test ./...
 - `db/openfga/` — Import functions for existing OpenFGA JSON models/tuples
 - `db/replication/` — Logical replication and materialized permissions patterns
 - `pgauthzd/` — The Go daemon (cmd/, internal/api/, internal/app/, internal/authz/, internal/config/, internal/metrics/, internal/pgbackend/, internal/opabackend/)
+- `pgauthzadm/` — Shared Go library for model administration (export, DSL parse/import, registry publish/plan/apply/diff, SQL rendering), used by `pgauthzctl/` and the console
+- `console/` — The management console: `backend/` (Go BFF: sessions, the console-store authorization gate, one handler file per tab) and `frontend/` (Lit SPA, no build step, JSON dictionaries under `src/i18n/`); its access model is `examples/models/console/` (loaded as `console_test` by `tests/test.sh`, created once as `console` by `./start.sh --console`)
 - `conformance/` — Go module running the OpenID conformance suite's AuthZEN PDP test plans against pgauthzd (Testcontainers suite, https front, subject-less api_key JWT, one test per plan); fixture is `examples/models/authzen-cert/`
 - `opa/policies/` — Rego policies (pgauthz client, application policy, JWT authn, system authz)
 

@@ -203,9 +203,15 @@ Configuration (environment): `ENGINE_DSN`, `PG_DSN` (sessions), `ISSUER`,
   (ADR 0014) with a service token would lift that.
 - **Saved test scenarios.** The matrix a tester builds is not yet saved as a
   `tests.authz.yaml` fixture; the runner lives in pgauthzctl.
-- **Gates, grant rules, namespaces, payload schemas** are shown (SQL view)
-  but not edited; the editor covers types, relations, rules, type
-  restrictions and conditions.
+- **Grant rules and payload schemas** are shown (SQL view) but not edited;
+  the editor covers types, relations, rules, type restrictions, conditions,
+  temporal gates and namespaces.
+- **Replacing the playground.** The console is the successor of
+  [`playground/`](../playground/README.md); still to move over before the
+  playground goes: the resolution-path **graph** (the explain tree is shown
+  as a tree here, not drawn), the DOT export, and the "act as the PEP" bar
+  (record / reserve events against a store's gates). Then the playground,
+  its Keycloak client and its compose overlay are removed.
 - **End-user sharing semantics.** The Data tab writes tuples directly for
   console sharers; `authz.grant`/`revoke` under per-object grant rules stays
   the application's path through pgauthzd.

@@ -71,6 +71,9 @@ pre-1.0, minor versions may include breaking changes.
   `support` — each with one `console_*` realm role the console seed grants
   per team; alice/bob/carol/eva stay the application users. New store role
   `supporter` (tests anyone's access with full trees, never edits).
+- **Playground deprecated**: the management console replaces it; the
+  playground stays until the console draws the resolution graph and has the
+  "act as the PEP" event bar (tracked in `console/README.md`).
 - **Rollout tab tightened**: the registry model picker, the version list
   of an unmanaged store and the Plan dry run need `can_rollout`; viewers,
   testers, supporters and auditors see only the versions of the store's

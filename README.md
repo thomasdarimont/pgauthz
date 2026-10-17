@@ -12,9 +12,10 @@ application that shares the database authorizes with a query: no network
 hop, no second data store, and filtering is a JOIN. **pgauthzd**, a
 stateless Go daemon, serves the same engine over HTTP for everyone else:
 [AuthZEN 1.0](docs/ARCHITECTURE.md#authzen-10-api), a native check/search/write API, JWT
-validation, and an opt-in OPA sidecar for policy-as-code. Either way the
-data and the decisions stay in your PostgreSQL; there is no separate
-authorization database to run.
+validation, and an opt-in OPA sidecar for policy-as-code. A **management
+console** lets a team design, test, share and roll out models in the browser,
+with its own access decided by pgauthz. Either way the data and the decisions
+stay in your PostgreSQL; there is no separate authorization database to run.
 
 For a tour of what it can do, see the slides
 [*pgauthz: Can your AuthZ do that?*](docs/slides/pgauthz_Can%20your%20AuthZ%20do%20that_V1.pdf)
@@ -48,7 +49,8 @@ in [`docs/slides/`](docs/slides).
 - **pgauthzd front door, OPA opt-in** — one Go daemon validates JWTs and serves AuthZEN + the native API directly from PostgreSQL; OPA is an optional internal policy sidecar — see [ADR 0008](docs/adr/0008-opa-is-opt-in.md)
 - **Policy hooks (OPA overlay)** — mount your own veto-only Rego rules, global or per-store, with a verified-claims actor, shared helper libraries, and hook-consistent (filtered or refused) search — see [ADR 0011](docs/adr/0011-opa-policy-hooks.md) / [`examples/opa-hooks/`](examples/opa-hooks)
 - **AuthZEN 1.0 API** — the standard [AuthZEN](https://openid.net/specs/authorization-api-1_0.html) surface, multi-tenant ready: store-scoped routes, multiple trusted issuers, per-issuer store/DB-role bindings
-- **Playground (web UI)** — browse stores, run access queries, and visualize the `explain_access` resolution path ([`playground/`](playground/README.md))
+- **Playground (web UI, being retired)** — browse stores, run access queries, and visualize the `explain_access` resolution path ([`playground/`](playground/README.md)); the management console replaces it
+- **Management console** — a web console for the people who run pgauthz: edit models (structure, DSL, conditions, temporal gates, namespaces), browse and change data, test decisions (single, matrix, search, through pgauthzd) under a test policy, publish and roll out registry versions with diffs, see which OPA policies apply, manage who may do what — every screen and action authorized by a pgauthz store, with namespace-scoped roles for application teams and Keycloak demo personas ([`console/`](console/README.md))
 - **Performance** — integer IDs, LIST partitioning by object type, covering partial indexes, store-scoped index pruning
 
 ## Why PostgreSQL?
@@ -94,6 +96,8 @@ cd authz/pgauthz
 
 `bootstrap.sh` starts PostgreSQL, pgauthzd, and OPA via docker compose,
 installs the engine, loads the **demo** example model, and runs all tests.
+`./start.sh --console` adds the management console (with Keycloak) at
+`https://app.pgauthz.test/console/` — see [`console/README.md`](console/README.md).
 
 To install **only the engine** — schema, functions, OpenFGA import, audit
 partitions, and security roles, with no example stores — run `./init.sh`
@@ -237,8 +241,8 @@ Each topic has exactly one owner. Read the owner, not this file, for detail.
 | [`docs/slides/`](docs/slides) | slide decks: a capability teaser (*Can your AuthZ do that?*) | you want the overview before the docs |
 | [`pgauthzd/README.md`](pgauthzd/README.md) | the HTTP daemon: profiles, env, AuthZEN, native API, JWT | you deploy or call pgauthzd |
 | [`pgauthzctl/README.md`](pgauthzctl/README.md) | model-as-code CLI: import, test, publish, roll out | your models live in git |
-| [`playground/README.md`](playground/README.md) | the web UI | you want to see a resolution path |
-| [`console/README.md`](console/README.md) | the management console (PoC): edit, test, share, roll out — access decided by pgauthz | you manage stores with a team |
+| [`playground/README.md`](playground/README.md) | the earlier web UI (being retired in favour of the console) | you want the resolution-path graph the console does not draw yet |
+| [`console/README.md`](console/README.md) | the management console: model editing, data, tests, rollout, policies, access and namespace roles — access decided by pgauthz; personas and audience guidance | you manage stores with a team |
 | [`examples/models/README.md`](examples/models/README.md) | the example models and what each shows | you want a starting point |
 | [`conformance/README.md`](conformance/README.md) | the OpenID conformance suite's AuthZEN PDP plans run against pgauthzd | you want proof the AuthZEN surface is conformant |
 | [`examples/filtering/README.md`](examples/filtering/README.md) | authorization as a JOIN (data filtering) | you list what a user may see |
@@ -317,11 +321,21 @@ SQL, pgauthzd front door, OPA overlay), the AuthZEN surface, read replicas
 and the access-control roles are in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (§6–§8).
 
-### Playground
+### Playground (being retired)
 
-A web UI to browse stores, run access queries and visualise the
-`explain_access` resolution path against the real production path:
-[`playground/`](playground/README.md).
+The earlier web UI to browse stores, run access queries and visualise the
+`explain_access` resolution path: [`playground/`](playground/README.md). The
+management console replaces it; what still only the playground does (the
+resolution graph, DOT export, the "act as the PEP" event bar) is listed in
+[`console/README.md`](console/README.md) as work to move over.
+
+### Management console
+
+A web console for teams: the Model, Data, Test, Rollout, Activity, Policies,
+Access and Admin tabs of a store, the model registry and the platform, with
+who-may-do-what decided by pgauthz itself (the `console` store) — which
+audience uses it for what, store versus namespace, and the test policy are
+in [`console/README.md`](console/README.md).
 
 ### Example models
 
