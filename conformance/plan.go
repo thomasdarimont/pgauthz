@@ -11,8 +11,9 @@ var suiteConfigs embed.FS
 
 // PlanDefinition is an AuthZEN PDP test plan of the OpenID conformance suite with the variant it
 // runs in. Every plan runs with pdp_auth_type=api_key (pgauthzd always wants a bearer token, so
-// `none` is impossible) and authzen_support=core (decisions from identifiers alone; the
-// `properties` level needs request properties pgauthzd does not yet feed into the engine).
+// `none` is impossible). authzen_support is properties by default — the core modules plus the
+// ones deciding on subject/resource/action properties (certification profile rules 5–8),
+// which pgauthzd feeds into the engine's conditions — or core (CTS_SUPPORT=core).
 // pdp_server_metadata is static (the five endpoints are configured) or discovery (the suite
 // fetches them from the PDP's /.well-known/authzen-configuration and insists the advertised
 // policy_decision_point equals the configured one).
@@ -31,6 +32,15 @@ const (
 	Static    = "static"
 	Discovery = "discovery"
 )
+
+// The authzen_support variants; Support is the one the plans run with (CTS_SUPPORT, default
+// Properties — it includes every core module).
+const (
+	Core       = "core"
+	Properties = "properties"
+)
+
+var Support = env("CTS_SUPPORT", Properties)
 
 // The plans with static endpoints.
 var (
@@ -63,7 +73,7 @@ func (p PlanDefinition) Variant() map[string]string {
 	if metadata == "" {
 		metadata = Static
 	}
-	return map[string]string{"pdp_auth_type": "api_key", "pdp_server_metadata": metadata, "authzen_support": "core"}
+	return map[string]string{"pdp_auth_type": "api_key", "pdp_server_metadata": metadata, "authzen_support": Support}
 }
 
 // PDP is the PDP under test as the suite sees it.

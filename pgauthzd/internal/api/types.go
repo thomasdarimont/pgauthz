@@ -104,18 +104,27 @@ type SearchActionResponse struct {
 
 // --- Shared types ---
 
+// Subject, Action and Resource are the AuthZEN 1.0 entities (§5.1–5.3). Their
+// `properties` are not matched by the graph — pgauthz decides on identifiers
+// and relationships — but they reach the engine's CONDITIONS: pgauthzd puts
+// them into the request context under the request's own shape, see
+// requestContext.
+
 type Subject struct {
-	Type string `json:"type"`
-	ID   string `json:"id"`
+	Type       string         `json:"type"`
+	ID         string         `json:"id"`
+	Properties map[string]any `json:"properties,omitempty"`
 }
 
 type Action struct {
-	Name string `json:"name"`
+	Name       string         `json:"name"`
+	Properties map[string]any `json:"properties,omitempty"`
 }
 
 type Resource struct {
-	Type string `json:"type"`
-	ID   string `json:"id,omitempty"`
+	Type       string         `json:"type"`
+	ID         string         `json:"id,omitempty"`
+	Properties map[string]any `json:"properties,omitempty"`
 }
 
 type PageToken struct {

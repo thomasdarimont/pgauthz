@@ -96,6 +96,14 @@ curl -X POST http://localhost:8090/access/v1/evaluation \
 # => {"decision": true}
 ```
 
+**Properties.** `subject.properties`, `resource.properties` and
+`action.properties` are not matched by the graph but reach the engine's
+conditions: pgauthzd puts each entity that carries properties into the request
+`context` under its own key, in the request's shape (`context.action.properties.soft`),
+so a SQL or CEL condition reads the wire request. A caller `context` key named
+like an entity is replaced by the block. See MODEL_DESIGN §8 "AuthZEN request
+properties"; `examples/models/authzen-cert` is the worked example.
+
 ### Batch evaluations
 
 Check multiple permissions in a single call. `options.evaluations_semantic`
@@ -106,7 +114,8 @@ short-circuit behavior:
 - `permit_on_first_permit` — stop on first permit
 
 With a short-circuit the response array ends with the decision that stopped
-processing. An evaluation that lacks a subject, action or resource after the
+processing. Every item is evaluated with its own context: the shared `context`
+overridden per key by the item's own, then the item's entity properties. An evaluation that lacks a subject, action or resource after the
 shared defaults are merged in comes back as `{"decision": false}` in its place
 (§7.1.1) rather than failing the batch; a request without an `evaluations`
 array is handled like the single Access Evaluation API and answered as

@@ -312,6 +312,10 @@ $$;
 -- check_access_batch (JSONB overload): HTTP/JSON-friendly version.
 -- Accepts checks as a JSONB array of objects, each with:
 --   {"user_type", "user_id", "relation", "object_type", "object_id"}
+-- and optionally "context": a per-check request context, merged over the
+-- shared p_context (the check's keys win, top-level key by key) — what an
+-- AuthZEN batch needs when each evaluation carries its own resource or
+-- action properties (pgauthzd puts them into the context).
 -- Returns a JSONB array of objects with {decision: bool} per check.
 --
 -- This overload is designed for pgauthzd / HTTP callers where passing
@@ -337,6 +341,7 @@ DECLARE
     v_store_id    integer := authz._s(p_store);
     v_results     jsonb := '[]'::jsonb;
     v_check       jsonb;
+    v_context     jsonb;
     v_result      boolean;
     v_user_type   integer;
     v_relation    integer;
@@ -362,10 +367,17 @@ BEGIN
 
         PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
 
+        -- per-check context, merged over the shared one (check wins per key)
+        IF jsonb_typeof(v_check->'context') = 'object' THEN
+            v_context := COALESCE(p_context, '{}'::jsonb) || (v_check->'context');
+        ELSE
+            v_context := p_context;
+        END IF;
+
         v_result := authz._decide(
             v_store_id, v_user_type, v_check->>'user_id',
             v_relation, v_object_type, v_check->>'object_id',
-            p_context
+            v_context
         );
 
         v_results := v_results || jsonb_build_object('decision', v_result);

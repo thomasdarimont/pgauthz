@@ -35,8 +35,12 @@ the stack's `pgauthzd-decision`.
 | `TestEvaluationsComprehensivePlan` | `authzen-pdp-evaluations-comprehensive-test-plan` | short-circuit semantics (not certification) |
 | `TestDiscoveryPlans` | the five certification plans again | `pdp_server_metadata=discovery`: endpoints taken from `/.well-known/authzen-configuration` — **skipped unless `CTS_DISCOVERY=true`**, see known suite issues |
 
-All plans run with `pdp_auth_type=api_key` and `authzen_support=core`; the six above with
-`pdp_server_metadata=static` (the endpoints are configured), `TestDiscoveryPlans` with
+All plans run with `pdp_auth_type=api_key` and, by default, `authzen_support=properties`:
+every core module plus the ones that decide on `subject`/`resource`/`action` properties
+(certification profile rules 5–8 and the property searches), which pgauthzd passes to the
+engine's conditions as `context.subject` / `.resource` / `.action` (see the fixture's
+`model.sql`); `CTS_SUPPORT=core` runs the core level only. The six tests above use
+`pdp_server_metadata=static` (the endpoints are configured), `TestDiscoveryPlans` uses
 `discovery` (the suite inserts the well-known segment between host and tenant path,
 `…/.well-known/authzen-configuration/stores/authzen_cert`, and stops unless the advertised
 `policy_decision_point` is identical to the configured one). The configuration is
@@ -68,6 +72,7 @@ the key and — static only — the endpoints filled in at run time.
 |---|---|---|
 | `CTS_PGAUTHZD_URL` | `http://localhost:8090` | the pgauthzd under test (`decision-only` is enough; `ALLOW_SUBJECT_OVERRIDE=true`, and `TRUST_FORWARDED_HEADERS=true` or a matching `BASE_URL` for the discovery variant — env.sh sets both for the demo stack) |
 | `CTS_STORE` | `authzen_cert` | the store the PDP identifier selects |
+| `CTS_SUPPORT` | `properties` | `authzen_support` variant: `properties` (core + property modules) or `core` |
 | `CTS_PDP_PORT` | `9445` | host port of the https front |
 | `CTS_SUITE_PORT` | `18444` | host port of the suite (its UI) |
 | `CTS_SIGNING_KEY`, `CTS_KEY_ID`, `CTS_ISSUER`, `CTS_AUDIENCE` | the demo key, `my-kid`, `https://auth.example.com`, `authz-api` | how the api_key is minted |
@@ -100,6 +105,4 @@ fixed. As of release-v5.3.2:
 
 ## Not covered yet
 
-- `authzen_support=properties` (fixture rules 5–8: archived records, the admin role, soft
-  delete): pgauthzd does not feed `subject`/`resource`/`action` properties into the engine.
 - `client_secret_basic` and `mtls`: pgauthzd authenticates callers by JWT only.

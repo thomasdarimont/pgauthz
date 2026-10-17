@@ -15,3 +15,13 @@
 SELECT authz.write_tuple('authzen_cert', 'user', 'alice', 'writer', 'record', 'record-1');
 SELECT authz.write_tuple('authzen_cert', 'user', 'bob',   'reader', 'record', 'record-1');
 SELECT authz.write_tuple('authzen_cert', 'user', 'alice', 'reader', 'record', 'record-2');
+
+-- Entity attributes as data (Properties level): bob is an admin on every record
+-- (object wildcard), record-2 is archived (a flag tuple that holds for everyone).
+SELECT authz.write_tuple('authzen_cert', 'user', 'bob', 'admin',    'record', '*');
+SELECT authz.write_tuple('authzen_cert', 'user', '*',   'archived', 'record', 'record-2');
+
+-- The request-property rule as ONE tuple: anyone may soft-delete any record they
+-- may otherwise delete — the condition reads action.properties.soft at check time.
+SELECT authz.write_tuple('authzen_cert', 'user', '*', 'soft_delete', 'record', '*',
+    p_condition => 'soft_requested');

@@ -313,7 +313,10 @@ SELECT authz.write_tuples('demo', ARRAY[
 ```
 
 All batch functions also accept a **JSONB array** instead of a PostgreSQL composite array.
-This is easier to use from HTTP clients (e.g. pgauthzd's HTTP API) and languages without native composite-type support:
+This is easier to use from HTTP clients (e.g. pgauthzd's HTTP API) and languages without native composite-type support.
+For `check_access_batch` a JSONB check may also carry its own `"context"`, merged over the
+shared `p_context` (the check's keys win) — how pgauthzd evaluates an AuthZEN batch whose
+items carry their own properties:
 
 ```sql
 -- JSONB variant: same as above, but with a JSON array of objects.

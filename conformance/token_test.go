@@ -111,4 +111,7 @@ func TestPlanConfig(t *testing.T) {
 	if v := Evaluation.Variant()["pdp_server_metadata"]; v != "static" {
 		t.Fatalf("static variant: %q", v)
 	}
+	if v := Evaluation.Variant()["authzen_support"]; v != Properties {
+		t.Fatalf("support variant defaults to properties, got %q", v)
+	}
 }

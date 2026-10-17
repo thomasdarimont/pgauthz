@@ -9,6 +9,24 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **AuthZEN `properties` reach the engine's conditions.** `subject.properties`,
+  `resource.properties` and `action.properties` on `/access/v1` requests
+  (evaluation, evaluations, the three searches) are put into the request
+  context under the entity's own key in the request's shape —
+  `context.action.properties.soft`, `context.resource.properties.status` —
+  so a SQL or CEL condition reads the wire request; an entity without
+  properties adds nothing, a caller context key named like an entity is
+  replaced. Batch items are now evaluated with their OWN context: the shared
+  `context` overridden per key by the item's (§7.1 context inheritance, which
+  was dropped before), then the item's properties — `authz.check_access_batch`
+  takes an optional per-check `"context"` key for it, and the OPA path
+  forwards it. The `authzen-cert` fixture gained the Properties level of the
+  certification profile (rules 5–8: bob's admin role and record-2's archived
+  status as tuples, soft-vs-hard delete as one conditional wildcard tuple
+  reading `action.properties.soft`), the conformance harness runs the plans
+  with `authzen_support=properties` by default (`CTS_SUPPORT=core` for the
+  core level), and MODEL_DESIGN §8 gained "AuthZEN request properties"
+  (attributes are data, properties are claims).
 - **`TRUST_FORWARDED_HEADERS`** (pgauthzd, default `false`): build the
   discovery document's base from `X-Forwarded-Proto` / `X-Forwarded-Host`,
   for an instance behind a TLS-terminating proxy that sets them — AuthZEN

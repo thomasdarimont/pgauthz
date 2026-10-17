@@ -507,6 +507,65 @@ func (h *Handler) Evaluation(w http.ResponseWriter, r *http.Request) {
 	h.evaluateSingle(w, r, req)
 }
 
+// requestContext is the context the engine's conditions see for a request:
+// the caller's `context` plus, for every entity that carries AuthZEN
+// `properties`, a block under the entity's own key in the request's shape —
+//
+//	{"subject":  {"type": …, "id": …, "properties": {…}},
+//	 "resource": {"type": …, "id": …, "properties": {…}},
+//	 "action":   {"name": …, "properties": {…}}}
+//
+// — so a SQL or CEL condition reads `$1 #>> '{action,properties,soft}'` exactly
+// as it reads the wire request (MODEL_DESIGN §8). An entity WITHOUT properties
+// adds nothing, which keeps today's context byte-identical for property-less
+// requests. A caller key named like an entity (`context.action`) is replaced by
+// the block; the documented collision rule. nil in, nothing to add → nil out.
+func requestContext(callerContext map[string]any, subject Subject, resource Resource, action Action) map[string]any {
+	var out map[string]any
+	add := func(key string, block map[string]any) {
+		if out == nil {
+			out = make(map[string]any, len(callerContext)+3)
+			for k, v := range callerContext {
+				out[k] = v
+			}
+		}
+		out[key] = block
+	}
+	if len(subject.Properties) > 0 {
+		add("subject", map[string]any{"type": subject.Type, "id": subject.ID, "properties": subject.Properties})
+	}
+	if len(resource.Properties) > 0 {
+		add("resource", map[string]any{"type": resource.Type, "id": resource.ID, "properties": resource.Properties})
+	}
+	if len(action.Properties) > 0 {
+		add("action", map[string]any{"name": action.Name, "properties": action.Properties})
+	}
+	if out == nil {
+		return callerContext
+	}
+	return out
+}
+
+// mergeContext layers an evaluation's own `context` over the batch's shared
+// one (AuthZEN 1.0 §7.1: top-level context applies unless overridden per
+// evaluation), top-level key by key; nil when both are nil.
+func mergeContext(shared, item map[string]any) map[string]any {
+	if len(item) == 0 {
+		return shared
+	}
+	if len(shared) == 0 {
+		return item
+	}
+	out := make(map[string]any, len(shared)+len(item))
+	for k, v := range shared {
+		out[k] = v
+	}
+	for k, v := range item {
+		out[k] = v
+	}
+	return out
+}
+
 // evaluateSingle answers one access evaluation in the single-decision form
 // ({"decision": …}). Shared by POST /access/v1/evaluation and by the batch
 // endpoint for a request without an evaluations array, which AuthZEN 1.0 §7.1
@@ -530,6 +589,8 @@ func (h *Handler) evaluateSingle(w http.ResponseWriter, r *http.Request, req Eva
 	if !ok {
 		return
 	}
+	subject := req.Subject
+	subject.Type, subject.ID = subjectType, subjectID
 	evalReq := authz.EvalRequest{
 		Store:       store,
 		SubjectType: subjectType,
@@ -537,7 +598,7 @@ func (h *Handler) evaluateSingle(w http.ResponseWriter, r *http.Request, req Eva
 		Action:      req.Action.Name,
 		ObjectType:  req.Resource.Type,
 		ObjectID:    req.Resource.ID,
-		Context:     req.Context,
+		Context:     requestContext(req.Context, subject, req.Resource, req.Action),
 	}
 
 	start := time.Now()
@@ -647,10 +708,18 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 			writeForbidden(w, fmt.Sprintf("evaluation[%d]: %s", i, serr.Error()))
 			return
 		}
+		subProps := e.Subject.Properties
+		if subProps == nil && req.Subject != nil {
+			subProps = req.Subject.Properties
+		}
 
 		action := e.Action.Name
 		if action == "" && req.Action != nil {
 			action = req.Action.Name
+		}
+		actProps := e.Action.Properties
+		if actProps == nil && req.Action != nil {
+			actProps = req.Action.Properties
 		}
 
 		resType := e.Resource.Type
@@ -661,6 +730,10 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 		if resID == "" && req.Resource != nil {
 			resID = req.Resource.ID
 		}
+		resProps := e.Resource.Properties
+		if resProps == nil && req.Resource != nil {
+			resProps = req.Resource.Properties
+		}
 
 		if serr != nil || action == "" || resType == "" || resID == "" {
 			unresolved[i] = true
@@ -670,6 +743,13 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// The item's context: the shared one overridden per key by its own
+		// (§7.1), then the entity properties as condition input.
+		itemCtx := requestContext(mergeContext(req.Context, e.Context),
+			Subject{Type: subType, ID: subID, Properties: subProps},
+			Resource{Type: resType, ID: resID, Properties: resProps},
+			Action{Name: action, Properties: actProps})
+
 		evals = append(evals, authz.EvalRequest{
 			Store:       store,
 			SubjectType: subType,
@@ -677,6 +757,7 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 			Action:      action,
 			ObjectType:  resType,
 			ObjectID:    resID,
+			Context:     itemCtx,
 		})
 	}
 
@@ -772,10 +853,13 @@ func (h *Handler) SearchSubject(w http.ResponseWriter, r *http.Request) {
 	}
 	// Sealed cursors are bound to the query context INCLUDING the verified
 	// actor — the AAD here must mirror the minting side (opabackend.ListSubjects).
+	// Entity properties become condition input (requestContext); the sealed
+	// cursor's AAD hashes the SAME context the backend evaluates with.
+	reqCtx := requestContext(req.Context, req.Subject, req.Resource, req.Action)
 	_, actorID := SubjectFromContext(r.Context())
 	page := decodePage(req.Page, SealedCursorAAD("subjects", store, actorID,
 		req.Subject.Type, "", req.Action.Name, req.Resource.Type, req.Resource.ID,
-		CanonicalContextHash(req.Context)))
+		CanonicalContextHash(reqCtx)))
 	if page != nil && page.After == invalidCursorSentinel {
 		writeBadRequest(w, "invalid page token: sealed cursor failed verification (wrong query context, or replicas without a shared CURSOR_SEAL_KEY)")
 		return
@@ -783,10 +867,10 @@ func (h *Handler) SearchSubject(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	subjects, pageResp, err := h.backend.ListSubjects(r.Context(), store,
 		req.Subject.Type, req.Action.Name, req.Resource.Type, req.Resource.ID,
-		req.Context, page)
+		reqCtx, page)
 	recordSearch(store, "subjects", len(subjects), err)
 	h.logSearch(r, "search/subject", h.viaLabel(), store, decisionlog.Ref{Type: req.Subject.Type}, req.Action.Name,
-		decisionlog.Ref{Type: req.Resource.Type, ID: req.Resource.ID}, req.Context, len(subjects), start, err)
+		decisionlog.Ref{Type: req.Resource.Type, ID: req.Resource.ID}, reqCtx, len(subjects), start, err)
 	if err != nil {
 		writeSearchError(w, err)
 		return
@@ -838,11 +922,15 @@ func (h *Handler) SearchResource(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// AAD mirrors the minting side (opabackend.ListResources), actor included.
+	// AAD mirrors the minting side (opabackend.ListResources), actor included,
+	// over the context the backend evaluates with (entity properties included).
+	subject := req.Subject
+	subject.Type, subject.ID = subjectType, subjectID
+	reqCtx := requestContext(req.Context, subject, req.Resource, req.Action)
 	_, actorID := SubjectFromContext(r.Context())
 	page := decodePage(req.Page, SealedCursorAAD("objects", store, actorID,
 		subjectType, subjectID, req.Action.Name, req.Resource.Type, "",
-		CanonicalContextHash(req.Context)))
+		CanonicalContextHash(reqCtx)))
 	if page != nil && page.After == invalidCursorSentinel {
 		writeBadRequest(w, "invalid page token: sealed cursor failed verification (wrong query context, or replicas without a shared CURSOR_SEAL_KEY)")
 		return
@@ -850,10 +938,10 @@ func (h *Handler) SearchResource(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	resources, pageResp, err := h.backend.ListResources(r.Context(), store,
 		subjectType, subjectID, req.Action.Name, req.Resource.Type,
-		req.Context, page)
+		reqCtx, page)
 	recordSearch(store, "objects", len(resources), err)
 	h.logSearch(r, "search/resource", h.viaLabel(), store, decisionlog.Ref{Type: subjectType, ID: subjectID}, req.Action.Name,
-		decisionlog.Ref{Type: req.Resource.Type}, req.Context, len(resources), start, err)
+		decisionlog.Ref{Type: req.Resource.Type}, reqCtx, len(resources), start, err)
 	if err != nil {
 		writeSearchError(w, err)
 		return
@@ -897,12 +985,15 @@ func (h *Handler) SearchAction(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	subject := req.Subject
+	subject.Type, subject.ID = subjectType, subjectID
+	reqCtx := requestContext(req.Context, subject, req.Resource, Action{})
 	start := time.Now()
 	actions, err := h.backend.ListActions(r.Context(), store,
 		subjectType, subjectID, req.Resource.Type, req.Resource.ID,
-		req.Context)
+		reqCtx)
 	h.logSearch(r, "search/action", h.viaLabel(), store, decisionlog.Ref{Type: subjectType, ID: subjectID}, "",
-		decisionlog.Ref{Type: req.Resource.Type, ID: req.Resource.ID}, req.Context, len(actions), start, err)
+		decisionlog.Ref{Type: req.Resource.Type, ID: req.Resource.ID}, reqCtx, len(actions), start, err)
 	if err != nil {
 		writeInternalError(w, err)
 		return

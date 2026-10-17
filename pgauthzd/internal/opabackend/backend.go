@@ -150,6 +150,12 @@ func (b *Backend) CheckAccessBatch(ctx context.Context, store string, reqs []aut
 				"id":   req.ObjectID,
 			},
 		}
+		// the item's own context (shared context + overrides + entity
+		// properties, merged by the handler) — forwarded per item so the
+		// engine evaluates each item with it
+		if req.Context != nil {
+			eval["context"] = req.Context
+		}
 		evals[i] = eval
 	}
 

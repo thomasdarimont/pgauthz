@@ -752,22 +752,33 @@ func (b *Backend) CheckWithContextualTuples(ctx context.Context, req authz.EvalR
 	return decision, nil
 }
 
-func (b *Backend) CheckAccessBatch(ctx context.Context, store string, reqs []authz.EvalRequest,
-	globalContext map[string]any, semantic string) ([]authz.EvalResult, error) {
-
-	// Build JSONB checks array matching the SQL function's expected format
-	checks := make([]map[string]string, len(reqs))
+// batchChecks is the JSONB checks array authz.check_access_batch expects: one
+// object per check, plus the check's own `context` when it has one — merged
+// by the engine over the shared p_context, the check's keys winning — so an
+// AuthZEN batch whose items carry their own properties evaluates each item
+// with its own context.
+func batchChecks(reqs []authz.EvalRequest) []map[string]any {
+	checks := make([]map[string]any, len(reqs))
 	for i, req := range reqs {
-		checks[i] = map[string]string{
+		check := map[string]any{
 			"user_type":   req.SubjectType,
 			"user_id":     req.SubjectID,
 			"relation":    req.Action,
 			"object_type": req.ObjectType,
 			"object_id":   req.ObjectID,
 		}
+		if req.Context != nil {
+			check["context"] = req.Context
+		}
+		checks[i] = check
 	}
+	return checks
+}
 
-	checksJSON, err := json.Marshal(checks)
+func (b *Backend) CheckAccessBatch(ctx context.Context, store string, reqs []authz.EvalRequest,
+	globalContext map[string]any, semantic string) ([]authz.EvalResult, error) {
+
+	checksJSON, err := json.Marshal(batchChecks(reqs))
 	if err != nil {
 		return nil, fmt.Errorf("marshaling checks: %w", err)
 	}

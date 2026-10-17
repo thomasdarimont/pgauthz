@@ -1659,9 +1659,9 @@ components:
           type: object
           additionalProperties: true
           description: >
-            AuthZEN-standard extension attributes. Accepted for compatibility;
-            pgauthz does not evaluate them — pass condition input via the
-            request-level context instead.
+            Not matched by the graph, but condition input: passed to the engine
+            as context.subject = {type, id, properties} (MODEL_DESIGN §8). A
+            caller context key named like an entity is replaced by the block.
       description: >
         On the public listener a request subject must match the JWT-derived
         subject unless ALLOW_SUBJECT_OVERRIDE is enabled (trusted-PEP mode);
@@ -1675,7 +1675,9 @@ components:
         properties:
           type: object
           additionalProperties: true
-          description: Accepted for AuthZEN compatibility; not evaluated.
+          description: >
+            Not matched by the graph, but condition input: passed to the engine
+            as context.action = {name, properties} (MODEL_DESIGN §8).
     Resource:
       type: object
       properties:
@@ -1684,7 +1686,9 @@ components:
         properties:
           type: object
           additionalProperties: true
-          description: Accepted for AuthZEN compatibility; not evaluated.
+          description: >
+            Not matched by the graph, but condition input: passed to the engine
+            as context.resource = {type, id, properties} (MODEL_DESIGN §8).
     Context:
       type: object
       additionalProperties: true

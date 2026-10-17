@@ -23,6 +23,10 @@ import (
 type certBackend struct {
 	authz.Backend
 	batches [][]authz.EvalRequest
+	// singles records what CheckAccess was asked, searches the context each
+	// List* call received — the properties plumbing is asserted on these.
+	singles  []authz.EvalRequest
+	searches []map[string]any
 }
 
 func fixtureDecision(r authz.EvalRequest) bool {
@@ -37,6 +41,7 @@ func fixtureDecision(r authz.EvalRequest) bool {
 }
 
 func (b *certBackend) CheckAccess(_ context.Context, req authz.EvalRequest) (bool, error) {
+	b.singles = append(b.singles, req)
 	return fixtureDecision(req), nil
 }
 
@@ -59,13 +64,16 @@ func (b *certBackend) CheckAccessBatch(_ context.Context, _ string, reqs []authz
 	return out, nil
 }
 
-func (b *certBackend) ListSubjects(context.Context, string, string, string, string, string, map[string]any, *authz.PageRequest) ([]string, *authz.PageResponse, error) {
+func (b *certBackend) ListSubjects(_ context.Context, _, _, _, _, _ string, ctx map[string]any, _ *authz.PageRequest) ([]string, *authz.PageResponse, error) {
+	b.searches = append(b.searches, ctx)
 	return []string{"alice", "bob"}, nil, nil
 }
-func (b *certBackend) ListResources(context.Context, string, string, string, string, string, map[string]any, *authz.PageRequest) ([]string, *authz.PageResponse, error) {
+func (b *certBackend) ListResources(_ context.Context, _, _, _, _, _ string, ctx map[string]any, _ *authz.PageRequest) ([]string, *authz.PageResponse, error) {
+	b.searches = append(b.searches, ctx)
 	return []string{"record-1"}, nil, nil
 }
-func (b *certBackend) ListActions(context.Context, string, string, string, string, string, map[string]any) ([]string, error) {
+func (b *certBackend) ListActions(_ context.Context, _, _, _, _, _ string, ctx map[string]any) ([]string, error) {
+	b.searches = append(b.searches, ctx)
 	return []string{"read", "write"}, nil
 }
 
@@ -438,5 +446,130 @@ func TestPageLimit(t *testing.T) {
 	var p PageToken
 	if err := json.Unmarshal([]byte(`{"limit":1}`), &p); err != nil || p.Limit != 1 {
 		t.Fatalf("limit does not decode: %v %+v", err, p)
+	}
+}
+
+// path reads a nested value out of a context map.
+func path(m map[string]any, keys ...string) any {
+	var cur any = m
+	for _, k := range keys {
+		mm, ok := cur.(map[string]any)
+		if !ok {
+			return nil
+		}
+		cur = mm[k]
+	}
+	return cur
+}
+
+// AuthZEN `properties` reach the engine as condition input: each entity with
+// properties becomes a block under its own key in the request context, in the
+// request's shape (certification profile rules 5–8 decide on them).
+func TestPropertiesBecomeConditionContext(t *testing.T) {
+	mux, b := certMux(t, true)
+
+	// Rule 7 payload: action properties, no caller context → context is the
+	// action block alone; the subject/resource without properties add nothing.
+	pep(mux, http.MethodPost, "/access/v1/evaluation", "application/json",
+		`{"subject":{"type":"user","id":"alice"},"action":{"name":"delete","properties":{"soft":true}},"resource":{"type":"record","id":"record-1"}}`)
+	got := b.singles[len(b.singles)-1].Context
+	if path(got, "action", "properties", "soft") != true || path(got, "action", "name") != "delete" {
+		t.Fatalf("action block: %v", got)
+	}
+	if _, has := got["subject"]; has {
+		t.Fatalf("subject without properties must add no block: %v", got)
+	}
+
+	// Rule 6 payload plus a caller context: caller keys kept, both entity blocks
+	// added with the resolved type/id, and a caller key named like an entity is
+	// replaced by the block (the documented collision rule).
+	pep(mux, http.MethodPost, "/access/v1/evaluation", "application/json",
+		`{"subject":{"type":"user","id":"bob","properties":{"role":"admin"}},"action":{"name":"write"},"resource":{"type":"record","id":"record-2","properties":{"status":"archived"}},"context":{"time":"2025-06-27T18:03-07:00","resource":"stale"}}`)
+	got = b.singles[len(b.singles)-1].Context
+	if path(got, "subject", "properties", "role") != "admin" || path(got, "subject", "id") != "bob" || path(got, "subject", "type") != "user" {
+		t.Fatalf("subject block: %v", got)
+	}
+	if path(got, "resource", "properties", "status") != "archived" || path(got, "resource", "id") != "record-2" {
+		t.Fatalf("resource block replaces the caller's key: %v", got)
+	}
+	if got["time"] != "2025-06-27T18:03-07:00" {
+		t.Fatalf("caller context key lost: %v", got)
+	}
+
+	// No properties, no context: the context stays nil — byte-identical to today
+	// for every property-less request (and for the context hash in the log).
+	pep(mux, http.MethodPost, "/access/v1/evaluation", "application/json",
+		`{"subject":{"type":"user","id":"alice"},"action":{"name":"read"},"resource":{"type":"record","id":"record-1"}}`)
+	if got := b.singles[len(b.singles)-1].Context; got != nil {
+		t.Fatalf("want nil context, got %v", got)
+	}
+}
+
+// A batch evaluates every item with ITS context: the shared context overridden
+// per key by the item's own (§7.1), plus the item's entity properties after the
+// default-value merge (an item's `resource: {id, properties}` inherits the
+// top-level type). Modules …-batch-with-properties-validated,
+// …-batch-with-subject-properties-validated, …-batch-with-default-value-merging,
+// …-batch-with-context-inheritance.
+func TestBatchItemsCarryTheirOwnContext(t *testing.T) {
+	mux, b := certMux(t, true)
+	pep(mux, http.MethodPost, "/access/v1/evaluations", "application/json", `{
+		"subject": {"type": "user", "id": "alice"},
+		"action": {"name": "write"},
+		"resource": {"type": "record"},
+		"context": {"time": "t0", "source": "batch"},
+		"evaluations": [
+			{"resource": {"id": "record-1", "properties": {"status": "active"}}},
+			{"resource": {"type": "record", "id": "record-2", "properties": {"status": "archived"}}, "context": {"source": "item"}},
+			{"subject": {"type": "user", "id": "bob", "properties": {"role": "admin"}}, "resource": {"id": "record-2"}}
+		]}`)
+	if len(b.batches) != 1 || len(b.batches[0]) != 3 {
+		t.Fatalf("want one batch of 3, got %v", b.batches)
+	}
+	items := b.batches[0]
+	if items[0].ObjectType != "record" || path(items[0].Context, "resource", "type") != "record" || path(items[0].Context, "resource", "properties", "status") != "active" {
+		t.Fatalf("item 0 (type inherited, own properties): %+v", items[0])
+	}
+	if items[0].Context["source"] != "batch" || items[0].Context["time"] != "t0" {
+		t.Fatalf("item 0 inherits the shared context: %v", items[0].Context)
+	}
+	if path(items[1].Context, "resource", "properties", "status") != "archived" || items[1].Context["source"] != "item" || items[1].Context["time"] != "t0" {
+		t.Fatalf("item 1 overrides one shared key and keeps the other: %v", items[1].Context)
+	}
+	if items[2].SubjectID != "bob" || path(items[2].Context, "subject", "properties", "role") != "admin" {
+		t.Fatalf("item 2 subject properties: %+v", items[2])
+	}
+	if _, has := items[2].Context["resource"]; has {
+		t.Fatalf("item 2 resource has no properties, no block expected: %v", items[2].Context)
+	}
+}
+
+// Searches pass the entity properties the same way (modules
+// …-subject-search-with-resource-properties, …-resource-search-with-subject-properties,
+// …-action-search-with-properties).
+func TestSearchesCarryProperties(t *testing.T) {
+	mux, b := certMux(t, true)
+	pep(mux, http.MethodPost, "/access/v1/search/subject", "application/json",
+		`{"subject":{"type":"user"},"action":{"name":"write"},"resource":{"type":"record","id":"record-2","properties":{"status":"archived"}}}`)
+	pep(mux, http.MethodPost, "/access/v1/search/resource", "application/json",
+		`{"subject":{"type":"user","id":"bob","properties":{"role":"admin"}},"action":{"name":"write"},"resource":{"type":"record"}}`)
+	pep(mux, http.MethodPost, "/access/v1/search/action", "application/json",
+		`{"subject":{"type":"user","id":"bob","properties":{"role":"admin"}},"resource":{"type":"record","id":"record-2","properties":{"status":"archived"}}}`)
+	pep(mux, http.MethodPost, "/access/v1/search/action", "application/json",
+		`{"subject":{"type":"user","id":"alice"},"resource":{"type":"record","id":"record-1"}}`)
+	if len(b.searches) != 4 {
+		t.Fatalf("want 4 searches, got %d", len(b.searches))
+	}
+	if path(b.searches[0], "resource", "properties", "status") != "archived" || path(b.searches[0], "resource", "id") != "record-2" {
+		t.Fatalf("subject search: %v", b.searches[0])
+	}
+	if path(b.searches[1], "subject", "properties", "role") != "admin" || path(b.searches[1], "subject", "id") != "bob" {
+		t.Fatalf("resource search: %v", b.searches[1])
+	}
+	if path(b.searches[2], "subject", "properties", "role") != "admin" || path(b.searches[2], "resource", "properties", "status") != "archived" {
+		t.Fatalf("action search: %v", b.searches[2])
+	}
+	if b.searches[3] != nil {
+		t.Fatalf("no properties → nil context, got %v", b.searches[3])
 	}
 }

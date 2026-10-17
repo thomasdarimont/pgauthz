@@ -383,14 +383,24 @@ _batch_checks := [check |
 	some eval in input.evaluations
 	_eval_sub := object.get(eval, "subject", object.get(input, "subject", {}))
 	_eval_res := object.get(eval, "resource", object.get(input, "resource", {}))
-	check := {
-		"user_type": object.get(_eval_sub, "type", ""),
-		"user_id": object.get(_eval_sub, "id", ""),
-		"relation": object.get(eval, "action", object.get(input, "action", "")),
-		"object_type": object.get(_eval_res, "type", ""),
-		"object_id": object.get(_eval_res, "id", ""),
-	}
+	check := object.union(
+		{
+			"user_type": object.get(_eval_sub, "type", ""),
+			"user_id": object.get(_eval_sub, "id", ""),
+			"relation": object.get(eval, "action", object.get(input, "action", "")),
+			"object_type": object.get(_eval_res, "type", ""),
+			"object_id": object.get(_eval_res, "id", ""),
+		},
+		_batch_check_context(eval),
+	)
 ]
+
+# An item's own context (pgauthzd sends the shared context merged with the
+# item's overrides and its entity properties) rides along as the check's
+# `context`; the engine merges it over the batch-level context per key.
+_batch_check_context(eval) := {"context": eval.context} if eval.context
+
+_batch_check_context(eval) := {} if not eval.context
 
 # -----------------------------------------------------------------------
 # Enumeration confidentiality (ADR 0011): search results are GRAPH-derived

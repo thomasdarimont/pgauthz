@@ -167,11 +167,19 @@ check_access_with_context(store, subject_type, subject_id, relation, object_type
 # _native_check_elem maps an engine-shaped batch check
 # ({user_type,user_id,relation,object_type,object_id}) to the native
 # subject/action/resource shape.
-_native_check_elem(c) := {
-	"subject": {"type": c.user_type, "id": c.user_id},
-	"action": {"name": c.relation},
-	"resource": {"type": c.object_type, "id": c.object_id},
-}
+_native_check_elem(c) := object.union(
+	{
+		"subject": {"type": c.user_type, "id": c.user_id},
+		"action": {"name": c.relation},
+		"resource": {"type": c.object_type, "id": c.object_id},
+	},
+	_native_check_context(c),
+)
+
+# a per-check context (AuthZEN items with their own properties) is passed through
+_native_check_context(c) := {"context": c.context} if c.context
+
+_native_check_context(c) := {} if not c.context
 
 # Native batch returns {"results":[bool]} in input order; the contract here is
 # an ordered array of {decision: bool}, so re-wrap. Array comprehensions

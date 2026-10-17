@@ -987,6 +987,58 @@ of context.
 - Geographic or IP-based constraints
 - Feature flags or license checks at the tuple level
 
+### AuthZEN request properties
+
+An AuthZEN request (pgauthzd's `/access/v1`) may carry `properties` on its
+`subject`, `resource` and `action`. The graph never matches on them — pgauthz
+decides on identifiers and relationships — but they are **condition input**:
+pgauthzd puts each entity that carries properties into the request context
+under the entity's own key, in the request's shape, so a condition reads the
+wire request:
+
+```json
+{
+  "...the caller's context keys...",
+  "subject":  {"type": "user",   "id": "bob",      "properties": {"role": "admin"}},
+  "resource": {"type": "record", "id": "record-2", "properties": {"status": "archived"}},
+  "action":   {"name": "delete", "properties": {"soft": true}}
+}
+```
+
+```sql
+-- only a soft delete is allowed: one conditional wildcard tuple carries the rule
+SELECT authz.create_condition_sql('records', 'soft_requested',
+    $$ COALESCE(($1 #>> '{action,properties,soft}')::boolean, false) $$,
+    '{"request": ["action"]}'::jsonb);
+SELECT authz.model_add_rule('records', 'record', 'soft_delete', 'direct', p_allow_object_wildcard => true);
+SELECT authz.write_tuple('records', 'user', '*', 'soft_delete', 'record', '*', p_condition => 'soft_requested');
+--   define delete: writer and soft_delete
+```
+
+An entity without properties adds nothing (a property-less request's context
+is unchanged); a caller key named like an entity (`context.action`) is
+replaced by the block. Declaring the entity key in `required_context` makes a
+request without the property fail closed and lets `check_access_detailed`
+report it (`missing_context: ["action"]`) — the PEP's cue to send it. The
+searches pass properties the same way, so a `list_subjects` with
+`resource.properties` evaluates the conditional tuples with them. In a batch
+(`/access/v1/evaluations`) every item gets its own context: the shared one,
+the item's overrides, then the item's properties (`check_access_batch` takes a
+per-check `"context"` key for that).
+
+**Attributes are data, properties are claims.** Properties come from the PEP.
+In trusted-PEP mode (`ALLOW_SUBJECT_OVERRIDE=true`) the PEP already asserts
+*who* the subject is, so asserting *what* it is sits at the same trust level;
+in token-only mode a body `subject.properties` is a claim of the caller about
+itself. The engine does not decide this — a condition does, by reading
+`$1 -> 'subject' -> 'properties'` or not. Attributes the PDP should *know*
+rather than be told — a user's role, a record's status — belong in the graph
+as relations (`(user:bob, admin, record:*)`, a flag tuple
+`(user:*, archived, record:record-2)`), which is also what makes them
+searchable: "who can write the archived record?" names no subject and no
+role. [`examples/models/authzen-cert`](../examples/models/authzen-cert) is
+the worked example: the OpenID conformance suite's Properties-level fixture.
+
 ### Other condition examples
 
 ```sql
