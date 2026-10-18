@@ -23,8 +23,15 @@
 #      detach involved), and a second removal of the SAME type waits and then
 #      fails with "Unknown type" instead of acting on a stale id.
 #
-# Reports in the shared "==> N passed, M failed (of T ...)" format for
-# test-all.sh. Needs python3 for millisecond timing (macOS date has no %N).
+# Synchronization: the holder session runs its statement and then pg_sleep(2)
+# in one transaction; the second session is launched only once pg_stat_activity
+# shows the holder inside that pg_sleep (so the lock is held) — not after a
+# fixed delay. A "waited" assertion then means the waiter returned only after
+# the holder's commit (>= 1 s later, with the 2 s sleep); a "did not wait"
+# assertion checks that the holder session was still alive when the second
+# call returned. Reports in the shared "==> N passed, M failed (of T ...)"
+# format for test-all.sh. Needs python3 for millisecond timing (macOS date
+# has no %N).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,14 +45,29 @@ bad()  { echo "    FAIL  $1: $2"; fail=$((fail + 1)); }
 check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected=$3, got=$2"; fi; }
 now_ms(){ python3 -c 'import time; print(int(time.time() * 1000))'; }
 q()    { psql_exec "$PG_DB" -Atq -c "$1" 2>&1 | grep -v '^NOTICE'; }
-# A session that runs the given SQL in ONE transaction in the background.
+# A session that runs the given SQL in ONE transaction in the background,
+# then holds it open for 2 s. await_holder blocks until that hold has begun.
+HOLDER_PID=
 session(){ psql_exec "$PG_DB" -q -v ON_ERROR_STOP=1 >/dev/null 2>&1 <<SQL &
 BEGIN;
 $1
-SELECT pg_sleep(2);
+SELECT pg_sleep(2.0) /* conc-holder */;
 COMMIT;
 SQL
+HOLDER_PID=$!
+await_holder
 }
+await_holder(){
+    local i
+    for i in $(seq 1 100); do
+        if [ "$(q "SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND query LIKE '%conc-holder%' AND pid <> pg_backend_pid()")" -ge 1 ]; then
+            return 0
+        fi
+        sleep 0.05
+    done
+    echo "    FAIL  holder session never reached its hold" ; fail=$((fail + 1)); return 1
+}
+holder_alive(){ kill -0 "$HOLDER_PID" 2>/dev/null; }
 
 cleanup(){ q "SELECT authz.delete_store('$S', p_purge_audit => true)" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
@@ -59,7 +81,6 @@ q "SELECT authz.create_store('$S');
 
 echo "==> A. model_remove_type vs an in-flight tuple write"
 session "SELECT authz.write_tuple('$S','user','bob','viewer','legacy','l1');"
-sleep 0.7
 t0=$(now_ms)
 out=$(q "SELECT authz.model_remove_type('$S','legacy')")
 dt=$(( $(now_ms) - t0 ))
@@ -74,7 +95,6 @@ PC='[{"match":"absent","user_type":"user","user_id":"alice","relation":"owner","
 W1='[{"user_type":"user","user_id":"alice","relation":"owner","object_type":"doc","object_id":"d1"}]'
 W2='[{"user_type":"user","user_id":"alice","relation":"owner","object_type":"doc","object_id":"d2"}]'
 session "SELECT authz.write_tuples_checked('$S', '$PC', '[]', '$W1');"
-sleep 0.7
 t0=$(now_ms)
 out=$(q "SELECT authz.write_tuples_checked('$S', '$PC', '[]', '$W2')")
 dt=$(( $(now_ms) - t0 ))
@@ -89,17 +109,16 @@ P2='[{"match":"absent","user_type":"user","user_id":"zed","relation":"viewer","o
 V1='[{"user_type":"user","user_id":"zed","relation":"viewer","object_type":"doc","object_id":"d1"}]'
 V2='[{"user_type":"user","user_id":"zed","relation":"viewer","object_type":"doc","object_id":"d2"}]'
 session "SELECT authz.write_tuples_checked('$S', '$P1', '[]', '$V1');"
-sleep 0.7
 t0=$(now_ms)
 out=$(q "SELECT authz.write_tuples_checked('$S', '$P2', '[]', '$V2')")
 dt=$(( $(now_ms) - t0 ))
+if holder_alive; then alive=yes; else alive=no; fi
 wait
 case "$out" in *'"written": 1'*) ok "conc_C_second_writer_succeeded" ;; *) bad "conc_C_second_writer_succeeded" "$out" ;; esac
-[ "$dt" -lt 1000 ] && ok "conc_C_second_writer_did_not_wait (${dt} ms)" || bad "conc_C_second_writer_did_not_wait" "${dt} ms — waited for the other object"
+[ "$alive" = yes ] && ok "conc_C_second_writer_did_not_wait (holder still open, ${dt} ms)" || bad "conc_C_second_writer_did_not_wait" "the holder had already committed (${dt} ms)"
 
 echo "==> D. a writer waits for a removal that holds the lock (before it resolves any id)"
 session "SELECT authz._lock_tuples_for_removal();"
-sleep 0.7
 t0=$(now_ms)
 out=$(q "SELECT authz.write_tuple('$S','user','bob','viewer','legacy','l2')")
 dt=$(( $(now_ms) - t0 ))
@@ -110,7 +129,6 @@ check "conc_D_write_succeeded_after_the_removal_released" "$out" "t"
 echo "==> E. two concurrent removals serialize (no lock-upgrade deadlock)"
 q "SELECT authz.model_register_type('$S', t) FROM unnest(ARRAY['gone_a','gone_b']) t;" >/dev/null
 session "SELECT authz.model_remove_type('$S','gone_a');"
-sleep 0.7
 t0=$(now_ms)
 out=$(q "SELECT authz.model_remove_type('$S','gone_b')")
 dt=$(( $(now_ms) - t0 ))
@@ -122,18 +140,16 @@ check "conc_E_both_types_gone" "$(q "SELECT count(*) FROM authz.types WHERE stor
 echo "==> F. a removal commits while a writer waits — the writer fails, no orphan"
 q "SELECT authz.model_register_type('$S', 'doomed'); SELECT authz.model_register_relation('$S', 'reads'); SELECT authz.model_add_rule('$S', 'doomed', 'reads', 'direct');" >/dev/null
 session "SELECT authz.model_remove_type('$S','doomed');"
-sleep 0.7
 t0=$(now_ms)
 out=$(q "SELECT authz.write_tuple('$S','user','bob','reads','doomed','x1')")
 dt=$(( $(now_ms) - t0 ))
 wait
 case "$out" in *"Unknown type"*) ok "conc_F_writer_failed_on_the_removed_type" ;; *) bad "conc_F_writer_failed_on_the_removed_type" "$out" ;; esac
 [ "$dt" -ge 1000 ] && ok "conc_F_writer_waited_for_the_removal (${dt} ms)" || bad "conc_F_writer_waited_for_the_removal" "${dt} ms — did not wait"
-check "conc_F_no_orphan_tuple" "$(q "SELECT count(*) FROM authz.tuples t WHERE t.store_id = authz._s('$S') AND NOT EXISTS (SELECT 1 FROM authz.types ty WHERE ty.id = t.object_type)")" "0"
+check "conc_F_no_orphan_tuple" "$(q "SELECT count(*) FROM authz.tuples t WHERE t.store_id = authz._s('$S') AND (NOT EXISTS (SELECT 1 FROM authz.types ty WHERE ty.id = t.object_type) OR NOT EXISTS (SELECT 1 FROM authz.types ty WHERE ty.id = t.user_type))")" "0"
 
 echo "==> G. the removal lock is self-exclusive; two removals of the SAME type"
 session "SELECT authz._lock_tuples_for_removal();"
-sleep 0.7
 t0=$(now_ms)
 q "SELECT authz._lock_tuples_for_removal()" >/dev/null
 dt=$(( $(now_ms) - t0 ))
@@ -141,7 +157,6 @@ wait
 [ "$dt" -ge 1000 ] && ok "conc_G_second_removal_lock_waited (${dt} ms)" || bad "conc_G_second_removal_lock_waited" "${dt} ms — SHARE ROW EXCLUSIVE did not conflict with itself"
 q "SELECT authz.model_register_type('$S', 'same');" >/dev/null
 session "SELECT authz.model_remove_type('$S','same');"
-sleep 0.7
 t0=$(now_ms)
 out=$(q "SELECT authz.model_remove_type('$S','same')")
 dt=$(( $(now_ms) - t0 ))

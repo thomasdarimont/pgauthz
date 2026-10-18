@@ -216,7 +216,9 @@ pre-1.0, minor versions may include breaking changes.
   for a writer, a writer waiting for a remover and then failing cleanly
   once it committed, two removals serializing (also of the same type), the
   removal lock conflicting with itself, two partial-precondition writers
-  serializing, and two object-scoped writers staying concurrent.
+  serializing, and two object-scoped writers staying concurrent. The second
+  session starts only once `pg_stat_activity` shows the first inside its
+  hold, not after a fixed delay, so slow runners cannot make it flaky.
 - **Checked writes: partial preconditions take the store lock.** A
   `write_tuples_checked` precondition without `object_id` ("alice owns no
   document") expresses a cross-object invariant that the per-object locks
