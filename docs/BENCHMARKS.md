@@ -545,3 +545,33 @@ milestone, not done here: (1) skip the memo for confirmation checks inside
 only pays off *within* one deep check); (2) re-record the original table on
 one machine state so later runs compare like with like — today's table above
 is that baseline for PostgreSQL 18.6.
+
+**Same-day rerun after the removal/write lock protocol (review #17 rounds
+2–3: `SHARE ROW EXCLUSIVE` removal lock, writers take `ROW EXCLUSIVE` on
+`authz.tuples` as their first statement, store-level lock for partial
+preconditions).** All five suites again, a few hours after the table above.
+The read-path lines drifted +0–25 % (drive shallow 0.195 → 0.217, DENY 3.70
+→ 4.39, github nested-team 1.33 → 1.68, github `list_actions` 3.67 → 4.52)
+while the gates baseline got *faster* (0.181 → 0.175) and adversarial stayed
+flat — and no read-path file changed, so that is the machine's afternoon
+state, not code. The lines the change could touch: bulk loads drive 1.95 →
+2.11 s, github 1.27 → 1.32 s, rules 1.75 → 1.78 s, gates 3.97 → 3.92 s;
+`record_event` 0.060 → 0.064, batch of 100 5.77 → 6.14 (events do not take
+the tuple lock at all, so these two are noise by construction).
+
+To separate the two, an interleaved **A/B of the write path on one machine
+state**: three rounds of 10,000 `write_tuple` calls into a scratch store,
+alternating the pre-change `tuples.sql` (B) and the new one (A), with a
+10,000-check loop as a read-path control that no round changed:
+
+| round | B: `write_tuple` µs/op | A: `write_tuple` µs/op | control `check_access` B → A |
+|--:|--:|--:|--:|
+| 1 | 78.8 | 74.7 | 199 → 207 |
+| 2 | 68.9 | 68.9 | 183 → 189 |
+| 3 | 71.5 | 69.0 | 181 → 210 |
+
+The early lock costs nothing measurable (A is within a microsecond of B, in
+both directions), while the unchanged control swings 181–210 µs across
+rounds — the ~15 % band every comparison in this file has to be read
+against. Re-acquiring a relation lock the session will take anyway is a
+local hash lookup; the number says so.
