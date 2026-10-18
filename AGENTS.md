@@ -72,6 +72,7 @@ With OPA overlay: Application → pgauthzd (validates JWT) → OPA (Rego policy-
 ./tests/test-opa.sh      # OPA integration tests
 ./tests/test-authzen.sh  # AuthZEN API tests
 ./tests/test-conformance.sh  # OpenID conformance suite AuthZEN PDP plans (Docker, minutes; conformance/)
+./tests/test-console-go.sh  # console Go tests against the DB (race tests mandatory; fixture store console_gotest)
 ./tests/test-all.sh      # init.sh + all test suites
 ```
 

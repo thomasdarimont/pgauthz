@@ -101,13 +101,15 @@ func (s *Server) canQ(ctx context.Context, q querier, p *principal, relation, ob
 // store changes that admin already started, and the store changes that start
 // after it see the revocation. Independent stores still run in parallel. The
 // order is always platform, then object — no path takes them the other way.
+// Keys are 64-bit (hashtextextended) so unrelated objects do not share a
+// lock by collision; the bigint advisory-lock overloads take them.
 func (s *Server) accessLock(ctx context.Context, tx pgx.Tx, objectType, objectID string) error {
 	if objectType != "platform" {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtext($1))`, lockKey("platform", s.cfg.PlatformID)); err != nil {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))`, lockKey("platform", s.cfg.PlatformID)); err != nil {
 			return err
 		}
 	}
-	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey(objectType, objectID))
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockKey(objectType, objectID))
 	return err
 }
 

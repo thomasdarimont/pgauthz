@@ -80,7 +80,10 @@ jobs:
       - name: Initialize database and bring up the stack
         run: ./init.sh
 
-      # SQL suites + OPA + AuthZEN integration + AuthZEN Go unit tests.
+      # SQL suites + OPA + AuthZEN integration + AuthZEN Go unit tests + the
+      # console's database-backed Go tests (tests/test-console-go.sh loads the
+      # console fixture as console_gotest and FAILS if the race tests skip —
+      # the plain `go test` above runs them without a database, where they skip).
       - name: Run all tests
         run: ./tests/test-all.sh
 

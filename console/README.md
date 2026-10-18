@@ -181,6 +181,17 @@ stores where nothing is shared (and always per tenant).
 - A **403** from the BFF names the missing capability and object, and the UI
   says so ("This needs *edit model* on store:demo").
 
+## Tests
+
+`go test ./...` in `backend/` runs the unit tests; the database-backed race
+tests (concurrent last-owner removal, platform-revocation ordering, the
+namespace-rename gate) need `PGAUTHZ_TEST_DATABASE_URL` and a console store
+(`PGAUTHZ_TEST_CONSOLE_STORE`, default `console`) and skip without them.
+`../tests/test-console-go.sh` loads the fixture as `console_gotest`, runs
+them as mandatory (`PGAUTHZ_TEST_REQUIRE_DATABASE=1`) and drops the store;
+`tests/test-all.sh` and CI include it. The access model's own SQL checks are
+`../examples/models/console/tests.sql` (run by `tests/test.sh`).
+
 ## Pieces
 
 - `backend/` — the Go BFF (`cmd/console`, `internal/{config,oidc,server}`):

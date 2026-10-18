@@ -199,7 +199,10 @@ pre-1.0, minor versions may include breaking changes.
   namespace re-checks both capabilities it needs (`can_edit_model` and
   `can_manage_access`). Go regression tests (`console/backend`,
   `PGAUTHZ_TEST_DATABASE_URL`) race two owner removals, a platform
-  revocation against a store change, and the rename gate.
+  revocation against a store change, and the rename gate;
+  `tests/test-console-go.sh` (part of `test-all.sh`, so CI) runs them
+  against a fixture store and fails if they skip. Lock keys are 64-bit
+  (`hashtextextended`).
 - **Console: an expired session is no session.** The BFF refreshed the
   access token only when a refresh token existed; without one it kept
   serving the stale memberships until the 8-hour cookie ran out. A session
