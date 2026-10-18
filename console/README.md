@@ -156,7 +156,10 @@ stores where nothing is shared (and always per tenant).
   change, after taking a per-object lock (`pg_advisory_xact_lock` on
   `store:X` / `platform:default`). A role revoked in between denies the
   change, and two owners removing each other at once leave one owner — the
-  last-owner rule is counted under the same lock.
+  last-owner rule is counted under the same lock. Because a store role can
+  come from `platform#admin`, store changes hold the platform lock shared
+  and platform-admin changes take it exclusively: revoking an admin waits
+  for what they already started and denies what they start afterwards.
 - **Sessions live as long as the access token.** Memberships come from the
   token, so the BFF renews it with the refresh token shortly before expiry
   and ends the session (401, sign in again) when it cannot. The cookie's 8

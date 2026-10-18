@@ -293,7 +293,9 @@ func (s *Server) handleNamespaceRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var moved int
-	err := s.asPerson(ctx, p, "can_edit_model", "store", store, map[string]any{"op": "rename_namespace", "from": ns, "to": req.To}, func(tx pgx.Tx) error {
+	// a rename changes the model (the types' namespace) AND moves the
+	// namespace's role assignments: both capabilities, re-checked in the tx
+	err := s.asPersonAuthorized(ctx, p, s.storeGate(ctx, p, store, "can_edit_model", "can_manage_access"), "can_edit_model", "store", store, map[string]any{"op": "rename_namespace", "from": ns, "to": req.To}, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT t.name FROM authz.types t JOIN authz.stores st ON st.id = t.store_id
 			 WHERE st.name = $1 AND t.namespace = $2`, store, ns)

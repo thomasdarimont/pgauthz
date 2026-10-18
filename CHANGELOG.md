@@ -191,8 +191,15 @@ pre-1.0, minor versions may include breaking changes.
   the person may still do it, in the same transaction — so a role revoked
   between the screen's check and the click is honoured, and two owners
   removing each other at the same time leave one owner, never zero (the
-  last-owner count runs under the same lock). A Go regression test
-  (`console/backend`, `PGAUTHZ_TEST_DATABASE_URL`) races two removals.
+  last-owner count runs under the same lock). Store capabilities can be
+  inherited from the platform, so a store change also holds the platform
+  lock in shared mode and a platform-admin grant or revocation takes it
+  exclusively: a revocation waits for the store changes that admin already
+  started and is seen by every one that starts after it. Renaming a
+  namespace re-checks both capabilities it needs (`can_edit_model` and
+  `can_manage_access`). Go regression tests (`console/backend`,
+  `PGAUTHZ_TEST_DATABASE_URL`) race two owner removals, a platform
+  revocation against a store change, and the rename gate.
 - **Console: an expired session is no session.** The BFF refreshed the
   access token only when a refresh token existed; without one it kept
   serving the stale memberships until the 8-hour cookie ran out. A session

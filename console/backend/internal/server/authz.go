@@ -93,9 +93,43 @@ func (s *Server) canQ(ctx context.Context, q querier, p *principal, relation, ob
 // session is seen (it released the lock after committing) and a competing
 // removal waits — the last-owner count and the "may this person still do
 // this" question are answered under the same lock.
-func accessLock(ctx context.Context, tx pgx.Tx, objectType, objectID string) error {
-	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "pgauthz-console:"+objectType+":"+objectID)
+//
+// Store capabilities can be inherited from the platform (`admin from
+// platform`), so a change about a store also takes the platform lock in
+// SHARED mode first, and a change about the platform (an admin granted or
+// revoked) takes it exclusively: a platform-admin revocation waits for the
+// store changes that admin already started, and the store changes that start
+// after it see the revocation. Independent stores still run in parallel. The
+// order is always platform, then object — no path takes them the other way.
+func (s *Server) accessLock(ctx context.Context, tx pgx.Tx, objectType, objectID string) error {
+	if objectType != "platform" {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtext($1))`, lockKey("platform", s.cfg.PlatformID)); err != nil {
+			return err
+		}
+	}
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey(objectType, objectID))
 	return err
+}
+
+func lockKey(objectType, objectID string) string {
+	return "pgauthz-console:" + objectType + ":" + objectID
+}
+
+// storeGate is an in-transaction authorization (see asPersonAuthorized) for
+// one or more capabilities on a store — all of them are required.
+func (s *Server) storeGate(ctx context.Context, p *principal, store string, caps ...string) func(tx pgx.Tx) error {
+	return func(tx pgx.Tx) error {
+		for _, cap := range caps {
+			ok, err := s.canQ(ctx, tx, p, cap, "store", store)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return scopeError{cap, "store:" + store}
+			}
+		}
+		return nil
+	}
 }
 
 // capabilities answers objects × relations in ONE round trip: for every
@@ -219,7 +253,7 @@ func (s *Server) asPersonAuthorized(ctx context.Context, p *principal, authorize
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := accessLock(ctx, tx, objectType, objectID); err != nil {
+	if err := s.accessLock(ctx, tx, objectType, objectID); err != nil {
 		return err
 	}
 	if err := authorize(tx); err != nil {

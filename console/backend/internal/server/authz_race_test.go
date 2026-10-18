@@ -111,3 +111,108 @@ func TestIsSelfBindsType(t *testing.T) {
 		}
 	}
 }
+
+// A platform-admin revocation serializes with the store changes that admin
+// authorizes through `admin from platform` (review #16, second round): a
+// store change in flight holds the platform lock shared, so the revocation
+// waits for its commit; a store change that starts after the revocation
+// committed is denied inside its transaction.
+func TestPlatformRevocationOrdersStoreChanges(t *testing.T) {
+	dsn := os.Getenv("PGAUTHZ_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("PGAUTHZ_TEST_DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	s := &Server{cfg: config.Config{ConsoleStore: "console", SubjectType: "user", PlatformID: "default"}, engine: pool}
+	const store = "race_platform_store"
+	exec := func(sql string, args ...any) {
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// race_admin is a platform admin; race_root owns the platform (so the
+	// last-owner rule lets us revoke race_admin) and is the revoker; the
+	// store reports to the platform and race_admin reaches it only that way.
+	exec(`SELECT authz.write_tuple('console', 'user', 'race_root', 'admin', 'platform', 'default')`)
+	exec(`SELECT authz.write_tuple('console', 'user', 'race_admin', 'admin', 'platform', 'default')`)
+	exec(`SELECT authz.write_tuple('console', 'platform', 'default', 'platform', 'store', $1)`, store)
+	defer func() {
+		bg := context.Background()
+		_, _ = pool.Exec(bg, `SELECT authz.delete_tuple('console', 'platform', 'default', 'platform', 'store', $1)`, store)
+		_, _ = pool.Exec(bg, `SELECT authz.delete_tuple('console', 'user', 'race_admin', 'admin', 'platform', 'default')`)
+		_, _ = pool.Exec(bg, `SELECT authz.delete_tuple('console', 'user', 'race_root', 'admin', 'platform', 'default')`)
+	}()
+	admin := &principal{typ: "user", id: "race_admin", ctxTuples: "[]"}
+	root := &principal{typ: "user", id: "race_root", ctxTuples: "[]"}
+
+	started := make(chan struct{})
+	var wg sync.WaitGroup
+	var storeErr, revokeErr error
+	var storeDone, revokeDone time.Time
+	wg.Add(2)
+	go func() { // the store change the admin already authorized, slow
+		defer wg.Done()
+		storeErr = s.asPerson(ctx, admin, "can_manage_access", "store", store, map[string]any{"op": "settings"}, func(tx pgx.Tx) error {
+			close(started)
+			time.Sleep(500 * time.Millisecond)
+			return nil
+		})
+		storeDone = time.Now()
+	}()
+	go func() { // the revocation, issued while the store change is in flight
+		defer wg.Done()
+		<-started
+		revokeErr = s.asPerson(ctx, root, "can_manage_access", "platform", "default", map[string]any{"op": "remove"}, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `SELECT authz.delete_tuple('console', 'user', 'race_admin', 'admin', 'platform', 'default')`)
+			return err
+		})
+		revokeDone = time.Now()
+	}()
+	wg.Wait()
+	if storeErr != nil || revokeErr != nil {
+		t.Fatalf("store change: %v, revocation: %v", storeErr, revokeErr)
+	}
+	if revokeDone.Before(storeDone) {
+		t.Fatalf("the revocation committed before the store change it should have waited for")
+	}
+	// after the revocation: the same store change is denied inside its transaction
+	err = s.asPerson(ctx, admin, "can_manage_access", "store", store, map[string]any{"op": "settings"}, func(tx pgx.Tx) error { return nil })
+	var se scopeError
+	if !errors.As(err, &se) {
+		t.Fatalf("expected the revoked admin to be denied in-transaction, got %v", err)
+	}
+}
+
+// The namespace rename gate needs BOTH capabilities inside the transaction.
+func TestNamespaceRenameGateNeedsBoth(t *testing.T) {
+	dsn := os.Getenv("PGAUTHZ_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("PGAUTHZ_TEST_DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	s := &Server{cfg: config.Config{ConsoleStore: "console", SubjectType: "user", PlatformID: "default"}, engine: pool}
+	const store = "race_rename_store"
+	if _, err := pool.Exec(ctx, `SELECT authz.write_tuple('console', 'user', 'race_author', 'author', 'store', $1)`, store); err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Exec(context.Background(), `SELECT authz.delete_tuple('console', 'user', 'race_author', 'author', 'store', $1)`, store)
+	author := &principal{typ: "user", id: "race_author", ctxTuples: "[]"}
+	gate := s.storeGate(ctx, author, store, "can_edit_model", "can_manage_access")
+	err = s.asPersonAuthorized(ctx, author, gate, "can_edit_model", "store", store, nil, func(tx pgx.Tx) error { return nil })
+	var se scopeError
+	if !errors.As(err, &se) || se.required != "can_manage_access" {
+		t.Fatalf("expected a can_manage_access denial, got %v", err)
+	}
+}
