@@ -12,6 +12,11 @@
 #      lock and then fails its precondition — exactly one owner tuple.
 #   C. Two OBJECT-scoped checked writes on different objects do not wait for
 #      each other (the shared store lock keeps them concurrent).
+#   D. A writer waits for a removal holding the lock — as its first statement,
+#      before resolving names to ids (the orphan-after-removal window).
+#   E. Two removals serialize instead of deadlocking (SHARE ROW EXCLUSIVE is
+#      self-exclusive; a plain SHARE lock would let both in and deadlock on
+#      their DELETEs).
 #
 # Reports in the shared "==> N passed, M failed (of T ...)" format for
 # test-all.sh. Needs python3 for millisecond timing (macOS date has no %N).
@@ -86,6 +91,28 @@ dt=$(( $(now_ms) - t0 ))
 wait
 case "$out" in *'"written": 1'*) ok "conc_C_second_writer_succeeded" ;; *) bad "conc_C_second_writer_succeeded" "$out" ;; esac
 [ "$dt" -lt 1000 ] && ok "conc_C_second_writer_did_not_wait (${dt} ms)" || bad "conc_C_second_writer_did_not_wait" "${dt} ms — waited for the other object"
+
+echo "==> D. a writer waits for a removal that holds the lock (before it resolves any id)"
+session "SELECT authz._lock_tuples_for_removal();"
+sleep 0.7
+t0=$(now_ms)
+out=$(q "SELECT authz.write_tuple('$S','user','bob','viewer','legacy','l2')")
+dt=$(( $(now_ms) - t0 ))
+wait
+check "conc_D_write_succeeded_after_the_removal_released" "$out" "t"
+[ "$dt" -ge 1000 ] && ok "conc_D_writer_waited_for_the_remover (${dt} ms)" || bad "conc_D_writer_waited_for_the_remover" "${dt} ms — did not wait"
+
+echo "==> E. two concurrent removals serialize (no lock-upgrade deadlock)"
+q "SELECT authz.model_register_type('$S', t) FROM unnest(ARRAY['gone_a','gone_b']) t;" >/dev/null
+session "SELECT authz.model_remove_type('$S','gone_a');"
+sleep 0.7
+t0=$(now_ms)
+out=$(q "SELECT authz.model_remove_type('$S','gone_b')")
+dt=$(( $(now_ms) - t0 ))
+wait
+case "$out" in *'"type": "gone_b"'*) ok "conc_E_second_removal_succeeded" ;; *) bad "conc_E_second_removal_succeeded" "$out" ;; esac
+[ "$dt" -ge 1000 ] && ok "conc_E_second_removal_waited (${dt} ms)" || bad "conc_E_second_removal_waited" "${dt} ms — did not wait"
+check "conc_E_both_types_gone" "$(q "SELECT count(*) FROM authz.types WHERE store_id = authz._s('$S') AND name IN ('gone_a','gone_b')")" "0"
 
 echo "==> ${pass} passed, ${fail} failed (of $((pass + fail)) concurrency checks)"
 [ "$fail" -eq 0 ]

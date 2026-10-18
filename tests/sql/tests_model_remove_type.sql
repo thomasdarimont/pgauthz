@@ -187,11 +187,12 @@ BEGIN
 END;
 $$;
 
--- rt_12: the reference count runs under a SHARE lock on authz.tuples, held to
--- the end of the transaction (so a concurrent write cannot slip in between
--- the count and the purge — see tests/test-concurrency.sh for the two-session
--- version). Visible in pg_locks for the rest of this transaction.
-BEGIN;
+-- rt_12: the reference count runs under a SHARE ROW EXCLUSIVE lock on
+-- authz.tuples, held to the end of the transaction (so a concurrent write
+-- cannot slip in between the count and the purge — tests/test-concurrency.sh
+-- has the two-session version). A DO block is one transaction, so pg_locks
+-- shows the lock right after the call. (No BEGIN/ROLLBACK around asserts:
+-- a rolled-back assertion is not counted by the report.)
 DO $$
 DECLARE v_err text; v_mode text;
 BEGIN
@@ -199,22 +200,41 @@ BEGIN
     BEGIN PERFORM authz.model_remove_type('test_rmtype', 'legacy');
     EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
     PERFORM _test_assert_true('rt_12_refused', v_err LIKE '%referenced by 1 tuple%', coalesce(v_err, 'no error'));
-END;
-$$;
-DO $$
-DECLARE v_mode text;
-BEGIN
-    -- the lock survives the refused (sub-transaction) call? No: the
-    -- EXCEPTION block rolled it back. Take the path that succeeds instead.
+    PERFORM authz.delete_tuple('test_rmtype', 'user', 'bob', 'viewer', 'legacy', 'l1');
+    -- the refused call's sub-transaction released its lock; take the path
+    -- that succeeds and look at what it holds
     PERFORM authz.model_register_type('test_rmtype', 'scratch_lock');
     PERFORM authz.model_remove_type('test_rmtype', 'scratch_lock');
     SELECT string_agg(l.mode, ',') INTO v_mode FROM pg_locks l
      WHERE l.locktype = 'relation' AND l.relation = 'authz.tuples'::regclass
-       AND l.pid = pg_backend_pid() AND l.granted AND l.mode = 'ShareLock';
-    PERFORM _test_assert('rt_12_share_lock_held_on_tuples', coalesce(v_mode, 'none'), 'ShareLock');
+       AND l.pid = pg_backend_pid() AND l.granted AND l.mode = 'ShareRowExclusiveLock';
+    PERFORM _test_assert('rt_12_removal_lock_held_on_tuples', coalesce(v_mode, 'none'), 'ShareRowExclusiveLock');
 END;
 $$;
-ROLLBACK;
+
+-- rt_13: removals refuse to run under REPEATABLE READ (the count would use a
+-- snapshot older than the lock); writers take the parent lock first.
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+DO $$
+DECLARE v_err text;
+BEGIN
+    BEGIN PERFORM authz.model_remove_type('test_rmtype', 'legacy');
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert_true('rt_13_repeatable_read_refused', v_err LIKE '%requires READ COMMITTED%', coalesce(v_err, 'no error'));
+END;
+$$;
+COMMIT;
+DO $$
+DECLARE v_mode text;
+BEGIN
+    PERFORM authz.write_tuple('test_rmtype', 'user', 'bob', 'viewer', 'legacy', 'l1');
+    SELECT string_agg(l.mode, ',') INTO v_mode FROM pg_locks l
+     WHERE l.locktype = 'relation' AND l.relation = 'authz.tuples'::regclass
+       AND l.pid = pg_backend_pid() AND l.granted AND l.mode = 'RowExclusiveLock';
+    PERFORM _test_assert('rt_13_writer_holds_parent_lock', coalesce(v_mode, 'none'), 'RowExclusiveLock');
+    PERFORM authz.delete_tuple('test_rmtype', 'user', 'bob', 'viewer', 'legacy', 'l1');
+END;
+$$;
 
 -- rt_09: a type with no tuples / rules / restrictions removes cleanly without p_force
 DO $$

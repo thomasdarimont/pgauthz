@@ -552,12 +552,26 @@ dedicated tuple partition. The relations its rules used stay registered.
 Fail-closed: a type with temporal gates or recorded events is always refused
 (drop the gates / purge the events first); a type still named by tuples on
 either side is refused unless `p_force => true`, which deletes them, expired
-rows included, through the audited path. Returns a summary. The reference
-count runs under a `SHARE` lock on `authz.tuples`, so a tuple written
-concurrently is either counted (its writer committed first) or waits for the
-removal to finish — writers take nothing new, and only writes racing an
-actual removal wait, for the milliseconds it takes; reads never do.
-`apply_model` takes the same lock before dropping a stale relation.
+rows included, through the audited path. Returns a summary.
+
+**Concurrency.** The reference count runs under a `SHARE ROW EXCLUSIVE` lock
+on `authz.tuples` (the parent only), so a tuple written concurrently is
+either counted (its writer committed first) or waits for the removal to
+finish, and two removals serialize. Writers hold the matching `ROW
+EXCLUSIVE` lock from their first statement — before they resolve type and
+relation names to ids — so a writer cannot insert against an id the removal
+has just deleted; it is the same lock their insert takes anyway, taken a
+moment earlier. Only writes racing an actual removal wait, for the
+milliseconds it takes. The removal requires `READ COMMITTED` (the default)
+and raises under `REPEATABLE READ` / `SERIALIZABLE`, whose snapshot would
+predate the lock and miss a tuple that committed while waiting for it.
+Dropping the type's partition takes `ACCESS EXCLUSIVE` on `authz.tuples`
+until the transaction commits, so **checks wait** for that moment: the drop
+is the last thing the function does, so call it in its own short
+transaction — never inside a long one — and expect a brief pause per removed
+type during an `apply_model` that removes several. `apply_model` takes the
+same removal lock before dropping a stale relation (no partition involved).
+Two-session tests: `tests/test-concurrency.sh`.
 
 ```sql
 SELECT authz.model_remove_type('demo', 'legacy_report');

@@ -161,22 +161,48 @@ CREATE OR REPLACE FUNCTION authz._rls_count_relation_tuples(
        AND (t.relation = p_relation_id OR t.user_relation = p_relation_id);
 $$;
 
--- _lock_tuples_for_removal: taken by the model paths that remove a type or a
--- relation BEFORE they count its references. Every tuple write — write_tuple,
--- the batch and checked variants, grant/revoke, imports — inserts through
--- the parent and therefore holds ROW EXCLUSIVE on it until commit; SHARE
--- conflicts with that and with nothing else: in-flight writers finish first
--- (the count then sees their rows), new writers wait the few milliseconds
--- the removal takes, and reads (AccessShare) never wait. Writers themselves
--- take nothing new, and no write path can opt out, since the lock manager
--- enforces it rather than a convention. One lock on the parent rather than
--- the store's partitions keeps the order trivially deadlock-free (writers
--- lock the parent first, too). Runs with the owner's privileges.
+-- Removal / write lock protocol on authz.tuples (tuples have no FK to types
+-- or relations, so the lock manager has to do what a constraint would):
+--
+--   * _lock_tuples_for_removal — the model paths that remove a type or a
+--     relation take SHARE ROW EXCLUSIVE on the parent BEFORE counting
+--     references. It conflicts with ROW EXCLUSIVE (every writer) and with
+--     itself (two removals serialize instead of deadlocking on their later
+--     DELETEs, which a plain SHARE lock would allow), and not with reads.
+--   * _lock_tuples_for_write — every writer takes ROW EXCLUSIVE on the
+--     parent as its FIRST statement, before it resolves type/relation names
+--     to ids. Its INSERT would take that very lock anyway; taking it early
+--     closes the window in which a writer holds an id the remover has just
+--     deleted (the insert would otherwise land in the default partition as
+--     an orphan). Re-acquiring a lock the session holds is a hash lookup,
+--     so writers pay nothing measurable, and no write path can opt out:
+--     both insert helpers are reached only through these functions.
+--
+-- ONLY: the parent alone, not every partition — writers lock the parent too
+-- (they insert through it), and the partition count must not scale the
+-- lock cost. Order is always this lock first; nothing takes a partition
+-- lock before it, so there is no cycle. The removal path additionally
+-- requires READ COMMITTED: under REPEATABLE READ / SERIALIZABLE the count
+-- would run on a snapshot older than the lock and miss a tuple that
+-- committed while we waited for it.
 CREATE OR REPLACE FUNCTION authz._lock_tuples_for_removal()
 RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
-    LOCK TABLE authz.tuples IN SHARE MODE;
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'removing a type or relation requires READ COMMITTED isolation (current: %): the reference count must see writes that committed while waiting for the lock',
+            current_setting('transaction_isolation')
+            USING ERRCODE = 'invalid_transaction_state';
+    END IF;
+    LOCK TABLE ONLY authz.tuples IN SHARE ROW EXCLUSIVE MODE;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION authz._lock_tuples_for_write()
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+    LOCK TABLE ONLY authz.tuples IN ROW EXCLUSIVE MODE;
 END;
 $$;
 
@@ -215,13 +241,21 @@ CREATE OR REPLACE FUNCTION authz.write_tuple(
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id      integer := authz._s(p_store);
-    v_user_type     integer := authz._t(v_store_id, p_user_type);
-    v_relation      integer := authz._r(v_store_id, p_relation);
-    v_object_type   integer := authz._t(v_store_id, p_object_type);
+    v_store_id      integer;
+    v_user_type     integer;
+    v_relation      integer;
+    v_object_type   integer;
     v_user_relation integer;
     v_condition_id  integer;
 BEGIN
+    -- The write lock FIRST, then resolve names to ids (see the lock
+    -- protocol above _lock_tuples_for_removal).
+    PERFORM authz._lock_tuples_for_write();
+    v_store_id    := authz._s(p_store);
+    v_user_type   := authz._t(v_store_id, p_user_type);
+    v_relation    := authz._r(v_store_id, p_relation);
+    v_object_type := authz._t(v_store_id, p_object_type);
+
     -- Set application user for the audit trigger (transaction-local)
     -- The true in set_config(..., true) makes the variable transaction-local, so it auto-resets after each call — no risk of leaking between requests.
     PERFORM set_config('authz.performed_by', COALESCE(p_performed_by, ''), true);
@@ -345,6 +379,8 @@ DECLARE
     v_count    integer;
     v_bad      text;
 BEGIN
+    -- The write lock FIRST, then resolve names (lock protocol, see above).
+    PERFORM authz._lock_tuples_for_write();
     -- Set application user for the audit trigger (transaction-local)
     PERFORM set_config('authz.performed_by', COALESCE(p_performed_by, ''), true);
 

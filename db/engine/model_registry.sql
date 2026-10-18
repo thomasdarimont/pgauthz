@@ -486,7 +486,7 @@ BEGIN
     -- Rules/restrictions were just synced; tuples have NO FK on relations,
     -- so guard explicitly instead of silently orphaning tuple rows. The
     -- count runs through the RLS-bypass helper (expired rows reference the
-    -- relation until cleanup deletes them) and under the SHARE lock on
+    -- relation until cleanup deletes them) and under the removal lock on
     -- authz.tuples (a concurrent write cannot slip in after the count).
     FOR v_rel IN
         SELECT r.id, r.name FROM authz.relations r

@@ -194,16 +194,25 @@ pre-1.0, minor versions may include breaking changes.
 - **Type and relation removal are serialized against tuple writes.**
   `model_remove_type` counted a type's references, then purged; a tuple
   written in between was deleted without `p_force` or left orphaned. The
-  count (and `apply_model`'s stale-relation guard) now runs under a `SHARE`
-  lock on `authz.tuples`: in-flight writers commit first and are counted,
-  later writers wait the milliseconds a removal takes, reads never wait,
-  and no write path can opt out because the lock manager enforces it, not
-  a convention. The stale-relation guard also counts **expired** tuples
+  count (and `apply_model`'s stale-relation guard) now runs under a
+  `SHARE ROW EXCLUSIVE` lock on `authz.tuples` (self-exclusive, so two
+  removals serialize instead of deadlocking on their later deletes):
+  in-flight writers commit first and are counted, later writers wait the
+  milliseconds a removal takes, reads never wait, and no write path can opt
+  out because the lock manager enforces it, not a convention. Writers take
+  their `ROW EXCLUSIVE` lock on the parent as their first statement, before
+  resolving names to ids, closing the window in which a writer inserts
+  against an id the removal just deleted. Removals require `READ COMMITTED`
+  and raise otherwise (a repeatable-read snapshot would predate the lock).
+  Documented: detaching the type's partition holds `ACCESS EXCLUSIVE` until
+  commit, so checks pause briefly per removed type. The stale-relation
+  guard also counts **expired** tuples
   (new `_rls_count_relation_tuples`), as the type guard does, and
   `plan_model_apply` reports the same count. New two-session suite
   `tests/test-concurrency.sh` (in `test-all.sh`) shows the remover waiting
-  for a writer, two partial-precondition writers serializing, and two
-  object-scoped writers staying concurrent.
+  for a writer, a writer waiting for a remover, two removals serializing,
+  two partial-precondition writers serializing, and two object-scoped
+  writers staying concurrent.
 - **Checked writes: partial preconditions take the store lock.** A
   `write_tuples_checked` precondition without `object_id` ("alice owns no
   document") expresses a cross-object invariant that the per-object locks

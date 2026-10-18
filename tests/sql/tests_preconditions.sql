@@ -211,7 +211,8 @@ END $$;
 -- precondition (no object_id — a cross-object invariant such as "alice owns
 -- no doc") holds it exclusively, so two such writers cannot both see the
 -- invariant hold and both commit. Transaction-scoped advisory locks are
--- visible in pg_locks for the rest of this DO block's transaction.
+-- visible in pg_locks for the rest of the DO block's transaction. (No
+-- BEGIN/ROLLBACK around asserts: a rolled-back assertion is not counted.)
 DROP FUNCTION IF EXISTS _pc_store_lock_mode();
 CREATE FUNCTION _pc_store_lock_mode() RETURNS text LANGUAGE sql STABLE AS $$
     SELECT string_agg(l.mode, ',' ORDER BY l.mode)
@@ -221,7 +222,6 @@ CREATE FUNCTION _pc_store_lock_mode() RETURNS text LANGUAGE sql STABLE AS $$
        AND l.objid   = ( hashtextextended('test_pc:*', 0)        & 4294967295)::oid
        AND l.objsubid = 1;
 $$;
-BEGIN;
 DO $$
 BEGIN
     PERFORM authz.write_tuples_checked('test_pc',
@@ -229,20 +229,17 @@ BEGIN
         p_writes        := '[{"user_type":"user","user_id":"carol","relation":"viewer","object_type":"doc","object_id":"d1"}]');
     PERFORM _test_assert('pc_13_object_scoped_holds_store_shared', _pc_store_lock_mode(), 'ShareLock');
 END $$;
-ROLLBACK;
-BEGIN;
 DO $$
 BEGIN
-    -- "alice owns no doc at all" → the store lock, exclusive
+    -- "nobody_pc13 owns no doc at all" → the store lock, exclusive
     PERFORM authz.write_tuples_checked('test_pc',
         p_preconditions := '[{"match":"absent","user_type":"user","user_id":"nobody_pc13","relation":"owner","object_type":"doc"}]',
         p_writes        := '[{"user_type":"user","user_id":"nobody_pc13","relation":"owner","object_type":"doc","object_id":"d9"}]');
     PERFORM _test_assert('pc_13_partial_holds_store_exclusive', _pc_store_lock_mode(), 'ExclusiveLock');
 END $$;
-ROLLBACK;
+
 -- pc_14: an object_id WITHOUT object_type is partial too (it matches every
 -- type) — exclusive store lock, and no NULL-keyed object lock.
-BEGIN;
 DO $$
 BEGIN
     PERFORM authz.write_tuples_checked('test_pc',
@@ -250,7 +247,6 @@ BEGIN
         p_writes        := '[{"user_type":"user","user_id":"nobody_pc14","relation":"owner","object_type":"doc","object_id":"d8"}]');
     PERFORM _test_assert('pc_14_object_id_only_is_partial', _pc_store_lock_mode(), 'ExclusiveLock');
 END $$;
-ROLLBACK;
 DROP FUNCTION IF EXISTS _pc_store_lock_mode();
 
 SELECT authz.delete_store('test_pc');

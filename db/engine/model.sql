@@ -223,10 +223,12 @@ BEGIN
     END IF;
 
     -- 2. Tuples on either side: refuse, or (p_force) delete through the
-    --    audited path. First the SHARE lock on authz.tuples: a tuple written
-    --    concurrently can neither slip between this count and the purge
-    --    (deleted without consent) nor land after it (orphaned) — in-flight
-    --    writers commit first and are counted, later ones wait for us.
+    --    audited path. First the removal lock on authz.tuples (SHARE ROW
+    --    EXCLUSIVE, READ COMMITTED required — see tuples.sql): a tuple
+    --    written concurrently can neither slip between this count and the
+    --    purge (deleted without consent) nor land after it (orphaned) —
+    --    in-flight writers commit first and are counted, later ones wait
+    --    for us, and a second removal waits rather than deadlocks.
     --    Counted by the RLS-bypass helper so EXPIRED rows —
     --    hidden from an ordinary count, deleted by the purge — are refused
     --    too. `IS NOT TRUE`: a NULL p_force is not consent (NOT NULL is
@@ -254,6 +256,9 @@ BEGIN
     GET DIAGNOSTICS v_rules = ROW_COUNT;
 
     -- 4. The type's dedicated partition (same naming as _ensure_tuple_partition).
+    --    DETACH takes ACCESS EXCLUSIVE on the parent until COMMIT, so reads
+    --    wait for the rest of this transaction: keep it short (it is the
+    --    last thing this function does), never wrap removals in a long one.
     v_part_name := 'tuples_' || regexp_replace(p_store, '[^a-zA-Z0-9]', '_', 'g')
                    || '_'     || regexp_replace(p_type_name, '[^a-zA-Z0-9]', '_', 'g');
     IF EXISTS (SELECT 1 FROM pg_catalog.pg_class c
