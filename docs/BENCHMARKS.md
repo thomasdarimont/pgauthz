@@ -78,8 +78,10 @@ dead-end leaf). All DENY (no grant), to force full traversal.
 
 - **Host:** MacBook Pro, Apple M3 Max, 64 GB RAM, 1 TB NVMe, macOS.
 - **Database:** PostgreSQL 18.4 in a single Docker container (Docker Desktop
-  Linux VM; ~16 vCPU / ~7.7 GB visible to the container), default-ish tuning —
-  not production hardware, and not a tuned/bare-metal Postgres.
+  Linux VM; ~16 vCPU / ~7.7 GB visible to the container), default-ish tuning
+  (`shared_buffers` 256 MB, `work_mem` 16 MB) — not production hardware, and
+  not a tuned/bare-metal Postgres. The 2026-10-18 addendum at the end is the
+  most recent full table, on PostgreSQL 18.6.
 
 **Treat the absolute numbers as illustrative; the point is the scaling
 behavior** (what each operation's cost is bounded by), which is
@@ -462,3 +464,84 @@ churn — a reminder that time-travel replay cost tracks audit-log size up to
 `p_at`, and that the retention guidance in PRODUCTION applies to the audit
 tables as much as to events.
 
+
+## Addendum: 2026-10-18 (PostgreSQL 18.6, console + sharing + lock protocol in place)
+
+All five suites rerun at `v0.17.0-47` (after the management console, the
+`grant`/`revoke` sharing API, the relation-kind trigger, the checked-write
+lock protocol and migrations 0017–0022). Same laptop as above; **PostgreSQL
+18.6** now (18.4 before), Docker Desktop 7 with the full overlay stack
+running (Keycloak, OPA, console, playground — all idle, <0.5 % CPU). Not a
+fresh install: 16 stores, 64 tuple partitions, a **237 k-row audit log** from
+weeks of test runs, autovacuumed the same day (≤46 dead rows on any model
+table). Full output:
+
+| `drive` (60,031 tuples) | ms/op | | `github` (39,092 tuples) | ms/op |
+|---|--:|---|---|--:|
+| check shallow | 0.195 | | check org-admin `can_read` (4-level chain) | 1.25 |
+| check deep (15-folder TTU) | 3.77 | | check org-member `can_read` (TTU) | 1.57 |
+| check userset | 0.340 | | check nested-team reader (10-deep) | 1.33 |
+| check DENY (full traversal) | 3.70 | | check DENY (full traversal) | 2.76 |
+| check wildcard | 0.195 | | check `can_write` DENY, plain reader | 0.855 |
+| list_objects grant-sparse | 2.69 | | list_objects org-admin repos | 125 |
+| list_subjects shared doc (3) | 14.2 | | list_subjects repo readers (526) | **689** |
+| list_subjects wildcard doc | 13.8 | | list_actions | 3.67 |
+| list_subjects group doc (50) | 32.4 | | | |
+| list_actions | 5.44 | | | |
+| contextual tuples (inject 1) | 0.335 | | | |
+| audit_check_access (replay 237 k audit rows) | 113 | | | |
+
+| `rules` (53,596 tuples) | ms/op | | `gates` (220,100 events) | ms/op |
+|---|--:|---|---|--:|
+| intersection ALLOW / DENY | 0.203 / 0.354 | | ungated baseline | 0.181 |
+| exclusion ALLOW / DENY | 0.347 / 0.210 | | gated, 0 / 100 / 10k events | 0.263 / 0.361 / 11.5 |
+| condition ALLOW / DENY | 0.200 / 0.321 | | `formerly_within` + match, 10k | 3.84 |
+| list_objects intersection | 4.26 | | gated DENY, missing `$request` key | 0.261 |
+| list_subjects intersection, hot (500) | **105** | | explain gated / detailed conditional | 1.02 / 1.02 |
+| list_subjects exclusion, hot (450) | **169** | | list_subjects ungated / gated (2k) | 322 / 547 |
+| | | | list_objects gated | 11.8 |
+| `adversarial` (1,054 tuples) | | | list_actions (3 relations, 2 gated) | 0.774 |
+| diamond DENY depth 6 / 9 / 12 | 1.19 / 1.59 / 2.03 | | audit_check_access gated | 10.3 |
+| wide fan-out (500 → 1) | 64.5 | | record_event / batch of 100 | 0.060 / 5.77 |
+| | | | reserve_event / list_events page | 1.02 / 0.275 |
+
+**Against the last recorded run (2026-10-02 / 09-29), everything is within
+the ~10–20 % run-to-run band** this machine has shown all along: drive
+shallow 0.162 → 0.195, deep TTU 3.59 → 3.77, DENY 3.77 → 3.70, github
+nested-team 1.30 → 1.33, github `list_objects` 121 → 125, rules
+`list_objects` 3.8 → 4.3, gates baseline 0.171 → 0.181, gated 10k 11.8 →
+11.5, `reserve_event` 0.86 → 1.02, `record_event` 0.056 → 0.060, `list_events`
+0.26 → 0.275, adversarial fan-out 65.7 → 64.5. The write-path additions of
+this period (the store-level lock in checked writes and sharing, the
+relation-kind trigger on tuple writes) are not on these paths; the suites'
+bulk loads were 1.9 / 1.3 / 1.7 s (drive / github / rules), unchanged.
+
+**Time-travel tracks the audit log, again:** `audit_check_access` 29 → 113 ms
+(drive) and 4.0 → 10.3 ms (gates) with a 237 k-row audit log instead of the
+fresh-install log of the 10-02 run. Same lesson as then; the replay is linear
+in the log up to `p_at`.
+
+**The three hot `list_subjects` lines were checked for a regression and
+cleared.** Against the *original* table they are 3–5× slower (github repo
+readers 233 → 689, rules intersection 20 → 105, exclusion 39 → 169) while
+the sparse `list_subjects` lines are on baseline (drive shared doc 12 → 14).
+An A/B on the same database — the read-path engine files
+(`core_internal`, `access_internal`, `access`) from the last benchmarked
+revision loaded over HEAD, then HEAD restored — timed the github call at
+731 / 726 / 720 ms vs 748 / 702 / 727 ms: **identical**, so nothing since
+10-02 caused it. The lines were never re-recorded after the original table,
+and they are **per-candidate-check bound**: a hot object's 450–526
+candidates each cost one confirmation check, and a shallow check has gone
+from 0.04 ms in the original table to ~0.2 ms today through the features
+added since (expiry RLS, the `_decide` seam with its gate lookup, the memo,
+the relation-kind and condition-clock lookups) — 500 × 0.2 ms ≈ 100 ms, which
+is what the rules line reads. One measurable contributor: with
+`SET authz.memoize = 'off'` the github call drops 713 → 560 ms (−20 %); the
+memo's temp-table bookkeeping (`local … dirtied=1578 written=1052` buffers
+per call) is overhead on hundreds of small confirmation checks that never
+revisit a node. Two follow-ups for the production-scale benchmark
+milestone, not done here: (1) skip the memo for confirmation checks inside
+`list_subjects` / `list_objects` (the candidates are independent, the memo
+only pays off *within* one deep check); (2) re-record the original table on
+one machine state so later runs compare like with like — today's table above
+is that baseline for PostgreSQL 18.6.
