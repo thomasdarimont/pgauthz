@@ -7,13 +7,13 @@ SELECT _test_reset();
 DROP FUNCTION IF EXISTS _test_setup_wildcard();
 CREATE OR REPLACE FUNCTION _test_setup_wildcard() RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE
-    s          smallint;
-    t_resource smallint;
-    r_viewer   smallint;
-    r_editor   smallint;
-    r_can_view smallint;
-    r_can_edit smallint;
-    r_parent   smallint;
+    s          integer;
+    t_resource integer;
+    r_viewer   integer;
+    r_editor   integer;
+    r_can_view integer;
+    r_can_edit integer;
+    r_parent   integer;
 BEGIN
     BEGIN PERFORM authz.delete_store('test_wildcard'); EXCEPTION WHEN OTHERS THEN NULL; END;
 

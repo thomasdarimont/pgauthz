@@ -8,7 +8,7 @@ SELECT _test_reset();
 
 DROP FUNCTION IF EXISTS _test_setup_watch(text);
 CREATE FUNCTION _test_setup_watch(p_store text) RETURNS void LANGUAGE plpgsql AS $$
-DECLARE s smallint;
+DECLARE s integer;
 BEGIN
     BEGIN PERFORM authz.delete_store(p_store); EXCEPTION WHEN OTHERS THEN NULL; END;
     PERFORM authz.create_store(p_store);

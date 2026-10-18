@@ -10,7 +10,7 @@ SELECT _test_reset();
 DROP FUNCTION IF EXISTS _test_setup_part();
 CREATE OR REPLACE FUNCTION _test_setup_part() RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE
-    s smallint;
+    s integer;
 BEGIN
     BEGIN PERFORM authz.delete_store('test_part'); EXCEPTION WHEN OTHERS THEN NULL; END;
     -- Leftover partitions from a previous (aborted) run would make
@@ -45,7 +45,7 @@ $$;
 -- ================================================================
 DO $$
 DECLARE
-    s smallint;
+    s integer;
     v_oid text;
 BEGIN
     PERFORM _test_setup_part();
@@ -94,7 +94,7 @@ SELECT * FROM _test_teardown_part();
 -- ================================================================
 DO $$
 DECLARE
-    s smallint;
+    s integer;
     v_oid text;
 BEGIN
     PERFORM _test_setup_part();

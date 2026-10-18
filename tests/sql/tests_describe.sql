@@ -6,7 +6,7 @@ SELECT _test_reset();
 
 DROP FUNCTION IF EXISTS _test_setup_desc();
 CREATE FUNCTION _test_setup_desc() RETURNS void LANGUAGE plpgsql AS $$
-DECLARE s smallint;
+DECLARE s integer;
 BEGIN
     BEGIN PERFORM authz.delete_store('test_desc'); EXCEPTION WHEN OTHERS THEN NULL; END;
     PERFORM authz.create_store('test_desc');

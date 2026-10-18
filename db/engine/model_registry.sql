@@ -484,19 +484,26 @@ BEGIN
 
     -- Stale relations: removable only when nothing references them anymore.
     -- Rules/restrictions were just synced; tuples have NO FK on relations,
-    -- so guard explicitly instead of silently orphaning tuple rows.
+    -- so guard explicitly instead of silently orphaning tuple rows. The
+    -- count runs through the RLS-bypass helper (expired rows reference the
+    -- relation until cleanup deletes them) and under the SHARE lock on
+    -- authz.tuples (a concurrent write cannot slip in after the count).
     FOR v_rel IN
         SELECT r.id, r.name FROM authz.relations r
          WHERE r.store_id = v_store_id
            AND r.name NOT IN (SELECT x->>'name' FROM jsonb_array_elements(v_def->'relations') x)
     LOOP
-        IF EXISTS (SELECT 1 FROM authz.tuples t
-                    WHERE t.store_id = v_store_id
-                      AND (t.relation = v_rel.id OR t.user_relation = v_rel.id)) THEN
-            RAISE EXCEPTION 'apply_model: relation % is not in model %/% but tuples still '
-                'reference it in store % — delete those tuples first',
-                v_rel.name, p_name, v_version, p_store;
-        END IF;
+        DECLARE v_t bigint; v_x bigint;
+        BEGIN
+            PERFORM authz._lock_tuples_for_removal();
+            SELECT total, expired INTO v_t, v_x FROM authz._rls_count_relation_tuples(v_store_id, v_rel.id);
+            IF v_t > 0 THEN
+                RAISE EXCEPTION 'apply_model: relation % is not in model %/% but % tuple(s) still '
+                    'reference it in store % — delete those tuples first',
+                    v_rel.name, p_name, v_version, v_t,
+                    p_store || CASE WHEN v_x > 0 THEN format(' (%s expired, pending cleanup)', v_x) ELSE '' END;
+            END IF;
+        END;
         DELETE FROM authz.relations r WHERE r.id = v_rel.id;
     END LOOP;
 
@@ -815,11 +822,9 @@ BEGIN
     v_rel_remove := authz._jsonb_array_except_by_name(v_live->'relations', v_def->'relations');
     FOR v_rel IN SELECT x.e->>'name' AS name FROM jsonb_array_elements(v_rel_remove) AS x(e)
     LOOP
-        SELECT count(*) INTO v_refs
-          FROM authz.tuples t
-         WHERE t.store_id = v_store_id
-           AND (t.relation = authz._r(v_store_id, v_rel.name)
-                OR t.user_relation = authz._r(v_store_id, v_rel.name));
+        -- the same count apply_model guards on (incl. expired rows)
+        SELECT total INTO v_refs
+          FROM authz._rls_count_relation_tuples(v_store_id, authz._r(v_store_id, v_rel.name));
         IF v_refs > 0 THEN
             v_blockers := v_blockers || jsonb_build_object(
                 'kind', 'relation_referenced_by_tuples',

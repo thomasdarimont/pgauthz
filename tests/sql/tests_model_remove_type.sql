@@ -187,6 +187,35 @@ BEGIN
 END;
 $$;
 
+-- rt_12: the reference count runs under a SHARE lock on authz.tuples, held to
+-- the end of the transaction (so a concurrent write cannot slip in between
+-- the count and the purge — see tests/test-concurrency.sh for the two-session
+-- version). Visible in pg_locks for the rest of this transaction.
+BEGIN;
+DO $$
+DECLARE v_err text; v_mode text;
+BEGIN
+    PERFORM authz.write_tuple('test_rmtype', 'user', 'bob', 'viewer', 'legacy', 'l1');
+    BEGIN PERFORM authz.model_remove_type('test_rmtype', 'legacy');
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert_true('rt_12_refused', v_err LIKE '%referenced by 1 tuple%', coalesce(v_err, 'no error'));
+END;
+$$;
+DO $$
+DECLARE v_mode text;
+BEGIN
+    -- the lock survives the refused (sub-transaction) call? No: the
+    -- EXCEPTION block rolled it back. Take the path that succeeds instead.
+    PERFORM authz.model_register_type('test_rmtype', 'scratch_lock');
+    PERFORM authz.model_remove_type('test_rmtype', 'scratch_lock');
+    SELECT string_agg(l.mode, ',') INTO v_mode FROM pg_locks l
+     WHERE l.locktype = 'relation' AND l.relation = 'authz.tuples'::regclass
+       AND l.pid = pg_backend_pid() AND l.granted AND l.mode = 'ShareLock';
+    PERFORM _test_assert('rt_12_share_lock_held_on_tuples', coalesce(v_mode, 'none'), 'ShareLock');
+END;
+$$;
+ROLLBACK;
+
 -- rt_09: a type with no tuples / rules / restrictions removes cleanly without p_force
 DO $$
 DECLARE v_res jsonb;

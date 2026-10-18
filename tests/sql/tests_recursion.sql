@@ -19,7 +19,7 @@ SELECT _test_reset();
 DROP FUNCTION IF EXISTS _test_setup_rec();
 CREATE OR REPLACE FUNCTION _test_setup_rec() RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE
-    s smallint;
+    s integer;
     i int;
 BEGIN
     BEGIN PERFORM authz.delete_store('test_rec'); EXCEPTION WHEN OTHERS THEN NULL; END;

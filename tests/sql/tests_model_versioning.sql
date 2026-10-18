@@ -40,7 +40,7 @@ SELECT set_config('test.mv1_t1', clock_timestamp()::text, false);
 DO $$
 DECLARE
     v_t1      timestamptz := current_setting('test.mv1_t1')::timestamptz;
-    v_rule_id smallint;
+    v_rule_id integer;
 BEGIN
     SELECT id INTO v_rule_id FROM authz.models
      WHERE store_id    = authz._s('test_mv')

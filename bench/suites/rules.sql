@@ -26,15 +26,15 @@ SELECT authz.model_add_rule('bench_rules','resource', r, 'direct')
 
 -- can_access = assigned AND cleared        (intersection)
 SELECT authz.model_add_rule('bench_rules','resource','can_access','computed',
-    p_computed_relation => 'assigned', p_group_id => 1::smallint, p_group_op => 'intersection');
+    p_computed_relation => 'assigned', p_group_id => 1::integer, p_group_op => 'intersection');
 SELECT authz.model_add_rule('bench_rules','resource','can_access','computed',
-    p_computed_relation => 'cleared',  p_group_id => 1::smallint, p_group_op => 'intersection');
+    p_computed_relation => 'cleared',  p_group_id => 1::integer, p_group_op => 'intersection');
 
 -- can_edit = editor BUT NOT banned         (exclusion)
 SELECT authz.model_add_rule('bench_rules','resource','can_edit','computed',
-    p_computed_relation => 'editor', p_group_id => 2::smallint, p_group_op => 'exclusion', p_negated => false);
+    p_computed_relation => 'editor', p_group_id => 2::integer, p_group_op => 'exclusion', p_negated => false);
 SELECT authz.model_add_rule('bench_rules','resource','can_edit','computed',
-    p_computed_relation => 'banned', p_group_id => 2::smallint, p_group_op => 'exclusion', p_negated => true);
+    p_computed_relation => 'banned', p_group_id => 2::integer, p_group_op => 'exclusion', p_negated => true);
 
 -- can_view = viewer                        (viewer tuples carry a time condition)
 SELECT authz.model_add_rule('bench_rules','resource','can_view','computed',
@@ -53,13 +53,13 @@ DECLARE
     n_res    int := 5000;
     hot_size int := 500;     -- subjects on the "hot" resource (list_subjects)
 
-    s          smallint := authz._s('bench_rules');
-    t_user     smallint := authz._t(s,'user');
-    t_res      smallint := authz._t(s,'resource');
-    r_assigned smallint := authz._r(s,'assigned');
-    r_cleared  smallint := authz._r(s,'cleared');
-    r_editor   smallint := authz._r(s,'editor');
-    r_banned   smallint := authz._r(s,'banned');
+    s          integer := authz._s('bench_rules');
+    t_user     integer := authz._t(s,'user');
+    t_res      integer := authz._t(s,'resource');
+    r_assigned integer := authz._r(s,'assigned');
+    r_cleared  integer := authz._r(s,'cleared');
+    r_editor   integer := authz._r(s,'editor');
+    r_banned   integer := authz._r(s,'banned');
     t0         timestamptz := clock_timestamp();
 BEGIN
     -- Bulk: every user assigned to + editor of one resource; half are cleared;

@@ -23,56 +23,56 @@ SELECT authz.create_store('demo');
 ----------------------------------------------------------------------
 DO $$
 DECLARE
-    s smallint := authz._s('demo');
+    s integer := authz._s('demo');
 
     -- Type shortcuts
-    t_team              smallint;
-    t_client_org        smallint;
-    t_engagement        smallint;
-    t_assignment        smallint;
-    t_int_ds            smallint;  -- internal_data_space
-    t_cli_ds            smallint;  -- client_data_space
-    t_document          smallint;
-    t_upload_req        smallint;  -- upload_request
-    t_folder            smallint;
+    t_team              integer;
+    t_client_org        integer;
+    t_engagement        integer;
+    t_assignment        integer;
+    t_int_ds            integer;  -- internal_data_space
+    t_cli_ds            integer;  -- client_data_space
+    t_document          integer;
+    t_upload_req        integer;  -- upload_request
+    t_folder            integer;
 
     -- Relation shortcuts
-    r_member                      smallint;
-    r_advisor                     smallint;
-    r_assistant                   smallint;
-    r_client                      smallint;
-    r_internal_collaborator       smallint;
-    r_can_view                    smallint;
-    r_can_manage_access           smallint;
-    r_can_manage_client_collab    smallint;  -- can_manage_client_collaboration
-    r_parent_engagement           smallint;
-    r_accountant                  smallint;
-    r_payroll_clerk               smallint;
-    r_tax_clerk                   smallint;
-    r_can_edit                    smallint;
-    r_can_approve                 smallint;
-    r_parent_assignment           smallint;
-    r_viewer                      smallint;
-    r_editor                      smallint;
-    r_client_org                  smallint;
-    r_direct_client_user          smallint;
-    r_direct_internal_manager     smallint;
-    r_client_member               smallint;
-    r_can_upload                  smallint;
-    r_can_manage_sharing          smallint;
-    r_in_internal_space           smallint;
-    r_in_client_space             smallint;
-    r_can_read                    smallint;
-    r_can_share_with_client       smallint;
-    r_can_delete                  smallint;
-    r_requested_from              smallint;
-    r_created_by                  smallint;
-    r_can_submit                  smallint;
-    r_can_manage                  smallint;
-    r_parent                      smallint;
-    r_owner                       smallint;
-    r_parent_folder               smallint;
-    r_can_share                   smallint;
+    r_member                      integer;
+    r_advisor                     integer;
+    r_assistant                   integer;
+    r_client                      integer;
+    r_internal_collaborator       integer;
+    r_can_view                    integer;
+    r_can_manage_access           integer;
+    r_can_manage_client_collab    integer;  -- can_manage_client_collaboration
+    r_parent_engagement           integer;
+    r_accountant                  integer;
+    r_payroll_clerk               integer;
+    r_tax_clerk                   integer;
+    r_can_edit                    integer;
+    r_can_approve                 integer;
+    r_parent_assignment           integer;
+    r_viewer                      integer;
+    r_editor                      integer;
+    r_client_org                  integer;
+    r_direct_client_user          integer;
+    r_direct_internal_manager     integer;
+    r_client_member               integer;
+    r_can_upload                  integer;
+    r_can_manage_sharing          integer;
+    r_in_internal_space           integer;
+    r_in_client_space             integer;
+    r_can_read                    integer;
+    r_can_share_with_client       integer;
+    r_can_delete                  integer;
+    r_requested_from              integer;
+    r_created_by                  integer;
+    r_can_submit                  integer;
+    r_can_manage                  integer;
+    r_parent                      integer;
+    r_owner                       integer;
+    r_parent_folder               integer;
+    r_can_share                   integer;
 BEGIN
 
     ----------------------------------------------------------------------

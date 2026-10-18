@@ -17,12 +17,12 @@ SELECT _test_reset();
 
 DO $$
 DECLARE
-    s        smallint;
+    s        integer;
     v_lang   text;
     v_ok     boolean;
     v_threw  boolean;
-    v_id     smallint;
-    v_id2    smallint;
+    v_id     integer;
+    v_id2    integer;
 BEGIN
     BEGIN PERFORM authz.delete_store('test_condlang'); EXCEPTION WHEN OTHERS THEN NULL; END;
     s := authz.create_store('test_condlang');

@@ -269,7 +269,7 @@ matters).
 |---|---|---|
 | Pure PostgreSQL engine | Operability | No separate authorization database to deploy, back up, or keep consistent — the engine runs where the data is, and pgauthzd in front of it is stateless. The database is the single source of truth. |
 | SECURITY DEFINER functions | Security | Application roles have zero table access. The function API is the only entry point, making the table schema an internal implementation detail. |
-| Integer ID encoding | Performance | `smallint` IDs (2 bytes) instead of text for types/relations. Smaller rows, faster comparisons, better cache hit ratio. |
+| Integer ID encoding | Performance | `integer` IDs (4 bytes) instead of text for types/relations. Smaller rows, faster comparisons, better cache hit ratio. |
 | LIST partitioning by object_type | Performance | Each type gets its own partition. `check_access` benefits from partition pruning — only the relevant partition is scanned. |
 | pgauthzd front door + optional OPA sidecar | Compatibility | pgauthzd is the HTTP front door — it validates the JWT and exposes the SQL functions over its native `/pgauthz/v1` API and AuthZEN 1.0. OPA is an internal policy-as-code sidecar (Rego, caching) that only pgauthzd calls; it is optional (enabled by setting `OPA_URL` on a pgauthzd instance — orthogonal to the DB capability profile). |
 | Models as data, not schema | Operability | Model changes are INSERT/DELETE operations. No schema migrations, no function reloads, no downtime. |
@@ -340,8 +340,8 @@ is the only backend ([ADR 0007](adr/0007-pgauthzd-front-door.md)).
 | Table | Purpose | Partitioning |
 |---|---|---|
 | `stores` | Independent authorization namespaces | — |
-| `types` | Object type registry (smallint ID, namespace) | — |
-| `relations` | Relation registry (smallint ID) | — |
+| `types` | Object type registry (integer ID, namespace) | — |
+| `relations` | Relation registry (integer ID) | — |
 | `conditions` | Named SQL expressions for ABAC | — |
 | `conditions_audit` | Immutable condition-expression change log (versions conditions for time-travel) | — |
 | `models` | Authorization rules (direct/computed/TTU, groups). PK + unique index. | — |
@@ -1242,7 +1242,7 @@ concrete integration examples.
 
 | Optimization | Impact |
 |---|---|
-| Integer IDs (smallint) | Smaller rows, faster comparisons, better cache ratio |
+| Integer IDs (`integer`) | Smaller rows, faster comparisons, better cache ratio |
 | LIST partitioning by object_type | Partition pruning — only scan relevant type |
 | HASH sub-partitioning | Spread high-volume types across multiple tables |
 | Partial indexes (direct vs userset) | Separate B-trees, more accurate planner estimates |

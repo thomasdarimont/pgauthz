@@ -15,7 +15,7 @@ SELECT _test_reset();
 DROP FUNCTION IF EXISTS _test_setup_ow();
 CREATE OR REPLACE FUNCTION _test_setup_ow() RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE
-    s smallint;
+    s integer;
 BEGIN
     BEGIN PERFORM authz.delete_store('test_ow'); EXCEPTION WHEN OTHERS THEN NULL; END;
 
@@ -32,10 +32,10 @@ BEGIN
     PERFORM authz.model_add_rule('test_ow', 'doc', 'blocked', 'direct');
     PERFORM authz.model_add_rule('test_ow', 'doc', 'can_comment', 'computed',
         p_computed_relation => 'viewer',
-        p_group_id => 1::smallint, p_group_op => 'exclusion');
+        p_group_id => 1::integer, p_group_op => 'exclusion');
     PERFORM authz.model_add_rule('test_ow', 'doc', 'can_comment', 'computed',
         p_computed_relation => 'blocked',
-        p_group_id => 1::smallint, p_group_op => 'exclusion', p_negated => true);
+        p_group_id => 1::integer, p_group_op => 'exclusion', p_negated => true);
 
     -- ordinary data
     PERFORM authz.write_tuple('test_ow', 'user', 'bob', 'viewer', 'doc', 'd1');

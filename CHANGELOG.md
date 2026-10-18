@@ -191,6 +191,19 @@ pre-1.0, minor versions may include breaking changes.
   deleted by the purge) through a new RLS-bypass helper,
   `_rls_count_type_tuples`, and names them in the error;
   `plan_model_apply` reports the same count as a blocker. Tests rt_10/rt_11.
+- **Type and relation removal are serialized against tuple writes.**
+  `model_remove_type` counted a type's references, then purged; a tuple
+  written in between was deleted without `p_force` or left orphaned. The
+  count (and `apply_model`'s stale-relation guard) now runs under a `SHARE`
+  lock on `authz.tuples`: in-flight writers commit first and are counted,
+  later writers wait the milliseconds a removal takes, reads never wait,
+  and no write path can opt out because the lock manager enforces it, not
+  a convention. The stale-relation guard also counts **expired** tuples
+  (new `_rls_count_relation_tuples`), as the type guard does, and
+  `plan_model_apply` reports the same count. New two-session suite
+  `tests/test-concurrency.sh` (in `test-all.sh`) shows the remover waiting
+  for a writer, two partial-precondition writers serializing, and two
+  object-scoped writers staying concurrent.
 - **Checked writes: partial preconditions take the store lock.** A
   `write_tuples_checked` precondition without `object_id` ("alice owns no
   document") expresses a cross-object invariant that the per-object locks
@@ -198,7 +211,11 @@ pre-1.0, minor versions may include breaking changes.
   it hold and both commit. The lock protocol is now store first, then
   objects: object-scoped requests, `grant`, `revoke` and `apply_grants`
   hold the store lock shared, a partial precondition holds it exclusively.
-  Documented in DEVELOPMENT.md; test pc_13 checks the held modes.
+  A precondition missing *either* `object_type` or `object_id` is partial
+  (an `object_id` alone matches every type and used to lock nothing).
+  `allowed`/`denied` keep the target-object lock; their graph dependency is
+  documented as the same window a human share has. DEVELOPMENT.md; tests
+  pc_13/pc_14 check the held modes.
 - **Documented the sharing trust boundary.** `authz.grant` / `revoke` take
   the actor as a parameter; `authz_sharer` must stay with a backend that
   authenticates its users (pgauthzd derives the actor from the token).
@@ -235,6 +252,16 @@ pre-1.0, minor versions may include breaking changes.
   The subject must now be the person's id under the console subject type or
   one of `CONSOLE_SELF_SUBJECT_TYPES` (the types that denote people in the
   managed stores; the demo stack lists `user,internal_user`).
+
+### Fixed
+
+- **Tests, example models and bench suites declared dictionary ids as
+  `smallint`.** The engine's `types` / `relations` / `models` ids are
+  `integer` (serial) and have been all along; test-local variables and a
+  few `::smallint` casts were not, and a long-lived development database
+  whose `models` sequence had passed 32,767 made `tests/test.sh` abort with
+  `smallint out of range` at the first affected block. All widened to
+  `integer`; ARCHITECTURE.md no longer calls the ids `smallint`.
 
 ### Changed
 

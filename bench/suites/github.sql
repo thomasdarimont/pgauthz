@@ -23,19 +23,19 @@ SELECT authz.model_register_relation('bench_github', r)
 
 DO $$
 DECLARE
-    s            smallint := authz._s('bench_github');
-    t_team       smallint := authz._t(s,'team');
-    t_org        smallint := authz._t(s,'org');
-    t_repo       smallint := authz._t(s,'repo');
-    r_member     smallint := authz._r(s,'member');
-    r_admin      smallint := authz._r(s,'admin');
-    r_maintainer smallint := authz._r(s,'maintainer');
-    r_writer     smallint := authz._r(s,'writer');
-    r_reader     smallint := authz._r(s,'reader');
-    r_parent_org smallint := authz._r(s,'parent_org');
-    r_can_admin  smallint := authz._r(s,'can_admin');
-    r_can_write  smallint := authz._r(s,'can_write');
-    r_can_read   smallint := authz._r(s,'can_read');
+    s            integer := authz._s('bench_github');
+    t_team       integer := authz._t(s,'team');
+    t_org        integer := authz._t(s,'org');
+    t_repo       integer := authz._t(s,'repo');
+    r_member     integer := authz._r(s,'member');
+    r_admin      integer := authz._r(s,'admin');
+    r_maintainer integer := authz._r(s,'maintainer');
+    r_writer     integer := authz._r(s,'writer');
+    r_reader     integer := authz._r(s,'reader');
+    r_parent_org integer := authz._r(s,'parent_org');
+    r_can_admin  integer := authz._r(s,'can_admin');
+    r_can_write  integer := authz._r(s,'can_write');
+    r_can_read   integer := authz._r(s,'can_read');
 BEGIN
     INSERT INTO authz.models
         (store_id, object_type, relation, rule_type, computed_relation, tupleset_relation, tupleset_computed) VALUES
@@ -74,15 +74,15 @@ DECLARE
     repos_org   int := 50;     -- repos per org
     nest_depth  int := 10;     -- nested-team chain length
 
-    s            smallint := authz._s('bench_github');
-    t_user       smallint := authz._t(s,'user');
-    t_team       smallint := authz._t(s,'team');
-    t_org        smallint := authz._t(s,'org');
-    t_repo       smallint := authz._t(s,'repo');
-    r_member     smallint := authz._r(s,'member');
-    r_admin      smallint := authz._r(s,'admin');
-    r_reader     smallint := authz._r(s,'reader');
-    r_parent_org smallint := authz._r(s,'parent_org');
+    s            integer := authz._s('bench_github');
+    t_user       integer := authz._t(s,'user');
+    t_team       integer := authz._t(s,'team');
+    t_org        integer := authz._t(s,'org');
+    t_repo       integer := authz._t(s,'repo');
+    r_member     integer := authz._r(s,'member');
+    r_admin      integer := authz._r(s,'admin');
+    r_reader     integer := authz._r(s,'reader');
+    r_parent_org integer := authz._r(s,'parent_org');
     t0           timestamptz := clock_timestamp();
 BEGIN
     -- Every user is a member of one org (round-robin).

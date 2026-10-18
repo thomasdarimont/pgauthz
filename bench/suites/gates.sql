@@ -48,13 +48,13 @@ DECLARE
     n_heavy     int := 10000;     -- events of the 'heavy' principal inside the window
     n_mid       int := 100;
 
-    s          smallint := authz._s('bench_gates');
-    t_user     smallint := authz._t(s,'user');
-    t_acc      smallint := authz._t(s,'account');
-    r_transfer smallint := authz._r(s,'transfer');
-    r_pay      smallint := authz._r(s,'pay');
-    r_withdraw smallint := authz._r(s,'withdraw');
-    r_approve  smallint := authz._r(s,'approve_sale');
+    s          integer := authz._s('bench_gates');
+    t_user     integer := authz._t(s,'user');
+    t_acc      integer := authz._t(s,'account');
+    r_transfer integer := authz._r(s,'transfer');
+    r_pay      integer := authz._r(s,'pay');
+    r_withdraw integer := authz._r(s,'withdraw');
+    r_approve  integer := authz._r(s,'approve_sale');
     t0         timestamptz := clock_timestamp();
 BEGIN
     -- Tuples: every user may transfer / pay / withdraw on acc-1.

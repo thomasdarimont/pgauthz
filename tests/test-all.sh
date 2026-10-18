@@ -57,6 +57,11 @@ echo ""
 run_tests "$SCRIPT_DIR/test-go.sh"
 
 echo ""
+echo "==> Running two-session concurrency tests..."
+echo ""
+run_tests "$SCRIPT_DIR/test-concurrency.sh"
+
+echo ""
 echo "==> Running console Go tests (database-backed, mandatory)..."
 echo ""
 run_tests "$SCRIPT_DIR/test-console-go.sh"

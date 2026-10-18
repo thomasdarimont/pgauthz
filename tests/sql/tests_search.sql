@@ -19,14 +19,14 @@ SELECT _test_reset();
 DROP FUNCTION IF EXISTS _test_setup_search();
 CREATE OR REPLACE FUNCTION _test_setup_search() RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE
-    s          smallint;
-    t_folder   smallint;
-    t_doc      smallint;
-    r_owner    smallint;
-    r_parent   smallint;
-    r_viewer   smallint;
-    r_can_read smallint;
-    r_can_edit smallint;
+    s          integer;
+    t_folder   integer;
+    t_doc      integer;
+    r_owner    integer;
+    r_parent   integer;
+    r_viewer   integer;
+    r_can_read integer;
+    r_can_edit integer;
 BEGIN
     BEGIN PERFORM authz.delete_store('test_search'); EXCEPTION WHEN OTHERS THEN NULL; END;
 

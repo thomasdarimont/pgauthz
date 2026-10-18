@@ -220,7 +220,23 @@ BEGIN
             || '/' || (p->'blockers'->0->>'name') || '/' || (p->'blockers'->0->>'tuples'),
         'false/relation_referenced_by_tuples/ghost/1');
 
+    -- An EXPIRED tuple (hidden by RLS until cleanup) still references the
+    -- relation: the plan counts it and apply refuses, naming it as expired.
+    PERFORM authz.write_tuple('test_reg_tgt', 'user', 'carl', 'ghost', 'doc', 'doc1', p_expires_at => now() + interval '1 hour');
+    UPDATE authz.tuples SET expires_at = now() - interval '1 second'
+     WHERE store_id = authz._s('test_reg_tgt') AND user_id = 'carl';
     PERFORM authz.delete_tuple('test_reg_tgt', 'user', 'bob', 'ghost', 'doc', 'doc1');
+    p := authz.plan_model_apply('test_reg_tgt', 'test_reg_model');
+    PERFORM _test_assert('reg_26b_plan_counts_expired_reference',
+        (p->>'can_apply') || '/' || (p->'blockers'->0->>'tuples'), 'false/1');
+    BEGIN
+        PERFORM authz.apply_model('test_reg_tgt', 'test_reg_model', 2);
+        PERFORM _test_assert('reg_26c_apply_refuses_expired_reference', 'applied', 'refused');
+    EXCEPTION WHEN OTHERS THEN
+        PERFORM _test_assert_true('reg_26c_apply_refuses_expired_reference',
+            SQLERRM LIKE '%1 tuple(s) still reference it%1 expired%', SQLERRM);
+    END;
+    DELETE FROM authz.tuples WHERE store_id = authz._s('test_reg_tgt') AND user_id = 'carl';
     p := authz.plan_model_apply('test_reg_tgt', 'test_reg_model');
     PERFORM _test_assert('reg_27_plan_unblocked_after_tuple_delete',
         (p->>'can_apply') || '/' || (p->'changes'->'relations'->'remove')::text,

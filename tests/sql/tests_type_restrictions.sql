@@ -10,7 +10,7 @@ SELECT _test_reset();
 -- Setup: create test store with model.
 CREATE OR REPLACE FUNCTION _test_setup_tr() RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE
-    s smallint;
+    s integer;
 BEGIN
     BEGIN PERFORM authz.delete_store('test_tr'); EXCEPTION WHEN OTHERS THEN NULL; END;
 
@@ -256,7 +256,7 @@ SELECT * FROM _test_teardown_tr();
 -- ================================================================
 DO $$
 DECLARE
-    v_store_id smallint;
+    v_store_id integer;
     v_count int;
 BEGIN
     PERFORM _test_setup_tr();
@@ -275,8 +275,8 @@ DELETE FROM _test_results RETURNING *;
 -- ================================================================
 DO $$
 DECLARE
-    v_id1 smallint;
-    v_id2 smallint;
+    v_id1 integer;
+    v_id2 integer;
 BEGIN
     PERFORM _test_setup_tr();
     v_id1 := authz.model_add_type_restriction('test_tr', 'document', 'viewer', 'user');

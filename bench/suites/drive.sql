@@ -19,17 +19,17 @@ SELECT authz.model_register_relation('bench_drive', r)
 
 DO $$
 DECLARE
-    s         smallint := authz._s('bench_drive');
-    t_group   smallint := authz._t(s,'group');
-    t_folder  smallint := authz._t(s,'folder');
-    t_doc     smallint := authz._t(s,'document');
-    r_member  smallint := authz._r(s,'member');
-    r_parent  smallint := authz._r(s,'parent');
-    r_viewer  smallint := authz._r(s,'viewer');
-    r_editor  smallint := authz._r(s,'editor');
-    r_owner   smallint := authz._r(s,'owner');
-    r_can_view smallint := authz._r(s,'can_view');
-    r_can_edit smallint := authz._r(s,'can_edit');
+    s         integer := authz._s('bench_drive');
+    t_group   integer := authz._t(s,'group');
+    t_folder  integer := authz._t(s,'folder');
+    t_doc     integer := authz._t(s,'document');
+    r_member  integer := authz._r(s,'member');
+    r_parent  integer := authz._r(s,'parent');
+    r_viewer  integer := authz._r(s,'viewer');
+    r_editor  integer := authz._r(s,'editor');
+    r_owner   integer := authz._r(s,'owner');
+    r_can_view integer := authz._r(s,'can_view');
+    r_can_edit integer := authz._r(s,'can_edit');
 BEGIN
     INSERT INTO authz.models
         (store_id, object_type, relation, rule_type, computed_relation, tupleset_relation, tupleset_computed) VALUES
@@ -63,14 +63,14 @@ DECLARE
     grp_size  int := 50;      -- members per group
     depth     int := 15;      -- nested-folder chain length
 
-    s        smallint := authz._s('bench_drive');
-    t_group  smallint := authz._t(s,'group');
-    t_folder smallint := authz._t(s,'folder');
-    t_doc    smallint := authz._t(s,'document');
-    t_user   smallint := authz._t(s,'user');
-    r_member smallint := authz._r(s,'member');
-    r_parent smallint := authz._r(s,'parent');
-    r_viewer smallint := authz._r(s,'viewer');
+    s        integer := authz._s('bench_drive');
+    t_group  integer := authz._t(s,'group');
+    t_folder integer := authz._t(s,'folder');
+    t_doc    integer := authz._t(s,'document');
+    t_user   integer := authz._t(s,'user');
+    r_member integer := authz._r(s,'member');
+    r_parent integer := authz._r(s,'parent');
+    r_viewer integer := authz._r(s,'viewer');
     t0       timestamptz := clock_timestamp();
 BEGIN
     -- Large user base: each user owns/views a private document.

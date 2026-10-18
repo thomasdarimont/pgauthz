@@ -957,18 +957,24 @@ SELECT authz.write_tuples_checked('acme',
 
 > **Concurrency.** Transaction-scoped advisory locks, taken store first and
 > then per referenced object in a stable order. A request whose `exists` /
-> `absent` preconditions all name an `object_id` holds the store lock
-> *shared* and each object *exclusively*: two racing transfers of one
-> document serialize (one wins, the other's precondition then fails), while
-> different documents proceed in parallel. A **partial** precondition — no
-> `object_id`, a cross-object invariant such as "alice owns no document" —
-> holds the store lock *exclusively*: it waits for every in-flight checked
-> write in the store and blocks new ones until it commits, so two such
-> writers cannot both see the invariant hold. `grant` / `revoke` /
-> `apply_grants` take the same locks. This protects these paths **against
-> each other** — plain `write_tuple` takes no lock, so for a hard invariant
-> route *all* mutators of those tuples through `write_checked` or sharing (or
-> add a DB constraint).
+> `absent` preconditions all name an object (`object_type` **and**
+> `object_id`) holds the store lock *shared* and each object *exclusively*:
+> two racing transfers of one document serialize (one wins, the other's
+> precondition then fails), while different documents proceed in parallel.
+> A **partial** precondition — either field missing, a cross-object
+> invariant such as "alice owns no document" or "nothing on id 42 of any
+> type" — holds the store lock *exclusively*: it waits for every in-flight
+> checked write in the store and blocks new ones until it commits, so two
+> such writers cannot both see the invariant hold. `grant` / `revoke` /
+> `apply_grants` take the same locks. `allowed` / `denied` preconditions are
+> decided on committed state under the *target* object's lock; the graph
+> they walk (the actor's own rights on other objects) is not locked — a
+> right revoked between the check and the commit is the same window a user
+> clicking "share" has, visible afterwards in the audit trail. This protects
+> these paths **against each other** — plain `write_tuple` takes no advisory
+> lock, so for a hard invariant route *all* mutators of those tuples through
+> `write_checked` or sharing (or add a DB constraint). Two-session tests:
+> `tests/test-concurrency.sh`.
 
 ### Recording actions (the action log)
 
@@ -1460,7 +1466,7 @@ shows `[any]`). It's a one-way rendering for humans — a round-trippable
 ### List all model rules for a type
 
 For tabular inspection there are also the `models_view` and
-`type_restrictions_view` views (names, not smallint ids):
+`type_restrictions_view` views (names, not integer ids):
 
 ```sql
 SELECT relation, rule_type, computed_relation, tupleset_relation, tupleset_computed

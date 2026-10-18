@@ -18,7 +18,7 @@ SELECT _test_reset();
 -- Setup: create test store with model (idempotent).
 CREATE OR REPLACE FUNCTION _test_setup_api() RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE
-    s smallint;
+    s integer;
 BEGIN
     BEGIN PERFORM authz.delete_store('test_api'); EXCEPTION WHEN OTHERS THEN NULL; END;
 
@@ -252,7 +252,7 @@ SELECT * FROM _test_teardown_api();
 -- api_16: performed_by tracked on write_tuple
 DO $$
 DECLARE
-    s smallint;
+    s integer;
     v_text text;
 BEGIN
     PERFORM _test_setup_api();
@@ -273,7 +273,7 @@ SELECT * FROM _test_teardown_api();
 -- api_17: performed_by tracked on delete_tuple
 DO $$
 DECLARE
-    s smallint;
+    s integer;
     v_text text;
 BEGIN
     PERFORM _test_setup_api();
@@ -296,7 +296,7 @@ SELECT * FROM _test_teardown_api();
 -- api_18: performed_by tracked on write_tuples (batch)
 DO $$
 DECLARE
-    s smallint;
+    s integer;
     v_text text;
 BEGIN
     PERFORM _test_setup_api();
@@ -317,7 +317,7 @@ SELECT * FROM _test_teardown_api();
 -- api_19: performed_by tracked on delete_user_tuples
 DO $$
 DECLARE
-    s smallint;
+    s integer;
     v_text text;
 BEGIN
     PERFORM _test_setup_api();
@@ -457,7 +457,7 @@ SELECT * FROM _test_teardown_api();
 -- api_33: model_add_rule — add a direct rule, verify it exists
 DO $$
 DECLARE
-    v_rule_id smallint;
+    v_rule_id integer;
     v_count   bigint;
 BEGIN
     PERFORM _test_setup_api();
@@ -479,7 +479,7 @@ SELECT * FROM _test_teardown_api();
 -- api_34: model_add_rule — add a computed rule, verify check_access works
 DO $$
 DECLARE
-    v_rule_id smallint;
+    v_rule_id integer;
     v_access  boolean;
 BEGIN
     PERFORM _test_setup_api();
@@ -498,8 +498,8 @@ SELECT * FROM _test_teardown_api();
 -- api_35: model_add_rule — add a TTU rule, verify check_access works
 DO $$
 DECLARE
-    s         smallint;
-    v_rule_id smallint;
+    s         integer;
+    v_rule_id integer;
     v_access  boolean;
 BEGIN
     PERFORM _test_setup_api();
@@ -531,8 +531,8 @@ SELECT * FROM _test_teardown_api();
 -- api_36: model_add_rule — duplicate insert is idempotent (returns same ID)
 DO $$
 DECLARE
-    v_id1 smallint;
-    v_id2 smallint;
+    v_id1 integer;
+    v_id2 integer;
 BEGIN
     PERFORM _test_setup_api();
     -- Remove existing direct reader rule first
@@ -557,12 +557,12 @@ BEGIN
     PERFORM _test_setup_api();
     -- First rule in group 1 with 'intersection'
     PERFORM authz.model_add_rule('test_api', 'doc', 'reader', 'direct',
-        p_group_id => 1::smallint, p_group_op => 'intersection');
+        p_group_id => 1::integer, p_group_op => 'intersection');
     -- Second rule in group 1 with 'or' should fail
     BEGIN
         PERFORM authz.model_add_rule('test_api', 'doc', 'reader', 'computed',
             p_computed_relation => 'editor',
-            p_group_id => 1::smallint, p_group_op => 'or');
+            p_group_id => 1::integer, p_group_op => 'or');
     EXCEPTION WHEN OTHERS THEN
         v_raised := true;
     END;
@@ -590,7 +590,7 @@ SELECT * FROM _test_teardown_api();
 -- api_39: model_remove_rule — remove by ID, verify check_access changes
 DO $$
 DECLARE
-    v_rule_id smallint;
+    v_rule_id integer;
     v_deleted boolean;
     v_access  boolean;
 BEGIN
@@ -622,9 +622,9 @@ SELECT * FROM _test_teardown_api();
 -- api_40: model_remove_rule — wrong store returns false
 DO $$
 DECLARE
-    v_rule_id smallint;
+    v_rule_id integer;
     v_deleted boolean;
-    ds        smallint;
+    ds        integer;
 BEGIN
     PERFORM _test_setup_api();
     -- Create a second store
@@ -815,7 +815,7 @@ SELECT * FROM _test_teardown_api();
 -- api_53: write_tuples_jsonb with performed_by tracks audit
 DO $$
 DECLARE
-    s smallint;
+    s integer;
     v_text text;
 BEGIN
     PERFORM _test_setup_api();
@@ -836,7 +836,7 @@ SELECT * FROM _test_teardown_api();
 -- api_54: write_tuples_jsonb with optional user_relation
 DO $$
 DECLARE
-    s smallint;
+    s integer;
     v_count bigint;
 BEGIN
     PERFORM _test_setup_api();
@@ -1235,7 +1235,7 @@ SELECT * FROM _test_teardown_api();
 -- api_29-32: delete_store creates, verifies, deletes, and checks cleanup
 DO $$
 DECLARE
-    ds smallint;
+    ds integer;
     v_count bigint;
 BEGIN
     BEGIN PERFORM authz.delete_store('test_delete_store'); EXCEPTION WHEN OTHERS THEN NULL; END;
@@ -1389,7 +1389,7 @@ SELECT * FROM _test_teardown_api();
 SELECT _test_setup_api();
 DO $$
 DECLARE
-    s  smallint := authz._s('test_api');
+    s  integer := authz._s('test_api');
     ts timestamptz := now() - interval '1 hour';
 BEGIN
     -- doc_tie1: granted then revoked in the same microsecond -> no access
@@ -1515,7 +1515,7 @@ SELECT * FROM _test_teardown_api();
 SELECT _test_setup_api();
 DO $$
 DECLARE
-    s     smallint := authz._s('test_api');
+    s     integer := authz._s('test_api');
     v_err text;
     v_cnt bigint;
 BEGIN
@@ -1552,7 +1552,7 @@ DELETE FROM _test_results RETURNING *;
 SELECT _test_setup_api();
 DO $$
 DECLARE
-    s     smallint := authz._s('test_api');
+    s     integer := authz._s('test_api');
     v_cnt bigint;
 BEGIN
     PERFORM authz.write_tuple('test_api', 'user', 'alice', 'reader', 'doc', 'imm2');
@@ -1663,13 +1663,13 @@ SELECT * FROM _test_teardown_api();
 SELECT _test_setup_api();
 DO $$
 DECLARE
-    s     smallint := authz._s('test_api');
+    s     integer := authz._s('test_api');
     v_err text;
 BEGIN
     -- api_105: dangling object_type is rejected
     BEGIN
         INSERT INTO authz.models (store_id, object_type, relation, rule_type)
-        VALUES (s, 32000::smallint, authz._r(s, 'reader'), authz._rel_direct());
+        VALUES (s, 32000::integer, authz._r(s, 'reader'), authz._rel_direct());
         v_err := 'no exception raised';
     EXCEPTION WHEN foreign_key_violation THEN
         v_err := NULL;
@@ -1679,7 +1679,7 @@ BEGIN
     -- api_106: dangling computed_relation is rejected
     BEGIN
         INSERT INTO authz.models (store_id, object_type, relation, rule_type, computed_relation)
-        VALUES (s, authz._t(s, 'doc'), authz._r(s, 'reader'), authz._rel_computed(), 32000::smallint);
+        VALUES (s, authz._t(s, 'doc'), authz._r(s, 'reader'), authz._rel_computed(), 32000::integer);
         v_err := 'no exception raised';
     EXCEPTION WHEN foreign_key_violation THEN
         v_err := NULL;
@@ -1707,7 +1707,7 @@ BEGIN
     -- api_108: dangling allowed_user_type in type restrictions is rejected
     BEGIN
         INSERT INTO authz.type_restrictions (store_id, object_type, relation, allowed_user_type)
-        VALUES (s, authz._t(s, 'doc'), authz._r(s, 'reader'), 32000::smallint);
+        VALUES (s, authz._t(s, 'doc'), authz._r(s, 'reader'), 32000::integer);
         v_err := 'no exception raised';
     EXCEPTION WHEN foreign_key_violation THEN
         v_err := NULL;

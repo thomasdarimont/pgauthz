@@ -552,7 +552,12 @@ dedicated tuple partition. The relations its rules used stay registered.
 Fail-closed: a type with temporal gates or recorded events is always refused
 (drop the gates / purge the events first); a type still named by tuples on
 either side is refused unless `p_force => true`, which deletes them, expired
-rows included, through the audited path. Returns a summary.
+rows included, through the audited path. Returns a summary. The reference
+count runs under a `SHARE` lock on `authz.tuples`, so a tuple written
+concurrently is either counted (its writer committed first) or waits for the
+removal to finish — writers take nothing new, and only writes racing an
+actual removal wait, for the milliseconds it takes; reads never do.
+`apply_model` takes the same lock before dropping a stale relation.
 
 ```sql
 SELECT authz.model_remove_type('demo', 'legacy_report');

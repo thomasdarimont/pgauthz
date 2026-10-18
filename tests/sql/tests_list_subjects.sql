@@ -13,10 +13,10 @@ SELECT _test_reset();
 DROP FUNCTION IF EXISTS _test_setup_ls();
 CREATE OR REPLACE FUNCTION _test_setup_ls() RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE
-    s smallint;
-    t_user smallint; t_team smallint; t_doc smallint;
-    r_member smallint; r_viewer smallint; r_owner smallint; r_blocked smallint;
-    r_can_edit smallint; r_can_comment smallint;
+    s integer;
+    t_user integer; t_team integer; t_doc integer;
+    r_member integer; r_viewer integer; r_owner integer; r_blocked integer;
+    r_can_edit integer; r_can_comment integer;
 BEGIN
     BEGIN PERFORM authz.delete_store('test_ls'); EXCEPTION WHEN OTHERS THEN NULL; END;
     s := authz.create_store('test_ls');

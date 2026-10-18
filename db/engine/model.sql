@@ -223,10 +223,15 @@ BEGIN
     END IF;
 
     -- 2. Tuples on either side: refuse, or (p_force) delete through the
-    --    audited path. Counted by the RLS-bypass helper so EXPIRED rows —
+    --    audited path. First the SHARE lock on authz.tuples: a tuple written
+    --    concurrently can neither slip between this count and the purge
+    --    (deleted without consent) nor land after it (orphaned) — in-flight
+    --    writers commit first and are counted, later ones wait for us.
+    --    Counted by the RLS-bypass helper so EXPIRED rows —
     --    hidden from an ordinary count, deleted by the purge — are refused
     --    too. `IS NOT TRUE`: a NULL p_force is not consent (NOT NULL is
     --    NULL, and IF NULL would skip the guard).
+    PERFORM authz._lock_tuples_for_removal();
     SELECT total, expired INTO v_tuples, v_expired
       FROM authz._rls_count_type_tuples(v_store_id, v_type_id);
     IF v_tuples > 0 AND p_force IS NOT TRUE THEN

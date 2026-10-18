@@ -9,7 +9,7 @@ SELECT _test_reset();
 
 DROP FUNCTION IF EXISTS _test_setup_pc();
 CREATE FUNCTION _test_setup_pc() RETURNS void LANGUAGE plpgsql AS $$
-DECLARE s smallint;
+DECLARE s integer;
 BEGIN
     BEGIN PERFORM authz.delete_store('test_pc'); EXCEPTION WHEN OTHERS THEN NULL; END;
     PERFORM authz.create_store('test_pc');
@@ -125,7 +125,7 @@ END $$;
 -- (computed relations, conditions with context, gates) — "grant only if the
 -- granter may". bob owns d1 (after pc_05); can_share = owner (computed).
 DO $$
-DECLARE s smallint := authz._s('test_pc'); v_err text; v_state text;
+DECLARE s integer := authz._s('test_pc'); v_err text; v_state text;
 BEGIN
     INSERT INTO authz.relations (store_id, name) VALUES (s, 'can_share');
     INSERT INTO authz.models (store_id, object_type, relation, rule_type, computed_relation, tupleset_relation, tupleset_computed)
@@ -238,6 +238,17 @@ BEGIN
         p_preconditions := '[{"match":"absent","user_type":"user","user_id":"nobody_pc13","relation":"owner","object_type":"doc"}]',
         p_writes        := '[{"user_type":"user","user_id":"nobody_pc13","relation":"owner","object_type":"doc","object_id":"d9"}]');
     PERFORM _test_assert('pc_13_partial_holds_store_exclusive', _pc_store_lock_mode(), 'ExclusiveLock');
+END $$;
+ROLLBACK;
+-- pc_14: an object_id WITHOUT object_type is partial too (it matches every
+-- type) — exclusive store lock, and no NULL-keyed object lock.
+BEGIN;
+DO $$
+BEGIN
+    PERFORM authz.write_tuples_checked('test_pc',
+        p_preconditions := '[{"match":"absent","object_id":"nothing_here","relation":"owner"}]',
+        p_writes        := '[{"user_type":"user","user_id":"nobody_pc14","relation":"owner","object_type":"doc","object_id":"d8"}]');
+    PERFORM _test_assert('pc_14_object_id_only_is_partial', _pc_store_lock_mode(), 'ExclusiveLock');
 END $$;
 ROLLBACK;
 DROP FUNCTION IF EXISTS _pc_store_lock_mode();

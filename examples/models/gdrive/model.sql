@@ -62,24 +62,24 @@ SELECT authz.create_store('gdrive', 'Google Drive permission model');
 
 DO $$
 DECLARE
-    s smallint := authz._s('gdrive');
+    s integer := authz._s('gdrive');
 
     -- Type shortcuts
-    t_group   smallint;
-    t_folder  smallint;
-    t_doc     smallint;
+    t_group   integer;
+    t_folder  integer;
+    t_doc     integer;
 
     -- Relation shortcuts
-    r_member           smallint;
-    r_owner            smallint;
-    r_parent           smallint;
-    r_viewer           smallint;
-    r_can_create_file  smallint;
-    r_can_change_owner smallint;
-    r_can_read         smallint;
-    r_can_share        smallint;
-    r_can_write        smallint;
-    r_download         smallint;
+    r_member           integer;
+    r_owner            integer;
+    r_parent           integer;
+    r_viewer           integer;
+    r_can_create_file  integer;
+    r_can_change_owner integer;
+    r_can_read         integer;
+    r_can_share        integer;
+    r_can_write        integer;
+    r_download         integer;
 BEGIN
     -- Types
     INSERT INTO authz.types (store_id, name) VALUES

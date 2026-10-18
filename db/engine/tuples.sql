@@ -145,6 +145,41 @@ CREATE OR REPLACE FUNCTION authz._rls_count_type_tuples(
        AND (t.object_type = p_type_id OR t.user_type = p_type_id);
 $$;
 
+-- _rls_count_relation_tuples: how many tuples name a relation (as relation
+-- or user_relation), INCLUDING expired rows — apply_model's stale-relation
+-- guard and plan_model_apply's blocker must see what would be orphaned.
+CREATE OR REPLACE FUNCTION authz._rls_count_relation_tuples(
+    p_store_id    int,
+    p_relation_id int,
+    OUT total   bigint,
+    OUT expired bigint
+) LANGUAGE sql STABLE AS $$
+    SELECT count(*),
+           count(*) FILTER (WHERE t.expires_at IS NOT NULL AND t.expires_at <= statement_timestamp())
+      FROM authz.tuples t
+     WHERE t.store_id = p_store_id
+       AND (t.relation = p_relation_id OR t.user_relation = p_relation_id);
+$$;
+
+-- _lock_tuples_for_removal: taken by the model paths that remove a type or a
+-- relation BEFORE they count its references. Every tuple write — write_tuple,
+-- the batch and checked variants, grant/revoke, imports — inserts through
+-- the parent and therefore holds ROW EXCLUSIVE on it until commit; SHARE
+-- conflicts with that and with nothing else: in-flight writers finish first
+-- (the count then sees their rows), new writers wait the few milliseconds
+-- the removal takes, and reads (AccessShare) never wait. Writers themselves
+-- take nothing new, and no write path can opt out, since the lock manager
+-- enforces it rather than a convention. One lock on the parent rather than
+-- the store's partitions keeps the order trivially deadlock-free (writers
+-- lock the parent first, too). Runs with the owner's privileges.
+CREATE OR REPLACE FUNCTION authz._lock_tuples_for_removal()
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+    LOCK TABLE authz.tuples IN SHARE MODE;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION authz._rls_delete_type_tuples(
     p_store_id int,
     p_type_id  int
@@ -793,8 +828,9 @@ BEGIN
     -- Lock protocol (store first, then objects — every checked path keeps
     -- this order, so there is no deadlock):
     --   1. the STORE lock: SHARED for a request whose preconditions all name
-    --      an object, EXCLUSIVE when any exists/absent precondition is
-    --      PARTIAL (no object_id: "alice owns no document at all"). A
+    --      an object (object_type AND object_id), EXCLUSIVE when any
+    --      exists/absent precondition is PARTIAL (either missing: "alice
+    --      owns no document at all", "nothing on object 42 of any type"). A
     --      cross-object invariant can only hold if no other checked write
     --      in the store commits between its check and its write — the
     --      exclusive store lock waits for in-flight checked writes (they
@@ -806,9 +842,13 @@ BEGIN
     -- grant / revoke / apply_grants take the same store lock shared and the
     -- same object keys, so sharing participates. Plain write_tuple does not:
     -- an invariant holds among the writers that go through these paths.
+    -- allowed/denied preconditions are decided on committed state under
+    -- the target object's lock; the graph they walk (the actor's own
+    -- rights elsewhere) is not locked — the same check-then-act window a
+    -- user clicking "share" has, and documented as such.
     IF EXISTS (SELECT 1 FROM jsonb_array_elements(p_preconditions) AS e
                 WHERE coalesce(e->>'match', 'exists') IN ('exists', 'absent')
-                  AND NOT (e ? 'object_id')) THEN
+                  AND NOT (e ? 'object_id' AND e ? 'object_type')) THEN
         PERFORM pg_advisory_xact_lock(hashtextextended(p_store || ':*', 0));
     ELSE
         PERFORM pg_advisory_xact_lock_shared(hashtextextended(p_store || ':*', 0));
@@ -816,7 +856,7 @@ BEGIN
     FOR v_obj IN
         SELECT DISTINCT e->>'object_type' AS ot, e->>'object_id' AS oid
           FROM jsonb_array_elements(p_preconditions || p_deletes || p_writes) AS e
-         WHERE e ? 'object_id'
+         WHERE e ? 'object_id' AND e ? 'object_type'
          ORDER BY 1, 2
     LOOP
         PERFORM pg_advisory_xact_lock(

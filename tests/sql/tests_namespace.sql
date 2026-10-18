@@ -13,7 +13,7 @@ SELECT _test_reset();
 DROP FUNCTION IF EXISTS _test_setup_ns_write();
 CREATE OR REPLACE FUNCTION _test_setup_ns_write() RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE
-    s smallint;
+    s integer;
 BEGIN
     BEGIN PERFORM authz.delete_store('test_ns_write'); EXCEPTION WHEN OTHERS THEN NULL; END;
 
@@ -51,7 +51,7 @@ $$;
 DROP FUNCTION IF EXISTS _test_setup_ns_read();
 CREATE OR REPLACE FUNCTION _test_setup_ns_read() RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE
-    s smallint;
+    s integer;
 BEGIN
     BEGIN PERFORM authz.delete_store('test_ns_read'); EXCEPTION WHEN OTHERS THEN NULL; END;
 

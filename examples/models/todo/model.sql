@@ -53,25 +53,25 @@ SELECT authz.create_store('todo', 'AuthZEN interop todo model');
 
 DO $$
 DECLARE
-    s smallint := authz._s('todo');
+    s integer := authz._s('todo');
 
     -- Type shortcuts
-    t_user smallint;
-    t_todo smallint;
+    t_user integer;
+    t_todo integer;
 
     -- Relation shortcuts
-    r_admin                 smallint;
-    r_editor                smallint;
-    r_evil_genius           smallint;
-    r_viewer                smallint;
-    r_owner                 smallint;
-    r_parent                smallint;
-    r_can_manage_todo_items smallint;
-    r_can_create_todo       smallint;
-    r_can_read_todos        smallint;
-    r_can_delete_todo       smallint;
-    r_can_update_todo       smallint;
-    r_can_read_user         smallint;
+    r_admin                 integer;
+    r_editor                integer;
+    r_evil_genius           integer;
+    r_viewer                integer;
+    r_owner                 integer;
+    r_parent                integer;
+    r_can_manage_todo_items integer;
+    r_can_create_todo       integer;
+    r_can_read_todos        integer;
+    r_can_delete_todo       integer;
+    r_can_update_todo       integer;
+    r_can_read_user         integer;
 BEGIN
     ----------------------------------------------------------------------
     -- Types

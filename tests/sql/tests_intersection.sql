@@ -7,14 +7,14 @@ SELECT _test_reset();
 DROP FUNCTION IF EXISTS _test_setup_groups();
 CREATE OR REPLACE FUNCTION _test_setup_groups() RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE
-    s             smallint;
-    t_resource    smallint;
-    r_member      smallint;
-    r_licensed    smallint;
-    r_blocked     smallint;
-    r_admin       smallint;
-    r_can_view    smallint;
-    r_can_comment smallint;
+    s             integer;
+    t_resource    integer;
+    r_member      integer;
+    r_licensed    integer;
+    r_blocked     integer;
+    r_admin       integer;
+    r_can_view    integer;
+    r_can_comment integer;
 BEGIN
     BEGIN PERFORM authz.delete_store('test_groups'); EXCEPTION WHEN OTHERS THEN NULL; END;
 
@@ -161,7 +161,7 @@ SELECT * FROM _test_teardown_groups();
 -- grp_15: direct INSERT of a negated-only exclusion group is rejected
 SELECT _test_setup_groups();
 DO $$
-DECLARE s smallint := authz._s('test_groups');
+DECLARE s integer := authz._s('test_groups');
 BEGIN
     INSERT INTO authz.models (store_id, object_type, relation, rule_type,
                               computed_relation, group_id, group_op, negated)
@@ -182,7 +182,7 @@ DO $$
 BEGIN
     PERFORM authz.model_add_rule('test_groups', 'resource', 'can_react', 'computed',
         p_computed_relation => 'blocked',
-        p_group_id => 1::smallint, p_group_op => 'exclusion', p_negated => true);
+        p_group_id => 1::integer, p_group_op => 'exclusion', p_negated => true);
     PERFORM _test_assert_true('grp_16_add_rule_negated_without_base_rejected', false, 'expected exception');
 EXCEPTION WHEN raise_exception THEN
     PERFORM _test_assert_true('grp_16_add_rule_negated_without_base_rejected',
@@ -194,14 +194,14 @@ SELECT * FROM _test_teardown_groups();
 -- grp_17: removing the last base rule of an exclusion group is rejected
 SELECT _test_setup_groups();
 DO $$
-DECLARE v_base_id smallint;
+DECLARE v_base_id integer;
 BEGIN
     v_base_id := authz.model_add_rule('test_groups', 'resource', 'can_react', 'computed',
         p_computed_relation => 'member',
-        p_group_id => 1::smallint, p_group_op => 'exclusion');
+        p_group_id => 1::integer, p_group_op => 'exclusion');
     PERFORM authz.model_add_rule('test_groups', 'resource', 'can_react', 'computed',
         p_computed_relation => 'blocked',
-        p_group_id => 1::smallint, p_group_op => 'exclusion', p_negated => true);
+        p_group_id => 1::integer, p_group_op => 'exclusion', p_negated => true);
 
     PERFORM authz.model_remove_rule('test_groups', v_base_id);
     PERFORM _test_assert_true('grp_17_remove_last_base_rule_rejected', false, 'expected exception');
@@ -215,7 +215,7 @@ SELECT * FROM _test_teardown_groups();
 -- grp_18: negated rules outside exclusion groups are rejected
 SELECT _test_setup_groups();
 DO $$
-DECLARE s smallint := authz._s('test_groups');
+DECLARE s integer := authz._s('test_groups');
 BEGIN
     INSERT INTO authz.models (store_id, object_type, relation, rule_type,
                               computed_relation, group_id, group_op, negated)
@@ -234,7 +234,7 @@ SELECT * FROM _test_teardown_groups();
 -- The validation trigger is bypassed via session_replication_role
 -- (superuser-only) to simulate a model that predates validation.
 DO $$
-DECLARE s smallint;
+DECLARE s integer;
 BEGIN
     PERFORM _test_setup_groups();
     s := authz._s('test_groups');

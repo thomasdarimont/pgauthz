@@ -17,7 +17,7 @@ SELECT _test_reset();
 DROP FUNCTION IF EXISTS _test_setup_contextual();
 CREATE OR REPLACE FUNCTION _test_setup_contextual() RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE
-    s smallint;
+    s integer;
 BEGIN
     BEGIN PERFORM authz.delete_store('test_contextual'); EXCEPTION WHEN OTHERS THEN NULL; END;
 

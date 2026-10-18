@@ -14,7 +14,7 @@ SELECT _test_reset();
 DROP FUNCTION IF EXISTS _test_setup_eval();
 CREATE OR REPLACE FUNCTION _test_setup_eval() RETURNS boolean LANGUAGE plpgsql AS $fn$
 DECLARE
-    s smallint;
+    s integer;
 BEGIN
     BEGIN PERFORM authz.delete_store('test_eval'); EXCEPTION WHEN OTHERS THEN NULL; END;
 
@@ -98,7 +98,7 @@ $$;
 
 -- ev_01: exact direct tuple found
 DO $$
-DECLARE s smallint; v boolean;
+DECLARE s integer; v boolean;
 BEGIN
     PERFORM _test_setup_eval();
     s := authz._s('test_eval');
@@ -115,7 +115,7 @@ SELECT * FROM _test_teardown_eval();
 
 -- ev_02: direct tuple not found
 DO $$
-DECLARE s smallint; v boolean;
+DECLARE s integer; v boolean;
 BEGIN
     PERFORM _test_setup_eval();
     s := authz._s('test_eval');
@@ -132,7 +132,7 @@ SELECT * FROM _test_teardown_eval();
 
 -- ev_03: wildcard tuple match
 DO $$
-DECLARE s smallint; v boolean;
+DECLARE s integer; v boolean;
 BEGIN
     PERFORM _test_setup_eval();
     s := authz._s('test_eval');
@@ -149,7 +149,7 @@ SELECT * FROM _test_teardown_eval();
 
 -- ev_04: userset expansion (alice is member of group:eng, group:eng#member is viewer of doc:d2)
 DO $$
-DECLARE s smallint; v boolean;
+DECLARE s integer; v boolean;
 BEGIN
     PERFORM _test_setup_eval();
     s := authz._s('test_eval');
@@ -166,7 +166,7 @@ SELECT * FROM _test_teardown_eval();
 
 -- ev_05: conditional tuple — condition passes
 DO $$
-DECLARE s smallint; v boolean;
+DECLARE s integer; v boolean;
 BEGIN
     PERFORM _test_setup_eval();
     s := authz._s('test_eval');
@@ -184,7 +184,7 @@ SELECT * FROM _test_teardown_eval();
 
 -- ev_06: conditional tuple — condition denied
 DO $$
-DECLARE s smallint; v boolean;
+DECLARE s integer; v boolean;
 BEGIN
     PERFORM _test_setup_eval();
     s := authz._s('test_eval');
@@ -206,7 +206,7 @@ SELECT * FROM _test_teardown_eval();
 
 -- ev_07: TTU — bob can_view folder:f1, doc:d3 is in_folder folder:f1
 DO $$
-DECLARE s smallint; v boolean;
+DECLARE s integer; v boolean;
 BEGIN
     PERFORM _test_setup_eval();
     s := authz._s('test_eval');
@@ -224,7 +224,7 @@ SELECT * FROM _test_teardown_eval();
 
 -- ev_08: TTU — alice has no can_view on folder:f1
 DO $$
-DECLARE s smallint; v boolean;
+DECLARE s integer; v boolean;
 BEGIN
     PERFORM _test_setup_eval();
     s := authz._s('test_eval');
@@ -242,7 +242,7 @@ SELECT * FROM _test_teardown_eval();
 
 -- ev_09: TTU — no link exists (doc:d1 has no in_folder)
 DO $$
-DECLARE s smallint; v boolean;
+DECLARE s integer; v boolean;
 BEGIN
     PERFORM _test_setup_eval();
     s := authz._s('test_eval');
@@ -264,7 +264,7 @@ SELECT * FROM _test_teardown_eval();
 
 -- ev_10: tracing produces trace rows
 DO $$
-DECLARE s smallint; v boolean; v_count int;
+DECLARE s integer; v boolean; v_count int;
 BEGIN
     PERFORM _test_setup_eval();
     s := authz._s('test_eval');
@@ -281,9 +281,9 @@ BEGIN
         result        boolean,
         detail        text,
         duration_ms   double precision,
-        model_rule_id smallint,
-        group_id      smallint,
-        group_op      smallint,
+        model_rule_id integer,
+        group_id      integer,
+        group_op      integer,
         negated       boolean,
         condition_name         text,
         condition_missing_keys text[],
@@ -314,7 +314,7 @@ SELECT * FROM _test_teardown_eval();
 
 -- ev_11: snapshot direct — tuple found
 DO $$
-DECLARE s smallint; v boolean;
+DECLARE s integer; v boolean;
 BEGIN
     PERFORM _test_setup_eval();
     s := authz._s('test_eval');
@@ -340,7 +340,7 @@ SELECT * FROM _test_teardown_eval();
 
 -- ev_12: snapshot direct — no tuple
 DO $$
-DECLARE s smallint; v boolean;
+DECLARE s integer; v boolean;
 BEGIN
     PERFORM _test_setup_eval();
     s := authz._s('test_eval');
@@ -366,7 +366,7 @@ SELECT * FROM _test_teardown_eval();
 
 -- ev_13: snapshot TTU — bob can read d3 via folder
 DO $$
-DECLARE s smallint; v boolean;
+DECLARE s integer; v boolean;
 BEGIN
     PERFORM _test_setup_eval();
     s := authz._s('test_eval');
@@ -393,7 +393,7 @@ SELECT * FROM _test_teardown_eval();
 
 -- ev_14: snapshot TTU — no link
 DO $$
-DECLARE s smallint; v boolean;
+DECLARE s integer; v boolean;
 BEGIN
     PERFORM _test_setup_eval();
     s := authz._s('test_eval');
@@ -424,7 +424,7 @@ SELECT * FROM _test_teardown_eval();
 
 -- ev_15: _eval_rule dispatches direct correctly
 DO $$
-DECLARE s smallint; v boolean;
+DECLARE s integer; v boolean;
 BEGIN
     PERFORM _test_setup_eval();
     s := authz._s('test_eval');
@@ -441,7 +441,7 @@ SELECT * FROM _test_teardown_eval();
 
 -- ev_16: _eval_rule dispatches TTU correctly
 DO $$
-DECLARE s smallint; v boolean;
+DECLARE s integer; v boolean;
 BEGIN
     PERFORM _test_setup_eval();
     s := authz._s('test_eval');
@@ -458,7 +458,7 @@ SELECT * FROM _test_teardown_eval();
 
 -- ev_17: _eval_rule dispatches computed correctly (can_read via viewer)
 DO $$
-DECLARE s smallint; v boolean;
+DECLARE s integer; v boolean;
 BEGIN
     PERFORM _test_setup_eval();
     s := authz._s('test_eval');
