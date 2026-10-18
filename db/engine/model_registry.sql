@@ -320,6 +320,12 @@ BEGIN
             v_def->>'format';
     END IF;
 
+    -- The removal lock before anything is resolved or removed (see
+    -- tuples.sql): the stale-type and stale-relation ids below are then
+    -- read under it, never from before it. model_remove_type re-takes it
+    -- (a no-op within the transaction).
+    PERFORM authz._lock_tuples_for_removal();
+
     -- Stale types: removed through model_remove_type, which fails closed —
     -- a type still referenced by tuples (either side), gates or events
     -- raises and aborts the apply (same stance as stale relations below).
@@ -486,8 +492,8 @@ BEGIN
     -- Rules/restrictions were just synced; tuples have NO FK on relations,
     -- so guard explicitly instead of silently orphaning tuple rows. The
     -- count runs through the RLS-bypass helper (expired rows reference the
-    -- relation until cleanup deletes them) and under the removal lock on
-    -- authz.tuples (a concurrent write cannot slip in after the count).
+    -- relation until cleanup deletes them) and under the removal lock
+    -- taken above (a concurrent write cannot slip in after the count).
     FOR v_rel IN
         SELECT r.id, r.name FROM authz.relations r
          WHERE r.store_id = v_store_id
@@ -495,7 +501,6 @@ BEGIN
     LOOP
         DECLARE v_t bigint; v_x bigint;
         BEGIN
-            PERFORM authz._lock_tuples_for_removal();
             SELECT total, expired INTO v_t, v_x FROM authz._rls_count_relation_tuples(v_store_id, v_rel.id);
             IF v_t > 0 THEN
                 RAISE EXCEPTION 'apply_model: relation % is not in model %/% but % tuple(s) still '

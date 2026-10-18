@@ -17,6 +17,11 @@
 #   E. Two removals serialize instead of deadlocking (SHARE ROW EXCLUSIVE is
 #      self-exclusive; a plain SHARE lock would let both in and deadlock on
 #      their DELETEs).
+#   F. A removal commits while a writer waits: the writer resolves the name
+#      only after the lock, fails with "Unknown type", inserts no orphan.
+#   G. The removal lock conflicts with itself (measured directly, no partition
+#      detach involved), and a second removal of the SAME type waits and then
+#      fails with "Unknown type" instead of acting on a stale id.
 #
 # Reports in the shared "==> N passed, M failed (of T ...)" format for
 # test-all.sh. Needs python3 for millisecond timing (macOS date has no %N).
@@ -113,6 +118,38 @@ wait
 case "$out" in *'"type": "gone_b"'*) ok "conc_E_second_removal_succeeded" ;; *) bad "conc_E_second_removal_succeeded" "$out" ;; esac
 [ "$dt" -ge 1000 ] && ok "conc_E_second_removal_waited (${dt} ms)" || bad "conc_E_second_removal_waited" "${dt} ms — did not wait"
 check "conc_E_both_types_gone" "$(q "SELECT count(*) FROM authz.types WHERE store_id = authz._s('$S') AND name IN ('gone_a','gone_b')")" "0"
+
+echo "==> F. a removal commits while a writer waits — the writer fails, no orphan"
+q "SELECT authz.model_register_type('$S', 'doomed'); SELECT authz.model_register_relation('$S', 'reads'); SELECT authz.model_add_rule('$S', 'doomed', 'reads', 'direct');" >/dev/null
+session "SELECT authz.model_remove_type('$S','doomed');"
+sleep 0.7
+t0=$(now_ms)
+out=$(q "SELECT authz.write_tuple('$S','user','bob','reads','doomed','x1')")
+dt=$(( $(now_ms) - t0 ))
+wait
+case "$out" in *"Unknown type"*) ok "conc_F_writer_failed_on_the_removed_type" ;; *) bad "conc_F_writer_failed_on_the_removed_type" "$out" ;; esac
+[ "$dt" -ge 1000 ] && ok "conc_F_writer_waited_for_the_removal (${dt} ms)" || bad "conc_F_writer_waited_for_the_removal" "${dt} ms — did not wait"
+check "conc_F_no_orphan_tuple" "$(q "SELECT count(*) FROM authz.tuples t WHERE t.store_id = authz._s('$S') AND NOT EXISTS (SELECT 1 FROM authz.types ty WHERE ty.id = t.object_type)")" "0"
+
+echo "==> G. the removal lock is self-exclusive; two removals of the SAME type"
+session "SELECT authz._lock_tuples_for_removal();"
+sleep 0.7
+t0=$(now_ms)
+q "SELECT authz._lock_tuples_for_removal()" >/dev/null
+dt=$(( $(now_ms) - t0 ))
+wait
+[ "$dt" -ge 1000 ] && ok "conc_G_second_removal_lock_waited (${dt} ms)" || bad "conc_G_second_removal_lock_waited" "${dt} ms — SHARE ROW EXCLUSIVE did not conflict with itself"
+q "SELECT authz.model_register_type('$S', 'same');" >/dev/null
+session "SELECT authz.model_remove_type('$S','same');"
+sleep 0.7
+t0=$(now_ms)
+out=$(q "SELECT authz.model_remove_type('$S','same')")
+dt=$(( $(now_ms) - t0 ))
+wait
+case "$out" in *"Unknown type"*) ok "conc_G_same_type_second_removal_fails_cleanly" ;; *) bad "conc_G_same_type_second_removal_fails_cleanly" "$out" ;; esac
+[ "$dt" -ge 1000 ] && ok "conc_G_same_type_second_removal_waited (${dt} ms)" || bad "conc_G_same_type_second_removal_waited" "${dt} ms — did not wait"
+check "conc_G_type_gone_once" "$(q "SELECT count(*) FROM authz.types WHERE store_id = authz._s('$S') AND name = 'same'")" "0"
+check "conc_G_no_leftover_partition" "$(q "SELECT count(*) FROM pg_class WHERE relname = 'tuples_test_conc_same'")" "0"
 
 echo "==> ${pass} passed, ${fail} failed (of $((pass + fail)) concurrency checks)"
 [ "$fail" -eq 0 ]

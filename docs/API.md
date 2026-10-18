@@ -554,10 +554,14 @@ Fail-closed: a type with temporal gates or recorded events is always refused
 either side is refused unless `p_force => true`, which deletes them, expired
 rows included, through the audited path. Returns a summary.
 
-**Concurrency.** The reference count runs under a `SHARE ROW EXCLUSIVE` lock
-on `authz.tuples` (the parent only), so a tuple written concurrently is
-either counted (its writer committed first) or waits for the removal to
-finish, and two removals serialize. Writers hold the matching `ROW
+**Concurrency.** The function's first statement takes a `SHARE ROW
+EXCLUSIVE` lock on `authz.tuples` (the parent only) and only then resolves
+the type name, so a tuple written concurrently is either counted (its
+writer committed first) or waits for the removal to finish, two removals
+serialize, and a second removal of the same type fails with "Unknown type"
+rather than acting on an id it resolved before the first one dropped it
+(the partition is named after the type, so a stale id could have dropped a
+re-registered type's data). Writers hold the matching `ROW
 EXCLUSIVE` lock from their first statement — before they resolve type and
 relation names to ids — so a writer cannot insert against an id the removal
 has just deleted; it is the same lock their insert takes anyway, taken a

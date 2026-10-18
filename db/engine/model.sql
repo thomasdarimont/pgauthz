@@ -197,8 +197,8 @@ CREATE OR REPLACE FUNCTION authz.model_remove_type(
 ) RETURNS jsonb
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id     integer := authz._s(p_store);
-    v_type_id      integer := authz._t(v_store_id, p_type_name);
+    v_store_id     integer;
+    v_type_id      integer;
     v_gates        int;
     v_events       bigint;
     v_tuples       bigint := 0;
@@ -208,6 +208,16 @@ DECLARE
     v_part_name    text;
     v_part_dropped boolean := false;
 BEGIN
+    -- 0. The removal lock FIRST, then resolve the name (see tuples.sql): an
+    --    id resolved before the lock could belong to a type a concurrent
+    --    removal has already dropped and a re-registration replaced — the
+    --    partition carries the NAME, so a stale id would drop the new type's
+    --    data. A second removal of the same type therefore waits here and
+    --    then fails with "Unknown type", never with a stale id.
+    PERFORM authz._lock_tuples_for_removal();
+    v_store_id := authz._s(p_store);
+    v_type_id  := authz._t(v_store_id, p_type_name);
+
     -- 1. Hard references: never removed implicitly.
     SELECT count(*) INTO v_gates FROM authz.model_gates g
      WHERE g.store_id = v_store_id AND g.object_type = v_type_id;
@@ -223,7 +233,7 @@ BEGIN
     END IF;
 
     -- 2. Tuples on either side: refuse, or (p_force) delete through the
-    --    audited path. First the removal lock on authz.tuples (SHARE ROW
+    --    audited path. Under the removal lock taken in step 0 (SHARE ROW
     --    EXCLUSIVE, READ COMMITTED required — see tuples.sql): a tuple
     --    written concurrently can neither slip between this count and the
     --    purge (deleted without consent) nor land after it (orphaned) —
@@ -233,7 +243,6 @@ BEGIN
     --    hidden from an ordinary count, deleted by the purge — are refused
     --    too. `IS NOT TRUE`: a NULL p_force is not consent (NOT NULL is
     --    NULL, and IF NULL would skip the guard).
-    PERFORM authz._lock_tuples_for_removal();
     SELECT total, expired INTO v_tuples, v_expired
       FROM authz._rls_count_type_tuples(v_store_id, v_type_id);
     IF v_tuples > 0 AND p_force IS NOT TRUE THEN

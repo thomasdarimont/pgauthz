@@ -202,7 +202,10 @@ pre-1.0, minor versions may include breaking changes.
   out because the lock manager enforces it, not a convention. Writers take
   their `ROW EXCLUSIVE` lock on the parent as their first statement, before
   resolving names to ids, closing the window in which a writer inserts
-  against an id the removal just deleted. Removals require `READ COMMITTED`
+  against an id the removal just deleted; the remover (and `apply_model`)
+  likewise lock before resolving, so a second removal of the same type
+  fails cleanly instead of dropping a re-registered type's partition by
+  name. Removals require `READ COMMITTED`
   and raise otherwise (a repeatable-read snapshot would predate the lock).
   Documented: detaching the type's partition holds `ACCESS EXCLUSIVE` until
   commit, so checks pause briefly per removed type. The stale-relation
@@ -210,9 +213,10 @@ pre-1.0, minor versions may include breaking changes.
   (new `_rls_count_relation_tuples`), as the type guard does, and
   `plan_model_apply` reports the same count. New two-session suite
   `tests/test-concurrency.sh` (in `test-all.sh`) shows the remover waiting
-  for a writer, a writer waiting for a remover, two removals serializing,
-  two partial-precondition writers serializing, and two object-scoped
-  writers staying concurrent.
+  for a writer, a writer waiting for a remover and then failing cleanly
+  once it committed, two removals serializing (also of the same type), the
+  removal lock conflicting with itself, two partial-precondition writers
+  serializing, and two object-scoped writers staying concurrent.
 - **Checked writes: partial preconditions take the store lock.** A
   `write_tuples_checked` precondition without `object_id` ("alice owns no
   document") expresses a cross-object invariant that the per-object locks
