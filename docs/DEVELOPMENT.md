@@ -955,11 +955,20 @@ SELECT authz.write_tuples_checked('acme',
                           "object_type":"document","object_id":"d1"}]');
 ```
 
-> **Concurrency.** A transaction-scoped advisory lock on each referenced object
-> serializes concurrent checked-writes, giving compare-and-swap semantics (two
-> racing transfers: one wins, the other's precondition then fails). This protects
-> checked-writes **against each other** — for a hard invariant, route *all*
-> mutators of those tuples through `write_checked` (or add a DB constraint).
+> **Concurrency.** Transaction-scoped advisory locks, taken store first and
+> then per referenced object in a stable order. A request whose `exists` /
+> `absent` preconditions all name an `object_id` holds the store lock
+> *shared* and each object *exclusively*: two racing transfers of one
+> document serialize (one wins, the other's precondition then fails), while
+> different documents proceed in parallel. A **partial** precondition — no
+> `object_id`, a cross-object invariant such as "alice owns no document" —
+> holds the store lock *exclusively*: it waits for every in-flight checked
+> write in the store and blocks new ones until it commits, so two such
+> writers cannot both see the invariant hold. `grant` / `revoke` /
+> `apply_grants` take the same locks. This protects these paths **against
+> each other** — plain `write_tuple` takes no lock, so for a hard invariant
+> route *all* mutators of those tuples through `write_checked` or sharing (or
+> add a DB constraint).
 
 ### Recording actions (the action log)
 

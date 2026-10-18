@@ -183,6 +183,26 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Security
 
+- **`model_remove_type` with `p_force => NULL` no longer skips the tuple
+  guard.** The check was `v_tuples > 0 AND NOT p_force`; with a NULL flag
+  that is NULL and the `IF` fell through, deleting a referenced type and
+  its tuples without consent. It is now `p_force IS NOT TRUE`. The guard
+  also counts **expired** tuples (hidden from ordinary counts by RLS but
+  deleted by the purge) through a new RLS-bypass helper,
+  `_rls_count_type_tuples`, and names them in the error;
+  `plan_model_apply` reports the same count as a blocker. Tests rt_10/rt_11.
+- **Checked writes: partial preconditions take the store lock.** A
+  `write_tuples_checked` precondition without `object_id` ("alice owns no
+  document") expresses a cross-object invariant that the per-object locks
+  could not protect: two such writers on different objects could both see
+  it hold and both commit. The lock protocol is now store first, then
+  objects: object-scoped requests, `grant`, `revoke` and `apply_grants`
+  hold the store lock shared, a partial precondition holds it exclusively.
+  Documented in DEVELOPMENT.md; test pc_13 checks the held modes.
+- **Documented the sharing trust boundary.** `authz.grant` / `revoke` take
+  the actor as a parameter; `authz_sharer` must stay with a backend that
+  authenticates its users (pgauthzd derives the actor from the token).
+  API.md note + PRODUCTION.md checklist item.
 - **Console: changes are re-authorized inside their transaction, under a
   per-object lock.** Every console write (role grants and removals, model and
   data changes, store creation/adoption/deletion, recorded tests) now takes a

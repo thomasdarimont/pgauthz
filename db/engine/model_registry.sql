@@ -798,8 +798,8 @@ BEGIN
     LOOP
         DECLARE v_tid int := authz._t(v_store_id, v_rel.name); v_t bigint; v_g int; v_e bigint;
         BEGIN
-            SELECT count(*) INTO v_t FROM authz.tuples t
-             WHERE t.store_id = v_store_id AND (t.object_type = v_tid OR t.user_type = v_tid);
+            -- the same count model_remove_type guards on (incl. expired rows)
+            SELECT total INTO v_t FROM authz._rls_count_type_tuples(v_store_id, v_tid);
             SELECT count(*) INTO v_g FROM authz.model_gates g WHERE g.store_id = v_store_id AND g.object_type = v_tid;
             SELECT count(*) INTO v_e FROM authz.events e
              WHERE e.store_id = v_store_id AND (e.subject_type = v_tid OR e.object_type = v_tid);

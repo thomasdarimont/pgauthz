@@ -128,6 +128,23 @@ BEGIN
 END;
 $$;
 
+-- _rls_count_type_tuples: how many tuples name a type on either side,
+-- INCLUDING expired rows that RLS hides from ordinary counts — the guard of
+-- model_remove_type / plan_model_apply must see what the purge would delete.
+-- Runs as authz_rls_bypass; returns counts, never rows.
+CREATE OR REPLACE FUNCTION authz._rls_count_type_tuples(
+    p_store_id int,
+    p_type_id  int,
+    OUT total   bigint,
+    OUT expired bigint
+) LANGUAGE sql STABLE AS $$
+    SELECT count(*),
+           count(*) FILTER (WHERE t.expires_at IS NOT NULL AND t.expires_at <= statement_timestamp())
+      FROM authz.tuples t
+     WHERE t.store_id = p_store_id
+       AND (t.object_type = p_type_id OR t.user_type = p_type_id);
+$$;
+
 CREATE OR REPLACE FUNCTION authz._rls_delete_type_tuples(
     p_store_id int,
     p_type_id  int
@@ -773,8 +790,29 @@ DECLARE
     v_written  integer := 0;
     v_deleted  integer := 0;
 BEGIN
-    -- Lock every referenced object, in a stable order (deadlock-free), so
-    -- concurrent checked-writes on the same object serialize.
+    -- Lock protocol (store first, then objects — every checked path keeps
+    -- this order, so there is no deadlock):
+    --   1. the STORE lock: SHARED for a request whose preconditions all name
+    --      an object, EXCLUSIVE when any exists/absent precondition is
+    --      PARTIAL (no object_id: "alice owns no document at all"). A
+    --      cross-object invariant can only hold if no other checked write
+    --      in the store commits between its check and its write — the
+    --      exclusive store lock waits for in-flight checked writes (they
+    --      hold it shared) and blocks new ones until it commits.
+    --      Object-scoped requests on different objects still run in
+    --      parallel with each other.
+    --   2. every referenced object, in a stable order, so concurrent
+    --      checked writes on the same object serialize (compare-and-swap).
+    -- grant / revoke / apply_grants take the same store lock shared and the
+    -- same object keys, so sharing participates. Plain write_tuple does not:
+    -- an invariant holds among the writers that go through these paths.
+    IF EXISTS (SELECT 1 FROM jsonb_array_elements(p_preconditions) AS e
+                WHERE coalesce(e->>'match', 'exists') IN ('exists', 'absent')
+                  AND NOT (e ? 'object_id')) THEN
+        PERFORM pg_advisory_xact_lock(hashtextextended(p_store || ':*', 0));
+    ELSE
+        PERFORM pg_advisory_xact_lock_shared(hashtextextended(p_store || ':*', 0));
+    END IF;
     FOR v_obj IN
         SELECT DISTINCT e->>'object_type' AS ot, e->>'object_id' AS oid
           FROM jsonb_array_elements(p_preconditions || p_deletes || p_writes) AS e
@@ -898,8 +936,10 @@ BEGIN
     END IF;
     SELECT r.name INTO v_req_nm FROM authz.relations r WHERE r.id = v_req;
 
-    -- Same lock key as write_tuples_checked, so checked writes and
-    -- grant/revoke on one object serialize with each other.
+    -- Same lock protocol as write_tuples_checked (store shared, then the
+    -- object), so checked writes and grant/revoke on one object serialize
+    -- with each other and a partial-precondition write sees them.
+    PERFORM pg_advisory_xact_lock_shared(hashtextextended(p_store || ':*', 0));
     PERFORM pg_advisory_xact_lock(hashtextextended(p_store || ':' || p_object_type || ':' || p_object_id, 0));
 
     IF NOT authz._decide(p_store_id, authz._t(p_store_id, p_actor_type), p_actor_id,
@@ -1117,7 +1157,9 @@ BEGIN
             USING ERRCODE = 'invalid_parameter_value';
     END IF;
     -- Lock every object up front in a stable order (deadlock-free), as
-    -- write_tuples_checked does; grant/revoke re-take the same locks (held).
+    -- write_tuples_checked does — the store shared first, then the objects;
+    -- grant/revoke re-take the same locks (held).
+    PERFORM pg_advisory_xact_lock_shared(hashtextextended(p_store || ':*', 0));
     FOR v_obj IN
         SELECT DISTINCT e->>'object_type' AS ot, e->>'object_id' AS oid
           FROM jsonb_array_elements(p_grants || p_revokes) e

@@ -206,6 +206,42 @@ BEGIN
         coalesce(v_err, 'no error'));
 END $$;
 
+-- pc_13: lock protocol (review #17 P2). A request whose exists/absent
+-- preconditions all name an object holds the STORE lock shared; a PARTIAL
+-- precondition (no object_id — a cross-object invariant such as "alice owns
+-- no doc") holds it exclusively, so two such writers cannot both see the
+-- invariant hold and both commit. Transaction-scoped advisory locks are
+-- visible in pg_locks for the rest of this DO block's transaction.
+DROP FUNCTION IF EXISTS _pc_store_lock_mode();
+CREATE FUNCTION _pc_store_lock_mode() RETURNS text LANGUAGE sql STABLE AS $$
+    SELECT string_agg(l.mode, ',' ORDER BY l.mode)
+      FROM pg_locks l
+     WHERE l.locktype = 'advisory' AND l.pid = pg_backend_pid() AND l.granted
+       AND l.classid = ((hashtextextended('test_pc:*', 0) >> 32) & 4294967295)::oid
+       AND l.objid   = ( hashtextextended('test_pc:*', 0)        & 4294967295)::oid
+       AND l.objsubid = 1;
+$$;
+BEGIN;
+DO $$
+BEGIN
+    PERFORM authz.write_tuples_checked('test_pc',
+        p_preconditions := '[{"match":"exists","user_type":"user","user_id":"bob","relation":"owner","object_type":"doc","object_id":"d1"}]',
+        p_writes        := '[{"user_type":"user","user_id":"carol","relation":"viewer","object_type":"doc","object_id":"d1"}]');
+    PERFORM _test_assert('pc_13_object_scoped_holds_store_shared', _pc_store_lock_mode(), 'ShareLock');
+END $$;
+ROLLBACK;
+BEGIN;
+DO $$
+BEGIN
+    -- "alice owns no doc at all" → the store lock, exclusive
+    PERFORM authz.write_tuples_checked('test_pc',
+        p_preconditions := '[{"match":"absent","user_type":"user","user_id":"nobody_pc13","relation":"owner","object_type":"doc"}]',
+        p_writes        := '[{"user_type":"user","user_id":"nobody_pc13","relation":"owner","object_type":"doc","object_id":"d9"}]');
+    PERFORM _test_assert('pc_13_partial_holds_store_exclusive', _pc_store_lock_mode(), 'ExclusiveLock');
+END $$;
+ROLLBACK;
+DROP FUNCTION IF EXISTS _pc_store_lock_mode();
+
 SELECT authz.delete_store('test_pc');
 DROP FUNCTION IF EXISTS _pc_has(text, text, text, text);
 DROP FUNCTION IF EXISTS _test_setup_pc();

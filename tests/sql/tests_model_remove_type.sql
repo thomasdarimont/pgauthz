@@ -148,6 +148,45 @@ BEGIN
 END;
 $$;
 
+-- rt_10: p_force => NULL is NOT consent (NOT NULL is NULL; the guard must
+-- still fire — review #17 P1)
+DO $$
+DECLARE v_err text;
+BEGIN
+    PERFORM authz.write_tuple('test_rmtype', 'user', 'bob', 'viewer', 'legacy', 'l1');
+    BEGIN PERFORM authz.model_remove_type('test_rmtype', 'legacy', p_force => NULL);
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert_true('rt_10_null_force_refused', v_err LIKE '%referenced by 1 tuple%', coalesce(v_err, 'no error'));
+    PERFORM _test_assert('rt_10_type_still_there', (SELECT count(*) FROM authz.types WHERE store_id = authz._s('test_rmtype') AND name = 'legacy')::text, '1');
+    PERFORM _test_assert_true('rt_10_tuple_still_there', EXISTS (SELECT 1 FROM authz.tuples WHERE store_id = authz._s('test_rmtype') AND object_id = 'l1'), '');
+    PERFORM authz.delete_tuple('test_rmtype', 'user', 'bob', 'viewer', 'legacy', 'l1');
+END;
+$$;
+
+-- rt_11: an EXPIRED tuple (hidden by RLS, still stored until cleanup) still
+-- counts as a reference — refused without p_force, reported as expired;
+-- p_force deletes it through the audited purge.
+DO $$
+DECLARE v_err text; v_res jsonb;
+BEGIN
+    PERFORM authz.write_tuple('test_rmtype', 'user', 'bob', 'viewer', 'legacy', 'l1', p_expires_at => now() + interval '1 hour');
+    UPDATE authz.tuples SET expires_at = now() - interval '1 second'
+     WHERE store_id = authz._s('test_rmtype') AND object_id = 'l1';
+    -- (inside model_remove_type — SECURITY DEFINER, authz_owner, FORCE RLS —
+    -- an ordinary count would not see this row; the guard's helper must)
+    BEGIN PERFORM authz.model_remove_type('test_rmtype', 'legacy');
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert_true('rt_11_expired_still_refused', v_err LIKE '%referenced by 1 tuple%1 expired%', coalesce(v_err, 'no error'));
+    -- the registry plan sees the same blocker
+    PERFORM _test_assert_true('rt_11_plan_counts_expired',
+        (SELECT total FROM authz._rls_count_type_tuples(authz._s('test_rmtype'), authz._t(authz._s('test_rmtype'), 'legacy'))) = 1, '');
+    v_res := authz.model_remove_type('test_rmtype', 'legacy', p_force => true);
+    PERFORM _test_assert('rt_11_force_purges_expired', v_res->>'tuples_deleted', '1');
+    -- restore the bare type, as rt_08 left it for rt_09
+    PERFORM authz.model_register_type('test_rmtype', 'legacy');
+END;
+$$;
+
 -- rt_09: a type with no tuples / rules / restrictions removes cleanly without p_force
 DO $$
 DECLARE v_res jsonb;

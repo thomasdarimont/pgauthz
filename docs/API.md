@@ -398,6 +398,16 @@ call them schema-qualified, as every authz function is. The dedicated
 `authz_sharer` role holds exactly these two functions, so an application tier
 that lets end users share needs no `write_tuple`. Over HTTP:
 `POST /pgauthz/v1/grant` and `/revoke`, actor = the token subject.
+
+> **Trust boundary.** The actor is a *parameter*: the engine checks that
+> `p_actor` may share, it cannot know who is really calling. Whoever holds
+> `authz_sharer` is trusted to name the actor truthfully — pgauthzd does
+> (the actor is the verified token's subject, or an asserted one where
+> ADR 0014 allows it), and so must any application tier with direct SQL
+> access. `authz_sharer` is therefore a role for a trusted backend, never
+> for end users or per-user database sessions: a caller who may pick the
+> actor can share as anyone. The same holds for `p_performed_by` on the
+> writer functions.
 `describe_model` renders the rules as `# grant requires …` lines and the
 registry versions them with the model.
 

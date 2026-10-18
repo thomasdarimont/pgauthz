@@ -202,6 +202,7 @@ DECLARE
     v_gates        int;
     v_events       bigint;
     v_tuples       bigint := 0;
+    v_expired      bigint := 0;
     v_rules        int;
     v_restrictions int;
     v_part_name    text;
@@ -222,13 +223,16 @@ BEGIN
     END IF;
 
     -- 2. Tuples on either side: refuse, or (p_force) delete through the
-    --    audited path. Expired rows are hidden from this count by RLS but
-    --    deleted by the helper; the count reported is the helper's.
-    SELECT count(*) INTO v_tuples FROM authz.tuples t
-     WHERE t.store_id = v_store_id AND (t.object_type = v_type_id OR t.user_type = v_type_id);
-    IF v_tuples > 0 AND NOT p_force THEN
-        RAISE EXCEPTION 'model_remove_type: type % in store % is referenced by % tuple(s) (as object or subject) — delete them first, or pass p_force => true to delete them',
-            p_type_name, p_store, v_tuples;
+    --    audited path. Counted by the RLS-bypass helper so EXPIRED rows —
+    --    hidden from an ordinary count, deleted by the purge — are refused
+    --    too. `IS NOT TRUE`: a NULL p_force is not consent (NOT NULL is
+    --    NULL, and IF NULL would skip the guard).
+    SELECT total, expired INTO v_tuples, v_expired
+      FROM authz._rls_count_type_tuples(v_store_id, v_type_id);
+    IF v_tuples > 0 AND p_force IS NOT TRUE THEN
+        RAISE EXCEPTION 'model_remove_type: type % in store % is referenced by % tuple(s) (as object or subject%) — delete them first, or pass p_force => true to delete them',
+            p_type_name, p_store, v_tuples,
+            CASE WHEN v_expired > 0 THEN format('; %s expired, pending cleanup', v_expired) ELSE '' END;
     END IF;
     PERFORM set_config('authz.performed_by', COALESCE(p_performed_by, ''), true);
     v_tuples := authz._rls_delete_type_tuples(v_store_id, v_type_id);

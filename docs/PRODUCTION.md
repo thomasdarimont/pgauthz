@@ -85,6 +85,13 @@ by `init.sh` on every run.
       `DB_ROLE_CLAIM` on the **OPA**
       service so token-mode requests derive the role from verified claims.
       With no role configured, reads run as the fixed full-reader role.
+- [ ] **Keep `authz_sharer` (and `p_performed_by`) behind a trusted tier.**
+      `authz.grant` / `authz.revoke` take the acting user as a parameter and
+      check that *that* user may share; they cannot verify who is calling.
+      Grant `authz_sharer` only to a backend that authenticates its users
+      (pgauthzd derives the actor from the token), never to end-user
+      database sessions — see the trust-boundary note in
+      [API.md](API.md#grant--revoke--share-on-behalf-of-an-actor).
 - [ ] **Run the production profile: gate search, explain and watch.**
       `search/subject|resource|action` enumerate the access graph ("who can
       access X?" — strictly more than "can *I* access X?"), native explain
