@@ -800,13 +800,17 @@ shape as a *Permissions Index*.)
 
 **Solution:** `authz.materialized_permissions` is a flat
 `(store, subject, permission, object)` table the engine keeps current: a
-trigger on tuple changes queues the affected objects, a worker re-evaluates
-them, and logical replication ships only that table to the consumer, which
-needs no engine, model or functions. It is eventually consistent (queue
-processing plus replication lag). Conditions, contextual tuples and temporal
-gates depend on the request and cannot live in a precomputed row, so the
-table holds the context-free, fail-closed answer; decisions that must be
-exact at the moment of the request stay on the live `check_access`.
+trigger on tuple changes queues the affected objects, a worker re-derives
+them, and logical replication ships that table plus two side tables (the
+subjects and objects the engine knows) to the consumer, which needs no
+engine, model or functions — only the helper `authz.check_permission()`,
+a single SQL expression that also applies wildcard grants correctly (a `*`
+row counts only for a subject or object the engine does not know). It is
+eventually consistent (queue processing plus replication lag). Conditions,
+contextual tuples and temporal gates depend on the request and cannot live
+in a precomputed row, so the table holds the context-free, fail-closed
+answer; decisions that must be exact at the moment of the request stay on
+the live `check_access`.
 
 ```sql
 -- primary: keep the table current (pg_cron, or a worker on LISTEN authz_permissions_changed)
@@ -814,14 +818,15 @@ SELECT authz.process_permissions_refresh_queue();
 -- subscriber: a permission-aware listing with no engine installed
 SELECT d.*
   FROM documents d
-  JOIN authz.materialized_permissions p
-    ON p.store = 'demo' AND p.object_type = 'document' AND p.object_id = d.id
- WHERE p.user_type = 'internal_user' AND p.user_id = 'bob' AND p.permission = 'can_read';
+ WHERE authz.check_permission('demo', 'internal_user', 'bob', 'can_read', 'document', d.id)
+ ORDER BY d.created_at DESC LIMIT 20;
 ```
 Shown in: [DESIGN.md → Derived permissions](DESIGN.md#approach-2-derived-permissions-recommended-for-most-apps),
 [`db/replication/materialized_permissions.sql`](../db/replication/materialized_permissions.sql),
 [`db/replication/demo-replication.sh`](../db/replication/demo-replication.sh)
-(exercised by `tests/test-replication.sh`).
+(`tests/test-replication.sh` proves the subscriber's answers equal the
+primary's live checks for every subject × relation × object, unknown probes
+included).
 
 ### Forward the user's token, or ask as a PEP — two ways to call the daemon
 

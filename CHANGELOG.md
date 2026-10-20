@@ -270,6 +270,18 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **Derived permissions under-authorized on wildcards.** On the derived
+  replica a subject-wildcard grant (`employee:*`) produced only a literal
+  `*` row, so an unknown employee was denied although the live engine
+  allows; an object-wildcard grant (`document:*`) was expanded only to
+  objects that already had tuples, so a document the engine had never seen
+  was denied. Both are fixed by the wildcard contract (see Changed). Also
+  fixed: on a `roles.sql` install the queue trigger failed with
+  `permission denied for table permissions_refresh_queue` (tuple writes run
+  as the BYPASSRLS helper's owner), and calling the refresh and the public
+  `check_access` in one session failed with `permission denied for table
+  _check_memo_v2` (two roles creating the engine's memo table).
+
 - **Tests, example models and bench suites declared dictionary ids as
   `smallint`.** The engine's `types` / `relations` / `models` ids are
   `integer` (serial) and have been all along; test-local variables and a
@@ -285,8 +297,29 @@ pre-1.0, minor versions may include breaking changes.
   equivalent of a hosted *permissions index* for search, analytics and
   application databases that join on precomputed answers — now has a use
   case, a README feature line, a comparison row and an explicit statement
-  of its limits (context-free answers, brute-force refresh, two-level
-  reverse propagation) in `DESIGN.md`.
+  of its limits (context-free answers, no gates, brute-force refresh,
+  two-level reverse propagation) in `DESIGN.md`.
+
+- **Derived permissions: the wildcard contract.** Wildcard grants are
+  stored as literal `*` rows, which are correct only for a subject or
+  object the engine does not know. Two side tables,
+  `authz.materialized_subjects` and `authz.materialized_objects`, now
+  travel with the permissions table (publication `authz_derived`), and the
+  subscriber helper `authz.check_permission()` (`schema-derived.sql`)
+  applies the rule — a known entity's concrete rows are authoritative, a
+  `*` row covers unknown ones — as one inlinable SQL expression. A write of
+  an object-wildcard tuple re-derives every object of its type; subjects
+  that lose their last tuple are delisted (wildcard-covered). The refresh
+  goes through `authz._decide` with an empty gate list (graph only), and
+  the refresh functions and queue trigger are `SECURITY DEFINER`, handed to
+  `authz_owner` when `roles.sql` has run. `tests/test-replication.sh` now
+  loads the aia-acme fixture next to the demo and asserts, differentially,
+  that the subscriber's `check_permission()` equals the primary's live
+  `check_access()` for every subject × relation × object plus unknown
+  probes (~9 000 checks), and that a primary write reaches the derived
+  replica through the refresh queue. `init-replication.sh` and the test
+  accept `REPLICATION_COMPOSE_FILES` (override files, e.g. other host ports)
+  so the demo can run next to the main stack.
 
 - `publish_model` and `apply_model` attribute `created_by` / `applied_by`
   to the `authz.performed_by` session setting when it is set (the same

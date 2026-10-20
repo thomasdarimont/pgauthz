@@ -787,19 +787,23 @@ authz-primary (wal_level=logical)
 ### Approach 2: Derived permissions (recommended for most apps)
 
 The central authz database maintains a `materialized_permissions` table —
-a flat, denormalized lookup table. Applications subscribe to this table
-only. No authz schema, functions, or model knowledge needed.
+a flat, denormalized lookup table — plus two small side tables,
+`materialized_subjects` and `materialized_objects`, that list the subjects
+and objects the engine knows (= have at least one tuple). Applications
+subscribe to these three tables only, and call one helper,
+`authz.check_permission()`, that is a single inlinable SQL expression. No
+authz schema, functions, or model knowledge needed.
 
 ```
 authz-primary
   ├── tuples (source of truth)
   ├── trigger: tuple change → queue affected objects
-  ├── process_permissions_refresh_queue() → re-evaluates permissions
-  └── Publication: materialized_permissions
+  ├── process_permissions_refresh_queue() → re-derives permissions via _decide
+  └── Publication: materialized_permissions + materialized_subjects/objects
         │
         └──▶ app-db (subscriber)
-               ├── materialized_permissions (replicated)
-               └── SELECT EXISTS(...) for access checks
+               ├── the three tables (replicated)
+               └── authz.check_permission(...) in WHERE clauses / joins
 ```
 
 **Trade-offs:**
@@ -810,30 +814,68 @@ authz-primary
 - The app cannot run `explain_access` or `list_objects` — only simple
   permission lookups
 
-**What a precomputed row cannot hold.** Conditions, contextual tuples and
-temporal gates depend on the request, so the table stores the context-free,
-fail-closed answer: a conditional grant is absent until its condition is
-dropped. Decisions that must be exact at the moment of the request stay on
-the live `check_access`. The refresh is correct but brute-force: a queued
-object is re-evaluated against every subject known to the store, and the
-trigger follows reverse tuple-to-userset edges two levels deep, so deeper
-nesting (team → department → org → document) needs a periodic
-`refresh_all_materialized_permissions`. This is the same shape as Auth0
-FGA's hosted *Permissions Index* (which excludes conditions and contextual
-tuples for the same reason); an incremental, changefeed-driven refresh that
-expands only the affected subjects is the planned follow-up.
+**Wildcards: the contract.** The engine cannot expand an object wildcard
+(`document:*`) — it does not know the application's object universe — and
+will not enumerate every user for a subject wildcard (`employee:*`). Such
+grants are stored as literal `*` rows, and a `*` row is correct **only for a
+subject or object the engine does not know**: a known one has authoritative
+concrete rows (exclusions, markers and intersections already applied),
+while an unknown one has no tuples and therefore nothing that could narrow
+the wildcard. That is what the two side tables are for, and what
+`check_permission()` applies:
+
+```
+subject keys = {user_id}   ∪ {'*' if (store, user_type, user_id) ∉ materialized_subjects}
+object keys  = {object_id} ∪ {'*' if (store, object_type, object_id) ∉ materialized_objects}
+allowed      = a row exists with user_id IN subject keys AND object_id IN object keys
+```
+
+A consumer that joins on the table directly must apply the same rule — a
+plain `user_id = :me AND object_id = d.id` silently under-authorizes on
+wildcards. `tests/test-replication.sh` proves the contract differentially:
+every subject × relation × object of the demo and aia-acme stores, plus
+unknown probes, must agree between the subscriber's `check_permission()`
+and the primary's live `check_access()`.
+
+**What a precomputed row cannot hold.** Conditions and contextual tuples
+depend on the request, so the table stores the context-free, fail-closed
+answer: a conditional grant is absent until its condition is dropped.
+Temporal gates are per-principal history and are not evaluated at all (the
+refresh calls `_decide` with an empty gate list). Decisions that must be
+exact at the moment of the request stay on the live `check_access`. The
+refresh is correct but brute-force: a queued object is re-derived against
+every subject known to the store, a write of an object-wildcard tuple
+re-derives the whole type, and the trigger follows reverse tuple-to-userset
+edges two levels deep, so deeper nesting (team → department → org →
+document) needs a periodic `refresh_all_materialized_permissions`. This is
+the same shape as Auth0 FGA's hosted *Permissions Index* (which excludes
+conditions and contextual tuples for the same reason); an incremental,
+changefeed-driven refresh that expands only the affected subjects is the
+planned follow-up.
+
+**Install and ownership.** Load `materialized_permissions.sql` after the
+engine; the refresh functions and the queue trigger are `SECURITY DEFINER`
+(tuple writes arrive through the engine's BYPASSRLS helper, and the
+engine's per-session memo table must be created under one role), and the
+script transfers them to `authz_owner` when `roles.sql` has run. The worker
+that processes the queue needs only `EXECUTE` on
+`process_permissions_refresh_queue()`.
 
 ### Change propagation for derived permissions
 
 When a tuple changes on the primary:
 
 1. A row-level trigger fires and queues the directly affected object plus
-   objects reachable via reverse TTU traversal (2 levels deep)
+   objects reachable via reverse TTU traversal (2 levels deep); a change to
+   an object-wildcard tuple (`object_id = '*'`) queues every object of the
+   type, because their concrete rows are authoritative over the `*` row
 2. The trigger sends `pg_notify('authz_permissions_changed')` to notify
    external listeners
 3. A worker (pg_cron, external service, or explicit call) processes the
    queue by re-evaluating permissions for each queued object
-4. Updated permissions are written to `materialized_permissions`
+4. Updated permissions are written to `materialized_permissions`; the side
+   tables gain the object and every subject seen, and lose subjects that no
+   longer have any tuple (they become wildcard-covered)
 5. PostgreSQL logical replication delivers the changes to subscribers
 
 The queue can be processed:

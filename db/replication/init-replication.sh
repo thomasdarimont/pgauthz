@@ -8,30 +8,39 @@
 #
 # Usage:
 #   docker compose -f compose-replication.yml up -d --wait
-#   ./replication/init-replication.sh
+#   ./db/replication/init-replication.sh
+#
+# REPLICATION_COMPOSE_FILES (colon-separated, default compose-replication.yml,
+# relative to the repo root) adds override files — e.g. one that moves the
+# host ports so the demo can run next to the main stack; set
+# COMPOSE_PROJECT_NAME as well to keep the two stacks' networks apart.
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # db/replication
 PG_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"                    # repo root
-COMPOSE_FILE="$PG_DIR/compose-replication.yml"
+cd "$PG_DIR"
 source "$PG_DIR/db/engine/manifest.sh"
+
+COMPOSE=(docker compose)
+IFS=: read -ra _compose_files <<< "${REPLICATION_COMPOSE_FILES:-compose-replication.yml}"
+for _f in "${_compose_files[@]}"; do COMPOSE+=(-f "$_f"); done
 
 psql_primary() {
     docker exec -i -e PGPASSWORD=authz \
-        "$(docker compose -f "$COMPOSE_FILE" ps -q authz-primary)" \
+        "$("${COMPOSE[@]}" ps -q authz-primary)" \
         psql -U authz -d authz "$@"
 }
 
 psql_accounting() {
     docker exec -i -e PGPASSWORD=authz \
-        "$(docker compose -f "$COMPOSE_FILE" ps -q accounting-app-db)" \
+        "$("${COMPOSE[@]}" ps -q accounting-app-db)" \
         psql -U authz -d authz "$@"
 }
 
 psql_derived() {
     docker exec -i -e PGPASSWORD=authz \
-        "$(docker compose -f "$COMPOSE_FILE" ps -q accounting-app-derived-db)" \
+        "$("${COMPOSE[@]}" ps -q accounting-app-derived-db)" \
         psql -U authz -d authz "$@"
 }
 
@@ -174,9 +183,9 @@ echo "--- eva can_read doc_acc_001 (should be TRUE) ---"
 psql_derived -c \
     "SELECT authz.check_permission('demo','internal_user','eva','can_read','document','doc_acc_001');"
 
-echo "--- bob can_read doc_acc_001 (should be FALSE — bob is not in accounting_team) ---"
+echo "--- alice can_read doc_acc_001 (should be FALSE — no path into the accounting engagement) ---"
 psql_derived -c \
-    "SELECT authz.check_permission('demo','internal_user','bob','can_read','document','doc_acc_001');"
+    "SELECT authz.check_permission('demo','internal_user','alice','can_read','document','doc_acc_001');"
 
 echo ""
 echo "--- All permissions for doc_acc_001 ---"
@@ -184,6 +193,10 @@ psql_derived -c \
     "SELECT user_type, user_id, permission FROM authz.materialized_permissions
       WHERE object_type = 'document' AND object_id = 'doc_acc_001'
       ORDER BY user_type, user_id, permission;"
+
+echo "--- nadia_auditor (viewer on document:*) can_read a document the engine has never seen (should be TRUE: the '*' row applies to unknown objects) ---"
+psql_derived -c \
+    "SELECT authz.check_permission('demo','internal_user','nadia_auditor','can_read','document','doc_never_touched');"
 
 echo ""
 echo "================================================================"

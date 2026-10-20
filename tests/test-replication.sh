@@ -8,11 +8,25 @@
 #     check_access locally on replicated tuples, and reflects a live write made
 #     on the primary;
 #   - derived replica (accounting-app-derived-db): receives the flat
-#     materialized_permissions table.
+#     materialized_permissions table and its side tables, and its
+#     check_permission() agrees with the primary's live check_access for every
+#     (subject, relation, object) of two stores — known subjects and objects
+#     plus unknown probes, so the wildcard contract ('*' rows apply only to
+#     entities the engine does not know) is proven, not assumed; a write on
+#     the primary reaches the derived replica through the refresh queue.
+#
+# The aia-acme fixture is loaded onto the primary in addition to the demo
+# because it has subject wildcards (employee:*), exclusion and intersection;
+# the demo contributes object wildcards (document:*).
 #
 # The assertions are independent of init-replication.sh's own output because
 # that script does not use ON_ERROR_STOP — a SQL error leaves a broken setup but
 # still exits 0, so only these checks catch a regression.
+#
+# REPLICATION_COMPOSE_FILES (colon-separated) adds compose override files, e.g.
+# to move the host ports so the test can run next to the main stack; set
+# COMPOSE_PROJECT_NAME too so the networks stay apart. Both are passed on to
+# init-replication.sh.
 #
 # Leaves the stack running for inspection; the caller tears it down
 # (the CI job and a final hint below).
@@ -20,7 +34,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-COMPOSE=(docker compose -f compose-replication.yml)
+COMPOSE=(docker compose)
+IFS=: read -ra _compose_files <<< "${REPLICATION_COMPOSE_FILES:-compose-replication.yml}"
+for _f in "${_compose_files[@]}"; do COMPOSE+=(-f "$_f"); done
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
 
 echo "==> Resetting + bringing up the replication stack..."
 "${COMPOSE[@]}" down -v >/dev/null 2>&1 || true
@@ -33,6 +51,8 @@ PRIMARY=$("${COMPOSE[@]}" ps -q authz-primary)
 ACCT=$("${COMPOSE[@]}" ps -q accounting-app-db)
 DERIVED=$("${COMPOSE[@]}" ps -q accounting-app-derived-db)
 qp() { docker exec -e PGPASSWORD=authz "$1" psql -U authz -d authz -tA -c "$2"; }
+# Run a SQL script from stdin (ON_ERROR_STOP, quiet).
+qf() { docker exec -i -e PGPASSWORD=authz "$1" psql -U authz -d authz -v ON_ERROR_STOP=1 -q -tA; }
 
 fail=0
 assert() {  # description  expected  actual
@@ -40,12 +60,28 @@ assert() {  # description  expected  actual
 }
 
 # Poll until every subscribed table on $1 is 'r' (ready), or time out.
-wait_ready() {  # container  label
+wait_ready() {  # container
   for _ in $(seq 1 30); do
     [ "$(qp "$1" "SELECT count(*) FROM pg_subscription_rel WHERE srsubstate <> 'r';")" = "0" ] && return 0
     sleep 2
   done
   return 1
+}
+
+# Poll until the derived replica holds exactly the primary's derived rows.
+derived_counts() {  # container
+  qp "$1" "SELECT (SELECT count(*) FROM authz.materialized_permissions) || '/' ||
+                  (SELECT count(*) FROM authz.materialized_subjects)    || '/' ||
+                  (SELECT count(*) FROM authz.materialized_objects);"
+}
+wait_derived_parity() {
+  local want
+  want=$(derived_counts "$PRIMARY")
+  for _ in $(seq 1 30); do
+    [ "$(derived_counts "$DERIVED")" = "$want" ] && { echo "$want"; return 0; }
+    sleep 1
+  done
+  echo "timeout (primary $want, derived $(derived_counts "$DERIVED"))"; return 1
 }
 
 echo "==> Asserting subscription health..."
@@ -63,9 +99,74 @@ assert "replica: eva can_read accounting doc" "t" \
 assert "replica: carol cannot read client doc (space not replicated)" "f" \
   "$(qp "$ACCT" "SELECT authz.check_access('demo','client_user','carol','can_read','document','doc_client_001');")"
 
-echo "==> Asserting the DERIVED replica received materialized permissions..."
+echo "==> Loading the aia-acme fixture (subject wildcards, exclusion) onto the primary and deriving it..."
+qf "$PRIMARY" < examples/models/aia-acme/model.sql >/dev/null
+qf "$PRIMARY" < examples/models/aia-acme/seed.sql  >/dev/null
+qp "$PRIMARY" "SELECT authz.refresh_all_materialized_permissions('aia_acme');" >/dev/null
+qp "$PRIMARY" "DELETE FROM authz.permissions_refresh_queue;" >/dev/null
+
+echo "==> Asserting the DERIVED replica mirrors the primary's derived tables..."
+parity=$(wait_derived_parity) || true
+case "$parity" in timeout*) assert "derived: permissions/subjects/objects match the primary" "parity" "$parity";;
+                  *)        assert "derived: permissions/subjects/objects match the primary ($parity)" "ok" "ok";; esac
 assert "derived: materialized_permissions populated" "t" \
   "$(qp "$DERIVED" "SELECT count(*) > 0 FROM authz.materialized_permissions;")"
+assert "derived: literal '*' rows present for both wildcard kinds" "t" \
+  "$(qp "$DERIVED" "SELECT EXISTS(SELECT 1 FROM authz.materialized_permissions WHERE user_id='*') AND EXISTS(SELECT 1 FROM authz.materialized_permissions WHERE object_id='*');")"
+
+echo "==> Differential: derived check_permission vs live check_access over every subject × relation × object (+ unknown probes)..."
+# The universe and the live answers come from the primary; the derived replica
+# evaluates the same universe with check_permission(); any disagreement fails.
+qp "$PRIMARY" "COPY (
+  WITH stores AS (SELECT id, name FROM authz.stores WHERE name IN ('demo','aia_acme')),
+  subj AS (
+    SELECT DISTINCT s.name AS store, ut.name AS user_type, t.user_id
+      FROM authz.tuples t JOIN stores s ON s.id=t.store_id JOIN authz.types ut ON ut.id=t.user_type
+     WHERE t.user_relation IS NULL AND t.user_id <> '*'
+    UNION
+    SELECT DISTINCT s.name, ut.name, 'zz_unknown_' || ut.name
+      FROM authz.tuples t JOIN stores s ON s.id=t.store_id JOIN authz.types ut ON ut.id=t.user_type
+     WHERE t.user_relation IS NULL),
+  obj AS (
+    SELECT DISTINCT s.name AS store, ot.name AS object_type, t.object_id
+      FROM authz.tuples t JOIN stores s ON s.id=t.store_id JOIN authz.types ot ON ot.id=t.object_type
+     WHERE t.object_id <> '*'
+    UNION
+    SELECT DISTINCT s.name, ot.name, 'zz_unknown_object'
+      FROM authz.tuples t JOIN stores s ON s.id=t.store_id JOIN authz.types ot ON ot.id=t.object_type),
+  rel AS (
+    SELECT DISTINCT s.name AS store, ot.name AS object_type, r.name AS relation
+      FROM authz.models m JOIN stores s ON s.id=m.store_id JOIN authz.types ot ON ot.id=m.object_type JOIN authz.relations r ON r.id=m.relation)
+  SELECT u.store, u.user_type, u.user_id, r.relation, o.object_type, o.object_id,
+         authz.check_access(u.store, u.user_type, u.user_id, r.relation, o.object_type, o.object_id) AS live
+    FROM subj u JOIN obj o ON o.store = u.store JOIN rel r ON r.store = o.store AND r.object_type = o.object_type
+) TO STDOUT;" > "$WORK/universe.tsv"
+checks=$(wc -l < "$WORK/universe.tsv" | tr -d ' ')
+live_allows=$(awk -F'\t' '$7=="t"' "$WORK/universe.tsv" | wc -l | tr -d ' ')
+{
+  echo "CREATE TEMP TABLE u (store text, user_type text, user_id text, relation text, object_type text, object_id text, live boolean);"
+  echo "COPY u FROM STDIN;"
+  cat "$WORK/universe.tsv"
+  echo '\.'
+  echo "SELECT count(*) FILTER (WHERE live <> authz.check_permission(store, user_type, user_id, relation, object_type, object_id)) FROM u;"
+  echo "SELECT store || ' ' || user_type || ':' || user_id || ' ' || relation || ' ' || object_type || ':' || object_id || ' live=' || live
+          FROM u WHERE live <> authz.check_permission(store, user_type, user_id, relation, object_type, object_id) ORDER BY 1 LIMIT 10;"
+} | qf "$DERIVED" > "$WORK/diff.out"
+mismatches=$(sed -n 1p "$WORK/diff.out")
+echo "    checks=$checks live_allows=$live_allows mismatches=$mismatches"
+assert "differential: universe is non-trivial (> 5000 checks)" "t" "$([ "${checks:-0}" -gt 5000 ] && echo t || echo f)"
+assert "differential: derived check_permission == live check_access everywhere" "0" "$mismatches"
+if [ "$mismatches" != "0" ]; then sed -n '2,$p' "$WORK/diff.out" | sed 's/^/        /'; fi
+
+echo "==> Wildcard contract regressions (the cases that were wrong before the side tables)..."
+assert "unknown employee may 'delegatable' board-deck (employee:* grant, subject not expanded)" "t" \
+  "$(qp "$DERIVED" "SELECT authz.check_permission('aia_acme','employee','zz_nobody','delegatable','document','board-deck');")"
+assert "nadia_auditor can_read a document the engine never saw (document:* grant)" "t" \
+  "$(qp "$DERIVED" "SELECT authz.check_permission('demo','internal_user','nadia_auditor','can_read','document','doc_never_touched');")"
+assert "an unknown user cannot read that unknown document" "f" \
+  "$(qp "$DERIVED" "SELECT authz.check_permission('demo','internal_user','zz_nobody','can_read','document','doc_never_touched');")"
+assert "alice cannot read doc_acc_001 (no path into the accounting engagement)" "f" \
+  "$(qp "$DERIVED" "SELECT authz.check_permission('demo','internal_user','alice','can_read','document','doc_acc_001');")"
 
 echo "==> Asserting LIVE propagation (write on primary -> full replica)..."
 qp "$PRIMARY" "SELECT authz.write_tuple('demo','internal_user','ci_repltest','viewer','document','doc_acc_001');" >/dev/null
@@ -77,6 +178,20 @@ for _ in $(seq 1 15); do
   sleep 1
 done
 assert "replica reflects a primary write within 15s" "ok" "$live"
+
+echo "==> Asserting LIVE propagation (write on primary -> refresh queue -> derived replica)..."
+assert "the write queued a refresh" "t" "$(qp "$PRIMARY" "SELECT count(*) > 0 FROM authz.permissions_refresh_queue;")"
+qp "$PRIMARY" "SELECT authz.process_permissions_refresh_queue();" >/dev/null
+live=timeout
+for _ in $(seq 1 15); do
+  if [ "$(qp "$DERIVED" "SELECT authz.check_permission('demo','internal_user','ci_repltest','can_read','document','doc_acc_001');")" = "t" ]; then
+    live=ok; break
+  fi
+  sleep 1
+done
+assert "derived replica reflects the processed queue within 15s" "ok" "$live"
+assert "the new subject is now a known subject on the derived replica" "t" \
+  "$(qp "$DERIVED" "SELECT EXISTS(SELECT 1 FROM authz.materialized_subjects WHERE store='demo' AND user_id='ci_repltest');")"
 
 echo ""
 if [ "$fail" -ne 0 ]; then
