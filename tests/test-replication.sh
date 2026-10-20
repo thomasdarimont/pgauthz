@@ -300,6 +300,26 @@ parity=$(wait_derived_parity) || true
 assert "both writes of that transaction reached the derived replica" "t" \
   "$(qp "$DERIVED" "SELECT authz.check_permission('demo','internal_user','ci_inside1','can_read','document','doc_acc_001') AND authz.check_permission('demo','internal_user','ci_inside2','can_read','document','doc_acc_001');")"
 
+echo "==> The refresh entry points refuse any isolation level but READ COMMITTED..."
+# Under REPEATABLE READ the snapshot predates the cutoff capture; a change
+# committed in between would be invisible yet past the cutoff — skipped forever.
+rr_worker=$(docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -tA 2>&1 <<'SQL' | grep -c "requires READ COMMITTED" || true
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT authz.refresh_materialized_permissions();
+ROLLBACK;
+SQL
+)
+assert "refresh_materialized_permissions is rejected under REPEATABLE READ" "1" "$rr_worker"
+rr_all=$(docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -tA 2>&1 <<'SQL' | grep -c "requires READ COMMITTED" || true
+BEGIN ISOLATION LEVEL SERIALIZABLE;
+SELECT authz.refresh_all_materialized_permissions('demo');
+ROLLBACK;
+SQL
+)
+assert "refresh_all_materialized_permissions is rejected under SERIALIZABLE" "1" "$rr_all"
+assert "the cursor was not touched by the rejected runs" "t" \
+  "$(qp "$PRIMARY" "SELECT feed_drained FROM authz.materialized_refresh_state WHERE store='demo';")"
+
 echo "==> Asserting LIVE propagation (write on primary -> full replica)..."
 qp "$PRIMARY" "SELECT authz.write_tuple('demo','internal_user','ci_repltest','viewer','document','doc_acc_001');" >/dev/null
 live=timeout

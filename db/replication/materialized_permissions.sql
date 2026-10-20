@@ -71,6 +71,15 @@
 -- included — and reads every store's feed with it (p_until), so the cutoff
 -- cannot drift while the run works and a worker called inside an explicit
 -- transaction cannot advance past rows that transaction may still write.
+-- READ COMMITTED ONLY. The cutoff comes from pg_stat_activity, which is not
+-- MVCC, while the feed is read through the transaction's snapshot. Under
+-- READ COMMITTED every query inside these VOLATILE functions takes a fresh
+-- snapshot after the cutoff was captured, so a transaction that committed
+-- before the capture is visible and one still open is excluded by the
+-- cutoff. Under REPEATABLE READ or SERIALIZABLE the snapshot predates the
+-- capture: a transaction that committed in between is invisible, yet no
+-- longer open, and its rows would be skipped forever. Both entry points
+-- therefore refuse to run in any other isolation level.
 -- OPERATIONAL LIMIT: any long-open transaction on the database, read-only
 -- ones included (an analytics query, a connection left idle in
 -- transaction), holds the cutoff back and with it every revocation; the
@@ -245,6 +254,23 @@ BEGIN
     TRUNCATE _mp_claimed RESTART IDENTITY;
     CREATE TEMP TABLE IF NOT EXISTS _mp_written (store text, n integer);
     TRUNCATE _mp_written;
+END;
+$$;
+
+------------------------------------------------------------------------
+-- _mp_require_read_committed: see header, READ COMMITTED ONLY.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._mp_require_read_committed(p_what text)
+RETURNS void
+LANGUAGE plpgsql STABLE SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION '% requires READ COMMITTED (transaction isolation is %): the feed is read through this transaction''s snapshot, '
+                        'and a change committed between that snapshot and the cutoff would be skipped for good',
+            p_what, current_setting('transaction_isolation')
+            USING ERRCODE = 'invalid_transaction_state',
+                  HINT = 'Run the worker in its own READ COMMITTED transaction (autocommit).';
+    END IF;
 END;
 $$;
 
@@ -607,6 +633,7 @@ DECLARE
     v_retired    text[] := '{}';
     v_store      text;
 BEGIN
+    PERFORM authz._mp_require_read_committed('refresh_materialized_permissions');
     PERFORM authz._mp_prepare_pairs();
     CREATE TEMP TABLE IF NOT EXISTS _mp_feed (
         store text, store_id integer, changes integer,
@@ -787,6 +814,7 @@ DECLARE
     v_gate      interval := v_started - v_cursor_at;
     v_pairs     integer; v_written integer;
 BEGIN
+    PERFORM authz._mp_require_read_committed('refresh_all_materialized_permissions');
     DELETE FROM authz.materialized_permissions WHERE store = p_store;
     DELETE FROM authz.materialized_subjects    WHERE store = p_store;
     DELETE FROM authz.materialized_objects     WHERE store = p_store;
@@ -886,6 +914,7 @@ BEGIN
             EXECUTE format('ALTER TABLE %s OWNER TO authz_owner', r.obj);
         END LOOP;
         ALTER FUNCTION authz._mp_prepare_pairs()                                      OWNER TO authz_owner;
+        ALTER FUNCTION authz._mp_require_read_committed(text)                         OWNER TO authz_owner;
         ALTER FUNCTION authz._mp_blast_radius()                                       OWNER TO authz_owner;
         ALTER FUNCTION authz._derive_pairs()                                          OWNER TO authz_owner;
         ALTER FUNCTION authz._refresh_permissions_for_object(integer, integer, text) OWNER TO authz_owner;
@@ -904,6 +933,7 @@ $$;
 -- refresh_materialized_permissions only.
 ------------------------------------------------------------------------
 REVOKE ALL ON FUNCTION authz._mp_prepare_pairs()                                      FROM PUBLIC;
+REVOKE ALL ON FUNCTION authz._mp_require_read_committed(text)                         FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._mp_blast_radius()                                       FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._derive_pairs()                                          FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._refresh_permissions_for_object(integer, integer, text) FROM PUBLIC;

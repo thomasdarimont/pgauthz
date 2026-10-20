@@ -924,7 +924,12 @@ shows the backlog, `as_of` and the last run per store. Run the worker:
 - **Event-driven:** on `LISTEN authz_changes`, the audit log's doorbell
 
 A crashed worker resumes from the stored cursor; a page is replayed if its
-run rolled back. One worker is the intended deployment. Structural changes
+run rolled back. One worker is the intended deployment, in its own `READ
+COMMITTED` transaction: both entry points refuse any other isolation level,
+because the cutoff is read from `pg_stat_activity` (not MVCC) while the
+feed is read through the transaction's snapshot — under `REPEATABLE READ`
+a change committed between snapshot and cutoff would be invisible yet past
+the cutoff, skipped for good. Structural changes
 are not pair-shaped: a page carrying `TYPE_REMOVED`, or tuple deltas whose
 type no longer resolves, makes the worker rebuild that store in the same
 run; `STORE_RETIRED` drops the store from the derived tables. Model changes

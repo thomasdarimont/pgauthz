@@ -270,6 +270,17 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **Derived permissions: the refresh entry points require READ COMMITTED.**
+  Third review round: the cutoff is read from `pg_stat_activity`, which is
+  not MVCC, while the feed is read through the transaction's snapshot. Under
+  `REPEATABLE READ` or `SERIALIZABLE` a transaction that committed between
+  the snapshot and the cutoff capture is invisible yet no longer open, so
+  its rows would be skipped for good. `refresh_materialized_permissions` and
+  `refresh_all_materialized_permissions` now raise `invalid_transaction_state`
+  in any isolation level other than `READ COMMITTED`, where every query
+  inside these `VOLATILE` functions takes a fresh snapshot after the capture.
+  Regression tests for both entry points.
+
 - **AuthZEN conformance job: MongoDB could not start on current GitHub
   runners.** The suite's MongoDB (`mongo:9.0.2-noble`) exits at startup on
   Linux kernels 6.19 up to 7.0.13 (SERVER-121912) and, before 9.0.4, misreads
