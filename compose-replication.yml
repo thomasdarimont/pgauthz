@@ -116,6 +116,34 @@ services:
     volumes:
       - accounting-app-derived-data:/var/lib/postgresql:z
 
+  # ── A second application: derived permissions of ITS namespace only ──
+  accounting-app-dms-db:
+    image: postgres:18.6
+    command:
+      - postgres
+      - -c
+      - max_connections=100
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - max_sync_workers_per_subscription=10
+    environment:
+      POSTGRES_USER: authz
+      POSTGRES_PASSWORD: authz
+      POSTGRES_DB: authz
+    ports:
+      - "55437:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authz"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      authz-primary:
+        condition: service_healthy
+    volumes:
+      - accounting-app-dms-data:/var/lib/postgresql:z
+
 volumes:
   authz-primary-logical-data:
     name: authz-pg-primary-logical-data
@@ -123,3 +151,5 @@ volumes:
     name: authz-pg-accounting-app-data
   accounting-app-derived-data:
     name: authz-pg-accounting-app-derived-data
+  accounting-app-dms-data:
+    name: authz-pg-accounting-app-dms-data

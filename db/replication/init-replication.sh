@@ -44,6 +44,12 @@ psql_derived() {
         psql -U authz -d authz "$@"
 }
 
+psql_dms() {
+    docker exec -i -e PGPASSWORD=authz \
+        "$("${COMPOSE[@]}" ps -q accounting-app-dms-db)" \
+        psql -U authz -d authz "$@"
+}
+
 # Apply ALL structural migrations in order via psql (the demo has no sqlx
 # migration ledger — it does not do upgrades — so it replays every
 # db/migrations/NNNN_*.sql, not just the frozen baseline, to stay in sync as
@@ -100,6 +106,10 @@ psql_primary < "$SCRIPT_DIR/materialized_permissions.sql"
 echo "==> [primary] Loading demo seed data..."
 psql_primary < "$PG_DIR/examples/models/demo/seed.sql"
 
+echo "==> [primary] Namespace 'dms' = the document application's types (document, folder); the worker's login role may read every namespace..."
+psql_primary -c "SELECT authz.model_set_type_namespace('demo', 'document', 'dms'), authz.model_set_type_namespace('demo', 'folder', 'dms');"
+psql_primary -c "SELECT authz.grant_namespace_access('demo', 'dms', 'authz', p_can_read => true, p_can_write => true);"
+
 echo "==> [primary] Building materialized permissions (initial snapshot; registers the store for incremental refresh from the audit changefeed)..."
 psql_primary -c "SELECT authz.refresh_all_materialized_permissions('demo') AS permissions_created;"
 
@@ -138,12 +148,24 @@ echo "==> [accounting-app-derived] Creating subscription..."
 psql_derived < "$SCRIPT_DIR/setup-subscription-derived.sql"
 
 # ══════════════════════════════════════════════════════════════════════
+# Approach 2b: one application's namespace only (row-filtered publication)
+# ══════════════════════════════════════════════════════════════════════
+
+echo ""
+echo "==> [accounting-app-dms] Loading minimal schema..."
+psql_dms < "$SCRIPT_DIR/schema-derived.sql"
+
+echo "==> [accounting-app-dms] Creating the namespace-scoped subscription (publication authz_derived_dms)..."
+psql_dms < "$SCRIPT_DIR/setup-subscription-dms.sql"
+
+# ══════════════════════════════════════════════════════════════════════
 # Wait for sync
 # ══════════════════════════════════════════════════════════════════════
 
 echo ""
 wait_for_sync psql_accounting "accounting-app"
 wait_for_sync psql_derived "accounting-app-derived"
+wait_for_sync psql_dms "accounting-app-dms"
 
 # ══════════════════════════════════════════════════════════════════════
 # Verify
@@ -199,15 +221,27 @@ psql_derived -c \
 
 echo ""
 echo "================================================================"
+echo "  Approach 2b: one namespace only (dms = document, folder)"
+echo "================================================================"
+echo ""
+echo "--- object types on the dms subscriber (only the namespace's) ---"
+psql_dms -c "SELECT object_type, count(*) FROM authz.materialized_permissions GROUP BY 1 ORDER BY 1;"
+echo "--- subjects are store-wide; eva reads doc_acc_001 here too ---"
+psql_dms -c "SELECT (SELECT count(*) FROM authz.materialized_subjects) AS known_subjects, authz.check_permission('demo','internal_user','eva','can_read','document','doc_acc_001') AS eva_can_read, authz.permissions_as_of('demo') AS as_of;"
+
+echo ""
+echo "================================================================"
 echo "  Done."
 echo "================================================================"
 echo ""
 echo "  Primary:              localhost:55433  (full authz database)"
 echo "  Accounting app:       localhost:55435  (full replica, selective tuples)"
 echo "  Accounting app (derived): localhost:55436  (flat permissions table only)"
+echo "  Accounting app (dms):     localhost:55437  (flat permissions, namespace dms only)"
 echo ""
 echo "  Connect with:"
 echo "    docker exec -it \$(docker compose -f compose-replication.yml ps -q authz-primary) psql -U authz -d authz"
 echo "    docker exec -it \$(docker compose -f compose-replication.yml ps -q accounting-app-db) psql -U authz -d authz"
 echo "    docker exec -it \$(docker compose -f compose-replication.yml ps -q accounting-app-derived-db) psql -U authz -d authz"
+echo "    docker exec -it \$(docker compose -f compose-replication.yml ps -q accounting-app-dms-db) psql -U authz -d authz"
 echo ""

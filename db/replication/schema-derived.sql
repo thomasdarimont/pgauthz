@@ -2,6 +2,10 @@
 -- No authz functions, models, or tuples — just the flat lookup table, its
 -- two side tables, the per-store freshness row, and two helpers: one that
 -- applies the wildcard contract, one that says how stale the copy may be.
+-- The same schema serves a subscriber of the whole store (publication
+-- authz_derived) and one of a single namespace (authz_derived_<ns>): the
+-- helpers work per object type, so a namespace subscriber simply has no rows
+-- for the other types.
 --
 -- The partition layout must match the primary exactly for logical
 -- replication to route rows correctly.
@@ -15,8 +19,9 @@ CREATE TABLE IF NOT EXISTS authz.materialized_permissions (
     permission    text    NOT NULL,
     object_type   text    NOT NULL,
     object_id     text    NOT NULL,
+    namespace     text    NOT NULL DEFAULT '',   -- the object type's namespace; lets a publication row filter select it
     refreshed_at  timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (store, user_id, user_type, permission, object_type, object_id)
+    PRIMARY KEY (store, user_id, user_type, permission, object_type, object_id, namespace)
 ) PARTITION BY HASH (store, user_id);
 
 CREATE TABLE authz.materialized_permissions_0 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 0);
@@ -45,8 +50,9 @@ CREATE TABLE IF NOT EXISTS authz.materialized_objects (
     store         text    NOT NULL,
     object_type   text    NOT NULL,
     object_id     text    NOT NULL,
+    namespace     text    NOT NULL DEFAULT '',
     refreshed_at  timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (store, object_type, object_id)
+    PRIMARY KEY (store, object_type, object_id, namespace)
 );
 
 -- Freshness, one row per store the primary derives (replicated): every

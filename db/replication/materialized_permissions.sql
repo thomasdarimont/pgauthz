@@ -117,6 +117,21 @@
 -- picked up; the oldest open transaction can push the gate further out
 -- (NO ROW IS SKIPPED above).
 --
+-- NAMESPACES. Rows of materialized_permissions and materialized_objects carry
+-- the object type's namespace ('' when it has none), so an application can
+-- subscribe to its own object types only through a row-filtered publication
+-- (setup-publication.sql, authz_derived_<ns>); the derivation itself stays
+-- store-wide — a team in a shared namespace grants access to documents in the
+-- application's — and materialized_subjects / materialized_refresh_state are
+-- published whole (known subjects are a store-wide notion). Changing a type's
+-- namespace afterwards needs refresh_all_materialized_permissions(store). The
+-- worker's LOGIN role is what the engine's namespace check sees in
+-- list_subjects: grant it authz_namespace_bypass (roles.sql) or read access to
+-- every namespace, otherwise the expansion falls back to every known subject
+-- (correct, slow). A publication is a volume boundary, not a security one:
+-- any replication role that may read the tables may subscribe to any
+-- publication — isolate tenants with stores.
+--
 -- REQUIRES the audit profile (tuples_audit + watch_changes), i.e. a full
 -- install.
 --
@@ -144,8 +159,10 @@ CREATE TABLE IF NOT EXISTS authz.materialized_permissions (
     permission    text    NOT NULL,
     object_type   text    NOT NULL,
     object_id     text    NOT NULL,
+    namespace     text    NOT NULL DEFAULT '',   -- the object type's namespace ('' = none); in the key so a
+                                                 -- publication row filter may name it (replica identity rule)
     refreshed_at  timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (store, user_id, user_type, permission, object_type, object_id)
+    PRIMARY KEY (store, user_id, user_type, permission, object_type, object_id, namespace)
 ) PARTITION BY HASH (store, user_id);
 
 -- 8 hash partitions (same modulus as the document tuple partitions).
@@ -175,9 +192,30 @@ CREATE TABLE IF NOT EXISTS authz.materialized_objects (
     store         text    NOT NULL,
     object_type   text    NOT NULL,
     object_id     text    NOT NULL,
+    namespace     text    NOT NULL DEFAULT '',
     refreshed_at  timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (store, object_type, object_id)
+    PRIMARY KEY (store, object_type, object_id, namespace)
 );
+
+-- Upgrade of tables created before the namespace column: add it to the key.
+-- Rows written before carry '' — run refresh_all_materialized_permissions()
+-- per store afterwards so they get their namespace.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'authz' AND table_name = 'materialized_permissions' AND column_name = 'namespace') THEN
+        ALTER TABLE authz.materialized_permissions ADD COLUMN namespace text NOT NULL DEFAULT '';
+        ALTER TABLE authz.materialized_permissions DROP CONSTRAINT materialized_permissions_pkey;
+        ALTER TABLE authz.materialized_permissions ADD PRIMARY KEY (store, user_id, user_type, permission, object_type, object_id, namespace);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'authz' AND table_name = 'materialized_objects' AND column_name = 'namespace') THEN
+        ALTER TABLE authz.materialized_objects ADD COLUMN namespace text NOT NULL DEFAULT '';
+        ALTER TABLE authz.materialized_objects DROP CONSTRAINT materialized_objects_pkey;
+        ALTER TABLE authz.materialized_objects ADD PRIMARY KEY (store, object_type, object_id, namespace);
+    END IF;
+END;
+$$;
 
 ------------------------------------------------------------------------
 -- Deferred deltas: one row per expiring tuple, due at its expiry (filed
@@ -308,7 +346,7 @@ BEGIN
     -- 1. resolve
     CREATE TEMP TABLE IF NOT EXISTS _mp_objects (
         store_id integer, object_type integer, object_id text,
-        store text, type_name text, has_tuples boolean,
+        store text, type_name text, namespace text, has_tuples boolean,
         PRIMARY KEY (store_id, object_type, object_id));
     CREATE TEMP TABLE IF NOT EXISTS _mp_subjects (
         store_id integer, user_type integer, user_id text,
@@ -317,7 +355,7 @@ BEGIN
     TRUNCATE _mp_objects, _mp_subjects;
 
     INSERT INTO _mp_objects
-    SELECT DISTINCT p.store_id, p.object_type, p.object_id, s.name, ot.name,
+    SELECT DISTINCT p.store_id, p.object_type, p.object_id, s.name, ot.name, COALESCE(ot.namespace, ''),
            EXISTS (SELECT 1 FROM authz.tuples t
                     WHERE t.store_id = p.store_id AND t.object_type = p.object_type
                       AND t.object_id = p.object_id)
@@ -359,7 +397,7 @@ BEGIN
     ON CONFLICT DO NOTHING;
     --    the other side of the added pairs may be new to the work tables
     INSERT INTO _mp_objects
-    SELECT DISTINCT p.store_id, p.object_type, p.object_id, s.name, ot.name,
+    SELECT DISTINCT p.store_id, p.object_type, p.object_id, s.name, ot.name, COALESCE(ot.namespace, ''),
            EXISTS (SELECT 1 FROM authz.tuples t
                     WHERE t.store_id = p.store_id AND t.object_type = p.object_type
                       AND t.object_id = p.object_id)
@@ -391,10 +429,16 @@ BEGIN
      WHERE NOT o.has_tuples
        AND mo.store = o.store AND mo.object_type = o.type_name AND mo.object_id = o.object_id;
 
-    INSERT INTO authz.materialized_objects (store, object_type, object_id)
-    SELECT o.store, o.type_name, o.object_id FROM _mp_objects o
+    -- (a row with a stale namespace — the type moved — goes with the delist above: match on the key without it)
+    DELETE FROM authz.materialized_objects mo
+     USING _mp_objects o
+     WHERE o.has_tuples
+       AND mo.store = o.store AND mo.object_type = o.type_name AND mo.object_id = o.object_id
+       AND mo.namespace <> o.namespace;
+    INSERT INTO authz.materialized_objects (store, object_type, object_id, namespace)
+    SELECT o.store, o.type_name, o.object_id, o.namespace FROM _mp_objects o
      WHERE o.has_tuples AND o.object_id <> '*'
-    ON CONFLICT (store, object_type, object_id) DO NOTHING;
+    ON CONFLICT (store, object_type, object_id, namespace) DO NOTHING;
 
     DELETE FROM _mp_pairs p
      USING _mp_objects o
@@ -430,10 +474,10 @@ BEGIN
     -- 5. decide and diff
     CREATE TEMP TABLE IF NOT EXISTS _mp_want (
         store text, user_type text, user_id text, permission text,
-        object_type text, object_id text, allowed boolean);
+        object_type text, object_id text, namespace text, allowed boolean);
     TRUNCATE _mp_want;
     INSERT INTO _mp_want
-    SELECT o.store, su.type_name, p.user_id, r.name, o.type_name, p.object_id,
+    SELECT o.store, su.type_name, p.user_id, r.name, o.type_name, p.object_id, o.namespace,
            authz._decide(p.store_id, p.user_type, p.user_id, r.id, p.object_type, p.object_id,
                          NULL, false, '[]'::jsonb)
       FROM _mp_pairs p
@@ -454,13 +498,14 @@ BEGIN
                             WHERE w.allowed
                               AND w.store = mp.store AND w.user_type = mp.user_type AND w.user_id = mp.user_id
                               AND w.object_type = mp.object_type AND w.object_id = mp.object_id
-                              AND w.permission = mp.permission)
+                              AND w.permission = mp.permission
+                              AND w.namespace = mp.namespace)   -- a row under the type's old namespace is stale too
         RETURNING mp.store)
     INSERT INTO _mp_written SELECT d.store, count(*) FROM d GROUP BY d.store;
 
     WITH i AS (
-        INSERT INTO authz.materialized_permissions (store, user_type, user_id, permission, object_type, object_id)
-        SELECT w.store, w.user_type, w.user_id, w.permission, w.object_type, w.object_id
+        INSERT INTO authz.materialized_permissions (store, user_type, user_id, permission, object_type, object_id, namespace)
+        SELECT w.store, w.user_type, w.user_id, w.permission, w.object_type, w.object_id, w.namespace
           FROM _mp_want w WHERE w.allowed
         ON CONFLICT DO NOTHING
         RETURNING store)

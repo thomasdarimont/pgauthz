@@ -10,6 +10,8 @@
 --                             and materialized_refresh_state (freshness);
 --                             flat, no authz schema/functions needed on
 --                             the subscriber
+--   4. authz_derived_dms    — the same, row-filtered to the object types of
+--                             namespace 'dms' (one application's share)
 --
 -- The accounting app needs these types to resolve check_access paths:
 --   document(9) → in_internal_space → internal_data_space(7)
@@ -80,18 +82,31 @@ CREATE PUBLICATION authz_accounting FOR TABLE
 -- subscribe to without needing the authz schema or functions, plus the
 -- side tables the subscriber's check_permission() needs to apply '*'
 -- rows correctly (see materialized_permissions.sql, "the wildcard
--- contract"). Hash-partitioned by (store, user_id), so we list all leaf
--- partitions.
+-- contract") and the per-store freshness row. The partitioned tables are
+-- published through their root (publish_via_partition_root), so the
+-- subscriber routes rows into its own partitions and a row filter on the
+-- root applies to every partition.
 CREATE PUBLICATION authz_derived FOR TABLE
+    authz.materialized_permissions,
     authz.materialized_subjects,
     authz.materialized_objects,
-    authz.materialized_refresh_state,
-    authz.materialized_permissions_0,
-    authz.materialized_permissions_1,
-    authz.materialized_permissions_2,
-    authz.materialized_permissions_3,
-    authz.materialized_permissions_4,
-    authz.materialized_permissions_5,
-    authz.materialized_permissions_6,
-    authz.materialized_permissions_7
+    authz.materialized_refresh_state
+    WITH (publish_via_partition_root = true);
+
+-- 4. The same, narrowed to one application's namespace: only the rows of
+-- object types in namespace 'dms' (document, folder in this demo — see
+-- init-replication.sh), plus the whole subject set and the freshness row,
+-- which are store-wide notions the wildcard contract and permissions_fresh()
+-- need regardless. The filter names `namespace`, which is why that column is
+-- part of the tables' primary key (a row filter may only reference replica
+-- identity columns). Adding a type to the namespace needs no change here;
+-- moving a type between namespaces needs refresh_all_materialized_permissions.
+-- One publication per application; a publication is a volume boundary, not a
+-- security one (any replication role that may read the tables may subscribe
+-- to any publication) — isolate tenants with stores.
+CREATE PUBLICATION authz_derived_dms FOR TABLE
+    authz.materialized_permissions WHERE (store = 'demo' AND namespace = 'dms'),
+    authz.materialized_objects     WHERE (store = 'demo' AND namespace = 'dms'),
+    authz.materialized_subjects,
+    authz.materialized_refresh_state
     WITH (publish_via_partition_root = true);

@@ -176,7 +176,11 @@ BEGIN
     -- which namespace) is not bound to the per-application grants below.
     -- (pg_has_role is true for every role when v_role is a superuser, so the
     -- membership must be explicit: superusers follow the grants like anyone.)
-    IF pg_has_role(v_role, 'authz_namespace_bypass', 'MEMBER')
+    -- (The role is created by roles.sql; an install without it — a bare
+    -- engine load, the replication demo — must not fail the check on
+    -- pg_has_role's "role does not exist".)
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authz_namespace_bypass')
+       AND pg_has_role(v_role, 'authz_namespace_bypass', 'MEMBER')
        AND NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_role AND rolsuper) THEN
         RETURN;
     END IF;

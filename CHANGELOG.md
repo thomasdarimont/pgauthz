@@ -9,6 +9,21 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Derived permissions for one application's namespace.** Rows of
+  `authz.materialized_permissions` and `authz.materialized_objects` carry the
+  object type's namespace (in the primary key, so a publication row filter may
+  name it); an application subscribes to its own object types through a
+  row-filtered publication — `authz_derived_<ns>` with `WHERE (store = …
+  AND namespace = …)` on the two tables, the subject set and the freshness
+  row whole. The derivation stays store-wide. Replication demo: a third
+  subscriber `accounting-app-dms-db` on namespace `dms` (document, folder);
+  `tests/test-replication.sh` asserts it holds exactly the primary's `dms`
+  rows after the snapshot and after every random batch. Existing derived
+  tables are upgraded in place (column + key); run `refresh_all` per store
+  afterwards. The worker's login role needs `authz_namespace_bypass` or
+  namespace read grants for the `list_subjects` expansion once types carry
+  namespaces (the demo grants it).
+
 - **Management console (proof of concept, `console/`).** A Lit + Go BFF web
   UI for the people who run pgauthz: per store, the live model in three
   read views (OpenFGA-style DSL, canonical JSON, the SQL calls that rebuild
@@ -269,6 +284,13 @@ pre-1.0, minor versions may include breaking changes.
   managed stores; the demo stack lists `user,internal_user`).
 
 ### Fixed
+
+- **Namespace access check failed on installs without roles.sql.**
+  `_check_namespace_access` asked `pg_has_role` about `authz_namespace_bypass`
+  unconditionally, which raises "role does not exist" where roles.sql has not
+  run (a bare engine load, the replication demo): the first namespaced type
+  made every read of that type's permissions fail. The role lookup is guarded
+  now; `tests_namespace.sql` 25/25.
 
 - **Derived permissions: the refresh entry points require READ COMMITTED.**
   Third review round: the cutoff is read from `pg_stat_activity`, which is

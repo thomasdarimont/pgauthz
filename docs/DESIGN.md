@@ -818,6 +818,7 @@ authz-primary
 - The app cannot run `explain_access` or `list_objects` — only simple
   permission lookups
 - Requires the audit profile on the primary (the changefeed is the source)
+- One application's share: a row-filtered publication per namespace (below)
 
 **Wildcards: the contract.** The engine cannot expand an object wildcard
 (`document:*`) — it does not know the application's object universe — and
@@ -857,6 +858,40 @@ engine (full profile: it reads the audit changefeed); the functions are
 under one role), and the script transfers them to `authz_owner` when
 `roles.sql` has run. The worker role needs only `EXECUTE` on
 `refresh_materialized_permissions()`.
+
+### One application, one namespace
+
+An application rarely wants the whole store's permissions, only those of
+the object types it manages — its namespace. The derivation stays
+store-wide (a team in a shared namespace grants access to documents in the
+application's), but the *subscription* narrows: rows of
+`materialized_permissions` and `materialized_objects` carry the object
+type's namespace, as part of their primary key so a publication row filter
+may name it, and each application gets its own publication:
+
+```sql
+CREATE PUBLICATION authz_derived_dms FOR TABLE
+    authz.materialized_permissions WHERE (store = 'demo' AND namespace = 'dms'),
+    authz.materialized_objects     WHERE (store = 'demo' AND namespace = 'dms'),
+    authz.materialized_subjects,          -- store-wide: "known subject" is a store-wide notion
+    authz.materialized_refresh_state      -- per store: as_of / permissions_fresh()
+    WITH (publish_via_partition_root = true);
+```
+
+The subscriber uses the same minimal schema and helpers; it simply has no
+rows for the other object types. Adding a type to the namespace needs no
+change to the publication; moving a type between namespaces needs
+`refresh_all_materialized_permissions(store)`. The worker's login role is
+what the engine's namespace check sees inside `list_subjects`: grant it
+`authz_namespace_bypass` or read access to every namespace, or the
+expansion falls back to every known subject (correct, slow). Two things it
+is not: a security boundary — any replication role that may read the
+tables may subscribe to any publication; isolate tenants with stores — and
+a saving on the primary, which still derives every namespace once. The
+replication demo runs this as a third subscriber (`accounting-app-dms-db`,
+publication `authz_derived_dms`, namespace `dms` = document + folder), and
+`tests/test-replication.sh` asserts it holds exactly the primary's `dms`
+rows after the snapshot and after every random batch.
 
 ### Change propagation for derived permissions
 

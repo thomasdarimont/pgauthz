@@ -7,6 +7,10 @@
 #   - full replica (accounting-app-db): subscriptions reach 'ready', resolves
 #     check_access locally on replicated tuples, and reflects a live write made
 #     on the primary;
+#   - namespace replica (accounting-app-dms-db): subscribes to the row-filtered
+#     publication authz_derived_dms and holds exactly the primary's rows of the
+#     'dms' object types (document, folder), every subject, and the freshness
+#     rows — re-checked after each random batch;
 #   - derived replica (accounting-app-derived-db): receives the flat
 #     materialized_permissions table and its side tables, and its
 #     check_permission() agrees with the primary's live check_access for every
@@ -56,6 +60,7 @@ echo "==> Running init-replication.sh..."
 PRIMARY=$("${COMPOSE[@]}" ps -q authz-primary)
 ACCT=$("${COMPOSE[@]}" ps -q accounting-app-db)
 DERIVED=$("${COMPOSE[@]}" ps -q accounting-app-derived-db)
+DMS=$("${COMPOSE[@]}" ps -q accounting-app-dms-db)
 qp() { docker exec -e PGPASSWORD=authz "$1" psql -U authz -d authz -tA -c "$2"; }
 # Run a SQL script from stdin (ON_ERROR_STOP, quiet).
 qf() { docker exec -i -e PGPASSWORD=authz "$1" psql -U authz -d authz -v ON_ERROR_STOP=1 -q -tA; }
@@ -89,14 +94,33 @@ wait_derived_parity() {
   done
   echo "timeout (primary $want, derived $(derived_counts "$DERIVED"))"; return 1
 }
+# The namespace subscriber must hold exactly the primary's rows of namespace
+# 'dms' (document, folder), every subject, and the freshness rows.
+dms_counts() {  # container  where-clause-for-permissions/objects
+  qp "$1" "SELECT (SELECT count(*) FROM authz.materialized_permissions WHERE $2) || '/' ||
+                  (SELECT count(*) FROM authz.materialized_subjects)              || '/' ||
+                  (SELECT count(*) FROM authz.materialized_objects WHERE $2)      || '/' ||
+                  (SELECT count(*) FROM authz.materialized_refresh_state);"
+}
+wait_dms_parity() {
+  local want
+  want=$(dms_counts "$PRIMARY" "store = 'demo' AND namespace = 'dms'")
+  for _ in $(seq 1 30); do
+    [ "$(dms_counts "$DMS" "true")" = "$want" ] && { echo "$want"; return 0; }
+    sleep 1
+  done
+  echo "timeout (primary $want, dms $(dms_counts "$DMS" "true"))"; return 1
+}
 
 echo "==> Asserting subscription health..."
 wait_ready "$ACCT"    && assert "accounting-app: all subscriptions ready" "ok" "ok" \
                       || assert "accounting-app: all subscriptions ready" "ok" "timeout"
 wait_ready "$DERIVED" && assert "derived: all subscriptions ready"        "ok" "ok" \
                       || assert "derived: all subscriptions ready"        "ok" "timeout"
-# Replication is actively streaming (3 subscribers connected to the primary).
-assert "primary has 3 streaming replication connections" "3" \
+wait_ready "$DMS"     && assert "dms (one namespace): subscription ready" "ok" "ok" \
+                      || assert "dms (one namespace): subscription ready" "ok" "timeout"
+# Replication is actively streaming (4 subscriptions connected to the primary).
+assert "primary has 4 streaming replication connections" "4" \
   "$(qp "$PRIMARY" "SELECT count(*) FROM pg_stat_replication WHERE state='streaming';")"
 
 echo "==> Asserting the FULL replica resolves access on replicated data..."
@@ -118,6 +142,24 @@ assert "derived: materialized_permissions populated" "t" \
   "$(qp "$DERIVED" "SELECT count(*) > 0 FROM authz.materialized_permissions;")"
 assert "derived: literal '*' rows present for both wildcard kinds" "t" \
   "$(qp "$DERIVED" "SELECT EXISTS(SELECT 1 FROM authz.materialized_permissions WHERE user_id='*') AND EXISTS(SELECT 1 FROM authz.materialized_permissions WHERE object_id='*');")"
+
+echo "==> Asserting the NAMESPACE subscriber holds its own object types only (row-filtered publication)..."
+parity=$(wait_dms_parity) || true
+case "$parity" in timeout*) assert "dms: rows of namespace dms + all subjects + freshness match the primary" "parity" "$parity";;
+                  *)        assert "dms: rows of namespace dms + all subjects + freshness match the primary ($parity)" "ok" "ok";; esac
+assert "dms: only document and folder rows" "document,folder" \
+  "$(qp "$DMS" "SELECT string_agg(DISTINCT object_type, ',' ORDER BY object_type) FROM authz.materialized_permissions;")"
+assert "dms: no row of another namespace or store" "0" \
+  "$(qp "$DMS" "SELECT count(*) FROM authz.materialized_permissions WHERE namespace <> 'dms' OR store <> 'demo';")"
+assert "dms: the whole subject set is there (the wildcard contract needs it)" \
+  "$(qp "$PRIMARY" "SELECT count(*) FROM authz.materialized_subjects WHERE store='demo';")" \
+  "$(qp "$DMS" "SELECT count(*) FROM authz.materialized_subjects WHERE store='demo';")"
+assert "dms: eva reads doc_acc_001, alice does not, nadia reads an unseen document — as on the primary" "true|false|true" \
+  "$(qp "$DMS" "SELECT authz.check_permission('demo','internal_user','eva','can_read','document','doc_acc_001') || '|' || authz.check_permission('demo','internal_user','alice','can_read','document','doc_acc_001') || '|' || authz.check_permission('demo','internal_user','nadia_auditor','can_read','document','doc_never_touched');")"
+assert "dms: a type outside the namespace simply has no rows (team membership is not its business)" "f" \
+  "$(qp "$DMS" "SELECT authz.check_permission('demo','internal_user','eva','member','team','accounting_team');")"
+assert "dms: freshness is known" "t" \
+  "$(qp "$DMS" "SELECT authz.permissions_fresh('demo', interval '10 minutes');")"
 
 # The universe and the live answers come from the primary; the derived replica
 # evaluates the same universe with check_permission(); any disagreement fails.
@@ -407,6 +449,9 @@ for batch in 1 2 3; do
   parity=$(wait_derived_parity) || true
   case "$parity" in timeout*) assert "batch $batch: derived tables match the primary" "parity" "$parity";;
                     *)        assert "batch $batch: derived tables match the primary ($parity)" "ok" "ok";; esac
+  parity=$(wait_dms_parity) || true
+  case "$parity" in timeout*) assert "batch $batch: namespace subscriber matches the primary's dms rows" "parity" "$parity";;
+                    *)        assert "batch $batch: namespace subscriber matches the primary's dms rows ($parity)" "ok" "ok";; esac
   differential "batch $batch"
 done
 
