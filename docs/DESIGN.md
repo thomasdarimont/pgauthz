@@ -810,6 +810,19 @@ authz-primary
 - The app cannot run `explain_access` or `list_objects` — only simple
   permission lookups
 
+**What a precomputed row cannot hold.** Conditions, contextual tuples and
+temporal gates depend on the request, so the table stores the context-free,
+fail-closed answer: a conditional grant is absent until its condition is
+dropped. Decisions that must be exact at the moment of the request stay on
+the live `check_access`. The refresh is correct but brute-force: a queued
+object is re-evaluated against every subject known to the store, and the
+trigger follows reverse tuple-to-userset edges two levels deep, so deeper
+nesting (team → department → org → document) needs a periodic
+`refresh_all_materialized_permissions`. This is the same shape as Auth0
+FGA's hosted *Permissions Index* (which excludes conditions and contextual
+tuples for the same reason); an incremental, changefeed-driven refresh that
+expands only the affected subjects is the planned follow-up.
+
 ### Change propagation for derived permissions
 
 When a tuple changes on the primary:

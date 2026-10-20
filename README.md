@@ -40,6 +40,7 @@ in [`docs/slides/`](docs/slides).
 - **Full audit trail** — immutable, monthly-partitioned audit log with application user tracking (`performed_by`)
 - **Time-travel queries** — `audit_check_access` reconstructs permissions at any past point in time
 - **Watch / changefeed** — cursored, filterable stream of tuple changes plus a `NOTIFY` doorbell, for cache invalidation and sync
+- **Derived permissions table (permissions index)** — a flat, precomputed `(subject, permission, object)` table kept current by the engine and shipped by logical replication to search, analytics or application databases that join on it without running the engine — see [DESIGN.md → Derived permissions](docs/DESIGN.md#approach-2-derived-permissions-recommended-for-most-apps)
 - **Action log** — `record_event` / `list_events`: a per-store, per-principal record of what subjects *actually did* (reported by your PEP, never inferred from decisions) — see [ADR 0012](docs/adr/0012-action-log.md)
 - **Temporal gates** — centrally managed, history-dependent veto rules over trusted recorded actions (Dogwood-inspired, not Dogwood-compatible; not a workflow engine): rate limits, spend caps, prior approval, step-up freshness, lockouts, agent guardrails (`count_within`, `sum_within`, `formerly_within`, `count_distinct_within`), applied on every check, listing, explain and time-travel path; `reserve_event` for concurrency-exact caps — see [MODEL_DESIGN §17](docs/MODEL_DESIGN.md#17-temporal-gates-history-dependent-rules)
 - **Agentic authorization** — every tool call a check with the agent as principal, planning via the search API instead of policy residuals, task scope as expiring or contextual tuples, sequencing and budgets as temporal gates, delegation as data with evaluation-time attenuation, RAG authorize-before-retrieval — see [AGENTIC-AUTHORIZATION.md](docs/AGENTIC-AUTHORIZATION.md) and `examples/models/agents/`; a human delegating to an agent via Keycloak token exchange, bounded by a task, runs end to end in [`examples/agentic/`](examples/agentic/README.md)
@@ -230,7 +231,7 @@ Each topic has exactly one owner. Read the owner, not this file, for detail.
 | [`docs/MODEL_DESIGN.md`](docs/MODEL_DESIGN.md) | modelling: types, relations, rules, wildcards, conditions, gates, registry, OpenFGA import | you are writing or changing an authorization model |
 | [`docs/AUDIT.md`](docs/AUDIT.md) | audit trail, time travel, changefeed | you need history, replay or change notifications |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | how it works and how it is deployed (arc42) | you are integrating, scaling or reviewing the design |
-| [`docs/DESIGN.md`](docs/DESIGN.md) | why PostgreSQL, security model, performance, where permissions belong | you are evaluating the approach |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | why PostgreSQL, security model, performance, where permissions belong, the derived permissions table for other databases | you are evaluating the approach |
 | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | day-to-day operations, HTTP write API, integration, debugging, repository layout | you are building against it or on it |
 | [`docs/PRODUCTION.md`](docs/PRODUCTION.md) | checklist, roles, network, secrets, replicas, HA, retention, upgrades | you are going live |
 | [`docs/AGENTIC-AUTHORIZATION.md`](docs/AGENTIC-AUTHORIZATION.md) | AI agents: tool calls, planning, delegation, RAG | your principal is an agent |
@@ -277,6 +278,9 @@ registry; importing OpenFGA models. All in
 wildcard row when the answer is "all of them", so a listing query joins
 against it instead of checking row by row. The pattern, its cost bounds and
 a runnable showcase: [`examples/filtering/`](examples/filtering/README.md).
+A database that cannot call the engine joins on the derived permissions
+table instead, precomputed on the primary and shipped by logical
+replication: [`docs/DESIGN.md`](docs/DESIGN.md#approach-2-derived-permissions-recommended-for-most-apps).
 
 ### Audit, time travel and the changefeed
 

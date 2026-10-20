@@ -67,6 +67,7 @@ the caller requested.
 | **Batch operations** | `write_tuples` / `delete_tuples` in a single statement |
 | **No external service** | Pure SQL — no network hop, no separate process to operate |
 | **OpenFGA import** | Import existing OpenFGA JSON models directly. `intersection` and `difference` are translated natively into rule groups; operators nested deeper than one level below `union` are rejected (never imported as a more permissive approximation) — see [MODEL_DESIGN.md](MODEL_DESIGN.md#example-how-intersectionexclusion-map-to-rule-groups) |
+| **Derived permissions table** | A flat, precomputed `(subject, permission, object)` table kept current by the engine and shipped by logical replication to search, analytics or application databases, which join on it without running the engine. OpenFGA has no equivalent; the hosted Auth0 FGA sells the same shape as its *Permissions Index* (enterprise entitlement metered per expansion, colocated only, conditions and contextual tuples excluded) — see [DESIGN.md](DESIGN.md#approach-2-derived-permissions-recommended-for-most-apps) |
 | **Object wildcards** | `(subject, relation, type, '*')` grants the relation on every object of the type — O(1) super-admin/auditor checks and listing. Default-deny: the direct rule must be marked `allow_object_wildcard`. OpenFGA wildcards are subject-side only |
 
 ## OpenFGA has, this solution doesn't

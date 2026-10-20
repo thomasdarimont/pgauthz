@@ -280,6 +280,14 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- **Derived permissions table documented as a feature.** The flat
+  `authz.materialized_permissions` table (`db/replication/`) — pgauthz's
+  equivalent of a hosted *permissions index* for search, analytics and
+  application databases that join on precomputed answers — now has a use
+  case, a README feature line, a comparison row and an explicit statement
+  of its limits (context-free answers, brute-force refresh, two-level
+  reverse propagation) in `DESIGN.md`.
+
 - `publish_model` and `apply_model` attribute `created_by` / `applied_by`
   to the `authz.performed_by` session setting when it is set (the same
   convention as the tuple audit trail), else to the connection's role.

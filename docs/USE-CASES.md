@@ -27,6 +27,7 @@ combine several.
   - [Marker tuples and exclusion — archived, under legal hold, draft only](#marker-tuples-and-exclusion--archived-under-legal-hold-draft-only)
   - [Object wildcard, bulk delete, expiry — suspended, offboarded, break-glass](#object-wildcard-bulk-delete-expiry--suspended-offboarded-break-glass)
   - [Search API as a JOIN — show me only what I may see](#search-api-as-a-join--show-me-only-what-i-may-see)
+  - [Derived permissions table — a permissions index for apps that are not co-located](#derived-permissions-table--a-permissions-index-for-apps-that-are-not-co-located)
   - [Forward the user's token, or ask as a PEP — two ways to call the daemon](#forward-the-users-token-or-ask-as-a-pep--two-ways-to-call-the-daemon)
   - [Time travel and the audit trail — could Grace read payroll last Tuesday, and who revoked it?](#time-travel-and-the-audit-trail--could-grace-read-payroll-last-tuesday-and-who-revoked-it)
   - [Changefeed — react to changes: cache invalidation, sync](#changefeed--react-to-changes-cache-invalidation-sync)
@@ -789,6 +790,38 @@ SELECT d.* FROM documents d
  ORDER BY d.created_at DESC LIMIT 20;
 ```
 Shown in: [`examples/filtering/`](../examples/filtering/README.md).
+
+### Derived permissions table — a permissions index for apps that are not co-located
+
+**Scenario:** Enterprise search, an analytics warehouse, a RAG pipeline or an
+application on its own database wants to filter rows by permission with a
+plain join, and cannot call `list_objects` per query. (Auth0 FGA sells this
+shape as a *Permissions Index*.)
+
+**Solution:** `authz.materialized_permissions` is a flat
+`(store, subject, permission, object)` table the engine keeps current: a
+trigger on tuple changes queues the affected objects, a worker re-evaluates
+them, and logical replication ships only that table to the consumer, which
+needs no engine, model or functions. It is eventually consistent (queue
+processing plus replication lag). Conditions, contextual tuples and temporal
+gates depend on the request and cannot live in a precomputed row, so the
+table holds the context-free, fail-closed answer; decisions that must be
+exact at the moment of the request stay on the live `check_access`.
+
+```sql
+-- primary: keep the table current (pg_cron, or a worker on LISTEN authz_permissions_changed)
+SELECT authz.process_permissions_refresh_queue();
+-- subscriber: a permission-aware listing with no engine installed
+SELECT d.*
+  FROM documents d
+  JOIN authz.materialized_permissions p
+    ON p.store = 'demo' AND p.object_type = 'document' AND p.object_id = d.id
+ WHERE p.user_type = 'internal_user' AND p.user_id = 'bob' AND p.permission = 'can_read';
+```
+Shown in: [DESIGN.md → Derived permissions](DESIGN.md#approach-2-derived-permissions-recommended-for-most-apps),
+[`db/replication/materialized_permissions.sql`](../db/replication/materialized_permissions.sql),
+[`db/replication/demo-replication.sh`](../db/replication/demo-replication.sh)
+(exercised by `tests/test-replication.sh`).
 
 ### Forward the user's token, or ask as a PEP — two ways to call the daemon
 
