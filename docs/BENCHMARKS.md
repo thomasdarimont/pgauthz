@@ -579,8 +579,8 @@ local hash lookup; the number says so.
 ## Addendum: 2026-10-20 (derived permissions: the incremental worker on `drive`)
 
 A characterization, not a rerun: the changefeed-driven worker for the
-derived-permissions table (`db/replication/materialized_permissions.sql`,
-`refresh_materialized_permissions`) is new and had no numbers. Measured on
+derived-permissions table (`db/replication/materialized_relations.sql`,
+`refresh_materialized_relations`) is new and had no numbers. Measured on
 the `drive` store (60,031 tuples: 50,003 users each owning a private
 document, 200 groups of 50 members, one group-shared document, a 15-folder
 chain ending in one document, one public document) in a single rolled-back

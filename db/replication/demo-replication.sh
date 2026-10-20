@@ -72,7 +72,7 @@ run_derived() {
 # logical replication deliver the rows.
 refresh() {
     sleep 1.2
-    run_primary "SELECT authz.refresh_materialized_permissions() AS pairs_rederived;"
+    run_primary "SELECT authz.refresh_materialized_relations() AS pairs_rederived;"
     sleep 1
 }
 
@@ -82,18 +82,18 @@ section "1. Current state after init"
 
 step "Who can read doc_acc_001? (primary — full check_access)"
 run_primary "
-SELECT user_type, user_id, permission
-  FROM authz.materialized_permissions
+SELECT user_type, user_id, relation
+  FROM authz.materialized_relations
  WHERE object_type = 'document' AND object_id = 'doc_acc_001'
- ORDER BY user_type, user_id, permission;
+ ORDER BY user_type, user_id, relation;
 "
 
 step "Same data on the derived app DB (flat lookup, no authz functions):"
 run_derived "
-SELECT user_type, user_id, permission
-  FROM authz.materialized_permissions
+SELECT user_type, user_id, relation
+  FROM authz.materialized_relations
  WHERE object_type = 'document' AND object_id = 'doc_acc_001'
- ORDER BY user_type, user_id, permission;
+ ORDER BY user_type, user_id, relation;
 "
 
 step "Can grace read doc_acc_001? (she has no access yet)"
@@ -122,7 +122,7 @@ pause
 section "3. Run the worker → replicates to derived DB"
 
 step "The derived table is refreshed from the audit changefeed; the worker resumes from a stored cursor:"
-run_primary "SELECT store, as_of, feed_drained, last_run_changes, last_run_pairs FROM authz.materialized_permissions_status();"
+run_primary "SELECT store, as_of, feed_drained, last_run_changes, last_run_pairs FROM authz.materialized_relations_status();"
 
 step "Run the worker (pulls the changes since the cursor, re-derives only the affected subject × object pairs), then wait for replication:"
 refresh
@@ -132,10 +132,10 @@ run_derived "SELECT authz.check_permission('demo','internal_user','grace','can_r
 
 step "Full permission set for doc_acc_001 on derived DB:"
 run_derived "
-SELECT user_type, user_id, permission
-  FROM authz.materialized_permissions
+SELECT user_type, user_id, relation
+  FROM authz.materialized_relations
  WHERE object_type = 'document' AND object_id = 'doc_acc_001'
- ORDER BY user_type, user_id, permission;
+ ORDER BY user_type, user_id, relation;
 "
 
 pause
@@ -162,10 +162,10 @@ refresh
 
 step "Derived app DB — all permissions for doc_acc_002:"
 run_derived "
-SELECT user_type, user_id, permission
-  FROM authz.materialized_permissions
+SELECT user_type, user_id, relation
+  FROM authz.materialized_relations
  WHERE object_type = 'document' AND object_id = 'doc_acc_002'
- ORDER BY user_type, user_id, permission;
+ ORDER BY user_type, user_id, relation;
 "
 
 pause
@@ -186,8 +186,8 @@ refresh
 step "Derived app DB — grace is gone:"
 run_derived "SELECT authz.check_permission('demo','internal_user','grace','can_read','document','doc_acc_001');"
 run_derived "
-SELECT user_type, user_id, permission
-  FROM authz.materialized_permissions
+SELECT user_type, user_id, relation
+  FROM authz.materialized_relations
  WHERE object_type = 'document' AND object_id = 'doc_acc_001'
    AND user_id = 'grace';
 "
@@ -225,10 +225,10 @@ run_derived "SELECT authz.check_permission('demo','internal_user','eva','can_rea
 
 step "All remaining permissions for doc_acc_001 (eva is no longer listed):"
 run_derived "
-SELECT user_type, user_id, permission
-  FROM authz.materialized_permissions
+SELECT user_type, user_id, relation
+  FROM authz.materialized_relations
  WHERE object_type = 'document' AND object_id = 'doc_acc_001'
- ORDER BY user_type, user_id, permission;
+ ORDER BY user_type, user_id, relation;
 "
 
 step "Restoring eva to accounting_team for subsequent runs..."
@@ -243,10 +243,10 @@ section "7. Wildcards on the derived DB — the '*' contract"
 
 step "nadia_auditor holds 'viewer' on document:* (an object wildcard). Her derived rows:"
 run_derived "
-SELECT permission, object_id
-  FROM authz.materialized_permissions
+SELECT relation, object_id
+  FROM authz.materialized_relations
  WHERE store = 'demo' AND user_id = 'nadia_auditor' AND object_type = 'document'
- ORDER BY permission, object_id;
+ ORDER BY relation, object_id;
 "
 echo "    One concrete row per document the engine knows, plus a literal '*' row."
 echo "    The engine cannot expand document:* — it does not know which documents"
@@ -262,9 +262,9 @@ run_primary "SELECT authz.check_access('demo','internal_user','nadia_auditor','c
 step "A naive lookup on the derived DB gets it WRONG (no concrete row):"
 run_derived "
 SELECT EXISTS (
-  SELECT 1 FROM authz.materialized_permissions
+  SELECT 1 FROM authz.materialized_relations
    WHERE store = 'demo' AND user_type = 'internal_user' AND user_id = 'nadia_auditor'
-     AND permission = 'can_read' AND object_type = 'document' AND object_id = 'doc_brand_new') AS naive_lookup;
+     AND relation = 'can_read' AND object_type = 'document' AND object_id = 'doc_brand_new') AS naive_lookup;
 "
 
 step "check_permission() gets it right — it applies the contract:"
@@ -292,13 +292,16 @@ step "So a listing query on the derived DB uses the helper, not a join on user_i
 echo "    SELECT d.* FROM documents d"
 echo "     WHERE authz.check_permission('demo','internal_user', :me, 'can_read', 'document', d.id);"
 echo ""
+step "Rows carry both kinds of relation; what nadia may DO on doc_acc_001 is the is_permission subset:"
+run_derived "SELECT relation, is_permission FROM authz.materialized_relations WHERE store = 'demo' AND user_id = 'nadia_auditor' AND object_id = 'doc_acc_001' ORDER BY is_permission DESC, relation;"
+echo ""
 
 pause
 
 step "A NEW object-wildcard grant re-derives the whole type. Grant demo_auditor2 viewer on document:*"
 run_primary "SELECT authz.write_tuple('demo','internal_user','demo_auditor2','viewer','document','*');"
 refresh
-run_primary "SELECT last_run_changes AS changes_in_feed, last_run_pairs AS pairs_rederived FROM authz.materialized_permissions_status() WHERE store = 'demo';"
+run_primary "SELECT last_run_changes AS changes_in_feed, last_run_pairs AS pairs_rederived FROM authz.materialized_relations_status() WHERE store = 'demo';"
 echo "    (one change in the feed; the pairs are demo_auditor2 × every known document"
 echo "    plus the '*' pseudo-object — their concrete rows are authoritative and must"
 echo "    now say 'allowed'. Nobody else is re-derived.)"
@@ -314,7 +317,7 @@ step "Revoke it again — the rows disappear and demo_auditor2 becomes unknown (
 run_primary "SELECT authz.delete_tuple('demo','internal_user','demo_auditor2','viewer','document','*');"
 refresh
 run_derived "
-SELECT (SELECT count(*) FROM authz.materialized_permissions WHERE store = 'demo' AND user_id = 'demo_auditor2') AS rows_left,
+SELECT (SELECT count(*) FROM authz.materialized_relations WHERE store = 'demo' AND user_id = 'demo_auditor2') AS rows_left,
        EXISTS (SELECT 1 FROM authz.materialized_subjects WHERE store = 'demo' AND user_id = 'demo_auditor2')    AS still_known,
        authz.check_permission('demo','internal_user','demo_auditor2','can_read','document','doc_brand_new')     AS can_read_unknown_doc;
 "
@@ -348,7 +351,7 @@ step "Cleaning up demo data (removing doc_acc_002, demo_auditor2)..."
 primary -c "SELECT authz.delete_tuple('demo', 'internal_data_space', 'eng_42_accounting_internal', 'in_internal_space', 'document', 'doc_acc_002');" > /dev/null 2>&1
 primary -c "SELECT authz.delete_tuple('demo','internal_user','demo_auditor2','viewer','document','*');" > /dev/null 2>&1
 sleep 1.2
-primary -c "SELECT authz.refresh_materialized_permissions();" > /dev/null 2>&1
+primary -c "SELECT authz.refresh_materialized_relations();" > /dev/null 2>&1
 
 echo ""
 echo "  Done."

@@ -798,8 +798,10 @@ application on its own database wants to filter rows by permission with a
 plain join, and cannot call `list_objects` per query. (Auth0 FGA sells this
 shape as a *Permissions Index*.)
 
-**Solution:** `authz.materialized_permissions` is a flat
-`(store, subject, permission, object)` table the engine keeps current
+**Solution:** `authz.materialized_relations` is a flat
+`(store, subject, relation, object)` table — permissions such as `can_read`
+and structural relations such as `member`, told apart by `is_permission` —
+that the engine keeps current
 incrementally: a worker follows the audit changefeed from a stored cursor
 and re-derives only the subject × object pairs a change can affect (an
 expiring grant is withdrawn when it expires), and logical replication ships
@@ -816,7 +818,7 @@ the live `check_access`.
 
 ```sql
 -- primary: the worker (pg_cron, or on LISTEN authz_changes); resumes from its cursor
-SELECT authz.refresh_materialized_permissions();
+SELECT authz.refresh_materialized_relations();
 -- subscriber: a permission-aware listing with no engine installed
 SELECT d.*
   FROM documents d
@@ -824,7 +826,7 @@ SELECT d.*
  ORDER BY d.created_at DESC LIMIT 20;
 ```
 Shown in: [DESIGN.md → Derived permissions](DESIGN.md#approach-2-derived-permissions-recommended-for-most-apps),
-[`db/replication/materialized_permissions.sql`](../db/replication/materialized_permissions.sql),
+[`db/replication/materialized_relations.sql`](../db/replication/materialized_relations.sql),
 [`db/replication/demo-replication.sh`](../db/replication/demo-replication.sh)
 (`tests/test-replication.sh` proves the subscriber's answers equal the
 primary's live checks for every subject × relation × object, unknown probes

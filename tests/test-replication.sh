@@ -12,7 +12,7 @@
 #     'dms' object types (document, folder), every subject, and the freshness
 #     rows — re-checked after each random batch;
 #   - derived replica (accounting-app-derived-db): receives the flat
-#     materialized_permissions table and its side tables, and its
+#     materialized_relations table and its side tables, and its
 #     check_permission() agrees with the primary's live check_access for every
 #     (subject, relation, object) of two stores — known subjects and objects
 #     plus unknown probes, so the wildcard contract ('*' rows apply only to
@@ -81,7 +81,7 @@ wait_ready() {  # container
 
 # Poll until the derived replica holds exactly the primary's derived rows.
 derived_counts() {  # container
-  qp "$1" "SELECT (SELECT count(*) FROM authz.materialized_permissions) || '/' ||
+  qp "$1" "SELECT (SELECT count(*) FROM authz.materialized_relations) || '/' ||
                   (SELECT count(*) FROM authz.materialized_subjects)    || '/' ||
                   (SELECT count(*) FROM authz.materialized_objects);"
 }
@@ -96,20 +96,20 @@ wait_derived_parity() {
 }
 # The namespace subscriber must hold exactly the primary's rows of namespace
 # 'dms' (document, folder), every subject, and the freshness rows.
-dms_counts() {  # container  where-clause-for-permissions/objects
-  qp "$1" "SELECT (SELECT count(*) FROM authz.materialized_permissions WHERE $2) || '/' ||
+dms_counts() {  # container  where-for-permissions  where-for-objects
+  qp "$1" "SELECT (SELECT count(*) FROM authz.materialized_relations WHERE $2) || '/' ||
                   (SELECT count(*) FROM authz.materialized_subjects)              || '/' ||
-                  (SELECT count(*) FROM authz.materialized_objects WHERE $2)      || '/' ||
+                  (SELECT count(*) FROM authz.materialized_objects WHERE $3)      || '/' ||
                   (SELECT count(*) FROM authz.materialized_refresh_state);"
 }
 wait_dms_parity() {
   local want
-  want=$(dms_counts "$PRIMARY" "store = 'demo' AND namespace = 'dms'")
+  want=$(dms_counts "$PRIMARY" "store = 'demo' AND namespace = 'dms'" "store = 'demo' AND namespace = 'dms'")
   for _ in $(seq 1 30); do
-    [ "$(dms_counts "$DMS" "true")" = "$want" ] && { echo "$want"; return 0; }
+    [ "$(dms_counts "$DMS" "true" "true")" = "$want" ] && { echo "$want"; return 0; }
     sleep 1
   done
-  echo "timeout (primary $want, dms $(dms_counts "$DMS" "true"))"; return 1
+  echo "timeout (primary $want, dms $(dms_counts "$DMS" "true" "true"))"; return 1
 }
 
 echo "==> Asserting subscription health..."
@@ -132,25 +132,35 @@ assert "replica: carol cannot read client doc (space not replicated)" "f" \
 echo "==> Loading the aia-acme fixture (subject wildcards, exclusion) onto the primary and deriving it..."
 qf "$PRIMARY" < examples/models/aia-acme/model.sql >/dev/null
 qf "$PRIMARY" < examples/models/aia-acme/seed.sql  >/dev/null
-qp "$PRIMARY" "SELECT authz.refresh_all_materialized_permissions('aia_acme');" >/dev/null
+qp "$PRIMARY" "SELECT authz.refresh_all_materialized_relations('aia_acme');" >/dev/null
 
 echo "==> Asserting the DERIVED replica mirrors the primary's derived tables..."
 parity=$(wait_derived_parity) || true
 case "$parity" in timeout*) assert "derived: permissions/subjects/objects match the primary" "parity" "$parity";;
                   *)        assert "derived: permissions/subjects/objects match the primary ($parity)" "ok" "ok";; esac
-assert "derived: materialized_permissions populated" "t" \
-  "$(qp "$DERIVED" "SELECT count(*) > 0 FROM authz.materialized_permissions;")"
+assert "derived: materialized_relations populated" "t" \
+  "$(qp "$DERIVED" "SELECT count(*) > 0 FROM authz.materialized_relations;")"
 assert "derived: literal '*' rows present for both wildcard kinds" "t" \
-  "$(qp "$DERIVED" "SELECT EXISTS(SELECT 1 FROM authz.materialized_permissions WHERE user_id='*') AND EXISTS(SELECT 1 FROM authz.materialized_permissions WHERE object_id='*');")"
+  "$(qp "$DERIVED" "SELECT EXISTS(SELECT 1 FROM authz.materialized_relations WHERE user_id='*') AND EXISTS(SELECT 1 FROM authz.materialized_relations WHERE object_id='*');")"
 
 echo "==> Asserting the NAMESPACE subscriber holds its own object types only (row-filtered publication)..."
 parity=$(wait_dms_parity) || true
 case "$parity" in timeout*) assert "dms: rows of namespace dms + all subjects + freshness match the primary" "parity" "$parity";;
                   *)        assert "dms: rows of namespace dms + all subjects + freshness match the primary ($parity)" "ok" "ok";; esac
 assert "dms: only document and folder rows" "document,folder" \
-  "$(qp "$DMS" "SELECT string_agg(DISTINCT object_type, ',' ORDER BY object_type) FROM authz.materialized_permissions;")"
+  "$(qp "$DMS" "SELECT string_agg(DISTINCT object_type, ',' ORDER BY object_type) FROM authz.materialized_relations;")"
 assert "dms: no row of another namespace or store" "0" \
-  "$(qp "$DMS" "SELECT count(*) FROM authz.materialized_permissions WHERE namespace <> 'dms' OR store <> 'demo';")"
+  "$(qp "$DMS" "SELECT count(*) FROM authz.materialized_relations WHERE namespace <> 'dms' OR store <> 'demo';")"
+# Both kinds are replicated; an application that only wants permissions asks
+# with the flag — and gets exactly the primary's permission rows of its namespace.
+assert "dms: WHERE is_permission yields exactly the primary's permission rows of the namespace" \
+  "$(qp "$PRIMARY" "SELECT count(*) FROM authz.materialized_relations WHERE store='demo' AND namespace='dms' AND is_permission;")" \
+  "$(qp "$DMS" "SELECT count(*) FROM authz.materialized_relations WHERE is_permission;")"
+dms_rels=$(qp "$DMS" "SELECT string_agg(DISTINCT relation, ',' ORDER BY relation) FROM authz.materialized_relations WHERE is_permission;")
+assert "dms: the flagged relations ($dms_rels) are all declared permissions on the primary" "0" \
+  "$(qp "$PRIMARY" "SELECT count(*) FROM unnest(string_to_array('$dms_rels', ',')) n WHERE COALESCE((SELECT r.metadata->>'kind' FROM authz.relations r WHERE r.store_id = authz._s('demo') AND r.name = n), 'relation') <> 'permission';")"
+assert "dms: nadia's structural 'viewer' is a relation row, her 'can_read' a permission row" "false|true" \
+  "$(qp "$DMS" "SELECT (SELECT is_permission FROM authz.materialized_relations WHERE user_id='nadia_auditor' AND relation='viewer' LIMIT 1) || '|' || (SELECT is_permission FROM authz.materialized_relations WHERE user_id='nadia_auditor' AND relation='can_read' LIMIT 1);")"
 assert "dms: the whole subject set is there (the wildcard contract needs it)" \
   "$(qp "$PRIMARY" "SELECT count(*) FROM authz.materialized_subjects WHERE store='demo';")" \
   "$(qp "$DMS" "SELECT count(*) FROM authz.materialized_subjects WHERE store='demo';")"
@@ -222,7 +232,7 @@ drain_feed() {
   local i
   for i in $(seq 1 20); do
     sleep 1.1
-    qp "$PRIMARY" "SELECT authz.refresh_materialized_permissions();" >/dev/null
+    qp "$PRIMARY" "SELECT authz.refresh_materialized_relations();" >/dev/null
     [ "$(qp "$PRIMARY" "SELECT bool_and(feed_drained) FROM authz.materialized_refresh_state;")" = "t" ] && return 0
   done
   return 1
@@ -296,12 +306,12 @@ assert "frank is tax_clerk again after both edges are restored" "t" \
 
 echo "==> A removed type rebuilds the store (TYPE_REMOVED in the feed)..."
 assert "demo has derived rows for upload_request before the removal" "t" \
-  "$(qp "$DERIVED" "SELECT count(*) > 0 FROM authz.materialized_permissions WHERE store='demo' AND object_type='upload_request';")"
+  "$(qp "$DERIVED" "SELECT count(*) > 0 FROM authz.materialized_relations WHERE store='demo' AND object_type='upload_request';")"
 qp "$PRIMARY" "SELECT authz.model_remove_type('demo','upload_request', p_force => true);" >/dev/null
 drain_feed || assert "type removal: feed drained" "ok" "timeout"
 parity=$(wait_derived_parity) || true
 assert "no derived rows for the removed type remain on the replica" "0" \
-  "$(qp "$DERIVED" "SELECT count(*) FROM authz.materialized_permissions WHERE store='demo' AND object_type='upload_request';")"
+  "$(qp "$DERIVED" "SELECT count(*) FROM authz.materialized_relations WHERE store='demo' AND object_type='upload_request';")"
 differential "after type removal"
 
 echo "==> A long-open transaction must never be skipped by the cursor..."
@@ -319,11 +329,11 @@ slow_pid=$!
 sleep 1
 qp "$PRIMARY" "SELECT authz.write_tuple('demo','internal_user','ci_fast','viewer','document','doc_acc_001');" >/dev/null
 sleep 1.5
-qp "$PRIMARY" "SELECT authz.refresh_materialized_permissions();" >/dev/null
+qp "$PRIMARY" "SELECT authz.refresh_materialized_relations();" >/dev/null
 assert "the worker widened its gate to the open transaction (> 2 s)" "t" \
   "$(qp "$PRIMARY" "SELECT last_run_gate > interval '2 seconds' FROM authz.materialized_refresh_state WHERE store='demo';")"
 assert "nothing past the open transaction was consumed (ci_fast not derived yet)" "0" \
-  "$(qp "$PRIMARY" "SELECT count(*) FROM authz.materialized_permissions WHERE store='demo' AND user_id='ci_fast';")"
+  "$(qp "$PRIMARY" "SELECT count(*) FROM authz.materialized_relations WHERE store='demo' AND user_id='ci_fast';")"
 wait "$slow_pid" || true
 drain_feed || assert "long transaction: feed drained after commit" "ok" "timeout"
 parity=$(wait_derived_parity) || true
@@ -348,7 +358,7 @@ cat > "$WORK/inside.sql" <<'SQL'
 BEGIN;
 SELECT authz.write_tuple('demo','internal_user','ci_inside1','viewer','document','doc_acc_001');
 SELECT pg_sleep(1.5);
-SELECT authz.refresh_materialized_permissions();
+SELECT authz.refresh_materialized_relations();
 SELECT authz.write_tuple('demo','internal_user','ci_inside2','viewer','document','doc_acc_001');
 COMMIT;
 SQL
@@ -371,23 +381,23 @@ cursor_state() { qp "$PRIMARY" "SELECT string_agg(format('%s:%s|%s|%s', store, c
 before=$(cursor_state)
 rr_worker=$(docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -tA -v VERBOSITY=verbose 2>&1 <<'SQL' | grep -c "^ERROR:  25000:" || true
 BEGIN ISOLATION LEVEL REPEATABLE READ;
-SELECT authz.refresh_materialized_permissions();
+SELECT authz.refresh_materialized_relations();
 ROLLBACK;
 SQL
 )
-assert "refresh_materialized_permissions raises SQLSTATE 25000 under REPEATABLE READ" "1" "$rr_worker"
+assert "refresh_materialized_relations raises SQLSTATE 25000 under REPEATABLE READ" "1" "$rr_worker"
 rr_all=$(docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -tA -v VERBOSITY=verbose 2>&1 <<'SQL' | grep -c "^ERROR:  25000:" || true
 BEGIN ISOLATION LEVEL SERIALIZABLE;
-SELECT authz.refresh_all_materialized_permissions('demo');
+SELECT authz.refresh_all_materialized_relations('demo');
 ROLLBACK;
 SQL
 )
-assert "refresh_all_materialized_permissions raises SQLSTATE 25000 under SERIALIZABLE" "1" "$rr_all"
+assert "refresh_all_materialized_relations raises SQLSTATE 25000 under SERIALIZABLE" "1" "$rr_all"
 assert "cursor_at / cursor_seq / as_of of every store are unchanged by the rejected runs" "$before" "$(cursor_state)"
 # The same call inside an explicit READ COMMITTED transaction succeeds.
 rc_ok=$(docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -tA -v ON_ERROR_STOP=1 2>&1 <<'SQL' | tail -1
 BEGIN ISOLATION LEVEL READ COMMITTED;
-SELECT authz.refresh_materialized_permissions();
+SELECT authz.refresh_materialized_relations();
 COMMIT;
 SELECT 'rc-ok';
 SQL
@@ -409,7 +419,7 @@ echo "==> Asserting LIVE propagation (write on primary -> changefeed worker -> d
 live=timeout; pairs_seen=0
 for _ in $(seq 1 15); do
   sleep 1
-  p=$(qp "$PRIMARY" "SELECT authz.refresh_materialized_permissions();")
+  p=$(qp "$PRIMARY" "SELECT authz.refresh_materialized_relations();")
   [ "${p:-0}" -gt 0 ] && pairs_seen=$p
   if [ "$(qp "$DERIVED" "SELECT authz.check_permission('demo','internal_user','ci_repltest','can_read','document','doc_acc_001');")" = "t" ]; then
     live=ok; break

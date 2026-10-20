@@ -101,7 +101,7 @@ echo "==> [primary] Loading demo model..."
 psql_primary < "$PG_DIR/examples/models/demo/model.sql"
 
 echo "==> [primary] Loading materialized permissions infrastructure..."
-psql_primary < "$SCRIPT_DIR/materialized_permissions.sql"
+psql_primary < "$SCRIPT_DIR/materialized_relations.sql"
 
 echo "==> [primary] Loading demo seed data..."
 psql_primary < "$PG_DIR/examples/models/demo/seed.sql"
@@ -111,7 +111,7 @@ psql_primary -c "SELECT authz.model_set_type_namespace('demo', 'document', 'dms'
 psql_primary -c "SELECT authz.grant_namespace_access('demo', 'dms', 'authz', p_can_read => true, p_can_write => true);"
 
 echo "==> [primary] Building materialized permissions (initial snapshot; registers the store for incremental refresh from the audit changefeed)..."
-psql_primary -c "SELECT authz.refresh_all_materialized_permissions('demo') AS permissions_created;"
+psql_primary -c "SELECT authz.refresh_all_materialized_relations('demo') AS permissions_created;"
 
 echo "==> [primary] Creating publications..."
 psql_primary < "$SCRIPT_DIR/setup-publication.sql"
@@ -197,7 +197,7 @@ echo "  Approach 2: Derived permissions (flat lookup, no authz schema)"
 echo "================================================================"
 echo ""
 echo "--- Permissions replicated ---"
-psql_derived -c "SELECT count(*) AS total_permissions FROM authz.materialized_permissions;"
+psql_derived -c "SELECT count(*) AS total_permissions FROM authz.materialized_relations;"
 
 echo ""
 echo "--- eva can_read doc_acc_001 (should be TRUE) ---"
@@ -211,9 +211,9 @@ psql_derived -c \
 echo ""
 echo "--- All permissions for doc_acc_001 ---"
 psql_derived -c \
-    "SELECT user_type, user_id, permission FROM authz.materialized_permissions
+    "SELECT user_type, user_id, relation FROM authz.materialized_relations
       WHERE object_type = 'document' AND object_id = 'doc_acc_001'
-      ORDER BY user_type, user_id, permission;"
+      ORDER BY user_type, user_id, relation;"
 
 echo "--- nadia_auditor (viewer on document:*) can_read a document the engine has never seen (should be TRUE: the '*' row applies to unknown objects) ---"
 psql_derived -c \
@@ -225,7 +225,9 @@ echo "  Approach 2b: one namespace only (dms = document, folder)"
 echo "================================================================"
 echo ""
 echo "--- object types on the dms subscriber (only the namespace's) ---"
-psql_dms -c "SELECT object_type, count(*) FROM authz.materialized_permissions GROUP BY 1 ORDER BY 1;"
+psql_dms -c "SELECT object_type, count(*) FROM authz.materialized_relations GROUP BY 1 ORDER BY 1;"
+echo "--- both kinds arrive; the application reads permissions only with the flag ---"
+psql_dms -c "SELECT relation, object_id FROM authz.materialized_relations WHERE user_id = 'eva' AND is_permission ORDER BY 2, 1;"
 echo "--- subjects are store-wide; eva reads doc_acc_001 here too ---"
 psql_dms -c "SELECT (SELECT count(*) FROM authz.materialized_subjects) AS known_subjects, authz.check_permission('demo','internal_user','eva','can_read','document','doc_acc_001') AS eva_can_read, authz.permissions_as_of('demo') AS as_of;"
 

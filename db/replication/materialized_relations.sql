@@ -4,7 +4,7 @@
 --
 -- Three tables travel together (publication authz_derived):
 --
---   authz.materialized_permissions  (store, user_type, user_id, permission, object_type, object_id)
+--   authz.materialized_relations  (store, user_type, user_id, permission, object_type, object_id)
 --   authz.materialized_subjects     (store, user_type, user_id)     — subjects the engine knows
 --   authz.materialized_objects      (store, object_type, object_id) — objects the engine knows
 --
@@ -35,9 +35,9 @@
 --
 -- INCREMENTAL, CHANGEFEED-DRIVEN. The source of change is the audit
 -- changefeed, authz.watch_changes (AUDIT.md → Watching for changes): a store
--- is registered by refresh_all_materialized_permissions(), which takes the
+-- is registered by refresh_all_materialized_relations(), which takes the
 -- initial snapshot and records a (performed_at, seq) cursor just before it.
--- A worker — SELECT authz.refresh_materialized_permissions(), run from
+-- A worker — SELECT authz.refresh_materialized_relations(), run from
 -- pg_cron, on LISTEN authz_changes (the audit log's own doorbell), or in a
 -- loop — pulls one lag-gated page of the feed per registered store, resumes
 -- from the stored cursor after a crash, and for each delta re-derives only
@@ -101,30 +101,39 @@
 -- worker rebuilds that store in the same run. A retired store
 -- (STORE_RETIRED) is dropped from the derived tables and deregistered.
 -- Model changes (rules, restrictions) are not in the tuple feed: run
--- refresh_all_materialized_permissions(store) after applying one.
+-- refresh_all_materialized_relations(store) after applying one.
 --
 -- EXPIRY. The feed reports writes, not the passing of time, so for every
 -- inserted tuple that carries expires_at the worker files a deferred delta
--- in authz.permissions_refresh_queue, due at that instant; refresh_all files
+-- in authz.materialized_refresh_queue, due at that instant; refresh_all files
 -- one per expiring tuple of the store. When it falls due the tuple is
 -- already invisible to the engine and the rows it granted are withdrawn.
 --
 -- FRESHNESS. authz.materialized_refresh_state (one row per registered store,
 -- replicated) carries the cursor and `as_of`: every change performed before
--- as_of is reflected. authz.materialized_permissions_status() on the primary,
+-- as_of is reflected. authz.materialized_relations_status() on the primary,
 -- authz.permissions_as_of(store) on the subscriber. The feed's stability lag
 -- (p_lag, default 1 s; see watch_changes) bounds how soon a change can be
 -- picked up; the oldest open transaction can push the gate further out
 -- (NO ROW IS SKIPPED above).
 --
--- NAMESPACES. Rows of materialized_permissions and materialized_objects carry
+-- KIND. Every row says whether its relation is a permission (can_read: what a
+-- subject may DO) or a relation (member, parent: what it IS), from the
+-- relation's declared kind (MODEL_DESIGN.md, "Relation kinds"; default
+-- relation; infer_relation_kinds(store, true) declares the obvious ones). An
+-- application that only asks "may X do Y?" reads `WHERE is_permission` — or
+-- subscribes with that in its row filter if it wants the rows kept away
+-- entirely. Re-declaring a kind afterwards needs
+-- refresh_all_materialized_relations(store).
+--
+-- NAMESPACES. Rows of materialized_relations and materialized_objects carry
 -- the object type's namespace ('' when it has none), so an application can
 -- subscribe to its own object types only through a row-filtered publication
 -- (setup-publication.sql, authz_derived_<ns>); the derivation itself stays
 -- store-wide — a team in a shared namespace grants access to documents in the
 -- application's — and materialized_subjects / materialized_refresh_state are
 -- published whole (known subjects are a store-wide notion). Changing a type's
--- namespace afterwards needs refresh_all_materialized_permissions(store). The
+-- namespace afterwards needs refresh_all_materialized_relations(store). The
 -- worker's LOGIN role is what the engine's namespace check sees in
 -- list_subjects: grant it authz_namespace_bypass (roles.sql) or read access to
 -- every namespace, otherwise the expansion falls back to every known subject
@@ -144,41 +153,84 @@
 -- (db/security/roles.sql has run) the block at the end transfers ownership
 -- to it; re-running roles.sql does the same. EXECUTE on every function is
 -- revoked from PUBLIC and granted to authz_admin when that role exists; the
--- worker role needs only EXECUTE on refresh_materialized_permissions(). Every
+-- worker role needs only EXECUTE on refresh_materialized_relations(). Every
 -- function pins search_path = pg_catalog, pg_temp.
 
 ------------------------------------------------------------------------
--- The derived permissions table.
+-- Rename from the first version (authz.materialized_permissions, its
+-- partitions, the queue): the table carries relations of both kinds, so
+-- it is named after the generic one. Idempotent; a no-op on a fresh install.
+------------------------------------------------------------------------
+DO $$
+DECLARE
+    r record;
+BEGIN
+    IF to_regclass('authz.materialized_permissions') IS NOT NULL
+       AND to_regclass('authz.materialized_relations') IS NULL THEN
+        ALTER TABLE authz.materialized_permissions RENAME TO materialized_relations;
+        ALTER TABLE authz.materialized_relations RENAME CONSTRAINT materialized_permissions_pkey TO materialized_relations_pkey;
+        FOR r IN SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                  WHERE n.nspname = 'authz' AND c.relname ~ '^materialized_permissions_[0-9]+$' LOOP
+            EXECUTE format('ALTER TABLE authz.%I RENAME TO %I', r.relname,
+                           replace(r.relname, 'materialized_permissions_', 'materialized_relations_'));
+        END LOOP;
+    END IF;
+    -- the name column was `permission`; the table holds both kinds
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'authz' AND table_name = 'materialized_relations' AND column_name = 'permission') THEN
+        ALTER TABLE authz.materialized_relations RENAME COLUMN permission TO relation;
+    END IF;
+    IF to_regclass('authz.permissions_refresh_queue') IS NOT NULL
+       AND to_regclass('authz.materialized_refresh_queue') IS NULL THEN
+        ALTER TABLE authz.permissions_refresh_queue RENAME TO materialized_refresh_queue;
+    END IF;
+END;
+$$;
+DROP FUNCTION IF EXISTS authz.refresh_materialized_permissions(interval, int, timestamptz);
+DROP FUNCTION IF EXISTS authz.refresh_materialized_permissions(interval, int);
+DROP FUNCTION IF EXISTS authz.refresh_all_materialized_permissions(text, interval, timestamptz);
+DROP FUNCTION IF EXISTS authz.refresh_all_materialized_permissions(text, interval);
+DROP FUNCTION IF EXISTS authz.refresh_all_materialized_permissions(text);
+DROP FUNCTION IF EXISTS authz.materialized_permissions_status();
+DROP FUNCTION IF EXISTS authz._refresh_permissions_for_object(integer, integer, text);
+
+------------------------------------------------------------------------
+-- The derived relations table: one row per (subject, relation, object)
+-- the engine would answer yes to — permissions (can_read) and relations
+-- (member, parent) alike, told apart by is_permission.
 -- Hash-partitioned by (store, user_id) for partition pruning on the
 -- primary access pattern: "can user X do Y on Z?"
 ------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS authz.materialized_permissions (
+CREATE TABLE IF NOT EXISTS authz.materialized_relations (
     store         text    NOT NULL,
     user_type     text    NOT NULL,
     user_id       text    NOT NULL,
-    permission    text    NOT NULL,
+    relation    text    NOT NULL,
     object_type   text    NOT NULL,
     object_id     text    NOT NULL,
     namespace     text    NOT NULL DEFAULT '',   -- the object type's namespace ('' = none); in the key so a
                                                  -- publication row filter may name it (replica identity rule)
+    is_permission boolean NOT NULL DEFAULT false, -- the relation's declared kind: true = permission (can_read),
+                                                 -- false = relation (member, parent). boolean, not an enum: a
+                                                 -- user-defined type cannot appear in a publication row filter
     refreshed_at  timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (store, user_id, user_type, permission, object_type, object_id, namespace)
+    PRIMARY KEY (store, user_id, user_type, relation, object_type, object_id, namespace, is_permission)
 ) PARTITION BY HASH (store, user_id);
 
 -- 8 hash partitions (same modulus as the document tuple partitions).
-CREATE TABLE IF NOT EXISTS authz.materialized_permissions_0 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 0);
-CREATE TABLE IF NOT EXISTS authz.materialized_permissions_1 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 1);
-CREATE TABLE IF NOT EXISTS authz.materialized_permissions_2 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 2);
-CREATE TABLE IF NOT EXISTS authz.materialized_permissions_3 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 3);
-CREATE TABLE IF NOT EXISTS authz.materialized_permissions_4 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 4);
-CREATE TABLE IF NOT EXISTS authz.materialized_permissions_5 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 5);
-CREATE TABLE IF NOT EXISTS authz.materialized_permissions_6 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 6);
-CREATE TABLE IF NOT EXISTS authz.materialized_permissions_7 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 7);
+CREATE TABLE IF NOT EXISTS authz.materialized_relations_0 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 0);
+CREATE TABLE IF NOT EXISTS authz.materialized_relations_1 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 1);
+CREATE TABLE IF NOT EXISTS authz.materialized_relations_2 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 2);
+CREATE TABLE IF NOT EXISTS authz.materialized_relations_3 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 3);
+CREATE TABLE IF NOT EXISTS authz.materialized_relations_4 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 4);
+CREATE TABLE IF NOT EXISTS authz.materialized_relations_5 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 5);
+CREATE TABLE IF NOT EXISTS authz.materialized_relations_6 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 6);
+CREATE TABLE IF NOT EXISTS authz.materialized_relations_7 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 7);
 
 ------------------------------------------------------------------------
 -- The side tables of the wildcard contract (see header): every subject
 -- and every object that has at least one tuple in the store. A '*' row
--- in materialized_permissions applies only to entities NOT listed here.
+-- in materialized_relations applies only to entities NOT listed here.
 ------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS authz.materialized_subjects (
     store         text    NOT NULL,
@@ -198,15 +250,19 @@ CREATE TABLE IF NOT EXISTS authz.materialized_objects (
 );
 
 -- Upgrade of tables created before the namespace column: add it to the key.
--- Rows written before carry '' — run refresh_all_materialized_permissions()
+-- Rows written before carry '' — run refresh_all_materialized_relations()
 -- per store afterwards so they get their namespace.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                    WHERE table_schema = 'authz' AND table_name = 'materialized_permissions' AND column_name = 'namespace') THEN
-        ALTER TABLE authz.materialized_permissions ADD COLUMN namespace text NOT NULL DEFAULT '';
-        ALTER TABLE authz.materialized_permissions DROP CONSTRAINT materialized_permissions_pkey;
-        ALTER TABLE authz.materialized_permissions ADD PRIMARY KEY (store, user_id, user_type, permission, object_type, object_id, namespace);
+                    WHERE table_schema = 'authz' AND table_name = 'materialized_relations' AND column_name = 'namespace') THEN
+        ALTER TABLE authz.materialized_relations ADD COLUMN namespace text NOT NULL DEFAULT '';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'authz' AND table_name = 'materialized_relations' AND column_name = 'is_permission') THEN
+        ALTER TABLE authz.materialized_relations ADD COLUMN is_permission boolean NOT NULL DEFAULT false;
+        ALTER TABLE authz.materialized_relations DROP CONSTRAINT materialized_relations_pkey;
+        ALTER TABLE authz.materialized_relations ADD PRIMARY KEY (store, user_id, user_type, relation, object_type, object_id, namespace, is_permission);
     END IF;
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                     WHERE table_schema = 'authz' AND table_name = 'materialized_objects' AND column_name = 'namespace') THEN
@@ -223,7 +279,7 @@ $$;
 -- by the worker when due. Manual whole-object entries (subject columns
 -- NULL) are accepted too and re-derive the object for every subject.
 ------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS authz.permissions_refresh_queue (
+CREATE TABLE IF NOT EXISTS authz.materialized_refresh_queue (
     id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     store_id      integer NOT NULL,
     object_type   integer NOT NULL,
@@ -237,14 +293,14 @@ CREATE TABLE IF NOT EXISTS authz.permissions_refresh_queue (
     due_at        timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 -- Upgrade of a pre-incremental queue (whole-object rows): add the columns.
-ALTER TABLE authz.permissions_refresh_queue
+ALTER TABLE authz.materialized_refresh_queue
     ADD COLUMN IF NOT EXISTS relation      integer,
     ADD COLUMN IF NOT EXISTS user_type     integer,
     ADD COLUMN IF NOT EXISTS user_id       text,
     ADD COLUMN IF NOT EXISTS user_relation integer,
     ADD COLUMN IF NOT EXISTS op            text,
     ADD COLUMN IF NOT EXISTS due_at        timestamptz NOT NULL DEFAULT clock_timestamp();
-CREATE INDEX IF NOT EXISTS idx_permissions_refresh_queue_due ON authz.permissions_refresh_queue (due_at);
+CREATE INDEX IF NOT EXISTS idx_materialized_refresh_queue_due ON authz.materialized_refresh_queue (due_at);
 
 ------------------------------------------------------------------------
 -- Per-store cursor and freshness. Replicated with the permissions, so
@@ -282,22 +338,26 @@ CREATE OR REPLACE FUNCTION authz._mp_prepare_pairs()
 RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
-    CREATE TEMP TABLE IF NOT EXISTS _mp_pairs (
+    -- Dropped and recreated every run, not IF NOT EXISTS + TRUNCATE: a
+    -- long-lived worker session would otherwise keep a work table in the
+    -- shape of the code it was created by, and a reload that adds a column
+    -- would fail with "INSERT has more expressions than target columns".
+    DROP TABLE IF EXISTS _mp_pairs, _mp_claimed, _mp_written, _mp_objects, _mp_subjects, _mp_want,
+                         _mp_known, _mp_known_built, _mp_principal, _mp_subject_types, _mp_expanded,
+                         _mp_ref_subjects, _mp_closure, _mp_frontier, _mp_next, _mp_feed, _mp_page;
+    CREATE TEMP TABLE _mp_pairs (
         store_id    integer NOT NULL,
         object_type integer NOT NULL,
         object_id   text    NOT NULL,
         user_type   integer NOT NULL,
         user_id     text    NOT NULL,
         PRIMARY KEY (store_id, object_type, object_id, user_type, user_id));
-    TRUNCATE _mp_pairs;
-    CREATE TEMP TABLE IF NOT EXISTS _mp_claimed (
+    CREATE TEMP TABLE _mp_claimed (
         id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
         store_id      integer, object_type integer, object_id text, relation integer,
         user_type     integer, user_id text, user_relation integer, op text);
-    CREATE INDEX IF NOT EXISTS _mp_claimed_user ON _mp_claimed (store_id, user_type, user_id);
-    TRUNCATE _mp_claimed RESTART IDENTITY;
-    CREATE TEMP TABLE IF NOT EXISTS _mp_written (store text, n integer);
-    TRUNCATE _mp_written;
+    CREATE INDEX _mp_claimed_user ON _mp_claimed (store_id, user_type, user_id);
+    CREATE TEMP TABLE _mp_written (store text, n integer);
 END;
 $$;
 
@@ -377,7 +437,7 @@ BEGIN
     INSERT INTO _mp_pairs (store_id, object_type, object_id, user_type, user_id)
     SELECT DISTINCT su.store_id, ot.id, mp.object_id, su.user_type, su.user_id
       FROM _mp_subjects su
-      JOIN authz.materialized_permissions mp
+      JOIN authz.materialized_relations mp
         ON mp.store = su.store AND mp.user_type = su.type_name AND mp.user_id = '*'
       JOIN authz.types ot ON ot.store_id = su.store_id AND ot.name = mp.object_type
      WHERE su.has_tuples AND su.user_id <> '*'
@@ -388,7 +448,7 @@ BEGIN
     INSERT INTO _mp_pairs (store_id, object_type, object_id, user_type, user_id)
     SELECT DISTINCT o.store_id, o.object_type, o.object_id, ut.id, mp.user_id
       FROM _mp_objects o
-      JOIN authz.materialized_permissions mp
+      JOIN authz.materialized_relations mp
         ON mp.store = o.store AND mp.object_type = o.type_name AND mp.object_id = '*'
       JOIN authz.types ut ON ut.store_id = o.store_id AND ut.name = mp.user_type
      WHERE o.has_tuples AND o.object_id <> '*'
@@ -417,7 +477,7 @@ BEGIN
 
     -- 3. objects without tuples
     WITH d AS (
-        DELETE FROM authz.materialized_permissions mp
+        DELETE FROM authz.materialized_relations mp
          USING _mp_objects o
          WHERE NOT o.has_tuples
            AND mp.store = o.store AND mp.object_type = o.type_name AND mp.object_id = o.object_id
@@ -447,7 +507,7 @@ BEGIN
 
     -- 4. subjects without tuples
     WITH d AS (
-        DELETE FROM authz.materialized_permissions mp
+        DELETE FROM authz.materialized_relations mp
          USING _mp_subjects su
          WHERE NOT su.has_tuples
            AND mp.store = su.store AND mp.user_type = su.type_name AND mp.user_id = su.user_id
@@ -473,11 +533,12 @@ BEGIN
 
     -- 5. decide and diff
     CREATE TEMP TABLE IF NOT EXISTS _mp_want (
-        store text, user_type text, user_id text, permission text,
-        object_type text, object_id text, namespace text, allowed boolean);
+        store text, user_type text, user_id text, relation text,
+        object_type text, object_id text, namespace text, is_permission boolean, allowed boolean);
     TRUNCATE _mp_want;
     INSERT INTO _mp_want
     SELECT o.store, su.type_name, p.user_id, r.name, o.type_name, p.object_id, o.namespace,
+           COALESCE(r.metadata->>'kind', 'relation') = 'permission',
            authz._decide(p.store_id, p.user_type, p.user_id, r.id, p.object_type, p.object_id,
                          NULL, false, '[]'::jsonb)
       FROM _mp_pairs p
@@ -488,7 +549,7 @@ BEGIN
       JOIN authz.relations r ON r.id = m.relation;
 
     WITH d AS (
-        DELETE FROM authz.materialized_permissions mp
+        DELETE FROM authz.materialized_relations mp
          USING _mp_pairs p
           JOIN _mp_objects  o  ON o.store_id = p.store_id AND o.object_type = p.object_type AND o.object_id = p.object_id
           JOIN _mp_subjects su ON su.store_id = p.store_id AND su.user_type = p.user_type AND su.user_id = p.user_id
@@ -498,14 +559,15 @@ BEGIN
                             WHERE w.allowed
                               AND w.store = mp.store AND w.user_type = mp.user_type AND w.user_id = mp.user_id
                               AND w.object_type = mp.object_type AND w.object_id = mp.object_id
-                              AND w.permission = mp.permission
-                              AND w.namespace = mp.namespace)   -- a row under the type's old namespace is stale too
+                              AND w.relation = mp.relation
+                              AND w.namespace = mp.namespace          -- a row under the type's old namespace is stale too,
+                              AND w.is_permission = mp.is_permission) -- as is one under the relation's old kind
         RETURNING mp.store)
     INSERT INTO _mp_written SELECT d.store, count(*) FROM d GROUP BY d.store;
 
     WITH i AS (
-        INSERT INTO authz.materialized_permissions (store, user_type, user_id, permission, object_type, object_id, namespace)
-        SELECT w.store, w.user_type, w.user_id, w.permission, w.object_type, w.object_id, w.namespace
+        INSERT INTO authz.materialized_relations (store, user_type, user_id, relation, object_type, object_id, namespace, is_permission)
+        SELECT w.store, w.user_type, w.user_id, w.relation, w.object_type, w.object_id, w.namespace, w.is_permission
           FROM _mp_want w WHERE w.allowed
         ON CONFLICT DO NOTHING
         RETURNING store)
@@ -761,7 +823,7 @@ END;
 $$;
 
 ------------------------------------------------------------------------
--- refresh_materialized_permissions: the worker. For every registered
+-- refresh_materialized_relations: the worker. For every registered
 -- store, pull one page of authz.watch_changes after the stored cursor
 -- (p_limit rows, before the run's fixed cutoff = watch_safe_until(p_lag),
 -- or p_until when given), file deferred deltas for inserted tuples that expire,
@@ -777,8 +839,8 @@ $$;
 -- the page is replayed. One worker is the intended deployment: two workers
 -- would pull the same page (a wasted but harmless double derivation).
 ------------------------------------------------------------------------
-DROP FUNCTION IF EXISTS authz.refresh_materialized_permissions(interval, int);  -- pre-cutoff signature
-CREATE OR REPLACE FUNCTION authz.refresh_materialized_permissions(
+DROP FUNCTION IF EXISTS authz.refresh_materialized_relations(interval, int);  -- pre-cutoff signature (same name)
+CREATE OR REPLACE FUNCTION authz.refresh_materialized_relations(
     p_lag   interval    DEFAULT '1 second',
     p_limit int         DEFAULT 1000,
     p_until timestamptz DEFAULT NULL      -- override the cutoff (tests, controlled replays); forfeits the guarantee
@@ -799,7 +861,7 @@ DECLARE
     v_retired    text[] := '{}';
     v_store      text;
 BEGIN
-    PERFORM authz._mp_require_read_committed('refresh_materialized_permissions');
+    PERFORM authz._mp_require_read_committed('refresh_materialized_relations');
     PERFORM authz._mp_prepare_pairs();
     CREATE TEMP TABLE IF NOT EXISTS _mp_feed (
         store text, store_id integer, changes integer,
@@ -853,7 +915,7 @@ BEGIN
         -- inserted tuples that will expire: file the deferred delta.
         -- statement_timestamp(), like the RLS expiry policy: every tuple the
         -- derivation below can see is filed.
-        INSERT INTO authz.permissions_refresh_queue
+        INSERT INTO authz.materialized_refresh_queue
             (store_id, object_type, object_id, relation, user_type, user_id, user_relation, op, due_at)
         SELECT DISTINCT t.store_id, t.object_type, t.object_id, t.relation, t.user_type, t.user_id, t.user_relation,
                'EXPIRE', t.expires_at
@@ -865,7 +927,7 @@ BEGIN
          WHERE c.store_id = v_state.store_id
            AND c.op IN ('INSERT', 'UPDATE')
            AND t.expires_at IS NOT NULL AND t.expires_at > statement_timestamp()
-           AND NOT EXISTS (SELECT 1 FROM authz.permissions_refresh_queue q
+           AND NOT EXISTS (SELECT 1 FROM authz.materialized_refresh_queue q
                             WHERE q.op = 'EXPIRE' AND q.due_at = t.expires_at
                               AND q.store_id = t.store_id AND q.object_type = t.object_type
                               AND q.object_id = t.object_id AND q.relation = t.relation
@@ -880,8 +942,8 @@ BEGIN
 
     -- deferred deltas that fell due (expiries, manual entries)
     WITH claimed AS (
-        DELETE FROM authz.permissions_refresh_queue
-         WHERE id IN (SELECT id FROM authz.permissions_refresh_queue
+        DELETE FROM authz.materialized_refresh_queue
+         WHERE id IN (SELECT id FROM authz.materialized_refresh_queue
                        WHERE due_at <= statement_timestamp()
                        FOR UPDATE SKIP LOCKED)
          RETURNING store_id, object_type, object_id, relation, user_type, user_id, user_relation, op)
@@ -916,16 +978,16 @@ BEGIN
 
     -- retired stores: drop everything derived, deregister
     FOREACH v_store IN ARRAY v_retired LOOP
-        DELETE FROM authz.materialized_permissions   WHERE store = v_store;
+        DELETE FROM authz.materialized_relations   WHERE store = v_store;
         DELETE FROM authz.materialized_subjects      WHERE store = v_store;
         DELETE FROM authz.materialized_objects       WHERE store = v_store;
-        DELETE FROM authz.permissions_refresh_queue q WHERE q.store_id IN (SELECT st.id FROM authz.stores st WHERE st.name = v_store);
+        DELETE FROM authz.materialized_refresh_queue q WHERE q.store_id IN (SELECT st.id FROM authz.stores st WHERE st.name = v_store);
         DELETE FROM authz.materialized_refresh_state WHERE store = v_store;
     END LOOP;
 
     -- structural change: rebuild (its cursor is this run's cutoff)
     FOREACH v_store IN ARRAY v_rebuild LOOP
-        PERFORM authz.refresh_all_materialized_permissions(v_store, p_lag, v_cutoff);
+        PERFORM authz.refresh_all_materialized_relations(v_store, p_lag, v_cutoff);
     END LOOP;
 
     RETURN v_pairs;
@@ -936,7 +998,7 @@ $$;
 -- Whole-object re-derivation (every known subject × this object).
 -- Kept for manual repair; the worker computes finer pairs itself.
 ------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION authz._refresh_permissions_for_object(
+CREATE OR REPLACE FUNCTION authz._refresh_relations_for_object(
     p_store_id    integer,
     p_object_type integer,
     p_object_id   text
@@ -957,7 +1019,7 @@ END;
 $$;
 
 ------------------------------------------------------------------------
--- refresh_all_materialized_permissions: register a store for incremental
+-- refresh_all_materialized_relations: register a store for incremental
 -- refresh (or rebuild it): clear its derived rows, take the cursor at the
 -- safe cutoff (watch_safe_until(p_lag): the stability lag before now, or
 -- the oldest open transaction, whichever is earlier — never later than this
@@ -966,9 +1028,9 @@ $$;
 -- store, file a deferred delta for every expiring tuple. Returns the rows
 -- written.
 ------------------------------------------------------------------------
-DROP FUNCTION IF EXISTS authz.refresh_all_materialized_permissions(text);            -- pre-changefeed signature
-DROP FUNCTION IF EXISTS authz.refresh_all_materialized_permissions(text, interval);  -- pre-cutoff signature
-CREATE OR REPLACE FUNCTION authz.refresh_all_materialized_permissions(
+DROP FUNCTION IF EXISTS authz.refresh_all_materialized_relations(text);            -- pre-changefeed signature
+DROP FUNCTION IF EXISTS authz.refresh_all_materialized_relations(text, interval);  -- pre-cutoff signature
+CREATE OR REPLACE FUNCTION authz.refresh_all_materialized_relations(
     p_store text,
     p_lag   interval    DEFAULT '1 second',
     p_until timestamptz DEFAULT NULL      -- override the cutoff (tests, controlled replays); forfeits the guarantee
@@ -981,11 +1043,11 @@ DECLARE
     v_gate      interval := v_started - v_cursor_at;
     v_pairs     integer; v_written integer;
 BEGIN
-    PERFORM authz._mp_require_read_committed('refresh_all_materialized_permissions');
-    DELETE FROM authz.materialized_permissions WHERE store = p_store;
+    PERFORM authz._mp_require_read_committed('refresh_all_materialized_relations');
+    DELETE FROM authz.materialized_relations WHERE store = p_store;
     DELETE FROM authz.materialized_subjects    WHERE store = p_store;
     DELETE FROM authz.materialized_objects     WHERE store = p_store;
-    DELETE FROM authz.permissions_refresh_queue WHERE store_id = v_store_id;
+    DELETE FROM authz.materialized_refresh_queue WHERE store_id = v_store_id;
 
     -- the snapshot is the blast radius of every tuple of the store, taken
     -- as an insert: every (subject, object) pair a grant can reach, and
@@ -997,7 +1059,7 @@ BEGIN
     PERFORM authz._mp_blast_radius();
     SELECT d.pairs, d.rows_written INTO v_pairs, v_written FROM authz._derive_pairs() d;
 
-    INSERT INTO authz.permissions_refresh_queue
+    INSERT INTO authz.materialized_refresh_queue
         (store_id, object_type, object_id, relation, user_type, user_id, user_relation, op, due_at)
     SELECT t.store_id, t.object_type, t.object_id, t.relation, t.user_type, t.user_id, t.user_relation,
            'EXPIRE', t.expires_at
@@ -1021,8 +1083,8 @@ $$;
 ------------------------------------------------------------------------
 -- Status on the primary, one row per registered store.
 ------------------------------------------------------------------------
-DROP FUNCTION IF EXISTS authz.materialized_permissions_status();  -- return type changed
-CREATE FUNCTION authz.materialized_permissions_status()
+DROP FUNCTION IF EXISTS authz.materialized_relations_status();  -- return type changed
+CREATE FUNCTION authz.materialized_relations_status()
 RETURNS TABLE (
     store                 text,
     as_of                 timestamptz,  -- every change performed before this is reflected
@@ -1040,9 +1102,9 @@ RETURNS TABLE (
 )
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
     SELECT s.store, s.as_of, statement_timestamp() - s.as_of, s.feed_drained,
-           (SELECT count(*) FROM authz.permissions_refresh_queue q
+           (SELECT count(*) FROM authz.materialized_refresh_queue q
              WHERE q.store_id = st.id AND q.due_at <= statement_timestamp()),
-           (SELECT count(*) FROM authz.permissions_refresh_queue q
+           (SELECT count(*) FROM authz.materialized_refresh_queue q
              WHERE q.store_id = st.id AND q.due_at >  statement_timestamp()),
            s.last_run_started_at, s.last_run_finished_at,
            s.last_run_changes, s.last_run_pairs, s.last_run_rows_written, s.last_run_gate,
@@ -1058,7 +1120,7 @@ $$;
 DROP TRIGGER  IF EXISTS trg_queue_permissions_refresh ON authz.tuples;
 DROP FUNCTION IF EXISTS authz._queue_permissions_refresh();
 DROP FUNCTION IF EXISTS authz._sweep_materialized_subjects(integer);
-DROP FUNCTION IF EXISTS authz.process_permissions_refresh_queue();
+DROP FUNCTION IF EXISTS authz.process_materialized_refresh_queue();
 
 ------------------------------------------------------------------------
 -- Ownership: when roles.sql has created authz_owner, the definer
@@ -1077,7 +1139,7 @@ BEGIN
               JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
              WHERE n.nspname = 'authz'
                AND c.relkind IN ('r', 'p')
-               AND (c.relname LIKE 'materialized\_%' OR c.relname = 'permissions_refresh_queue')
+               AND (c.relname LIKE 'materialized\_%' OR c.relname = 'materialized_refresh_queue')
         LOOP
             EXECUTE format('ALTER TABLE %s OWNER TO authz_owner', r.obj);
         END LOOP;
@@ -1086,10 +1148,10 @@ BEGIN
         ALTER FUNCTION authz._mp_blast_radius()                                       OWNER TO authz_owner;
         ALTER FUNCTION authz._mp_ensure_known(integer)                                OWNER TO authz_owner;
         ALTER FUNCTION authz._derive_pairs()                                          OWNER TO authz_owner;
-        ALTER FUNCTION authz._refresh_permissions_for_object(integer, integer, text) OWNER TO authz_owner;
-        ALTER FUNCTION authz.refresh_materialized_permissions(interval, int, timestamptz)      OWNER TO authz_owner;
-        ALTER FUNCTION authz.refresh_all_materialized_permissions(text, interval, timestamptz) OWNER TO authz_owner;
-        ALTER FUNCTION authz.materialized_permissions_status()                       OWNER TO authz_owner;
+        ALTER FUNCTION authz._refresh_relations_for_object(integer, integer, text) OWNER TO authz_owner;
+        ALTER FUNCTION authz.refresh_materialized_relations(interval, int, timestamptz)      OWNER TO authz_owner;
+        ALTER FUNCTION authz.refresh_all_materialized_relations(text, interval, timestamptz) OWNER TO authz_owner;
+        ALTER FUNCTION authz.materialized_relations_status()                       OWNER TO authz_owner;
     END IF;
 END;
 $$;
@@ -1099,23 +1161,23 @@ $$;
 -- PostgreSQL grants EXECUTE to PUBLIC on creation; take it back from every
 -- function here and hand the three public ones to authz_admin when that
 -- role exists (roles.sql). The worker role needs EXECUTE on
--- refresh_materialized_permissions only.
+-- refresh_materialized_relations only.
 ------------------------------------------------------------------------
 REVOKE ALL ON FUNCTION authz._mp_prepare_pairs()                                      FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._mp_require_read_committed(text)                         FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._mp_blast_radius()                                       FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._mp_ensure_known(integer)                                FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._derive_pairs()                                          FROM PUBLIC;
-REVOKE ALL ON FUNCTION authz._refresh_permissions_for_object(integer, integer, text) FROM PUBLIC;
-REVOKE ALL ON FUNCTION authz.refresh_materialized_permissions(interval, int, timestamptz)      FROM PUBLIC;
-REVOKE ALL ON FUNCTION authz.refresh_all_materialized_permissions(text, interval, timestamptz) FROM PUBLIC;
-REVOKE ALL ON FUNCTION authz.materialized_permissions_status()                       FROM PUBLIC;
+REVOKE ALL ON FUNCTION authz._refresh_relations_for_object(integer, integer, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION authz.refresh_materialized_relations(interval, int, timestamptz)      FROM PUBLIC;
+REVOKE ALL ON FUNCTION authz.refresh_all_materialized_relations(text, interval, timestamptz) FROM PUBLIC;
+REVOKE ALL ON FUNCTION authz.materialized_relations_status()                       FROM PUBLIC;
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authz_admin') THEN
-        GRANT EXECUTE ON FUNCTION authz.refresh_materialized_permissions(interval, int, timestamptz)      TO authz_admin;
-        GRANT EXECUTE ON FUNCTION authz.refresh_all_materialized_permissions(text, interval, timestamptz) TO authz_admin;
-        GRANT EXECUTE ON FUNCTION authz.materialized_permissions_status()                    TO authz_admin;
+        GRANT EXECUTE ON FUNCTION authz.refresh_materialized_relations(interval, int, timestamptz)      TO authz_admin;
+        GRANT EXECUTE ON FUNCTION authz.refresh_all_materialized_relations(text, interval, timestamptz) TO authz_admin;
+        GRANT EXECUTE ON FUNCTION authz.materialized_relations_status()                    TO authz_admin;
     END IF;
 END;
 $$;

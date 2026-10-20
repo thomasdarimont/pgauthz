@@ -392,7 +392,7 @@ selective subsets of authorization data:
 authz-primary (wal_level=logical)
   ├── Publication: authz_metadata (stores, types, relations, models)
   ├── Publication: authz_accounting (selective tuple partitions)
-  └── Publication: authz_derived (materialized_permissions)
+  └── Publication: authz_derived (materialized_relations)
 ```
 
 Key configuration parameters:
@@ -651,7 +651,7 @@ SELECT authz.model_add_rule('demo', 'invoice', 'can_approve', 'ttu',
 publication on the primary and the partition structure must be created
 on each subscriber before it can receive tuples. For derived
 permissions (approach 2), no subscriber changes are needed — new
-permissions flow through `materialized_permissions` automatically.
+permissions flow through `materialized_relations` automatically.
 
 #### Adding a new relation to an existing object type
 
@@ -674,7 +674,7 @@ If the new relation is computed from existing relations (like the
 example above), it works immediately without writing any new tuples.
 
 **Impact on derived permissions:** if using materialized permissions,
-run `refresh_all_materialized_permissions()` to compute the new
+run `refresh_all_materialized_relations()` to compute the new
 relation for all existing objects. Incremental changes after that
 are handled by the trigger/queue mechanism automatically.
 
@@ -702,7 +702,7 @@ SELECT * FROM authz.cleanup_redundant_tuples('demo', 'document', 'can_archive',
 find model rules for the removed relation and will return false.
 
 **Impact on derived permissions:** if using materialized permissions,
-run `refresh_all_materialized_permissions()` to remove the now-denied
+run `refresh_all_materialized_relations()` to remove the now-denied
 permissions from the lookup table. Or wait for the trigger/queue
 mechanism to process affected objects as the tuples are deleted.
 
@@ -754,7 +754,7 @@ cleaned up to keep the model understandable.
 
 **Impact on replication subscribers:** for full replicas, the partition
 must be dropped on each subscriber as well. For derived permissions,
-run `refresh_all_materialized_permissions()` after deletion to clean
+run `refresh_all_materialized_relations()` after deletion to clean
 up any stale entries.
 
 ## Integration patterns for application databases
@@ -786,8 +786,10 @@ authz-primary (wal_level=logical)
 
 ### Approach 2: Derived permissions (recommended for most apps)
 
-The central authz database maintains a `materialized_permissions` table —
-a flat, denormalized lookup table — plus two small side tables,
+The central authz database maintains a `materialized_relations` table —
+a flat, denormalized lookup table of every (subject, relation, object) the
+engine answers yes to, permissions and structural relations alike — plus
+two small side tables,
 `materialized_subjects` and `materialized_objects`, that list the subjects
 and objects the engine knows (= have at least one tuple), and one
 freshness row per store, `materialized_refresh_state`. Applications
@@ -799,9 +801,9 @@ max_staleness)`. No authz schema, functions, or model knowledge needed.
 ```
 authz-primary
   ├── tuples (source of truth) ── audit log ── watch_changes (changefeed)
-  ├── refresh_materialized_permissions(): worker, resumes from a stored cursor,
+  ├── refresh_materialized_relations(): worker, resumes from a stored cursor,
   │     re-derives only the affected subject × object pairs via _decide
-  └── Publication: materialized_permissions + subjects/objects + refresh_state
+  └── Publication: materialized_relations + subjects/objects + refresh_state
         │
         └──▶ app-db (subscriber)
                ├── the tables (replicated)
@@ -852,12 +854,12 @@ exact at the moment of the request stay on the live `check_access`. This
 is the same shape as Auth0 FGA's hosted *Permissions Index*, which excludes
 conditions and contextual tuples for the same reason.
 
-**Install and ownership.** Load `materialized_permissions.sql` after the
+**Install and ownership.** Load `materialized_relations.sql` after the
 engine (full profile: it reads the audit changefeed); the functions are
 `SECURITY DEFINER` (the engine's per-session memo table must be created
 under one role), and the script transfers them to `authz_owner` when
 `roles.sql` has run. The worker role needs only `EXECUTE` on
-`refresh_materialized_permissions()`.
+`refresh_materialized_relations()`.
 
 ### One application, one namespace
 
@@ -865,13 +867,13 @@ An application rarely wants the whole store's permissions, only those of
 the object types it manages — its namespace. The derivation stays
 store-wide (a team in a shared namespace grants access to documents in the
 application's), but the *subscription* narrows: rows of
-`materialized_permissions` and `materialized_objects` carry the object
+`materialized_relations` and `materialized_objects` carry the object
 type's namespace, as part of their primary key so a publication row filter
 may name it, and each application gets its own publication:
 
 ```sql
 CREATE PUBLICATION authz_derived_dms FOR TABLE
-    authz.materialized_permissions WHERE (store = 'demo' AND namespace = 'dms'),
+    authz.materialized_relations WHERE (store = 'demo' AND namespace = 'dms'),
     authz.materialized_objects     WHERE (store = 'demo' AND namespace = 'dms'),
     authz.materialized_subjects,          -- store-wide: "known subject" is a store-wide notion
     authz.materialized_refresh_state      -- per store: as_of / permissions_fresh()
@@ -881,7 +883,17 @@ CREATE PUBLICATION authz_derived_dms FOR TABLE
 The subscriber uses the same minimal schema and helpers; it simply has no
 rows for the other object types. Adding a type to the namespace needs no
 change to the publication; moving a type between namespaces needs
-`refresh_all_materialized_permissions(store)`. The worker's login role is
+`refresh_all_materialized_relations(store)`. Rows also carry
+`is_permission`, the relation's declared kind ([MODEL_DESIGN.md → Relation
+kinds](MODEL_DESIGN.md#relation-kinds-what-a-subject-is-versus-what-it-can-do)),
+because the table holds both: what a subject may *do* (`can_read`) and what
+it *is* (`member`, `parent`, `owner`, a third to a half of the rows in the
+fixtures). An application that only asks "may X do Y?" reads
+`WHERE is_permission`; one that wants those rows kept off the wire adds
+`AND is_permission` to its publication filter, which is why the flag is in
+the key — and a boolean, not an enum, because a row filter may not
+reference a user-defined type. Re-declaring a kind needs `refresh_all` like
+a namespace move. The worker's login role is
 what the engine's namespace check sees inside `list_subjects`: grant it
 `authz_namespace_bypass` or read access to every namespace, or the
 expansion falls back to every known subject (correct, slow). Two things it
@@ -897,12 +909,12 @@ rows after the snapshot and after every random batch.
 
 The source of change is the audit changefeed
 ([AUDIT.md → Watching for changes](AUDIT.md#watching-for-changes-changefeed)).
-`refresh_all_materialized_permissions(store)` takes the initial snapshot —
+`refresh_all_materialized_relations(store)` takes the initial snapshot —
 the blast radius of every tuple of the store, so its cost is linear in the
 grants, not objects × subjects — and registers the store with a
 `(performed_at, seq)` cursor from just before it; nothing on the write path
 changes (no trigger on `authz.tuples`). On each run,
-`refresh_materialized_permissions()`:
+`refresh_materialized_relations()`:
 
 1. captures one absolute, exclusive cutoff for the run —
    `watch_safe_until(lag)`: now minus the stability lag (1 s by default),
@@ -967,9 +979,9 @@ Every known subject is re-derived only where the contract demands it: a
 subject-wildcard grant (`user:*` on an object) makes every known user's rows
 on that object authoritative — 50 k pairs, ~100 s per public document at
 that scale — so a store that makes documents public one by one is not a
-good fit. `materialized_permissions_status()`
+good fit. `materialized_relations_status()`
 shows the backlog, `as_of` and the last run per store. Run the worker:
-- **Explicitly:** `SELECT authz.refresh_materialized_permissions()` (again
+- **Explicitly:** `SELECT authz.refresh_materialized_relations()` (again
   while any store's `feed_drained` is false)
 - **Periodically:** via pg_cron (`SELECT cron.schedule(...)`)
 - **Event-driven:** on `LISTEN authz_changes`, the audit log's doorbell
@@ -985,10 +997,10 @@ are not pair-shaped: a page carrying `TYPE_REMOVED`, or tuple deltas whose
 type no longer resolves, makes the worker rebuild that store in the same
 run; `STORE_RETIRED` drops the store from the derived tables. Model changes
 (rules, type restrictions) are not in the tuple feed at all — run
-`refresh_all_materialized_permissions(store)` after applying one. Every
+`refresh_all_materialized_relations(store)` after applying one. Every
 function is `SECURITY DEFINER` with `search_path` pinned; `EXECUTE` is
 revoked from `PUBLIC` and granted to `authz_admin`, and the worker role
-needs it on `refresh_materialized_permissions` only.
+needs it on `refresh_materialized_relations` only.
 
 ### Choosing between the approaches
 
@@ -1024,14 +1036,14 @@ concrete row per document the engine knows and one literal `*` row:
 
 ```sql
 -- On the app database (subscriber):
-SELECT permission, object_id FROM authz.materialized_permissions
+SELECT relation, object_id FROM authz.materialized_relations
  WHERE store = 'demo' AND user_id = 'nadia_auditor' AND object_type = 'document';
 --  can_read | *             ← stands in for every document the engine never saw
 --  can_read | doc_acc_001
 --  can_read | doc_acc_002   …
 
 -- A document created a second ago has no tuples. A naive lookup is wrong:
-SELECT EXISTS (SELECT 1 FROM authz.materialized_permissions
+SELECT EXISTS (SELECT 1 FROM authz.materialized_relations
                 WHERE store = 'demo' AND user_id = 'nadia_auditor'
                   AND permission = 'can_read' AND object_id = 'doc_brand_new');
 -- => false   (the primary's check_access says true)

@@ -12,29 +12,30 @@
 
 CREATE SCHEMA IF NOT EXISTS authz;
 
-CREATE TABLE IF NOT EXISTS authz.materialized_permissions (
+CREATE TABLE IF NOT EXISTS authz.materialized_relations (
     store         text    NOT NULL,
     user_type     text    NOT NULL,
     user_id       text    NOT NULL,
-    permission    text    NOT NULL,
+    relation    text    NOT NULL,
     object_type   text    NOT NULL,
     object_id     text    NOT NULL,
     namespace     text    NOT NULL DEFAULT '',   -- the object type's namespace; lets a publication row filter select it
+    is_permission boolean NOT NULL DEFAULT false, -- true: a permission (can_read), false: a relation (member, parent)
     refreshed_at  timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (store, user_id, user_type, permission, object_type, object_id, namespace)
+    PRIMARY KEY (store, user_id, user_type, relation, object_type, object_id, namespace, is_permission)
 ) PARTITION BY HASH (store, user_id);
 
-CREATE TABLE authz.materialized_permissions_0 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 0);
-CREATE TABLE authz.materialized_permissions_1 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 1);
-CREATE TABLE authz.materialized_permissions_2 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 2);
-CREATE TABLE authz.materialized_permissions_3 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 3);
-CREATE TABLE authz.materialized_permissions_4 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 4);
-CREATE TABLE authz.materialized_permissions_5 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 5);
-CREATE TABLE authz.materialized_permissions_6 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 6);
-CREATE TABLE authz.materialized_permissions_7 PARTITION OF authz.materialized_permissions FOR VALUES WITH (MODULUS 8, REMAINDER 7);
+CREATE TABLE authz.materialized_relations_0 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 0);
+CREATE TABLE authz.materialized_relations_1 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 1);
+CREATE TABLE authz.materialized_relations_2 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 2);
+CREATE TABLE authz.materialized_relations_3 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 3);
+CREATE TABLE authz.materialized_relations_4 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 4);
+CREATE TABLE authz.materialized_relations_5 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 5);
+CREATE TABLE authz.materialized_relations_6 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 6);
+CREATE TABLE authz.materialized_relations_7 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 7);
 
 -- The subjects and objects the engine knows (= have at least one tuple).
--- A '*' row in materialized_permissions applies only to entities that are
+-- A '*' row in materialized_relations applies only to entities that are
 -- NOT listed here: a known subject or object has authoritative concrete
 -- rows (exclusions already applied); an unknown one has nothing that could
 -- narrow the wildcard.
@@ -89,7 +90,7 @@ LANGUAGE sql STABLE AS $$
                        FROM authz.materialized_refresh_state WHERE store = p_store), false);
 $$;
 
--- The wildcard contract (see materialized_permissions.sql on the primary):
+-- The wildcard contract (see materialized_relations.sql on the primary):
 --
 --   subject keys = {user_id}   ∪ {'*' if the subject is unknown}
 --   object keys  = {object_id} ∪ {'*' if the object is unknown}
@@ -109,10 +110,10 @@ CREATE OR REPLACE FUNCTION authz.check_permission(
 ) RETURNS boolean
 LANGUAGE sql STABLE AS $$
     SELECT EXISTS(
-        SELECT 1 FROM authz.materialized_permissions p
+        SELECT 1 FROM authz.materialized_relations p
          WHERE p.store       = p_store
            AND p.user_type   = p_user_type
-           AND p.permission  = p_permission
+           AND p.relation  = p_permission
            AND p.object_type = p_object_type
            AND (p.user_id = p_user_id
                 OR (p.user_id = '*' AND NOT EXISTS (

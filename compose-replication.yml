@@ -8,7 +8,7 @@
 #    Trade-off: must deploy authz schema to the app DB.
 #
 # 2. Derived permissions (accounting-app-derived-db):
-#    Receives only a flat materialized_permissions lookup table.
+#    Receives only a flat materialized_relations lookup table.
 #    No authz schema or functions needed — just a simple EXISTS query.
 #    Trade-off: permissions are pre-computed, slight lag on changes.
 #

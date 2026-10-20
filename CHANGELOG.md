@@ -10,7 +10,7 @@ pre-1.0, minor versions may include breaking changes.
 ### Added
 
 - **Derived permissions for one application's namespace.** Rows of
-  `authz.materialized_permissions` and `authz.materialized_objects` carry the
+  `authz.materialized_relations` and `authz.materialized_objects` carry the
   object type's namespace (in the primary key, so a publication row filter may
   name it); an application subscribes to its own object types through a
   row-filtered publication — `authz_derived_<ns>` with `WHERE (store = …
@@ -22,7 +22,21 @@ pre-1.0, minor versions may include breaking changes.
   tables are upgraded in place (column + key); run `refresh_all` per store
   afterwards. The worker's login role needs `authz_namespace_bypass` or
   namespace read grants for the `list_subjects` expansion once types carry
-  namespaces (the demo grants it).
+  namespaces (the demo grants it). Rows also carry `is_permission`, the
+  relation's declared kind: the table holds permissions (`can_read`) and
+  structural relations (`member`, `parent`, `owner`) alike, and an
+  application that only asks "may X do Y?" reads `WHERE is_permission` — or
+  filters its publication on it, which is why the flag is in the key (a
+  boolean rather than an enum: row filters cannot reference user-defined
+  types). **Renamed** for the same reason: `authz.materialized_permissions`
+  → `authz.materialized_relations` (partitions too), `permissions_refresh_queue`
+  → `materialized_refresh_queue`, `refresh_materialized_permissions` /
+  `refresh_all_materialized_permissions` / `materialized_permissions_status`
+  → `…_relations…`, the name column `permission` → `relation`, and the script
+  `db/replication/materialized_relations.sql`.
+  Existing installs are renamed in place by the script; the subscriber
+  helpers (`check_permission`, `permissions_as_of`, `permissions_fresh`) keep
+  their question-shaped names.
 
 - **Management console (proof of concept, `console/`).** A Lit + Go BFF web
   UI for the people who run pgauthz: per store, the live model in three
@@ -297,8 +311,8 @@ pre-1.0, minor versions may include breaking changes.
   not MVCC, while the feed is read through the transaction's snapshot. Under
   `REPEATABLE READ` or `SERIALIZABLE` a transaction that committed between
   the snapshot and the cutoff capture is invisible yet no longer open, so
-  its rows would be skipped for good. `refresh_materialized_permissions` and
-  `refresh_all_materialized_permissions` now raise `invalid_transaction_state`
+  its rows would be skipped for good. `refresh_materialized_relations` and
+  `refresh_all_materialized_relations` now raise `invalid_transaction_state`
   in any isolation level other than `READ COMMITTED`, where every query
   inside these `VOLATILE` functions takes a fresh snapshot after the capture.
   Regression tests for both entry points.
@@ -321,7 +335,7 @@ pre-1.0, minor versions may include breaking changes.
   replaces `p_lag` when set) and the engine gains `watch_safe_until(lag)`:
   now minus the lag, capped at the start of the oldest transaction open on
   the database, the caller's own included. The worker captures it once per
-  run; `refresh_materialized_permissions` / `refresh_all_…` accept `p_until`
+  run; `refresh_materialized_relations` / `refresh_all_…` accept `p_until`
   as an explicit override for tests and controlled replays. Regression
   tests: a cutoff in the past returns nothing a lag would, and a worker run
   inside a transaction that keeps writing leaves the cursor at that
@@ -362,7 +376,7 @@ pre-1.0, minor versions may include breaking changes.
   objects that already had tuples, so a document the engine had never seen
   was denied. Both are fixed by the wildcard contract (see Changed). Also
   fixed: on a `roles.sql` install the queue trigger failed with
-  `permission denied for table permissions_refresh_queue` (tuple writes run
+  `permission denied for table materialized_refresh_queue` (tuple writes run
   as the BYPASSRLS helper's owner), and calling the refresh and the public
   `check_access` in one session failed with `permission denied for table
   _check_memo_v2` (two roles creating the engine's memo table).
@@ -385,7 +399,7 @@ pre-1.0, minor versions may include breaking changes.
   share, and a snapshot of objects × subjects that could not finish. The
   worker now asks `list_subjects` (gates off, once per distinct reference)
   who holds the userset's relation or any relation on the referenced object,
-  and `refresh_all_materialized_permissions` takes the blast radius of every
+  and `refresh_all_materialized_relations` takes the blast radius of every
   tuple instead of the cross product: the share is 50 pairs in ~200 ms, its
   revocation the same, a folder move 4 pairs, the snapshot 110 k pairs in
   ~200 s; principal deltas stay at one pair in tens of milliseconds. Every
@@ -397,7 +411,7 @@ pre-1.0, minor versions may include breaking changes.
   reached by neither path; that case is a deterministic regression test now.
 
 - **Derived permissions table documented as a feature.** The flat
-  `authz.materialized_permissions` table (`db/replication/`) — pgauthz's
+  `authz.materialized_relations` table (`db/replication/`) — pgauthz's
   equivalent of a hosted *permissions index* for search, analytics and
   application databases that join on precomputed answers — now has a use
   case, a README feature line, a comparison row and an explicit statement
@@ -430,10 +444,10 @@ pre-1.0, minor versions may include breaking changes.
   demo can run next to the main stack.
 
 - **Derived permissions: incremental, changefeed-driven refresh.** The
-  worker `authz.refresh_materialized_permissions()` replaces the tuple
-  trigger and `process_permissions_refresh_queue()`: it follows
+  worker `authz.refresh_materialized_relations()` replaces the tuple
+  trigger and `process_materialized_refresh_queue()`: it follows
   `authz.watch_changes` from a per-store cursor (registered by
-  `refresh_all_materialized_permissions`, which takes the snapshot from
+  `refresh_all_materialized_relations`, which takes the snapshot from
   just before the cursor), computes each delta's blast radius — the
   objects that reach the changed object through tuples at full depth, the
   delta's own subject when its type can never be an edge (no relation on
@@ -445,7 +459,7 @@ pre-1.0, minor versions may include breaking changes.
   two-level reverse-traversal limit is gone. Expiring tuples file a
   deferred delta due at their expiry, so the rows they granted are
   withdrawn on time. `authz.materialized_refresh_state` (replicated) carries
-  cursor and `as_of`; `materialized_permissions_status()` on the primary and
+  cursor and `as_of`; `materialized_relations_status()` on the primary and
   `permissions_as_of(store)` on the subscriber say how stale the copy may
   be. Requires the audit profile. `tests/test-replication.sh` now also
   runs three batches of random mutations

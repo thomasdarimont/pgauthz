@@ -1,5 +1,5 @@
 -- Creates a subscription on the derived app database.
--- Only subscribes to the materialized_permissions table — no authz
+-- Only subscribes to the materialized_relations table — no authz
 -- schema, functions, or model knowledge needed.
 
 CREATE SUBSCRIPTION sub_authz_derived
