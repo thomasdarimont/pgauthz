@@ -108,9 +108,14 @@
 -- leftovers from before this trigger. Registration (refresh_all), the
 -- worker's cleanup and the trigger serialize per store name on an advisory
 -- transaction lock, and cleanup only removes the incarnation it identified
--- — a concurrent re-registration is never undone. The subscriber's
--- check_permission() requires a registration row for the store, so even a
--- stale row of an unregistered incarnation answers false.
+-- — a concurrent re-registration is never undone. Deletion and the snapshot
+-- order themselves on the engine's store-wide lock, taken BEFORE the store
+-- name is resolved (delete_store exclusively, refresh_all shared): a
+-- deletion waits for a running snapshot and then invalidates it; a snapshot
+-- that meets a deletion in flight waits and then finds the name gone; the
+-- worker try-locks and skips, so it never waits (see Locks below). The
+-- subscriber's check_permission() requires a registration row for the
+-- store, so even a stale row of an unregistered incarnation answers false.
 -- Model changes (rules, restrictions) are not in the tuple feed: run
 -- refresh_all_materialized_relations(store) after applying one.
 --
@@ -381,13 +386,45 @@ END;
 $$;
 
 ------------------------------------------------------------------------
--- _mp_lock_store: registration, cleanup and the store-deletion trigger
--- serialize per store NAME (the unit the derived rows are keyed by).
+-- Locks. Two advisory transaction locks per store NAME (the unit the
+-- derived rows are keyed by), always in this order:
+--
+--   1. the engine's store-wide lock (store.sql _lock_store_lifecycle,
+--      tuples.sql checked writes): retire_store / delete_store hold it
+--      EXCLUSIVELY from their first statement to their commit; checked
+--      writers and refresh_all hold it SHARED. So whoever holds it in any
+--      mode knows no deletion is half-way through, and resolving the store
+--      name AFTER taking it yields the live incarnation (or "Unknown store").
+--   2. the derived-rows lock (_mp_lock_store): refresh_all (registration),
+--      the deletion trigger and the worker's cleanup serialize on it.
+--
+-- The worker never WAITS for either (it try-locks both per store and skips
+-- the store for this run when it cannot have them): it holds ACCESS SHARE
+-- on the tuple partitions it read earlier in the same transaction, and a
+-- deletion's partition DDL waits for exactly those — a blocking wait by the
+-- worker would close the cycle. The deleter holds lock 1 before any DDL;
+-- refresh_all holds it shared before reading a tuple; so the two can only
+-- ever wait on each other in one direction.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._mp_lock_store(p_store text)
 RETURNS void
 LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
     SELECT pg_advisory_xact_lock(hashtext('authz.materialized_relations:' || p_store));
+$$;
+
+-- Both locks, non-blocking, in order; true when this transaction holds both.
+-- The store-wide lock is taken SHARED (the worker reads; it must only step
+-- aside for a deletion or an exclusive checked write in flight).
+CREATE OR REPLACE FUNCTION authz._mp_try_lock_store(p_store text)
+RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+    -- sequential on purpose: SQL AND does not promise evaluation order
+    IF NOT pg_try_advisory_xact_lock_shared(hashtextextended(p_store || ':*', 0)) THEN
+        RETURN false;
+    END IF;
+    RETURN pg_try_advisory_xact_lock(hashtext('authz.materialized_relations:' || p_store));
+END;
 $$;
 
 ------------------------------------------------------------------------
@@ -931,7 +968,8 @@ DECLARE
     v_pairs      integer := 0;
     v_written    integer := 0;
     v_rebuild    text[] := '{}';
-    v_store      text;
+    v_rebuild_id integer[] := '{}';
+    v_i          integer;
 BEGIN
     PERFORM authz._mp_require_read_committed('refresh_materialized_relations');
     PERFORM authz._mp_prepare_pairs();
@@ -949,6 +987,12 @@ BEGIN
           FROM authz.materialized_refresh_state s
      LEFT JOIN authz.stores st ON st.id = s.store_id        -- by id: a recreated name is a new store
     LOOP
+        -- never wait (see Locks): a deletion, a registration or an exclusive
+        -- checked write owns this store right now — its cursor stays, next run
+        IF NOT authz._mp_try_lock_store(v_state.store) THEN
+            CONTINUE;
+        END IF;
+
         -- deleted (or deleted and recreated) before the deletion trigger existed:
         -- nothing in the feed will ever say so; drop it — this incarnation only
         IF v_state.store_id IS NULL THEN
@@ -986,7 +1030,8 @@ BEGIN
         -- structural change (a type was removed): the deltas cannot be
         -- mapped to pairs — rebuild the store instead of advancing past them
         IF v_n < v_tuple_rows OR EXISTS (SELECT 1 FROM _mp_page pg WHERE pg.action = 'TYPE_REMOVED') THEN
-            v_rebuild := v_rebuild || v_state.store;
+            v_rebuild    := v_rebuild    || v_state.store;
+            v_rebuild_id := v_rebuild_id || v_state.store_id;
             DELETE FROM _mp_claimed c WHERE c.store_id = v_state.store_id;
             CONTINUE;
         END IF;
@@ -1019,11 +1064,13 @@ BEGIN
             (SELECT count(*) FROM _mp_page) < p_limit);
     END LOOP;
 
-    -- deferred deltas that fell due (expiries, manual entries)
+    -- deferred deltas that fell due (expiries, manual entries) — of the
+    -- stores this run holds the locks for; a skipped store's rows stay due
     WITH claimed AS (
         DELETE FROM authz.materialized_refresh_queue
-         WHERE id IN (SELECT id FROM authz.materialized_refresh_queue
-                       WHERE due_at <= statement_timestamp()
+         WHERE id IN (SELECT q.id FROM authz.materialized_refresh_queue q
+                       WHERE q.due_at <= statement_timestamp()
+                         AND q.store_id IN (SELECT f.store_id FROM _mp_feed f)
                        FOR UPDATE SKIP LOCKED)
          RETURNING store_id, object_type, object_id, relation, user_type, user_id, user_relation, op)
     INSERT INTO _mp_claimed (store_id, object_type, object_id, relation, user_type, user_id, user_relation, op)
@@ -1055,9 +1102,12 @@ BEGIN
       FROM _mp_feed f
      WHERE f.store = s.store;
 
-    -- structural change: rebuild (its cursor is this run's cutoff)
-    FOREACH v_store IN ARRAY v_rebuild LOOP
-        PERFORM authz.refresh_all_materialized_relations(v_store, p_lag, v_cutoff);
+    -- structural change: rebuild (its cursor is this run's cutoff). Both
+    -- locks are held and the incarnation is the one the loop saw — the
+    -- internal snapshot, not the public entry point (which would WAIT for
+    -- the store-wide lock, see Locks)
+    FOR v_i IN 1 .. coalesce(array_length(v_rebuild, 1), 0) LOOP
+        PERFORM authz._mp_snapshot_store(v_rebuild[v_i], v_rebuild_id[v_i], v_cutoff, v_started, v_gate);
     END LOOP;
 
     RETURN v_pairs;
@@ -1107,18 +1157,43 @@ CREATE OR REPLACE FUNCTION authz.refresh_all_materialized_relations(
 ) RETURNS integer
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
-    v_store_id  integer := authz._s(p_store);
-    v_started   timestamptz := clock_timestamp();
-    v_cursor_at timestamptz := LEAST(COALESCE(p_until, authz.watch_safe_until(p_lag)), transaction_timestamp());
-    v_gate      interval := v_started - v_cursor_at;
-    v_pairs     integer; v_written integer;
+    v_store_id  integer;
+    v_started   timestamptz;
+    v_cursor_at timestamptz;
 BEGIN
     PERFORM authz._mp_require_read_committed('refresh_all_materialized_relations');
-    PERFORM authz._mp_lock_store(p_store);   -- vs. the worker's cleanup and the deletion trigger
+    -- Locks FIRST, in order (see Locks), and only then resolve the name: a
+    -- delete_store in flight holds the store-wide lock exclusively from its
+    -- first statement, so after this returns the deletion has committed
+    -- ("Unknown store") or has not begun (and now waits for this snapshot).
+    PERFORM pg_advisory_xact_lock_shared(hashtextextended(p_store || ':*', 0));
+    PERFORM authz._mp_lock_store(p_store);
+    v_store_id  := authz._s(p_store);
+    v_started   := clock_timestamp();
+    v_cursor_at := LEAST(COALESCE(p_until, authz.watch_safe_until(p_lag)), transaction_timestamp());
+    RETURN authz._mp_snapshot_store(p_store, v_store_id, v_cursor_at, v_started, v_started - v_cursor_at);
+END;
+$$;
+
+------------------------------------------------------------------------
+-- _mp_snapshot_store: the snapshot itself — caller holds both locks and
+-- has resolved the incarnation (refresh_all; the worker's rebuild).
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._mp_snapshot_store(
+    p_store     text,
+    p_store_id  integer,
+    p_cursor_at timestamptz,
+    p_started   timestamptz,
+    p_gate      interval
+) RETURNS integer
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+DECLARE
+    v_pairs     integer; v_written integer;
+BEGIN
     DELETE FROM authz.materialized_relations WHERE store = p_store;
     DELETE FROM authz.materialized_subjects    WHERE store = p_store;
     DELETE FROM authz.materialized_objects     WHERE store = p_store;
-    DELETE FROM authz.materialized_refresh_queue WHERE store_id = v_store_id;
+    DELETE FROM authz.materialized_refresh_queue WHERE store_id = p_store_id;
 
     -- the snapshot is the blast radius of every tuple of the store, taken
     -- as an insert: every (subject, object) pair a grant can reach, and
@@ -1126,7 +1201,7 @@ BEGIN
     PERFORM authz._mp_prepare_pairs();
     INSERT INTO _mp_claimed (store_id, object_type, object_id, relation, user_type, user_id, user_relation, op)
     SELECT t.store_id, t.object_type, t.object_id, t.relation, t.user_type, t.user_id, t.user_relation, 'SNAPSHOT'
-      FROM authz.tuples t WHERE t.store_id = v_store_id;
+      FROM authz.tuples t WHERE t.store_id = p_store_id;
     PERFORM authz._mp_blast_radius();
     SELECT d.pairs, d.rows_written INTO v_pairs, v_written FROM authz._derive_pairs() d;
 
@@ -1135,12 +1210,12 @@ BEGIN
     SELECT t.store_id, t.object_type, t.object_id, t.relation, t.user_type, t.user_id, t.user_relation,
            'EXPIRE', t.expires_at
       FROM authz.tuples t
-     WHERE t.store_id = v_store_id AND t.expires_at IS NOT NULL;   -- visible ⇒ not yet expired (RLS)
+     WHERE t.store_id = p_store_id AND t.expires_at IS NOT NULL;   -- visible ⇒ not yet expired (RLS)
 
     INSERT INTO authz.materialized_refresh_state
         (store, store_id, cursor_at, cursor_seq, as_of, feed_drained,
          last_run_started_at, last_run_finished_at, last_run_changes, last_run_pairs, last_run_rows_written, last_run_gate)
-    VALUES (p_store, v_store_id, v_cursor_at, 0, v_cursor_at, true, v_started, clock_timestamp(), 0, v_pairs, v_written, v_gate)
+    VALUES (p_store, p_store_id, p_cursor_at, 0, p_cursor_at, true, p_started, clock_timestamp(), 0, v_pairs, v_written, p_gate)
     ON CONFLICT (store) DO UPDATE
        SET store_id = EXCLUDED.store_id,
            cursor_at = EXCLUDED.cursor_at, cursor_seq = 0, as_of = EXCLUDED.as_of, feed_drained = true,
@@ -1234,6 +1309,8 @@ BEGIN
         ALTER FUNCTION authz._mp_prepare_pairs()                                      OWNER TO authz_owner;
         ALTER FUNCTION authz._mp_require_read_committed(text)                         OWNER TO authz_owner;
         ALTER FUNCTION authz._mp_lock_store(text)                                     OWNER TO authz_owner;
+        ALTER FUNCTION authz._mp_try_lock_store(text)                                 OWNER TO authz_owner;
+        ALTER FUNCTION authz._mp_snapshot_store(text, integer, timestamptz, timestamptz, interval) OWNER TO authz_owner;
         ALTER FUNCTION authz._mp_drop_store(text, integer)                            OWNER TO authz_owner;
         ALTER FUNCTION authz._mp_on_store_deleted()                                   OWNER TO authz_owner;
         ALTER FUNCTION authz._mp_blast_radius()                                       OWNER TO authz_owner;
@@ -1257,6 +1334,8 @@ $$;
 REVOKE ALL ON FUNCTION authz._mp_prepare_pairs()                                      FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._mp_require_read_committed(text)                         FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._mp_lock_store(text)                                     FROM PUBLIC;
+REVOKE ALL ON FUNCTION authz._mp_try_lock_store(text)                                 FROM PUBLIC;
+REVOKE ALL ON FUNCTION authz._mp_snapshot_store(text, integer, timestamptz, timestamptz, interval) FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._mp_drop_store(text, integer)                            FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._mp_on_store_deleted()                                   FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._mp_blast_radius()                                       FROM PUBLIC;

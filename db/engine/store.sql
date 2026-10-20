@@ -69,6 +69,29 @@ END;
 $$;
 
 ------------------------------------------------------------------------
+-- _lock_store_lifecycle: the store-wide advisory lock, EXCLUSIVE, as the
+-- very first statement of retire_store / delete_store — before the store is
+-- even resolved. The key is the engine's checked-write store lock
+-- (tuples.sql: write_tuples_checked / grant / apply_grants hold it shared;
+-- a partial precondition exclusively), so a store deletion waits for the
+-- checked writes in flight and blocks new ones until it commits. It is also
+-- the ordering point for whole-store maintenance that reads the store's
+-- tuples in a long transaction (db/replication/materialized_relations.sql:
+-- refresh_all_materialized_relations takes it SHARED first, the worker
+-- try-locks it): deletion first takes this lock, THEN drops partitions —
+-- DDL that needs every reader of the store's partitions gone — so a
+-- maintenance transaction and a deletion never wait on each other in
+-- opposite order, and whoever acquires the lock after a deletion resolves
+-- the name against committed state (gone, or the next incarnation), never
+-- against a store half-deleted. Taken by store NAME: it is the unit a
+-- deletion and a recreation share.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._lock_store_lifecycle(p_store text) RETURNS void
+LANGUAGE sql AS $$
+    SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_store || ':*', 0));
+$$;
+
+------------------------------------------------------------------------
 -- _drop_store_tuple_partitions: detaches and drops the per-type tuple
 -- partitions of a store (reclaiming the hot storage). Shared by
 -- delete_store and retire_store. Partition names mirror the convention
@@ -120,8 +143,10 @@ $$;
 CREATE OR REPLACE FUNCTION authz.retire_store(p_store text) RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id integer := authz._s(p_store);   -- live-only: cannot retire twice
+    v_store_id integer;
 BEGIN
+    PERFORM authz._lock_store_lifecycle(p_store);   -- FIRST: see _lock_store_lifecycle
+    v_store_id := authz._s(p_store);                 -- live-only: cannot retire twice
     -- Drop the live tuple partitions (DDL: removes the data + reclaims storage
     -- in O(partitions), not per row). We deliberately do NOT
     -- `DELETE FROM authz.tuples` first: that fired the per-row audit trigger and
@@ -177,8 +202,10 @@ CREATE OR REPLACE FUNCTION authz.delete_store(
 ) RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_store_id   integer := authz._s(p_store, true);
+    v_store_id   integer;
 BEGIN
+    PERFORM authz._lock_store_lifecycle(p_store);        -- FIRST: see _lock_store_lifecycle
+    v_store_id := authz._s(p_store, true);
     PERFORM authz._rls_delete_store_tuples(v_store_id);  -- purge incl. expired (F11 fix)
     IF p_purge_audit THEN
         PERFORM set_config('authz.audit_maintenance', 'on', true);

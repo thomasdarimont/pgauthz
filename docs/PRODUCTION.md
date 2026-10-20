@@ -806,7 +806,10 @@ condition history (`models_audit`, `conditions_audit`) are append-only logs.
   become name-unresolvable and the historical API can no longer query that
   store. Reserve it for non-audited / test stores or deliberate erasure; a
   retired store can later be purged with `delete_store` when its retention
-  window expires.
+  window expires. Both `retire_store` and `delete_store` take the store-wide
+  lock as their first statement: they wait for checked writes in flight
+  (`write_tuples_checked`, `grant`, `apply_grants`) and for a running
+  derived-permissions snapshot, and block new ones until they commit.
 
 See [DEVELOPMENT.md → Audit partition maintenance](DEVELOPMENT.md#audit-partition-maintenance).
 

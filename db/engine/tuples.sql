@@ -876,7 +876,11 @@ BEGIN
     --   2. every referenced object, in a stable order, so concurrent
     --      checked writes on the same object serialize (compare-and-swap).
     -- grant / revoke / apply_grants take the same store lock shared and the
-    -- same object keys, so sharing participates. Plain write_tuple does not:
+    -- same object keys, so sharing participates. retire_store / delete_store
+    -- take it exclusively as their first statement (store.sql,
+    -- _lock_store_lifecycle), so a deletion waits for the checked writes in
+    -- flight; so does whole-store maintenance, shared (materialized_relations).
+    -- Plain write_tuple does not:
     -- an invariant holds among the writers that go through these paths.
     -- allowed/denied preconditions are decided on committed state under
     -- the target object's lock; the graph they walk (the actor's own

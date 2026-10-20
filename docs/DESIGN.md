@@ -1028,6 +1028,23 @@ advisory transaction lock, and cleanup only removes the incarnation it
 identified, so it can never undo a concurrent re-registration. (A retired
 store announces itself through `STORE_RETIRED` and is handled the same way.)
 
+Deletion and snapshot never wait on each other in opposite order. Both
+start with the engine's **store-wide lock** (the one checked writes hold
+shared): `delete_store`/`retire_store` take it exclusively as their first
+statement, before resolving the name and long before the partition DDL that
+needs every reader of the store gone; `refresh_all_materialized_relations`
+takes it shared, then the derived-rows lock, and only then resolves the
+name. So a snapshot that meets a deletion in flight waits and then finds
+the name gone (`Unknown store`) instead of registering the id being
+deleted, and a deletion that meets a running snapshot waits and then
+invalidates it. The worker holds `ACCESS SHARE` on the partitions it read
+earlier in its transaction, exactly what a deletion's DDL waits for, so it
+never blocks on a lock: it try-locks both per store and leaves a store
+someone else owns for the next run (its cursor does not move). The suite
+runs each pairing with a held-open transaction and twelve seconds of all
+three actors churning one store, and asserts no deadlock, no orphan row and
+agreement with the engine.
+
 A crashed worker resumes from the stored cursor; a page is replayed if its
 run rolled back. One worker is the intended deployment, in its own `READ
 COMMITTED` transaction: both entry points refuse any other isolation level,

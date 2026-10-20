@@ -519,6 +519,86 @@ qp "$PRIMARY" "SELECT authz.refresh_materialized_relations();" >/dev/null
 assert "a further worker run leaves it alone" "t" \
   "$(qp "$PRIMARY" "SELECT (SELECT count(*) FROM authz.materialized_relations WHERE store='aia_acme') > 0 AND EXISTS (SELECT 1 FROM authz.materialized_refresh_state WHERE store='aia_acme');")"
 
+echo "==> delete_store in flight vs. refresh_all: the lock comes before the name..."
+# Session A deletes aia_acme and holds its transaction open; session B registers
+# the store meanwhile. B must wait for A (the store-wide lock is taken before
+# the name is resolved) and then meet committed state — "Unknown store" — never
+# register the id A is deleting.
+cat > "$WORK/del-hold.sql" <<'SQL'
+BEGIN;
+SELECT authz.delete_store('aia_acme');
+SELECT pg_sleep(3);
+COMMIT;
+SQL
+docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -q < "$WORK/del-hold.sql" >/dev/null 2>&1 &
+hold_pid=$!
+sleep 1
+rc_b=0; err_b=$(docker exec -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -q -c "SELECT authz.refresh_all_materialized_relations('aia_acme');" 2>&1 >/dev/null) || rc_b=$?
+wait "$hold_pid" || true
+assert "refresh_all waited for the deletion, then refused the vanished name (no deadlock)" "1|Unknown store|" \
+  "$rc_b|$(echo "$err_b" | grep -o 'Unknown store' | head -1)|$(echo "$err_b" | grep -io 'deadlock' | head -1)"
+assert "the deleted incarnation left no registration and no rows" "false|0" \
+  "$(qp "$PRIMARY" "SELECT EXISTS(SELECT 1 FROM authz.materialized_refresh_state WHERE store='aia_acme') || '|' || (SELECT count(*) FROM authz.materialized_relations WHERE store='aia_acme');")"
+
+echo "==> refresh_all in flight vs. delete_store: the deletion waits, then invalidates..."
+qf "$PRIMARY" < examples/models/aia-acme/model.sql >/dev/null; qf "$PRIMARY" < examples/models/aia-acme/seed.sql >/dev/null
+cat > "$WORK/refresh-hold.sql" <<'SQL'
+BEGIN;
+SELECT authz.refresh_all_materialized_relations('aia_acme');
+SELECT pg_sleep(3);
+COMMIT;
+SQL
+docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -q < "$WORK/refresh-hold.sql" >/dev/null 2>&1 &
+hold_pid=$!
+sleep 1
+t0=$(date +%s)
+rc_b=0; err_b=$(docker exec -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -q -c "SELECT authz.delete_store('aia_acme');" 2>&1 >/dev/null) || rc_b=$?
+waited=$(( $(date +%s) - t0 ))
+wait "$hold_pid" || true
+assert "delete_store completed without error and without a deadlock" "0|" "$rc_b|$(echo "$err_b" | grep -io 'deadlock' | head -1)"
+assert "delete_store waited for the open snapshot transaction (>= 1 s)" "t" "$([ "$waited" -ge 1 ] && echo t || echo f)"
+assert "the snapshot's rows and registration went with the deletion" "0|false|false" \
+  "$(qp "$PRIMARY" "SELECT (SELECT count(*) FROM authz.materialized_relations WHERE store='aia_acme') || '|' || EXISTS(SELECT 1 FROM authz.materialized_refresh_state WHERE store='aia_acme') || '|' || EXISTS(SELECT 1 FROM authz.stores WHERE name='aia_acme');")"
+
+echo "==> Three actors for 12 s: delete_store + recreate, refresh_all, the worker (and refresh_all of another store)..."
+# Nobody may deadlock, "Unknown store" is the only acceptable error (a
+# refresh of a name between its deletion and its recreation), and afterwards
+# every derived row must belong to a registered live incarnation and agree
+# with the engine.
+qf "$PRIMARY" < examples/models/aia-acme/model.sql >/dev/null; qf "$PRIMARY" < examples/models/aia-acme/seed.sql >/dev/null
+qp "$PRIMARY" "SELECT authz.refresh_all_materialized_relations('aia_acme');" >/dev/null
+churn_until=$(( $(date +%s) + 12 ))
+actor() {  # name command...
+  local name=$1; shift
+  while [ "$(date +%s)" -lt "$churn_until" ]; do
+    if "$@" >/dev/null 2>>"$WORK/churn-$name.err"; then echo ok >> "$WORK/churn-$name.ok"; fi
+  done
+}
+psql_p() { docker exec -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -q -v ON_ERROR_STOP=1 -c "$1"; }
+recreate_cycle() {
+  psql_p "SELECT authz.delete_store('aia_acme');" \
+    && docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -q -v ON_ERROR_STOP=1 < examples/models/aia-acme/model.sql >/dev/null \
+    && docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -q -v ON_ERROR_STOP=1 < examples/models/aia-acme/seed.sql >/dev/null
+}
+actor worker  psql_p "SELECT authz.refresh_materialized_relations();" &
+actor refresh psql_p "SELECT authz.refresh_all_materialized_relations('aia_acme');" &
+actor other   psql_p "SELECT authz.refresh_all_materialized_relations('demo');" &
+actor deleter recreate_cycle &
+wait
+for a in worker refresh other deleter; do
+  assert "churn: actor $a made progress" "t" "$([ -s "$WORK/churn-$a.ok" ] && echo t || echo f)"
+done
+assert "churn: no deadlock and no error other than 'Unknown store' in 12 s" "" \
+  "$(cat "$WORK"/churn-*.err 2>/dev/null | grep '^ERROR:' | grep -v 'Unknown store' | sort | uniq -c | head -5)"
+assert "churn: refresh_all met the gap between deletion and recreation at least once (the race was exercised)" "t" \
+  "$([ "$(grep -c 'Unknown store' "$WORK/churn-refresh.err" 2>/dev/null || true)" -gt 0 ] && echo t || echo f)"
+# settle: whatever the last cycle left, register it and drain
+qp "$PRIMARY" "SELECT authz.refresh_all_materialized_relations('aia_acme');" >/dev/null
+drain_feed || assert "churn: feed drained" "ok" "timeout"
+assert "churn: every derived row belongs to a registered, live incarnation" "t" \
+  "$(qp "$PRIMARY" "SELECT NOT EXISTS (SELECT 1 FROM authz.materialized_relations r LEFT JOIN authz.materialized_refresh_state s ON s.store = r.store LEFT JOIN authz.stores st ON st.id = s.store_id WHERE st.id IS NULL);")"
+differential "after churn"
+
 echo "==> A first-shape subscriber upgrades through a LIVE subscription (disable, both sides, enable, refresh)..."
 # Publisher: the primary's maintenance database with the first shape and the
 # first publication (leaf partitions); subscriber: the dms container's
@@ -551,6 +631,7 @@ qsub "ALTER SUBSCRIPTION sub_v1 DISABLE;" >/dev/null
   echo "DELETE FROM authz.materialized_relations;"
   echo "INSERT INTO authz.materialized_relations (store, user_type, user_id, relation, object_type, object_id, namespace, is_permission) VALUES ('demo','internal_user','eva','can_read','document','doc_acc_001','dms',true), ('demo','internal_user','eva','member','team','accounting_team','',false), ('demo','internal_user','nadia_auditor','can_read','document','*','dms',true);"
   echo "INSERT INTO authz.materialized_subjects (store, user_type, user_id) VALUES ('demo','internal_user','eva'), ('demo','internal_user','nadia_auditor');"
+  echo "INSERT INTO authz.materialized_objects (store, object_type, object_id, namespace) VALUES ('demo','document','doc_acc_001','dms'), ('demo','team','accounting_team','');"
   echo "INSERT INTO authz.materialized_refresh_state (store, store_id, cursor_at, cursor_seq, as_of) VALUES ('demo', 1, now(), 0, now());"
 } | "${PUB_DB[@]}" >/dev/null
 { cat db/replication/upgrade-derived-tables.sql db/replication/schema-derived.sql
@@ -561,20 +642,21 @@ qsub "ALTER SUBSCRIPTION sub_v1 REFRESH PUBLICATION;" >/dev/null
 up_ready=timeout
 for _ in $(seq 1 30); do
   [ "$(qsub "SELECT count(*) FROM pg_subscription_rel WHERE srsubstate <> 'r';")" = "0" ] && [ "$(qsub "SELECT count(*) FROM authz.materialized_refresh_state;")" = "1" ] \
-    && [ "$(qsub "SELECT count(*) FROM authz.materialized_relations WHERE is_permission;")" = "2" ] && { up_ready=ok; break; }
+    && [ "$(qsub "SELECT count(*) FROM authz.materialized_relations WHERE is_permission;")" = "2" ] \
+    && [ "$(qsub "SELECT count(*) FROM authz.materialized_objects;")" = "2" ] && { up_ready=ok; break; }
   sleep 1
 done
-assert "after the upgrade the subscription streams again: state table copied, kinds and namespaces arrived" "ok" "$up_ready"
-live_digest() { "$@" "SELECT md5((SELECT coalesce(string_agg(row_to_json(t)::text, ';' ORDER BY store, user_type, user_id, relation, object_type, object_id, namespace, is_permission), '') FROM authz.materialized_relations t) || (SELECT coalesce(string_agg(row_to_json(t)::text, ';' ORDER BY store, user_type, user_id), '') FROM authz.materialized_subjects t) || (SELECT coalesce(string_agg(row_to_json(t)::text, ';' ORDER BY store), '') FROM authz.materialized_refresh_state t));"; }
-assert "upgraded subscriber equals the publisher row for row (relations, subjects, state)" "$(live_digest qpub)" "$(live_digest qsub)"
+assert "after the upgrade the subscription streams again: state and objects tables copied, kinds and namespaces arrived" "ok" "$up_ready"
+live_digest() { "$@" "SELECT md5((SELECT coalesce(string_agg(row_to_json(t)::text, ';' ORDER BY store, user_type, user_id, relation, object_type, object_id, namespace, is_permission), '') FROM authz.materialized_relations t) || (SELECT coalesce(string_agg(row_to_json(t)::text, ';' ORDER BY store, user_type, user_id), '') FROM authz.materialized_subjects t) || (SELECT coalesce(string_agg(row_to_json(t)::text, ';' ORDER BY store, object_type, object_id, namespace), '') FROM authz.materialized_objects t) || (SELECT coalesce(string_agg(row_to_json(t)::text, ';' ORDER BY store), '') FROM authz.materialized_refresh_state t));"; }
+assert "upgraded subscriber equals the publisher row for row (relations, subjects, objects, state)" "$(live_digest qpub)" "$(live_digest qsub)"
 assert "eva's can_read is a permission row with its namespace on the upgraded subscriber" "true|dms" \
   "$(qsub "SELECT is_permission || '|' || namespace FROM authz.materialized_relations WHERE user_id='eva' AND relation='can_read';")"
-qpub "INSERT INTO authz.materialized_relations (store, user_type, user_id, relation, object_type, object_id, namespace, is_permission) VALUES ('demo','internal_user','bob','can_read','document','doc_acc_001','dms',true); DELETE FROM authz.materialized_relations WHERE user_id='nadia_auditor';" >/dev/null
+qpub "INSERT INTO authz.materialized_relations (store, user_type, user_id, relation, object_type, object_id, namespace, is_permission) VALUES ('demo','internal_user','bob','can_read','document','doc_acc_001','dms',true); DELETE FROM authz.materialized_relations WHERE user_id='nadia_auditor'; INSERT INTO authz.materialized_objects (store, object_type, object_id, namespace) VALUES ('demo','document','doc_acc_002','dms'); DELETE FROM authz.materialized_objects WHERE object_id='accounting_team';" >/dev/null
 after=timeout
 for _ in $(seq 1 15); do
   [ "$(live_digest qpub)" = "$(live_digest qsub)" ] && { after=ok; break; }; sleep 1
 done
-assert "an insert and a delete after resumption replicate (digest equal again)" "ok" "$after"
+assert "inserts and deletes after resumption replicate, objects included (digest equal again)" "ok" "$after"
 qsub "DROP SUBSCRIPTION sub_v1;" >/dev/null 2>&1 || true
 qsub "DROP SCHEMA IF EXISTS authz CASCADE;" >/dev/null 2>&1 || true
 qpub "DROP PUBLICATION IF EXISTS authz_derived_v1; DROP SCHEMA IF EXISTS authz CASCADE;" >/dev/null 2>&1 || true
