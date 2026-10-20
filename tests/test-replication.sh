@@ -303,22 +303,34 @@ assert "both writes of that transaction reached the derived replica" "t" \
 echo "==> The refresh entry points refuse any isolation level but READ COMMITTED..."
 # Under REPEATABLE READ the snapshot predates the cutoff capture; a change
 # committed in between would be invisible yet past the cutoff — skipped forever.
-rr_worker=$(docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -tA 2>&1 <<'SQL' | grep -c "requires READ COMMITTED" || true
+# Assert on SQLSTATE 25000 (invalid_transaction_state), not the message, and
+# prove the cursor state (cursor_at, cursor_seq, as_of) is untouched.
+cursor_state() { qp "$PRIMARY" "SELECT cursor_at || '|' || cursor_seq || '|' || as_of FROM authz.materialized_refresh_state WHERE store='demo';"; }
+before=$(cursor_state)
+rr_worker=$(docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -tA -v VERBOSITY=verbose 2>&1 <<'SQL' | grep -c "^ERROR:  25000:" || true
 BEGIN ISOLATION LEVEL REPEATABLE READ;
 SELECT authz.refresh_materialized_permissions();
 ROLLBACK;
 SQL
 )
-assert "refresh_materialized_permissions is rejected under REPEATABLE READ" "1" "$rr_worker"
-rr_all=$(docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -tA 2>&1 <<'SQL' | grep -c "requires READ COMMITTED" || true
+assert "refresh_materialized_permissions raises SQLSTATE 25000 under REPEATABLE READ" "1" "$rr_worker"
+rr_all=$(docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -tA -v VERBOSITY=verbose 2>&1 <<'SQL' | grep -c "^ERROR:  25000:" || true
 BEGIN ISOLATION LEVEL SERIALIZABLE;
 SELECT authz.refresh_all_materialized_permissions('demo');
 ROLLBACK;
 SQL
 )
-assert "refresh_all_materialized_permissions is rejected under SERIALIZABLE" "1" "$rr_all"
-assert "the cursor was not touched by the rejected runs" "t" \
-  "$(qp "$PRIMARY" "SELECT feed_drained FROM authz.materialized_refresh_state WHERE store='demo';")"
+assert "refresh_all_materialized_permissions raises SQLSTATE 25000 under SERIALIZABLE" "1" "$rr_all"
+assert "cursor_at / cursor_seq / as_of are unchanged by the rejected runs" "$before" "$(cursor_state)"
+# The same call inside an explicit READ COMMITTED transaction succeeds.
+rc_ok=$(docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -tA -v ON_ERROR_STOP=1 2>&1 <<'SQL' | tail -1
+BEGIN ISOLATION LEVEL READ COMMITTED;
+SELECT authz.refresh_materialized_permissions();
+COMMIT;
+SELECT 'rc-ok';
+SQL
+)
+assert "an explicit READ COMMITTED transaction runs the worker" "rc-ok" "$rc_ok"
 
 echo "==> Asserting LIVE propagation (write on primary -> full replica)..."
 qp "$PRIMARY" "SELECT authz.write_tuple('demo','internal_user','ci_repltest','viewer','document','doc_acc_001');" >/dev/null
