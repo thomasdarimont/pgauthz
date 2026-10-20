@@ -76,7 +76,7 @@ the key and — static only — the endpoints filled in at run time.
 | `CTS_PDP_PORT` | `9445` | host port of the https front |
 | `CTS_SUITE_PORT` | `18444` | host port of the suite (its UI) |
 | `CTS_SIGNING_KEY`, `CTS_KEY_ID`, `CTS_ISSUER`, `CTS_AUDIENCE` | the demo key, `my-kid`, `https://auth.example.com`, `authz-api` | how the api_key is minted |
-| `CTS_SUITE_IMAGE`, `CTS_SUITE_NGINX_IMAGE`, `CTS_SUITE_MONGODB_IMAGE` | `release-v5.3.2` by digest, `mongo:9.0.2-noble` by digest | the images (`settings.go` is the single place to change them) |
+| `CTS_SUITE_IMAGE`, `CTS_SUITE_NGINX_IMAGE`, `CTS_SUITE_MONGODB_IMAGE` | `release-v5.3.2` by digest, `mongo:9.0.4` by digest (older MongoDB does not start on the Linux ≥ 6.19 kernels of current GitHub runners, SERVER-121912 / SERVER-131779) | the images (`settings.go` is the single place to change them) |
 | `CTS_STRICT` | unset | `true` fails a module the suite finished with WARNING |
 
 ## Known suite issues

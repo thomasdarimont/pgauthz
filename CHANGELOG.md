@@ -270,6 +270,14 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **AuthZEN conformance job: MongoDB could not start on current GitHub
+  runners.** The suite's MongoDB (`mongo:9.0.2-noble`) exits at startup on
+  Linux kernels 6.19 up to 7.0.13 (SERVER-121912) and, before 9.0.4, misreads
+  Ubuntu's 7.0 kernels as 7.0.0 (SERVER-131779); the runner image of
+  2026-10-18 ships such a kernel, so every plan failed with "could not start
+  MongoDB for the conformance suite". `conformance/settings.go` now pins
+  `mongo:9.0.4` by digest (the same pin as easyssf/easyssf#54).
+
 - **Derived permissions: the cursor cutoff is absolute, exclusive, and
   includes the worker's own transaction.** Second review round: the gate was
   an interval re-applied against a moving clock inside the feed query, so
