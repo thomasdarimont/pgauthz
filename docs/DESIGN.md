@@ -862,10 +862,12 @@ under one role), and the script transfers them to `authz_owner` when
 
 The source of change is the audit changefeed
 ([AUDIT.md → Watching for changes](AUDIT.md#watching-for-changes-changefeed)).
-`refresh_all_materialized_permissions(store)` takes the initial snapshot and
-registers the store with a `(performed_at, seq)` cursor from just before
-it; nothing on the write path changes (no trigger on `authz.tuples`). On
-each run, `refresh_materialized_permissions()`:
+`refresh_all_materialized_permissions(store)` takes the initial snapshot —
+the blast radius of every tuple of the store, so its cost is linear in the
+grants, not objects × subjects — and registers the store with a
+`(performed_at, seq)` cursor from just before it; nothing on the write path
+changes (no trigger on `authz.tuples`). On each run,
+`refresh_materialized_permissions()`:
 
 1. captures one absolute, exclusive cutoff for the run —
    `watch_safe_until(lag)`: now minus the stability lag (1 s by default),
@@ -891,14 +893,18 @@ each run, `refresh_materialized_permissions()`:
      through tuples (reverse closure over tuple edges, full depth, cycle
      safe); an object-wildcard delta seeds every object of the type,
      because their concrete rows are authoritative over the `*` row
-   - *subjects*: the delta's own subject when it is a plain principal (the
-     model defines no relation on its type, so it can never be an edge);
-     every known subject of the type for a subject-wildcard delta; every
-     known subject when the delta's subject is a userset or an object
-     reference (`team#member`, a parent folder, a classification) — the
-     safe over-approximation. Decided from the model, not the current
-     tuples, so a batch that deletes several edges of one path still
-     re-derives everyone above the cut
+   - *subjects*: the delta's own subject, always; for a userset
+     (`team#member`) the userset's members and for an object reference (a
+     parent folder, a manager, a classification — any type the model
+     defines relations on) everyone holding any relation on that object,
+     both from the engine's reverse expansion (`list_subjects`, gates off,
+     expanded once per distinct reference); every known subject of the type
+     only for a subject-wildcard delta, when `list_subjects` reports a
+     wildcard, or for a manual whole-object entry. The closure walks the
+     current tuples **and the batch's own deltas**: a deleted edge is the
+     path a withdrawn permission came through, and a member whose
+     membership and whose team's reference vanished in one batch is reached
+     only that way
    - *relations*: every relation of the object's type
 3. decides each pair through `_decide` (graph only) and **diffs** against
    the stored rows, so the table receives real inserts and deletes only (a
@@ -916,14 +922,17 @@ each run, `refresh_materialized_permissions()`:
 
 A write costs nothing extra; a typical grant or revoke re-derives one pair
 (tens of milliseconds); a share with a team or a folder move re-derives the
-affected objects for **every known subject** — the safe over-approximation,
-and the current scale limit: on the 50 k-user `drive` benchmark store one
-userset share is 50,018 pairs and 2.2 minutes, and the brute-force snapshot
-(every object × every known subject) is infeasible altogether
-([BENCHMARKS.md, 2026-10-20 addendum](BENCHMARKS.md#addendum-2026-10-20-derived-permissions-the-incremental-worker-on-drive)).
-Until the worker expands those deltas through `list_subjects` and takes its
-snapshot by reverse expansion, the derived table suits stores whose subject
-population is in the thousands. `materialized_permissions_status()`
+affected objects for the subjects the engine's reverse expansion
+(`list_subjects`, gates off) names — the members of the team, the holders
+of a relation on the folder — so on the 50 k-user `drive` benchmark store a
+userset share is 50 pairs in ~200 ms and the snapshot of the whole store
+(the blast radius of every tuple, linear in the grants) 110 k pairs in
+~200 s ([BENCHMARKS.md, 2026-10-20 addendum](BENCHMARKS.md#addendum-2026-10-20-derived-permissions-the-incremental-worker-on-drive)).
+Every known subject is re-derived only where the contract demands it: a
+subject-wildcard grant (`user:*` on an object) makes every known user's rows
+on that object authoritative — 50 k pairs, ~100 s per public document at
+that scale — so a store that makes documents public one by one is not a
+good fit. `materialized_permissions_status()`
 shows the backlog, `as_of` and the last run per store. Run the worker:
 - **Explicitly:** `SELECT authz.refresh_materialized_permissions()` (again
   while any store's `feed_drained` is false)

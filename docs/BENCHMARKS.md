@@ -585,48 +585,59 @@ the `drive` store (60,031 tuples: 50,003 users each owning a private
 document, 200 groups of 50 members, one group-shared document, a 15-folder
 chain ending in one document, one public document) in a single rolled-back
 transaction on the same laptop and database as the 2026-10-18 run (PostgreSQL
-18.6, 279 k-row audit log, the full overlay stack idle). The store was
-registered without a snapshot (cursor = the transaction's start) so each
-measurement is exactly one delta; the worker ran with `p_until` overriding
-the cutoff, as the in-transaction harness requires.
+18.6, 279 k-row audit log, the full overlay stack idle). Each delta is
+measured alone; the worker ran with `p_until` overriding the cutoff, as the
+in-transaction harness requires.
 
-| delta | pairs re-derived | rows written | ms |
-|---|--:|--:|--:|
-| idle run (nothing in the feed) | 0 | 0 | 20 |
-| A principal grant `user:u1 viewer document:priv_2` | 1 | 2 | 39 |
-| B the same, revoked | 1 | 2 | 39 |
-| C group membership `user:u49990 member group:g1` (g1 views `group_doc`) | 2 | 3 | 65 |
-| D folder grant at the top of the 15-folder chain (`folder:f1 viewer`) | 16 | 17 | 77 |
-| **E userset share `document:priv_3 viewer group:g2#member`** | **50,018** | 102 | **133,326** |
+The first measurement found the scale limit of the design as first written
+("a userset or object-reference delta re-derives every known subject"); the
+worker was then changed the same day to expand those deltas through the
+engine's own reverse expansion (`list_subjects`, gates off) and to take its
+snapshot as the blast radius of every tuple. Both columns are kept:
 
-Supporting figures: building the store's known-subject set (`DISTINCT`
-direct subjects, 50,018 rows) takes 188 ms; `_derive_pairs` on 2,000
-user × document pairs takes 4.37 s, i.e. **2.2 ms per pair** (six relations
-decided per pair, ~0.36 ms per decision); `list_subjects` on the
-group-shared document (51 subjects) takes 41–63 ms, on the public document
-20 ms.
+| | before (every known subject) | | after (`list_subjects` expansion) | |
+|---|--:|--:|--:|--:|
+| | pairs | ms | pairs | ms |
+| idle run (nothing in the feed) | 0 | 20 | 0 | 10 |
+| A principal grant `user:u1 viewer document:priv_2` | 1 | 39 | 1 | 56 |
+| B the same, revoked | 1 | 39 | 1 | 34 |
+| C group membership `user:u49990 member group:g1` | 2 | 65 | 2 | 41 |
+| D folder grant at the top of the 15-folder chain | 16 | 77 | 16 | 107 |
+| **E userset share `document:priv_3 viewer group:g2#member`** | **50,018** | **133,326** | **50** | **193** |
+| E2 the same share revoked | — | — | 50 | 199 |
+| F folder move `document:priv_4 parent folder:f3` | (same class as E) | | 4 | 157 |
+| G subject-wildcard grant `user:* viewer document:priv_8` | 50,003 | (same class as E) | 50,003 | 98,163 |
+| **snapshot of the whole store (`refresh_all`)** | 50 k × 50 k pairs | **infeasible (weeks)** | **110,202** | **199,000** |
+
+Supporting figures: `_derive_pairs` costs **2.2 ms per pair** (six relations
+decided per pair, ~0.36 ms per decision); the store-wide known-subject set
+(50,018 rows) takes 188 ms to build; `list_subjects` on the group-shared
+document (51 subjects) takes 41–63 ms. The snapshot produced 210,164 rows
+for 50,017 known subjects and 50,229 known objects; spot checks against the
+live engine agree (the group document's 50 viewers, the deep document's one
+viewer, each user's own document, the public document's `*` row).
 
 **What it says.** A, B, C and D are the "tens of milliseconds" the docs
-promise: a principal's change touches one pair, a folder grant at the top of
-a 15-deep chain touches 16 objects, and the fixed per-run overhead (feed
-page, cutoff, state) is ~20 ms. **E is the number that matters.** A userset
-share, a folder move or a subject-wildcard write falls back to *every known
-subject × the affected objects* — the safe over-approximation chosen in the
-design — and at 50 k users that is 50,018 pairs, 2.2 minutes, to write 102
-rows. The same approach makes the brute-force snapshot
-(`refresh_all_materialized_permissions` = every object × every known
-subject) infeasible at this scale: 50 k objects × 50 k subjects × 2.2 ms is
-measured in weeks, so the store above cannot be registered through it at
-all. Both limits are documented in DESIGN.md.
+promise and did not move: a principal's change touches one pair, a folder
+grant at the top of a 15-deep chain 16 objects, the fixed per-run overhead
+is ~10–20 ms. **E is the number that changed.** The first version fell back
+to every known subject for a userset share — 50,018 pairs and 2.2 minutes to
+write 102 rows — and the same objects × subjects shape made the snapshot
+infeasible, so the store could not be registered at all. The engine already
+answers the question that fallback brute-forced: `list_subjects` on the
+shared document returns the 51 subjects whose answer can change, so the share
+is now 50 pairs in under 200 ms (derived and live agree: 51 viewers), its
+revocation the same, a folder move 4 pairs, and the snapshot — the blast
+radius of every tuple, so linear in the grants — 110,202 pairs in 199 s for
+a 50 k-user store. **G is the remaining known cost and is by design:** a
+subject-wildcard grant (`user:*` on a document) makes every *known* user's
+rows on that document authoritative under the wildcard contract, so one
+public document costs 50,003 pairs and 100 k rows (98 s). Making a document
+public to everyone is rare; a store that does it per document at this scale
+should not use the derived table.
 
-**Where the fix is.** The engine already answers the question the fallback
-brute-forces: `list_subjects` on the shared document returns the 51 subjects
-whose answer can change in ~50 ms, and `list_objects` per subject is the
-reverse expansion the snapshot needs. Expanding a userset or object-reference
-delta through `list_subjects` (with gates switched off, `authz.gates_mode =
-off`) turns E from 50,018 pairs into ~51 and from 133 s into well under a
-second; a reverse-expansion snapshot makes registration linear in the
-number of grants instead of quadratic in the store. That is the next step
-for the worker and is recorded in the scratch notes; until it lands, the
-derived table suits stores whose subject population is in the thousands, or
-models where usersets and folder moves are rare.
+The incremental path's correctness under these expansions is covered by the
+replication test's random-mutation differential and by a deterministic case
+the expansion first got wrong: a member's membership and the team's
+reference deleted in one batch (the closure now also walks the batch's own
+deleted edges).

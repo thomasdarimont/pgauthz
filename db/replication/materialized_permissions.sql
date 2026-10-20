@@ -41,18 +41,23 @@
 -- pg_cron, on LISTEN authz_changes (the audit log's own doorbell), or in a
 -- loop — pulls one lag-gated page of the feed per registered store, resumes
 -- from the stored cursor after a crash, and for each delta re-derives only
--- the (subject, object) pairs whose answer can have changed:
+-- the (subject, object) pairs whose answer can have changed (the snapshot
+-- refresh_all takes is the same computation over every tuple of the store,
+-- so registration costs what the grants cost, not objects × subjects):
 --
 --   objects  = the delta's object plus every object that reaches it through
 --              tuples (reverse closure over tuple edges, full depth, cycle
 --              safe); an object-wildcard delta ('*') seeds every object of
 --              the type
---   subjects = the delta's own subject when it is a plain principal (the
---              model defines no relation on its type, so it can never be an
---              edge); every known subject of the type for a subject-wildcard
---              delta; every known subject when the delta's subject is a
---              userset or an object reference (team#member, parent folder,
---              a classification) — the safe over-approximation
+--   subjects = the delta's own subject, always; when the subject is a
+--              userset (team#member) the userset's members, and when it is an
+--              object reference (a parent folder, a manager, a
+--              classification — any type the model defines relations on)
+--              everyone holding any relation on that object — both resolved
+--              by the engine's reverse expansion, authz.list_subjects, gates
+--              off; every known subject of the type only for a
+--              subject-wildcard delta, when list_subjects reports a wildcard,
+--              or for a manual whole-object entry
 --   relations = every relation of the object's type
 --
 -- Each pair's allowed relations are recomputed and DIFFED against the stored
@@ -248,9 +253,10 @@ BEGIN
         PRIMARY KEY (store_id, object_type, object_id, user_type, user_id));
     TRUNCATE _mp_pairs;
     CREATE TEMP TABLE IF NOT EXISTS _mp_claimed (
-        id            bigint GENERATED ALWAYS AS IDENTITY,
+        id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
         store_id      integer, object_type integer, object_id text, relation integer,
         user_type     integer, user_id text, user_relation integer, op text);
+    CREATE INDEX IF NOT EXISTS _mp_claimed_user ON _mp_claimed (store_id, user_type, user_id);
     TRUNCATE _mp_claimed RESTART IDENTITY;
     CREATE TEMP TABLE IF NOT EXISTS _mp_written (store text, n integer);
     TRUNCATE _mp_written;
@@ -465,6 +471,24 @@ END;
 $$;
 
 ------------------------------------------------------------------------
+-- _mp_ensure_known: the store's known-subject set (every direct subject,
+-- '*' included), built once per run and only when a delta needs it.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._mp_ensure_known(p_store_id integer)
+RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM _mp_known_built b WHERE b.store_id = p_store_id) THEN RETURN; END IF;
+    INSERT INTO _mp_known
+    SELECT DISTINCT p_store_id, t.user_type, t.user_id
+      FROM authz.tuples t
+     WHERE t.store_id = p_store_id AND t.user_relation IS NULL
+    ON CONFLICT DO NOTHING;
+    INSERT INTO _mp_known_built VALUES (p_store_id);
+END;
+$$;
+
+------------------------------------------------------------------------
 -- _mp_blast_radius: turn the deltas in _mp_claimed into (subject, object)
 -- pairs in _mp_pairs (see the header for the rule).
 --
@@ -473,38 +497,59 @@ $$;
 -- single set-based query with the keys coming from a CTE made the planner
 -- hash-join the whole tuples table — every store, every partition — per
 -- delta (4 s on a database with large benchmark stores next to a tiny one).
--- The store-wide known-subject set is built only for stores where a delta
--- needs it (userset, object reference, wildcard, whole-object entry); a
--- principal's grant touches one pair and never scans the subjects.
+--
+-- Subjects of a userset or object-reference delta come from the engine's
+-- own reverse expansion (list_subjects, gates off): the members of the
+-- userset, or everyone holding any relation on the referenced object. On
+-- the 50 k-user drive store that is ~51 subjects in ~50 ms where "every
+-- known subject" was 50,018 pairs and 2.2 minutes. The store-wide known set
+-- is built only for a subject-wildcard delta, a wildcard reported by
+-- list_subjects, or a manual whole-object entry.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._mp_blast_radius()
 RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
-    r record;
+    r   record;
+    rel record;
+    st  record;
+    sub record;
 BEGIN
+    -- gates are per-principal history, not part of a precomputed row
+    PERFORM set_config('authz.gates_mode', 'off', true);
+
     CREATE TEMP TABLE IF NOT EXISTS _mp_known (
         store_id integer, user_type integer, user_id text,
         PRIMARY KEY (store_id, user_type, user_id));
+    CREATE TEMP TABLE IF NOT EXISTS _mp_known_built (store_id integer PRIMARY KEY);
     CREATE TEMP TABLE IF NOT EXISTS _mp_principal (
         store_id integer, user_type integer,
         PRIMARY KEY (store_id, user_type));
+    CREATE TEMP TABLE IF NOT EXISTS _mp_subject_types (
+        store_id integer, type_id integer, type_name text,
+        PRIMARY KEY (store_id, type_id));
+    CREATE TEMP TABLE IF NOT EXISTS _mp_expanded (
+        delta_id bigint, store_id integer, user_type integer, user_id text,
+        PRIMARY KEY (delta_id, store_id, user_type, user_id));
+    CREATE TEMP TABLE IF NOT EXISTS _mp_ref_subjects (   -- expansion of one referenced object / userset
+        store_id integer, ref_type integer, ref_id text, ref_relation integer,
+        user_type integer, user_id text,
+        PRIMARY KEY (store_id, ref_type, ref_id, ref_relation, user_type, user_id));
     CREATE TEMP TABLE IF NOT EXISTS _mp_closure (
         delta_id bigint, store_id integer, object_type integer, object_id text,
         PRIMARY KEY (delta_id, store_id, object_type, object_id));
     CREATE TEMP TABLE IF NOT EXISTS _mp_frontier (
         delta_id bigint, store_id integer, object_type integer, object_id text);
+    CREATE INDEX IF NOT EXISTS _mp_frontier_obj ON _mp_frontier (store_id, object_type, object_id);
     CREATE TEMP TABLE IF NOT EXISTS _mp_next (LIKE _mp_frontier);
-    TRUNCATE _mp_known, _mp_principal, _mp_closure, _mp_frontier, _mp_next;
+    TRUNCATE _mp_known, _mp_known_built, _mp_principal, _mp_subject_types, _mp_expanded,
+             _mp_ref_subjects, _mp_closure, _mp_frontier, _mp_next;
 
     -- principal subject types: no relation is defined on the type in the
     -- MODEL, so no tuple can ever make one of its members an edge (a userset
     -- source, a parent, a manager). Decided from the model, not from the
     -- current tuples: a batch that deletes the last tuple on a type must not
-    -- turn that type into a principal while its deltas are being processed
-    -- — the deleted edge's delta is exactly the one that has to re-derive
-    -- every subject above it. (A type with rules but used only as a
-    -- principal is treated as a possible edge: safe over-approximation.)
+    -- turn that type into a principal while its deltas are being processed.
     FOR r IN SELECT DISTINCT c.store_id, c.user_type FROM _mp_claimed c WHERE c.user_type IS NOT NULL LOOP
         IF NOT EXISTS (SELECT 1 FROM authz.models m
                         WHERE m.store_id = r.store_id AND m.object_type = r.user_type)
@@ -514,20 +559,83 @@ BEGIN
         END IF;
     END LOOP;
 
-    -- every subject a store knows — only where a delta needs the broad set
-    FOR r IN
-        SELECT DISTINCT c.store_id FROM _mp_claimed c
-         WHERE c.user_type IS NULL
-            OR c.user_relation IS NOT NULL
-            OR c.user_id = '*'
-            OR NOT EXISTS (SELECT 1 FROM _mp_principal pr
-                            WHERE pr.store_id = c.store_id AND pr.user_type = c.user_type)
-    LOOP
-        INSERT INTO _mp_known
-        SELECT DISTINCT r.store_id, t.user_type, t.user_id
-          FROM authz.tuples t
+    -- the types that appear as direct subjects in each store (what list_subjects enumerates)
+    FOR r IN SELECT DISTINCT c.store_id FROM _mp_claimed c LOOP
+        INSERT INTO _mp_subject_types
+        SELECT DISTINCT r.store_id, t.user_type, ty.name
+          FROM authz.tuples t JOIN authz.types ty ON ty.id = t.user_type
          WHERE t.store_id = r.store_id AND t.user_relation IS NULL
         ON CONFLICT DO NOTHING;
+    END LOOP;
+
+    -- userset and object-reference deltas: who can reach the referenced
+    -- object? The userset's own relation, or every relation the model
+    -- defines on the referenced type, for every subject type of the store —
+    -- expanded ONCE per distinct reference (a snapshot has many tuples per
+    -- team or folder), then joined back to the deltas.
+    FOR r IN
+        SELECT DISTINCT c.store_id, s.name AS store, c.user_type, ut.name AS utype, c.user_id,
+               c.user_relation, ur.name AS urel
+          FROM _mp_claimed c
+          JOIN authz.stores    s  ON s.id  = c.store_id
+          JOIN authz.types     ut ON ut.id = c.user_type
+     LEFT JOIN authz.relations ur ON ur.id = c.user_relation
+         WHERE c.user_type IS NOT NULL AND c.user_id <> '*'
+           AND (c.user_relation IS NOT NULL
+                OR NOT EXISTS (SELECT 1 FROM _mp_principal pr
+                                WHERE pr.store_id = c.store_id AND pr.user_type = c.user_type))
+    LOOP
+        FOR rel IN
+            SELECT r.urel AS name WHERE r.urel IS NOT NULL
+            UNION
+            SELECT rl.name FROM authz.models m JOIN authz.relations rl ON rl.id = m.relation
+             WHERE r.urel IS NULL AND m.store_id = r.store_id AND m.object_type = r.user_type
+        LOOP
+            FOR st IN SELECT t.type_id, t.type_name FROM _mp_subject_types t WHERE t.store_id = r.store_id LOOP
+                BEGIN
+                    FOR sub IN
+                        SELECT ls.subject_id, ls.is_wildcard
+                          FROM authz.list_subjects(r.store, st.type_name, rel.name, r.utype, r.user_id) ls
+                    LOOP
+                        IF sub.is_wildcard THEN
+                            -- "everyone of this type": the known ones need authoritative rows,
+                            -- the '*' pseudo-subject answers for the unknown ones
+                            PERFORM authz._mp_ensure_known(r.store_id);
+                            INSERT INTO _mp_ref_subjects
+                            SELECT r.store_id, r.user_type, r.user_id, COALESCE(r.user_relation, 0), k.user_type, k.user_id
+                              FROM _mp_known k WHERE k.store_id = r.store_id AND k.user_type = st.type_id
+                            ON CONFLICT DO NOTHING;
+                            INSERT INTO _mp_ref_subjects
+                            VALUES (r.store_id, r.user_type, r.user_id, COALESCE(r.user_relation, 0), st.type_id, '*')
+                            ON CONFLICT DO NOTHING;
+                        ELSE
+                            INSERT INTO _mp_ref_subjects
+                            VALUES (r.store_id, r.user_type, r.user_id, COALESCE(r.user_relation, 0), st.type_id, sub.subject_id)
+                            ON CONFLICT DO NOTHING;
+                        END IF;
+                    END LOOP;
+                EXCEPTION WHEN OTHERS THEN
+                    -- the expansion is an optimisation; on any surprise fall back to every known subject of the type
+                    PERFORM authz._mp_ensure_known(r.store_id);
+                    INSERT INTO _mp_ref_subjects
+                    SELECT r.store_id, r.user_type, r.user_id, COALESCE(r.user_relation, 0), k.user_type, k.user_id
+                      FROM _mp_known k WHERE k.store_id = r.store_id AND k.user_type = st.type_id
+                    ON CONFLICT DO NOTHING;
+                END;
+            END LOOP;
+        END LOOP;
+    END LOOP;
+    INSERT INTO _mp_expanded
+    SELECT c.id, c.store_id, rs.user_type, rs.user_id
+      FROM _mp_claimed c
+      JOIN _mp_ref_subjects rs ON rs.store_id = c.store_id AND rs.ref_type = c.user_type
+                              AND rs.ref_id = c.user_id AND rs.ref_relation = COALESCE(c.user_relation, 0)
+    ON CONFLICT DO NOTHING;
+
+    -- subject-wildcard and whole-object deltas need the store-wide set
+    FOR r IN SELECT DISTINCT c.store_id FROM _mp_claimed c
+              WHERE c.user_type IS NULL OR (c.user_relation IS NULL AND c.user_id = '*') LOOP
+        PERFORM authz._mp_ensure_known(r.store_id);
     END LOOP;
 
     -- seeds: the delta's object; for an object wildcard, every object of the type
@@ -543,7 +651,11 @@ BEGIN
     END LOOP;
 
     -- reverse closure, breadth first: objects whose tuples reference a
-    -- frontier object as their subject (usersets, parent references)
+    -- frontier object as their subject (usersets, parent references). The
+    -- edges are the current tuples PLUS the batch's own deltas: a deleted
+    -- edge is exactly the path a withdrawn permission came through, and a
+    -- subject whose membership and whose team's reference both vanished in
+    -- one batch is reached only by walking the deleted reference.
     INSERT INTO _mp_frontier SELECT delta_id, store_id, object_type, object_id FROM _mp_closure;
     LOOP
         TRUNCATE _mp_next;
@@ -554,6 +666,16 @@ BEGIN
                   FROM _mp_frontier f
                   JOIN authz.tuples t ON t.store_id = r.store_id
                                      AND t.user_type = r.object_type AND t.user_id = r.object_id
+                 WHERE f.store_id = r.store_id AND f.object_type = r.object_type AND f.object_id = r.object_id
+                ON CONFLICT DO NOTHING
+                RETURNING delta_id, store_id, object_type, object_id)
+            INSERT INTO _mp_next SELECT * FROM ins;
+            WITH ins AS (
+                INSERT INTO _mp_closure
+                SELECT f.delta_id, c.store_id, c.object_type, c.object_id
+                  FROM _mp_frontier f
+                  JOIN _mp_claimed c ON c.store_id = r.store_id
+                                    AND c.user_type = r.object_type AND c.user_id = r.object_id
                  WHERE f.store_id = r.store_id AND f.object_type = r.object_type AND f.object_id = r.object_id
                 ON CONFLICT DO NOTHING
                 RETURNING delta_id, store_id, object_type, object_id)
@@ -580,15 +702,14 @@ BEGIN
               JOIN _mp_known k ON k.store_id = c.store_id AND k.user_type = c.user_type
              WHERE c.user_relation IS NULL AND c.user_id = '*'
             UNION
-            -- userset, object reference (non-principal type), or whole-object
-            -- entry: every known subject
+            -- whole-object entry (manual): every known subject
             SELECT c.id, c.store_id, k.user_type, k.user_id
               FROM _mp_claimed c
               JOIN _mp_known k ON k.store_id = c.store_id
              WHERE c.user_type IS NULL
-                OR c.user_relation IS NOT NULL
-                OR (c.user_id <> '*' AND NOT EXISTS (SELECT 1 FROM _mp_principal pr
-                                                       WHERE pr.store_id = c.store_id AND pr.user_type = c.user_type))
+            UNION
+            -- userset members / holders of a relation on the referenced object
+            SELECT e.delta_id, e.store_id, e.user_type, e.user_id FROM _mp_expanded e
            ) s ON s.delta_id = cl.delta_id
     ON CONFLICT DO NOTHING;
 END;
@@ -796,8 +917,9 @@ $$;
 -- safe cutoff (watch_safe_until(p_lag): the stability lag before now, or
 -- the oldest open transaction, whichever is earlier — never later than this
 -- transaction's own start, so a write committing while the snapshot runs is
--- replayed, never missed), derive every object × every known subject, file
--- a deferred delta for every expiring tuple. Returns the rows written.
+-- replayed, never missed), derive the blast radius of every tuple of the
+-- store, file a deferred delta for every expiring tuple. Returns the rows
+-- written.
 ------------------------------------------------------------------------
 DROP FUNCTION IF EXISTS authz.refresh_all_materialized_permissions(text);            -- pre-changefeed signature
 DROP FUNCTION IF EXISTS authz.refresh_all_materialized_permissions(text, interval);  -- pre-cutoff signature
@@ -820,13 +942,14 @@ BEGIN
     DELETE FROM authz.materialized_objects     WHERE store = p_store;
     DELETE FROM authz.permissions_refresh_queue WHERE store_id = v_store_id;
 
+    -- the snapshot is the blast radius of every tuple of the store, taken
+    -- as an insert: every (subject, object) pair a grant can reach, and
+    -- nothing else — linear in the grants, not objects × subjects
     PERFORM authz._mp_prepare_pairs();
-    INSERT INTO _mp_pairs (store_id, object_type, object_id, user_type, user_id)
-    SELECT v_store_id, o.object_type, o.object_id, k.user_type, k.user_id
-      FROM (SELECT DISTINCT t.object_type, t.object_id FROM authz.tuples t WHERE t.store_id = v_store_id) o
-     CROSS JOIN (SELECT DISTINCT t.user_type, t.user_id FROM authz.tuples t
-                  WHERE t.store_id = v_store_id AND t.user_relation IS NULL) k
-    ON CONFLICT DO NOTHING;
+    INSERT INTO _mp_claimed (store_id, object_type, object_id, relation, user_type, user_id, user_relation, op)
+    SELECT t.store_id, t.object_type, t.object_id, t.relation, t.user_type, t.user_id, t.user_relation, 'SNAPSHOT'
+      FROM authz.tuples t WHERE t.store_id = v_store_id;
+    PERFORM authz._mp_blast_radius();
     SELECT d.pairs, d.rows_written INTO v_pairs, v_written FROM authz._derive_pairs() d;
 
     INSERT INTO authz.permissions_refresh_queue
@@ -916,6 +1039,7 @@ BEGIN
         ALTER FUNCTION authz._mp_prepare_pairs()                                      OWNER TO authz_owner;
         ALTER FUNCTION authz._mp_require_read_committed(text)                         OWNER TO authz_owner;
         ALTER FUNCTION authz._mp_blast_radius()                                       OWNER TO authz_owner;
+        ALTER FUNCTION authz._mp_ensure_known(integer)                                OWNER TO authz_owner;
         ALTER FUNCTION authz._derive_pairs()                                          OWNER TO authz_owner;
         ALTER FUNCTION authz._refresh_permissions_for_object(integer, integer, text) OWNER TO authz_owner;
         ALTER FUNCTION authz.refresh_materialized_permissions(interval, int, timestamptz)      OWNER TO authz_owner;
@@ -935,6 +1059,7 @@ $$;
 REVOKE ALL ON FUNCTION authz._mp_prepare_pairs()                                      FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._mp_require_read_committed(text)                         FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._mp_blast_radius()                                       FROM PUBLIC;
+REVOKE ALL ON FUNCTION authz._mp_ensure_known(integer)                                FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._derive_pairs()                                          FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._refresh_permissions_for_object(integer, integer, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz.refresh_materialized_permissions(interval, int, timestamptz)      FROM PUBLIC;

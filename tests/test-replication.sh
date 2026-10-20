@@ -234,6 +234,24 @@ parity=$(wait_derived_parity) || true
 assert "transition 3: zz_newbie is unknown again and still inherits employee:*" "t" \
   "$(qp "$DERIVED" "SELECT NOT EXISTS(SELECT 1 FROM authz.materialized_subjects WHERE store='aia_acme' AND user_id='zz_newbie') AND authz.check_permission('aia_acme','employee','zz_newbie','delegatable','document','board-deck');")"
 
+echo "==> A member leaving AND the team's reference going in one batch (both edges of frank's path)..."
+# frank is tax_clerk on assignment eng_42_tax only through team:tax_team. Delete
+# his membership and the team's reference in one transaction: his own delta
+# can reach the assignment only by walking the deleted reference, and the
+# reference's expansion no longer lists him. Both must still re-derive him.
+assert "frank is tax_clerk on eng_42_tax via tax_team (before)" "t" \
+  "$(qp "$DERIVED" "SELECT authz.check_permission('demo','internal_user','frank','tax_clerk','assignment','eng_42_tax');")"
+qp "$PRIMARY" "SELECT authz.delete_tuple('demo','internal_user','frank','member','team','tax_team'), authz.delete_tuple('demo','team','tax_team','tax_clerk','assignment','eng_42_tax','member');" >/dev/null
+drain_feed || assert "two-edge deletion: feed drained" "ok" "timeout"
+parity=$(wait_derived_parity) || true
+assert "frank lost tax_clerk on eng_42_tax on the replica (live agrees)" "f|f" \
+  "$(qp "$DERIVED" "SELECT authz.check_permission('demo','internal_user','frank','tax_clerk','assignment','eng_42_tax');")|$(qp "$PRIMARY" "SELECT authz.check_access('demo','internal_user','frank','tax_clerk','assignment','eng_42_tax');")"
+qp "$PRIMARY" "SELECT authz.write_tuple('demo','internal_user','frank','member','team','tax_team'), authz.write_tuple('demo','team','tax_team','tax_clerk','assignment','eng_42_tax', p_user_relation => 'member');" >/dev/null
+drain_feed || assert "two-edge restore: feed drained" "ok" "timeout"
+parity=$(wait_derived_parity) || true
+assert "frank is tax_clerk again after both edges are restored" "t" \
+  "$(qp "$DERIVED" "SELECT authz.check_permission('demo','internal_user','frank','tax_clerk','assignment','eng_42_tax');")"
+
 echo "==> A removed type rebuilds the store (TYPE_REMOVED in the feed)..."
 assert "demo has derived rows for upload_request before the removal" "t" \
   "$(qp "$DERIVED" "SELECT count(*) > 0 FROM authz.materialized_permissions WHERE store='demo' AND object_type='upload_request';")"

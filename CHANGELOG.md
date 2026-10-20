@@ -355,12 +355,24 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
-- **BENCHMARKS.md: the derived-permissions worker characterized on the
-  `drive` store** (50 k users). A principal's grant or revoke is one pair in
-  ~39 ms, a folder grant at the top of a 15-deep chain 16 pairs in 77 ms, but
-  a userset share falls back to every known subject: 50,018 pairs, 2.2 min;
-  the brute-force snapshot is infeasible at that scale. DESIGN.md states the
-  limit; `list_subjects`-based expansion is the recorded next step.
+- **Derived permissions: userset and object-reference deltas expand through
+  the engine; the snapshot is the blast radius of every tuple.** Characterizing
+  the worker on the 50 k-user `drive` store (BENCHMARKS.md addendum
+  2026-10-20) found the scale limit of "every known subject" as the fallback
+  for a userset share or a folder move: 50,018 pairs and 2.2 minutes for one
+  share, and a snapshot of objects × subjects that could not finish. The
+  worker now asks `list_subjects` (gates off, once per distinct reference)
+  who holds the userset's relation or any relation on the referenced object,
+  and `refresh_all_materialized_permissions` takes the blast radius of every
+  tuple instead of the cross product: the share is 50 pairs in ~200 ms, its
+  revocation the same, a folder move 4 pairs, the snapshot 110 k pairs in
+  ~200 s; principal deltas stay at one pair in tens of milliseconds. Every
+  known subject is re-derived only for subject-wildcard grants (by the
+  contract: ~100 s per public document at that scale), a wildcard reported by
+  `list_subjects`, or a manual whole-object entry. The closure also walks the
+  batch's own deleted edges — the random differential found a member whose
+  membership and whose team's reference vanished in one batch was otherwise
+  reached by neither path; that case is a deterministic regression test now.
 
 - **Derived permissions table documented as a feature.** The flat
   `authz.materialized_permissions` table (`db/replication/`) — pgauthz's
