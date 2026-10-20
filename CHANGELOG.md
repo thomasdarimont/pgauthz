@@ -355,6 +355,13 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- **BENCHMARKS.md: the derived-permissions worker characterized on the
+  `drive` store** (50 k users). A principal's grant or revoke is one pair in
+  ~39 ms, a folder grant at the top of a 15-deep chain 16 pairs in 77 ms, but
+  a userset share falls back to every known subject: 50,018 pairs, 2.2 min;
+  the brute-force snapshot is infeasible at that scale. DESIGN.md states the
+  limit; `list_subjects`-based expansion is the recorded next step.
+
 - **Derived permissions table documented as a feature.** The flat
   `authz.materialized_permissions` table (`db/replication/`) — pgauthz's
   equivalent of a hosted *permissions index* for search, analytics and

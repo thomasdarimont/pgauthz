@@ -575,3 +575,58 @@ both directions), while the unchanged control swings 181–210 µs across
 rounds — the ~15 % band every comparison in this file has to be read
 against. Re-acquiring a relation lock the session will take anyway is a
 local hash lookup; the number says so.
+
+## Addendum: 2026-10-20 (derived permissions: the incremental worker on `drive`)
+
+A characterization, not a rerun: the changefeed-driven worker for the
+derived-permissions table (`db/replication/materialized_permissions.sql`,
+`refresh_materialized_permissions`) is new and had no numbers. Measured on
+the `drive` store (60,031 tuples: 50,003 users each owning a private
+document, 200 groups of 50 members, one group-shared document, a 15-folder
+chain ending in one document, one public document) in a single rolled-back
+transaction on the same laptop and database as the 2026-10-18 run (PostgreSQL
+18.6, 279 k-row audit log, the full overlay stack idle). The store was
+registered without a snapshot (cursor = the transaction's start) so each
+measurement is exactly one delta; the worker ran with `p_until` overriding
+the cutoff, as the in-transaction harness requires.
+
+| delta | pairs re-derived | rows written | ms |
+|---|--:|--:|--:|
+| idle run (nothing in the feed) | 0 | 0 | 20 |
+| A principal grant `user:u1 viewer document:priv_2` | 1 | 2 | 39 |
+| B the same, revoked | 1 | 2 | 39 |
+| C group membership `user:u49990 member group:g1` (g1 views `group_doc`) | 2 | 3 | 65 |
+| D folder grant at the top of the 15-folder chain (`folder:f1 viewer`) | 16 | 17 | 77 |
+| **E userset share `document:priv_3 viewer group:g2#member`** | **50,018** | 102 | **133,326** |
+
+Supporting figures: building the store's known-subject set (`DISTINCT`
+direct subjects, 50,018 rows) takes 188 ms; `_derive_pairs` on 2,000
+user × document pairs takes 4.37 s, i.e. **2.2 ms per pair** (six relations
+decided per pair, ~0.36 ms per decision); `list_subjects` on the
+group-shared document (51 subjects) takes 41–63 ms, on the public document
+20 ms.
+
+**What it says.** A, B, C and D are the "tens of milliseconds" the docs
+promise: a principal's change touches one pair, a folder grant at the top of
+a 15-deep chain touches 16 objects, and the fixed per-run overhead (feed
+page, cutoff, state) is ~20 ms. **E is the number that matters.** A userset
+share, a folder move or a subject-wildcard write falls back to *every known
+subject × the affected objects* — the safe over-approximation chosen in the
+design — and at 50 k users that is 50,018 pairs, 2.2 minutes, to write 102
+rows. The same approach makes the brute-force snapshot
+(`refresh_all_materialized_permissions` = every object × every known
+subject) infeasible at this scale: 50 k objects × 50 k subjects × 2.2 ms is
+measured in weeks, so the store above cannot be registered through it at
+all. Both limits are documented in DESIGN.md.
+
+**Where the fix is.** The engine already answers the question the fallback
+brute-forces: `list_subjects` on the shared document returns the 51 subjects
+whose answer can change in ~50 ms, and `list_objects` per subject is the
+reverse expansion the snapshot needs. Expanding a userset or object-reference
+delta through `list_subjects` (with gates switched off, `authz.gates_mode =
+off`) turns E from 50,018 pairs into ~51 and from 133 s into well under a
+second; a reverse-expansion snapshot makes registration linear in the
+number of grants instead of quadratic in the store. That is the next step
+for the worker and is recorded in the scratch notes; until it lands, the
+derived table suits stores whose subject population is in the thousands, or
+models where usersets and folder moves are rare.

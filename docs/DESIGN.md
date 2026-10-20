@@ -916,7 +916,14 @@ each run, `refresh_materialized_permissions()`:
 
 A write costs nothing extra; a typical grant or revoke re-derives one pair
 (tens of milliseconds); a share with a team or a folder move re-derives the
-affected objects for every known subject. `materialized_permissions_status()`
+affected objects for **every known subject** — the safe over-approximation,
+and the current scale limit: on the 50 k-user `drive` benchmark store one
+userset share is 50,018 pairs and 2.2 minutes, and the brute-force snapshot
+(every object × every known subject) is infeasible altogether
+([BENCHMARKS.md, 2026-10-20 addendum](BENCHMARKS.md#addendum-2026-10-20-derived-permissions-the-incremental-worker-on-drive)).
+Until the worker expands those deltas through `list_subjects` and takes its
+snapshot by reverse expansion, the derived table suits stores whose subject
+population is in the thousands. `materialized_permissions_status()`
 shows the backlog, `as_of` and the last run per store. Run the worker:
 - **Explicitly:** `SELECT authz.refresh_materialized_permissions()` (again
   while any store's `feed_drained` is false)
