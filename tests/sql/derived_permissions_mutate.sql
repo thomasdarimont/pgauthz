@@ -12,9 +12,13 @@
 -- the restriction allows it — the '*' subject; on a known or a fresh object),
 -- expiring direct grant (1–3 s), revoke of a random tuple, revoke of a random
 -- userset / wildcard tuple, userset grant (team#member style), object-wildcard
--- grant. Writes the model rejects (type restrictions, namespaces) are counted
--- and skipped, so the walk stays inside the model. setseed() makes a run
--- reproducible for a given seed and starting state.
+-- grant. Writes the model rejects (type restrictions, wildcards not allowed,
+-- namespaces) and draws with nothing to act on are counted as rejected and
+-- skipped, so the walk stays inside the model; any other error is counted as
+-- UNEXPECTED and reported with its first message — the test asserts zero.
+-- setseed() makes a run reproducible for a given seed and starting state
+-- (the walk still depends on which expiring tuples are alive, i.e. on
+-- cadence).
 DO $$
 DECLARE
     v_store    text  := current_setting('mutate.store');
@@ -25,8 +29,11 @@ DECLARE
     v_op       int;
     v_otype    text; v_rel text; v_utype text; v_urel text;
     v_obj      text; v_subj text; v_wild boolean;
-    v_applied  int := 0;
-    v_rejected int := 0;
+    v_applied    int := 0;
+    v_rejected   int := 0;
+    v_unexpected int := 0;
+    v_first_err  text;
+    v_msg        text;
 BEGIN
     PERFORM setseed(v_seed);
     v_store_id := authz._s(v_store);
@@ -148,11 +155,19 @@ BEGIN
             END IF;
             v_applied := v_applied + 1;
         EXCEPTION WHEN OTHERS THEN
-            v_rejected := v_rejected + 1;
+            GET STACKED DIAGNOSTICS v_msg = MESSAGE_TEXT;
+            IF v_msg ~* '^(type restriction|wildcard|namespace|nothing to revoke|no [a-z -]+(restriction|rule|objects))'
+               OR v_msg ~* 'not allowed|restriction|namespace' THEN
+                v_rejected := v_rejected + 1;
+            ELSE
+                v_unexpected := v_unexpected + 1;
+                v_first_err := COALESCE(v_first_err, v_msg);
+            END IF;
         END;
     END LOOP;
 
-    RAISE NOTICE 'mutate % (seed %, % draws): % applied, % rejected by the model',
-        v_store, v_seed, v_n, v_applied, v_rejected;
+    RAISE NOTICE 'mutate % (seed %, % draws): % applied, % rejected by the model, % unexpected errors%',
+        v_store, v_seed, v_n, v_applied, v_rejected, v_unexpected,
+        COALESCE(' (first: ' || v_first_err || ')', '');
 END;
 $$;

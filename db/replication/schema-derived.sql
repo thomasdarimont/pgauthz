@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS authz.materialized_refresh_state (
     last_run_finished_at  timestamptz,
     last_run_changes      integer NOT NULL DEFAULT 0,
     last_run_pairs        integer NOT NULL DEFAULT 0,
-    last_run_rows_written integer NOT NULL DEFAULT 0
+    last_run_rows_written integer NOT NULL DEFAULT 0,
+    last_run_gate         interval
 );
 
 -- "How stale can this copy be?" — NULL until the store is derived.

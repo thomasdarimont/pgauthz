@@ -14,9 +14,12 @@
 #     plus unknown probes, so the wildcard contract ('*' rows apply only to
 #     entities the engine does not know) is proven, not assumed; a write on
 #     the primary reaches the derived replica through the changefeed-driven
-#     worker; and after each of three batches of random mutations
-#     (tests/sql/derived_permissions_mutate.sql: grants, revokes, usersets,
-#     wildcards, short expiries) the differential still holds.
+#     worker; a subject or object that becomes known (or unknown) under a
+#     wildcard keeps agreeing with the primary; a forced type removal rebuilds
+#     the store; a write inside a transaction held open for seconds is never
+#     skipped by the cursor; and after each of three batches of random
+#     mutations (tests/sql/derived_permissions_mutate.sql: grants, revokes,
+#     usersets, wildcards, short expiries) the differential still holds.
 #
 # The aia-acme fixture is loaded onto the primary in addition to the demo
 # because it has subject wildcards (employee:*), exclusion and intersection;
@@ -199,6 +202,76 @@ assert "an unknown user cannot read that unknown document" "f" \
 assert "alice cannot read doc_acc_001 (no path into the accounting engagement)" "f" \
   "$(qp "$DERIVED" "SELECT authz.check_permission('demo','internal_user','alice','can_read','document','doc_acc_001');")"
 
+echo "==> Known-state transitions under wildcards (the subscriber must keep agreeing with the primary)..."
+# An unknown employee inherits employee:* on board-deck. An unrelated grant
+# makes her known — the '*' rows stop applying, so concrete rows must appear.
+assert "unknown zz_newbie inherits employee:* delegatable on board-deck" "t" \
+  "$(qp "$DERIVED" "SELECT authz.check_permission('aia_acme','employee','zz_newbie','delegatable','document','board-deck');")"
+qp "$PRIMARY" "SELECT authz.write_tuple('aia_acme','employee','zz_newbie','editor','document','q3-plan');" >/dev/null
+drain_feed || assert "transition 1: feed drained" "ok" "timeout"
+parity=$(wait_derived_parity) || true
+assert "transition 1: zz_newbie is now a known subject on the replica" "t" \
+  "$(qp "$DERIVED" "SELECT EXISTS(SELECT 1 FROM authz.materialized_subjects WHERE store='aia_acme' AND user_id='zz_newbie');")"
+assert "transition 1: known zz_newbie still may 'delegatable' board-deck (concrete row materialized)" "t" \
+  "$(qp "$DERIVED" "SELECT authz.check_permission('aia_acme','employee','zz_newbie','delegatable','document','board-deck');")"
+# An unknown document inherits nadia's document:* grant. A grant to someone
+# else makes it known — nadia needs a concrete row on it.
+assert "unknown doc_fresh_obj: nadia_auditor reads it via document:*" "t" \
+  "$(qp "$DERIVED" "SELECT authz.check_permission('demo','internal_user','nadia_auditor','can_read','document','doc_fresh_obj');")"
+qp "$PRIMARY" "SELECT authz.write_tuple('demo','internal_user','bob','viewer','document','doc_fresh_obj');" >/dev/null
+drain_feed || assert "transition 2: feed drained" "ok" "timeout"
+parity=$(wait_derived_parity) || true
+assert "transition 2: doc_fresh_obj is now a known object on the replica" "t" \
+  "$(qp "$DERIVED" "SELECT EXISTS(SELECT 1 FROM authz.materialized_objects WHERE store='demo' AND object_id='doc_fresh_obj');")"
+assert "transition 2: nadia_auditor still reads the now-known document (concrete row)" "t" \
+  "$(qp "$DERIVED" "SELECT authz.check_permission('demo','internal_user','nadia_auditor','can_read','document','doc_fresh_obj');")"
+assert "transition 2: bob reads it too" "t" \
+  "$(qp "$DERIVED" "SELECT authz.check_permission('demo','internal_user','bob','can_read','document','doc_fresh_obj');")"
+# Known → unknown again: rows go, the '*' row applies once more.
+qp "$PRIMARY" "SELECT authz.delete_tuple('aia_acme','employee','zz_newbie','editor','document','q3-plan');" >/dev/null
+drain_feed || assert "transition 3: feed drained" "ok" "timeout"
+parity=$(wait_derived_parity) || true
+assert "transition 3: zz_newbie is unknown again and still inherits employee:*" "t" \
+  "$(qp "$DERIVED" "SELECT NOT EXISTS(SELECT 1 FROM authz.materialized_subjects WHERE store='aia_acme' AND user_id='zz_newbie') AND authz.check_permission('aia_acme','employee','zz_newbie','delegatable','document','board-deck');")"
+
+echo "==> A removed type rebuilds the store (TYPE_REMOVED in the feed)..."
+assert "demo has derived rows for upload_request before the removal" "t" \
+  "$(qp "$DERIVED" "SELECT count(*) > 0 FROM authz.materialized_permissions WHERE store='demo' AND object_type='upload_request';")"
+qp "$PRIMARY" "SELECT authz.model_remove_type('demo','upload_request', p_force => true);" >/dev/null
+drain_feed || assert "type removal: feed drained" "ok" "timeout"
+parity=$(wait_derived_parity) || true
+assert "no derived rows for the removed type remain on the replica" "0" \
+  "$(qp "$DERIVED" "SELECT count(*) FROM authz.materialized_permissions WHERE store='demo' AND object_type='upload_request';")"
+differential "after type removal"
+
+echo "==> A long-open transaction must never be skipped by the cursor..."
+# Session A opens a transaction, writes, and holds it open for 5 s; session B
+# writes and commits meanwhile. A's row has the earlier performed_at. The
+# worker must widen its gate to A's age and consume neither until A commits.
+cat > "$WORK/slow.sql" <<'SQL'
+BEGIN;
+SELECT authz.write_tuple('demo','internal_user','ci_slow','viewer','document','doc_acc_001');
+SELECT pg_sleep(5);
+COMMIT;
+SQL
+docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -q < "$WORK/slow.sql" >/dev/null 2>&1 &
+slow_pid=$!
+sleep 1
+qp "$PRIMARY" "SELECT authz.write_tuple('demo','internal_user','ci_fast','viewer','document','doc_acc_001');" >/dev/null
+sleep 1.5
+qp "$PRIMARY" "SELECT authz.refresh_materialized_permissions();" >/dev/null
+assert "the worker widened its gate to the open transaction (> 2 s)" "t" \
+  "$(qp "$PRIMARY" "SELECT last_run_gate > interval '2 seconds' FROM authz.materialized_refresh_state WHERE store='demo';")"
+assert "nothing past the open transaction was consumed (ci_fast not derived yet)" "0" \
+  "$(qp "$PRIMARY" "SELECT count(*) FROM authz.materialized_permissions WHERE store='demo' AND user_id='ci_fast';")"
+wait "$slow_pid" || true
+drain_feed || assert "long transaction: feed drained after commit" "ok" "timeout"
+parity=$(wait_derived_parity) || true
+assert "the slow transaction's write reached the derived replica" "t" \
+  "$(qp "$DERIVED" "SELECT authz.check_permission('demo','internal_user','ci_slow','can_read','document','doc_acc_001');")"
+assert "the fast write reached it as well" "t" \
+  "$(qp "$DERIVED" "SELECT authz.check_permission('demo','internal_user','ci_fast','can_read','document','doc_acc_001');")"
+
 echo "==> Asserting LIVE propagation (write on primary -> full replica)..."
 qp "$PRIMARY" "SELECT authz.write_tuple('demo','internal_user','ci_repltest','viewer','document','doc_acc_001');" >/dev/null
 live=timeout
@@ -233,11 +306,17 @@ echo "==> Randomized mutations: 3 batches × 25 draws per store, worker, expirie
 # known / fresh objects), expiring grants (1–3 s), revokes, userset grants,
 # object-wildcard grants; writes the model rejects are skipped. Seeds are fixed
 # so a failure is reproducible from the same starting state.
-mutate() {  # store seed
-  {
-    echo "SELECT set_config('mutate.store', '$1', false), set_config('mutate.n', '25', false), set_config('mutate.seed', '$2', false);"
-    cat tests/sql/derived_permissions_mutate.sql
-  } | docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -v ON_ERROR_STOP=1 -q 2>&1 | grep -i "mutate" | sed 's/^/    /' || true
+mutate() {  # store seed  — psql must succeed, enough draws must apply, no unexpected errors
+  local out rc=0 applied unexpected
+  out=$({ echo "SELECT set_config('mutate.store', '$1', false), set_config('mutate.n', '25', false), set_config('mutate.seed', '$2', false);"
+          cat tests/sql/derived_permissions_mutate.sql
+        } | docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -v ON_ERROR_STOP=1 -q 2>&1) || rc=$?
+  echo "$out" | grep -i "mutate " | sed 's/^/    /'
+  assert "mutate $1 (seed $2): psql exited 0" "0" "$rc"
+  applied=$(echo "$out" | sed -n 's/.*: \([0-9]*\) applied.*/\1/p' | head -1)
+  unexpected=$(echo "$out" | sed -n 's/.*, \([0-9]*\) unexpected.*/\1/p' | head -1)
+  assert "mutate $1 (seed $2): at least 8 of 25 draws applied (${applied:-?})" "t" "$([ "${applied:-0}" -ge 8 ] && echo t || echo f)"
+  assert "mutate $1 (seed $2): no unexpected SQL errors" "0" "${unexpected:-?}"
 }
 for batch in 1 2 3; do
   mutate demo     "0.${batch}1"

@@ -270,6 +270,29 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **Derived permissions: review follow-ups (incremental refresh).** Four
+  correctness and privilege findings from an external review of the
+  changefeed-driven worker, each with a deterministic regression test in
+  `tests/test-replication.sh`: (1) a subject or object that *became* known
+  under a wildcard lost the `*` rows it had inherited without gaining
+  concrete ones — the worker now derives the newcomer against every object
+  (subject) carrying a `*` row of its type; (2) the cursor could skip a
+  write made in a transaction that committed after a later one — the gate
+  is now max(stability lag, age of the oldest open transaction), read from
+  `pg_stat_activity`, so an open transaction stalls the cursor instead of
+  being lost (`last_run_gate` / `oldest_open_txn_age` in the status);
+  (3) the three public `SECURITY DEFINER` entry points kept PostgreSQL's
+  default `EXECUTE` for `PUBLIC` — revoked, granted to `authz_admin`, and
+  every function pins `search_path = pg_catalog, pg_temp`; (4) a forced
+  type removal left the store's rows stale while the feed reported itself
+  drained — `TYPE_REMOVED` (or unresolvable tuple deltas) now rebuilds the
+  store in the same run, `STORE_RETIRED` drops it. Also: the store-wide
+  known-subject set is built only for deltas that need it, so a principal's
+  grant never scans the subjects; `last_run_pairs` / `last_run_rows_written`
+  are per store; the random-mutation harness fails on psql errors, requires
+  a minimum of applied draws and distinguishes model rejections from
+  unexpected SQL errors.
+
 - **Derived permissions under-authorized on wildcards.** On the derived
   replica a subject-wildcard grant (`employee:*`) produced only a literal
   `*` row, so an unknown employee was denied although the live engine

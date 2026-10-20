@@ -59,7 +59,26 @@
 -- rows, so the table only ever receives real inserts and deletes (a CDC
 -- consumer sees deltas). Objects that lost their last tuple and subjects
 -- that lost theirs are delisted and lose their rows (they are wildcard
--- covered from then on).
+-- covered from then on); a subject or object that BECOMES known stops
+-- being wildcard covered, so it is derived against every object (subject)
+-- that carries a '*' row of its type — the two known-state transitions.
+--
+-- NO ROW IS SKIPPED. The feed is ordered by (performed_at = the writing
+-- transaction's start, seq) and a transaction may commit long after it
+-- started, so the worker never reads past the start of the oldest
+-- transaction still open on this database: the gate is
+-- max(p_lag, age of the oldest open transaction), read from
+-- pg_stat_activity (authz_owner holds pg_read_all_stats). A session that
+-- stays in a transaction stalls the cursor rather than lose a write;
+-- materialized_permissions_status() shows the gate and the staleness. Set
+-- idle_in_transaction_session_timeout on application roles.
+--
+-- STRUCTURAL CHANGES. A removed type (TYPE_REMOVED in the feed, or tuple
+-- deltas whose type no longer resolves) cannot be mapped to pairs; the
+-- worker rebuilds that store in the same run. A retired store
+-- (STORE_RETIRED) is dropped from the derived tables and deregistered.
+-- Model changes (rules, restrictions) are not in the tuple feed: run
+-- refresh_all_materialized_permissions(store) after applying one.
 --
 -- EXPIRY. The feed reports writes, not the passing of time, so for every
 -- inserted tuple that carries expires_at the worker files a deferred delta
@@ -72,8 +91,8 @@
 -- as_of is reflected. authz.materialized_permissions_status() on the primary,
 -- authz.permissions_as_of(store) on the subscriber. The feed's stability lag
 -- (p_lag, default 1 s; see watch_changes) bounds how soon a change can be
--- picked up — and must stay at or above the writers' statement_timeout for
--- the "no row is ever skipped" guarantee.
+-- picked up; the oldest open transaction can push the gate further out
+-- (NO ROW IS SKIPPED above).
 --
 -- REQUIRES the audit profile (tuples_audit + watch_changes), i.e. a full
 -- install.
@@ -85,8 +104,10 @@
 -- definer-run public check_access in one session fails with "permission
 -- denied for table _check_memo_v2"). When authz_owner exists
 -- (db/security/roles.sql has run) the block at the end transfers ownership
--- to it; re-running roles.sql does the same. The worker role needs only
--- EXECUTE on refresh_materialized_permissions().
+-- to it; re-running roles.sql does the same. EXECUTE on every function is
+-- revoked from PUBLIC and granted to authz_admin when that role exists; the
+-- worker role needs only EXECUTE on refresh_materialized_permissions(). Every
+-- function pins search_path = pg_catalog, pg_temp.
 
 ------------------------------------------------------------------------
 -- The derived permissions table.
@@ -177,9 +198,20 @@ CREATE TABLE IF NOT EXISTS authz.materialized_refresh_state (
     last_run_started_at   timestamptz,
     last_run_finished_at  timestamptz,
     last_run_changes      integer NOT NULL DEFAULT 0,  -- feed rows + due deferred rows, this store
-    last_run_pairs        integer NOT NULL DEFAULT 0,  -- (subject, object) pairs re-derived, whole run
-    last_run_rows_written integer NOT NULL DEFAULT 0   -- permission rows inserted + deleted, whole run
+    last_run_pairs        integer NOT NULL DEFAULT 0,  -- (subject, object) pairs re-derived, this store
+    last_run_rows_written integer NOT NULL DEFAULT 0,  -- permission rows inserted + deleted, this store
+    last_run_gate         interval                     -- stability gate used: max(p_lag, age of the oldest open transaction)
 );
+-- Upgrade of a state table created before last_run_gate existed (silent on a fresh install).
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'authz' AND table_name = 'materialized_refresh_state'
+                      AND column_name = 'last_run_gate') THEN
+        ALTER TABLE authz.materialized_refresh_state ADD COLUMN last_run_gate interval;
+    END IF;
+END;
+$$;
 
 ------------------------------------------------------------------------
 -- Session work tables. Created under the definer role (the same role the
@@ -187,7 +219,7 @@ CREATE TABLE IF NOT EXISTS authz.materialized_refresh_state (
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._mp_prepare_pairs()
 RETURNS void
-LANGUAGE plpgsql SECURITY DEFINER AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
     CREATE TEMP TABLE IF NOT EXISTS _mp_pairs (
         store_id    integer NOT NULL,
@@ -202,7 +234,27 @@ BEGIN
         store_id      integer, object_type integer, object_id text, relation integer,
         user_type     integer, user_id text, user_relation integer, op text);
     TRUNCATE _mp_claimed RESTART IDENTITY;
+    CREATE TEMP TABLE IF NOT EXISTS _mp_written (store text, n integer);
+    TRUNCATE _mp_written;
 END;
+$$;
+
+------------------------------------------------------------------------
+-- _mp_safe_gate: the stability lag to use — never less than the age of the
+-- oldest transaction still open on this database (see header, NO ROW IS
+-- SKIPPED). Sessions whose transaction start is hidden (no
+-- pg_read_all_stats) cannot be seen; grant it to the owner.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._mp_safe_gate(p_lag interval)
+RETURNS interval
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+    SELECT GREATEST(p_lag,
+                    COALESCE(clock_timestamp() - (SELECT min(a.xact_start)
+                                                     FROM pg_stat_activity a
+                                                    WHERE a.datname = current_database()
+                                                      AND a.pid <> pg_backend_pid()
+                                                      AND a.xact_start IS NOT NULL),
+                             p_lag));
 $$;
 
 ------------------------------------------------------------------------
@@ -211,22 +263,24 @@ $$;
 --   1. resolve every object and every subject of the pairs — names and
 --      whether it still has tuples — BEFORE any pruning, so an object and a
 --      subject that vanished in the same change are both seen
---   2. objects without tuples are delisted and lose all their rows (the
+--   2. known-state transitions: a subject (object) that is about to become
+--      known stops inheriting the '*' rows of its type — add the pairs that
+--      materialize what it inherited so far
+--   3. objects without tuples are delisted and lose all their rows (the
 --      '*' rows, if any, answer for them from now on); the rest are listed
---   3. subjects without tuples likewise
---   4. each remaining pair is decided for every relation of the object's
+--   4. subjects without tuples likewise
+--   5. each remaining pair is decided for every relation of the object's
 --      type through authz._decide with an empty gate list (graph only, no
 --      request context), and the result is diffed against the stored rows:
 --      rows no longer allowed are deleted, new ones inserted
 --
--- Returns the pairs decided and the rows written (inserts + deletes).
+-- Returns the pairs decided and the rows written (inserts + deletes);
+-- _mp_written holds the rows written per store.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._derive_pairs(OUT pairs integer, OUT rows_written integer)
-LANGUAGE plpgsql SECURITY DEFINER AS $$
-DECLARE
-    v_n integer;
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
-    rows_written := 0;
+    TRUNCATE _mp_written;
 
     -- 1. resolve
     CREATE TEMP TABLE IF NOT EXISTS _mp_objects (
@@ -257,12 +311,57 @@ BEGIN
       JOIN authz.stores s  ON s.id  = p.store_id
       JOIN authz.types  ut ON ut.id = p.user_type;
 
-    -- 2. objects without tuples
-    DELETE FROM authz.materialized_permissions mp
-     USING _mp_objects o
-     WHERE NOT o.has_tuples
-       AND mp.store = o.store AND mp.object_type = o.type_name AND mp.object_id = o.object_id;
-    GET DIAGNOSTICS v_n = ROW_COUNT; rows_written := rows_written + v_n;
+    -- 2. known-state transitions
+    --    subject becoming known: × every object carrying a '*'-subject row of its type
+    INSERT INTO _mp_pairs (store_id, object_type, object_id, user_type, user_id)
+    SELECT DISTINCT su.store_id, ot.id, mp.object_id, su.user_type, su.user_id
+      FROM _mp_subjects su
+      JOIN authz.materialized_permissions mp
+        ON mp.store = su.store AND mp.user_type = su.type_name AND mp.user_id = '*'
+      JOIN authz.types ot ON ot.store_id = su.store_id AND ot.name = mp.object_type
+     WHERE su.has_tuples AND su.user_id <> '*'
+       AND NOT EXISTS (SELECT 1 FROM authz.materialized_subjects ms
+                        WHERE ms.store = su.store AND ms.user_type = su.type_name AND ms.user_id = su.user_id)
+    ON CONFLICT DO NOTHING;
+    --    object becoming known: × every subject holding a '*'-object row of its type
+    INSERT INTO _mp_pairs (store_id, object_type, object_id, user_type, user_id)
+    SELECT DISTINCT o.store_id, o.object_type, o.object_id, ut.id, mp.user_id
+      FROM _mp_objects o
+      JOIN authz.materialized_permissions mp
+        ON mp.store = o.store AND mp.object_type = o.type_name AND mp.object_id = '*'
+      JOIN authz.types ut ON ut.store_id = o.store_id AND ut.name = mp.user_type
+     WHERE o.has_tuples AND o.object_id <> '*'
+       AND NOT EXISTS (SELECT 1 FROM authz.materialized_objects mo
+                        WHERE mo.store = o.store AND mo.object_type = o.type_name AND mo.object_id = o.object_id)
+    ON CONFLICT DO NOTHING;
+    --    the other side of the added pairs may be new to the work tables
+    INSERT INTO _mp_objects
+    SELECT DISTINCT p.store_id, p.object_type, p.object_id, s.name, ot.name,
+           EXISTS (SELECT 1 FROM authz.tuples t
+                    WHERE t.store_id = p.store_id AND t.object_type = p.object_type
+                      AND t.object_id = p.object_id)
+      FROM _mp_pairs p
+      JOIN authz.stores s  ON s.id  = p.store_id
+      JOIN authz.types  ot ON ot.id = p.object_type
+    ON CONFLICT DO NOTHING;
+    INSERT INTO _mp_subjects
+    SELECT DISTINCT p.store_id, p.user_type, p.user_id, s.name, ut.name,
+           EXISTS (SELECT 1 FROM authz.tuples t
+                    WHERE t.store_id = p.store_id AND t.user_type = p.user_type
+                      AND t.user_id = p.user_id AND t.user_relation IS NULL)
+      FROM _mp_pairs p
+      JOIN authz.stores s  ON s.id  = p.store_id
+      JOIN authz.types  ut ON ut.id = p.user_type
+    ON CONFLICT DO NOTHING;
+
+    -- 3. objects without tuples
+    WITH d AS (
+        DELETE FROM authz.materialized_permissions mp
+         USING _mp_objects o
+         WHERE NOT o.has_tuples
+           AND mp.store = o.store AND mp.object_type = o.type_name AND mp.object_id = o.object_id
+        RETURNING mp.store)
+    INSERT INTO _mp_written SELECT d.store, count(*) FROM d GROUP BY d.store;
 
     DELETE FROM authz.materialized_objects mo
      USING _mp_objects o
@@ -279,12 +378,14 @@ BEGIN
      WHERE NOT o.has_tuples
        AND p.store_id = o.store_id AND p.object_type = o.object_type AND p.object_id = o.object_id;
 
-    -- 3. subjects without tuples
-    DELETE FROM authz.materialized_permissions mp
-     USING _mp_subjects su
-     WHERE NOT su.has_tuples
-       AND mp.store = su.store AND mp.user_type = su.type_name AND mp.user_id = su.user_id;
-    GET DIAGNOSTICS v_n = ROW_COUNT; rows_written := rows_written + v_n;
+    -- 4. subjects without tuples
+    WITH d AS (
+        DELETE FROM authz.materialized_permissions mp
+         USING _mp_subjects su
+         WHERE NOT su.has_tuples
+           AND mp.store = su.store AND mp.user_type = su.type_name AND mp.user_id = su.user_id
+        RETURNING mp.store)
+    INSERT INTO _mp_written SELECT d.store, count(*) FROM d GROUP BY d.store;
 
     DELETE FROM authz.materialized_subjects ms
      USING _mp_subjects su
@@ -303,7 +404,7 @@ BEGIN
 
     SELECT count(*) INTO pairs FROM _mp_pairs;
 
-    -- 4. decide and diff
+    -- 5. decide and diff
     CREATE TEMP TABLE IF NOT EXISTS _mp_want (
         store text, user_type text, user_id text, permission text,
         object_type text, object_id text, allowed boolean);
@@ -319,24 +420,30 @@ BEGIN
         ON m.store_id = p.store_id AND m.object_type = p.object_type
       JOIN authz.relations r ON r.id = m.relation;
 
-    DELETE FROM authz.materialized_permissions mp
-     USING _mp_pairs p
-      JOIN _mp_objects  o  ON o.store_id = p.store_id AND o.object_type = p.object_type AND o.object_id = p.object_id
-      JOIN _mp_subjects su ON su.store_id = p.store_id AND su.user_type = p.user_type AND su.user_id = p.user_id
-     WHERE mp.store = o.store AND mp.object_type = o.type_name AND mp.object_id = p.object_id
-       AND mp.user_type = su.type_name AND mp.user_id = p.user_id
-       AND NOT EXISTS (SELECT 1 FROM _mp_want w
-                        WHERE w.allowed
-                          AND w.store = mp.store AND w.user_type = mp.user_type AND w.user_id = mp.user_id
-                          AND w.object_type = mp.object_type AND w.object_id = mp.object_id
-                          AND w.permission = mp.permission);
-    GET DIAGNOSTICS v_n = ROW_COUNT; rows_written := rows_written + v_n;
+    WITH d AS (
+        DELETE FROM authz.materialized_permissions mp
+         USING _mp_pairs p
+          JOIN _mp_objects  o  ON o.store_id = p.store_id AND o.object_type = p.object_type AND o.object_id = p.object_id
+          JOIN _mp_subjects su ON su.store_id = p.store_id AND su.user_type = p.user_type AND su.user_id = p.user_id
+         WHERE mp.store = o.store AND mp.object_type = o.type_name AND mp.object_id = p.object_id
+           AND mp.user_type = su.type_name AND mp.user_id = p.user_id
+           AND NOT EXISTS (SELECT 1 FROM _mp_want w
+                            WHERE w.allowed
+                              AND w.store = mp.store AND w.user_type = mp.user_type AND w.user_id = mp.user_id
+                              AND w.object_type = mp.object_type AND w.object_id = mp.object_id
+                              AND w.permission = mp.permission)
+        RETURNING mp.store)
+    INSERT INTO _mp_written SELECT d.store, count(*) FROM d GROUP BY d.store;
 
-    INSERT INTO authz.materialized_permissions (store, user_type, user_id, permission, object_type, object_id)
-    SELECT w.store, w.user_type, w.user_id, w.permission, w.object_type, w.object_id
-      FROM _mp_want w WHERE w.allowed
-    ON CONFLICT DO NOTHING;
-    GET DIAGNOSTICS v_n = ROW_COUNT; rows_written := rows_written + v_n;
+    WITH i AS (
+        INSERT INTO authz.materialized_permissions (store, user_type, user_id, permission, object_type, object_id)
+        SELECT w.store, w.user_type, w.user_id, w.permission, w.object_type, w.object_id
+          FROM _mp_want w WHERE w.allowed
+        ON CONFLICT DO NOTHING
+        RETURNING store)
+    INSERT INTO _mp_written SELECT i.store, count(*) FROM i GROUP BY i.store;
+
+    SELECT COALESCE(sum(w.n), 0)::integer INTO rows_written FROM _mp_written w;
 END;
 $$;
 
@@ -349,10 +456,13 @@ $$;
 -- single set-based query with the keys coming from a CTE made the planner
 -- hash-join the whole tuples table — every store, every partition — per
 -- delta (4 s on a database with large benchmark stores next to a tiny one).
+-- The store-wide known-subject set is built only for stores where a delta
+-- needs it (userset, object reference, wildcard, whole-object entry); a
+-- principal's grant touches one pair and never scans the subjects.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz._mp_blast_radius()
 RETURNS void
-LANGUAGE plpgsql SECURITY DEFINER AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
     r record;
 BEGIN
@@ -370,15 +480,6 @@ BEGIN
     CREATE TEMP TABLE IF NOT EXISTS _mp_next (LIKE _mp_frontier);
     TRUNCATE _mp_known, _mp_principal, _mp_closure, _mp_frontier, _mp_next;
 
-    -- every subject each store knows
-    FOR r IN SELECT DISTINCT c.store_id FROM _mp_claimed c LOOP
-        INSERT INTO _mp_known
-        SELECT DISTINCT r.store_id, t.user_type, t.user_id
-          FROM authz.tuples t
-         WHERE t.store_id = r.store_id AND t.user_relation IS NULL
-        ON CONFLICT DO NOTHING;
-    END LOOP;
-
     -- principal subject types: no relation is defined on the type in the
     -- MODEL, so no tuple can ever make one of its members an edge (a userset
     -- source, a parent, a manager). Decided from the model, not from the
@@ -394,6 +495,22 @@ BEGIN
                             WHERE t.store_id = r.store_id AND t.object_type = r.user_type) THEN
             INSERT INTO _mp_principal VALUES (r.store_id, r.user_type) ON CONFLICT DO NOTHING;
         END IF;
+    END LOOP;
+
+    -- every subject a store knows — only where a delta needs the broad set
+    FOR r IN
+        SELECT DISTINCT c.store_id FROM _mp_claimed c
+         WHERE c.user_type IS NULL
+            OR c.user_relation IS NOT NULL
+            OR c.user_id = '*'
+            OR NOT EXISTS (SELECT 1 FROM _mp_principal pr
+                            WHERE pr.store_id = c.store_id AND pr.user_type = c.user_type)
+    LOOP
+        INSERT INTO _mp_known
+        SELECT DISTINCT r.store_id, t.user_type, t.user_id
+          FROM authz.tuples t
+         WHERE t.store_id = r.store_id AND t.user_relation IS NULL
+        ON CONFLICT DO NOTHING;
     END LOOP;
 
     -- seeds: the delta's object; for an object wildcard, every object of the type
@@ -463,9 +580,12 @@ $$;
 ------------------------------------------------------------------------
 -- refresh_materialized_permissions: the worker. For every registered
 -- store, pull one page of authz.watch_changes after the stored cursor
--- (p_limit rows, stability lag p_lag), file deferred deltas for inserted
--- tuples that expire, claim the deferred deltas that fell due, compute
--- the blast radius, re-derive, record cursor and as_of. Returns the
+-- (p_limit rows, stability gate = max(p_lag, age of the oldest open
+-- transaction)), file deferred deltas for inserted tuples that expire,
+-- claim the deferred deltas that fell due, compute the blast radius,
+-- re-derive, record cursor and as_of. A page carrying TYPE_REMOVED, or
+-- tuple deltas whose type no longer resolves, rebuilds that store instead;
+-- STORE_RETIRED drops the store from the derived tables. Returns the
 -- number of pairs re-derived; call again while any store's feed_drained
 -- is false.
 --
@@ -478,15 +598,20 @@ CREATE OR REPLACE FUNCTION authz.refresh_materialized_permissions(
     p_lag   interval DEFAULT '1 second',
     p_limit int      DEFAULT 1000
 ) RETURNS integer
-LANGUAGE plpgsql SECURITY DEFINER AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
-    v_started  timestamptz := clock_timestamp();
-    v_state    record;
-    v_n        integer;
-    v_last_at  timestamptz;
-    v_last_seq bigint;
-    v_pairs    integer := 0;
-    v_written  integer := 0;
+    v_started    timestamptz := clock_timestamp();
+    v_gate       interval    := authz._mp_safe_gate(p_lag);
+    v_state      record;
+    v_n          integer;
+    v_tuple_rows integer;
+    v_last_at    timestamptz;
+    v_last_seq   bigint;
+    v_pairs      integer := 0;
+    v_written    integer := 0;
+    v_rebuild    text[] := '{}';
+    v_retired    text[] := '{}';
+    v_store      text;
 BEGIN
     PERFORM authz._mp_prepare_pairs();
     CREATE TEMP TABLE IF NOT EXISTS _mp_feed (
@@ -507,13 +632,18 @@ BEGIN
         INSERT INTO _mp_page
         SELECT w.seq, w.action, w.performed_at, w.user_type, w.user_id, w.user_relation,
                w.relation, w.object_type, w.object_id
-          FROM authz.watch_changes(v_state.store, v_state.cursor_at, v_state.cursor_seq, p_limit, p_lag) w;
-        GET DIAGNOSTICS v_n = ROW_COUNT;
+          FROM authz.watch_changes(v_state.store, v_state.cursor_at, v_state.cursor_seq, p_limit, v_gate) w;
+
+        IF EXISTS (SELECT 1 FROM _mp_page pg WHERE pg.action = 'STORE_RETIRED') THEN
+            v_retired := v_retired || v_state.store;
+            CONTINUE;
+        END IF;
 
         SELECT pg.performed_at, pg.seq INTO v_last_at, v_last_seq
           FROM _mp_page pg ORDER BY pg.performed_at DESC, pg.seq DESC LIMIT 1;
 
-        -- tuple deltas (lifecycle events and unresolvable names are skipped)
+        -- tuple deltas; names resolve against the current dictionaries
+        SELECT count(*) INTO v_tuple_rows FROM _mp_page pg WHERE pg.action IN ('INSERT', 'UPDATE', 'DELETE');
         INSERT INTO _mp_claimed (store_id, object_type, object_id, relation, user_type, user_id, user_relation, op)
         SELECT v_state.store_id, ot.id, pg.object_id, r.id, ut.id, pg.user_id, ur.id, pg.action
           FROM _mp_page pg
@@ -522,12 +652,19 @@ BEGIN
           JOIN authz.types     ut ON ut.store_id = v_state.store_id AND ut.name = pg.user_type
      LEFT JOIN authz.relations ur ON ur.store_id = v_state.store_id AND ur.name = pg.user_relation
          WHERE pg.action IN ('INSERT', 'UPDATE', 'DELETE');
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+
+        -- structural change (a type was removed): the deltas cannot be
+        -- mapped to pairs — rebuild the store instead of advancing past them
+        IF v_n < v_tuple_rows OR EXISTS (SELECT 1 FROM _mp_page pg WHERE pg.action = 'TYPE_REMOVED') THEN
+            v_rebuild := v_rebuild || v_state.store;
+            DELETE FROM _mp_claimed c WHERE c.store_id = v_state.store_id;
+            CONTINUE;
+        END IF;
 
         -- inserted tuples that will expire: file the deferred delta.
         -- statement_timestamp(), like the RLS expiry policy: every tuple the
-        -- derivation below can see is filed. (clock_timestamp() here opened a
-        -- millisecond race — a tuple expiring between statement start and this
-        -- step was derived but never filed, so its rows were never withdrawn.)
+        -- derivation below can see is filed.
         INSERT INTO authz.permissions_refresh_queue
             (store_id, object_type, object_id, relation, user_type, user_id, user_relation, op, due_at)
         SELECT DISTINCT t.store_id, t.object_type, t.object_id, t.relation, t.user_type, t.user_id, t.user_relation,
@@ -548,9 +685,9 @@ BEGIN
                               AND q.user_relation IS NOT DISTINCT FROM t.user_relation);
 
         INSERT INTO _mp_feed VALUES (
-            v_state.store, v_state.store_id, v_n,
+            v_state.store, v_state.store_id, v_tuple_rows,
             COALESCE(v_last_at, v_state.cursor_at), COALESCE(v_last_seq, v_state.cursor_seq),
-            v_n < p_limit);
+            (SELECT count(*) FROM _mp_page) < p_limit);
     END LOOP;
 
     -- deferred deltas that fell due (expiries, manual entries)
@@ -562,11 +699,13 @@ BEGIN
          RETURNING store_id, object_type, object_id, relation, user_type, user_id, user_relation, op)
     INSERT INTO _mp_claimed (store_id, object_type, object_id, relation, user_type, user_id, user_relation, op)
     SELECT store_id, object_type, object_id, relation, user_type, user_id, user_relation, op FROM claimed;
-    GET DIAGNOSTICS v_n = ROW_COUNT;
     UPDATE _mp_feed f SET changes = f.changes + d.n
       FROM (SELECT c.store_id, count(*) AS n FROM _mp_claimed c
              WHERE c.op NOT IN ('INSERT', 'UPDATE', 'DELETE') GROUP BY c.store_id) d
      WHERE d.store_id = f.store_id;
+    -- a store about to be rebuilt or retired needs no pair work
+    DELETE FROM _mp_claimed c
+     WHERE c.store_id IN (SELECT st.id FROM authz.stores st WHERE st.name = ANY (v_rebuild || v_retired));
 
     IF EXISTS (SELECT 1 FROM _mp_claimed) THEN
         PERFORM authz._mp_blast_radius();
@@ -577,14 +716,29 @@ BEGIN
        SET cursor_at             = f.last_at,
            cursor_seq            = f.last_seq,
            feed_drained          = f.drained,
-           as_of                 = GREATEST(s.as_of, CASE WHEN f.drained THEN v_started - p_lag ELSE f.last_at END),
+           as_of                 = GREATEST(s.as_of, CASE WHEN f.drained THEN v_started - v_gate ELSE f.last_at END),
            last_run_started_at   = v_started,
            last_run_finished_at  = clock_timestamp(),
            last_run_changes      = f.changes,
-           last_run_pairs        = v_pairs,
-           last_run_rows_written = v_written
+           last_run_pairs        = COALESCE((SELECT count(*) FROM _mp_pairs p WHERE p.store_id = f.store_id), 0),
+           last_run_rows_written = COALESCE((SELECT sum(w.n) FROM _mp_written w WHERE w.store = f.store), 0),
+           last_run_gate         = v_gate
       FROM _mp_feed f
      WHERE f.store = s.store;
+
+    -- retired stores: drop everything derived, deregister
+    FOREACH v_store IN ARRAY v_retired LOOP
+        DELETE FROM authz.materialized_permissions   WHERE store = v_store;
+        DELETE FROM authz.materialized_subjects      WHERE store = v_store;
+        DELETE FROM authz.materialized_objects       WHERE store = v_store;
+        DELETE FROM authz.permissions_refresh_queue q WHERE q.store_id IN (SELECT st.id FROM authz.stores st WHERE st.name = v_store);
+        DELETE FROM authz.materialized_refresh_state WHERE store = v_store;
+    END LOOP;
+
+    -- structural change: rebuild (resets the cursor to the safe gate)
+    FOREACH v_store IN ARRAY v_rebuild LOOP
+        PERFORM authz.refresh_all_materialized_permissions(v_store, v_gate);
+    END LOOP;
 
     RETURN v_pairs;
 END;
@@ -599,7 +753,7 @@ CREATE OR REPLACE FUNCTION authz._refresh_permissions_for_object(
     p_object_type integer,
     p_object_id   text
 ) RETURNS integer
-LANGUAGE plpgsql SECURITY DEFINER AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
     v_pairs integer; v_written integer;
 BEGIN
@@ -617,22 +771,24 @@ $$;
 ------------------------------------------------------------------------
 -- refresh_all_materialized_permissions: register a store for incremental
 -- refresh (or rebuild it): clear its derived rows, take the cursor just
--- before the snapshot (p_lag before now — the feed's stability lag — so a
--- write committing while the snapshot runs is replayed, never missed),
--- derive every object × every known subject, file a deferred delta for
--- every expiring tuple. Returns the rows written.
+-- before the snapshot (the safe gate before now — the feed's stability lag
+-- or the oldest open transaction, whichever is older — so a write
+-- committing while the snapshot runs is replayed, never missed), derive
+-- every object × every known subject, file a deferred delta for every
+-- expiring tuple. Returns the rows written.
 ------------------------------------------------------------------------
 DROP FUNCTION IF EXISTS authz.refresh_all_materialized_permissions(text);  -- pre-changefeed signature
 CREATE OR REPLACE FUNCTION authz.refresh_all_materialized_permissions(
     p_store text,
     p_lag   interval DEFAULT '1 second'
 ) RETURNS integer
-LANGUAGE plpgsql SECURITY DEFINER AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
     v_store_id  integer := authz._s(p_store);
     v_started   timestamptz := clock_timestamp();
+    v_gate      interval := authz._mp_safe_gate(p_lag);
     -- not later than this transaction's own writes (performed_at = transaction_timestamp())
-    v_cursor_at timestamptz := LEAST(clock_timestamp() - p_lag, transaction_timestamp());
+    v_cursor_at timestamptz := LEAST(clock_timestamp() - v_gate, transaction_timestamp());
     v_pairs     integer; v_written integer;
 BEGIN
     DELETE FROM authz.materialized_permissions WHERE store = p_store;
@@ -658,13 +814,13 @@ BEGIN
 
     INSERT INTO authz.materialized_refresh_state
         (store, cursor_at, cursor_seq, as_of, feed_drained,
-         last_run_started_at, last_run_finished_at, last_run_changes, last_run_pairs, last_run_rows_written)
-    VALUES (p_store, v_cursor_at, 0, v_cursor_at, true, v_started, clock_timestamp(), 0, v_pairs, v_written)
+         last_run_started_at, last_run_finished_at, last_run_changes, last_run_pairs, last_run_rows_written, last_run_gate)
+    VALUES (p_store, v_cursor_at, 0, v_cursor_at, true, v_started, clock_timestamp(), 0, v_pairs, v_written, v_gate)
     ON CONFLICT (store) DO UPDATE
        SET cursor_at = EXCLUDED.cursor_at, cursor_seq = 0, as_of = EXCLUDED.as_of, feed_drained = true,
            last_run_started_at = EXCLUDED.last_run_started_at, last_run_finished_at = EXCLUDED.last_run_finished_at,
            last_run_changes = 0, last_run_pairs = EXCLUDED.last_run_pairs,
-           last_run_rows_written = EXCLUDED.last_run_rows_written;
+           last_run_rows_written = EXCLUDED.last_run_rows_written, last_run_gate = EXCLUDED.last_run_gate;
 
     RETURN v_written;
 END;
@@ -673,7 +829,8 @@ $$;
 ------------------------------------------------------------------------
 -- Status on the primary, one row per registered store.
 ------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION authz.materialized_permissions_status()
+DROP FUNCTION IF EXISTS authz.materialized_permissions_status();  -- return type changed
+CREATE FUNCTION authz.materialized_permissions_status()
 RETURNS TABLE (
     store                 text,
     as_of                 timestamptz,  -- every change performed before this is reflected
@@ -685,16 +842,20 @@ RETURNS TABLE (
     last_run_finished_at  timestamptz,
     last_run_changes      integer,
     last_run_pairs        integer,
-    last_run_rows_written integer
+    last_run_rows_written integer,
+    last_run_gate         interval,     -- max(p_lag, age of the oldest open transaction) at the last run
+    oldest_open_txn_age   interval      -- now: the next run's gate will be at least this
 )
-LANGUAGE sql STABLE SECURITY DEFINER AS $$
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
     SELECT s.store, s.as_of, statement_timestamp() - s.as_of, s.feed_drained,
            (SELECT count(*) FROM authz.permissions_refresh_queue q
              WHERE q.store_id = st.id AND q.due_at <= statement_timestamp()),
            (SELECT count(*) FROM authz.permissions_refresh_queue q
              WHERE q.store_id = st.id AND q.due_at >  statement_timestamp()),
            s.last_run_started_at, s.last_run_finished_at,
-           s.last_run_changes, s.last_run_pairs, s.last_run_rows_written
+           s.last_run_changes, s.last_run_pairs, s.last_run_rows_written, s.last_run_gate,
+           (SELECT clock_timestamp() - min(a.xact_start) FROM pg_stat_activity a
+             WHERE a.datname = current_database() AND a.pid <> pg_backend_pid() AND a.xact_start IS NOT NULL)
       FROM authz.materialized_refresh_state s
       JOIN authz.stores st ON st.name = s.store
      ORDER BY s.store;
@@ -729,6 +890,7 @@ BEGIN
             EXECUTE format('ALTER TABLE %s OWNER TO authz_owner', r.obj);
         END LOOP;
         ALTER FUNCTION authz._mp_prepare_pairs()                                      OWNER TO authz_owner;
+        ALTER FUNCTION authz._mp_safe_gate(interval)                                  OWNER TO authz_owner;
         ALTER FUNCTION authz._mp_blast_radius()                                       OWNER TO authz_owner;
         ALTER FUNCTION authz._derive_pairs()                                          OWNER TO authz_owner;
         ALTER FUNCTION authz._refresh_permissions_for_object(integer, integer, text) OWNER TO authz_owner;
@@ -739,8 +901,27 @@ BEGIN
 END;
 $$;
 
--- Internal helpers are not for app roles.
+------------------------------------------------------------------------
+-- Privileges: SECURITY DEFINER entry points are not for app roles.
+-- PostgreSQL grants EXECUTE to PUBLIC on creation; take it back from every
+-- function here and hand the three public ones to authz_admin when that
+-- role exists (roles.sql). The worker role needs EXECUTE on
+-- refresh_materialized_permissions only.
+------------------------------------------------------------------------
 REVOKE ALL ON FUNCTION authz._mp_prepare_pairs()                                      FROM PUBLIC;
+REVOKE ALL ON FUNCTION authz._mp_safe_gate(interval)                                  FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._mp_blast_radius()                                       FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._derive_pairs()                                          FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._refresh_permissions_for_object(integer, integer, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION authz.refresh_materialized_permissions(interval, int)         FROM PUBLIC;
+REVOKE ALL ON FUNCTION authz.refresh_all_materialized_permissions(text, interval)    FROM PUBLIC;
+REVOKE ALL ON FUNCTION authz.materialized_permissions_status()                       FROM PUBLIC;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authz_admin') THEN
+        GRANT EXECUTE ON FUNCTION authz.refresh_materialized_permissions(interval, int)      TO authz_admin;
+        GRANT EXECUTE ON FUNCTION authz.refresh_all_materialized_permissions(text, interval) TO authz_admin;
+        GRANT EXECUTE ON FUNCTION authz.materialized_permissions_status()                    TO authz_admin;
+    END IF;
+END;
+$$;

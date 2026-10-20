@@ -867,9 +867,14 @@ registers the store with a `(performed_at, seq)` cursor from just before
 it; nothing on the write path changes (no trigger on `authz.tuples`). On
 each run, `refresh_materialized_permissions()`:
 
-1. pulls one lag-gated page of `watch_changes` per registered store after
-   its cursor (the stability lag, 1 s by default, must stay at or above the
-   writers' `statement_timeout` for the no-row-skipped guarantee), and
+1. pulls one page of `watch_changes` per registered store after its
+   cursor, gated by max(the stability lag, 1 s by default; the age of the
+   oldest transaction still open on the database). The feed is ordered by
+   the writing transaction's start time, and a transaction may commit long
+   after it started, so the worker never reads past the oldest open one: a
+   session that sits in a transaction stalls the cursor (visible as
+   staleness and `last_run_gate` in the status) rather than lose a write.
+   Set `idle_in_transaction_session_timeout` on application roles. It also
    claims the deferred deltas that fell due (see 4)
 2. computes each delta's blast radius — the subject × object pairs whose
    answer can have changed:
@@ -890,7 +895,10 @@ each run, `refresh_materialized_permissions()`:
    the stored rows, so the table receives real inserts and deletes only (a
    CDC consumer downstream sees deltas); objects and subjects that lost
    their last tuple are delisted and lose their rows (wildcard-covered from
-   then on)
+   then on), and — the other direction of the contract — a subject or
+   object that *becomes* known stops being wildcard-covered, so it is
+   derived against every object (subject) that carries a `*` row of its
+   type, materializing what it inherited until then
 4. files a deferred delta, due at `expires_at`, for every inserted tuple
    that expires — the feed reports writes, not the passing of time — so the
    rows an expiring grant produced are withdrawn when it expires
@@ -907,7 +915,15 @@ shows the backlog, `as_of` and the last run per store. Run the worker:
 - **Event-driven:** on `LISTEN authz_changes`, the audit log's doorbell
 
 A crashed worker resumes from the stored cursor; a page is replayed if its
-run rolled back. One worker is the intended deployment.
+run rolled back. One worker is the intended deployment. Structural changes
+are not pair-shaped: a page carrying `TYPE_REMOVED`, or tuple deltas whose
+type no longer resolves, makes the worker rebuild that store in the same
+run; `STORE_RETIRED` drops the store from the derived tables. Model changes
+(rules, type restrictions) are not in the tuple feed at all — run
+`refresh_all_materialized_permissions(store)` after applying one. Every
+function is `SECURITY DEFINER` with `search_path` pinned; `EXECUTE` is
+revoked from `PUBLIC` and granted to `authz_admin`, and the worker role
+needs it on `refresh_materialized_permissions` only.
 
 ### Choosing between the approaches
 
