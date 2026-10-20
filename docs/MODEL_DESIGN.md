@@ -198,12 +198,43 @@ The convention above is also a declaration. Every relation carries a
 | `relation` (default) | what a subject **is**: a role or link — `viewer`, `owner`, `member`, `parent`. Usually assignable by a tuple; may also be derived (`viewer: [user] or viewer from parent`). | nothing extra |
 | `permission` | what a subject **can do** — `can_read`, `can_share`; also a directly granted capability such as a tool an agent may use (`run: [agent]`). | a tuple may name it only where its model has a direct rule on that object type; without one it is derived and a tuple is refused |
 
-```sql
-SELECT authz.model_register_relation('gdrive', 'viewer');                                   -- kind defaults to relation
-SELECT authz.model_register_relation('gdrive', 'can_read', p_metadata => '{"kind": "permission"}');
-SELECT authz.model_set_relation_metadata('gdrive', 'viewer', '{"label": "Viewer", "docs_url": "https://wiki…"}');
-SELECT * FROM authz.infer_relation_kinds('gdrive', true);   -- rules but no direct rule → permission; otherwise the declared kind
-```
+**Three ways to set the kind.** They compose: declarations win, inference
+fills in what is left.
+
+1. **Declare it when registering the relation** — the explicit form for a new
+   model:
+   ```sql
+   SELECT authz.model_register_relation('gdrive', 'viewer');                                   -- kind defaults to relation
+   SELECT authz.model_register_relation('gdrive', 'can_read', p_metadata => '{"kind": "permission"}');
+   ```
+2. **Declare it afterwards**, on a relation that already exists (the same
+   call carries any other metadata, such as a display label):
+   ```sql
+   SELECT authz.model_set_relation_metadata('gdrive', 'can_read', '{"kind": "permission"}');
+   SELECT authz.model_set_relation_metadata('gdrive', 'viewer', '{"label": "Viewer", "docs_url": "https://wiki…"}');
+   ```
+3. **Infer what is left undeclared** from the rules, usually as the last
+   statement of a model file:
+   ```sql
+   SELECT * FROM authz.infer_relation_kinds('gdrive', true);   -- rules but no direct rule → permission; otherwise the declared kind
+   ```
+   The rule behind it: a relation with rules but **no direct rule** on any
+   object type cannot be granted by a tuple, so it is something a subject can
+   only *do* — a permission. A relation with a direct rule is something a
+   subject *is*. This is how the gdrive example gets by without a single
+   declaration: `viewer` has the direct rule `[group#member, user, user:*]`
+   and stays a relation; `can_read` is only `viewer or owner or viewer from
+   parent` and becomes a permission. Inference never overrides a
+   declaration.
+
+Where inference is not enough, declare: a derived relation that is a role
+rather than a capability (`owner_manager` in the aia-acme model, "manager of
+the owner", derived yet something a subject *is*) is declared `relation`
+although inference would call it a permission; a capability that is granted
+directly by a tuple (`run: [agent]` in the agents model — delegation as data)
+is declared `permission` although it has a direct rule, which inference
+cannot tell from a role. `describe_model` shows the result as
+`define can_read: viewer or owner  # permission`.
 
 Why declare it: a check against `viewer` on a document asks "is alice a viewer
 of this document" and is **no** when her access comes through the folder; a
