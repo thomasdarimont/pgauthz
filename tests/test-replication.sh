@@ -590,8 +590,9 @@ for a in worker refresh other deleter; do
 done
 assert "churn: no deadlock and no error other than 'Unknown store' in 12 s" "" \
   "$(cat "$WORK"/churn-*.err 2>/dev/null | grep '^ERROR:' | grep -v 'Unknown store' | sort | uniq -c | head -5)"
-assert "churn: refresh_all met the gap between deletion and recreation at least once (the race was exercised)" "t" \
-  "$([ "$(grep -c 'Unknown store' "$WORK/churn-refresh.err" 2>/dev/null || true)" -gt 0 ] && echo t || echo f)"
+# informational: how often a refresh met the gap between deletion and recreation
+# (the interleaving itself is asserted deterministically above, with held transactions)
+echo "    info  churn: refresh_all met the deletion gap $(grep -c 'Unknown store' "$WORK/churn-refresh.err" 2>/dev/null || echo 0) times; cycles: worker $(wc -l < "$WORK/churn-worker.ok" | tr -d ' ') refresh $(wc -l < "$WORK/churn-refresh.ok" | tr -d ' ') other $(wc -l < "$WORK/churn-other.ok" | tr -d ' ') deleter $(wc -l < "$WORK/churn-deleter.ok" | tr -d ' ')"
 # settle: whatever the last cycle left, register it and drain
 qp "$PRIMARY" "SELECT authz.refresh_all_materialized_relations('aia_acme');" >/dev/null
 drain_feed || assert "churn: feed drained" "ok" "timeout"

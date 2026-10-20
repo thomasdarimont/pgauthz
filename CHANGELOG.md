@@ -330,7 +330,9 @@ pre-1.0, minor versions may include breaking changes.
   it shared and resolves the name only afterwards, so it can no longer
   register the id of a store whose deletion is in flight; the worker
   try-locks and skips rather than waits, so a deletion's DDL and the
-  worker's reads never form a cycle. Tests: each pairing with a held-open
+  worker's reads never form a cycle, and re-reads each registration under
+  its locks, so a deletion or re-registration committed after it listed
+  its stores is seen, not acted on from stale state. Tests: each pairing with a held-open
   transaction, and twelve seconds of deletion/recreation, snapshot and
   worker on one store with no deadlock, no orphan row and engine agreement;
   the live-upgrade test now covers `materialized_objects` too.

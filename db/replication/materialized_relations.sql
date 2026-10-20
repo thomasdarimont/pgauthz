@@ -970,6 +970,7 @@ DECLARE
     v_rebuild    text[] := '{}';
     v_rebuild_id integer[] := '{}';
     v_i          integer;
+    v_name       text;
 BEGIN
     PERFORM authz._mp_require_read_committed('refresh_materialized_relations');
     PERFORM authz._mp_prepare_pairs();
@@ -982,14 +983,26 @@ BEGIN
         user_type text, user_id text, user_relation text,
         relation text, object_type text, object_id text);
 
-    FOR v_state IN
-        SELECT s.store, s.cursor_at, s.cursor_seq, s.store_id AS registered_id, st.id AS store_id
-          FROM authz.materialized_refresh_state s
-     LEFT JOIN authz.stores st ON st.id = s.store_id        -- by id: a recreated name is a new store
+    FOR v_name IN
+        SELECT s.store FROM authz.materialized_refresh_state s ORDER BY s.store
     LOOP
         -- never wait (see Locks): a deletion, a registration or an exclusive
         -- checked write owns this store right now — its cursor stays, next run
-        IF NOT authz._mp_try_lock_store(v_state.store) THEN
+        IF NOT authz._mp_try_lock_store(v_name) THEN
+            CONTINUE;
+        END IF;
+
+        -- Re-read the registration UNDER the locks (READ COMMITTED: a fresh
+        -- snapshot): the list above predates them, and a deletion or a
+        -- re-registration may have committed in between. Gone → nothing to do;
+        -- otherwise cursor and incarnation are the current ones, and the locks
+        -- keep them so until this transaction ends.
+        SELECT s.store, s.cursor_at, s.cursor_seq, s.store_id AS registered_id, st.id AS store_id
+          INTO v_state
+          FROM authz.materialized_refresh_state s
+     LEFT JOIN authz.stores st ON st.id = s.store_id        -- by id: a recreated name is a new store
+         WHERE s.store = v_name;
+        IF NOT FOUND THEN
             CONTINUE;
         END IF;
 
@@ -1100,7 +1113,7 @@ BEGIN
            last_run_rows_written = COALESCE((SELECT sum(w.n) FROM _mp_written w WHERE w.store = f.store), 0),
            last_run_gate         = v_gate
       FROM _mp_feed f
-     WHERE f.store = s.store;
+     WHERE f.store = s.store AND s.store_id = f.store_id;   -- the incarnation this run read
 
     -- structural change: rebuild (its cursor is this run's cutoff). Both
     -- locks are held and the incarnation is the one the loop saw — the
