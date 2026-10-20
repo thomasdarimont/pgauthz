@@ -272,6 +272,34 @@ assert "the slow transaction's write reached the derived replica" "t" \
 assert "the fast write reached it as well" "t" \
   "$(qp "$DERIVED" "SELECT authz.check_permission('demo','internal_user','ci_fast','can_read','document','doc_acc_001');")"
 
+echo "==> The cutoff is absolute and exclusive, and includes the worker's own transaction..."
+# watch_changes with p_until ignores the moving clock: a cutoff in the past
+# returns nothing even though the lag alone would, a cutoff now returns rows.
+qp "$PRIMARY" "SELECT authz.write_tuple('demo','internal_user','ci_cutoff','viewer','document','doc_acc_001');" >/dev/null
+sleep 1.2
+assert "p_until in the past yields no rows although p_lag would" "0" \
+  "$(qp "$PRIMARY" "SELECT count(*) FROM authz.watch_changes('demo', (SELECT cursor_at FROM authz.materialized_refresh_state WHERE store='demo'), (SELECT cursor_seq FROM authz.materialized_refresh_state WHERE store='demo'), 100, '0 seconds', p_until => clock_timestamp() - interval '1 hour');")"
+assert "p_until = now yields the committed write" "t" \
+  "$(qp "$PRIMARY" "SELECT count(*) >= 1 FROM authz.watch_changes('demo', (SELECT cursor_at FROM authz.materialized_refresh_state WHERE store='demo'), (SELECT cursor_seq FROM authz.materialized_refresh_state WHERE store='demo'), 100, '0 seconds', p_until => clock_timestamp());")"
+# A worker run INSIDE an explicit transaction must not advance the cursor past
+# that transaction's own start: writes made later in the same transaction have
+# the earlier performed_at and would otherwise be skipped forever.
+cat > "$WORK/inside.sql" <<'SQL'
+BEGIN;
+SELECT authz.write_tuple('demo','internal_user','ci_inside1','viewer','document','doc_acc_001');
+SELECT pg_sleep(1.5);
+SELECT authz.refresh_materialized_permissions();
+SELECT authz.write_tuple('demo','internal_user','ci_inside2','viewer','document','doc_acc_001');
+COMMIT;
+SQL
+docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -q < "$WORK/inside.sql" >/dev/null 2>&1
+assert "the in-transaction run did not move the cursor past its own transaction" "t" \
+  "$(qp "$PRIMARY" "SELECT cursor_at <= (SELECT min(performed_at) FROM authz.tuples_audit WHERE user_id IN ('ci_inside1','ci_inside2')) FROM authz.materialized_refresh_state WHERE store='demo';")"
+drain_feed || assert "in-transaction: feed drained" "ok" "timeout"
+parity=$(wait_derived_parity) || true
+assert "both writes of that transaction reached the derived replica" "t" \
+  "$(qp "$DERIVED" "SELECT authz.check_permission('demo','internal_user','ci_inside1','can_read','document','doc_acc_001') AND authz.check_permission('demo','internal_user','ci_inside2','can_read','document','doc_acc_001');")"
+
 echo "==> Asserting LIVE propagation (write on primary -> full replica)..."
 qp "$PRIMARY" "SELECT authz.write_tuple('demo','internal_user','ci_repltest','viewer','document','doc_acc_001');" >/dev/null
 live=timeout

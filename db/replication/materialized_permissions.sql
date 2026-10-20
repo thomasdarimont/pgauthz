@@ -65,13 +65,22 @@
 --
 -- NO ROW IS SKIPPED. The feed is ordered by (performed_at = the writing
 -- transaction's start, seq) and a transaction may commit long after it
--- started, so the worker never reads past the start of the oldest
--- transaction still open on this database: the gate is
--- max(p_lag, age of the oldest open transaction), read from
--- pg_stat_activity (authz_owner holds pg_read_all_stats). A session that
--- stays in a transaction stalls the cursor rather than lose a write;
--- materialized_permissions_status() shows the gate and the staleness. Set
--- idle_in_transaction_session_timeout on application roles.
+-- started. Each run captures ONE absolute, exclusive cutoff —
+-- authz.watch_safe_until(p_lag): now - p_lag, capped at the start of the
+-- oldest transaction still open on this database, the worker's own
+-- included — and reads every store's feed with it (p_until), so the cutoff
+-- cannot drift while the run works and a worker called inside an explicit
+-- transaction cannot advance past rows that transaction may still write.
+-- OPERATIONAL LIMIT: any long-open transaction on the database, read-only
+-- ones included (an analytics query, a connection left idle in
+-- transaction), holds the cutoff back and with it every revocation; the
+-- status shows last_run_gate and oldest_open_txn_age, the subscriber has
+-- permissions_fresh(store, max_staleness) to refuse a stale copy. Set
+-- idle_in_transaction_session_timeout on application roles. A consumer that
+-- needs bounded revocation latency independent of unrelated workloads needs
+-- a commit-ordered source (logical decoding) — not provided here. p_until on
+-- the worker overrides the cutoff for controlled replays and tests; it
+-- forfeits the guarantee.
 --
 -- STRUCTURAL CHANGES. A removed type (TYPE_REMOVED in the feed, or tuple
 -- deltas whose type no longer resolves) cannot be mapped to pairs; the
@@ -237,24 +246,6 @@ BEGIN
     CREATE TEMP TABLE IF NOT EXISTS _mp_written (store text, n integer);
     TRUNCATE _mp_written;
 END;
-$$;
-
-------------------------------------------------------------------------
--- _mp_safe_gate: the stability lag to use — never less than the age of the
--- oldest transaction still open on this database (see header, NO ROW IS
--- SKIPPED). Sessions whose transaction start is hidden (no
--- pg_read_all_stats) cannot be seen; grant it to the owner.
-------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION authz._mp_safe_gate(p_lag interval)
-RETURNS interval
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
-    SELECT GREATEST(p_lag,
-                    COALESCE(clock_timestamp() - (SELECT min(a.xact_start)
-                                                     FROM pg_stat_activity a
-                                                    WHERE a.datname = current_database()
-                                                      AND a.pid <> pg_backend_pid()
-                                                      AND a.xact_start IS NOT NULL),
-                             p_lag));
 $$;
 
 ------------------------------------------------------------------------
@@ -580,8 +571,8 @@ $$;
 ------------------------------------------------------------------------
 -- refresh_materialized_permissions: the worker. For every registered
 -- store, pull one page of authz.watch_changes after the stored cursor
--- (p_limit rows, stability gate = max(p_lag, age of the oldest open
--- transaction)), file deferred deltas for inserted tuples that expire,
+-- (p_limit rows, before the run's fixed cutoff = watch_safe_until(p_lag),
+-- or p_until when given), file deferred deltas for inserted tuples that expire,
 -- claim the deferred deltas that fell due, compute the blast radius,
 -- re-derive, record cursor and as_of. A page carrying TYPE_REMOVED, or
 -- tuple deltas whose type no longer resolves, rebuilds that store instead;
@@ -594,14 +585,17 @@ $$;
 -- the page is replayed. One worker is the intended deployment: two workers
 -- would pull the same page (a wasted but harmless double derivation).
 ------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS authz.refresh_materialized_permissions(interval, int);  -- pre-cutoff signature
 CREATE OR REPLACE FUNCTION authz.refresh_materialized_permissions(
-    p_lag   interval DEFAULT '1 second',
-    p_limit int      DEFAULT 1000
+    p_lag   interval    DEFAULT '1 second',
+    p_limit int         DEFAULT 1000,
+    p_until timestamptz DEFAULT NULL      -- override the cutoff (tests, controlled replays); forfeits the guarantee
 ) RETURNS integer
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
     v_started    timestamptz := clock_timestamp();
-    v_gate       interval    := authz._mp_safe_gate(p_lag);
+    v_cutoff     timestamptz := COALESCE(p_until, authz.watch_safe_until(p_lag));
+    v_gate       interval    := v_started - v_cutoff;
     v_state      record;
     v_n          integer;
     v_tuple_rows integer;
@@ -632,7 +626,8 @@ BEGIN
         INSERT INTO _mp_page
         SELECT w.seq, w.action, w.performed_at, w.user_type, w.user_id, w.user_relation,
                w.relation, w.object_type, w.object_id
-          FROM authz.watch_changes(v_state.store, v_state.cursor_at, v_state.cursor_seq, p_limit, v_gate) w;
+          FROM authz.watch_changes(v_state.store, v_state.cursor_at, v_state.cursor_seq, p_limit,
+                                   p_until => v_cutoff) w;
 
         IF EXISTS (SELECT 1 FROM _mp_page pg WHERE pg.action = 'STORE_RETIRED') THEN
             v_retired := v_retired || v_state.store;
@@ -716,7 +711,7 @@ BEGIN
        SET cursor_at             = f.last_at,
            cursor_seq            = f.last_seq,
            feed_drained          = f.drained,
-           as_of                 = GREATEST(s.as_of, CASE WHEN f.drained THEN v_started - v_gate ELSE f.last_at END),
+           as_of                 = GREATEST(s.as_of, CASE WHEN f.drained THEN v_cutoff ELSE f.last_at END),
            last_run_started_at   = v_started,
            last_run_finished_at  = clock_timestamp(),
            last_run_changes      = f.changes,
@@ -735,9 +730,9 @@ BEGIN
         DELETE FROM authz.materialized_refresh_state WHERE store = v_store;
     END LOOP;
 
-    -- structural change: rebuild (resets the cursor to the safe gate)
+    -- structural change: rebuild (its cursor is this run's cutoff)
     FOREACH v_store IN ARRAY v_rebuild LOOP
-        PERFORM authz.refresh_all_materialized_permissions(v_store, v_gate);
+        PERFORM authz.refresh_all_materialized_permissions(v_store, p_lag, v_cutoff);
     END LOOP;
 
     RETURN v_pairs;
@@ -770,25 +765,26 @@ $$;
 
 ------------------------------------------------------------------------
 -- refresh_all_materialized_permissions: register a store for incremental
--- refresh (or rebuild it): clear its derived rows, take the cursor just
--- before the snapshot (the safe gate before now — the feed's stability lag
--- or the oldest open transaction, whichever is older — so a write
--- committing while the snapshot runs is replayed, never missed), derive
--- every object × every known subject, file a deferred delta for every
--- expiring tuple. Returns the rows written.
+-- refresh (or rebuild it): clear its derived rows, take the cursor at the
+-- safe cutoff (watch_safe_until(p_lag): the stability lag before now, or
+-- the oldest open transaction, whichever is earlier — never later than this
+-- transaction's own start, so a write committing while the snapshot runs is
+-- replayed, never missed), derive every object × every known subject, file
+-- a deferred delta for every expiring tuple. Returns the rows written.
 ------------------------------------------------------------------------
-DROP FUNCTION IF EXISTS authz.refresh_all_materialized_permissions(text);  -- pre-changefeed signature
+DROP FUNCTION IF EXISTS authz.refresh_all_materialized_permissions(text);            -- pre-changefeed signature
+DROP FUNCTION IF EXISTS authz.refresh_all_materialized_permissions(text, interval);  -- pre-cutoff signature
 CREATE OR REPLACE FUNCTION authz.refresh_all_materialized_permissions(
     p_store text,
-    p_lag   interval DEFAULT '1 second'
+    p_lag   interval    DEFAULT '1 second',
+    p_until timestamptz DEFAULT NULL      -- override the cutoff (tests, controlled replays); forfeits the guarantee
 ) RETURNS integer
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
     v_store_id  integer := authz._s(p_store);
     v_started   timestamptz := clock_timestamp();
-    v_gate      interval := authz._mp_safe_gate(p_lag);
-    -- not later than this transaction's own writes (performed_at = transaction_timestamp())
-    v_cursor_at timestamptz := LEAST(clock_timestamp() - v_gate, transaction_timestamp());
+    v_cursor_at timestamptz := LEAST(COALESCE(p_until, authz.watch_safe_until(p_lag)), transaction_timestamp());
+    v_gate      interval := v_started - v_cursor_at;
     v_pairs     integer; v_written integer;
 BEGIN
     DELETE FROM authz.materialized_permissions WHERE store = p_store;
@@ -843,7 +839,7 @@ RETURNS TABLE (
     last_run_changes      integer,
     last_run_pairs        integer,
     last_run_rows_written integer,
-    last_run_gate         interval,     -- max(p_lag, age of the oldest open transaction) at the last run
+    last_run_gate         interval,     -- run start - cutoff at the last run (≥ p_lag; larger when a transaction was open)
     oldest_open_txn_age   interval      -- now: the next run's gate will be at least this
 )
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
@@ -890,12 +886,11 @@ BEGIN
             EXECUTE format('ALTER TABLE %s OWNER TO authz_owner', r.obj);
         END LOOP;
         ALTER FUNCTION authz._mp_prepare_pairs()                                      OWNER TO authz_owner;
-        ALTER FUNCTION authz._mp_safe_gate(interval)                                  OWNER TO authz_owner;
         ALTER FUNCTION authz._mp_blast_radius()                                       OWNER TO authz_owner;
         ALTER FUNCTION authz._derive_pairs()                                          OWNER TO authz_owner;
         ALTER FUNCTION authz._refresh_permissions_for_object(integer, integer, text) OWNER TO authz_owner;
-        ALTER FUNCTION authz.refresh_materialized_permissions(interval, int)         OWNER TO authz_owner;
-        ALTER FUNCTION authz.refresh_all_materialized_permissions(text, interval)    OWNER TO authz_owner;
+        ALTER FUNCTION authz.refresh_materialized_permissions(interval, int, timestamptz)      OWNER TO authz_owner;
+        ALTER FUNCTION authz.refresh_all_materialized_permissions(text, interval, timestamptz) OWNER TO authz_owner;
         ALTER FUNCTION authz.materialized_permissions_status()                       OWNER TO authz_owner;
     END IF;
 END;
@@ -909,18 +904,17 @@ $$;
 -- refresh_materialized_permissions only.
 ------------------------------------------------------------------------
 REVOKE ALL ON FUNCTION authz._mp_prepare_pairs()                                      FROM PUBLIC;
-REVOKE ALL ON FUNCTION authz._mp_safe_gate(interval)                                  FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._mp_blast_radius()                                       FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._derive_pairs()                                          FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._refresh_permissions_for_object(integer, integer, text) FROM PUBLIC;
-REVOKE ALL ON FUNCTION authz.refresh_materialized_permissions(interval, int)         FROM PUBLIC;
-REVOKE ALL ON FUNCTION authz.refresh_all_materialized_permissions(text, interval)    FROM PUBLIC;
+REVOKE ALL ON FUNCTION authz.refresh_materialized_permissions(interval, int, timestamptz)      FROM PUBLIC;
+REVOKE ALL ON FUNCTION authz.refresh_all_materialized_permissions(text, interval, timestamptz) FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz.materialized_permissions_status()                       FROM PUBLIC;
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authz_admin') THEN
-        GRANT EXECUTE ON FUNCTION authz.refresh_materialized_permissions(interval, int)      TO authz_admin;
-        GRANT EXECUTE ON FUNCTION authz.refresh_all_materialized_permissions(text, interval) TO authz_admin;
+        GRANT EXECUTE ON FUNCTION authz.refresh_materialized_permissions(interval, int, timestamptz)      TO authz_admin;
+        GRANT EXECUTE ON FUNCTION authz.refresh_all_materialized_permissions(text, interval, timestamptz) TO authz_admin;
         GRANT EXECUTE ON FUNCTION authz.materialized_permissions_status()                    TO authz_admin;
     END IF;
 END;

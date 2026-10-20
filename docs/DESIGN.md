@@ -793,8 +793,8 @@ and objects the engine knows (= have at least one tuple), and one
 freshness row per store, `materialized_refresh_state`. Applications
 subscribe to these tables only, and call two helpers:
 `authz.check_permission()`, a single inlinable SQL expression, and
-`authz.permissions_as_of(store)`. No authz schema, functions, or model
-knowledge needed.
+`authz.permissions_as_of(store)` / `authz.permissions_fresh(store,
+max_staleness)`. No authz schema, functions, or model knowledge needed.
 
 ```
 authz-primary
@@ -867,15 +867,24 @@ registers the store with a `(performed_at, seq)` cursor from just before
 it; nothing on the write path changes (no trigger on `authz.tuples`). On
 each run, `refresh_materialized_permissions()`:
 
-1. pulls one page of `watch_changes` per registered store after its
-   cursor, gated by max(the stability lag, 1 s by default; the age of the
-   oldest transaction still open on the database). The feed is ordered by
-   the writing transaction's start time, and a transaction may commit long
-   after it started, so the worker never reads past the oldest open one: a
-   session that sits in a transaction stalls the cursor (visible as
-   staleness and `last_run_gate` in the status) rather than lose a write.
-   Set `idle_in_transaction_session_timeout` on application roles. It also
-   claims the deferred deltas that fell due (see 4)
+1. captures one absolute, exclusive cutoff for the run —
+   `watch_safe_until(lag)`: now minus the stability lag (1 s by default),
+   capped at the start of the oldest transaction still open on the
+   database, the worker's own included — and pulls one page of
+   `watch_changes` per registered store after its cursor and before that
+   cutoff. The feed is ordered by the writing transaction's start time, and
+   a transaction may commit long after it started, so a fixed cutoff that
+   never passes an open transaction is what makes "no row is skipped" hold;
+   re-evaluating "now minus lag" per query would let the cutoff drift while
+   the run works. **Operational limit:** any long-open transaction on the
+   database, read-only ones included, holds the cutoff back and with it
+   every revocation. The status shows `last_run_gate` and
+   `oldest_open_txn_age`; the subscriber's `permissions_fresh(store,
+   max_staleness)` lets a consumer refuse a stale copy and fall back to the
+   live check. Set `idle_in_transaction_session_timeout` on application
+   roles; bounded revocation latency independent of unrelated workloads
+   needs a commit-ordered source (logical decoding), which this does not
+   provide. The run also claims the deferred deltas that fell due (see 4)
 2. computes each delta's blast radius — the subject × object pairs whose
    answer can have changed:
    - *objects*: the delta's object plus every object that reaches it

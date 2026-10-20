@@ -72,6 +72,17 @@ LANGUAGE sql STABLE AS $$
     SELECT as_of FROM authz.materialized_refresh_state WHERE store = p_store;
 $$;
 
+-- The freshness threshold a consumer enforces: true only if every change
+-- performed before now() - p_max_staleness is reflected. A worker stalled by
+-- a long-open transaction on the primary, or a replication lag, makes this
+-- false — fall back to the live check_access then.
+CREATE OR REPLACE FUNCTION authz.permissions_fresh(p_store text, p_max_staleness interval)
+RETURNS boolean
+LANGUAGE sql STABLE AS $$
+    SELECT COALESCE((SELECT as_of >= now() - p_max_staleness
+                       FROM authz.materialized_refresh_state WHERE store = p_store), false);
+$$;
+
 -- The wildcard contract (see materialized_permissions.sql on the primary):
 --
 --   subject keys = {user_id}   ∪ {'*' if the subject is unknown}

@@ -270,6 +270,27 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **Derived permissions: the cursor cutoff is absolute, exclusive, and
+  includes the worker's own transaction.** Second review round: the gate was
+  an interval re-applied against a moving clock inside the feed query, so
+  the effective cutoff drifted forward while a run worked through earlier
+  stores, and it excluded the worker's own session, so a worker invoked
+  inside an explicit transaction could advance past rows that transaction
+  wrote afterwards. `watch_changes` gains `p_until` (absolute, exclusive;
+  replaces `p_lag` when set) and the engine gains `watch_safe_until(lag)`:
+  now minus the lag, capped at the start of the oldest transaction open on
+  the database, the caller's own included. The worker captures it once per
+  run; `refresh_materialized_permissions` / `refresh_all_…` accept `p_until`
+  as an explicit override for tests and controlled replays. Regression
+  tests: a cutoff in the past returns nothing a lag would, and a worker run
+  inside a transaction that keeps writing leaves the cursor at that
+  transaction's start. Documented operational limit: a long-open
+  transaction, read-only ones included, holds every revocation back —
+  `permissions_fresh(store, max_staleness)` on the subscriber lets a
+  consumer refuse a stale copy. The `watch.sql` header no longer claims that
+  `statement_timeout` bounds a transaction. `roles.sql` grants the new
+  signature and `watch_safe_until` to `authz_auditor`.
+
 - **Derived permissions: review follow-ups (incremental refresh).** Four
   correctness and privilege findings from an external review of the
   changefeed-driven worker, each with a deterministic regression test in

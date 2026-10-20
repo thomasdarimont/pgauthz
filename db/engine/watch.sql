@@ -5,22 +5,38 @@
 -- invalidate caches, materialize permissions, or sync downstream systems — the
 -- SpiceDB "Watch" analog, built on infrastructure that already exists.
 --
--- Cursor + safety: changes are cursored by (performed_at, seq). `seq` is
--- assigned at INSERT time, not commit time, so a naive `seq > cursor` poll could
--- permanently skip a row whose transaction commits AFTER a higher seq has been
--- consumed. watch_changes instead orders by (performed_at, seq) and only emits
--- rows older than `p_lag` (the stability lag). Because the writer roles carry a
--- statement_timeout, a write transaction cannot outlive it; setting `p_lag` at
--- or above that bound makes "every row with performed_at <= now() - p_lag is
--- final" a guarantee, so no row is ever skipped. A smaller lag trades that
--- guarantee for lower latency (fine for at-least-once cache invalidation). For
--- strict exactly-once streaming, use logical replication on tuples_audit.
+-- Cursor + safety: changes are cursored by (performed_at, seq). performed_at is
+-- the writing TRANSACTION's start and `seq` is assigned at INSERT time, not
+-- commit time, so a naive `seq > cursor` poll could permanently skip a row whose
+-- transaction commits AFTER a higher seq has been consumed. watch_changes
+-- instead orders by (performed_at, seq) and only emits rows before a cutoff:
+--
+--   * p_lag (default 1 s): rows with performed_at <= now() - p_lag. A row is
+--     final once every transaction that started before it has ended. A
+--     statement_timeout does NOT bound a transaction (only its statements), so
+--     the lag alone is a heuristic: fine for at-least-once cache invalidation,
+--     not a guarantee.
+--   * p_until (absolute, exclusive): rows with performed_at < p_until. Pass
+--     watch_safe_until(p_lag) — now() - p_lag, capped at the start of the
+--     oldest transaction still open on this database (the caller's own
+--     included) — and no committed row is ever skipped: a transaction that is
+--     still open keeps the cutoff at its start until it ends. The price is
+--     that any long-open transaction, read-only ones included, holds the
+--     cutoff back; set idle_in_transaction_session_timeout on application
+--     roles and watch the consumer's staleness. Capture the cutoff ONCE per
+--     poll and pass it in; a consumer that re-evaluates "now - lag" per query
+--     lets the cutoff drift forward while it works.
+--
+-- For strict exactly-once streaming, use logical replication on tuples_audit.
 --
 -- Push: the _audit_tuple trigger emits NOTIFY authz_changes (payload = store_id,
 -- deduplicated to one per store per transaction). Treat it as a doorbell — on
 -- notification, call watch_changes(after the last cursor) to pull the rows.
 -- ============================================================================
 
+-- The pre-cutoff signature; the one below adds p_until with a default, so
+-- positional 8-argument callers keep working.
+DROP FUNCTION IF EXISTS authz.watch_changes(text, timestamptz, bigint, int, interval, text[], text[], text[]);
 CREATE OR REPLACE FUNCTION authz.watch_changes(
     p_store       text,
     p_after_at    timestamptz DEFAULT '-infinity',
@@ -29,7 +45,8 @@ CREATE OR REPLACE FUNCTION authz.watch_changes(
     p_lag          interval  DEFAULT '1 second',
     p_object_types text[]    DEFAULT NULL,   -- NULL = all types; else only these
     p_namespaces   text[]    DEFAULT NULL,   -- NULL = all; else only these namespaces (by the object type's namespace)
-    p_relations    text[]    DEFAULT NULL    -- NULL = all; else only these relations (the changed tuple's relation)
+    p_relations    text[]    DEFAULT NULL,   -- NULL = all; else only these relations (the changed tuple's relation)
+    p_until        timestamptz DEFAULT NULL  -- absolute exclusive cutoff; replaces p_lag when set (see header)
 ) RETURNS TABLE (
     seq            bigint,
     action         text,
@@ -77,7 +94,8 @@ BEGIN
      LEFT JOIN authz.conditions c ON c.store_id  = a.store_id AND c.id  = a.condition_id
          WHERE a.store_id = v_store_id
            AND (a.performed_at, a.seq) > (p_after_at, p_after_seq)
-           AND a.performed_at <= clock_timestamp() - p_lag
+           AND CASE WHEN p_until IS NULL THEN a.performed_at <= clock_timestamp() - p_lag
+                    ELSE a.performed_at < p_until END
            -- Lifecycle events (STORE_RETIRED, TYPE_REMOVED — the latter names
            -- the type in object_id) bypass the per-tuple type / namespace /
            -- relation filters so a narrowly-scoped watcher still learns that
@@ -89,6 +107,23 @@ BEGIN
          ORDER BY a.performed_at, a.seq
          LIMIT p_limit;
 END;
+$$;
+
+-- watch_safe_until: the cutoff before which every committed audit row is final
+-- (see header): now() - p_lag, capped at the start of the oldest transaction
+-- still open on this database — the caller's own transaction included, so a
+-- consumer that polls inside an explicit transaction can never advance its
+-- cursor past rows that transaction may still write. Reads pg_stat_activity;
+-- sessions it may not see (no pg_read_all_stats) do not count, which is why
+-- roles.sql makes it SECURITY DEFINER under authz_owner.
+CREATE OR REPLACE FUNCTION authz.watch_safe_until(p_lag interval DEFAULT '1 second')
+RETURNS timestamptz
+LANGUAGE sql STABLE AS $$
+    SELECT LEAST(clock_timestamp() - p_lag,
+                 COALESCE((SELECT min(a.xact_start) FROM pg_stat_activity a
+                            WHERE a.datname = current_database() AND a.xact_start IS NOT NULL),
+                          clock_timestamp() - p_lag),
+                 transaction_timestamp());
 $$;
 
 -- watch_cursor: the store's current high-water (performed_at, seq). A consumer

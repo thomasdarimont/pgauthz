@@ -125,7 +125,20 @@ SELECT * FROM authz.watch_changes('acme',
 
 -- current high-water cursor (to start "from now"):
 SELECT * FROM authz.watch_cursor('demo');
+
+-- a cursor that can never skip a committed row: capture the safe cutoff ONCE
+-- per poll and pass it as the absolute, exclusive bound. watch_safe_until is
+-- now() - lag, capped at the start of the oldest transaction still open on the
+-- database (your own included) — a transaction's rows carry its START time and
+-- it may commit long after; a statement_timeout does not bound a transaction.
+SELECT authz.watch_safe_until('1 second') AS until \gset
+SELECT * FROM authz.watch_changes('demo', :'last_at', :last_seq, p_until => :'until');
 ```
+
+Any long-open transaction on the database, read-only ones included, holds
+the safe cutoff back; set `idle_in_transaction_session_timeout` on application
+roles and watch your consumer's staleness. The plain `p_lag` form is a
+heuristic that suits at-least-once cache invalidation.
 
 Consumer loop: `LISTEN authz_changes` → on notification call `watch_changes`
 after the last cursor → process → persist the new cursor.

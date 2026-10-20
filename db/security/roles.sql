@@ -324,8 +324,9 @@ GRANT EXECUTE ON FUNCTION authz.audit_list_object(text, text, text, timestamptz,
 GRANT EXECUTE ON FUNCTION authz.audit_check_access(text, text, text, text, text, text, timestamptz, jsonb) TO authz_auditor;
 GRANT EXECUTE ON FUNCTION authz.audit_list_actions(text, text, text, text, text, timestamptz, jsonb) TO authz_auditor;
 -- Watch / changefeed (reads the audit log) — auditor-level privilege.
-GRANT EXECUTE ON FUNCTION authz.watch_changes(text, timestamptz, bigint, int, interval, text[], text[], text[]) TO authz_auditor;
+GRANT EXECUTE ON FUNCTION authz.watch_changes(text, timestamptz, bigint, int, interval, text[], text[], text[], timestamptz) TO authz_auditor;
 GRANT EXECUTE ON FUNCTION authz.watch_cursor(text) TO authz_auditor;
+GRANT EXECUTE ON FUNCTION authz.watch_safe_until(interval) TO authz_auditor;
 -- Action log inspection (ADR 0012) — per-principal behaviour, auditor-level.
 GRANT EXECUTE ON FUNCTION authz.list_events(text, text, text, text, text, text, text, text, timestamptz, timestamptz, timestamptz, bigint, int) TO authz_auditor;
 
@@ -468,8 +469,9 @@ ALTER FUNCTION authz.audit_check_access(text, text, text, text, text, text, time
 ALTER FUNCTION authz.audit_list_actions(text, text, text, text, text, timestamptz, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.audit_list_user(text, text, text, timestamptz, timestamptz) SECURITY DEFINER;
 ALTER FUNCTION authz.audit_list_object(text, text, text, timestamptz, timestamptz) SECURITY DEFINER;
-ALTER FUNCTION authz.watch_changes(text, timestamptz, bigint, int, interval, text[], text[], text[]) SECURITY DEFINER;
+ALTER FUNCTION authz.watch_changes(text, timestamptz, bigint, int, interval, text[], text[], text[], timestamptz) SECURITY DEFINER;
 ALTER FUNCTION authz.watch_cursor(text) SECURITY DEFINER;
+ALTER FUNCTION authz.watch_safe_until(interval) SECURITY DEFINER;   -- reads pg_stat_activity as authz_owner (pg_read_all_stats)
 ALTER FUNCTION authz.explain_access(text, text, text, text, text, text, jsonb, boolean, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.check_access_detailed(text, text, text, text, text, text, jsonb) SECURITY DEFINER;
 -- Freshness-token primitives (ADR 0009). Owner (authz_owner) is granted
