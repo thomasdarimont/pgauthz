@@ -305,7 +305,9 @@ echo "==> The refresh entry points refuse any isolation level but READ COMMITTED
 # committed in between would be invisible yet past the cutoff — skipped forever.
 # Assert on SQLSTATE 25000 (invalid_transaction_state), not the message, and
 # prove the cursor state (cursor_at, cursor_seq, as_of) is untouched.
-cursor_state() { qp "$PRIMARY" "SELECT cursor_at || '|' || cursor_seq || '|' || as_of FROM authz.materialized_refresh_state WHERE store='demo';"; }
+# Every registered store, serialized null-safe and ordered, so a rejected run
+# that touched any store's cursor shows up.
+cursor_state() { qp "$PRIMARY" "SELECT string_agg(format('%s:%s|%s|%s', store, cursor_at, cursor_seq, as_of), ';' ORDER BY store) FROM authz.materialized_refresh_state;"; }
 before=$(cursor_state)
 rr_worker=$(docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -tA -v VERBOSITY=verbose 2>&1 <<'SQL' | grep -c "^ERROR:  25000:" || true
 BEGIN ISOLATION LEVEL REPEATABLE READ;
@@ -321,7 +323,7 @@ ROLLBACK;
 SQL
 )
 assert "refresh_all_materialized_permissions raises SQLSTATE 25000 under SERIALIZABLE" "1" "$rr_all"
-assert "cursor_at / cursor_seq / as_of are unchanged by the rejected runs" "$before" "$(cursor_state)"
+assert "cursor_at / cursor_seq / as_of of every store are unchanged by the rejected runs" "$before" "$(cursor_state)"
 # The same call inside an explicit READ COMMITTED transaction succeeds.
 rc_ok=$(docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -tA -v ON_ERROR_STOP=1 2>&1 <<'SQL' | tail -1
 BEGIN ISOLATION LEVEL READ COMMITTED;
