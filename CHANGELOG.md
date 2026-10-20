@@ -317,9 +317,13 @@ pre-1.0, minor versions may include breaking changes.
   that the subscriber's `check_permission()` equals the primary's live
   `check_access()` for every subject × relation × object plus unknown
   probes (~9 000 checks), and that a primary write reaches the derived
-  replica through the refresh queue. `init-replication.sh` and the test
-  accept `REPLICATION_COMPOSE_FILES` (override files, e.g. other host ports)
-  so the demo can run next to the main stack.
+  replica through the refresh queue. The narrated
+  `demo-replication.sh` gains a section walking through the contract (the
+  `*` rows, a naive lookup getting an unseen document wrong, the helper
+  getting it right, a wildcard grant re-deriving the type), and DESIGN.md an
+  example to match. `init-replication.sh`, the demo and the test accept
+  `REPLICATION_COMPOSE_FILES` (override files, e.g. other host ports) so the
+  demo can run next to the main stack.
 
 - `publish_model` and `apply_model` attribute `created_by` / `applied_by`
   to the `authz.performed_by` session setting when it is set (the same

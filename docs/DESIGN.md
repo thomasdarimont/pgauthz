@@ -910,5 +910,48 @@ SELECT authz.check_permission('demo',
 --   then allow_approval()
 ```
 
+### Example: wildcards on the subscriber
+
+`nadia_auditor` holds `viewer` on `document:*`. The derived table carries one
+concrete row per document the engine knows and one literal `*` row:
+
+```sql
+-- On the app database (subscriber):
+SELECT permission, object_id FROM authz.materialized_permissions
+ WHERE store = 'demo' AND user_id = 'nadia_auditor' AND object_type = 'document';
+--  can_read | *             ← stands in for every document the engine never saw
+--  can_read | doc_acc_001
+--  can_read | doc_acc_002   …
+
+-- A document created a second ago has no tuples. A naive lookup is wrong:
+SELECT EXISTS (SELECT 1 FROM authz.materialized_permissions
+                WHERE store = 'demo' AND user_id = 'nadia_auditor'
+                  AND permission = 'can_read' AND object_id = 'doc_brand_new');
+-- => false   (the primary's check_access says true)
+
+-- The helper applies the contract: '*' counts because doc_brand_new is not
+-- in materialized_objects. For doc_acc_001 (known) only its concrete rows
+-- count — so an exclusion on a known document is honoured.
+SELECT authz.check_permission('demo','internal_user','nadia_auditor','can_read','document','doc_brand_new');
+-- => true
+SELECT authz.check_permission('demo','internal_user','alice','can_read','document','doc_brand_new');
+-- => false  (alice is known and has no '*' grant)
+```
+
+The mirror case is a subject wildcard such as `employee:*`: a row with
+`user_id = '*'` that `check_permission()` applies only to users absent from
+`materialized_subjects`. A listing therefore filters with the helper, never
+with a plain join on `user_id` and `object_id`:
+
+```sql
+SELECT d.* FROM documents d
+ WHERE authz.check_permission('demo', 'internal_user', :me, 'can_read', 'document', d.id);
+```
+
+Writing a new object-wildcard tuple queues every object of the type (their
+concrete rows must now say "allowed"); revoking it removes the rows and, if
+that was the subject's last tuple, delists the subject.
+
 See `db/replication/` for a working demo of both approaches, including
-a narrated demo script (`db/replication/demo-replication.sh`).
+a narrated demo script (`db/replication/demo-replication.sh`, section 7
+walks through the wildcard contract).
