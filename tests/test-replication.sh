@@ -21,7 +21,11 @@
 #     worker; a subject or object that becomes known (or unknown) under a
 #     wildcard keeps agreeing with the primary; a forced type removal rebuilds
 #     the store; a write inside a transaction held open for seconds is never
-#     skipped by the cursor; and after each of three batches of random
+#     skipped by the cursor; a physically deleted store loses its rows and a
+#     recreated one starts empty; a first-shape subscriber upgrades in place
+#     (tests/sql/derived_subscriber_v1.sql → upgrade-subscriber.sql); parity
+#     with the subscribers is a content digest, not a count; and after each of
+#     three batches of random
 #     mutations (tests/sql/derived_permissions_mutate.sql: grants, revokes,
 #     usersets, wildcards, short expiries) the differential still holds.
 #
@@ -79,37 +83,34 @@ wait_ready() {  # container
   return 1
 }
 
-# Poll until the derived replica holds exactly the primary's derived rows.
-derived_counts() {  # container
-  qp "$1" "SELECT (SELECT count(*) FROM authz.materialized_relations) || '/' ||
-                  (SELECT count(*) FROM authz.materialized_subjects)    || '/' ||
-                  (SELECT count(*) FROM authz.materialized_objects);"
+# Parity is CONTENT, not counts: a digest over every column of every row of
+# the four tables (ordered), with the row counts alongside for the report.
+derived_digest() {  # container  where-for-relations  where-for-objects  where-for-subjects/state
+  qp "$1" "SELECT md5((SELECT coalesce(string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s', store, user_type, user_id, relation, object_type, object_id, namespace, is_permission), ';' ORDER BY store, user_type, user_id, relation, object_type, object_id, namespace, is_permission), '') FROM authz.materialized_relations WHERE $2)
+                   || (SELECT coalesce(string_agg(format('%s|%s|%s', store, user_type, user_id), ';' ORDER BY store, user_type, user_id), '') FROM authz.materialized_subjects WHERE $4)
+                   || (SELECT coalesce(string_agg(format('%s|%s|%s|%s', store, object_type, object_id, namespace), ';' ORDER BY store, object_type, object_id, namespace), '') FROM authz.materialized_objects WHERE $3)
+                   || (SELECT coalesce(string_agg(format('%s|%s|%s|%s|%s', store, store_id, cursor_at, cursor_seq, as_of), ';' ORDER BY store), '') FROM authz.materialized_refresh_state WHERE $4))
+            || ' (' || (SELECT count(*) FROM authz.materialized_relations WHERE $2) || '/' || (SELECT count(*) FROM authz.materialized_subjects WHERE $4) || '/' || (SELECT count(*) FROM authz.materialized_objects WHERE $3) || ' rows)';"
 }
 wait_derived_parity() {
   local want
-  want=$(derived_counts "$PRIMARY")
+  want=$(derived_digest "$PRIMARY" true true true)
   for _ in $(seq 1 30); do
-    [ "$(derived_counts "$DERIVED")" = "$want" ] && { echo "$want"; return 0; }
+    [ "$(derived_digest "$DERIVED" true true true)" = "$want" ] && { echo "${want#* }"; return 0; }
     sleep 1
   done
-  echo "timeout (primary $want, derived $(derived_counts "$DERIVED"))"; return 1
+  echo "timeout (primary $want, derived $(derived_digest "$DERIVED" true true true))"; return 1
 }
 # The namespace subscriber must hold exactly the primary's rows of namespace
 # 'dms' (document, folder), every subject, and the freshness rows.
-dms_counts() {  # container  where-for-permissions  where-for-objects
-  qp "$1" "SELECT (SELECT count(*) FROM authz.materialized_relations WHERE $2) || '/' ||
-                  (SELECT count(*) FROM authz.materialized_subjects)              || '/' ||
-                  (SELECT count(*) FROM authz.materialized_objects WHERE $3)      || '/' ||
-                  (SELECT count(*) FROM authz.materialized_refresh_state);"
-}
 wait_dms_parity() {
   local want
-  want=$(dms_counts "$PRIMARY" "store = 'demo' AND namespace = 'dms'" "store = 'demo' AND namespace = 'dms'")
+  want=$(derived_digest "$PRIMARY" "store = 'demo' AND namespace = 'dms'" "store = 'demo' AND namespace = 'dms'" true)
   for _ in $(seq 1 30); do
-    [ "$(dms_counts "$DMS" "true" "true")" = "$want" ] && { echo "$want"; return 0; }
+    [ "$(derived_digest "$DMS" true true true)" = "$want" ] && { echo "${want#* }"; return 0; }
     sleep 1
   done
-  echo "timeout (primary $want, dms $(dms_counts "$DMS" "true" "true"))"; return 1
+  echo "timeout (primary $want, dms $(derived_digest "$DMS" true true true))"; return 1
 }
 
 echo "==> Asserting subscription health..."
@@ -140,6 +141,8 @@ case "$parity" in timeout*) assert "derived: permissions/subjects/objects match 
                   *)        assert "derived: permissions/subjects/objects match the primary ($parity)" "ok" "ok";; esac
 assert "derived: materialized_relations populated" "t" \
   "$(qp "$DERIVED" "SELECT count(*) > 0 FROM authz.materialized_relations;")"
+assert "derived: content digest of all four tables equals the primary's" "ok" \
+  "$([ "$(derived_digest "$PRIMARY" true true true)" = "$(derived_digest "$DERIVED" true true true)" ] && echo ok || echo differs)"
 assert "derived: literal '*' rows present for both wildcard kinds" "t" \
   "$(qp "$DERIVED" "SELECT EXISTS(SELECT 1 FROM authz.materialized_relations WHERE user_id='*') AND EXISTS(SELECT 1 FROM authz.materialized_relations WHERE object_id='*');")"
 
@@ -464,6 +467,38 @@ for batch in 1 2 3; do
                     *)        assert "batch $batch: namespace subscriber matches the primary's dms rows ($parity)" "ok" "ok";; esac
   differential "batch $batch"
 done
+
+echo "==> A physically deleted store loses its derived rows; a recreated one starts empty until registered..."
+# delete_store leaves no feed behind (the store row is gone); the worker must
+# notice the registered incarnation no longer exists.
+assert "aia_acme has derived rows before deletion" "t" \
+  "$(qp "$PRIMARY" "SELECT count(*) > 0 FROM authz.materialized_relations WHERE store='aia_acme';")"
+qp "$PRIMARY" "SELECT authz.delete_store('aia_acme');" >/dev/null
+qp "$PRIMARY" "SELECT authz.refresh_materialized_relations();" >/dev/null
+assert "after one worker run the deleted store has no rows, subjects, objects or registration on the primary" "0|0|0|false" \
+  "$(qp "$PRIMARY" "SELECT (SELECT count(*) FROM authz.materialized_relations WHERE store='aia_acme') || '|' || (SELECT count(*) FROM authz.materialized_subjects WHERE store='aia_acme') || '|' || (SELECT count(*) FROM authz.materialized_objects WHERE store='aia_acme') || '|' || EXISTS(SELECT 1 FROM authz.materialized_refresh_state WHERE store='aia_acme');")"
+parity=$(wait_derived_parity) || true
+assert "and neither has the derived replica" "0" \
+  "$(qp "$DERIVED" "SELECT count(*) FROM authz.materialized_relations WHERE store='aia_acme';")"
+# the same name again: a new incarnation, deliberately empty until someone registers it
+qf "$PRIMARY" < examples/models/aia-acme/model.sql >/dev/null; qf "$PRIMARY" < examples/models/aia-acme/seed.sql >/dev/null
+qp "$PRIMARY" "SELECT authz.refresh_materialized_relations();" >/dev/null
+assert "the recreated store is not derived until refresh_all registers it" "0|false" \
+  "$(qp "$PRIMARY" "SELECT (SELECT count(*) FROM authz.materialized_relations WHERE store='aia_acme') || '|' || EXISTS(SELECT 1 FROM authz.materialized_refresh_state WHERE store='aia_acme');")"
+qp "$PRIMARY" "SELECT authz.refresh_all_materialized_relations('aia_acme');" >/dev/null
+assert "registering it binds the new incarnation and derives it" "t" \
+  "$(qp "$PRIMARY" "SELECT s.store_id = st.id AND (SELECT count(*) FROM authz.materialized_relations WHERE store='aia_acme') > 0 FROM authz.materialized_refresh_state s JOIN authz.stores st ON st.name = 'aia_acme' WHERE s.store='aia_acme';")"
+
+echo "==> An existing subscriber of the FIRST shape upgrades in place (upgrade-subscriber.sql + schema-derived.sql)..."
+# On the dms container's maintenance database: the v1 shape with rows, then
+# the two scripts; the rows must survive under the new key and columns.
+up_out=$( { cat tests/sql/derived_subscriber_v1.sql
+            echo "INSERT INTO authz.materialized_permissions (store, user_type, user_id, permission, object_type, object_id) VALUES ('demo','internal_user','eva','can_read','document','doc_acc_001'), ('demo','internal_user','eva','member','team','accounting_team');"
+            cat db/replication/upgrade-subscriber.sql db/replication/schema-derived.sql
+            echo "SELECT (to_regclass('authz.materialized_permissions') IS NULL) || '|' || (SELECT count(*) FROM authz.materialized_relations) || '|' || (SELECT relation FROM authz.materialized_relations WHERE user_id='eva' AND object_id='doc_acc_001') || '|' || (SELECT string_agg(column_name, ',' ORDER BY column_name) FROM information_schema.columns WHERE table_schema='authz' AND table_name='materialized_relations' AND column_name IN ('namespace','is_permission','relation')) || '|' || authz.check_permission('demo','internal_user','eva','can_read','document','doc_acc_001');"
+          } | docker exec -i -e PGPASSWORD=authz "$DMS" psql -U authz -d postgres -v ON_ERROR_STOP=1 -q -tA 2>&1 | tail -1 )
+assert "v1 subscriber upgraded: old table gone, 2 rows kept, column renamed, namespace + is_permission present, helper answers" "true|2|can_read|is_permission,namespace,relation|true" "$up_out"
+docker exec -e PGPASSWORD=authz "$DMS" psql -U authz -d postgres -q -c "DROP SCHEMA IF EXISTS authz CASCADE;" >/dev/null 2>&1 || true
 
 echo ""
 if [ "$fail" -ne 0 ]; then

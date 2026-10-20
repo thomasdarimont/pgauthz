@@ -905,6 +905,26 @@ publication `authz_derived_dms`, namespace `dms` = document + folder), and
 `tests/test-replication.sh` asserts it holds exactly the primary's `dms`
 rows after the snapshot and after every random batch.
 
+`check_permission()` answers for **any** relation, exactly like the live
+`check_access()`: asked about `viewer` it says whether the subject *is* a
+viewer, asked about `can_read` whether it *may* read. The `is_permission`
+flag classifies rows for consumers that list or filter; it never changes an
+answer.
+
+**Upgrading an existing deployment.** Logical replication matches tables and
+columns by name and carries no DDL, so a subscriber created for the first
+shape (`materialized_permissions`, column `permission`) must be changed by
+hand, in this order: disable the subscription; load
+`db/replication/materialized_relations.sql` on the publisher (it renames its
+tables in place and repoints the `authz_derived` publication) and run
+`refresh_all_materialized_relations(store)` for every registered store; on
+the subscriber run `db/replication/upgrade-subscriber.sql` and then
+`schema-derived.sql`; `ALTER SUBSCRIPTION … REFRESH PUBLICATION` and enable
+it; verify with `pg_subscription_rel` and a content digest against the
+publisher. Replicated rows are kept; the publisher's rebuild then replaces
+them with their namespace and kind as ordinary changes.
+`tests/test-replication.sh` upgrades a first-shape subscriber this way.
+
 ### Change propagation for derived permissions
 
 The source of change is the audit changefeed
@@ -985,6 +1005,13 @@ shows the backlog, `as_of` and the last run per store. Run the worker:
   while any store's `feed_drained` is false)
 - **Periodically:** via pg_cron (`SELECT cron.schedule(...)`)
 - **Event-driven:** on `LISTEN authz_changes`, the audit log's doorbell
+
+A physically deleted store (`delete_store`) leaves no feed behind, so the
+worker checks the registered incarnation itself: a registration whose
+`store_id` no longer exists — the store is gone, or the name belongs to a
+new store — is dropped together with its rows, and a recreated store starts
+empty until `refresh_all_materialized_relations` registers it. (A retired
+store announces itself through `STORE_RETIRED` and is handled the same way.)
 
 A crashed worker resumes from the stored cursor; a page is replayed if its
 run rolled back. One worker is the intended deployment, in its own `READ

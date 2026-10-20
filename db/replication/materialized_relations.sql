@@ -99,7 +99,11 @@
 -- STRUCTURAL CHANGES. A removed type (TYPE_REMOVED in the feed, or tuple
 -- deltas whose type no longer resolves) cannot be mapped to pairs; the
 -- worker rebuilds that store in the same run. A retired store
--- (STORE_RETIRED) is dropped from the derived tables and deregistered.
+-- (STORE_RETIRED) is dropped from the derived tables and deregistered. A
+-- store DELETED physically (delete_store) leaves no feed behind: the worker
+-- notices that the registered store_id no longer exists — or that the name
+-- now belongs to a new incarnation — and drops its rows and registration
+-- the same way; a recreated store is registered anew with refresh_all.
 -- Model changes (rules, restrictions) are not in the tuple feed: run
 -- refresh_all_materialized_relations(store) after applying one.
 --
@@ -308,6 +312,8 @@ CREATE INDEX IF NOT EXISTS idx_materialized_refresh_queue_due ON authz.materiali
 ------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS authz.materialized_refresh_state (
     store                 text PRIMARY KEY,
+    store_id              integer,                -- the registered incarnation; a store deleted and recreated
+                                                 -- under the same name gets a new id and must be registered anew
     cursor_at             timestamptz NOT NULL,   -- watch_changes cursor: last (performed_at, seq) applied
     cursor_seq            bigint      NOT NULL DEFAULT 0,
     as_of                 timestamptz NOT NULL,   -- every change performed before this instant is reflected
@@ -319,13 +325,19 @@ CREATE TABLE IF NOT EXISTS authz.materialized_refresh_state (
     last_run_rows_written integer NOT NULL DEFAULT 0,  -- permission rows inserted + deleted, this store
     last_run_gate         interval                     -- stability gate used: max(p_lag, age of the oldest open transaction)
 );
--- Upgrade of a state table created before last_run_gate existed (silent on a fresh install).
+-- Upgrade of a state table created before last_run_gate / store_id existed (silent on a fresh install).
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                     WHERE table_schema = 'authz' AND table_name = 'materialized_refresh_state'
                       AND column_name = 'last_run_gate') THEN
         ALTER TABLE authz.materialized_refresh_state ADD COLUMN last_run_gate interval;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'authz' AND table_name = 'materialized_refresh_state'
+                      AND column_name = 'store_id') THEN
+        ALTER TABLE authz.materialized_refresh_state ADD COLUMN store_id integer;
+        UPDATE authz.materialized_refresh_state s SET store_id = st.id FROM authz.stores st WHERE st.name = s.store;
     END IF;
 END;
 $$;
@@ -873,10 +885,16 @@ BEGIN
         relation text, object_type text, object_id text);
 
     FOR v_state IN
-        SELECT s.store, s.cursor_at, s.cursor_seq, st.id AS store_id
+        SELECT s.store, s.cursor_at, s.cursor_seq, s.store_id AS registered_id, st.id AS store_id
           FROM authz.materialized_refresh_state s
-          JOIN authz.stores st ON st.name = s.store
+     LEFT JOIN authz.stores st ON st.id = s.store_id        -- by id: a recreated name is a new store
     LOOP
+        -- deleted (or deleted and recreated): nothing in the feed will ever say so
+        IF v_state.store_id IS NULL THEN
+            v_retired := v_retired || v_state.store;
+            CONTINUE;
+        END IF;
+
         TRUNCATE _mp_page;
         INSERT INTO _mp_page
         SELECT w.seq, w.action, w.performed_at, w.user_type, w.user_id, w.user_relation,
@@ -976,12 +994,14 @@ BEGIN
       FROM _mp_feed f
      WHERE f.store = s.store;
 
-    -- retired stores: drop everything derived, deregister
+    -- retired or deleted stores: drop everything derived, deregister
     FOREACH v_store IN ARRAY v_retired LOOP
-        DELETE FROM authz.materialized_relations   WHERE store = v_store;
+        DELETE FROM authz.materialized_relations     WHERE store = v_store;
         DELETE FROM authz.materialized_subjects      WHERE store = v_store;
         DELETE FROM authz.materialized_objects       WHERE store = v_store;
-        DELETE FROM authz.materialized_refresh_queue q WHERE q.store_id IN (SELECT st.id FROM authz.stores st WHERE st.name = v_store);
+        DELETE FROM authz.materialized_refresh_queue q
+         WHERE q.store_id IN (SELECT s.store_id FROM authz.materialized_refresh_state s WHERE s.store = v_store)
+            OR q.store_id IN (SELECT st.id FROM authz.stores st WHERE st.name = v_store);
         DELETE FROM authz.materialized_refresh_state WHERE store = v_store;
     END LOOP;
 
@@ -1067,11 +1087,12 @@ BEGIN
      WHERE t.store_id = v_store_id AND t.expires_at IS NOT NULL;   -- visible ⇒ not yet expired (RLS)
 
     INSERT INTO authz.materialized_refresh_state
-        (store, cursor_at, cursor_seq, as_of, feed_drained,
+        (store, store_id, cursor_at, cursor_seq, as_of, feed_drained,
          last_run_started_at, last_run_finished_at, last_run_changes, last_run_pairs, last_run_rows_written, last_run_gate)
-    VALUES (p_store, v_cursor_at, 0, v_cursor_at, true, v_started, clock_timestamp(), 0, v_pairs, v_written, v_gate)
+    VALUES (p_store, v_store_id, v_cursor_at, 0, v_cursor_at, true, v_started, clock_timestamp(), 0, v_pairs, v_written, v_gate)
     ON CONFLICT (store) DO UPDATE
-       SET cursor_at = EXCLUDED.cursor_at, cursor_seq = 0, as_of = EXCLUDED.as_of, feed_drained = true,
+       SET store_id = EXCLUDED.store_id,
+           cursor_at = EXCLUDED.cursor_at, cursor_seq = 0, as_of = EXCLUDED.as_of, feed_drained = true,
            last_run_started_at = EXCLUDED.last_run_started_at, last_run_finished_at = EXCLUDED.last_run_finished_at,
            last_run_changes = 0, last_run_pairs = EXCLUDED.last_run_pairs,
            last_run_rows_written = EXCLUDED.last_run_rows_written, last_run_gate = EXCLUDED.last_run_gate;
@@ -1111,8 +1132,24 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
            (SELECT clock_timestamp() - min(a.xact_start) FROM pg_stat_activity a
              WHERE a.datname = current_database() AND a.pid <> pg_backend_pid() AND a.xact_start IS NOT NULL)
       FROM authz.materialized_refresh_state s
-      JOIN authz.stores st ON st.name = s.store
+ LEFT JOIN authz.stores st ON st.id = s.store_id
      ORDER BY s.store;
+$$;
+
+-- An existing publication from the first version listed the permissions
+-- table's leaf partitions and knew no state table: point it at the four
+-- current tables, published through their roots. (A rename does not break
+-- a publication — it tracks relations by OID — but the subscriber must be
+-- renamed too; see db/replication/upgrade-subscriber.sql.)
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'authz_derived') THEN
+        ALTER PUBLICATION authz_derived SET TABLE
+            authz.materialized_relations, authz.materialized_subjects,
+            authz.materialized_objects, authz.materialized_refresh_state;
+        ALTER PUBLICATION authz_derived SET (publish_via_partition_root = true);
+    END IF;
+END;
 $$;
 
 -- The pre-changefeed design queued whole objects from a trigger on

@@ -299,6 +299,27 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **Derived permissions: a physically deleted store kept its rows.** The
+  worker found its stores by joining the registry to `authz.stores` by name,
+  so after `delete_store` the store was never visited again and its derived
+  rows stayed — and a store recreated under the same name would have exposed
+  its predecessor's permissions until rebuilt. The registration now records
+  the store's id; a registration whose id no longer exists is dropped with
+  its rows, and a recreated store starts empty until registered. Regression
+  test: delete → worker → recreate → register.
+
+- **Derived permissions: upgrading an existing subscriber.** The in-place
+  rename on the publisher had no counterpart for subscribers, which logical
+  replication matches by name. `db/replication/upgrade-subscriber.sql` plus
+  the documented procedure (disable, upgrade both sides, refresh publication,
+  enable, verify) brings a first-shape subscriber to the current shape with
+  its rows kept; the publisher script also repoints an existing
+  `authz_derived` publication at the four current tables. Tested from the
+  first shape (`tests/sql/derived_subscriber_v1.sql`). The replication test
+  compares subscribers to the primary by content digest, not by row counts.
+  `check_permission()` is documented to answer for any relation, like
+  `check_access()`; `is_permission` classifies, it does not restrict.
+
 - **Namespace access check failed on installs without roles.sql.**
   `_check_namespace_access` asked `pg_has_role` about `authz_namespace_bypass`
   unconditionally, which raises "role does not exist" where roles.sql has not

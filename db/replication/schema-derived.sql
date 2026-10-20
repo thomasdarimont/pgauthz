@@ -25,14 +25,14 @@ CREATE TABLE IF NOT EXISTS authz.materialized_relations (
     PRIMARY KEY (store, user_id, user_type, relation, object_type, object_id, namespace, is_permission)
 ) PARTITION BY HASH (store, user_id);
 
-CREATE TABLE authz.materialized_relations_0 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 0);
-CREATE TABLE authz.materialized_relations_1 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 1);
-CREATE TABLE authz.materialized_relations_2 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 2);
-CREATE TABLE authz.materialized_relations_3 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 3);
-CREATE TABLE authz.materialized_relations_4 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 4);
-CREATE TABLE authz.materialized_relations_5 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 5);
-CREATE TABLE authz.materialized_relations_6 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 6);
-CREATE TABLE authz.materialized_relations_7 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 7);
+CREATE TABLE IF NOT EXISTS authz.materialized_relations_0 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 0);
+CREATE TABLE IF NOT EXISTS authz.materialized_relations_1 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 1);
+CREATE TABLE IF NOT EXISTS authz.materialized_relations_2 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 2);
+CREATE TABLE IF NOT EXISTS authz.materialized_relations_3 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 3);
+CREATE TABLE IF NOT EXISTS authz.materialized_relations_4 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 4);
+CREATE TABLE IF NOT EXISTS authz.materialized_relations_5 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 5);
+CREATE TABLE IF NOT EXISTS authz.materialized_relations_6 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 6);
+CREATE TABLE IF NOT EXISTS authz.materialized_relations_7 PARTITION OF authz.materialized_relations FOR VALUES WITH (MODULUS 8, REMAINDER 7);
 
 -- The subjects and objects the engine knows (= have at least one tuple).
 -- A '*' row in materialized_relations applies only to entities that are
@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS authz.materialized_objects (
 -- change performed before as_of is reflected in this copy.
 CREATE TABLE IF NOT EXISTS authz.materialized_refresh_state (
     store                 text PRIMARY KEY,
+    store_id              integer,
     cursor_at             timestamptz NOT NULL,
     cursor_seq            bigint      NOT NULL DEFAULT 0,
     as_of                 timestamptz NOT NULL,
@@ -100,6 +101,13 @@ $$;
 -- A single SQL expression, so the planner can inline it into a listing
 -- query:  SELECT d.* FROM documents d
 --          WHERE authz.check_permission('demo','internal_user','bob','can_read','document', d.id);
+--
+-- It answers for ANY relation, exactly like the engine's check_access():
+-- check_permission(…, 'viewer', …) is "is bob a viewer of this document" and
+-- check_permission(…, 'can_read', …) "may bob read it"; both are legitimate
+-- questions and the table holds both (is_permission tells them apart for
+-- consumers that want to list or filter, not for the answer). Deliberate:
+-- the flag classifies, it does not restrict.
 CREATE OR REPLACE FUNCTION authz.check_permission(
     p_store       text,
     p_user_type   text,
