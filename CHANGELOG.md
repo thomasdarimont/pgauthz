@@ -312,20 +312,35 @@ pre-1.0, minor versions may include breaking changes.
   worker found its stores by joining the registry to `authz.stores` by name,
   so after `delete_store` the store was never visited again and its derived
   rows stayed — and a store recreated under the same name would have exposed
-  its predecessor's permissions until rebuilt. The registration now records
-  the store's id; a registration whose id no longer exists is dropped with
-  its rows, and a recreated store starts empty until registered. Regression
-  test: delete → worker → recreate → register.
+  its predecessor's permissions until rebuilt. Deletion now invalidates
+  synchronously: a trigger on `authz.stores` drops the store's rows and
+  registration in the deleting transaction (they replicate atomically); the
+  registration records the store's id, the subscriber's `check_permission()`
+  requires a registration row (a stale row of an unregistered incarnation
+  answers false), and registration, cleanup and the trigger serialize per
+  store name on an advisory lock with an incarnation check, so a concurrent
+  re-registration is never undone. Regression tests: delete → immediate
+  emptiness on primary and replica → recreate → false until registered;
+  cleanup of a dead incarnation racing refresh_all under a held lock.
 
 - **Derived permissions: upgrading an existing subscriber.** The in-place
   rename on the publisher had no counterpart for subscribers, which logical
-  replication matches by name. `db/replication/upgrade-subscriber.sql` plus
-  the documented procedure (disable, upgrade both sides, refresh publication,
-  enable, verify) brings a first-shape subscriber to the current shape with
-  its rows kept; the publisher script also repoints an existing
-  `authz_derived` publication at the four current tables. Tested from the
-  first shape (`tests/sql/derived_subscriber_v1.sql`). The replication test
-  compares subscribers to the primary by content digest, not by row counts.
+  replication matches by name. `db/replication/upgrade-derived-tables.sql` plus
+  the documented procedure (disable; upgrade both sides; truncate the
+  subscriber's derived tables; enable; refresh publication; verify) brings a
+  first-shape subscriber to the current shape; the publisher script also
+  repoints an existing `authz_derived` publication at the four current
+  tables. The rows are re-copied rather than kept: the first publication
+  listed leaf partitions, the current one publishes the root, which the
+  subscription meets as a new table and copies in full — into a subscriber
+  still holding the old rows that copy collides on the key and never
+  finishes (the first draft of the procedure did exactly that). Tested
+  through a LIVE subscription from the first shape
+  (`tests/sql/derived_subscriber_v1.sql`): disable, upgrade both sides,
+  truncate, enable and refresh, whole-row parity, then an insert and a
+  delete after resumption. The replication test compares
+  subscribers to the primary by a whole-row digest (`row_to_json`), not by
+  row counts.
   `check_permission()` is documented to answer for any relation, like
   `check_access()`; `is_permission` classifies, it does not restrict.
 

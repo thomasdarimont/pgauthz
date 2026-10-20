@@ -1,6 +1,6 @@
 -- The FIRST shape of a derived-permissions subscriber (before namespace, kind,
 -- side tables and freshness existed): what an existing deployment has.
--- Used by tests/test-replication.sh to prove db/replication/upgrade-subscriber.sql
+-- Used by tests/test-replication.sh to prove db/replication/upgrade-derived-tables.sql
 -- followed by schema-derived.sql brings it to the current shape with its rows
 -- intact. Not a deployable file.
 CREATE SCHEMA IF NOT EXISTS authz;

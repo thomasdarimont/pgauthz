@@ -102,6 +102,13 @@ $$;
 -- query:  SELECT d.* FROM documents d
 --          WHERE authz.check_permission('demo','internal_user','bob','can_read','document', d.id);
 --
+-- A store without a registration row (materialized_refresh_state) answers
+-- false whatever rows exist: rows are keyed by store NAME, the registration
+-- names the incarnation, and a store deleted and recreated under the same
+-- name is a new incarnation that has not been derived yet — the row and the
+-- old rows' deletion replicate in one transaction, so there is no moment at
+-- which a predecessor's permission counts for its successor.
+--
 -- It answers for ANY relation, exactly like the engine's check_access():
 -- check_permission(…, 'viewer', …) is "is bob a viewer of this document" and
 -- check_permission(…, 'can_read', …) "may bob read it"; both are legitimate
@@ -117,7 +124,8 @@ CREATE OR REPLACE FUNCTION authz.check_permission(
     p_object_id   text
 ) RETURNS boolean
 LANGUAGE sql STABLE AS $$
-    SELECT EXISTS(
+    SELECT EXISTS (SELECT 1 FROM authz.materialized_refresh_state s WHERE s.store = p_store)
+       AND EXISTS(
         SELECT 1 FROM authz.materialized_relations p
          WHERE p.store       = p_store
            AND p.user_type   = p_user_type

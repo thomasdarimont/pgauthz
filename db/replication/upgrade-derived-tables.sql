@@ -1,7 +1,9 @@
--- Upgrade a SUBSCRIBER of the derived tables from the first shape
--- (authz.materialized_permissions with a `permission` column) to the current
--- one. Logical replication matches tables and columns by NAME and carries no
--- DDL, so a subscriber must be changed by hand, in this order:
+-- Upgrade the derived tables from their first shape (authz.materialized_permissions
+-- with a `permission` column) to the current one — on a SUBSCRIBER, where it is
+-- the only way (logical replication matches tables and columns by NAME and
+-- carries no DDL), or on any database that holds a copy without the engine.
+-- (The publisher gets the same changes from materialized_relations.sql.)
+-- The live procedure, which tests/test-replication.sh runs end to end:
 --
 --   1. subscriber:  ALTER SUBSCRIPTION <sub> DISABLE;
 --   2. publisher:   load db/replication/materialized_relations.sql (renames its
@@ -9,15 +11,25 @@
 --                   then SELECT authz.refresh_all_materialized_relations(store)
 --                   for every registered store (rows get namespace / kind)
 --   3. subscriber:  this file, then db/replication/schema-derived.sql
---                   (idempotent: adds what is still missing)
---   4. subscriber:  ALTER SUBSCRIPTION <sub> REFRESH PUBLICATION;  -- picks up materialized_refresh_state
---                   ALTER SUBSCRIPTION <sub> ENABLE;
+--                   (idempotent: adds what is still missing), then
+--                   TRUNCATE authz.materialized_relations, authz.materialized_subjects,
+--                            authz.materialized_objects, authz.materialized_refresh_state;
+--   4. subscriber:  ALTER SUBSCRIPTION <sub> ENABLE;
+--                   ALTER SUBSCRIPTION <sub> REFRESH PUBLICATION;   -- copy_data = true (default)
 --   5. verify:      SELECT * FROM pg_subscription_rel WHERE srsubstate <> 'r';   -- empty when caught up
 --                   compare a digest of the tables with the publisher (see tests/test-replication.sh)
 --
--- Rows already replicated are kept (the publisher's rebuild in step 2 then
--- deletes and re-inserts them with their namespace and kind, which replicates
--- as ordinary changes). Idempotent: every step checks the current shape.
+-- Why the TRUNCATE and the re-copy: the first publication listed the leaf
+-- partitions, so the subscription knows eight leaf tables; the current one
+-- publishes the partitioned ROOT, which the subscription meets as a new table
+-- and copies in full on REFRESH (the three side tables too). A copy into a
+-- subscriber that still holds the old rows collides on the key ('' / false
+-- defaults) and the sync worker retries forever. Emptying the copy first makes
+-- the copy the truth; changes after its snapshot stream in as usual, so
+-- nothing is lost — only re-copied. (REFRESH is refused on a disabled
+-- subscription, hence ENABLE first; changes for the root that stream in
+-- between are skipped and superseded by the copy.) Idempotent: every step
+-- checks the current shape.
 
 DO $$
 DECLARE

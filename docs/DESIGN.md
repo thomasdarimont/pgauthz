@@ -918,12 +918,19 @@ hand, in this order: disable the subscription; load
 `db/replication/materialized_relations.sql` on the publisher (it renames its
 tables in place and repoints the `authz_derived` publication) and run
 `refresh_all_materialized_relations(store)` for every registered store; on
-the subscriber run `db/replication/upgrade-subscriber.sql` and then
-`schema-derived.sql`; `ALTER SUBSCRIPTION … REFRESH PUBLICATION` and enable
-it; verify with `pg_subscription_rel` and a content digest against the
-publisher. Replicated rows are kept; the publisher's rebuild then replaces
-them with their namespace and kind as ordinary changes.
-`tests/test-replication.sh` upgrades a first-shape subscriber this way.
+the subscriber run `db/replication/upgrade-derived-tables.sql` and then
+`schema-derived.sql`, and truncate the four derived tables; enable the
+subscription, then `ALTER SUBSCRIPTION … REFRESH PUBLICATION` (refused while
+disabled). The refresh re-copies everything: the first publication listed
+leaf partitions, the current one publishes the partitioned root, which the
+subscription meets as a new table — a copy into a subscriber still holding
+the old rows collides on the key and never finishes, hence the truncate.
+Changes after the copy's snapshot stream in as usual, so nothing is lost,
+only re-copied. Verify with `pg_subscription_rel` and a content digest
+against the publisher. `tests/test-replication.sh` runs this procedure
+against a live subscription from the first shape, then checks row-for-row
+parity and a write after resumption — the first version of the procedure,
+without the truncate, failed exactly there.
 
 ### Change propagation for derived permissions
 
@@ -1006,11 +1013,19 @@ shows the backlog, `as_of` and the last run per store. Run the worker:
 - **Periodically:** via pg_cron (`SELECT cron.schedule(...)`)
 - **Event-driven:** on `LISTEN authz_changes`, the audit log's doorbell
 
-A physically deleted store (`delete_store`) leaves no feed behind, so the
-worker checks the registered incarnation itself: a registration whose
-`store_id` no longer exists — the store is gone, or the name belongs to a
-new store — is dropped together with its rows, and a recreated store starts
-empty until `refresh_all_materialized_relations` registers it. (A retired
+A physically deleted store (`delete_store`) is invalidated **synchronously**:
+a trigger on `authz.stores`, installed by the replication script, drops the
+store's rows and registration in the deleting transaction, so they replicate
+atomically with it and a store recreated under the same name never inherits
+its predecessor's permissions. The registration records the store's id —
+its incarnation — and the subscriber's `check_permission()` requires a
+registration row for the store, so even a stale row of an unregistered
+incarnation answers false; a recreated store starts empty until
+`refresh_all_materialized_relations` registers it. Registration, the
+worker's cleanup (for registrations whose id no longer exists, leftovers
+from before the trigger) and the trigger serialize per store name on an
+advisory transaction lock, and cleanup only removes the incarnation it
+identified, so it can never undo a concurrent re-registration. (A retired
 store announces itself through `STORE_RETIRED` and is handled the same way.)
 
 A crashed worker resumes from the stored cursor; a page is replayed if its

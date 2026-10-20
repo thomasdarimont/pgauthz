@@ -100,10 +100,17 @@
 -- deltas whose type no longer resolves) cannot be mapped to pairs; the
 -- worker rebuilds that store in the same run. A retired store
 -- (STORE_RETIRED) is dropped from the derived tables and deregistered. A
--- store DELETED physically (delete_store) leaves no feed behind: the worker
--- notices that the registered store_id no longer exists — or that the name
--- now belongs to a new incarnation — and drops its rows and registration
--- the same way; a recreated store is registered anew with refresh_all.
+-- store DELETED physically (delete_store) is invalidated SYNCHRONOUSLY: a
+-- trigger on authz.stores drops its rows and registration in the deleting
+-- transaction (they replicate atomically with it), so a store recreated
+-- under the same name never inherits its predecessor's permissions; the
+-- worker also drops any registration whose store_id no longer exists, for
+-- leftovers from before this trigger. Registration (refresh_all), the
+-- worker's cleanup and the trigger serialize per store name on an advisory
+-- transaction lock, and cleanup only removes the incarnation it identified
+-- — a concurrent re-registration is never undone. The subscriber's
+-- check_permission() requires a registration row for the store, so even a
+-- stale row of an unregistered incarnation answers false.
 -- Model changes (rules, restrictions) are not in the tuple feed: run
 -- refresh_all_materialized_relations(store) after applying one.
 --
@@ -372,6 +379,60 @@ BEGIN
     CREATE TEMP TABLE _mp_written (store text, n integer);
 END;
 $$;
+
+------------------------------------------------------------------------
+-- _mp_lock_store: registration, cleanup and the store-deletion trigger
+-- serialize per store NAME (the unit the derived rows are keyed by).
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._mp_lock_store(p_store text)
+RETURNS void
+LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+    SELECT pg_advisory_xact_lock(hashtext('authz.materialized_relations:' || p_store));
+$$;
+
+------------------------------------------------------------------------
+-- _mp_drop_store: remove everything derived for a store name — unless the
+-- registration now belongs to another incarnation than the one the caller
+-- identified (p_expected_id), in which case nothing is touched. Returns
+-- whether it dropped.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._mp_drop_store(p_store text, p_expected_id integer)
+RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+    PERFORM authz._mp_lock_store(p_store);
+    IF p_expected_id IS NOT NULL AND EXISTS (
+           SELECT 1 FROM authz.materialized_refresh_state s
+            WHERE s.store = p_store AND s.store_id IS DISTINCT FROM p_expected_id) THEN
+        RETURN false;   -- re-registered meanwhile: that incarnation's rows are the truth
+    END IF;
+    DELETE FROM authz.materialized_relations     WHERE store = p_store;
+    DELETE FROM authz.materialized_subjects      WHERE store = p_store;
+    DELETE FROM authz.materialized_objects       WHERE store = p_store;
+    DELETE FROM authz.materialized_refresh_queue q
+     WHERE q.store_id = p_expected_id
+        OR q.store_id IN (SELECT s.store_id FROM authz.materialized_refresh_state s WHERE s.store = p_store);
+    DELETE FROM authz.materialized_refresh_state WHERE store = p_store;
+    RETURN true;
+END;
+$$;
+
+------------------------------------------------------------------------
+-- Synchronous invalidation on physical store deletion (delete_store):
+-- the derived rows go in the same transaction as the store row.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._mp_on_store_deleted()
+RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+    PERFORM authz._mp_drop_store(OLD.name, OLD.id);
+    RETURN OLD;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_mp_store_deleted ON authz.stores;
+CREATE TRIGGER trg_mp_store_deleted
+    AFTER DELETE ON authz.stores
+    FOR EACH ROW EXECUTE FUNCTION authz._mp_on_store_deleted();
 
 ------------------------------------------------------------------------
 -- _mp_require_read_committed: see header, READ COMMITTED ONLY.
@@ -870,7 +931,6 @@ DECLARE
     v_pairs      integer := 0;
     v_written    integer := 0;
     v_rebuild    text[] := '{}';
-    v_retired    text[] := '{}';
     v_store      text;
 BEGIN
     PERFORM authz._mp_require_read_committed('refresh_materialized_relations');
@@ -889,9 +949,10 @@ BEGIN
           FROM authz.materialized_refresh_state s
      LEFT JOIN authz.stores st ON st.id = s.store_id        -- by id: a recreated name is a new store
     LOOP
-        -- deleted (or deleted and recreated): nothing in the feed will ever say so
+        -- deleted (or deleted and recreated) before the deletion trigger existed:
+        -- nothing in the feed will ever say so; drop it — this incarnation only
         IF v_state.store_id IS NULL THEN
-            v_retired := v_retired || v_state.store;
+            PERFORM authz._mp_drop_store(v_state.store, v_state.registered_id);
             CONTINUE;
         END IF;
 
@@ -903,7 +964,7 @@ BEGIN
                                    p_until => v_cutoff) w;
 
         IF EXISTS (SELECT 1 FROM _mp_page pg WHERE pg.action = 'STORE_RETIRED') THEN
-            v_retired := v_retired || v_state.store;
+            PERFORM authz._mp_drop_store(v_state.store, v_state.registered_id);
             CONTINUE;
         END IF;
 
@@ -971,9 +1032,9 @@ BEGIN
       FROM (SELECT c.store_id, count(*) AS n FROM _mp_claimed c
              WHERE c.op NOT IN ('INSERT', 'UPDATE', 'DELETE') GROUP BY c.store_id) d
      WHERE d.store_id = f.store_id;
-    -- a store about to be rebuilt or retired needs no pair work
+    -- a store about to be rebuilt needs no pair work
     DELETE FROM _mp_claimed c
-     WHERE c.store_id IN (SELECT st.id FROM authz.stores st WHERE st.name = ANY (v_rebuild || v_retired));
+     WHERE c.store_id IN (SELECT st.id FROM authz.stores st WHERE st.name = ANY (v_rebuild));
 
     IF EXISTS (SELECT 1 FROM _mp_claimed) THEN
         PERFORM authz._mp_blast_radius();
@@ -993,17 +1054,6 @@ BEGIN
            last_run_gate         = v_gate
       FROM _mp_feed f
      WHERE f.store = s.store;
-
-    -- retired or deleted stores: drop everything derived, deregister
-    FOREACH v_store IN ARRAY v_retired LOOP
-        DELETE FROM authz.materialized_relations     WHERE store = v_store;
-        DELETE FROM authz.materialized_subjects      WHERE store = v_store;
-        DELETE FROM authz.materialized_objects       WHERE store = v_store;
-        DELETE FROM authz.materialized_refresh_queue q
-         WHERE q.store_id IN (SELECT s.store_id FROM authz.materialized_refresh_state s WHERE s.store = v_store)
-            OR q.store_id IN (SELECT st.id FROM authz.stores st WHERE st.name = v_store);
-        DELETE FROM authz.materialized_refresh_state WHERE store = v_store;
-    END LOOP;
 
     -- structural change: rebuild (its cursor is this run's cutoff)
     FOREACH v_store IN ARRAY v_rebuild LOOP
@@ -1064,6 +1114,7 @@ DECLARE
     v_pairs     integer; v_written integer;
 BEGIN
     PERFORM authz._mp_require_read_committed('refresh_all_materialized_relations');
+    PERFORM authz._mp_lock_store(p_store);   -- vs. the worker's cleanup and the deletion trigger
     DELETE FROM authz.materialized_relations WHERE store = p_store;
     DELETE FROM authz.materialized_subjects    WHERE store = p_store;
     DELETE FROM authz.materialized_objects     WHERE store = p_store;
@@ -1140,7 +1191,7 @@ $$;
 -- table's leaf partitions and knew no state table: point it at the four
 -- current tables, published through their roots. (A rename does not break
 -- a publication — it tracks relations by OID — but the subscriber must be
--- renamed too; see db/replication/upgrade-subscriber.sql.)
+-- renamed too; see db/replication/upgrade-derived-tables.sql.)
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'authz_derived') THEN
@@ -1182,6 +1233,9 @@ BEGIN
         END LOOP;
         ALTER FUNCTION authz._mp_prepare_pairs()                                      OWNER TO authz_owner;
         ALTER FUNCTION authz._mp_require_read_committed(text)                         OWNER TO authz_owner;
+        ALTER FUNCTION authz._mp_lock_store(text)                                     OWNER TO authz_owner;
+        ALTER FUNCTION authz._mp_drop_store(text, integer)                            OWNER TO authz_owner;
+        ALTER FUNCTION authz._mp_on_store_deleted()                                   OWNER TO authz_owner;
         ALTER FUNCTION authz._mp_blast_radius()                                       OWNER TO authz_owner;
         ALTER FUNCTION authz._mp_ensure_known(integer)                                OWNER TO authz_owner;
         ALTER FUNCTION authz._derive_pairs()                                          OWNER TO authz_owner;
@@ -1202,6 +1256,9 @@ $$;
 ------------------------------------------------------------------------
 REVOKE ALL ON FUNCTION authz._mp_prepare_pairs()                                      FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._mp_require_read_committed(text)                         FROM PUBLIC;
+REVOKE ALL ON FUNCTION authz._mp_lock_store(text)                                     FROM PUBLIC;
+REVOKE ALL ON FUNCTION authz._mp_drop_store(text, integer)                            FROM PUBLIC;
+REVOKE ALL ON FUNCTION authz._mp_on_store_deleted()                                   FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._mp_blast_radius()                                       FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._mp_ensure_known(integer)                                FROM PUBLIC;
 REVOKE ALL ON FUNCTION authz._derive_pairs()                                          FROM PUBLIC;
