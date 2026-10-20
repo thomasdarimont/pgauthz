@@ -789,30 +789,35 @@ authz-primary (wal_level=logical)
 The central authz database maintains a `materialized_permissions` table —
 a flat, denormalized lookup table — plus two small side tables,
 `materialized_subjects` and `materialized_objects`, that list the subjects
-and objects the engine knows (= have at least one tuple). Applications
-subscribe to these three tables only, and call one helper,
-`authz.check_permission()`, that is a single inlinable SQL expression. No
-authz schema, functions, or model knowledge needed.
+and objects the engine knows (= have at least one tuple), and one
+freshness row per store, `materialized_refresh_state`. Applications
+subscribe to these tables only, and call two helpers:
+`authz.check_permission()`, a single inlinable SQL expression, and
+`authz.permissions_as_of(store)`. No authz schema, functions, or model
+knowledge needed.
 
 ```
 authz-primary
-  ├── tuples (source of truth)
-  ├── trigger: tuple change → queue affected objects
-  ├── process_permissions_refresh_queue() → re-derives permissions via _decide
-  └── Publication: materialized_permissions + materialized_subjects/objects
+  ├── tuples (source of truth) ── audit log ── watch_changes (changefeed)
+  ├── refresh_materialized_permissions(): worker, resumes from a stored cursor,
+  │     re-derives only the affected subject × object pairs via _decide
+  └── Publication: materialized_permissions + subjects/objects + refresh_state
         │
         └──▶ app-db (subscriber)
-               ├── the three tables (replicated)
-               └── authz.check_permission(...) in WHERE clauses / joins
+               ├── the tables (replicated)
+               ├── authz.check_permission(...) in WHERE clauses / joins
+               └── authz.permissions_as_of('demo') — how stale may this be?
 ```
 
 **Trade-offs:**
 - No schema coupling — the app only needs the flat permissions table
 - Permissions are pre-computed, so there is a lag between a tuple change
   on the primary and the updated permission appearing on the subscriber
-  (queue processing time + replication lag)
+  (the changefeed's stability lag, 1 s by default + the worker's cadence +
+  replication lag); `permissions_as_of()` states it
 - The app cannot run `explain_access` or `list_objects` — only simple
   permission lookups
+- Requires the audit profile on the primary (the changefeed is the source)
 
 **Wildcards: the contract.** The engine cannot expand an object wildcard
 (`document:*`) — it does not know the application's object universe — and
@@ -842,46 +847,67 @@ depend on the request, so the table stores the context-free, fail-closed
 answer: a conditional grant is absent until its condition is dropped.
 Temporal gates are per-principal history and are not evaluated at all (the
 refresh calls `_decide` with an empty gate list). Decisions that must be
-exact at the moment of the request stay on the live `check_access`. The
-refresh is correct but brute-force: a queued object is re-derived against
-every subject known to the store, a write of an object-wildcard tuple
-re-derives the whole type, and the trigger follows reverse tuple-to-userset
-edges two levels deep, so deeper nesting (team → department → org →
-document) needs a periodic `refresh_all_materialized_permissions`. This is
-the same shape as Auth0 FGA's hosted *Permissions Index* (which excludes
-conditions and contextual tuples for the same reason); an incremental,
-changefeed-driven refresh that expands only the affected subjects is the
-planned follow-up.
+exact at the moment of the request stay on the live `check_access`. This
+is the same shape as Auth0 FGA's hosted *Permissions Index*, which excludes
+conditions and contextual tuples for the same reason.
 
 **Install and ownership.** Load `materialized_permissions.sql` after the
-engine; the refresh functions and the queue trigger are `SECURITY DEFINER`
-(tuple writes arrive through the engine's BYPASSRLS helper, and the
-engine's per-session memo table must be created under one role), and the
-script transfers them to `authz_owner` when `roles.sql` has run. The worker
-that processes the queue needs only `EXECUTE` on
-`process_permissions_refresh_queue()`.
+engine (full profile: it reads the audit changefeed); the functions are
+`SECURITY DEFINER` (the engine's per-session memo table must be created
+under one role), and the script transfers them to `authz_owner` when
+`roles.sql` has run. The worker role needs only `EXECUTE` on
+`refresh_materialized_permissions()`.
 
 ### Change propagation for derived permissions
 
-When a tuple changes on the primary:
+The source of change is the audit changefeed
+([AUDIT.md → Watching for changes](AUDIT.md#watching-for-changes-changefeed)).
+`refresh_all_materialized_permissions(store)` takes the initial snapshot and
+registers the store with a `(performed_at, seq)` cursor from just before
+it; nothing on the write path changes (no trigger on `authz.tuples`). On
+each run, `refresh_materialized_permissions()`:
 
-1. A row-level trigger fires and queues the directly affected object plus
-   objects reachable via reverse TTU traversal (2 levels deep); a change to
-   an object-wildcard tuple (`object_id = '*'`) queues every object of the
-   type, because their concrete rows are authoritative over the `*` row
-2. The trigger sends `pg_notify('authz_permissions_changed')` to notify
-   external listeners
-3. A worker (pg_cron, external service, or explicit call) processes the
-   queue by re-evaluating permissions for each queued object
-4. Updated permissions are written to `materialized_permissions`; the side
-   tables gain the object and every subject seen, and lose subjects that no
-   longer have any tuple (they become wildcard-covered)
-5. PostgreSQL logical replication delivers the changes to subscribers
+1. pulls one lag-gated page of `watch_changes` per registered store after
+   its cursor (the stability lag, 1 s by default, must stay at or above the
+   writers' `statement_timeout` for the no-row-skipped guarantee), and
+   claims the deferred deltas that fell due (see 4)
+2. computes each delta's blast radius — the subject × object pairs whose
+   answer can have changed:
+   - *objects*: the delta's object plus every object that reaches it
+     through tuples (reverse closure over tuple edges, full depth, cycle
+     safe); an object-wildcard delta seeds every object of the type,
+     because their concrete rows are authoritative over the `*` row
+   - *subjects*: the delta's own subject when it is a plain principal (the
+     model defines no relation on its type, so it can never be an edge);
+     every known subject of the type for a subject-wildcard delta; every
+     known subject when the delta's subject is a userset or an object
+     reference (`team#member`, a parent folder, a classification) — the
+     safe over-approximation. Decided from the model, not the current
+     tuples, so a batch that deletes several edges of one path still
+     re-derives everyone above the cut
+   - *relations*: every relation of the object's type
+3. decides each pair through `_decide` (graph only) and **diffs** against
+   the stored rows, so the table receives real inserts and deletes only (a
+   CDC consumer downstream sees deltas); objects and subjects that lost
+   their last tuple are delisted and lose their rows (wildcard-covered from
+   then on)
+4. files a deferred delta, due at `expires_at`, for every inserted tuple
+   that expires — the feed reports writes, not the passing of time — so the
+   rows an expiring grant produced are withdrawn when it expires
+5. advances the cursor and `as_of` in `materialized_refresh_state`; logical
+   replication delivers rows and freshness together
 
-The queue can be processed:
-- **Explicitly:** `SELECT authz.process_permissions_refresh_queue()`
+A write costs nothing extra; a typical grant or revoke re-derives one pair
+(tens of milliseconds); a share with a team or a folder move re-derives the
+affected objects for every known subject. `materialized_permissions_status()`
+shows the backlog, `as_of` and the last run per store. Run the worker:
+- **Explicitly:** `SELECT authz.refresh_materialized_permissions()` (again
+  while any store's `feed_drained` is false)
 - **Periodically:** via pg_cron (`SELECT cron.schedule(...)`)
-- **Event-driven:** via an external worker listening on the NOTIFY channel
+- **Event-driven:** on `LISTEN authz_changes`, the audit log's doorbell
+
+A crashed worker resumes from the stored cursor; a page is replayed if its
+run rolled back. One worker is the intended deployment.
 
 ### Choosing between the approaches
 
@@ -889,7 +915,7 @@ The queue can be processed:
 |---|---|---|
 | Schema coupling | High — must deploy authz schema to every app DB | None — just one flat table |
 | Query capability | Full (`check_access`, `list_objects`, `explain_access`) | Simple lookup only |
-| Latency | Replication lag only (< 1s) | Queue processing + replication lag |
+| Latency | Replication lag only (< 1s) | Changefeed stability lag (1 s) + worker cadence + replication lag; `permissions_as_of()` states it |
 | App-side complexity | Low (call `check_access()`) | Low (call `SELECT EXISTS(...)`) |
 | Combining with business rules | Call `check_access()` then apply rules | Call `check_permission()` then apply rules |
 | Recommended for | Apps that need full graph queries or `explain_access` | Most apps that just need yes/no permission checks |
@@ -948,9 +974,10 @@ SELECT d.* FROM documents d
  WHERE authz.check_permission('demo', 'internal_user', :me, 'can_read', 'document', d.id);
 ```
 
-Writing a new object-wildcard tuple queues every object of the type (their
-concrete rows must now say "allowed"); revoking it removes the rows and, if
-that was the subject's last tuple, delists the subject.
+Writing a new object-wildcard tuple re-derives the subject against every
+object of the type (their concrete rows must now say "allowed"); revoking
+it removes the rows and, if that was the subject's last tuple, delists the
+subject.
 
 See `db/replication/` for a working demo of both approaches, including
 a narrated demo script (`db/replication/demo-replication.sh`, section 7

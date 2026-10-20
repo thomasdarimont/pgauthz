@@ -799,22 +799,24 @@ plain join, and cannot call `list_objects` per query. (Auth0 FGA sells this
 shape as a *Permissions Index*.)
 
 **Solution:** `authz.materialized_permissions` is a flat
-`(store, subject, permission, object)` table the engine keeps current: a
-trigger on tuple changes queues the affected objects, a worker re-derives
-them, and logical replication ships that table plus two side tables (the
-subjects and objects the engine knows) to the consumer, which needs no
-engine, model or functions — only the helper `authz.check_permission()`,
-a single SQL expression that also applies wildcard grants correctly (a `*`
-row counts only for a subject or object the engine does not know). It is
-eventually consistent (queue processing plus replication lag). Conditions,
+`(store, subject, permission, object)` table the engine keeps current
+incrementally: a worker follows the audit changefeed from a stored cursor
+and re-derives only the subject × object pairs a change can affect (an
+expiring grant is withdrawn when it expires), and logical replication ships
+that table plus two side tables (the subjects and objects the engine knows)
+and a freshness row to the consumer, which needs no engine, model or
+functions — only the helper `authz.check_permission()`, a single SQL
+expression that also applies wildcard grants correctly (a `*` row counts
+only for a subject or object the engine does not know), and
+`authz.permissions_as_of()` to know how stale the copy may be. Conditions,
 contextual tuples and temporal gates depend on the request and cannot live
 in a precomputed row, so the table holds the context-free, fail-closed
 answer; decisions that must be exact at the moment of the request stay on
 the live `check_access`.
 
 ```sql
--- primary: keep the table current (pg_cron, or a worker on LISTEN authz_permissions_changed)
-SELECT authz.process_permissions_refresh_queue();
+-- primary: the worker (pg_cron, or on LISTEN authz_changes); resumes from its cursor
+SELECT authz.refresh_materialized_permissions();
 -- subscriber: a permission-aware listing with no engine installed
 SELECT d.*
   FROM documents d
@@ -826,7 +828,7 @@ Shown in: [DESIGN.md → Derived permissions](DESIGN.md#approach-2-derived-permi
 [`db/replication/demo-replication.sh`](../db/replication/demo-replication.sh)
 (`tests/test-replication.sh` proves the subscriber's answers equal the
 primary's live checks for every subject × relation × object, unknown probes
-included).
+included, after the snapshot and after three batches of random mutations).
 
 ### Forward the user's token, or ask as a PEP — two ways to call the daemon
 

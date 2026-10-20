@@ -6,9 +6,10 @@
 --                             authorization chains (skips client-facing types)
 --   3. authz_derived        — materialized_permissions table plus its two
 --                             side tables materialized_subjects /
---                             materialized_objects (the wildcard contract;
+--                             materialized_objects (the wildcard contract)
+--                             and materialized_refresh_state (freshness);
 --                             flat, no authz schema/functions needed on
---                             subscriber)
+--                             the subscriber
 --
 -- The accounting app needs these types to resolve check_access paths:
 --   document(9) → in_internal_space → internal_data_space(7)
@@ -84,6 +85,7 @@ CREATE PUBLICATION authz_accounting FOR TABLE
 CREATE PUBLICATION authz_derived FOR TABLE
     authz.materialized_subjects,
     authz.materialized_objects,
+    authz.materialized_refresh_state,
     authz.materialized_permissions_0,
     authz.materialized_permissions_1,
     authz.materialized_permissions_2,

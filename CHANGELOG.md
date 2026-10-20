@@ -325,6 +325,43 @@ pre-1.0, minor versions may include breaking changes.
   `REPLICATION_COMPOSE_FILES` (override files, e.g. other host ports) so the
   demo can run next to the main stack.
 
+- **Derived permissions: incremental, changefeed-driven refresh.** The
+  worker `authz.refresh_materialized_permissions()` replaces the tuple
+  trigger and `process_permissions_refresh_queue()`: it follows
+  `authz.watch_changes` from a per-store cursor (registered by
+  `refresh_all_materialized_permissions`, which takes the snapshot from
+  just before the cursor), computes each delta's blast radius — the
+  objects that reach the changed object through tuples at full depth, the
+  delta's own subject when its type can never be an edge (no relation on
+  it in the model), every known subject for usersets, object references
+  and subject wildcards — decides
+  those pairs and diffs them against the stored rows, so the table only
+  ever receives real inserts and deletes. A grant or revoke re-derives one
+  pair in tens of milliseconds instead of every subject of the object; the
+  two-level reverse-traversal limit is gone. Expiring tuples file a
+  deferred delta due at their expiry, so the rows they granted are
+  withdrawn on time. `authz.materialized_refresh_state` (replicated) carries
+  cursor and `as_of`; `materialized_permissions_status()` on the primary and
+  `permissions_as_of(store)` on the subscriber say how stale the copy may
+  be. Requires the audit profile. `tests/test-replication.sh` now also
+  runs three batches of random mutations
+  (`tests/sql/derived_permissions_mutate.sql`: grants to known, fresh and
+  `*` subjects, expiring grants, revokes, usersets, object wildcards) and
+  re-runs the differential after each. Two things that loop caught before
+  release: an object and a subject vanishing in the same change left the
+  subject listed as known (objects were pruned before subjects were
+  resolved), and a tuple expiring in the milliseconds between the worker's
+  statement start and its expiry-filing step was derived but never filed
+  (`clock_timestamp()` vs the RLS policy's `statement_timestamp()`); and
+  deciding "is this subject type a principal?" from the current tuples
+  turned a type into a principal in the very batch that deleted its last
+  edge, so the deleted edge's delta re-derived one pseudo-subject instead
+  of everyone above the cut — it is decided from the model now. A
+  set-based blast radius was tried first and rejected: with the keys coming
+  from a CTE the planner joined the whole tuples table per delta (4 s next
+  to large benchmark stores); the procedural version probes indexes with
+  constant keys.
+
 - `publish_model` and `apply_model` attribute `created_by` / `applied_by`
   to the `authz.performed_by` session setting when it is set (the same
   convention as the tuple audit trail), else to the connection's role.

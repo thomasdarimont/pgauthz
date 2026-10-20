@@ -27,7 +27,7 @@ RESET='\033[0m'
 
 primary() {
     # Notices off: the engine's per-session memo table announces itself on
-    # every check during queue processing, which only clutters the narration.
+    # every check the worker makes, which only clutters the narration.
     docker exec -i -e PGPASSWORD=authz \
         "$("${COMPOSE[@]}" ps -q authz-primary)" \
         psql -U authz -d authz -c "SET client_min_messages = warning" "$@"
@@ -67,6 +67,15 @@ run_derived() {
     derived -c "$1"
 }
 
+# The worker. The audit changefeed is lag-gated (1 s stability lag, see
+# watch_changes), so give the write a moment, pull the feed, then let
+# logical replication deliver the rows.
+refresh() {
+    sleep 1.2
+    run_primary "SELECT authz.refresh_materialized_permissions() AS pairs_rederived;"
+    sleep 1
+}
+
 # ─────────────────────────────────────────────────────────────────────
 
 section "1. Current state after init"
@@ -103,23 +112,20 @@ run_primary "SELECT authz.write_tuple('demo', 'internal_user', 'grace', 'member'
 step "Verify on primary (immediate — check_access resolves the full graph):"
 run_primary "SELECT authz.check_access('demo','internal_user','grace','can_read','document','doc_acc_001');"
 
-step "Derived app DB doesn't know yet (queue not processed):"
+step "Derived app DB doesn't know yet (worker not run):"
 run_derived "SELECT authz.check_permission('demo','internal_user','grace','can_read','document','doc_acc_001');"
 
 pause
 
 # ─────────────────────────────────────────────────────────────────────
 
-section "3. Process the refresh queue → replicates to derived DB"
+section "3. Run the worker → replicates to derived DB"
 
-step "Pending queue entries on primary:"
-run_primary "SELECT count(*) AS pending FROM authz.permissions_refresh_queue;"
+step "The derived table is refreshed from the audit changefeed; the worker resumes from a stored cursor:"
+run_primary "SELECT store, as_of, feed_drained, last_run_changes, last_run_pairs FROM authz.materialized_permissions_status();"
 
-step "Process the queue:"
-run_primary "SELECT authz.process_permissions_refresh_queue() AS permissions_refreshed;"
-
-step "Wait for replication..."
-sleep 2
+step "Run the worker (pulls the changes since the cursor, re-derives only the affected subject × object pairs), then wait for replication:"
+refresh
 
 step "Now check derived app DB — grace can read doc_acc_001:"
 run_derived "SELECT authz.check_permission('demo','internal_user','grace','can_read','document','doc_acc_001');"
@@ -151,9 +157,8 @@ run_primary "SELECT authz.check_access('demo','internal_user','bob','can_read','
 step "alice cannot read it (payroll_team, not accounting_team):"
 run_primary "SELECT authz.check_access('demo','internal_user','alice','can_read','document','doc_acc_002');"
 
-step "Process queue and wait for replication:"
-run_primary "SELECT authz.process_permissions_refresh_queue() AS permissions_refreshed;"
-sleep 2
+step "Run the worker and wait for replication:"
+refresh
 
 step "Derived app DB — all permissions for doc_acc_002:"
 run_derived "
@@ -175,9 +180,8 @@ run_primary "SELECT authz.delete_tuple('demo', 'internal_user', 'grace', 'member
 step "Primary — grace can no longer read doc_acc_001:"
 run_primary "SELECT authz.check_access('demo','internal_user','grace','can_read','document','doc_acc_001');"
 
-step "Process queue and replicate:"
-run_primary "SELECT authz.process_permissions_refresh_queue() AS permissions_refreshed;"
-sleep 2
+step "Run the worker and replicate:"
+refresh
 
 step "Derived app DB — grace is gone:"
 run_derived "SELECT authz.check_permission('demo','internal_user','grace','can_read','document','doc_acc_001');"
@@ -210,12 +214,11 @@ run_primary "SELECT authz.delete_tuple('demo', 'internal_user', 'eva', 'member',
 step "Primary immediately reflects the change — eva can no longer read:"
 run_primary "SELECT authz.check_access('demo','internal_user','eva','can_read','document','doc_acc_001');"
 
-step "Derived app DB still shows the old permission (queue not processed yet):"
+step "Derived app DB still shows the old permission (worker not run yet):"
 run_derived "SELECT authz.check_permission('demo','internal_user','eva','can_read','document','doc_acc_001');"
 
-step "Process queue and wait for replication:"
-run_primary "SELECT authz.process_permissions_refresh_queue() AS permissions_refreshed;"
-sleep 2
+step "Run the worker and wait for replication:"
+refresh
 
 step "Now the derived app DB reflects the revocation — eva's access is gone:"
 run_derived "SELECT authz.check_permission('demo','internal_user','eva','can_read','document','doc_acc_001');"
@@ -230,8 +233,7 @@ SELECT user_type, user_id, permission
 
 step "Restoring eva to accounting_team for subsequent runs..."
 run_primary "SELECT authz.write_tuple('demo', 'internal_user', 'eva', 'member', 'team', 'accounting_team');"
-run_primary "SELECT authz.process_permissions_refresh_queue() AS permissions_refreshed;"
-sleep 1
+refresh
 
 pause
 
@@ -295,11 +297,11 @@ pause
 
 step "A NEW object-wildcard grant re-derives the whole type. Grant demo_auditor2 viewer on document:*"
 run_primary "SELECT authz.write_tuple('demo','internal_user','demo_auditor2','viewer','document','*');"
-run_primary "SELECT count(*) AS queued_objects FROM authz.permissions_refresh_queue;"
-echo "    (every known document is queued, not just the '*' pseudo-object: their"
-echo "    concrete rows are authoritative and must now say 'allowed')"
-run_primary "SELECT authz.process_permissions_refresh_queue() AS permissions_refreshed;"
-sleep 2
+refresh
+run_primary "SELECT last_run_changes AS changes_in_feed, last_run_pairs AS pairs_rederived FROM authz.materialized_permissions_status() WHERE store = 'demo';"
+echo "    (one change in the feed; the pairs are demo_auditor2 × every known document"
+echo "    plus the '*' pseudo-object — their concrete rows are authoritative and must"
+echo "    now say 'allowed'. Nobody else is re-derived.)"
 
 step "On the derived DB: known document, unknown document, and someone else on the unknown document"
 run_derived "
@@ -310,8 +312,7 @@ SELECT authz.check_permission('demo','internal_user','demo_auditor2','can_read',
 
 step "Revoke it again — the rows disappear and demo_auditor2 becomes unknown (wildcard-covered, by nothing):"
 run_primary "SELECT authz.delete_tuple('demo','internal_user','demo_auditor2','viewer','document','*');"
-run_primary "SELECT authz.process_permissions_refresh_queue() AS permissions_refreshed;"
-sleep 2
+refresh
 run_derived "
 SELECT (SELECT count(*) FROM authz.materialized_permissions WHERE store = 'demo' AND user_id = 'demo_auditor2') AS rows_left,
        EXISTS (SELECT 1 FROM authz.materialized_subjects WHERE store = 'demo' AND user_id = 'demo_auditor2')    AS still_known,
@@ -334,10 +335,11 @@ echo "  Derived app DB (port 55436):"
 echo "    - No authz schema or functions — just a flat permissions table"
 echo "    - One lookup via check_permission(), which also applies the '*' contract:"
 echo "      a wildcard row counts only for subjects/objects the engine does not know"
-echo "    - Updated via: trigger → queue → process → logical replication"
+echo "    - Updated incrementally: audit changefeed → worker (affected pairs only)"
+echo "      → logical replication; permissions_as_of(store) says how stale it may be"
 echo ""
 echo "  Latency: change on primary → available on derived app DB"
-echo "    = queue processing time + replication lag (typically < 1s)"
+echo "    = changefeed stability lag (1 s) + worker cadence + replication lag"
 echo ""
 
 # ── Cleanup demo data ───────────────────────────────────────────────
@@ -345,7 +347,8 @@ echo ""
 step "Cleaning up demo data (removing doc_acc_002, demo_auditor2)..."
 primary -c "SELECT authz.delete_tuple('demo', 'internal_data_space', 'eng_42_accounting_internal', 'in_internal_space', 'document', 'doc_acc_002');" > /dev/null 2>&1
 primary -c "SELECT authz.delete_tuple('demo','internal_user','demo_auditor2','viewer','document','*');" > /dev/null 2>&1
-primary -c "SELECT authz.process_permissions_refresh_queue();" > /dev/null 2>&1
+sleep 1.2
+primary -c "SELECT authz.refresh_materialized_permissions();" > /dev/null 2>&1
 
 echo ""
 echo "  Done."

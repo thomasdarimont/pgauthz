@@ -1,6 +1,7 @@
 -- Minimal schema for app databases that subscribe to derived permissions.
 -- No authz functions, models, or tuples — just the flat lookup table, its
--- two side tables and one helper that applies the wildcard contract.
+-- two side tables, the per-store freshness row, and two helpers: one that
+-- applies the wildcard contract, one that says how stale the copy may be.
 --
 -- The partition layout must match the primary exactly for logical
 -- replication to route rows correctly.
@@ -47,6 +48,28 @@ CREATE TABLE IF NOT EXISTS authz.materialized_objects (
     refreshed_at  timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (store, object_type, object_id)
 );
+
+-- Freshness, one row per store the primary derives (replicated): every
+-- change performed before as_of is reflected in this copy.
+CREATE TABLE IF NOT EXISTS authz.materialized_refresh_state (
+    store                 text PRIMARY KEY,
+    cursor_at             timestamptz NOT NULL,
+    cursor_seq            bigint      NOT NULL DEFAULT 0,
+    as_of                 timestamptz NOT NULL,
+    feed_drained          boolean     NOT NULL DEFAULT true,
+    last_run_started_at   timestamptz,
+    last_run_finished_at  timestamptz,
+    last_run_changes      integer NOT NULL DEFAULT 0,
+    last_run_pairs        integer NOT NULL DEFAULT 0,
+    last_run_rows_written integer NOT NULL DEFAULT 0
+);
+
+-- "How stale can this copy be?" — NULL until the store is derived.
+CREATE OR REPLACE FUNCTION authz.permissions_as_of(p_store text)
+RETURNS timestamptz
+LANGUAGE sql STABLE AS $$
+    SELECT as_of FROM authz.materialized_refresh_state WHERE store = p_store;
+$$;
 
 -- The wildcard contract (see materialized_permissions.sql on the primary):
 --

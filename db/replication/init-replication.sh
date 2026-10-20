@@ -100,9 +100,8 @@ psql_primary < "$SCRIPT_DIR/materialized_permissions.sql"
 echo "==> [primary] Loading demo seed data..."
 psql_primary < "$PG_DIR/examples/models/demo/seed.sql"
 
-echo "==> [primary] Building materialized permissions (initial full refresh)..."
+echo "==> [primary] Building materialized permissions (initial snapshot; registers the store for incremental refresh from the audit changefeed)..."
 psql_primary -c "SELECT authz.refresh_all_materialized_permissions('demo') AS permissions_created;"
-psql_primary -c "DELETE FROM authz.permissions_refresh_queue;" 2>/dev/null
 
 echo "==> [primary] Creating publications..."
 psql_primary < "$SCRIPT_DIR/setup-publication.sql"

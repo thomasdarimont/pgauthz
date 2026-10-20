@@ -13,7 +13,10 @@
 #     (subject, relation, object) of two stores — known subjects and objects
 #     plus unknown probes, so the wildcard contract ('*' rows apply only to
 #     entities the engine does not know) is proven, not assumed; a write on
-#     the primary reaches the derived replica through the refresh queue.
+#     the primary reaches the derived replica through the changefeed-driven
+#     worker; and after each of three batches of random mutations
+#     (tests/sql/derived_permissions_mutate.sql: grants, revokes, usersets,
+#     wildcards, short expiries) the differential still holds.
 #
 # The aia-acme fixture is loaded onto the primary in addition to the demo
 # because it has subject wildcards (employee:*), exclusion and intersection;
@@ -103,7 +106,6 @@ echo "==> Loading the aia-acme fixture (subject wildcards, exclusion) onto the p
 qf "$PRIMARY" < examples/models/aia-acme/model.sql >/dev/null
 qf "$PRIMARY" < examples/models/aia-acme/seed.sql  >/dev/null
 qp "$PRIMARY" "SELECT authz.refresh_all_materialized_permissions('aia_acme');" >/dev/null
-qp "$PRIMARY" "DELETE FROM authz.permissions_refresh_queue;" >/dev/null
 
 echo "==> Asserting the DERIVED replica mirrors the primary's derived tables..."
 parity=$(wait_derived_parity) || true
@@ -114,49 +116,78 @@ assert "derived: materialized_permissions populated" "t" \
 assert "derived: literal '*' rows present for both wildcard kinds" "t" \
   "$(qp "$DERIVED" "SELECT EXISTS(SELECT 1 FROM authz.materialized_permissions WHERE user_id='*') AND EXISTS(SELECT 1 FROM authz.materialized_permissions WHERE object_id='*');")"
 
-echo "==> Differential: derived check_permission vs live check_access over every subject × relation × object (+ unknown probes)..."
 # The universe and the live answers come from the primary; the derived replica
 # evaluates the same universe with check_permission(); any disagreement fails.
-qp "$PRIMARY" "COPY (
-  WITH stores AS (SELECT id, name FROM authz.stores WHERE name IN ('demo','aia_acme')),
-  subj AS (
-    SELECT DISTINCT s.name AS store, ut.name AS user_type, t.user_id
-      FROM authz.tuples t JOIN stores s ON s.id=t.store_id JOIN authz.types ut ON ut.id=t.user_type
-     WHERE t.user_relation IS NULL AND t.user_id <> '*'
-    UNION
-    SELECT DISTINCT s.name, ut.name, 'zz_unknown_' || ut.name
-      FROM authz.tuples t JOIN stores s ON s.id=t.store_id JOIN authz.types ut ON ut.id=t.user_type
-     WHERE t.user_relation IS NULL),
-  obj AS (
-    SELECT DISTINCT s.name AS store, ot.name AS object_type, t.object_id
-      FROM authz.tuples t JOIN stores s ON s.id=t.store_id JOIN authz.types ot ON ot.id=t.object_type
-     WHERE t.object_id <> '*'
-    UNION
-    SELECT DISTINCT s.name, ot.name, 'zz_unknown_object'
-      FROM authz.tuples t JOIN stores s ON s.id=t.store_id JOIN authz.types ot ON ot.id=t.object_type),
-  rel AS (
-    SELECT DISTINCT s.name AS store, ot.name AS object_type, r.name AS relation
-      FROM authz.models m JOIN stores s ON s.id=m.store_id JOIN authz.types ot ON ot.id=m.object_type JOIN authz.relations r ON r.id=m.relation)
-  SELECT u.store, u.user_type, u.user_id, r.relation, o.object_type, o.object_id,
-         authz.check_access(u.store, u.user_type, u.user_id, r.relation, o.object_type, o.object_id) AS live
-    FROM subj u JOIN obj o ON o.store = u.store JOIN rel r ON r.store = o.store AND r.object_type = o.object_type
-) TO STDOUT;" > "$WORK/universe.tsv"
-checks=$(wc -l < "$WORK/universe.tsv" | tr -d ' ')
-live_allows=$(awk -F'\t' '$7=="t"' "$WORK/universe.tsv" | wc -l | tr -d ' ')
-{
-  echo "CREATE TEMP TABLE u (store text, user_type text, user_id text, relation text, object_type text, object_id text, live boolean);"
-  echo "COPY u FROM STDIN;"
-  cat "$WORK/universe.tsv"
-  echo '\.'
-  echo "SELECT count(*) FILTER (WHERE live <> authz.check_permission(store, user_type, user_id, relation, object_type, object_id)) FROM u;"
-  echo "SELECT store || ' ' || user_type || ':' || user_id || ' ' || relation || ' ' || object_type || ':' || object_id || ' live=' || live
-          FROM u WHERE live <> authz.check_permission(store, user_type, user_id, relation, object_type, object_id) ORDER BY 1 LIMIT 10;"
-} | qf "$DERIVED" > "$WORK/diff.out"
-mismatches=$(sed -n 1p "$WORK/diff.out")
-echo "    checks=$checks live_allows=$live_allows mismatches=$mismatches"
-assert "differential: universe is non-trivial (> 5000 checks)" "t" "$([ "${checks:-0}" -gt 5000 ] && echo t || echo f)"
-assert "differential: derived check_permission == live check_access everywhere" "0" "$mismatches"
-if [ "$mismatches" != "0" ]; then sed -n '2,$p' "$WORK/diff.out" | sed 's/^/        /'; fi
+# Known subjects and objects of both stores, plus unknown probes and the ids the
+# random mutations use (rnd_<type>_0..3), for every relation of the type.
+differential() {  # label
+  qp "$PRIMARY" "COPY (
+    WITH stores AS (SELECT id, name FROM authz.stores WHERE name IN ('demo','aia_acme')),
+    subj AS (
+      SELECT DISTINCT s.name AS store, ut.name AS user_type, t.user_id
+        FROM authz.tuples t JOIN stores s ON s.id=t.store_id JOIN authz.types ut ON ut.id=t.user_type
+       WHERE t.user_relation IS NULL AND t.user_id <> '*'
+      UNION
+      SELECT DISTINCT s.name, ut.name, 'zz_unknown_' || ut.name
+        FROM authz.tuples t JOIN stores s ON s.id=t.store_id JOIN authz.types ut ON ut.id=t.user_type
+       WHERE t.user_relation IS NULL
+      UNION
+      SELECT DISTINCT s.name, ut.name, 'rnd_' || ut.name || '_' || g
+        FROM authz.tuples t JOIN stores s ON s.id=t.store_id JOIN authz.types ut ON ut.id=t.user_type, generate_series(0,3) g
+       WHERE t.user_relation IS NULL),
+    obj AS (
+      SELECT DISTINCT s.name AS store, ot.name AS object_type, t.object_id
+        FROM authz.tuples t JOIN stores s ON s.id=t.store_id JOIN authz.types ot ON ot.id=t.object_type
+       WHERE t.object_id <> '*'
+      UNION
+      SELECT DISTINCT s.name, ot.name, 'zz_unknown_object'
+        FROM authz.tuples t JOIN stores s ON s.id=t.store_id JOIN authz.types ot ON ot.id=t.object_type
+      UNION
+      SELECT DISTINCT s.name, ot.name, 'rnd_' || ot.name || '_' || g
+        FROM authz.tuples t JOIN stores s ON s.id=t.store_id JOIN authz.types ot ON ot.id=t.object_type, generate_series(0,3) g),
+    rel AS (
+      SELECT DISTINCT s.name AS store, ot.name AS object_type, r.name AS relation
+        FROM authz.models m JOIN stores s ON s.id=m.store_id JOIN authz.types ot ON ot.id=m.object_type JOIN authz.relations r ON r.id=m.relation)
+    SELECT u.store, u.user_type, u.user_id, r.relation, o.object_type, o.object_id,
+           authz.check_access(u.store, u.user_type, u.user_id, r.relation, o.object_type, o.object_id) AS live
+      FROM subj u JOIN obj o ON o.store = u.store JOIN rel r ON r.store = o.store AND r.object_type = o.object_type
+  ) TO STDOUT;" > "$WORK/universe.tsv"
+  local checks live_allows mismatches
+  checks=$(wc -l < "$WORK/universe.tsv" | tr -d ' ')
+  live_allows=$(awk -F'\t' '$7=="t"' "$WORK/universe.tsv" | wc -l | tr -d ' ')
+  {
+    echo "CREATE TEMP TABLE u (store text, user_type text, user_id text, relation text, object_type text, object_id text, live boolean);"
+    echo "COPY u FROM STDIN;"
+    cat "$WORK/universe.tsv"
+    echo '\.'
+    echo "SELECT count(*) FILTER (WHERE live <> authz.check_permission(store, user_type, user_id, relation, object_type, object_id)) FROM u;"
+    echo "SELECT store || ' ' || user_type || ':' || user_id || ' ' || relation || ' ' || object_type || ':' || object_id || ' live=' || live
+            FROM u WHERE live <> authz.check_permission(store, user_type, user_id, relation, object_type, object_id) ORDER BY 1 LIMIT 10;"
+  } | qf "$DERIVED" > "$WORK/diff.out"
+  mismatches=$(sed -n 1p "$WORK/diff.out")
+  echo "    [$1] checks=$checks live_allows=$live_allows mismatches=$mismatches"
+  assert "differential ($1): universe is non-trivial (> 5000 checks)" "t" "$([ "${checks:-0}" -gt 5000 ] && echo t || echo f)"
+  assert "differential ($1): derived check_permission == live check_access everywhere" "0" "$mismatches"
+  if [ "$mismatches" != "0" ]; then sed -n '2,$p' "$WORK/diff.out" | sed 's/^/        /'; fi
+}
+
+# Run the worker until every registered store's feed is drained. The feed is
+# lag-gated (1 s), so the first pull waits that long.
+drain_feed() {
+  local i
+  for i in $(seq 1 20); do
+    sleep 1.1
+    qp "$PRIMARY" "SELECT authz.refresh_materialized_permissions();" >/dev/null
+    [ "$(qp "$PRIMARY" "SELECT bool_and(feed_drained) FROM authz.materialized_refresh_state;")" = "t" ] && return 0
+  done
+  return 1
+}
+
+# Absorb the snapshot's replay window first (writes from the stability lag
+# before the cursor are replayed on purpose, never missed).
+drain_feed || assert "feed drained after the snapshot" "ok" "timeout"
+echo "==> Differential after the initial snapshot..."
+differential "snapshot"
 
 echo "==> Wildcard contract regressions (the cases that were wrong before the side tables)..."
 assert "unknown employee may 'delegatable' board-deck (employee:* grant, subject not expanded)" "t" \
@@ -179,19 +210,46 @@ for _ in $(seq 1 15); do
 done
 assert "replica reflects a primary write within 15s" "ok" "$live"
 
-echo "==> Asserting LIVE propagation (write on primary -> refresh queue -> derived replica)..."
-assert "the write queued a refresh" "t" "$(qp "$PRIMARY" "SELECT count(*) > 0 FROM authz.permissions_refresh_queue;")"
-qp "$PRIMARY" "SELECT authz.process_permissions_refresh_queue();" >/dev/null
-live=timeout
+echo "==> Asserting LIVE propagation (write on primary -> changefeed worker -> derived replica)..."
+live=timeout; pairs_seen=0
 for _ in $(seq 1 15); do
+  sleep 1
+  p=$(qp "$PRIMARY" "SELECT authz.refresh_materialized_permissions();")
+  [ "${p:-0}" -gt 0 ] && pairs_seen=$p
   if [ "$(qp "$DERIVED" "SELECT authz.check_permission('demo','internal_user','ci_repltest','can_read','document','doc_acc_001');")" = "t" ]; then
     live=ok; break
   fi
-  sleep 1
 done
-assert "derived replica reflects the processed queue within 15s" "ok" "$live"
+assert "derived replica reflects the write through the worker within 15s" "ok" "$live"
 assert "the new subject is now a known subject on the derived replica" "t" \
   "$(qp "$DERIVED" "SELECT EXISTS(SELECT 1 FROM authz.materialized_subjects WHERE store='demo' AND user_id='ci_repltest');")"
+assert "the worker re-derived a handful of pairs for that write ($pairs_seen), not the store" "t" \
+  "$([ "$pairs_seen" -ge 1 ] && [ "$pairs_seen" -le 5 ] && echo t || echo f)"
+assert "derived replica knows how fresh it is (permissions_as_of within the last minute)" "t" \
+  "$(qp "$DERIVED" "SELECT authz.permissions_as_of('demo') > now() - interval '1 minute';")"
+
+echo "==> Randomized mutations: 3 batches × 25 draws per store, worker, expiries, differential..."
+# tests/sql/derived_permissions_mutate.sql: grants (known / fresh / '*' subjects,
+# known / fresh objects), expiring grants (1–3 s), revokes, userset grants,
+# object-wildcard grants; writes the model rejects are skipped. Seeds are fixed
+# so a failure is reproducible from the same starting state.
+mutate() {  # store seed
+  {
+    echo "SELECT set_config('mutate.store', '$1', false), set_config('mutate.n', '25', false), set_config('mutate.seed', '$2', false);"
+    cat tests/sql/derived_permissions_mutate.sql
+  } | docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -v ON_ERROR_STOP=1 -q 2>&1 | grep -i "mutate" | sed 's/^/    /' || true
+}
+for batch in 1 2 3; do
+  mutate demo     "0.${batch}1"
+  mutate aia_acme "0.${batch}2"
+  drain_feed || assert "batch $batch: feed drained" "ok" "timeout"
+  sleep 3.5                      # every random expiry (1–3 s) has fallen due
+  drain_feed || assert "batch $batch: feed drained after expiries" "ok" "timeout"
+  parity=$(wait_derived_parity) || true
+  case "$parity" in timeout*) assert "batch $batch: derived tables match the primary" "parity" "$parity";;
+                    *)        assert "batch $batch: derived tables match the primary ($parity)" "ok" "ok";; esac
+  differential "batch $batch"
+done
 
 echo ""
 if [ "$fail" -ne 0 ]; then
