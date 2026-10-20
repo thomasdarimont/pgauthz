@@ -9,6 +9,15 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **`./start-replication.sh` / `./stop-replication.sh`.** Bring the
+  logical-replication demo up next to the main stack — host ports moved by
+  `compose-replication-ports.yml`, its own compose project and volumes —
+  initialise it, and print the connection strings for the primary, the full
+  replica, the derived-permissions subscriber and the namespace-scoped one;
+  `--clean` recreates, `--no-init` only starts, `--default-ports` for a
+  machine without the main stack. The demo's volumes lost their fixed
+  global names so a second project cannot share or remove them.
+
 - **Derived permissions for one application's namespace.** Rows of
   `authz.materialized_relations` and `authz.materialized_objects` carry the
   object type's namespace (in the primary key, so a publication row filter may

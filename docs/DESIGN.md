@@ -1101,4 +1101,7 @@ subject.
 
 See `db/replication/` for a working demo of both approaches, including
 a narrated demo script (`db/replication/demo-replication.sh`, section 7
-walks through the wildcard contract).
+walks through the wildcard contract). `./start-replication.sh` brings it
+up next to the main stack (moved host ports, its own compose project),
+initialises it and prints the connection strings; `./stop-replication.sh
+[--clean]` takes it down.

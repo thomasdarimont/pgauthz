@@ -1,0 +1,26 @@
+# Override for running the replication demo NEXT TO the main stack: the demo's
+# primary is mapped to 55433 like the main database, so move the four host
+# ports out of the way (the containers replicate among themselves and never
+# use host ports). Pair it with a separate project name so the two stacks do
+# not share a network or a `down -v`. ./start-replication.sh does all of this:
+#
+#   ./start-replication.sh            # or, by hand:
+#   export REPLICATION_COMPOSE_FILES="compose-replication.yml:compose-replication-ports.yml" COMPOSE_PROJECT_NAME=pgauthz-repl
+#   docker compose -f compose-replication.yml -f compose-replication-ports.yml up -d --wait
+#   ./db/replication/init-replication.sh
+#   psql "postgresql://authz:authz@localhost:55536/authz"     # derived subscriber
+#
+# Ports: 55533 primary, 55535 full replica, 55536 derived, 55537 dms (one namespace).
+services:
+  authz-primary:
+    ports: !override
+      - "55533:5432"
+  accounting-app-db:
+    ports: !override
+      - "55535:5432"
+  accounting-app-derived-db:
+    ports: !override
+      - "55536:5432"
+  accounting-app-dms-db:
+    ports: !override
+      - "55537:5432"

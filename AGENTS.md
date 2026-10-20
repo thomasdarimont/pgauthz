@@ -48,6 +48,10 @@ With OPA overlay: Application → pgauthzd (validates JWT) → OPA (Rego policy-
 ./start.sh          # Start all services via docker compose
 ./stop.sh           # Stop services
 ./stop.sh --clean   # Stop and remove volumes
+./start-replication.sh          # The logical-replication demo next to the main stack
+                                # (ports +100, own compose project), initialised;
+                                # derived table: postgresql://authz:authz@localhost:55536/authz
+./stop-replication.sh [--clean] # Stop it (--clean: remove its volumes)
 ```
 
 ### Initialize Database

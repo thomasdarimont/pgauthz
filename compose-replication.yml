@@ -55,7 +55,7 @@ services:
       timeout: 5s
       retries: 5
     volumes:
-      - authz-primary-logical-data:/var/lib/postgresql:z
+      - authz-primary-logical-data:/var/lib/postgresql
       - ./db/replication/init-primary.sh:/docker-entrypoint-initdb.d/01-init-primary.sh:ro
 
   # ── Accounting app database (subscribes to accounting-relevant tuples) ──
@@ -86,7 +86,7 @@ services:
       authz-primary:
         condition: service_healthy
     volumes:
-      - accounting-app-db-data:/var/lib/postgresql:z
+      - accounting-app-db-data:/var/lib/postgresql
 
   # ── Accounting app with derived permissions (no authz schema needed) ──
   accounting-app-derived-db:
@@ -114,7 +114,7 @@ services:
       authz-primary:
         condition: service_healthy
     volumes:
-      - accounting-app-derived-data:/var/lib/postgresql:z
+      - accounting-app-derived-data:/var/lib/postgresql
 
   # ── A second application: derived permissions of ITS namespace only ──
   accounting-app-dms-db:
@@ -142,14 +142,13 @@ services:
       authz-primary:
         condition: service_healthy
     volumes:
-      - accounting-app-dms-data:/var/lib/postgresql:z
+      - accounting-app-dms-data:/var/lib/postgresql
 
+# Project-scoped (no fixed `name:`): running the demo under its own
+# COMPOSE_PROJECT_NAME next to the main stack must not share — or `down -v` —
+# another project's volumes.
 volumes:
   authz-primary-logical-data:
-    name: authz-pg-primary-logical-data
   accounting-app-db-data:
-    name: authz-pg-accounting-app-data
   accounting-app-derived-data:
-    name: authz-pg-accounting-app-derived-data
   accounting-app-dms-data:
-    name: authz-pg-accounting-app-dms-data

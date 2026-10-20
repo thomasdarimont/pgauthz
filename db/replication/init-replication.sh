@@ -6,14 +6,15 @@
 #   1. accounting-app-db         — full authz replica (schema + functions + selective tuples)
 #   2. accounting-app-derived-db — derived replica (flat permissions table only, no authz schema)
 #
-# Usage:
+# Usage (./start-replication.sh does both, next to the main stack):
 #   docker compose -f compose-replication.yml up -d --wait
 #   ./db/replication/init-replication.sh
 #
 # REPLICATION_COMPOSE_FILES (colon-separated, default compose-replication.yml,
-# relative to the repo root) adds override files — e.g. one that moves the
-# host ports so the demo can run next to the main stack; set
-# COMPOSE_PROJECT_NAME as well to keep the two stacks' networks apart.
+# relative to the repo root) adds override files — compose-replication-ports.yml
+# moves the host ports so the demo can run next to the main stack; set
+# COMPOSE_PROJECT_NAME as well to keep the two stacks' networks apart:
+#   export REPLICATION_COMPOSE_FILES="compose-replication.yml:compose-replication-ports.yml" COMPOSE_PROJECT_NAME=pgauthz-repl
 #
 set -euo pipefail
 
