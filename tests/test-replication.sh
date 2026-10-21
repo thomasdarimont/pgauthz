@@ -630,7 +630,7 @@ assert "try-lock on a store that is not registered (gone meanwhile) declines and
 echo "==> The worker meets a registration replaced AFTER it listed its stores (deterministic)..."
 # Park the worker: a store sorting first ('aaa_park') carries a dead
 # incarnation, so the worker's cleanup DELETEs its derived rows inside the
-# loop — on a row a third session holds FOR UPDATE. While it waits there,
+# loop — on a row a third session holds FOR UPDATE until released. While it waits,
 # aia_acme (listed already, with its old cursor and incarnation) is deleted,
 # recreated and registered anew. The worker must then work from the new
 # registration: afterwards aia_acme is registered under the live id and has
@@ -640,40 +640,63 @@ echo "==> The worker meets a registration replaced AFTER it listed its stores (d
 qp "$PRIMARY" "SELECT authz.refresh_all_materialized_relations('aaa_park');" >/dev/null
 assert "parking store aaa_park has derived rows" "t" "$(qp "$PRIMARY" "SELECT count(*) > 0 FROM authz.materialized_relations WHERE store='aaa_park';")"
 qp "$PRIMARY" "UPDATE authz.materialized_refresh_state SET store_id = store_id + 100000 WHERE store = 'aaa_park';" >/dev/null
-cat > "$WORK/park.sql" <<'SQL'
+# The parking transaction has no lifetime of its own: after taking its row it
+# waits for a GATE — an advisory lock a harness session holds and releases on
+# command — so no CI runner can be too slow for it. Sessions are named through
+# PGAPPNAME so the barriers read pg_stat_activity / pg_blocking_pids exactly.
+GATE_KEY="hashtext('repltest:park-gate')"
+mkfifo "$WORK/gate.fifo"
+docker exec -i -e PGPASSWORD=authz -e PGAPPNAME=park-gate "$PRIMARY" psql -U authz -d authz -q < "$WORK/gate.fifo" >/dev/null 2>&1 &
+gate_pid=$!
+exec 3>"$WORK/gate.fifo"     # psql executes each statement as it arrives
+echo "SELECT pg_advisory_lock($GATE_KEY);" >&3
+gate=timeout
+for _ in $(seq 1 40); do
+  [ "$(qp "$PRIMARY" "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE a.application_name = 'park-gate' AND l.locktype = 'advisory' AND l.granted;")" = "1" ] && { gate=ok; break; }; sleep 0.25
+done
+assert "barrier 0: the gate session holds its lock" "ok" "$gate"
+cat > "$WORK/park.sql" <<SQL
 BEGIN;
 SELECT 1 FROM authz.materialized_relations WHERE store = 'aaa_park' LIMIT 1 FOR UPDATE;
-SELECT pg_sleep(6);
+SELECT pg_advisory_xact_lock($GATE_KEY);   -- held until the harness opens the gate
 COMMIT;
 SQL
-docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -q < "$WORK/park.sql" >/dev/null 2>&1 &
+docker exec -i -e PGPASSWORD=authz -e PGAPPNAME=park "$PRIMARY" psql -U authz -d authz -q < "$WORK/park.sql" >/dev/null 2>&1 &
 park_pid=$!
-# barrier 1: the parking session holds its row (it is already in pg_sleep)
+# barrier 1: the parking session holds its row and waits at the gate
 parked=timeout
 for _ in $(seq 1 40); do
-  [ "$(qp "$PRIMARY" "SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'SELECT pg_sleep(6)%';")" = "1" ] && { parked=ok; break; }; sleep 0.25
+  [ "$(qp "$PRIMARY" "SELECT count(*) FROM pg_stat_activity p JOIN pg_stat_activity g ON g.application_name = 'park-gate' WHERE p.application_name = 'park' AND pg_blocking_pids(p.pid) @> ARRAY[g.pid];")" = "1" ] && { parked=ok; break; }; sleep 0.25
 done
-assert "barrier: the parking transaction holds its row" "ok" "$parked"
-rc_w=0; docker exec -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -q -c "SELECT authz.refresh_materialized_relations();" >/dev/null 2>"$WORK/parked-worker.err" & wpid=$!
+assert "barrier 1: the parking transaction holds its row and waits at the gate" "ok" "$parked"
+rc_w=0; docker exec -e PGPASSWORD=authz -e PGAPPNAME=parked-worker "$PRIMARY" psql -U authz -d authz -q -c "SELECT authz.refresh_materialized_relations();" >/dev/null 2>"$WORK/parked-worker.err" & wpid=$!
 # barrier 2: the worker is demonstrably blocked BY the parking session
 blocked=timeout
 for _ in $(seq 1 40); do
-  [ "$(qp "$PRIMARY" "SELECT count(*) FROM pg_stat_activity w JOIN pg_stat_activity p ON p.query LIKE 'SELECT pg_sleep(6)%' WHERE w.query LIKE 'SELECT authz.refresh_materialized_relations()%' AND pg_blocking_pids(w.pid) @> ARRAY[p.pid];")" = "1" ] && { blocked=ok; break; }; sleep 0.25
+  [ "$(qp "$PRIMARY" "SELECT count(*) FROM pg_stat_activity w JOIN pg_stat_activity p ON p.application_name = 'park' WHERE w.application_name = 'parked-worker' AND pg_blocking_pids(w.pid) @> ARRAY[p.pid];")" = "1" ] && { blocked=ok; break; }; sleep 0.25
 done
-assert "barrier: the worker is blocked by the parking transaction" "ok" "$blocked"
-# replace the registration the worker has already listed
-qp "$PRIMARY" "SELECT authz.delete_store('aia_acme');" >/dev/null
-qf "$PRIMARY" < examples/models/aia-acme/model.sql >/dev/null; qf "$PRIMARY" < examples/models/aia-acme/seed.sql >/dev/null
-qp "$PRIMARY" "SELECT authz.refresh_all_materialized_relations('aia_acme');" >/dev/null
-new_id=$(qp "$PRIMARY" "SELECT id FROM authz.stores WHERE name='aia_acme';")
-assert "replacement registered the live incarnation while the worker was parked" "$new_id" \
-  "$(qp "$PRIMARY" "SELECT store_id FROM authz.materialized_refresh_state WHERE store='aia_acme';")"
-assert "the worker is still parked after the replacement" "1" \
-  "$(qp "$PRIMARY" "SELECT count(*) FROM pg_stat_activity w WHERE w.query LIKE 'SELECT authz.refresh_materialized_relations()%' AND cardinality(pg_blocking_pids(w.pid)) > 0;")"
-wait "$wpid" || rc_w=$?
+assert "barrier 2: the worker is blocked by the parking transaction" "ok" "$blocked"
+new_id=""
+if [ "$gate$parked$blocked" = "okokok" ]; then
+  # replace the registration the worker has already listed
+  qp "$PRIMARY" "SELECT authz.delete_store('aia_acme');" >/dev/null
+  qf "$PRIMARY" < examples/models/aia-acme/model.sql >/dev/null; qf "$PRIMARY" < examples/models/aia-acme/seed.sql >/dev/null
+  qp "$PRIMARY" "SELECT authz.refresh_all_materialized_relations('aia_acme');" >/dev/null
+  new_id=$(qp "$PRIMARY" "SELECT id FROM authz.stores WHERE name='aia_acme';")
+  assert "replacement registered the live incarnation while the worker was parked" "$new_id" \
+    "$(qp "$PRIMARY" "SELECT store_id FROM authz.materialized_refresh_state WHERE store='aia_acme';")"
+  assert "the worker is still parked after the replacement" "1" \
+    "$(qp "$PRIMARY" "SELECT count(*) FROM pg_stat_activity w JOIN pg_stat_activity p ON p.application_name = 'park' WHERE w.application_name = 'parked-worker' AND pg_blocking_pids(w.pid) @> ARRAY[p.pid];")"
+else
+  echo "    skip  interleaving not established — the dependent assertions are skipped (failed above)"
+fi
+# open the gate: park commits, the worker runs on
+echo "SELECT pg_advisory_unlock($GATE_KEY);" >&3; echo '\q' >&3; exec 3>&-
 wait "$park_pid" || true
+wait "$gate_pid" || true
+wait "$wpid" || rc_w=$?
 assert "the released worker finished without error" "0|" "$rc_w|$(grep '^ERROR' "$WORK/parked-worker.err" | head -1)"
-assert "the worker worked from the re-read registration: live id, rows present" "true|true" \
+[ -n "$new_id" ] && assert "the worker worked from the re-read registration: live id, rows present" "true|true" \
   "$(qp "$PRIMARY" "SELECT (s.store_id = $new_id) || '|' || ((SELECT count(*) FROM authz.materialized_relations WHERE store='aia_acme') > 0) FROM authz.materialized_refresh_state s WHERE s.store='aia_acme';")"
 assert "the dead parking incarnation was dropped by the same run" "0|false" \
   "$(qp "$PRIMARY" "SELECT (SELECT count(*) FROM authz.materialized_relations WHERE store='aaa_park') || '|' || EXISTS(SELECT 1 FROM authz.materialized_refresh_state WHERE store='aaa_park');")"
