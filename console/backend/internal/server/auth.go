@@ -2,7 +2,9 @@ package server
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strings"
@@ -17,6 +19,11 @@ func pkce() (verifier, challenge string) {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if s.oidc == nil {
+		// No OpenID Provider: the SPA offers the local sign-in instead.
+		http.Redirect(w, r, s.cfg.BasePath+"/", http.StatusFound)
+		return
+	}
 	state := randToken(16)
 	verifier, challenge := pkce()
 	// Remember where the person wanted to go (a deep link into a store).
@@ -38,6 +45,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
+	if s.oidc == nil {
+		http.NotFound(w, r)
+		return
+	}
 	ac, err := r.Cookie(authCookie)
 	if err != nil {
 		http.Error(w, "missing auth cookie", http.StatusBadRequest)
@@ -73,15 +84,62 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, parts[2], http.StatusFound)
 }
 
+// handleLocalLogin — POST /auth/local {username, password}: the local admin
+// sign-in (config.LocalAdmin). Constant-time comparison; 404 while it is not
+// configured, so its mere presence tells nothing.
+func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.cfg.LocalAdminEnabled() {
+		http.NotFound(w, r)
+		return
+	}
+	var in struct{ Username, Password string }
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, "username and password expected")
+		return
+	}
+	if !localCredentialsMatch(s.cfg.LocalAdminUser, s.cfg.LocalAdminPassword, in.Username, in.Password) {
+		time.Sleep(500 * time.Millisecond) // one shared password: slow a guess down
+		writeError(w, http.StatusUnauthorized, "wrong username or password")
+		return
+	}
+	id, err := s.createLocalSession(r.Context(), s.cfg.LocalAdminUser)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "session: "+err.Error())
+		return
+	}
+	s.setCookie(w, sessionCookie, id, int(localSessionTTL.Seconds()))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// localCredentialsMatch compares both fields in constant time, and only
+// reports a match when both match (no early exit on the username).
+func localCredentialsMatch(wantUser, wantPass, user, pass string) bool {
+	u := subtle.ConstantTimeCompare([]byte(wantUser), []byte(user))
+	p := subtle.ConstantTimeCompare([]byte(wantPass), []byte(pass))
+	return u&p == 1
+}
+
+// loginMethods tells the SPA which sign-ins this deployment offers.
+func (s *Server) loginMethods() map[string]any {
+	return map[string]any{"oidc": s.oidc != nil, "local": s.cfg.LocalAdminEnabled()}
+}
+
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	var idToken string
+	local := false
 	if se := s.sessionFromReq(r); se != nil {
 		idToken = se.idToken
+		local = se.local
 		if c, err := r.Cookie(sessionCookie); err == nil {
 			s.deleteSession(r.Context(), c.Value)
 		}
 	}
 	s.setCookie(w, sessionCookie, "", -1)
+	if local || s.oidc == nil || s.endpoints.LogoutURL == "" {
+		// Nothing to end at an IdP.
+		http.Redirect(w, r, s.cfg.BasePath+"/", http.StatusFound)
+		return
+	}
 	q := url.Values{"post_logout_redirect_uri": {s.cfg.BaseURL + s.cfg.BasePath + "/"}, "client_id": {s.cfg.ClientID}}
 	if idToken != "" {
 		q.Set("id_token_hint", idToken)
@@ -94,7 +152,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	p := s.principal(r)
 	if p == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"authenticated": false})
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"authenticated": false, "login": s.loginMethods()})
 		return
 	}
 	platform, err := s.capabilities(r.Context(), p, "platform", []string{s.cfg.PlatformID},

@@ -40,6 +40,8 @@ export const api = {
   logout: () => {
     location.href = 'auth/logout';
   },
+  // The local admin sign-in (no IdP): offered when api/me says login.local.
+  localLogin: (username, password) => call('auth/local', { username, password }),
 
   stores: () => call('api/stores'),
   createStore: (name, description) => call('api/stores', { name, description }),

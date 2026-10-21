@@ -68,6 +68,27 @@ type Config struct {
 	// DeploymentEnvironment mirrors pgauthzd's flag so Settings can say which
 	// stack this is.
 	DeploymentEnvironment string
+
+	// LocalAdmin (optional) is a username/password sign-in that needs no OpenID
+	// Provider — for a first look at a fresh deployment and for tests. Set
+	// CONSOLE_LOCAL_ADMIN_USER and CONSOLE_LOCAL_ADMIN_PASSWORD together; the
+	// person signs in as <SubjectType>:<user> with the memberships in
+	// LocalAdminTeams (default: the console_admin team the seed makes platform
+	// admin). Unset either variable and restart to DEACTIVATE it: the sign-in
+	// disappears and every local session is rejected at once. Refused under
+	// DEPLOYMENT_ENVIRONMENT=production unless LocalAdminAllowInProduction.
+	LocalAdminUser              string
+	LocalAdminPassword          string
+	LocalAdminTeams             []string
+	LocalAdminAllowInProduction bool
+}
+
+// LocalAdminEnabled reports whether the local sign-in is configured.
+func (c Config) LocalAdminEnabled() bool { return c.LocalAdminUser != "" && c.LocalAdminPassword != "" }
+
+// Production reports the production profile (DEPLOYMENT_ENVIRONMENT).
+func (c Config) Production() bool {
+	return c.DeploymentEnvironment == "production" || c.DeploymentEnvironment == "prod"
 }
 
 func env(k, def string) string {
@@ -101,7 +122,7 @@ func Load() Config {
 		EngineDSN:    env("ENGINE_DSN", "postgres://authz_console:authz@authz-db:5432/authz"),
 		ClientID:     env("CLIENT_ID", "console-bff"),
 		ClientSecret: env("CLIENT_SECRET", "console-bff-demo-secret"),
-		Issuer:       env("ISSUER", "https://id.pgauthz.test/realms/pgauthz"),
+		Issuer:       env("ISSUER", ""), // empty = no OpenID Provider (local admin only)
 		RedirectURI:  env("REDIRECT_URI", "https://app.pgauthz.test/console/auth/callback"),
 		BaseURL:      env("BASE_URL", "https://app.pgauthz.test"),
 		BasePath:     strings.TrimRight(env("BASE_PATH", "/console"), "/"),
@@ -123,6 +144,11 @@ func Load() Config {
 		OPAToken:              env("CONSOLE_OPA_TOKEN", ""),
 		SelfSubjectTypes:      splitList(env("CONSOLE_SELF_SUBJECT_TYPES", "")),
 		DeploymentEnvironment: env("DEPLOYMENT_ENVIRONMENT", "dev"),
+
+		LocalAdminUser:              env("CONSOLE_LOCAL_ADMIN_USER", ""),
+		LocalAdminPassword:          env("CONSOLE_LOCAL_ADMIN_PASSWORD", ""),
+		LocalAdminTeams:             splitList(env("CONSOLE_LOCAL_ADMIN_TEAMS", "role_console_admin")),
+		LocalAdminAllowInProduction: env("CONSOLE_LOCAL_ADMIN_ALLOW_IN_PRODUCTION", "") == "true",
 	}
 }
 

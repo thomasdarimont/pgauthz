@@ -83,6 +83,7 @@ func (s *Server) Routes() http.Handler {
 	h("GET /healthz", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) })
 	h("GET /auth/login", s.handleLogin)
 	h("GET /auth/callback", s.handleCallback)
+	h("POST /auth/local", s.handleLocalLogin)
 	h("GET /auth/logout", s.handleLogout)
 	h("GET /api/me", s.handleMe)
 	// Build identity, public: the footer shows it on the login page too.

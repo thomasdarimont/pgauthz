@@ -25,6 +25,12 @@ func InitSchema(ctx context.Context, db *pgxpool.Pool) error {
 			expires_at    timestamptz NOT NULL,
 			created_at    timestamptz NOT NULL DEFAULT now()
 		)`)
+	if err != nil {
+		return err
+	}
+	// local: a session of the local admin sign-in (no token; memberships from
+	// the configuration). Existing tables gain the column.
+	_, err = db.Exec(ctx, `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS local boolean NOT NULL DEFAULT false`)
 	return err
 }
 
@@ -35,7 +41,20 @@ type session struct {
 	idToken      string
 	username     string
 	expiresAt    time.Time
+	local        bool
 }
+
+// createLocalSession opens a session for the local admin sign-in: no token,
+// a fixed lifetime, no refresh.
+func (s *Server) createLocalSession(ctx context.Context, username string) (string, error) {
+	id := randToken(32)
+	_, err := s.db.Exec(ctx,
+		`INSERT INTO sessions (id, access_token, username, expires_at, local) VALUES ($1, '', $2, $3, true)`,
+		id, username, time.Now().Add(localSessionTTL))
+	return id, err
+}
+
+const localSessionTTL = 8 * time.Hour
 
 func (s *Server) createSession(ctx context.Context, t *oidc.TokenResp) (string, error) {
 	id := randToken(32)
@@ -53,11 +72,19 @@ func (s *Server) createSession(ctx context.Context, t *oidc.TokenResp) (string, 
 func (s *Server) getSession(ctx context.Context, id string) (*session, error) {
 	var se session
 	err := s.db.QueryRow(ctx,
-		`SELECT id, access_token, coalesce(refresh_token,''), coalesce(id_token,''), coalesce(username,''), expires_at
+		`SELECT id, access_token, coalesce(refresh_token,''), coalesce(id_token,''), coalesce(username,''), expires_at, local
 		 FROM sessions WHERE id=$1`, id).
-		Scan(&se.id, &se.accessToken, &se.refreshToken, &se.idToken, &se.username, &se.expiresAt)
+		Scan(&se.id, &se.accessToken, &se.refreshToken, &se.idToken, &se.username, &se.expiresAt, &se.local)
 	if err != nil {
 		return nil, err
+	}
+	if se.local {
+		// Deactivated (the variables were unset) or run out: gone, no refresh.
+		if !s.cfg.LocalAdminEnabled() || time.Now().After(se.expiresAt) {
+			s.deleteSession(ctx, se.id)
+			return nil, errSessionExpired
+		}
+		return &se, nil
 	}
 	// Refresh when the access token is about to expire: the memberships that
 	// drive authorization come from the token, so they stay current too. An

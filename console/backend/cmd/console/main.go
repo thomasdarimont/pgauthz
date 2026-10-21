@@ -96,13 +96,28 @@ func main() {
 		log.Printf("trusting extra CA from %s", cfg.TLSCAFile)
 	}
 
-	disco, err := oidc.Discover(ctx, httpClient, cfg.Issuer)
-	if err != nil {
-		log.Fatalf("%v", err)
+	// Sign-in: an OpenID Provider (ISSUER), the local admin (no IdP), or both.
+	if cfg.LocalAdminEnabled() {
+		if cfg.Production() && !cfg.LocalAdminAllowInProduction {
+			log.Fatalf("CONSOLE_LOCAL_ADMIN_USER is set under DEPLOYMENT_ENVIRONMENT=%s: the local sign-in is for tests and first looks, not production. Unset it, or set CONSOLE_LOCAL_ADMIN_ALLOW_IN_PRODUCTION=true deliberately.", cfg.DeploymentEnvironment)
+		}
+		log.Printf("WARNING: local admin sign-in enabled for %s:%s (teams %v) — a shared password, no IdP; unset CONSOLE_LOCAL_ADMIN_USER/_PASSWORD to deactivate", cfg.SubjectType, cfg.LocalAdminUser, cfg.LocalAdminTeams)
 	}
-	log.Printf("OIDC discovered from %s: authorize=%s token=%s logout=%s", cfg.Issuer, disco.AuthURL, disco.TokenURL, disco.LogoutURL)
-
-	oidcClient := &oidc.Client{HTTP: httpClient, ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret, TokenURL: disco.TokenURL}
+	var disco oidc.Metadata
+	var oidcClient *oidc.Client
+	if cfg.Issuer != "" {
+		var err error
+		disco, err = oidc.Discover(ctx, httpClient, cfg.Issuer)
+		if err != nil {
+			log.Fatalf("%v", err)
+		}
+		log.Printf("OIDC discovered from %s: authorize=%s token=%s logout=%s", cfg.Issuer, disco.AuthURL, disco.TokenURL, disco.LogoutURL)
+		oidcClient = &oidc.Client{HTTP: httpClient, ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret, TokenURL: disco.TokenURL}
+	} else if !cfg.LocalAdminEnabled() {
+		log.Fatalf("no sign-in configured: set ISSUER (an OpenID Provider) or CONSOLE_LOCAL_ADMIN_USER + CONSOLE_LOCAL_ADMIN_PASSWORD")
+	} else {
+		log.Printf("no ISSUER: the local admin sign-in is the only way in")
+	}
 	srv := server.New(cfg, pool, engine, httpClient, oidcClient, disco)
 	srv.SetVersion(buildVersion())
 

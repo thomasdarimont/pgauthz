@@ -37,18 +37,25 @@ func (s *Server) principal(r *http.Request) *principal {
 	if se == nil || se.username == "" {
 		return nil
 	}
-	claims := claimMap(se.accessToken)
 	p := &principal{typ: s.cfg.SubjectType, id: se.username}
-	if n, ok := claims["name"].(string); ok {
-		p.name = n
-	}
-	seen := map[string]bool{}
-	for _, tc := range s.cfg.TeamClaims {
-		for _, v := range claimValues(claimPath(claims, tc.Path)) {
-			id := teamID(tc.Prefix, v)
-			if !seen[id] {
-				seen[id] = true
-				p.teams = append(p.teams, id)
+	if se.local {
+		// The local admin sign-in: memberships come from the configuration,
+		// not a token (getSession already rejected it if deactivated).
+		p.name = se.username
+		p.teams = append(p.teams, s.cfg.LocalAdminTeams...)
+	} else {
+		claims := claimMap(se.accessToken)
+		if n, ok := claims["name"].(string); ok {
+			p.name = n
+		}
+		seen := map[string]bool{}
+		for _, tc := range s.cfg.TeamClaims {
+			for _, v := range claimValues(claimPath(claims, tc.Path)) {
+				id := teamID(tc.Prefix, v)
+				if !seen[id] {
+					seen[id] = true
+					p.teams = append(p.teams, id)
+				}
 			}
 		}
 	}

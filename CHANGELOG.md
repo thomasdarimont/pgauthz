@@ -9,6 +9,46 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Deployments: derived relations in the Helm chart, a Docker Compose
+  deployment.** `derivedRelations.enabled` installs
+  `db/replication/materialized_relations.sql` through the migration Job,
+  declares the managed role `pgauthz_derived_worker` (inheriting the new
+  least-privilege `authz_derived_worker`: worker, registration, status,
+  namespace bypass) and runs one refresh worker pod
+  (`db/replication/worker.sh`, a loop around
+  `refresh_materialized_relations()` from the migrations image, registering
+  `derivedRelations.stores` at start); `derivedRelations.publication.enabled`
+  adds `wal_level=logical`, the managed `replicator` role and publication
+  `authz_derived` for subscribers. `deploy/compose/` is a one-host deployment
+  configured through `.env`: PostgreSQL behind a read-only and a writer
+  `pgauthzd`, an idempotent `migrate` service (the migrations image, which now
+  also sets the service-role passwords from `AUTHZEN_DIRECT_PASSWORD` /
+  `PGAUTHZD_RW_PASSWORD` / `DERIVED_WORKER_PASSWORD` / `REPLICATOR_PASSWORD`
+  when given), the `derived` and `opa` profiles and a `compose.logical.yml`
+  override for subscribers; production profile by default.
+  `tests/test-deploy-compose.sh` smoke-tests it (readiness, a decision with a
+  demo token, the doctor, a write reaching the derived table, a console
+  sign-in). The chart's description and notes now say what the front door is
+  (pgauthzd; OPA is opt-in). **The management console** is in both: Helm
+  `console.enabled` (managed roles `authz_console` + `console`, the sessions
+  database as a CloudNativePG `Database`, the console store created once by
+  the migration Job, Ingress path `/console`, NetworkPolicies), compose
+  `--profile console` (`migrate` creates the sessions database and the store).
+- **Console: local admin sign-in.** `CONSOLE_LOCAL_ADMIN_USER` +
+  `CONSOLE_LOCAL_ADMIN_PASSWORD` offer a username/password sign-in that needs
+  no OpenID Provider (`ISSUER` becomes optional): the person is
+  `user:<name>` with the memberships in `CONSOLE_LOCAL_ADMIN_TEAMS` (default
+  `role_console_admin`), so the console store still decides everything. Unset
+  the variables and restart to deactivate — the form disappears and every
+  local session is rejected at once. Constant-time comparison, a 500 ms delay
+  on a wrong guess, 404 while not configured; refused under
+  `DEPLOYMENT_ENVIRONMENT=production` unless
+  `CONSOLE_LOCAL_ADMIN_ALLOW_IN_PRODUCTION=true`. Helm `console.localAdmin.*`,
+  compose `CONSOLE_LOCAL_ADMIN_*`.
+- **pgauthzd: successful health probes log at `debug`.** `/livez`, `/readyz`
+  and `/healthz` answered 2xx no longer produce an `info` line per poll; a
+  failing probe still does.
+
 - **`./start-replication.sh` / `./stop-replication.sh`.** Bring the
   logical-replication demo up next to the main stack — host ports moved by
   `compose-replication-ports.yml`, its own compose project and volumes —

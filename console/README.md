@@ -35,6 +35,23 @@ open https://app.pgauthz.test/console/
 `./bootstrap.sh` the two `psql_file` lines are already done. Add
 `127.0.0.1 app.pgauthz.test` to `/etc/hosts` if it does not resolve.
 
+**Without an identity provider** — a first look, a test deployment — the BFF
+offers a **local admin sign-in**: set `CONSOLE_LOCAL_ADMIN_USER` and
+`CONSOLE_LOCAL_ADMIN_PASSWORD` (and no `ISSUER`, or both). That person signs
+in as `user:<name>` with the memberships in `CONSOLE_LOCAL_ADMIN_TEAMS`
+(default `role_console_admin`, the team the seed makes platform admin), so
+the console store still decides everything. Deactivate it by unsetting the
+two variables and restarting: the form disappears and every local session is
+rejected at once. It is one shared password, so the BFF refuses it under
+`DEPLOYMENT_ENVIRONMENT=production` unless
+`CONSOLE_LOCAL_ADMIN_ALLOW_IN_PRODUCTION=true` is set deliberately.
+
+**Deployments:** the Helm chart (`console.enabled`,
+[deploy/helm/pgauthz](../deploy/helm/pgauthz/README.md#management-console))
+and the Docker Compose deployment (`--profile console`,
+[deploy/compose](../deploy/compose/README.md#profiles)) run the console next
+to the engine, create its store once and give it its own sessions database.
+
 Demo users (password `password`) come in two kinds. The **console personas**
 each hold one realm role that the console turns into a team membership, so
 what they see follows from `examples/models/console/seed.sql`:
@@ -139,7 +156,9 @@ stores where nothing is shared (and always per tenant).
 
 ## How the access works
 
-- **People** are `user:<preferred_username>` in the console store.
+- **People** are `user:<preferred_username>` in the console store (the local
+  admin sign-in: `user:<CONSOLE_LOCAL_ADMIN_USER>`, with the configured teams
+  instead of token claims).
 - **Directory memberships come from the token, as contextual tuples.** For
   every realm role, group and organization in the access token the BFF adds
   `user:alice member team:role_<name>` / `team:group_<path>` / `team:org_<alias>`
@@ -217,7 +236,9 @@ Configuration (environment): `ENGINE_DSN`, `PG_DSN` (sessions), `ISSUER`,
 `TLS_CA_FILE`, `CONSOLE_STORE` (default `console`), `CONSOLE_PLATFORM_ID`,
 `CONSOLE_REGISTRY_ID`, `CONSOLE_SUBJECT_TYPE`, `CONSOLE_SELF_SUBJECT_TYPES`, `CONSOLE_TEAM_CLAIMS`,
 `CONSOLE_I18N_DIR` (translation overrides), `CONSOLE_OPA_URL` / `CONSOLE_OPA_TOKEN` (Policies tab), `PGAUTHZD_URL` (readiness shown on Settings), `PGAUTHZD_DECISION_URL` (the
-"as me" test mode; empty hides it).
+"as me" test mode; empty hides it), `CONSOLE_LOCAL_ADMIN_USER` / `_PASSWORD` /
+`_TEAMS` / `_ALLOW_IN_PRODUCTION` (the local admin sign-in; `ISSUER` may then be
+empty).
 
 ## What is not there yet
 

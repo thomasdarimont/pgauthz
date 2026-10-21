@@ -25,6 +25,9 @@ export class PgcApp extends PgcElement {
   constructor() {
     super();
     this.me = undefined; // undefined = loading, null = logged out
+    this.login = { oidc: true, local: false }; // sign-ins this deployment offers (from api/me)
+    this.localUser = '';
+    this.localPassword = '';
     this.path = this._currentPath();
     this.error = '';
     this.version = null;
@@ -70,10 +73,27 @@ export class PgcApp extends PgcElement {
     window.scrollTo(0, 0);
   }
 
+  // The local admin sign-in: POST the credentials, then reload who we are.
+  _localLogin = async (e) => {
+    e.preventDefault();
+    this.error = '';
+    try {
+      await api.localLogin(this.localUser, this.localPassword);
+      this.localPassword = '';
+      this.me = undefined;
+      await this._load();
+    } catch (err) {
+      this.error = err.status === 401 ? t('Wrong username or password.') : forbiddenText(err);
+    }
+  };
+
   async _load() {
     try {
       this.me = await api.me();
-      if (this.me && this.me.authenticated === false) this.me = null;
+      if (this.me && this.me.authenticated === false) {
+        if (this.me.login) this.login = this.me.login;
+        this.me = null;
+      }
     } catch (e) {
       this.me = null;
       this.error = forbiddenText(e);
@@ -142,7 +162,7 @@ export class PgcApp extends PgcElement {
                       >⚙</a
                     >
                     <button class="sm" @click=${api.logout}>${t('Sign out')}</button>`
-                : me === null
+                : me === null && this.login.oidc
                   ? html`<button class="sm primary" @click=${() => api.login()}>${t('Sign in')}</button>`
                   : nothing
             }
@@ -159,9 +179,44 @@ export class PgcApp extends PgcElement {
                   ${t('Design, test, share and roll out authorization models — with your access decided by pgauthz itself.')}
                 </p>
                 ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
-                <p>
-                  <button class="primary" @click=${() => api.login()}>${t('Sign in with Keycloak')}</button>
-                </p>
+                ${
+                  this.login.oidc
+                    ? html`<p>
+                        <button class="primary" @click=${() => api.login()}>
+                          ${t('Sign in with Keycloak')}
+                        </button>
+                      </p>`
+                    : nothing
+                }
+                ${
+                  this.login.local
+                    ? html`<form class="local-login" @submit=${this._localLogin}>
+                        <p class="muted">
+                          ${this.login.oidc ? t('Or the local admin account:') : t('This deployment has no identity provider; sign in with the local admin account.')}
+                        </p>
+                        <label
+                          >${t('Username')}
+                          <input
+                            name="username"
+                            autocomplete="username"
+                            required
+                            .value=${this.localUser}
+                            @input=${(e) => (this.localUser = e.target.value)}
+                        /></label>
+                        <label
+                          >${t('Password')}
+                          <input
+                            name="password"
+                            type="password"
+                            autocomplete="current-password"
+                            required
+                            .value=${this.localPassword}
+                            @input=${(e) => (this.localPassword = e.target.value)}
+                        /></label>
+                        <p><button class="primary" type="submit">${t('Sign in')}</button></p>
+                      </form>`
+                    : nothing
+                }
               </main>`
             : html`<main>${this._page()}</main>`
       }
