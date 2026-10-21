@@ -81,6 +81,11 @@ type Config struct {
 	LocalAdminPassword          string
 	LocalAdminTeams             []string
 	LocalAdminAllowInProduction bool
+	// LocalAdminStoreRole is the store role the local admin holds on EVERY
+	// store, contextually (nothing written): "owner" by default, so the
+	// account can do everything a test needs — platform admin alone only sees
+	// stores. Empty = no store role beyond what the teams grant.
+	LocalAdminStoreRole string
 }
 
 // LocalAdminEnabled reports whether the local sign-in is configured.
@@ -89,6 +94,16 @@ func (c Config) LocalAdminEnabled() bool { return c.LocalAdminUser != "" && c.Lo
 // Production reports the production profile (DEPLOYMENT_ENVIRONMENT).
 func (c Config) Production() bool {
 	return c.DeploymentEnvironment == "production" || c.DeploymentEnvironment == "prod"
+}
+
+// localAdminStoreRole: CONSOLE_LOCAL_ADMIN_STORE_ROLE, default "owner"; the
+// explicit empty value "none" switches it off (an empty variable reads as unset).
+func localAdminStoreRole() string {
+	v := env("CONSOLE_LOCAL_ADMIN_STORE_ROLE", "owner")
+	if v == "none" {
+		return ""
+	}
+	return v
 }
 
 func env(k, def string) string {
@@ -149,6 +164,7 @@ func Load() Config {
 		LocalAdminPassword:          env("CONSOLE_LOCAL_ADMIN_PASSWORD", ""),
 		LocalAdminTeams:             splitList(env("CONSOLE_LOCAL_ADMIN_TEAMS", "role_console_admin")),
 		LocalAdminAllowInProduction: env("CONSOLE_LOCAL_ADMIN_ALLOW_IN_PRODUCTION", "") == "true",
+		LocalAdminStoreRole:         localAdminStoreRole(),
 	}
 }
 

@@ -364,6 +364,7 @@ console:
     user: ""
     password: ""               # or secrets.existingSecret key console-local-admin-password
     teams: "role_console_admin"
+    storeRole: owner           # held on every store, contextually; "none" = teams only
     allowInProduction: false
   # The client's redirect URI is <baseUrl><basePath>/auth/callback; baseUrl
   # defaults to https://<ingress.host> (http without ingress.tls).

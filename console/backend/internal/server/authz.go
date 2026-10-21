@@ -27,8 +27,44 @@ type principal struct {
 	typ       string   // console subject type (config.SubjectType)
 	id        string   // preferred_username
 	name      string   // display name from the token
+	email     string   // email claim, when the token carries one
 	teams     []string // team object ids derived from claims
 	ctxTuples string   // JSON array of contextual membership tuples
+	// storeRole: the local admin's contextual role on every store it is asked
+	// about (config.LocalAdminStoreRole); pathStore is the store of the current
+	// request, so checks on a store's namespaces reach it too. Empty otherwise.
+	storeRole string
+	pathStore string
+}
+
+// tuplesFor returns the contextual tuples for a check on objectType/ids: the
+// membership tuples, plus — for the local admin — its store role on every
+// store among the ids and on the request's store. Nothing is written.
+func (p *principal) tuplesFor(objectType string, ids []string) string {
+	if p.storeRole == "" {
+		return p.ctxTuples
+	}
+	var tuples []map[string]string
+	_ = json.Unmarshal([]byte(p.ctxTuples), &tuples)
+	add := func(store string) {
+		tuples = append(tuples, map[string]string{
+			"user_type": p.typ, "user_id": p.id, "relation": p.storeRole, "object_type": "store", "object_id": store,
+		})
+	}
+	seen := map[string]bool{}
+	if objectType == "store" {
+		for _, id := range ids {
+			if !seen[id] {
+				seen[id] = true
+				add(id)
+			}
+		}
+	}
+	if p.pathStore != "" && !seen[p.pathStore] {
+		add(p.pathStore)
+	}
+	raw, _ := json.Marshal(tuples)
+	return string(raw)
 }
 
 // principal returns the logged-in person, or nil.
@@ -43,10 +79,15 @@ func (s *Server) principal(r *http.Request) *principal {
 		// not a token (getSession already rejected it if deactivated).
 		p.name = se.username
 		p.teams = append(p.teams, s.cfg.LocalAdminTeams...)
+		p.storeRole = s.cfg.LocalAdminStoreRole
+		p.pathStore = r.PathValue("store")
 	} else {
 		claims := claimMap(se.accessToken)
 		if n, ok := claims["name"].(string); ok {
 			p.name = n
+		}
+		if e, ok := claims["email"].(string); ok {
+			p.email = e
 		}
 		seen := map[string]bool{}
 		for _, tc := range s.cfg.TeamClaims {
@@ -88,7 +129,7 @@ func (s *Server) canQ(ctx context.Context, q querier, p *principal, relation, ob
 	var ok bool
 	err := q.QueryRow(ctx,
 		`SELECT authz.check_access_with_contextual_tuples_jsonb($1, $2, $3, $4, $5, $6, NULL, $7::jsonb)`,
-		s.cfg.ConsoleStore, p.typ, p.id, relation, objectType, objectID, p.ctxTuples).Scan(&ok)
+		s.cfg.ConsoleStore, p.typ, p.id, relation, objectType, objectID, p.tuplesFor(objectType, []string{objectID})).Scan(&ok)
 	return ok, err
 }
 
@@ -164,7 +205,7 @@ func (s *Server) capabilities(ctx context.Context, p *principal, objectType stri
 	rows, err := s.engine.Query(ctx, `
 		SELECT object_id, relation, decision
 		  FROM authz.check_access_batch_with_contextual_tuples_jsonb($1, $2::jsonb, NULL, $3::jsonb)`,
-		s.cfg.ConsoleStore, string(raw), nullable(p.ctxTuples))
+		s.cfg.ConsoleStore, string(raw), nullable(p.tuplesFor(objectType, ids)))
 	if err != nil {
 		return nil, err
 	}

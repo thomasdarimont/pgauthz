@@ -45,8 +45,11 @@ engine is not installed yet. The personas above need the Keycloak overlay.
 offers a **local admin sign-in**: set `CONSOLE_LOCAL_ADMIN_USER` and
 `CONSOLE_LOCAL_ADMIN_PASSWORD` (and no `ISSUER`, or both). That person signs
 in as `user:<name>` with the memberships in `CONSOLE_LOCAL_ADMIN_TEAMS`
-(default `role_console_admin`, the team the seed makes platform admin), so
-the console store still decides everything. Deactivate it by unsetting the
+(default `role_console_admin`, the team the seed makes platform admin) and
+holds `CONSOLE_LOCAL_ADMIN_STORE_ROLE` (default `owner`; `none` for no store
+role) on every store — contextually, nothing is written — so the account can
+test, edit, publish and share everywhere, which is what a testing account is
+for; the console store still decides every question. Deactivate it by unsetting the
 two variables and restarting: the form disappears and every local session is
 rejected at once. It is one shared password, so the BFF refuses it under
 `DEPLOYMENT_ENVIRONMENT=production` unless

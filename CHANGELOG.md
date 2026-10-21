@@ -45,6 +45,11 @@ pre-1.0, minor versions may include breaking changes.
   `DEPLOYMENT_ENVIRONMENT=production` unless
   `CONSOLE_LOCAL_ADMIN_ALLOW_IN_PRODUCTION=true`. Helm `console.localAdmin.*`,
   compose `CONSOLE_LOCAL_ADMIN_*`.
+- **Console: the local admin owns every store.** `CONSOLE_LOCAL_ADMIN_STORE_ROLE`
+  (default `owner`, `none` to switch off) is held contextually on every store
+  the account is asked about, so it can test, edit, publish and share
+  everywhere instead of only seeing stores as platform admin. Helm
+  `console.localAdmin.storeRole`, compose `CONSOLE_LOCAL_ADMIN_STORE_ROLE`.
 - **Dev stack: `./start.sh --console-local`.** The management console without
   Keycloak (`compose-console-local.yml`): the local admin sign-in on
   `http://localhost:8095/console/`, no proxy, no OPA; `env.sh` keeps the

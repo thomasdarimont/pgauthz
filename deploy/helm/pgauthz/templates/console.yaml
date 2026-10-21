@@ -90,6 +90,7 @@ spec:
               valueFrom:
                 secretKeyRef: { name: {{ if .Values.secrets.existingSecret }}{{ .Values.secrets.existingSecret }}{{ else }}{{ $full }}-console-local-admin{{ end }}, key: {{ if .Values.secrets.existingSecret }}console-local-admin-password{{ else }}password{{ end }} }
             - { name: CONSOLE_LOCAL_ADMIN_TEAMS, value: {{ $la.teams | default "role_console_admin" | quote }} }
+            - { name: CONSOLE_LOCAL_ADMIN_STORE_ROLE, value: {{ $la.storeRole | default "owner" | quote }} }
             {{- if $la.allowInProduction }}
             - { name: CONSOLE_LOCAL_ADMIN_ALLOW_IN_PRODUCTION, value: "true" }
             {{- end }}
