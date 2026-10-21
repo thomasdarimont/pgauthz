@@ -1039,10 +1039,12 @@ the name gone (`Unknown store`) instead of registering the id being
 deleted, and a deletion that meets a running snapshot waits and then
 invalidates it. The worker holds `ACCESS SHARE` on the partitions it read
 earlier in its transaction, exactly what a deletion's DDL waits for, so it
-never blocks on a lock: it try-locks both per store, re-reads the
-registration under the locks (its list of stores predates them), and leaves
-a store someone else owns, or whose registration went meanwhile, for the
-next run (its cursor does not move). The suite
+never blocks on a lock: it try-locks both per store inside a
+subtransaction (a failed second lock rolls the first back, so nothing stays
+held that a deletion would wait on), re-reads the registration under the
+locks (its list of stores predates them), and leaves a store someone else
+owns, or whose registration went meanwhile, for the next run (its cursor
+does not move). The suite
 runs each pairing with a held-open transaction and twelve seconds of all
 three actors churning one store, and asserts no deadlock, no orphan row and
 agreement with the engine.

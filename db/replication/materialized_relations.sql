@@ -419,11 +419,22 @@ CREATE OR REPLACE FUNCTION authz._mp_try_lock_store(p_store text)
 RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
-    -- sequential on purpose: SQL AND does not promise evaluation order
-    IF NOT pg_try_advisory_xact_lock_shared(hashtextextended(p_store || ':*', 0)) THEN
+    -- Sequential on purpose (SQL AND does not promise evaluation order), and
+    -- inside a subtransaction: a transaction-level advisory lock cannot be
+    -- released explicitly, but rolling back the subtransaction that took it
+    -- does — so a failed second lock does not leave the first one held for
+    -- the rest of the worker's run (a deletion would wait on it for nothing).
+    BEGIN
+        IF NOT pg_try_advisory_xact_lock_shared(hashtextextended(p_store || ':*', 0)) THEN
+            RETURN false;
+        END IF;
+        IF NOT pg_try_advisory_xact_lock(hashtext('authz.materialized_relations:' || p_store)) THEN
+            RAISE EXCEPTION USING ERRCODE = 'lock_not_available';   -- undo the shared lock
+        END IF;
+        RETURN true;
+    EXCEPTION WHEN lock_not_available THEN
         RETURN false;
-    END IF;
-    RETURN pg_try_advisory_xact_lock(hashtext('authz.materialized_relations:' || p_store));
+    END;
 END;
 $$;
 

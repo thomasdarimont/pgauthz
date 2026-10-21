@@ -600,6 +600,75 @@ assert "churn: every derived row belongs to a registered, live incarnation" "t" 
   "$(qp "$PRIMARY" "SELECT NOT EXISTS (SELECT 1 FROM authz.materialized_relations r LEFT JOIN authz.materialized_refresh_state s ON s.store = r.store LEFT JOIN authz.stores st ON st.id = s.store_id WHERE st.id IS NULL);")"
 differential "after churn"
 
+echo "==> A failed second try-lock leaves no lock behind (subtransaction rollback)..."
+# Hold aia_acme's derived-rows lock in a third session; a transaction that then
+# try-locks the store must get false AND hold no advisory lock of its own,
+# otherwise a deletion would wait on its store-wide lock for nothing.
+cat > "$WORK/hold-m.sql" <<'SQL'
+BEGIN;
+SELECT pg_advisory_xact_lock(hashtext('authz.materialized_relations:aia_acme'));
+SELECT pg_sleep(3);
+COMMIT;
+SQL
+docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -q < "$WORK/hold-m.sql" >/dev/null 2>&1 &
+hold_pid=$!
+sleep 0.7
+cat > "$WORK/try-lock.sql" <<'SQL'
+BEGIN;
+SELECT authz._mp_try_lock_store('aia_acme');
+SELECT count(*) FROM pg_locks WHERE pid = pg_backend_pid() AND locktype = 'advisory';
+COMMIT;
+SQL
+assert "try-lock reports false and the session holds no advisory lock afterwards" "f|0" \
+  "$(docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -q -tA < "$WORK/try-lock.sql" | paste -sd'|' -)"
+wait "$hold_pid" || true
+assert "try-lock succeeds once the holder is gone (both locks, then released at commit)" "t|2" \
+  "$(docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -q -tA < "$WORK/try-lock.sql" | paste -sd'|' -)"
+
+echo "==> The worker meets a registration replaced AFTER it listed its stores (deterministic)..."
+# Park the worker: a store sorting first ('aaa_park') carries a dead
+# incarnation, so the worker's cleanup DELETEs its derived rows inside the
+# loop — on a row a third session holds FOR UPDATE. While it waits there,
+# aia_acme (listed already, with its old cursor and incarnation) is deleted,
+# recreated and registered anew. The worker must then work from the new
+# registration: afterwards aia_acme is registered under the live id and has
+# rows. (Acting on the listed state would have rebuilt the store under the
+# dead id — no rows, stale id.)
+{ sed 's/helloworld/aaa_park/g' examples/models/helloworld/model.sql; sed 's/helloworld/aaa_park/g' examples/models/helloworld/seed.sql; } | qf "$PRIMARY" >/dev/null
+qp "$PRIMARY" "SELECT authz.refresh_all_materialized_relations('aaa_park');" >/dev/null
+assert "parking store aaa_park has derived rows" "t" "$(qp "$PRIMARY" "SELECT count(*) > 0 FROM authz.materialized_relations WHERE store='aaa_park';")"
+qp "$PRIMARY" "UPDATE authz.materialized_refresh_state SET store_id = store_id + 100000 WHERE store = 'aaa_park';" >/dev/null
+cat > "$WORK/park.sql" <<'SQL'
+BEGIN;
+SELECT 1 FROM authz.materialized_relations WHERE store = 'aaa_park' LIMIT 1 FOR UPDATE;
+SELECT pg_sleep(6);
+COMMIT;
+SQL
+docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -q < "$WORK/park.sql" >/dev/null 2>&1 &
+park_pid=$!
+sleep 0.7
+t0=$(date +%s)
+rc_w=0; docker exec -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -q -c "SELECT authz.refresh_materialized_relations();" >/dev/null 2>"$WORK/parked-worker.err" & wpid=$!
+sleep 1.5
+# replace the registration the worker has already listed
+qp "$PRIMARY" "SELECT authz.delete_store('aia_acme');" >/dev/null
+qf "$PRIMARY" < examples/models/aia-acme/model.sql >/dev/null; qf "$PRIMARY" < examples/models/aia-acme/seed.sql >/dev/null
+qp "$PRIMARY" "SELECT authz.refresh_all_materialized_relations('aia_acme');" >/dev/null
+new_id=$(qp "$PRIMARY" "SELECT id FROM authz.stores WHERE name='aia_acme';")
+assert "replacement registered the live incarnation while the worker was parked" "$new_id" \
+  "$(qp "$PRIMARY" "SELECT store_id FROM authz.materialized_refresh_state WHERE store='aia_acme';")"
+wait "$wpid" || rc_w=$?
+worker_took=$(( $(date +%s) - t0 ))
+wait "$park_pid" || true
+assert "the worker was parked past the replacement and finished without error" "t|0|" "$([ "$worker_took" -ge 4 ] && echo t || echo f)|$rc_w|$(grep '^ERROR' "$WORK/parked-worker.err" | head -1)"
+assert "the worker worked from the re-read registration: live id, rows present" "true|true" \
+  "$(qp "$PRIMARY" "SELECT (s.store_id = $new_id) || '|' || ((SELECT count(*) FROM authz.materialized_relations WHERE store='aia_acme') > 0) FROM authz.materialized_refresh_state s WHERE s.store='aia_acme';")"
+assert "the dead parking incarnation was dropped by the same run" "0|false" \
+  "$(qp "$PRIMARY" "SELECT (SELECT count(*) FROM authz.materialized_relations WHERE store='aaa_park') || '|' || EXISTS(SELECT 1 FROM authz.materialized_refresh_state WHERE store='aaa_park');")"
+qp "$PRIMARY" "SELECT authz.delete_store('aaa_park', p_purge_audit => true);" >/dev/null
+drain_feed || assert "replacement: feed drained" "ok" "timeout"
+differential "after replacement under a parked worker"
+
 echo "==> A first-shape subscriber upgrades through a LIVE subscription (disable, both sides, enable, refresh)..."
 # Publisher: the primary's maintenance database with the first shape and the
 # first publication (leaf partitions); subscriber: the dms container's
