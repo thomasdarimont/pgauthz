@@ -182,49 +182,54 @@ export class PgcApp extends PgcElement {
           ? html`<main><p class="muted">${t('Loading…')}</p></main>`
           : me === null
             ? html`<main class="login">
-                <h1>pgauthz ${t('Console')}</h1>
-                <p class="muted">
-                  ${t('Design, test, share and roll out authorization models — with your access decided by pgauthz itself.')}
-                </p>
-                ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
-                ${
-                  this.login.oidc
-                    ? html`<p>
-                        <button class="primary" @click=${() => api.login()}>
+                <section class="login-card card">
+                  <div class="login-brand">
+                    <span class="dot"></span><span>pgauthz <small>${t('console')}</small></span>
+                  </div>
+                  <h1>${t('Sign in')}</h1>
+                  <p class="muted">
+                    ${t('Design, test, share and roll out authorization models — with your access decided by pgauthz itself.')}
+                  </p>
+                  ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
+                  ${
+                    this.login.oidc
+                      ? html`<button class="primary wide" @click=${() => api.login()}>
                           ${t('Sign in with Keycloak')}
-                        </button>
-                      </p>`
-                    : nothing
-                }
-                ${
-                  this.login.local
-                    ? html`<form class="local-login" @submit=${this._localLogin}>
-                        <p class="muted">
-                          ${this.login.oidc ? t('Or the local admin account:') : t('This deployment has no identity provider; sign in with the local admin account.')}
-                        </p>
-                        <label
-                          >${t('Username')}
-                          <input
-                            name="username"
-                            autocomplete="username"
-                            required
-                            .value=${this.localUser}
-                            @input=${(e) => (this.localUser = e.target.value)}
-                        /></label>
-                        <label
-                          >${t('Password')}
-                          <input
-                            name="password"
-                            type="password"
-                            autocomplete="current-password"
-                            required
-                            .value=${this.localPassword}
-                            @input=${(e) => (this.localPassword = e.target.value)}
-                        /></label>
-                        <p><button class="primary" type="submit">${t('Sign in')}</button></p>
-                      </form>`
-                    : nothing
-                }
+                        </button>`
+                      : nothing
+                  }
+                  ${this.login.oidc && this.login.local ? html`<div class="login-or"><span>${t('or')}</span></div>` : nothing}
+                  ${
+                    this.login.local
+                      ? html`<form class="local-login" @submit=${this._localLogin}>
+                          <label
+                            >${t('Username')}
+                            <input
+                              name="username"
+                              autocomplete="username"
+                              autofocus
+                              required
+                              .value=${this.localUser}
+                              @input=${(e) => (this.localUser = e.target.value)}
+                          /></label>
+                          <label
+                            >${t('Password')}
+                            <input
+                              name="password"
+                              type="password"
+                              autocomplete="current-password"
+                              required
+                              .value=${this.localPassword}
+                              @input=${(e) => (this.localPassword = e.target.value)}
+                          /></label>
+                          <button class="primary wide" type="submit">${t('Sign in')}</button>
+                          <p class="login-hint muted">
+                            ${t('Local admin account — a development sign-in without an identity provider.')}
+                          </p>
+                        </form>`
+                      : nothing
+                  }
+                </section>
               </main>`
             : html`<main>${this._page()}</main>`
       }

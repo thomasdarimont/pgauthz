@@ -87,12 +87,20 @@ nav.areas a.active { color: var(--c-accent); background: var(--c-accent-soft); }
 .who b { color: var(--c-fg); }
 main { flex: 1 0 auto; width: 100%; max-width: var(--content); margin: 0 auto;
   padding: var(--s-5) max(16px, env(safe-area-inset-right, 0px)) var(--s-6) max(16px, env(safe-area-inset-left, 0px)); }
-main.login { text-align: center; padding-top: 14vh; max-width: 520px; }
-main.login h1 { font-size: var(--t-xl); margin-bottom: var(--s-3); }
-main.login .local-login { display: inline-flex; flex-direction: column; gap: var(--s-2); margin-top: var(--s-3); text-align: left; }
-main.login .local-login label { display: flex; flex-direction: column; gap: 4px; font-size: var(--t-sm); color: var(--c-muted); }
-main.login .local-login input { min-width: 260px; }
-main.login .local-login p { margin: 0; text-align: center; }
+main.login { display: flex; justify-content: center; align-items: flex-start; padding-top: 10vh; max-width: none; }
+.login-card { width: 100%; max-width: 400px; padding: var(--s-6) var(--s-5); display: flex; flex-direction: column; gap: var(--s-4); box-shadow: var(--c-shadow); }
+.login-brand { display: flex; align-items: center; gap: var(--s-2); font-weight: 700; letter-spacing: -.01em; color: var(--c-muted); font-size: var(--t-sm); }
+.login-brand .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--c-accent); }
+.login-brand small { font-weight: 500; }
+.login-card h1 { font-size: var(--t-xl); margin: 0; line-height: 1.2; }
+.login-card > .muted, .login-card > .error { margin: 0; }
+.login-card button.wide { width: 100%; padding: var(--s-3); font-size: var(--t-base); }
+.login-or { display: flex; align-items: center; gap: var(--s-3); color: var(--c-muted); font-size: var(--t-sm); text-transform: lowercase; }
+.login-or::before, .login-or::after { content: ''; flex: 1; border-top: 1px solid var(--c-border); }
+.local-login { display: flex; flex-direction: column; gap: var(--s-3); }
+.local-login label { display: flex; flex-direction: column; gap: 4px; font-size: var(--t-sm); font-weight: 600; color: var(--c-muted); }
+.local-login input { width: 100%; box-sizing: border-box; padding: var(--s-3); font-size: var(--t-base); }
+.login-hint { margin: 0; font-size: var(--t-xs); text-align: center; }
 .page-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: var(--s-3); margin-bottom: var(--s-4); }
 .page-head h1 { font-size: var(--t-xl); font-weight: 700; letter-spacing: -.01em; }
 .page-head .sub { color: var(--c-muted); }
