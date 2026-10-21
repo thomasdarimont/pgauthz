@@ -98,6 +98,13 @@ else
       COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-console.yml")
       ;;
   esac
+  # The Keycloak-free console (local admin sign-in); start.sh keeps the two
+  # console overlays exclusive.
+  case "${PGAUTHZ_CONSOLE_LOCAL:-}" in
+    1|true|yes|on)
+      COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-console-local.yml")
+      ;;
+  esac
 
   # Metrics overlay (ADR 0010): a Prometheus + Grafana that scrape the pgauthzd
   # instances' /metrics (:9090). Independent of the OPA/keycloak chain.
@@ -121,6 +128,7 @@ else
     echo "export PGAUTHZ_KEYCLOAK=\"\${PGAUTHZ_KEYCLOAK:-${PGAUTHZ_KEYCLOAK:-0}}\""
     echo "export PGAUTHZ_PLAYGROUND=\"\${PGAUTHZ_PLAYGROUND:-${PGAUTHZ_PLAYGROUND:-0}}\""
     echo "export PGAUTHZ_CONSOLE=\"\${PGAUTHZ_CONSOLE:-${PGAUTHZ_CONSOLE:-0}}\""
+    echo "export PGAUTHZ_CONSOLE_LOCAL=\"\${PGAUTHZ_CONSOLE_LOCAL:-${PGAUTHZ_CONSOLE_LOCAL:-0}}\""
     echo "export PGAUTHZ_METRICS=\"\${PGAUTHZ_METRICS:-${PGAUTHZ_METRICS:-0}}\""
   } > "$SCRIPT_DIR/.pgauthz-overlays"
 fi

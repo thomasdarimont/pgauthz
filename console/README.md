@@ -35,6 +35,12 @@ open https://app.pgauthz.test/console/
 `./bootstrap.sh` the two `psql_file` lines are already done. Add
 `127.0.0.1 app.pgauthz.test` to `/etc/hosts` if it does not resolve.
 
+**Without Keycloak, in the dev stack:** `./start.sh --console-local` (add
+`--cel` to keep CEL) serves the console at `http://localhost:8095/console/`
+with the local admin `admin` / `admin` (`CONSOLE_LOCAL_ADMIN_PASSWORD`), no
+proxy, no OPA — `compose-console-local.yml`; run `./init.sh` once if the
+engine is not installed yet. The personas above need the Keycloak overlay.
+
 **Without an identity provider** — a first look, a test deployment — the BFF
 offers a **local admin sign-in**: set `CONSOLE_LOCAL_ADMIN_USER` and
 `CONSOLE_LOCAL_ADMIN_PASSWORD` (and no `ISSUER`, or both). That person signs

@@ -1,0 +1,72 @@
+# Optional overlay: the management console WITHOUT Keycloak — the local admin
+# sign-in (console/README.md → "Without an identity provider") on a host port,
+# no proxy, no OPA, no certificates. For a quick look and for testing the
+# console itself; the Keycloak-backed overlay (compose-console.yml) is the
+# one that shows the real personas.
+#
+#   ./start.sh --console-local            (./start.sh --cel --console-local keeps CEL)
+#   ./init.sh                             # once: engine + roles (creates authz_console)
+#   open http://localhost:8095/console/   # sign in: admin / admin (CONSOLE_LOCAL_ADMIN_PASSWORD)
+#
+# start.sh creates the console store (examples/models/console) when missing.
+# Mutually exclusive with compose-console.yml (both define console-bff).
+name: pgauthz
+
+services:
+  console-db:
+    image: postgres:18.6
+    environment:
+      POSTGRES_DB: pgauthz_console
+      POSTGRES_USER: console
+      POSTGRES_PASSWORD: ${CONSOLE_DB_PASSWORD:-console}
+    volumes:
+      - console-db-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U console -d pgauthz_console"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  console-bff:
+    build:
+      context: .
+      dockerfile: console/Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+        REVISION: ${REVISION:-}
+    image: pgauthz-console-bff:dev
+    depends_on:
+      console-db:
+        condition: service_healthy
+      authz-db:
+        condition: service_healthy
+    environment:
+      PG_DSN: postgres://console:${CONSOLE_DB_PASSWORD:-console}@console-db:5432/pgauthz_console
+      ENGINE_DSN: postgres://authz_console:${CONSOLE_ENGINE_PASSWORD:-authz}@authz-db:5432/authz
+      # No OpenID Provider: the local admin is the only sign-in. One shared
+      # password — a development convenience, refused in production.
+      ISSUER: ""
+      CONSOLE_LOCAL_ADMIN_USER: "${CONSOLE_LOCAL_ADMIN_USER:-admin}"
+      CONSOLE_LOCAL_ADMIN_PASSWORD: "${CONSOLE_LOCAL_ADMIN_PASSWORD:-admin}"
+      CONSOLE_LOCAL_ADMIN_TEAMS: "${CONSOLE_LOCAL_ADMIN_TEAMS:-role_console_admin}"
+      BASE_URL: "http://localhost:${CONSOLE_LOCAL_PORT:-8095}"
+      BASE_PATH: /console
+      COOKIE_SECURE: "false"
+      DEPLOYMENT_ENVIRONMENT: "${DEPLOYMENT_ENVIRONMENT:-dev}"
+      CONSOLE_STORE: console
+      CONSOLE_PLATFORM_ID: default
+      CONSOLE_REGISTRY_ID: default
+      CONSOLE_SUBJECT_TYPE: user
+      CONSOLE_SELF_SUBJECT_TYPES: user,internal_user
+      # The direct instances of the default stack (no OPA here).
+      PGAUTHZD_URL: http://pgauthzd-full:8080
+      PGAUTHZD_DECISION_URL: http://pgauthzd-decision:8080
+      # CONSOLE_I18N_DIR: /i18n
+    ports:
+      - "${CONSOLE_LOCAL_PORT:-8095}:8080"
+    volumes:
+      # SPA mounted for live editing; the binary serves it from /web.
+      - ./console/frontend:/web:ro
+
+volumes:
+  console-db-data:

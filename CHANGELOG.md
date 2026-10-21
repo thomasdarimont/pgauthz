@@ -45,6 +45,10 @@ pre-1.0, minor versions may include breaking changes.
   `DEPLOYMENT_ENVIRONMENT=production` unless
   `CONSOLE_LOCAL_ADMIN_ALLOW_IN_PRODUCTION=true`. Helm `console.localAdmin.*`,
   compose `CONSOLE_LOCAL_ADMIN_*`.
+- **Dev stack: `./start.sh --console-local`.** The management console without
+  Keycloak (`compose-console-local.yml`): the local admin sign-in on
+  `http://localhost:8095/console/`, no proxy, no OPA; `env.sh` keeps the
+  overlay across `init.sh`/`test.sh` like the others.
 - **pgauthzd: successful health probes log at `debug`.** `/livez`, `/readyz`
   and `/healthz` answered 2xx no longer produce an `info` line per poll; a
   failing probe still does.

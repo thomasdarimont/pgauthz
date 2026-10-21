@@ -17,6 +17,10 @@
 #   --console   Also start the management console (Lit SPA + Go BFF) at
 #               https://app.pgauthz.test/console/. Implies --keycloak; run
 #               terraform apply afterwards to provision the console-bff client.
+#   --console-local  The console WITHOUT Keycloak at http://localhost:8095/console/
+#               (compose-console-local.yml): local admin sign-in admin / admin
+#               (CONSOLE_LOCAL_ADMIN_PASSWORD), no proxy, no OPA. For a quick
+#               look at the console itself; not combinable with --console.
 #   --metrics   Also start Prometheus + Grafana scraping the pgauthzd /metrics
 #               (compose-metrics.yml). UIs: :9095 (Prometheus) / :9096 (Grafana).
 #
@@ -28,6 +32,7 @@ OPA=0
 KEYCLOAK=0
 PLAYGROUND=0
 CONSOLE=0
+CONSOLE_LOCAL=0
 METRICS=0
 for arg in "$@"; do
   case "$arg" in
@@ -36,13 +41,18 @@ for arg in "$@"; do
     --keycloak)   KEYCLOAK=1 ;;
     --playground) PLAYGROUND=1 ;;
     --console)    CONSOLE=1 ;;
+    --console-local) CONSOLE_LOCAL=1 ;;
     --metrics)    METRICS=1 ;;
-    -h|--help)    sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,26p' "$0"; exit 0 ;;
     *) echo "Unknown option: $arg" >&2; exit 2 ;;
   esac
 done
 # The playground depends on keycloak; keycloak routes through the OPA overlay.
 if [ "$PLAYGROUND" = 1 ] || [ "$CONSOLE" = 1 ]; then KEYCLOAK=1; fi
+if [ "$CONSOLE" = 1 ] && [ "$CONSOLE_LOCAL" = 1 ]; then
+  echo "==> --console and --console-local both define the console; keeping --console (Keycloak)"
+  CONSOLE_LOCAL=0
+fi
 if [ "$KEYCLOAK" = 1 ]; then OPA=1; fi
 
 # Persist the overlay selection so env.sh (sourced by init.sh, test.sh,
@@ -59,6 +69,7 @@ if [ "$KEYCLOAK" = 1 ]; then OPA=1; fi
   echo "export PGAUTHZ_KEYCLOAK=\"\${PGAUTHZ_KEYCLOAK:-$KEYCLOAK}\""
   echo "export PGAUTHZ_PLAYGROUND=\"\${PGAUTHZ_PLAYGROUND:-$PLAYGROUND}\""
   echo "export PGAUTHZ_CONSOLE=\"\${PGAUTHZ_CONSOLE:-$CONSOLE}\""
+  echo "export PGAUTHZ_CONSOLE_LOCAL=\"\${PGAUTHZ_CONSOLE_LOCAL:-$CONSOLE_LOCAL}\""
   echo "export PGAUTHZ_METRICS=\"\${PGAUTHZ_METRICS:-$METRICS}\""
 } > "$SCRIPT_DIR/.pgauthz-overlays"
 
@@ -107,6 +118,12 @@ if [ "$CONSOLE" = 1 ]; then
   echo "==> Console enabled (compose-console.yml)"
 fi
 
+# Optional Keycloak-free console overlay (local admin sign-in, host port).
+if [ "$CONSOLE_LOCAL" = 1 ]; then
+  COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-console-local.yml")
+  echo "==> Console enabled without Keycloak (compose-console-local.yml)"
+fi
+
 # Optional metrics overlay (Prometheus + Grafana scraping pgauthzd /metrics).
 if [ "$METRICS" = 1 ]; then
   COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-metrics.yml")
@@ -122,7 +139,7 @@ docker compose "${COMPOSE_FILES[@]}" up -d --build --wait
 echo "==> Stack is running."
 docker compose "${COMPOSE_FILES[@]}" ps
 
-if [ "$CONSOLE" = 1 ]; then
+if [ "$CONSOLE" = 1 ] || [ "$CONSOLE_LOCAL" = 1 ]; then
   # The console's own store: created once from the example model + seed when
   # the engine is installed and the store is missing (never reset afterwards;
   # test.sh uses its own copy, console_test).
@@ -137,7 +154,11 @@ if [ "$CONSOLE" = 1 ]; then
     echo "==> Console store not created yet: run ./init.sh, then ./start.sh --console again"
   fi
   echo ""
-  echo "==> Console: https://app.pgauthz.test/console/  (console-bff client: terraform apply)"
+  if [ "$CONSOLE_LOCAL" = 1 ]; then
+    echo "==> Console: http://localhost:${CONSOLE_LOCAL_PORT:-8095}/console/  (local admin: ${CONSOLE_LOCAL_ADMIN_USER:-admin} / ${CONSOLE_LOCAL_ADMIN_PASSWORD:-admin})"
+  else
+    echo "==> Console: https://app.pgauthz.test/console/  (console-bff client: terraform apply)"
+  fi
 fi
 
 if [ "$KEYCLOAK" = 1 ]; then
