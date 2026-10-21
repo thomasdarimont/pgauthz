@@ -936,6 +936,11 @@ without the truncate, failed exactly there.
 
 The source of change is the audit changefeed
 ([AUDIT.md → Watching for changes](AUDIT.md#watching-for-changes-changefeed)).
+The worker is one loop around `refresh_materialized_relations()`
+(`db/replication/worker.sh`); the Helm chart runs it with
+`derivedRelations.enabled` and the compose deployment with the `derived`
+profile, both connecting as `pgauthz_derived_worker` (a login inheriting
+`authz_derived_worker`: worker, registration, status, namespace bypass).
 `refresh_all_materialized_relations(store)` takes the initial snapshot —
 the blast radius of every tuple of the store, so its cost is linear in the
 grants, not objects × subjects — and registers the store with a

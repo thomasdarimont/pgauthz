@@ -22,6 +22,8 @@ images:
   # decision-only reader + AuthZEN API, the full writer, and the OPA-fronted
   # AuthZEN gateway.
   pgauthzd:   { repository: pgauthz-pgauthzd,                  tag: "0.17.0" }
+  # The management console (console/Dockerfile, build context = repo root).
+  console:    { repository: pgauthz-console,                   tag: "0.17.0" }
 
 # ── Deployment profile ───────────────────────────────────────────────────────
 # deploymentEnvironment is forwarded to EVERY pgauthzd instance as
@@ -186,6 +188,15 @@ secrets:
   # Shared SERVICE credential OPA presents to the pgauthzd reader/writer callback
   # listeners (Authorization: Bearer). MUST be overridden for real deployments.
   nativeServiceToken: "change-me-in-production"
+  # derivedRelations: the refresh worker's login (pgauthz_derived_worker) and
+  # the logical-replication login subscribers use (replicator).
+  derivedWorkerPassword: "authz"
+  replicatorPassword: "authz"
+  # console: the BFF's engine login (authz_console), its sessions-database
+  # login (console) and the confidential OIDC client's secret.
+  consoleEnginePassword: "authz"
+  consoleSessionsPassword: "console"
+  consoleClientSecret: ""
 
 # ── OPA: the single front door ───────────────────────────────────────────────
 opa:
@@ -295,6 +306,86 @@ writer:
   synchronousCommit: remote_apply
   resources:
     requests: { cpu: 100m, memory: 128Mi }
+    limits:   { memory: 256Mi }
+
+# ── Derived relations for application databases (optional) ───────────────────
+# The precomputed (subject, relation, object) table other databases subscribe
+# to over logical replication — DESIGN.md → "Integration patterns", Approach 2.
+# Enabling installs db/replication/materialized_relations.sql through the
+# migrations Job and runs ONE refresh worker (a loop around
+# authz.refresh_materialized_relations() from the migrations image, connecting
+# to the primary as the managed role pgauthz_derived_worker). The worker is
+# changefeed-driven: a grant or revoke reaches the table about `lag` after it
+# commits; a store is registered (initial snapshot) once, by name below or by
+# hand with SELECT authz.refresh_all_materialized_relations('<store>').
+derivedRelations:
+  enabled: false
+  stores: []                   # registered at worker start if not yet (e.g. [demo])
+  lag: "1 second"              # stability lag (p_lag): changes younger than this wait one run
+  pageLimit: 1000              # changefeed rows per store per run
+  pollIntervalSeconds: 2       # sleep between runs once every feed is drained
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { memory: 128Mi }
+  # Publish the four derived tables as `authz_derived` for subscribers in other
+  # databases: sets wal_level=logical (+ slots/senders — a server RESTART, which
+  # CloudNativePG performs as a rolling restart) and creates the managed
+  # REPLICATION role `replicator`. Subscriber recipe: db/replication/
+  # schema-derived.sql + CREATE SUBSCRIPTION … PUBLICATION authz_derived
+  # (chart README → Derived relations).
+  publication:
+    enabled: false
+    maxReplicationSlots: 10    # one per subscription + one per table during initial sync
+    maxWalSenders: 10
+
+# ── Management console (optional) ────────────────────────────────────────────
+# console/README.md: the web UI for the people who run pgauthz (models, data,
+# tests, rollout, access), a Lit SPA + Go BFF whose own access is decided by a
+# pgauthz store. One Deployment, served under ingress.host + basePath. The BFF
+# logs the person in at an OpenID Provider (confidential client, code + PKCE),
+# keeps sessions in its own database (a CloudNativePG `Database` in the same
+# cluster, owned by the managed role `console`) and talks to the engine as the
+# managed role authz_console. Its store is created once by the migration Job
+# (initStore) from examples/models/console.
+console:
+  enabled: false
+  replicas: 1
+  # Sign-in: an OpenID Provider (issuer + client), the local admin below, or
+  # both. One of the two is required.
+  issuer: ""                   # OpenID Provider issuer, e.g. https://id.example.com/realms/pgauthz
+  clientId: console-bff
+  # The local admin sign-in — a username/password that needs no IdP, for a
+  # first look and tests; signs in as <subjectType>:<user> with the teams
+  # below (the seed makes team role_console_admin the platform admin). Set
+  # both to enable; clear them (and upgrade) to deactivate — every local
+  # session is rejected at once. The chart refuses it under
+  # deploymentEnvironment=production unless allowInProduction.
+  localAdmin:
+    user: ""
+    password: ""               # or secrets.existingSecret key console-local-admin-password
+    teams: "role_console_admin"
+    allowInProduction: false
+  # The client's redirect URI is <baseUrl><basePath>/auth/callback; baseUrl
+  # defaults to https://<ingress.host> (http without ingress.tls).
+  baseUrl: ""
+  basePath: /console
+  scopes: "openid profile"
+  cookieSecure: true           # false only on a plain-http test ingress
+  # ConfigMap with a `ca.crt` the BFF should trust for the issuer (private CA).
+  tlsCaConfigMap: ""
+  store: console               # the console's own authorization store
+  initStore: true              # create it from examples/models/console when missing
+  platformId: default
+  registryId: default
+  subjectType: user
+  # Subject types that denote a person in the managed stores ("your own access"
+  # under the test policy); comma-separated.
+  selfSubjectTypes: "user"
+  # Token claims that become team memberships (contextual team#member tuples).
+  teamClaims: "role=realm_access.roles,group=groups,org=organization"
+  sessionsDatabase: pgauthz_console
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
     limits:   { memory: 256Mi }
 
 # ── AuthZEN 1.0 API surface (optional) ───────────────────────────────────────

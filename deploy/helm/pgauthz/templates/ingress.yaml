@@ -36,4 +36,13 @@ spec:
                 name: {{ $full }}-authzen
                 {{- end }}
                 port: { number: 8080 }
+          {{- if .Values.console.enabled }}
+          # The management console under its base path (longest prefix wins).
+          - path: {{ .Values.console.basePath }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $full }}-console
+                port: { number: 8080 }
+          {{- end }}
 {{- end }}

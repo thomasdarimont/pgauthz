@@ -37,6 +37,8 @@ deployment.
 | `…-authzen` | Service | optional | publishes the reader pods' AuthZEN `:8080` (`authzen.direct.enabled`) |
 | `…-pgauthzd-opa` | Deployment | optional Ingress | pgauthzd `decision-only`/DB-less with `OPA_URL` set (OPA-fronted AuthZEN gateway); AuthZEN 1.0 API fronting OPA (`authzen.opa.enabled`) |
 | `…-migrate-N` | Job (Helm hook) | — | installs/upgrades the engine SQL |
+| `…-derived-worker` | Deployment | optional, internal | `derivedRelations.enabled`: the derived-relations refresh worker (one pod, migrations image), see below |
+| `…-console` | Deployment + `Database` | optional, **Ingress** `/console` | `console.enabled`: the management console (Lit SPA + Go BFF), its sessions database in the cluster, see below |
 
 OPA reaches the callbacks via `NATIVE_URL` (reader) and `NATIVE_WRITE_URL`
 (writer), authenticating with the shared `NATIVE_SERVICE_TOKEN` (matching each
@@ -54,11 +56,13 @@ service-token guarded and reachable only by OPA.
      https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.27/releases/cnpg-1.27.0.yaml
    kubectl -n cnpg-system rollout status deploy/cnpg-controller-manager
    ```
-2. **Images** — the migrations + pgauthzd images are built from this repo:
+2. **Images** — the migrations + pgauthzd images are built from this repo
+   (plus the console image when `console.enabled`):
    ```bash
    # from the repo root
    docker build -f deploy/migrations/Dockerfile -t pgauthz-migrations:0.1.0 .
    docker build -f pgauthzd/Dockerfile -t pgauthz-pgauthzd:0.1.0 ./pgauthzd
+   docker build -f console/Dockerfile -t pgauthz-console:0.1.0 .
    ```
    The single `pgauthz-pgauthzd` image serves every role — the reader
    (decision-only) + AuthZEN API, the writer (full), and the OPA-fronted AuthZEN
@@ -304,6 +308,108 @@ After the drill, CNPG re-clones the old primary as a standby and the cluster
 returns to a healthy `2/2` with the **roles swapped** (the old standby stays
 primary) and synchronous replication re-established.
 
+## Derived relations for application databases
+
+[DESIGN.md → Integration patterns](../../../docs/DESIGN.md#integration-patterns-for-application-databases)
+describes a precomputed `(subject, relation, object)` table that other
+databases subscribe to over logical replication, instead of calling pgauthz.
+The chart installs and runs it with one switch:
+
+```yaml
+derivedRelations:
+  enabled: true
+  stores: [demo]              # registered (initial snapshot) when the worker starts
+  publication:
+    enabled: true             # subscribers in other databases
+```
+
+`enabled` adds `db/replication/materialized_relations.sql` to the migration
+Job (`DERIVED_RELATIONS=1`), declares the managed role
+`pgauthz_derived_worker` (inheriting `authz_derived_worker`: the worker, the
+registration and the status function, plus namespace bypass for the engine's
+reverse expansion — nothing else), and runs **one** `…-derived-worker` pod: a
+loop around `authz.refresh_materialized_relations()` from the migrations
+image, connected to the primary. A grant or revoke reaches the table about
+`derivedRelations.lag` (1 s) after it commits. Status:
+
+```bash
+kubectl exec pgauthz-db-1 -c postgres -- psql -U postgres -d authz   -c "SELECT * FROM authz.materialized_relations_status();"
+kubectl logs deploy/pgauthz-derived-worker
+```
+
+A store listed in `stores` that does not exist yet is retried at the worker's
+next start (`kubectl rollout restart deploy/pgauthz-derived-worker` after
+loading it), or register by hand with
+`SELECT authz.refresh_all_materialized_relations('<store>')`.
+
+`publication.enabled` sets `wal_level=logical` (plus slots and senders — a
+restart parameter, which CloudNativePG applies as a rolling restart), declares
+the managed `replicator` role with the `REPLICATION` attribute (Secret
+`<release>-replicator`), and the Job creates publication `authz_derived` over
+the four derived tables. A subscriber is any PostgreSQL that can reach
+`<release>-db-rw:5432` (in-cluster, or through a Service/LoadBalancer you add;
+with `database.networkPolicy.enabled` label its pods as allowed clients):
+
+```sql
+\i db/replication/schema-derived.sql     -- the four tables + check_permission()
+CREATE SUBSCRIPTION authz_derived
+  CONNECTION 'host=pgauthz-db-rw port=5432 dbname=authz user=replicator password=…'
+  PUBLICATION authz_derived;
+```
+
+One application's namespace only: add a row-filtered publication like
+`authz_derived_dms` in `db/replication/setup-publication.sql` (by hand or via
+`bootstrap.initdb.postInitApplicationSQLRefs`). Upgrading an existing
+subscriber across a shape change follows
+`db/replication/upgrade-derived-tables.sql`.
+
+## Management console
+
+[`console/README.md`](../../../console/README.md): the web UI for the people
+who run pgauthz — models, data, tests, rollout, access — whose own access is
+decided by a pgauthz store. One switch:
+
+```yaml
+console:
+  enabled: true
+  issuer: https://id.example.com/realms/pgauthz   # your OpenID Provider
+secrets:
+  consoleClientSecret: "…"                       # the confidential client console-bff
+```
+
+The chart then declares two managed roles — `authz_console` (the BFF's
+engine login: admin tier, contextual checks, metadata SELECT; the console
+store gates it) and `console` (owner of the sessions database) — creates the
+sessions database as a CloudNativePG `Database` resource in the same cluster
+(`console.sessionsDatabase`, CNPG 1.25+), has the migration Job create the
+console's own store once from `examples/models/console` (`console.initStore`;
+it is data afterwards: never re-applied), and routes `ingress.host` +
+`console.basePath` to the console pod. Register the client at your IdP with
+redirect URI `<baseUrl><basePath>/auth/callback` (`baseUrl` defaults to the
+ingress host). A private issuer CA goes in `console.tlsCaConfigMap` (key
+`ca.crt`).
+
+**Without an IdP** — a first look, a test cluster — enable the local admin
+sign-in instead (or in addition):
+
+```yaml
+console:
+  enabled: true
+  localAdmin: { user: admin, password: "…" }     # or secrets.existingSecret key console-local-admin-password
+```
+
+The person signs in as `user:admin` with the memberships in
+`console.localAdmin.teams` (default `role_console_admin`, the platform admin
+of the seed). Clear `user`/`password` and upgrade to deactivate it: every
+local session is rejected at once. One shared password: the chart refuses
+it under `deploymentEnvironment=production` unless
+`console.localAdmin.allowInProduction` is set deliberately.
+
+The console shows the writer's readiness (Settings) through the writer's
+`:8080`, which the chart publishes and NetworkPolicy-restricts to the console
+pods; the Test tab's "as me" mode uses the AuthZEN front door; with
+`authzen.opa.enabled` the Policies tab reads OPA with the admin token.
+
 ## Direct SQL access for applications (`extraRoles`)
 
 Some apps need to talk to PostgreSQL directly (SQL) instead of going through the
@@ -403,4 +509,4 @@ allow-list, which is why it's off by default.
 See [`values.yaml`](values.yaml). Most-used: `database.instances`,
 `database.backup.*`, `pooler.enabled`, `reader.target`,
 `opa.{jwtIssuer,jwtAudience,writerRole,jwtRolesClaim,dbRoleClaim}`,
-`authzen.*.enabled`, `ingress.*`.
+`authzen.*.enabled`, `derivedRelations.*`, `console.*`, `ingress.*`.

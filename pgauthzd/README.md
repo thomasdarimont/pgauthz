@@ -538,7 +538,7 @@ All configuration is via environment variables.
 | `HTTP_READ_HEADER_TIMEOUT` | `5s` | Max time to read request headers on every listener (slowloris hardening) |
 | `HTTP_IDLE_TIMEOUT` | `60s` | Max keep-alive idle time on every listener |
 | `HTTP_MAX_BODY_BYTES` | `10485760` (10 MiB) | Request-body cap (`http.MaxBytesReader`); generous — batch writes are legitimately large. `0` disables |
-| `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
+| `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`). Successful health probes (`/livez`, `/readyz`, `/healthz`) log at `debug` so orchestrator polling does not fill the log; a failing probe logs at `info` |
 | `DECISION_LOG` | `off` | Decision log sink ([ADR 0013](../docs/adr/0013-decision-log.md)): `off`, `stdout`, `stderr`, or `file:<path>` (append-only; rotate externally with copy-truncate). One JSON line per decision on `evaluation(s)`, `check(-batch)`, `explain`, `events/reserve`, both listeners, with provenance (`pgauthzd_version`, the store's `model` name/version/checksum, OPA `policy` version + bundle revisions when fronted, and for OPA-fronted decisions with policy hooks the `hooks` consulted and any `hook_denials`). Context **keys** only, never values |
 | `DECISION_LOG_SAMPLE` | `1` | Fraction (0–1) of **allow** lines written; denies, conditionals and errors are always written |
 | `DECISION_LOG_DETAIL` | `false` | Run the detailed evaluation for plain checks **for the log only** (every line gets `state`/`reason`); responses are unchanged. Costs the detailed check's second pass on conditional outcomes |

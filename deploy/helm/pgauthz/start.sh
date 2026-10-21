@@ -71,9 +71,11 @@ if [ "${SKIP_BUILD:-}" != "1" ]; then
   # writer, OPA-fronted AuthZEN gateway). No BINARY build-arg — the Dockerfile hardcodes
   # ./cmd/pgauthzd.
   docker build -f "$REPO_ROOT/pgauthzd/Dockerfile" --build-arg VERSION="$IMAGE_TAG" -t "pgauthz-pgauthzd:$IMAGE_TAG" "$REPO_ROOT/pgauthzd"
+  # The management console (console.enabled); cheap enough to always have.
+  docker build -f "$REPO_ROOT/console/Dockerfile" --build-arg VERSION="$IMAGE_TAG" -t "pgauthz-console:$IMAGE_TAG" "$REPO_ROOT"
 
   echo "==> Importing images into k3d cluster '$K3D_CLUSTER'..."
-  k3d image import "pgauthz-migrations:$IMAGE_TAG" "pgauthz-pgauthzd:$IMAGE_TAG" -c "$K3D_CLUSTER"
+  k3d image import "pgauthz-migrations:$IMAGE_TAG" "pgauthz-pgauthzd:$IMAGE_TAG" "pgauthz-console:$IMAGE_TAG" -c "$K3D_CLUSTER"
 else
   echo "==> SKIP_BUILD=1 — using already-imported images."
 fi
@@ -94,6 +96,7 @@ helm upgrade --install "$RELEASE" "$CHART_DIR" \
   "${VALUE_ARGS[@]}" \
   --set images.migrations.tag="$IMAGE_TAG" \
   --set images.pgauthzd.tag="$IMAGE_TAG" \
+  --set images.console.tag="$IMAGE_TAG" \
   --timeout 8m
 
 echo ""

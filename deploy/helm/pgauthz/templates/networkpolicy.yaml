@@ -49,8 +49,9 @@ spec:
 {{- if .Values.authzen.opa.enabled }}
 ---
 # OPA is an INTERNAL policy sidecar: only the pgauthzd OPA-fronted AuthZEN
-# gateway may reach it (:8181). OPA is NOT the ingress front door — the ingress
-# controller reaches pgauthzd, never OPA directly. (OPA is opt-in.)
+# gateway may reach it (:8181) — and the console's Policies tab (admin token).
+# OPA is NOT the ingress front door — the ingress controller reaches pgauthzd,
+# never OPA directly. (OPA is opt-in.)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -63,7 +64,43 @@ spec:
   ingress:
     - from:
         - podSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: pgauthzd-opa } }
+        {{- if .Values.console.enabled }}
+        - podSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: console } }
+        {{- end }}
       ports: [{ port: 8181 }]
+{{- end }}
+{{- if .Values.console.enabled }}
+---
+# Management console (:8080): the ingress front (its base path).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $full }}-console-ingress
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: console }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {}
+      ports: [{ port: 8080 }]
+---
+# The console shows the writer's readiness (Settings) through its :8080 JWT
+# listener — additive allow from the console pods only; :8081 stays OPA-only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $full }}-writer-from-console
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: pgauthzd-writer }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: console } }
+      ports: [{ port: 8080 }]
 {{- end }}
 {{- if .Values.authzen.direct.enabled }}
 ---

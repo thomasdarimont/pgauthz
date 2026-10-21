@@ -1,0 +1,152 @@
+{{- /*
+Management console (console/README.md), optional: one Deployment of the
+pgauthz-console image (Lit SPA + Go BFF). The BFF logs people in at
+console.issuer (confidential client, code + PKCE), keeps sessions in its own
+database — a CloudNativePG `Database` in the chart's cluster, owned by the
+managed role `console` — and talks to the engine as the managed role
+authz_console (admin tier + contextual checks + metadata SELECT). The
+console's OWN store (console.store, created once by the migration Job from
+examples/models/console) decides what each person may do; that store is the
+gate in front of authz_console's privilege.
+
+Reached through the Ingress under console.basePath (longest prefix wins over
+the AuthZEN front door at /). The pod crash-loops until the issuer's discovery
+document is reachable — like the other pods wait for the schema.
+*/ -}}
+{{- if .Values.console.enabled }}
+{{- $full := include "pgauthz.fullname" . }}
+{{- $la := .Values.console.localAdmin | default dict }}
+{{- $localAdmin := and $la.user (or $la.password .Values.secrets.existingSecret) }}
+{{- if and (not .Values.console.issuer) (not $localAdmin) }}
+{{- fail "console.enabled needs a sign-in: console.issuer (an OpenID Provider) and/or console.localAdmin.user + .password" }}
+{{- end }}
+{{- $env := .Values.deploymentEnvironment | default "" }}
+{{- if and $localAdmin (or (eq $env "production") (eq $env "prod")) (not $la.allowInProduction) }}
+{{- fail (printf "deploymentEnvironment=%s forbids console.localAdmin (a shared password, no IdP): remove it, or set console.localAdmin.allowInProduction=true DELIBERATELY" $env) }}
+{{- end }}
+{{- $issuer := .Values.console.issuer }}
+{{- $scheme := ternary "https" "http" .Values.ingress.tls.enabled }}
+{{- $baseURL := .Values.console.baseUrl | default (printf "%s://%s" $scheme .Values.ingress.host) }}
+{{- $basePath := .Values.console.basePath | trimSuffix "/" }}
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: {{ $full }}-console-sessions
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  # The BFF's sessions live apart from the engine's `authz` database; the BFF
+  # creates its one table itself. Owned by the managed login role `console`.
+  name: {{ .Values.console.sessionsDatabase }}
+  owner: console
+  cluster:
+    name: {{ include "pgauthz.dbCluster" . }}
+  databaseReclaimPolicy: delete
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $full }}-console
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.console.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "pgauthz.name" . }}
+      app.kubernetes.io/component: console
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "pgauthz.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: console
+    spec:
+      containers:
+        - name: console
+          image: {{ include "pgauthz.image" .Values.images.console }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          env:
+            - { name: ADDR, value: ":8080" }
+            - name: CONSOLE_SESSIONS_PW
+              valueFrom:
+                secretKeyRef: { name: {{ $full }}-console-sessions, key: password }
+            - name: CONSOLE_ENGINE_PW
+              valueFrom:
+                secretKeyRef: { name: {{ $full }}-console-engine, key: password }
+            - name: PG_DSN
+              value: postgres://console:$(CONSOLE_SESSIONS_PW)@{{ include "pgauthz.dbRW" . }}:5432/{{ .Values.console.sessionsDatabase }}
+            - name: ENGINE_DSN
+              # The engine, as the console's dedicated role; writes go to the primary.
+              value: postgres://authz_console:$(CONSOLE_ENGINE_PW)@{{ include "pgauthz.dbRW" . }}:5432/authz
+            {{- if $issuer }}
+            - { name: ISSUER,       value: {{ $issuer | quote }} }
+            - { name: CLIENT_ID,    value: {{ .Values.console.clientId | quote }} }
+            - name: CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: {{ if .Values.secrets.existingSecret }}{{ .Values.secrets.existingSecret }}{{ else }}{{ $full }}-console-oidc{{ end }}, key: {{ if .Values.secrets.existingSecret }}console-client-secret{{ else }}client-secret{{ end }} }
+            {{- end }}
+            {{- if $localAdmin }}
+            - { name: CONSOLE_LOCAL_ADMIN_USER,  value: {{ $la.user | quote }} }
+            - name: CONSOLE_LOCAL_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ if .Values.secrets.existingSecret }}{{ .Values.secrets.existingSecret }}{{ else }}{{ $full }}-console-local-admin{{ end }}, key: {{ if .Values.secrets.existingSecret }}console-local-admin-password{{ else }}password{{ end }} }
+            - { name: CONSOLE_LOCAL_ADMIN_TEAMS, value: {{ $la.teams | default "role_console_admin" | quote }} }
+            {{- if $la.allowInProduction }}
+            - { name: CONSOLE_LOCAL_ADMIN_ALLOW_IN_PRODUCTION, value: "true" }
+            {{- end }}
+            {{- end }}
+            - { name: SCOPES,       value: {{ .Values.console.scopes | quote }} }
+            - { name: BASE_URL,     value: {{ $baseURL | quote }} }
+            - { name: BASE_PATH,    value: {{ $basePath | quote }} }
+            - { name: REDIRECT_URI, value: {{ printf "%s%s/auth/callback" $baseURL $basePath | quote }} }
+            - { name: COOKIE_SECURE, value: {{ .Values.console.cookieSecure | toString | quote }} }
+            {{- if .Values.console.tlsCaConfigMap }}
+            - { name: TLS_CA_FILE, value: /etc/pgauthz/ca.crt }
+            {{- end }}
+            - { name: CONSOLE_STORE,              value: {{ .Values.console.store | quote }} }
+            - { name: CONSOLE_PLATFORM_ID,        value: {{ .Values.console.platformId | quote }} }
+            - { name: CONSOLE_REGISTRY_ID,        value: {{ .Values.console.registryId | quote }} }
+            - { name: CONSOLE_SUBJECT_TYPE,       value: {{ .Values.console.subjectType | quote }} }
+            - { name: CONSOLE_SELF_SUBJECT_TYPES, value: {{ .Values.console.selfSubjectTypes | quote }} }
+            - { name: CONSOLE_TEAM_CLAIMS,        value: {{ .Values.console.teamClaims | quote }} }
+            {{- with .Values.deploymentEnvironment }}
+            - { name: DEPLOYMENT_ENVIRONMENT, value: {{ . | quote }} }
+            {{- end }}
+            # Settings: the writer instance's readiness (its JWT listener).
+            - { name: PGAUTHZD_URL, value: http://{{ $full }}-writer:8080 }
+            # The Test tab's "as me through pgauthzd": the AuthZEN front door.
+            {{- if .Values.authzen.opa.enabled }}
+            - { name: PGAUTHZD_DECISION_URL, value: http://{{ $full }}-pgauthzd-opa:8080 }
+            # Policies tab: OPA's policy list (admin token) and provenance.
+            - { name: CONSOLE_OPA_URL, value: http://{{ $full }}-opa:8181 }
+            - name: CONSOLE_OPA_TOKEN
+              valueFrom:
+                secretKeyRef: { name: {{ include "pgauthz.secretName" . }}, key: opa-admin-token }
+            {{- else if .Values.authzen.direct.enabled }}
+            - { name: PGAUTHZD_DECISION_URL, value: http://{{ $full }}-authzen:8080 }
+            {{- end }}
+          ports:
+            - { name: http, containerPort: 8080 }
+          readinessProbe: { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 5 }
+          livenessProbe:  { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 15 }
+          resources: {{- toYaml .Values.console.resources | nindent 12 }}
+          {{- if .Values.console.tlsCaConfigMap }}
+          volumeMounts:
+            - { name: ca, mountPath: /etc/pgauthz, readOnly: true }
+          {{- end }}
+      {{- if .Values.console.tlsCaConfigMap }}
+      volumes:
+        - name: ca
+          configMap: { name: {{ .Values.console.tlsCaConfigMap }} }
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $full }}-console
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "pgauthz.name" . }}
+    app.kubernetes.io/component: console
+  ports: [{ name: http, port: 8080, targetPort: 8080 }]
+{{- end }}

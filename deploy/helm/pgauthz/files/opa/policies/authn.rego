@@ -55,33 +55,62 @@ token_is_valid if {
 # Extracted claims from a valid token.
 claims := _token_data[2] if token_is_valid
 
-# Subject ID: prefer preferred_username, fall back to sub.
-subject_id := claims.preferred_username if {
+# Token subject ID: prefer preferred_username, fall back to sub.
+_token_subject_id := claims.preferred_username if {
 	token_is_valid
 	claims.preferred_username
 }
 
-subject_id := claims.sub if {
+_token_subject_id := claims.sub if {
 	token_is_valid
 	not claims.preferred_username
 }
 
-# Subject type from the token claim. There is intentionally NO hardcoded fallback
+# Token subject type from the claim. There is intentionally NO hardcoded fallback
 # to a privileged type: a token omitting subject_type must not silently become
 # internal_user (fail OPEN → too-broad access). When the claim is absent,
 # subject_type is left UNSET → the authz policy can't resolve a subject → deny
 # (fail closed), unless DEFAULT_SUBJECT_TYPE is configured to an explicit
 # (least-privileged) default.
-subject_type := claims.subject_type if {
+_token_subject_type := claims.subject_type if {
 	token_is_valid
 	claims.subject_type
 }
 
-subject_type := authn_config.default_subject_type if {
+_token_subject_type := authn_config.default_subject_type if {
 	token_is_valid
 	not claims.subject_type
 	authn_config.default_subject_type != ""
 }
+
+# Delegated actor (ACTOR_CLAIM, mirrors pgauthzd): the verified token names a
+# party acting on the subject's behalf (RFC 8693 `act`, Keycloak token-exchange
+# delegation). Defined only when configured AND the claim resolves to a
+# non-empty string — a plain token is unaffected.
+_delegated_actor := v if {
+	token_is_valid
+	authn_config.actor_claim_path
+	v := object.get(claims, authn_config.actor_claim_path, "")
+	is_string(v)
+	v != ""
+}
+
+# The PRINCIPAL. For a delegated token it is the ACTOR — checked with its own
+# authority in the graph (an agent's reach, task scope, gates), never the
+# user's. The issuer decided that the actor MAY act for the user (consent,
+# may_act); the graph decides what it may do while it does.
+subject_id := _token_subject_id if not _delegated_actor
+
+subject_id := _delegated_actor if _delegated_actor
+
+subject_type := _token_subject_type if not _delegated_actor
+
+subject_type := authn_config.actor_subject_type if _delegated_actor
+
+# Whose task a delegated actor serves: the token's own subject. Informational
+# (decision logs, hooks via input.actor.on_behalf_of); undefined for a plain
+# token.
+on_behalf_of := {"type": _token_subject_type, "id": _token_subject_id} if _delegated_actor
 
 # Roles aggregated (set-union) from every configured claim path
 # (authn_config.roles_claim_paths, default [["roles"]]). A token's roles may be

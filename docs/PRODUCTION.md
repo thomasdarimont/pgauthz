@@ -7,6 +7,20 @@ the engine to real traffic. Deeper background is in
 [DEVELOPMENT.md](DEVELOPMENT.md) (JWT/operations), and
 [DESIGN.md](DESIGN.md) (rationale).
 
+## Deployments
+
+Two deployments ship in [`deploy/`](../deploy): the **Helm chart**
+([`deploy/helm/pgauthz`](../deploy/helm/pgauthz/README.md)) on CloudNativePG —
+replicas, synchronous replication, failover, managed roles, NetworkPolicies,
+the migration Job, the optional OPA sidecar and the derived-relations worker —
+and a **Docker Compose deployment** for one host
+([`deploy/compose`](../deploy/compose/README.md)): PostgreSQL behind a
+read-only and a writer `pgauthzd`, an idempotent `migrate` service that also
+sets the service-role passwords, and the `derived` / `opa` profiles. Both are
+built from the same two images (`pgauthz-migrations`, `pgauthz-pgauthzd`) and
+both default to the production profile. The compose files in the repository
+root are the development stack this page's `.env` section refers to.
+
 ## Configuration
 
 Customize the deployment through a `.env` file rather than editing the compose

@@ -1,0 +1,55 @@
+{{- /*
+Derived-relations refresh worker (optional, derivedRelations.enabled): one
+pod running db/replication/worker.sh from the migrations image — a loop around
+SELECT authz.refresh_materialized_relations(), which pulls the audit changefeed
+per registered store and re-derives the affected (subject, object) pairs into
+authz.materialized_relations (DESIGN.md → Integration patterns, Approach 2).
+
+Connects to the PRIMARY (-rw: the worker writes) as the managed role
+pgauthz_derived_worker, which inherits authz_derived_worker — EXECUTE on the
+worker, the registration and the status function, plus namespace bypass for
+the engine's reverse expansion; nothing else. ONE replica, Recreate: a second
+worker is harmless (per-store try-locks) but pointless. The default-deny
+NetworkPolicy covers it (it accepts no connections).
+*/ -}}
+{{- if .Values.derivedRelations.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pgauthz.fullname" . }}-derived-worker
+  labels: {{- include "pgauthz.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "pgauthz.name" . }}
+      app.kubernetes.io/component: derived-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "pgauthz.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: derived-worker
+    spec:
+      containers:
+        - name: worker
+          image: {{ include "pgauthz.image" .Values.images.migrations }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          command: ["/usr/local/bin/derived-worker.sh"]
+          env:
+            - { name: PGHOST,     value: {{ include "pgauthz.dbRW" . }} }
+            - { name: PGPORT,     value: "5432" }
+            - { name: PGDATABASE, value: authz }
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef: { name: {{ include "pgauthz.fullname" . }}-derived-worker, key: username }
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ include "pgauthz.fullname" . }}-derived-worker, key: password }
+            - { name: DERIVED_STORES,    value: {{ join "," .Values.derivedRelations.stores | quote }} }
+            - { name: WORKER_LAG,        value: {{ .Values.derivedRelations.lag | quote }} }
+            - { name: WORKER_PAGE_LIMIT, value: {{ .Values.derivedRelations.pageLimit | quote }} }
+            - { name: WORKER_INTERVAL,   value: {{ .Values.derivedRelations.pollIntervalSeconds | quote }} }
+          resources: {{- toYaml .Values.derivedRelations.resources | nindent 12 }}
+{{- end }}

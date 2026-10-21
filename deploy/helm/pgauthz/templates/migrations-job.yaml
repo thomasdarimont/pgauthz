@@ -45,6 +45,22 @@ spec:
             - name: CONDITION_STATEMENT_TIMEOUT
               value: {{ . | quote }}
             {{- end }}
+            {{- if .Values.console.enabled }}
+            {{- if .Values.console.initStore }}
+            # Create the console's own store once (examples/models/console).
+            - { name: CONSOLE_STORE_INIT, value: "1" }
+            - { name: CONSOLE_STORE, value: {{ .Values.console.store | quote }} }
+            {{- end }}
+            {{- end }}
+            {{- if .Values.derivedRelations.enabled }}
+            # db/replication/materialized_relations.sql + the worker's roles;
+            # with the publication: wal_level=logical is set on the Cluster,
+            # the Job creates publication authz_derived + role replicator.
+            - { name: DERIVED_RELATIONS, value: "1" }
+            {{- if .Values.derivedRelations.publication.enabled }}
+            - { name: DERIVED_PUBLICATION, value: "1" }
+            {{- end }}
+            {{- end }}
           resources:
             requests: { cpu: 100m, memory: 128Mi }
             limits:   { memory: 256Mi }

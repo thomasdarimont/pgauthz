@@ -1,0 +1,8 @@
+# Test override for deploy/compose (tests/test-deploy-compose.sh): the demo JWKS
+# (opa/data/jwks.json, the key scripts/mint-demo-token.sh signs with) mounted
+# into the pgauthzd instances. Never use the demo key outside tests.
+services:
+  pgauthzd-decision:
+    volumes: ["../../opa/data/jwks.json:/jwks/jwks.json:ro"]
+  pgauthzd-full:
+    volumes: ["../../opa/data/jwks.json:/jwks/jwks.json:ro"]

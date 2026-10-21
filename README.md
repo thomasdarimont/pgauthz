@@ -249,6 +249,8 @@ Each topic has exactly one owner. Read the owner, not this file, for detail.
 | [`examples/filtering/README.md`](examples/filtering/README.md) | authorization as a JOIN (data filtering) | you list what a user may see |
 | [`examples/agentic/README.md`](examples/agentic/README.md) | human → agent delegation: Keycloak token exchange + a task-bounded agent, end to end | an agent acts on a user's behalf |
 | [`opa/README.md`](opa/README.md) | the optional OPA overlay and policy hooks | you need policy-as-code on top |
+| [`deploy/helm/pgauthz/README.md`](deploy/helm/pgauthz/README.md) | the Helm chart: CloudNativePG, replicas and failover, managed roles, the migration Job, derived-relations worker | you run it on Kubernetes |
+| [`deploy/compose/README.md`](deploy/compose/README.md) | the Docker Compose deployment for one host: `.env`, `migrate`, profiles `derived` / `opa`, upgrades | you run it on a VM |
 | [`CHANGELOG.md`](CHANGELOG.md) | what changed per version | you are upgrading (read one version block, not the file) |
 | [`AGENTS.md`](AGENTS.md) | conventions for coding agents and contributors | you are changing this repository |
 

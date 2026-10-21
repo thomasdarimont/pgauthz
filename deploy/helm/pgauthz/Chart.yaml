@@ -2,9 +2,10 @@ apiVersion: v2
 name: pgauthz
 description: >-
   PostgreSQL-native Zanzibar/OpenFGA authorization engine on Kubernetes, backed
-  by CloudNativePG. OPA is the single front door for reads and writes (calling
-  back into pgauthzd's native API); the pgauthzd reader/writer and PostgreSQL
-  are internal-only.
+  by CloudNativePG. pgauthzd (AuthZEN 1.0 + native API, JWT) is the front door;
+  OPA is an opt-in policy sidecar that calls back into pgauthzd; PostgreSQL and
+  the callback listeners are internal-only. Optional derived-relations worker
+  and publication for application databases.
 type: application
 version: 0.17.0
 appVersion: "0.17.0"

@@ -42,6 +42,19 @@ spec:
       {{- range $k, $v := .Values.database.parameters }}
       {{ $k }}: {{ $v | quote }}
       {{- end }}
+      {{- if and .Values.derivedRelations.enabled .Values.derivedRelations.publication.enabled }}
+      # Logical replication for the derived-relations publication (restart
+      # parameters; CNPG rolls the instances). Explicit database.parameters win.
+      {{- if not (hasKey .Values.database.parameters "wal_level") }}
+      wal_level: "logical"
+      {{- end }}
+      {{- if not (hasKey .Values.database.parameters "max_replication_slots") }}
+      max_replication_slots: {{ .Values.derivedRelations.publication.maxReplicationSlots | quote }}
+      {{- end }}
+      {{- if not (hasKey .Values.database.parameters "max_wal_senders") }}
+      max_wal_senders: {{ .Values.derivedRelations.publication.maxWalSenders | quote }}
+      {{- end }}
+      {{- end }}
 
   bootstrap:
     initdb:
@@ -59,6 +72,11 @@ spec:
         - CREATE ROLE authz_writer NOLOGIN
         - CREATE ROLE authz_auditor NOLOGIN
         - CREATE ROLE authz_admin NOLOGIN
+        # derivedRelations: the worker's privilege role (materialized_relations.sql
+        # re-creates it idempotently and grants it) — same bootstrap reason.
+        - CREATE ROLE authz_namespace_bypass NOLOGIN
+        - CREATE ROLE authz_derived_worker NOLOGIN
+        - CREATE ROLE authz_contextual_reader NOLOGIN   # console: contextual-tuple checks
 
   # Declarative service-login roles: passwords come from Secrets and are
   # reconciled (rotated) by the operator. roles.sql still owns the privilege
@@ -85,6 +103,43 @@ spec:
         inRoles: [authz_writer, authz_auditor]  # see note above — CNPG maintains these
         passwordSecret:
           name: {{ include "pgauthz.fullname" . }}-pgauthzd-rw
+      {{- if .Values.derivedRelations.enabled }}
+      - name: pgauthz_derived_worker
+        ensure: present
+        comment: "derived-relations refresh worker (refresh_materialized_relations)"
+        login: true
+        inherit: true
+        inRoles: [authz_derived_worker]   # worker + registration + status, namespace bypass
+        passwordSecret:
+          name: {{ include "pgauthz.fullname" . }}-derived-worker
+      {{- if .Values.derivedRelations.publication.enabled }}
+      - name: replicator
+        ensure: present
+        comment: "logical-replication login for subscribers of publication authz_derived"
+        login: true
+        replication: true
+        inherit: true
+        passwordSecret:
+          name: {{ include "pgauthz.fullname" . }}-replicator
+      {{- end }}
+      {{- end }}
+      {{- if .Values.console.enabled }}
+      - name: authz_console
+        ensure: present
+        comment: "management console BFF: admin tier + contextual checks + metadata SELECT; the console store gates it"
+        login: true
+        inherit: true
+        inRoles: [authz_admin, authz_contextual_reader, authz_namespace_bypass]
+        passwordSecret:
+          name: {{ include "pgauthz.fullname" . }}-console-engine
+      - name: console
+        ensure: present
+        comment: "management console sessions database owner"
+        login: true
+        inherit: true
+        passwordSecret:
+          name: {{ include "pgauthz.fullname" . }}-console-sessions
+      {{- end }}
       {{- range .Values.extraRoles }}
       # App role for direct SQL access (bypasses OPA — a TRUSTED service that
       # does its own authn/authz). Inherits the function-API privileges of its

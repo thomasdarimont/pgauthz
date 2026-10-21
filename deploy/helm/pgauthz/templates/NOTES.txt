@@ -8,15 +8,32 @@ Database (CloudNativePG): {{ include "pgauthz.dbCluster" . }}
      kubectl get cluster {{ include "pgauthz.dbCluster" . }} -w
      kubectl logs -l job-name={{ include "pgauthz.fullname" . }}-migrate-{{ .Release.Revision }} -f
 
-2. The ONLY externally reachable service is OPA (the front door). It calls back
-   into the pgauthzd reader (native reads) and writer (native writes); those
-   callbacks and PostgreSQL are ClusterIP-only and NetworkPolicy-locked.
+2. The ONLY externally reachable service is the pgauthzd AuthZEN front door
+   ({{ if .Values.authzen.opa.enabled }}the OPA-fronted gateway {{ include "pgauthz.fullname" . }}-pgauthzd-opa{{ else }}the direct reader, Service {{ include "pgauthz.fullname" . }}-authzen{{ end }}).
+   The reader/writer callback listeners{{ if .Values.authzen.opa.enabled }}, OPA{{ end }} and PostgreSQL are
+   ClusterIP-only and NetworkPolicy-locked.
 
 {{- if .Values.ingress.enabled }}
-   Reach OPA at: http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}/
+   Reach it at: http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}/
 {{- else }}
-   Port-forward OPA to test locally:
-     kubectl port-forward svc/{{ include "pgauthz.fullname" . }}-opa 8181:8181
+   Port-forward to test locally:
+     kubectl port-forward svc/{{ include "pgauthz.fullname" . }}-{{ if .Values.authzen.opa.enabled }}pgauthzd-opa{{ else }}authzen{{ end }} 8080:8080
+{{- end }}
+{{- if .Values.console.enabled }}
+
+   Management console: {{ .Values.console.baseUrl | default (printf "%s://%s" (ternary "https" "http" .Values.ingress.tls.enabled) .Values.ingress.host) }}{{ .Values.console.basePath }}/
+   {{- if .Values.console.localAdmin.user }}  (local admin sign-in: {{ .Values.console.localAdmin.user }} — deactivate it before real use){{ end }}
+{{- end }}
+{{- if .Values.derivedRelations.enabled }}
+
+   Derived relations: ONE worker ({{ include "pgauthz.fullname" . }}-derived-worker) refreshes
+   authz.materialized_relations from the changefeed{{ with .Values.derivedRelations.stores }}; stores {{ join ", " . }} are
+   registered at its start{{ end }}. Status:
+     kubectl exec {{ include "pgauthz.dbCluster" . }}-1 -c postgres -- psql -U postgres -d authz -c "SELECT * FROM authz.materialized_relations_status();"
+{{- if .Values.derivedRelations.publication.enabled }}
+   Subscribers connect as `replicator` (Secret {{ include "pgauthz.fullname" . }}-replicator) to
+   {{ include "pgauthz.dbRW" . }}:5432 and subscribe to publication authz_derived.
+{{- end }}
 {{- end }}
 
 3. SECURITY CHECKLIST before any real use:

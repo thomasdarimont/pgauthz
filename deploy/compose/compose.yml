@@ -1,0 +1,321 @@
+# pgauthz — a Docker Compose deployment: PostgreSQL (the engine) behind two
+# pgauthzd instances, a read-only one for decisions and a writer. This is the
+# reference for a single host or a small VM; Kubernetes deployments use the
+# Helm chart (deploy/helm/pgauthz). The repository root's compose files are
+# the DEVELOPMENT stack (demo passwords, bind mounts, published internals);
+# this one is meant to be copied and run as is, configured through `.env`
+# (see .env.example — every `${VAR:?}` below is a required setting).
+#
+#   cp .env.example .env            # and edit it
+#   docker compose build            # or pull/tag images built elsewhere
+#   docker compose up -d --wait     # migrate runs first, pgauthzd waits for it
+#   curl -s localhost:8080/readyz
+#
+# Profiles (opt-in services): `--profile derived` adds the derived-relations
+# worker, `--profile console` the management console, `--profile opa` the OPA
+# policy sidecar + the OPA-fronted gateway.
+# compose.logical.yml (an override) turns on logical replication for
+# subscribers of the derived tables.
+#
+# Upgrading: bump PGAUTHZ_VERSION in .env, build or pull, `docker compose up -d`.
+# `migrate` is idempotent (forward-only migrations + CREATE OR REPLACE code) and
+# runs on every `up`, so the schema follows the image.
+
+name: pgauthz
+
+x-pgauthzd-image: &pgauthzd-image
+  image: ${PGAUTHZ_IMAGE_PREFIX:-pgauthz}-pgauthzd:${PGAUTHZ_VERSION:-0.17.0}
+  build:
+    context: ../../pgauthzd
+    args: { VERSION: "${PGAUTHZ_VERSION:-0.17.0}" }
+
+# Settings every pgauthzd instance shares (JWT verification, subject policy,
+# the production profile's role gates, logging). Instance-specific keys follow
+# in each service.
+x-pgauthzd-env: &pgauthzd-env
+  LISTEN_ADDR: ":8080"
+  METRICS_LISTEN_ADDR: ":9090"            # Prometheus /metrics — not published; scrape on the compose network
+  # JWT verification: your IdP's JWKS by URL (preferred) or a mounted file.
+  JWKS_URL: "${JWKS_URL:-}"
+  JWKS_FILE: "${JWKS_FILE:-}"
+  JWT_ISSUER: "${JWT_ISSUER:?set JWT_ISSUER in .env}"
+  JWT_AUDIENCE: "${JWT_AUDIENCE:?set JWT_AUDIENCE in .env (the identifier of this API in `aud`)}"
+  JWT_ROLES_CLAIM: "${JWT_ROLES_CLAIM:-roles}"
+  DEFAULT_STORE: "${DEFAULT_STORE:-demo}"
+  # Token-only: the JWT subject is authoritative; a PEP that asserts request
+  # body subjects needs pep_clients (JWT_ISSUERS) — never a blanket override.
+  ALLOW_SUBJECT_OVERRIDE: "false"
+  # Production profile: refuses to start with open diagnostic surfaces.
+  DEPLOYMENT_ENVIRONMENT: "${DEPLOYMENT_ENVIRONMENT:-production}"
+  SEARCH_REQUIRED_ROLE: "${SEARCH_REQUIRED_ROLE:-authz_auditor}"
+  EXPLAIN_REQUIRED_ROLE: "${EXPLAIN_REQUIRED_ROLE:-authz_auditor}"
+  WATCH_REQUIRED_ROLE: "${WATCH_REQUIRED_ROLE:-}"          # unset = changefeed disabled
+  TRUST_FORWARDED_HEADERS: "${TRUST_FORWARDED_HEADERS:-false}"  # true behind your TLS proxy
+  BASE_URL: "${BASE_URL:-}"
+  CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
+  LOG_LEVEL: "${LOG_LEVEL:-info}"
+  DECISION_LOG: "${DECISION_LOG:-off}"
+  DECISION_LOG_SAMPLE: "${DECISION_LOG_SAMPLE:-1}"
+  DECISION_LOG_DETAIL: "${DECISION_LOG_DETAIL:-false}"
+  DECISION_LOG_REQUIRED: "${DECISION_LOG_REQUIRED:-false}"
+  DECISION_LOG_SEARCHES: "${DECISION_LOG_SEARCHES:-false}"
+  FRESHNESS_TOKEN_KEYS: "${FRESHNESS_TOKEN_KEYS:-}"
+
+services:
+
+  # ── The engine ─────────────────────────────────────────────────────────────
+  db:
+    image: postgres:${POSTGRES_TAG:-18.6}
+    command:
+      - postgres
+      - -c
+      - max_connections=${PG_MAX_CONNECTIONS:-250}
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-256MB}
+      - -c
+      - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-768MB}
+      - -c
+      - work_mem=${PG_WORK_MEM:-16MB}
+      - -c
+      - random_page_cost=1.1
+      - -c
+      # Long-open transactions hold back the derived-relations cutoff and bloat;
+      # bound idle-in-transaction sessions (0 = off).
+      - idle_in_transaction_session_timeout=${PG_IDLE_IN_TXN_TIMEOUT:-60s}
+    environment:
+      POSTGRES_USER: authz                 # the engine's install identity (superuser)
+      POSTGRES_PASSWORD: "${PG_PASSWORD:?set PG_PASSWORD in .env}"
+      POSTGRES_DB: authz
+    # Not published: only the services on this network reach PostgreSQL.
+    # For administration use `docker compose exec db psql -U authz -d authz`,
+    # or publish a port on a trusted interface, e.g.
+    # ports: ["127.0.0.1:55432:5432"]
+    volumes:
+      - db-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authz -d authz"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  # ── Schema install / upgrade (one-shot, idempotent, re-run on every up) ────
+  migrate:
+    image: ${PGAUTHZ_IMAGE_PREFIX:-pgauthz}-migrations:${PGAUTHZ_VERSION:-0.17.0}
+    build:
+      context: ../..
+      dockerfile: deploy/migrations/Dockerfile
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: authz
+      PGUSER: authz
+      PGPASSWORD: "${PG_PASSWORD:?}"
+      # Service-role passwords: set (and rotated) on every run — change them in
+      # .env and `up` again. They must match the DATABASE_URLs below.
+      AUTHZEN_DIRECT_PASSWORD: "${AUTHZEN_DIRECT_PASSWORD:?set AUTHZEN_DIRECT_PASSWORD in .env}"
+      PGAUTHZD_RW_PASSWORD: "${PGAUTHZD_RW_PASSWORD:?set PGAUTHZD_RW_PASSWORD in .env}"
+      DERIVED_WORKER_PASSWORD: "${DERIVED_WORKER_PASSWORD:-}"
+      REPLICATOR_PASSWORD: "${REPLICATOR_PASSWORD:-}"
+      CONDITION_STATEMENT_TIMEOUT: "${CONDITION_STATEMENT_TIMEOUT:-60s}"
+      # Derived relations (profile `derived`): the tables + worker functions;
+      # compose.logical.yml adds the publication.
+      DERIVED_RELATIONS: "${DERIVED_RELATIONS:-0}"
+      DERIVED_PUBLICATION: "${DERIVED_PUBLICATION:-0}"
+      # Management console (profile `console`): its engine login's password,
+      # its sessions database (created in this instance, owner role `console`)
+      # and its own authorization store (created once when missing).
+      CONSOLE_ENGINE_PASSWORD: "${CONSOLE_ENGINE_PASSWORD:-}"
+      CONSOLE_SESSIONS_DB: "${CONSOLE_SESSIONS_DB:-}"
+      CONSOLE_SESSIONS_PASSWORD: "${CONSOLE_SESSIONS_PASSWORD:-}"
+      CONSOLE_STORE_INIT: "${CONSOLE_STORE_INIT:-0}"
+      CONSOLE_STORE: "${CONSOLE_STORE:-console}"
+    depends_on:
+      db: { condition: service_healthy }
+    restart: "no"
+
+  # ── Decisions: read-only pgauthzd (AuthZEN 1.0 + native reads) ─────────────
+  pgauthzd-decision:
+    <<: *pgauthzd-image
+    environment:
+      <<: *pgauthzd-env
+      PGAUTHORIZER_PROFILE: "decision-only"
+      # Read-only login role; the instance asserts at startup that it cannot write.
+      DATABASE_URL: "postgres://authzen_direct:${AUTHZEN_DIRECT_PASSWORD:?}@db:5432/authz"
+      DEFAULT_DB_ROLE: "authz_reader"
+      DB_POOL_MAX: "${READ_POOL_MAX:-25}"
+    ports:
+      - "${READ_BIND:-127.0.0.1}:${READ_PORT:-8080}:8080"
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/readyz >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+
+  # ── Writes: the full-profile pgauthzd (native write path, reads too) ───────
+  pgauthzd-full:
+    <<: *pgauthzd-image
+    environment:
+      <<: *pgauthzd-env
+      PGAUTHORIZER_PROFILE: "full"
+      DATABASE_URL: "postgres://pgauthzd_rw:${PGAUTHZD_RW_PASSWORD:?}@db:5432/authz"
+      DB_POOL_MAX: "${WRITE_POOL_MAX:-10}"
+      # Who may write (a JWT role in JWT_ROLES_CLAIM) and who may feed the
+      # action log.
+      WRITER_ROLE: "${WRITER_ROLE:-authz_writer}"
+      RECORDER_ROLE: "${RECORDER_ROLE:-authz_recorder}"
+    ports:
+      - "${WRITE_BIND:-127.0.0.1}:${WRITE_PORT:-8082}:8080"
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/readyz >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+
+  # ── Derived relations worker (profile `derived`) ───────────────────────────
+  # One loop around authz.refresh_materialized_relations(): grants and revokes
+  # reach authz.materialized_relations about WORKER_LAG after they commit
+  # (docs/DESIGN.md → Integration patterns, Approach 2). Needs
+  # DERIVED_RELATIONS=1 and DERIVED_WORKER_PASSWORD in .env.
+  derived-worker:
+    image: ${PGAUTHZ_IMAGE_PREFIX:-pgauthz}-migrations:${PGAUTHZ_VERSION:-0.17.0}
+    profiles: [derived]
+    entrypoint: ["/usr/local/bin/derived-worker.sh"]   # the image's default entrypoint is the installer
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: authz
+      PGUSER: pgauthz_derived_worker
+      # Compose interpolates every service, active profile or not, so profile-only
+      # settings cannot be `:?`-required here; an empty password fails at login
+      # (visible in `docker compose logs derived-worker`).
+      PGPASSWORD: "${DERIVED_WORKER_PASSWORD:-}"
+      DERIVED_STORES: "${DERIVED_STORES:-}"          # registered (snapshot) at start if not yet
+      WORKER_LAG: "${WORKER_LAG:-1 second}"
+      WORKER_PAGE_LIMIT: "${WORKER_PAGE_LIMIT:-1000}"
+      WORKER_INTERVAL: "${WORKER_INTERVAL:-2}"
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+  # ── Management console (profile `console`) ─────────────────────────────────
+  # console/README.md: the web UI for the people who run pgauthz; a Lit SPA +
+  # Go BFF whose own access is decided by the `console` store. The BFF logs the
+  # person in at CONSOLE_ISSUER (confidential OIDC client), keeps sessions in
+  # the database CONSOLE_SESSIONS_DB of this instance and talks to the engine
+  # as authz_console. Served under BASE_URL + /console behind your reverse
+  # proxy. .env: CONSOLE_ISSUER, CONSOLE_CLIENT_SECRET, CONSOLE_ENGINE_PASSWORD,
+  # CONSOLE_SESSIONS_DB (+ _PASSWORD), CONSOLE_STORE_INIT=1 — profile-only, so
+  # not `:?`-required (see derived-worker); a missing issuer fails at start.
+  console:
+    image: ${PGAUTHZ_IMAGE_PREFIX:-pgauthz}-console:${PGAUTHZ_VERSION:-0.17.0}
+    build:
+      context: ../..                        # the backend embeds the sibling module pgauthzadm/
+      dockerfile: console/Dockerfile
+      args: { VERSION: "${PGAUTHZ_VERSION:-0.17.0}" }
+    profiles: [console]
+    environment:
+      ADDR: ":8080"
+      PG_DSN: "postgres://console:${CONSOLE_SESSIONS_PASSWORD:-}@db:5432/${CONSOLE_SESSIONS_DB:-pgauthz_console}"
+      ENGINE_DSN: "postgres://authz_console:${CONSOLE_ENGINE_PASSWORD:-}@db:5432/authz"
+      # Sign-in: an OpenID Provider (CONSOLE_ISSUER + client) and/or the local
+      # admin (CONSOLE_LOCAL_ADMIN_USER/_PASSWORD — a first look, tests; refused
+      # under DEPLOYMENT_ENVIRONMENT=production unless …_ALLOW_IN_PRODUCTION).
+      ISSUER: "${CONSOLE_ISSUER:-}"
+      CLIENT_ID: "${CONSOLE_CLIENT_ID:-console-bff}"
+      CLIENT_SECRET: "${CONSOLE_CLIENT_SECRET:-}"
+      CONSOLE_LOCAL_ADMIN_USER: "${CONSOLE_LOCAL_ADMIN_USER:-}"
+      CONSOLE_LOCAL_ADMIN_PASSWORD: "${CONSOLE_LOCAL_ADMIN_PASSWORD:-}"
+      CONSOLE_LOCAL_ADMIN_TEAMS: "${CONSOLE_LOCAL_ADMIN_TEAMS:-role_console_admin}"
+      CONSOLE_LOCAL_ADMIN_ALLOW_IN_PRODUCTION: "${CONSOLE_LOCAL_ADMIN_ALLOW_IN_PRODUCTION:-}"
+      SCOPES: "${CONSOLE_SCOPES:-openid profile}"
+      # The public base: your proxy's https://host; the client's redirect URI
+      # is ${BASE_URL}/console/auth/callback.
+      BASE_URL: "${BASE_URL:-}"                   # REQUIRED for this profile: https://your.host
+      BASE_PATH: "/console"
+      REDIRECT_URI: "${BASE_URL:-}/console/auth/callback"
+      COOKIE_SECURE: "${CONSOLE_COOKIE_SECURE:-true}"
+      TLS_CA_FILE: "${CONSOLE_TLS_CA_FILE:-}"     # mount a CA bundle and name it here for a private issuer CA
+      DEPLOYMENT_ENVIRONMENT: "${DEPLOYMENT_ENVIRONMENT:-production}"
+      CONSOLE_STORE: "${CONSOLE_STORE:-console}"
+      CONSOLE_PLATFORM_ID: "${CONSOLE_PLATFORM_ID:-default}"
+      CONSOLE_REGISTRY_ID: "${CONSOLE_REGISTRY_ID:-default}"
+      CONSOLE_SUBJECT_TYPE: "${CONSOLE_SUBJECT_TYPE:-user}"
+      CONSOLE_SELF_SUBJECT_TYPES: "${CONSOLE_SELF_SUBJECT_TYPES:-user}"
+      CONSOLE_TEAM_CLAIMS: "${CONSOLE_TEAM_CLAIMS:-role=realm_access.roles,group=groups,org=organization}"
+      PGAUTHZD_URL: "http://pgauthzd-full:8080"                         # Settings: writer readiness
+      PGAUTHZD_DECISION_URL: "${CONSOLE_DECISION_URL:-http://pgauthzd-decision:8080}"   # Test tab "as me"; http://pgauthzd-opa:8080 with the opa profile
+      CONSOLE_OPA_URL: "${CONSOLE_OPA_URL:-}"                          # http://opa:8181 with the opa profile (Policies tab)
+      CONSOLE_OPA_TOKEN: "${OPA_ADMIN_TOKEN:-}"
+    ports:
+      - "${CONSOLE_BIND:-127.0.0.1}:${CONSOLE_PORT:-8083}:8080"
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+
+  # ── OPA policy-as-code (profile `opa`) ─────────────────────────────────────
+  # Rego in front of the AuthZEN surface: client → pgauthzd-opa (validates the
+  # JWT, consults OPA) → OPA → pgauthzd's native callback → PostgreSQL. The
+  # policies and OPA's JWKS come from the repository (opa/); put your IdP's
+  # JWKS at opa/data/jwks.json or point OPA's authn at a URL (opa/README.md).
+  opa:
+    image: openpolicyagent/opa:${OPA_TAG:-1.21.2}
+    profiles: [opa]
+    command: run --server --addr :8181 --authentication=token --authorization=basic /policies /data
+    environment:
+      # Required for this profile (see the note on derived-worker): set both
+      # OPA_ADMIN_TOKEN and NATIVE_SERVICE_TOKEN in .env.
+      OPA_ADMIN_TOKEN: "${OPA_ADMIN_TOKEN:-}"
+      JWT_ISSUER: "${JWT_ISSUER:?}"
+      JWT_AUDIENCE: "${JWT_AUDIENCE:?}"
+      DEFAULT_STORE: "${DEFAULT_STORE:-demo}"
+      REQUIRE_TOKEN_FOR_READS: "true"
+      NATIVE_URL: "http://pgauthzd-opa:8081"
+      NATIVE_WRITE_URL: "http://pgauthzd-full:8081"
+      NATIVE_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-}"
+      JWT_ROLES_CLAIM: "${JWT_ROLES_CLAIM:-roles}"
+      WRITER_ROLE: "${WRITER_ROLE:-authz_writer}"
+      DEFAULT_CACHE_TTL_SECONDS: "${DEFAULT_CACHE_TTL_SECONDS:-1}"
+    volumes:
+      - ../../opa/policies:/policies:ro
+      - ../../opa/data:/data:ro
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+  pgauthzd-opa:
+    <<: *pgauthzd-image
+    profiles: [opa]
+    environment:
+      <<: *pgauthzd-env
+      PGAUTHORIZER_PROFILE: "decision-only"
+      DATABASE_URL: "postgres://authzen_direct:${AUTHZEN_DIRECT_PASSWORD:?}@db:5432/authz"
+      DEFAULT_DB_ROLE: "authz_reader"
+      DB_POOL_MAX: "${READ_POOL_MAX:-25}"
+      OPA_URL: "http://opa:8181"
+      FORWARD_TOKEN_TO_OPA: "true"
+      INTERNAL_LISTEN_ADDR: ":8081"              # OPA's read callback — compose network only
+      INTERNAL_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-}"   # pgauthzd refuses to start when empty
+    ports:
+      - "${OPA_GATEWAY_BIND:-127.0.0.1}:${OPA_GATEWAY_PORT:-8081}:8080"
+    depends_on:
+      opa: { condition: service_started }
+      migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+volumes:
+  db-data:

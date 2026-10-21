@@ -35,6 +35,23 @@ default_subject_type := _env.DEFAULT_SUBJECT_TYPE if _env.DEFAULT_SUBJECT_TYPE
 
 default_subject_type := "" if not _env.DEFAULT_SUBJECT_TYPE
 
+# Delegated actor (mirrors pgauthzd's ACTOR_CLAIM / ACTOR_SUBJECT_TYPE). A
+# dot-separated path of a verified-token claim naming the party acting ON THE
+# SUBJECT'S BEHALF — RFC 8693 `act.client_id`, as minted by Keycloak's
+# token-exchange delegation. When it resolves to a non-empty string, the
+# PRINCIPAL is (ACTOR_SUBJECT_TYPE, <value>) and the token's own subject is
+# exposed as authn.on_behalf_of: an agent holding a delegated token is checked
+# with ITS authority in the graph, never the user's. Unset = off (such a token
+# is treated as its subject). Set the SAME values on OPA and on the pgauthzd
+# instances in front of it — both derive the subject from the token.
+#   ACTOR_CLAIM=act.client_id
+#   ACTOR_SUBJECT_TYPE=agent
+actor_claim_path := split(_env.ACTOR_CLAIM, ".") if _env.ACTOR_CLAIM
+
+actor_subject_type := _env.ACTOR_SUBJECT_TYPE if _env.ACTOR_SUBJECT_TYPE
+
+actor_subject_type := "agent" if not _env.ACTOR_SUBJECT_TYPE
+
 # Opt-in token diagnostics (data.authz.token_debug). When TOKEN_DEBUG=true, OPA
 # explains WHY a token is rejected (issuer/audience/expiry/signature) — the common
 # "everything silently denies" misconfiguration. Off by default so the expected

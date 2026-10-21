@@ -1385,3 +1385,28 @@ BEGIN
     END IF;
 END;
 $$;
+
+------------------------------------------------------------------------
+-- authz_derived_worker: the privilege role of the refresh worker (the
+-- deployments' pgauthz_derived_worker LOGIN role inherits it — Helm
+-- derivedRelations, deploy/compose profile `derived`). Least privilege: it
+-- may run the worker, register a store and read the status — nothing else
+-- of the admin tier. The worker's list_subjects expansion resolves subjects
+-- across every namespace of a store, which is namespace-gated per session
+-- role, so the role is also a member of authz_namespace_bypass (roles.sql;
+-- the demo loads this script without roles.sql, hence the guard).
+------------------------------------------------------------------------
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authz_derived_worker') THEN
+        CREATE ROLE authz_derived_worker NOLOGIN;
+    END IF;
+    GRANT USAGE ON SCHEMA authz TO authz_derived_worker;   -- the schema itself (roles.sql grants it per tier)
+    GRANT EXECUTE ON FUNCTION authz.refresh_materialized_relations(interval, int, timestamptz)      TO authz_derived_worker;
+    GRANT EXECUTE ON FUNCTION authz.refresh_all_materialized_relations(text, interval, timestamptz) TO authz_derived_worker;
+    GRANT EXECUTE ON FUNCTION authz.materialized_relations_status()                    TO authz_derived_worker;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authz_namespace_bypass') THEN
+        GRANT authz_namespace_bypass TO authz_derived_worker;
+    END IF;
+END;
+$$;

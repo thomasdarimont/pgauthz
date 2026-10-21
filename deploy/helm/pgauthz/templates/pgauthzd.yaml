@@ -200,8 +200,13 @@ spec:
     app.kubernetes.io/name: {{ include "pgauthz.name" . }}
     app.kubernetes.io/component: pgauthzd-writer
   # Only the callback listener is exposed; OPA's NATIVE_WRITE_URL points here.
+  # (With the console: its :8080 too, for the readiness shown on Settings —
+  # NetworkPolicy-restricted to the console pods.)
   ports:
     - { name: callback, port: 8081, targetPort: 8081 }
+    {{- if .Values.console.enabled }}
+    - { name: jwt, port: 8080, targetPort: 8080 }
+    {{- end }}
     {{- if .Values.metrics.enabled }}
     - { name: metrics, port: {{ .Values.metrics.port }}, targetPort: metrics }
     {{- end }}

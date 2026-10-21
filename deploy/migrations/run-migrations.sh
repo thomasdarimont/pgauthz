@@ -67,6 +67,19 @@ FILES+=(
   "$SQL/security/roles.sql"
 )
 
+# Derived relations for application databases (db/replication, DESIGN.md →
+# "Integration patterns"): DERIVED_RELATIONS=1 installs the tables, the
+# worker/registration functions and the authz_derived_worker privilege role,
+# and creates the pgauthz_derived_worker LOGIN role the worker connects with
+# (CloudNativePG creates it as a managed role first; the guard makes this a
+# no-op then). DERIVED_PUBLICATION=1 additionally publishes the four tables as
+# `authz_derived` for logical-replication subscribers and creates the
+# `replicator` REPLICATION role (needs wal_level=logical on the server).
+truthy() { case "${1:-}" in 1|true|yes|on) return 0;; *) return 1;; esac; }
+if truthy "${DERIVED_RELATIONS:-}"; then
+  FILES+=("$SQL/replication/materialized_relations.sql")
+fi
+
 echo "==> Loading engine code (functions + roles) as role authz..."
 # One session so `SET ROLE authz` applies to every statement, and the trailing
 # operations (audit partitions, optional knobs, schema-cache reload) run too.
@@ -83,7 +96,84 @@ echo "==> Loading engine code (functions + roles) as role authz..."
     echo "ALTER ROLE authzen_direct SET statement_timeout = '${CONDITION_STATEMENT_TIMEOUT}';"
     echo "ALTER ROLE pgauthzd_rw    SET statement_timeout = '${CONDITION_STATEMENT_TIMEOUT}';"
   fi
+  if truthy "${DERIVED_RELATIONS:-}"; then
+    cat <<'EOSQL'
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgauthz_derived_worker') THEN
+    CREATE ROLE pgauthz_derived_worker LOGIN;   -- password: service-role passwords below
+  END IF;
+  GRANT authz_derived_worker TO pgauthz_derived_worker;
+END $$;
+EOSQL
+  fi
+  if truthy "${DERIVED_PUBLICATION:-}"; then
+    cat <<'EOSQL'
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'replicator') THEN
+    CREATE ROLE replicator REPLICATION LOGIN;   -- password: service-role passwords below
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'authz_derived') THEN
+    CREATE PUBLICATION authz_derived FOR TABLE
+        authz.materialized_relations, authz.materialized_subjects,
+        authz.materialized_objects, authz.materialized_refresh_state
+        WITH (publish_via_partition_root = true);
+  END IF;
+END $$;
+GRANT USAGE ON SCHEMA authz TO replicator;
+GRANT SELECT ON authz.materialized_relations, authz.materialized_subjects,
+                authz.materialized_objects, authz.materialized_refresh_state TO replicator;
+EOSQL
+  fi
   echo "NOTIFY pgrst, 'reload schema';"
 } | "${PSQL[@]}" -f -
+
+# Service-role passwords (deployments WITHOUT an operator that manages roles,
+# e.g. deploy/compose): roles.sql creates the LOGIN roles with the development
+# password; each variable below, when set, replaces it. CloudNativePG
+# deployments leave these unset — the operator owns the passwords (managed roles).
+set_password() {  # role password
+  local role=$1 pw=${2:-}
+  [ -n "$pw" ] || return 0
+  echo "==> Setting the password of $role"
+  echo 'ALTER ROLE :"r" WITH LOGIN PASSWORD :'"'"'pw'"'"';' | "${PSQL[@]}" -v r="$role" -v pw="$pw" -f -
+}
+set_password authzen_direct         "${AUTHZEN_DIRECT_PASSWORD:-}"
+set_password pgauthzd_rw            "${PGAUTHZD_RW_PASSWORD:-}"
+set_password pgauthz_derived_worker "${DERIVED_WORKER_PASSWORD:-}"
+set_password replicator             "${REPLICATOR_PASSWORD:-}"
+set_password authz_console          "${CONSOLE_ENGINE_PASSWORD:-}"
+
+# Console sessions database (deployments without an operator; CloudNativePG
+# uses a `Database` resource instead): CONSOLE_SESSIONS_DB names a database
+# owned by the login role `console`, both created when missing. The BFF creates
+# its one table itself.
+if [ -n "${CONSOLE_SESSIONS_DB:-}" ]; then
+  echo "==> Ensuring the console sessions database '${CONSOLE_SESSIONS_DB}' (owner: console)"
+  "${PSQL[@]}" -c "DO \$\$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'console') THEN CREATE ROLE console LOGIN; END IF;
+  END \$\$;"
+  echo "SELECT format('CREATE DATABASE %I OWNER console', :'db') WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'db') \\gexec" \
+    | "${PSQL[@]}" -v db="$CONSOLE_SESSIONS_DB" -f -
+  set_password console "${CONSOLE_SESSIONS_PASSWORD:-}"
+fi
+
+# Management console (console/): its access model is a pgauthz store
+# (examples/models/console, loaded here as CONSOLE_STORE, default `console`).
+# Created ONCE — when the store is missing — from model.sql + seed.sql (the
+# seed names the demo personas' realm roles as teams; adjust the store from
+# the console afterwards, it is data). Never re-applied: that would reset
+# whatever the console's owners changed since.
+if truthy "${CONSOLE_STORE_INIT:-}"; then
+  CS="${CONSOLE_STORE:-console}"
+  if [ "$("${PSQL[@]}" -tA -c "SELECT count(*) FROM authz.stores WHERE name = '$CS';")" = "0" ]; then
+    echo "==> Creating the console store '$CS' (examples/models/console: model + seed)"
+    { echo "SET ROLE authz;"; cat /sql/examples/console/model.sql; cat /sql/examples/console/seed.sql; } \
+      | "${PSQL[@]}" -v cs="$CS" -f -
+  else
+    echo "==> Console store '$CS' exists — left as is."
+  fi
+fi
 
 echo "==> pgauthz engine installed."

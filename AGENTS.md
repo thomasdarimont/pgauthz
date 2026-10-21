@@ -78,6 +78,7 @@ With OPA overlay: Application → pgauthzd (validates JWT) → OPA (Rego policy-
 ./tests/test-conformance.sh  # OpenID conformance suite AuthZEN PDP plans (Docker, minutes; conformance/)
 ./tests/test-concurrency.sh # two-session locking tests (type removal vs writer, partial preconditions)
 ./tests/test-console-go.sh  # console Go tests against the DB (race tests mandatory; fixture store console_gotest)
+./tests/test-deploy-compose.sh # the deploy/compose deployment end to end (needs the pgauthz-pgauthzd/-migrations/-console images)
 ./tests/test-all.sh      # init.sh + all test suites
 ```
 
@@ -98,7 +99,8 @@ cd pgauthzd && go build ./... && go test ./...
 - `examples/watch/` — Runnable setup example for the watch/changefeed feature (compose overlay + Python consumer)
 - `db/security/` — PostgreSQL role definitions (authz_reader, authz_writer, authz_sharer, authz_admin, authz_auditor, authz_recorder)
 - `db/openfga/` — Import functions for existing OpenFGA JSON models/tuples
-- `db/replication/` — Logical replication and materialized permissions patterns
+- `db/replication/` — Logical replication and materialized permissions patterns (`materialized_relations.sql` + `worker.sh`, the refresh loop both deployments run)
+- `deploy/` — The deployments: `helm/pgauthz/` (chart on CloudNativePG), `compose/` (one-host Docker Compose deployment; `tests/test-deploy-compose.sh` smoke-tests it), `migrations/` (the installer/worker image: engine SQL + sqlx + psql, `run-migrations.sh`), `metrics/` (Prometheus/Grafana assets)
 - `pgauthzd/` — The Go daemon (cmd/, internal/api/, internal/app/, internal/authz/, internal/config/, internal/metrics/, internal/pgbackend/, internal/opabackend/)
 - `pgauthzadm/` — Shared Go library for model administration (export, DSL parse/import, registry publish/plan/apply/diff, SQL rendering), used by `pgauthzctl/` and the console
 - `console/` — The management console: `backend/` (Go BFF: sessions, the console-store authorization gate, one handler file per tab) and `frontend/` (Lit SPA, no build step, JSON dictionaries under `src/i18n/`); its access model is `examples/models/console/` (loaded as `console_test` by `tests/test.sh`, created once as `console` by `./start.sh --console`)

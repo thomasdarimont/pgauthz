@@ -22,6 +22,11 @@ import data.authz.pgauthz.config
 #   "write"  / "delete"        → single tuple (input.tuple)
 #   "write_batch" / "delete_batch" → array of tuples (input.tuples)
 #   "delete_user"              → all tuples for a subject (input.user) [offboarding]
+#   "grant" / "revoke"         → SHARING (migration 0017): the caller gives /
+#                                takes away input.tuple, allowed iff the ENGINE's
+#                                grant rules let the caller's subject do so —
+#                                any valid token may try; no writer role needed
+#                                (input.context = the caller's request context)
 #
 # Input:
 #   {
@@ -109,6 +114,12 @@ _forward := pgauthz.delete_tuples(_store, input.tuples, _performed_by, _headers)
 
 _forward := pgauthz.delete_user_tuples(_store, input.user, _performed_by, _headers) if input.operation == "delete_user"
 
+# Sharing: the actor is the verified subject (asserted to the callback listener
+# as `actor`, which trusts OPA); the engine checks the grant rule.
+_forward := pgauthz.grant(_store, input.tuple, object.get(input, "context", null), _performed_by, _headers) if input.operation == "grant"
+
+_forward := pgauthz.revoke(_store, input.tuple, object.get(input, "context", null), _performed_by, _headers) if input.operation == "revoke"
+
 # Conditional / atomic write: check preconditions, then apply deletes + writes.
 _forward := pgauthz.write_tuples_checked(
 	_store,
@@ -156,6 +167,15 @@ _write_authorized if {
 	authn_config.writer_role in authn.roles
 }
 
+# Sharing needs no writer role: the engine decides under the store's grant
+# rules whether THIS subject may hand the relation out (fail-closed: a
+# relation without a grant rule cannot be granted this way at all).
+_write_authorized if {
+	input.token
+	authn.token_is_valid
+	input.operation in {"grant", "revoke"}
+}
+
 # A well-formed request, per operation.
 _valid_write_request if {
 	input.operation in {"write", "delete"}
@@ -173,6 +193,11 @@ _valid_write_request if {
 	input.operation == "delete_user"
 	input.user.user_type
 	input.user.user_id
+}
+
+_valid_write_request if {
+	input.operation in {"grant", "revoke"}
+	_valid_tuple(input.tuple)
 }
 
 # write_checked carries preconditions/deletes/writes arrays — the DB function

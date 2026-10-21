@@ -27,11 +27,20 @@ COPY db/migrations /sql/db/migrations
 COPY db/engine     /sql/db/engine
 COPY db/openfga    /sql/db/openfga
 COPY db/security   /sql/db/security
+# Derived relations for application databases (opt-in at run time, see
+# run-migrations.sh DERIVED_RELATIONS) and the refresh worker loop that the
+# deployments run from this same image (`derived-worker.sh`).
+COPY db/replication /sql/db/replication
+# The management console's own authorization store (examples/models/console),
+# created once by run-migrations.sh when CONSOLE_STORE_INIT=1 and it is missing.
+COPY examples/models/console /sql/examples/console
 COPY deploy/migrations/run-migrations.sh /usr/local/bin/run-migrations.sh
+COPY db/replication/worker.sh            /usr/local/bin/derived-worker.sh
 
-RUN chmod +x /usr/local/bin/run-migrations.sh
+RUN chmod +x /usr/local/bin/run-migrations.sh /usr/local/bin/derived-worker.sh
 
 # Connection is taken entirely from libpq env (PGHOST/PGUSER/PGPASSWORD/...),
 # injected by the Job from the CloudNativePG-generated secret; run-migrations.sh
 # builds DATABASE_URL from them for sqlx.
+# The worker is the same image with `command: ["derived-worker.sh"]`.
 ENTRYPOINT ["/usr/local/bin/run-migrations.sh"]

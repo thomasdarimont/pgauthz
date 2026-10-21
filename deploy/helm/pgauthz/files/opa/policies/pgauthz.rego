@@ -118,6 +118,19 @@ explain_access(store, subject_type, subject_id, relation, object_type, object_id
 	response.status_code == 200
 }
 
+# explain_access_with_context: the same trace with the request context the
+# check would see, so condition steps and temporal-gate clauses that read
+# $request.* resolve instead of reporting missing context.
+explain_access_with_context(store, subject_type, subject_id, relation, object_type, object_id, ctx) := response.body if {
+	response := _native_send(store, "explain", {
+		"subject": {"type": subject_type, "id": subject_id},
+		"action": {"name": relation},
+		"resource": {"type": object_type, "id": object_id},
+		"context": ctx,
+	}, -1)
+	response.status_code == 200
+}
+
 # check_access_detailed: the rich decision result (state allow|deny|
 # conditional, missing_context, conditions, model). Runs the explain
 # machinery in the engine — per-decision opt-in, deliberately NOT cached
@@ -154,11 +167,19 @@ check_access_with_context(store, subject_type, subject_id, relation, object_type
 # _native_check_elem maps an engine-shaped batch check
 # ({user_type,user_id,relation,object_type,object_id}) to the native
 # subject/action/resource shape.
-_native_check_elem(c) := {
-	"subject": {"type": c.user_type, "id": c.user_id},
-	"action": {"name": c.relation},
-	"resource": {"type": c.object_type, "id": c.object_id},
-}
+_native_check_elem(c) := object.union(
+	{
+		"subject": {"type": c.user_type, "id": c.user_id},
+		"action": {"name": c.relation},
+		"resource": {"type": c.object_type, "id": c.object_id},
+	},
+	_native_check_context(c),
+)
+
+# a per-check context (AuthZEN items with their own properties) is passed through
+_native_check_context(c) := {"context": c.context} if c.context
+
+_native_check_context(c) := {} if not c.context
 
 # Native batch returns {"results":[bool]} in input order; the contract here is
 # an ordered array of {decision: bool}, so re-wrap. Array comprehensions
@@ -351,6 +372,44 @@ delete_user_tuples(store, user, performed_by, headers) := _native_write(store, "
 # write_tuples_checked: conditional/atomic write — preconditions, then deletes
 # and writes, in one transaction (optimistic concurrency).
 write_tuples_checked(store, preconditions, deletes, writes, performed_by, headers) := _native_write(store, "write-checked", {"preconditions": preconditions, "deletes": deletes, "writes": writes, "performed_by": performed_by}, headers)
+
+# authz.grant / authz.revoke: sharing (migration 0017). `actor` is the
+# verified subject OPA asserts to the callback listener; the engine's grant
+# rules decide. Optional tuple keys (user_relation, condition, condition_context,
+# expires_at) pass through; `context` is the actor's request context.
+grant(store, tuple, context, actor, headers) := _native_write(store, "grant", _grant_body(tuple, context, actor), headers)
+
+revoke(store, tuple, context, actor, headers) := _native_write(store, "revoke", _grant_body(tuple, context, actor), headers)
+
+_grant_body(tuple, context, actor) := object.union(
+	{
+		"user": {"type": tuple.user_type, "id": tuple.user_id},
+		"relation": tuple.relation,
+		"object": {"type": tuple.object_type, "id": tuple.object_id},
+		"actor": actor,
+	},
+	object.union(
+		object.filter(
+			{
+				"user_relation": object.get(tuple, "user_relation", null),
+				"condition": object.get(tuple, "condition", null),
+				"condition_context": object.get(tuple, "condition_context", null),
+				"expires_at": object.get(tuple, "expires_at", null),
+			},
+			[k | some k, v in {
+				"user_relation": object.get(tuple, "user_relation", null),
+				"condition": object.get(tuple, "condition", null),
+				"condition_context": object.get(tuple, "condition_context", null),
+				"expires_at": object.get(tuple, "expires_at", null),
+			}; v != null],
+		),
+		_grant_context(context),
+	),
+)
+
+_grant_context(context) := {"context": context} if context != null
+
+_grant_context(context) := {} if context == null
 
 # _native_write POSTs an authorized write to the writer instance's callback
 # listener (store-scoped path). Forwards the service credential + the per-app
