@@ -150,9 +150,17 @@ export class PgcApp extends PgcElement {
               me
                 ? html`<span
                       class="name"
-                      title=${me.teams?.length ? t('teams: {teams}', { teams: me.teams.join(', ') }) : t('no team memberships')}
+                      title=${[
+                        me.subject,
+                        me.email,
+                        me.teams?.length
+                          ? t('teams: {teams}', { teams: me.teams.join(', ') })
+                          : t('no team memberships'),
+                      ]
+                        .filter(Boolean)
+                        .join('\n')}
                     >
-                      <b>${me.name || me.username}</b> <span class="mono">${me.subject}</span></span
+                      <b>${me.name || me.username}</b></span
                     >
                     <a
                       class="settings ${area === 'settings' ? 'active' : ''}"

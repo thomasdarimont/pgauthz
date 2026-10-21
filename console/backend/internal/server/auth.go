@@ -170,6 +170,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"authenticated": true,
 		"username":      p.id,
 		"name":          p.name,
+		"email":         p.email,
 		"subject":       p.typ + ":" + p.id,
 		"teams":         p.teams,
 		"platform":      platform[s.cfg.PlatformID],
