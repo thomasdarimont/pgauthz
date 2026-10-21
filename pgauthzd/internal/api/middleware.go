@@ -725,19 +725,32 @@ func RequestID(next http.Handler) http.Handler {
 	})
 }
 
-// Logging middleware logs HTTP requests.
+// Logging middleware logs HTTP requests. A SUCCESSFUL health probe
+// (/livez, /readyz, /healthz) is logged at DEBUG: orchestrators poll them
+// every few seconds, and at INFO they would be most of the log over time. A
+// failing probe (any non-2xx) stays at INFO — that is the line an operator
+// looks for.
 func Logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
-		slog.Info("request",
+		level := slog.LevelInfo
+		if isHealthPath(r.URL.Path) && sw.status < 300 {
+			level = slog.LevelDebug
+		}
+		slog.Log(r.Context(), level, "request",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", sw.status,
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
 	})
+}
+
+// isHealthPath: the liveness/readiness probes (and the deprecated alias).
+func isHealthPath(path string) bool {
+	return path == "/healthz" || path == "/livez" || path == "/readyz"
 }
 
 type statusWriter struct {

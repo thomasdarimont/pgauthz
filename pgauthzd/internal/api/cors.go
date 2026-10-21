@@ -10,7 +10,7 @@ import (
 // and the Swagger UI that renders it. The JWT middleware exempts exactly these,
 // and CORS answers any origin for them.
 func isPublicPath(path string) bool {
-	return path == "/healthz" || path == "/livez" || path == "/readyz" ||
+	return isHealthPath(path) ||
 		strings.HasPrefix(path, "/.well-known/") ||
 		path == "/pgauthz/v1/openapi.json" || path == "/pgauthz/v1/openapi.yaml" ||
 		path == swaggerUIPath || strings.HasPrefix(path, swaggerUIPath+"/") ||
