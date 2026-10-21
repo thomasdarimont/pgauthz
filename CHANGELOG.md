@@ -330,8 +330,9 @@ pre-1.0, minor versions may include breaking changes.
   it shared and resolves the name only afterwards, so it can no longer
   register the id of a store whose deletion is in flight; the worker
   try-locks and skips rather than waits, so a deletion's DDL and the
-  worker's reads never form a cycle (the two try-locks run in a
-  subtransaction, so a failed second lock releases the first), and re-reads
+  worker's reads never form a cycle (the two try-locks and the check that
+  the store is still registered run in one subtransaction, so a failed step
+  releases what was taken), and re-reads
   each registration under its locks, so a deletion or re-registration
   committed after it listed its stores is seen, not acted on from stale
   state — tested deterministically by parking the worker on a held row

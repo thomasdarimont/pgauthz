@@ -624,6 +624,8 @@ assert "try-lock reports false and the session holds no advisory lock afterwards
 wait "$hold_pid" || true
 assert "try-lock succeeds once the holder is gone (both locks, then released at commit)" "t|2" \
   "$(docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -q -tA < "$WORK/try-lock.sql" | paste -sd'|' -)"
+assert "try-lock on a store that is not registered (gone meanwhile) declines and holds nothing" "f|0" \
+  "$(docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -q -tA -c "BEGIN;" -c "SELECT authz._mp_try_lock_store('never_registered');" -c "SELECT count(*) FROM pg_locks WHERE pid = pg_backend_pid() AND locktype = 'advisory';" -c "COMMIT;" | paste -sd'|' -)"
 
 echo "==> The worker meets a registration replaced AFTER it listed its stores (deterministic)..."
 # Park the worker: a store sorting first ('aaa_park') carries a dead
@@ -646,10 +648,19 @@ COMMIT;
 SQL
 docker exec -i -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -q < "$WORK/park.sql" >/dev/null 2>&1 &
 park_pid=$!
-sleep 0.7
-t0=$(date +%s)
+# barrier 1: the parking session holds its row (it is already in pg_sleep)
+parked=timeout
+for _ in $(seq 1 40); do
+  [ "$(qp "$PRIMARY" "SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'SELECT pg_sleep(6)%';")" = "1" ] && { parked=ok; break; }; sleep 0.25
+done
+assert "barrier: the parking transaction holds its row" "ok" "$parked"
 rc_w=0; docker exec -e PGPASSWORD=authz "$PRIMARY" psql -U authz -d authz -q -c "SELECT authz.refresh_materialized_relations();" >/dev/null 2>"$WORK/parked-worker.err" & wpid=$!
-sleep 1.5
+# barrier 2: the worker is demonstrably blocked BY the parking session
+blocked=timeout
+for _ in $(seq 1 40); do
+  [ "$(qp "$PRIMARY" "SELECT count(*) FROM pg_stat_activity w JOIN pg_stat_activity p ON p.query LIKE 'SELECT pg_sleep(6)%' WHERE w.query LIKE 'SELECT authz.refresh_materialized_relations()%' AND pg_blocking_pids(w.pid) @> ARRAY[p.pid];")" = "1" ] && { blocked=ok; break; }; sleep 0.25
+done
+assert "barrier: the worker is blocked by the parking transaction" "ok" "$blocked"
 # replace the registration the worker has already listed
 qp "$PRIMARY" "SELECT authz.delete_store('aia_acme');" >/dev/null
 qf "$PRIMARY" < examples/models/aia-acme/model.sql >/dev/null; qf "$PRIMARY" < examples/models/aia-acme/seed.sql >/dev/null
@@ -657,10 +668,11 @@ qp "$PRIMARY" "SELECT authz.refresh_all_materialized_relations('aia_acme');" >/d
 new_id=$(qp "$PRIMARY" "SELECT id FROM authz.stores WHERE name='aia_acme';")
 assert "replacement registered the live incarnation while the worker was parked" "$new_id" \
   "$(qp "$PRIMARY" "SELECT store_id FROM authz.materialized_refresh_state WHERE store='aia_acme';")"
+assert "the worker is still parked after the replacement" "1" \
+  "$(qp "$PRIMARY" "SELECT count(*) FROM pg_stat_activity w WHERE w.query LIKE 'SELECT authz.refresh_materialized_relations()%' AND cardinality(pg_blocking_pids(w.pid)) > 0;")"
 wait "$wpid" || rc_w=$?
-worker_took=$(( $(date +%s) - t0 ))
 wait "$park_pid" || true
-assert "the worker was parked past the replacement and finished without error" "t|0|" "$([ "$worker_took" -ge 4 ] && echo t || echo f)|$rc_w|$(grep '^ERROR' "$WORK/parked-worker.err" | head -1)"
+assert "the released worker finished without error" "0|" "$rc_w|$(grep '^ERROR' "$WORK/parked-worker.err" | head -1)"
 assert "the worker worked from the re-read registration: live id, rows present" "true|true" \
   "$(qp "$PRIMARY" "SELECT (s.store_id = $new_id) || '|' || ((SELECT count(*) FROM authz.materialized_relations WHERE store='aia_acme') > 0) FROM authz.materialized_refresh_state s WHERE s.store='aia_acme';")"
 assert "the dead parking incarnation was dropped by the same run" "0|false" \

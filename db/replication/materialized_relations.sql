@@ -412,9 +412,12 @@ LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
     SELECT pg_advisory_xact_lock(hashtext('authz.materialized_relations:' || p_store));
 $$;
 
--- Both locks, non-blocking, in order; true when this transaction holds both.
--- The store-wide lock is taken SHARED (the worker reads; it must only step
--- aside for a deletion or an exclusive checked write in flight).
+-- Both locks, non-blocking, in order, and the store still registered; true
+-- when this transaction holds both. The store-wide lock is taken SHARED (the
+-- worker reads; it must only step aside for a deletion or an exclusive
+-- checked write in flight). A store whose registration went between the
+-- worker's listing and this call is not claimed either: nothing to do for
+-- it, and locks held on it would only make a re-registration wait.
 CREATE OR REPLACE FUNCTION authz._mp_try_lock_store(p_store text)
 RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
@@ -430,6 +433,9 @@ BEGIN
         END IF;
         IF NOT pg_try_advisory_xact_lock(hashtext('authz.materialized_relations:' || p_store)) THEN
             RAISE EXCEPTION USING ERRCODE = 'lock_not_available';   -- undo the shared lock
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM authz.materialized_refresh_state s WHERE s.store = p_store) THEN
+            RAISE EXCEPTION USING ERRCODE = 'lock_not_available';   -- gone meanwhile: undo both
         END IF;
         RETURN true;
     EXCEPTION WHEN lock_not_available THEN
@@ -1004,10 +1010,11 @@ BEGIN
         END IF;
 
         -- Re-read the registration UNDER the locks (READ COMMITTED: a fresh
-        -- snapshot): the list above predates them, and a deletion or a
-        -- re-registration may have committed in between. Gone → nothing to do;
-        -- otherwise cursor and incarnation are the current ones, and the locks
-        -- keep them so until this transaction ends.
+        -- snapshot): the list above predates them, and a re-registration may
+        -- have committed in between; cursor and incarnation are the current
+        -- ones now, and the locks keep them so until this transaction ends.
+        -- (A registration gone meanwhile was already declined by the try-lock;
+        -- NOT FOUND here is a safety net.)
         SELECT s.store, s.cursor_at, s.cursor_seq, s.store_id AS registered_id, st.id AS store_id
           INTO v_state
           FROM authz.materialized_refresh_state s
