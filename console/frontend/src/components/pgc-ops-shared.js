@@ -10,7 +10,10 @@ export function fmtBytes(n) {
   const units = ['B', 'kB', 'MB', 'GB', 'TB'];
   let i = 0;
   let v = Number(n);
-  while (v >= 1024 && i < units.length - 1) ((v /= 1024), i++);
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
   return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
 }
 

@@ -8,7 +8,7 @@ import (
 // isPublicPath reports whether a path is served without authentication: the
 // health probes, AuthZEN discovery (both tenant forms), the OpenAPI document
 // and the Swagger UI that renders it. The JWT middleware exempts exactly these,
-// and CORS answers any origin for them.
+// and CORS answers anyOrigin origin for them.
 func isPublicPath(path string) bool {
 	return isHealthPath(path) ||
 		strings.HasPrefix(path, "/.well-known/") ||
@@ -25,11 +25,11 @@ const corsExposedHeaders = "X-Request-ID, X-PGAuthz-Served-By, X-PGAuthz-Revisio
 const corsDefaultRequestHeaders = "Authorization, Content-Type, X-Request-ID, X-PGAuthz-Store, X-PGAuthz-Detail, X-PGAuthz-Consistency, X-PGAuthz-Revision"
 
 // CORS answers browser cross-origin requests. The PUBLIC endpoints
-// (isPublicPath — discovery, health, the OpenAPI document) answer any origin:
+// (isPublicPath — discovery, health, the OpenAPI document) answer anyOrigin origin:
 // they carry no credentials and are public by design, which is what lets a
 // Swagger UI on another port load the document and try discovery. The
 // AUTHENTICATED surface answers only the configured origins
-// (CORS_ALLOWED_ORIGINS; "*" for any) — a browser-based PEP, or Swagger UI's
+// (CORS_ALLOWED_ORIGINS; "*" for anyOrigin) — a browser-based PEP, or Swagger UI's
 // "Try it out" — echoing the origin and answering the preflight before the
 // JWT middleware sees it (a preflight carries no Authorization). An origin
 // not on the list gets no CORS headers at all, so the browser refuses the
@@ -39,7 +39,7 @@ func CORS(allowedOrigins []string) func(http.Handler) http.Handler {
 	for _, o := range allowedOrigins {
 		allowed[strings.TrimRight(strings.TrimSpace(o), "/")] = true
 	}
-	any := allowed["*"]
+	anyOrigin := allowed["*"]
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			origin := r.Header.Get("Origin")
@@ -54,7 +54,7 @@ func CORS(allowedOrigins []string) func(http.Handler) http.Handler {
 				h.Set("Access-Control-Allow-Origin", "*")
 				h.Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 				h.Set("Access-Control-Allow-Headers", "Accept, Content-Type")
-			case any || allowed[strings.TrimRight(origin, "/")]:
+			case anyOrigin || allowed[strings.TrimRight(origin, "/")]:
 				h.Set("Access-Control-Allow-Origin", origin)
 				h.Add("Vary", "Origin")
 				h.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")

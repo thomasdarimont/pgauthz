@@ -89,7 +89,10 @@ export class PgcJson extends PgcElement {
   _onInvalid(e) {
     let opened = false;
     for (let d = e.target.closest('details'); d; d = d.parentElement?.closest('details'))
-      if (!d.open) ((d.open = true), (opened = true));
+      if (!d.open) {
+        d.open = true;
+        opened = true;
+      }
     if (opened && !this._reporting) {
       this._reporting = true;
       requestAnimationFrame(() => {
@@ -105,7 +108,8 @@ export class PgcJson extends PgcElement {
     pre.scrollLeft = e.target.scrollLeft;
   }
 
-  updated() {
+  updated(changed) {
+    super.updated(changed);
     const ta = this.querySelector('textarea');
     const c = PgcJson.check(this.value, this.required);
     ta?.setCustomValidity(c.error ? `${t('Invalid JSON')}: ${c.error.msg}` : '');
@@ -122,7 +126,6 @@ export class PgcJson extends PgcElement {
         <textarea
           class="mono"
           rows=${this.rows}
-          wrap="off"
           spellcheck="false"
           autocomplete="off"
           ?required=${this.required}

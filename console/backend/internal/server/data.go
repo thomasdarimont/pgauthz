@@ -154,10 +154,6 @@ func (s *Server) handleWriteTuple(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-type deleteTuplesReq struct {
-	Tuples []tupleReq `json:"tuples"`
-}
-
 // handleDeleteTuple — revoke one or several relationships in the managed
 // store, in one transaction ({tuples: [...]}; a single tuple body still works).
 func (s *Server) handleDeleteTuple(w http.ResponseWriter, r *http.Request) {

@@ -39,7 +39,7 @@ export class PgcAccess extends PgcElement {
 
   willUpdate(changed) {
     if ((changed.has('store') || changed.has('scope')) && (this.store || this.scope === 'platform'))
-      this._load();
+      void this._load();
   }
 
   _api() {
@@ -62,7 +62,7 @@ export class PgcAccess extends PgcElement {
   }
 
   async _load() {
-    this._loadNamespaces();
+    void this._loadNamespaces();
     const d = await run(this, () => this._api().list());
     if (d) {
       this.d = d;

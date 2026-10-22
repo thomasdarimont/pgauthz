@@ -95,7 +95,7 @@ export class PgcStores extends PgcElement {
 
   connectedCallback() {
     super.connectedCallback();
-    this._load();
+    void this._load();
   }
 
   async _load() {
@@ -347,7 +347,10 @@ export class PgcStores extends PgcElement {
                             type="search"
                             placeholder=${t('search stores by name or description')}
                             .value=${this.q}
-                            @input=${(e) => ((this.q = e.target.value), (this.page = 0))}
+                            @input=${(e) => {
+                              this.q = e.target.value;
+                              this.page = 0;
+                            }}
                           />
                         </label>
                         ${
@@ -454,7 +457,10 @@ export class PgcStores extends PgcElement {
                                     <button
                                       class="sm danger"
                                       ?disabled=${this.busy}
-                                      @click=${() => ((this.deleting = s.name), (this.deleteName = ''))}
+                                      @click=${() => {
+                                        this.deleting = s.name;
+                                        this.deleteName = '';
+                                      }}
                                     >
                                       ${t('Delete…')}
                                     </button>

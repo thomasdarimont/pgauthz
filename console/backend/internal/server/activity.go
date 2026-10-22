@@ -75,7 +75,7 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 
 	audit := []auditRow{}
 	rows, err := s.engine.Query(ctx, `
-		SELECT a.action, a.performed_at, coalesce(a.performed_by,''), ut.name, a.user_id, coalesce(ur.name,''),
+		SELECT a.action, a.performed_at, a.performed_by, ut.name, a.user_id, coalesce(ur.name,''),
 		       rl.name, ot.name, a.object_id, coalesce(a.condition_context, 'null'::jsonb)
 		  FROM authz.tuples_audit a
 		  JOIN authz.stores s ON s.id = a.store_id

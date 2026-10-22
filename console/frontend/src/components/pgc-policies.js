@@ -29,7 +29,7 @@ export class PgcPolicies extends PgcElement {
   }
 
   willUpdate(changed) {
-    if (changed.has('store') && this.store) this._load();
+    if (changed.has('store') && this.store) void this._load();
   }
 
   async _load() {

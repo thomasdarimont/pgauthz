@@ -40,7 +40,7 @@ export class PgcOps extends PgcElement {
   }
 
   willUpdate(changed) {
-    if (changed.has('store') && this.store) this._load();
+    if (changed.has('store') && this.store) void this._load();
   }
 
   async _load() {
@@ -221,7 +221,7 @@ export class PgcOps extends PgcElement {
               data-testid="ops-recorder-form"
               @submit=${(e) => {
                 e.preventDefault();
-                this._act('recorder', () =>
+                void this._act('recorder', () =>
                   api.opsRecorderGrant(this.store, this.form.rec_role?.trim(), this._recActions()),
                 );
               }}
@@ -297,7 +297,7 @@ export class PgcOps extends PgcElement {
                 data-testid="ops-expired-form"
                 @submit=${(e) => {
                   e.preventDefault();
-                  this._act('expired', () => api.opsCleanupExpired(this.store, this.form.grace));
+                  void this._act('expired', () => api.opsCleanupExpired(this.store, this.form.grace));
                 }}
               >
                 <h4 class="wide">${t('Expired tuples')}</h4>

@@ -39,8 +39,8 @@ export class PgcApp extends PgcElement {
     super.connectedCallback();
     window.addEventListener('popstate', this._onPop);
     this.addEventListener('click', this._onClick);
-    initI18n(); // dictionaries + operator overrides; re-renders everything once loaded
-    this._load();
+    void initI18n(); // dictionaries + operator overrides; re-renders everything once loaded
+    void this._load();
     api
       .version()
       .then((v) => (this.version = v))

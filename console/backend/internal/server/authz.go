@@ -169,13 +169,13 @@ func lockKey(objectType, objectID string) string {
 // one or more capabilities on a store — all of them are required.
 func (s *Server) storeGate(ctx context.Context, p *principal, store string, caps ...string) func(tx pgx.Tx) error {
 	return func(tx pgx.Tx) error {
-		for _, cap := range caps {
-			ok, err := s.canQ(ctx, tx, p, cap, "store", store)
+		for _, c := range caps {
+			ok, err := s.canQ(ctx, tx, p, c, "store", store)
 			if err != nil {
 				return err
 			}
 			if !ok {
-				return scopeError{cap, "store:" + store}
+				return scopeError{c, "store:" + store}
 			}
 		}
 		return nil

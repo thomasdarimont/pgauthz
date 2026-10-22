@@ -55,7 +55,7 @@ export class PgcStore extends PgcElement {
   }
 
   willUpdate(changed) {
-    if (changed.has('store') && this.store) this._load();
+    if (changed.has('store') && this.store) void this._load();
   }
 
   async _load() {
@@ -191,7 +191,10 @@ export class PgcStore extends PgcElement {
                       caps.can_manage_access && !i.retired_at
                         ? html`<button
                             class="ghost sm"
-                            @click=${() => ((this.editing = !this.editing), (this.form = {}))}
+                            @click=${() => {
+                              this.editing = !this.editing;
+                              this.form = {};
+                            }}
                           >
                             ${t('Edit')}
                           </button>`

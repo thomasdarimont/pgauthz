@@ -90,12 +90,12 @@ export class PgcData extends PgcElement {
     } catch {
       /* storage unavailable */
     }
-    this._load();
+    void this._load();
   }
 
   willUpdate(changed) {
     if (changed.has('store') && this.store) {
-      this._load();
+      void this._load();
       api
         .meta(this.store)
         .then((m) => (this.meta = m))
@@ -192,7 +192,7 @@ export class PgcData extends PgcElement {
   _toggleSort(key) {
     this.sort = this.sort?.key === key ? { key, dir: -this.sort.dir } : { key, dir: 1 };
     this.page = 0;
-    this._load();
+    void this._load();
   }
 
   // Rows arrive in the chosen order from the server (the whole store is
@@ -207,7 +207,7 @@ export class PgcData extends PgcElement {
 
   _goto(page) {
     this.page = Math.max(0, Math.min(page, this._pages() - 1));
-    this._load();
+    void this._load();
   }
 
   _pager() {
@@ -473,7 +473,7 @@ export class PgcData extends PgcElement {
         data-testid="data-offboard-form"
         @submit=${(e) => {
           e.preventDefault();
-          this._offboardCount();
+          void this._offboardCount();
         }}
       >
         <label class="field"
@@ -612,18 +612,30 @@ export class PgcData extends PgcElement {
               ? html`<button
                     class="sm"
                     data-testid="data-import-open"
-                    @click=${() => ((this.panel = this.panel === 'import' ? null : 'import'), (this.adding = false))}
+                    @click=${() => {
+                      this.panel = this.panel === 'import' ? null : 'import';
+                      this.adding = false;
+                    }}
                   >
                     ${t('Import…')}
                   </button>
                   <button
                     class="sm"
                     data-testid="data-offboard-open"
-                    @click=${() => ((this.panel = this.panel === 'offboard' ? null : 'offboard'), (this.adding = false))}
+                    @click=${() => {
+                      this.panel = this.panel === 'offboard' ? null : 'offboard';
+                      this.adding = false;
+                    }}
                   >
                     ${t('Offboard…')}
                   </button>
-                  <button class="primary" @click=${() => ((this.adding = !this.adding), (this.panel = null))}>
+                  <button
+                    class="primary"
+                    @click=${() => {
+                      this.adding = !this.adding;
+                      this.panel = null;
+                    }}
+                  >
                     ${t('Add')}
                   </button>`
               : html`<span class="help">${t('writing needs "share" (sharer or owner)')}</span>`
@@ -773,7 +785,7 @@ export class PgcData extends PgcElement {
                             <td class="mono">${tu.relation}</td>
                             <td class="mono">${tu.object_type}:${tu.object_id}</td>
                             <td class="mono">
-                              ${tu.condition_name}${tu.condition_context && tu.condition_context !== null ? html` <span class="muted">${JSON.stringify(tu.condition_context)}</span>` : nothing}
+                              ${tu.condition_name}${tu.condition_context ? html` <span class="muted">${JSON.stringify(tu.condition_context)}</span>` : nothing}
                             </td>
                             <td class="muted">${this._expiry(tu)}</td>
                           </tr>`,

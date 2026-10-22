@@ -73,7 +73,7 @@ export class PgcModel extends PgcElement {
   }
 
   willUpdate(changed) {
-    if (changed.has('store') && this.store) this._load();
+    if (changed.has('store') && this.store) void this._load();
     if (changed.has('section') && this.section) {
       try {
         localStorage.setItem('pgc_model_section', this.section);
@@ -1722,7 +1722,10 @@ type document
                         ? html`<button
                             type="button"
                             class="link"
-                            @click=${() => ((this.renaming = ns), (this.renameTo = ns))}
+                            @click=${() => {
+                              this.renaming = ns;
+                              this.renameTo = ns;
+                            }}
                           >
                             ${t('rename')}
                           </button>`

@@ -32,7 +32,7 @@ export class PgcFleetOps extends PgcElement {
 
   connectedCallback() {
     super.connectedCallback();
-    this._load();
+    void this._load();
   }
 
   async _load() {
@@ -80,7 +80,7 @@ export class PgcFleetOps extends PgcElement {
         data-testid="fleet-ensure-form"
         @submit=${(e) => {
           e.preventDefault();
-          this._act('ensure', () => api.platformEnsurePartitions(Number(this.form.months)));
+          void this._act('ensure', () => api.platformEnsurePartitions(Number(this.form.months)));
         }}
       >
         <h4 class="wide">${t('Create partitions ahead')}</h4>

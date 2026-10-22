@@ -82,7 +82,6 @@ function armTip(icon) {
 document.addEventListener('mouseover', (e) => {
   const icon = e.target.closest?.('.help-icon[data-tip]');
   if (icon) armTip(icon);
-  else if (!tipTimer && !tipFor) return;
   else if (!e.target.closest?.('.pgc-tip')) hideTip();
 });
 document.addEventListener('focusin', (e) => {

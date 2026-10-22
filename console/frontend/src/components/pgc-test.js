@@ -90,7 +90,7 @@ export class PgcTest extends PgcElement {
   willUpdate(changed) {
     if (changed.has('store') && this.store) {
       this._clear();
-      this._load();
+      void this._load();
     }
   }
 
@@ -214,7 +214,7 @@ export class PgcTest extends PgcElement {
     this.action = action;
     this.resource = resource;
     this.mode = 'single';
-    this._runSingle();
+    void this._runSingle();
   }
 
   _sql() {
@@ -377,7 +377,19 @@ export class PgcTest extends PgcElement {
       out.push(
         html`<p class="notice">
           ${t('{action} is a relation: what a subject IS on this object, held by a tuple or inherited. To ask what they may do here, check a permission:', { action: this.action })}
-          ${perms.map((r) => html`<button class="sm" @click=${() => ((this.ask = 'can'), (this.action = r.name), this._runSingle())}>${r.name}</button>`)}
+          ${perms.map(
+            (r) =>
+              html`<button
+                class="sm"
+                @click=${() => {
+                  this.ask = 'can';
+                  this.action = r.name;
+                  void this._runSingle();
+                }}
+              >
+                ${r.name}
+              </button>`,
+          )}
         </p>`,
       );
     }
@@ -386,7 +398,19 @@ export class PgcTest extends PgcElement {
       out.push(
         html`<p class="help">
           ${t('To see what the subject IS on this object instead (its relations), switch to "Is a":')}
-          ${rels.map((r) => html`<button class="sm" @click=${() => ((this.ask = 'is'), (this.action = r.name), this._runSingle())}>${r.name}</button>`)}
+          ${rels.map(
+            (r) =>
+              html`<button
+                class="sm"
+                @click=${() => {
+                  this.ask = 'is';
+                  this.action = r.name;
+                  void this._runSingle();
+                }}
+              >
+                ${r.name}
+              </button>`,
+          )}
         </p>`,
       );
     }
@@ -445,7 +469,7 @@ export class PgcTest extends PgcElement {
       `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
     const preset = (ms) => {
       this.at = ms === null ? '' : local(new Date(Date.now() + ms));
-      if (this.decision !== null) this._runSingle();
+      if (this.decision !== null) void this._runSingle();
     };
     return html`<details class="at-row" ?open=${!!this.at}>
       <summary class="help">
@@ -478,7 +502,10 @@ export class PgcTest extends PgcElement {
         <input
           type="checkbox"
           .checked=${this.successfulOnly}
-          @change=${(e) => ((this.successfulOnly = e.target.checked), rerun())}
+          @change=${(e) => {
+            this.successfulOnly = e.target.checked;
+            rerun();
+          }}
         />
         ${t('Only the deciding path')}
       </label>
@@ -490,7 +517,10 @@ export class PgcTest extends PgcElement {
           type="checkbox"
           .checked=${this.redact || !this._policy().explainFull}
           ?disabled=${!this._policy().explainFull}
-          @change=${(e) => ((this.redact = e.target.checked), rerun())}
+          @change=${(e) => {
+            this.redact = e.target.checked;
+            rerun();
+          }}
         />
         ${t('Redact identifiers')}
       </label>
@@ -958,7 +988,10 @@ export class PgcTest extends PgcElement {
               class=${this.mode === id ? 'active' : ''}
               ?disabled=${locked}
               title=${locked ? t('The test policy does not let you enumerate objects or subjects (needs can_test_search).') : t(tip)}
-              @click=${() => ((this.mode = id), this._clear())}
+              @click=${() => {
+                this.mode = id;
+                this._clear();
+              }}
             >
               ${t(label)}${locked ? ' 🔒' : ''}
             </button>`;
