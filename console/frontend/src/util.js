@@ -48,6 +48,7 @@ export function fmtTime(s) {
 }
 
 // A store's managed-model badge: "saas_core@3", "@3 drifted" or "unmanaged".
+/** @param {import('./types.js').Status} [st] */
 export function statusBadge(st) {
   if (!st || !st.model_name) return html`<span class="badge muted">${t('unmanaged')}</span>`;
   const label = `${st.model_name}@${st.model_version}`;
@@ -143,7 +144,8 @@ export function fmtRelative(s, now = Date.now()) {
   ];
   const rtf = new Intl.RelativeTimeFormat(lang, { numeric: 'auto' });
   for (const [unit, secs] of units) {
-    if (Math.abs(diff) >= secs || unit === 'second') return rtf.format(Math.round(diff / secs), unit);
+    if (Math.abs(diff) >= secs || unit === 'second')
+      return rtf.format(Math.round(diff / secs), /** @type {Intl.RelativeTimeFormatUnit} */ (unit));
   }
   return '';
 }

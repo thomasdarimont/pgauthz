@@ -22,10 +22,12 @@ export class PgcFleetOps extends PgcElement {
 
   constructor() {
     super();
+    /** @type {import('../types.js').PlatformOps|null} */
     this.d = null;
     this.busy = false;
     this.error = '';
     this.form = { months: 1 };
+    /** @type {{ensure?: import('../types.js').FleetResult, drop?: import('../types.js').FleetResult}} */
     this.result = {};
     this.confirming = false;
   }

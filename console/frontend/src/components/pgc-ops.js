@@ -29,13 +29,18 @@ export class PgcOps extends PgcElement {
 
   constructor() {
     super();
+    /** @type {import('../types.js').OpsOverview|null} */
     this.d = null;
     this.busy = false;
     this.error = '';
+    /** @type {import('../types.js').OpsForm} */
     this.form = { grace: '1 day', months: 1 };
+    /** @type {import('../types.js').OpsResults} */
     this.result = {};
+    /** @type {import('../types.js').RedundantResult|null} */
     this.redundant = null;
     this.confirming = null;
+    /** @type {import('../types.js').Meta|null} */
     this.meta = null;
   }
 

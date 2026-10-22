@@ -17,6 +17,7 @@ export class PgcData extends PgcElement {
     nsCaps: { attribute: false }, // per-namespace capabilities (store screen)
     rows: { state: true },
     meta: { state: true },
+    /** @type {import('../types.js').TupleStats|null} */
     stats: { state: true },
     q: { state: true },
     busy: { state: true },
@@ -50,13 +51,16 @@ export class PgcData extends PgcElement {
 
   constructor() {
     super();
+    /** @type {import('../types.js').TupleRow[]|null} */
     this.rows = null;
     this.q = '';
     this.busy = false;
     this.error = '';
     this.adding = false;
     this.panel = null;
+    /** @type {{text: string, preview?: import('../types.js').ImportPreview|null, result?: import('../types.js').ImportResult|null}} */
     this.imp = { text: '' };
+    /** @type {{user_type?: string, user_id?: string, count?: number, confirming?: boolean, result?: import('../types.js').OffboardResult|null}} */
     this.off = {};
     this.form = {};
     this.selected = new Set();

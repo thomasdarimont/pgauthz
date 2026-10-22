@@ -245,6 +245,14 @@ them as mandatory (`PGAUTHZ_TEST_REQUIRE_DATABASE=1`) and drops the store;
 `tests/test-all.sh` and CI include it. The access model's own SQL checks are
 `../examples/models/console/tests.sql` (run by `tests/test.sh`).
 
+### API shapes
+
+`frontend/src/types.js` holds the BFF's response shapes as JSDoc typedefs
+(no runtime): the `api.js` calls declare what they resolve to and each
+component types the state it keeps a response in, so an editor resolves
+fields and flags a misspelt one. Keep it in step with the Go structs' json
+tags when a response changes.
+
 ### Test ids
 
 Every control an end-to-end test would drive carries a `data-testid`, named

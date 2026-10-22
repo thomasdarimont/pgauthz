@@ -24,6 +24,7 @@ export class PgcApp extends PgcElement {
 
   constructor() {
     super();
+    /** @type {import('../types.js').Me|null|undefined} */
     this.me = undefined; // undefined = loading, null = logged out
     this.login = { oidc: true, local: false }; // sign-ins this deployment offers (from api/me)
     this.localUser = '';

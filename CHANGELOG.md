@@ -25,7 +25,10 @@ pre-1.0, minor versions may include breaking changes.
   row count before the rows are read (Activity → Console actions). Existing
   console stores need the model delta once (console README).
   The stores home hides retired stores unless "show retired (n)" is ticked
-  (remembered per browser).
+  (remembered per browser); sorting it by model works again (it read a
+  field the status never had). `frontend/src/types.js` documents the BFF's
+  response shapes as JSDoc typedefs, used by `api.js` and the components'
+  state, so editors resolve the fields.
 - **Console: an Operations tab per store and for the fleet.** Store →
   Operations (reads `can_view_audit`, actions `can_manage_access`, as the
   person, recorded): gate readiness (`events_readiness`, every clause's

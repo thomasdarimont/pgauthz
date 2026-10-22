@@ -22,6 +22,7 @@ export class PgcActivity extends PgcElement {
 
   constructor() {
     super();
+    /** @type {import('../types.js').ActivityResponse|null} */
     this.d = null;
     this.view = 'console';
     this.busy = false;

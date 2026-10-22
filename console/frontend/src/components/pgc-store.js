@@ -47,6 +47,7 @@ export class PgcStore extends PgcElement {
 
   constructor() {
     super();
+    /** @type {import('../types.js').StoreRow|null} */
     this.info = null;
     this.busy = false;
     this.error = '';

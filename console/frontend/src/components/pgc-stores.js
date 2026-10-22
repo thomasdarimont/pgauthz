@@ -28,6 +28,7 @@ export class PgcStores extends PgcElement {
 
   constructor() {
     super();
+    /** @type {import('../types.js').StoreList|null} */
     this.data = null;
     this.busy = false;
     this.error = '';
@@ -163,7 +164,7 @@ export class PgcStores extends PgcElement {
         case 'updated':
           return st.last_change_at ? new Date(st.last_change_at).getTime() : 0;
         case 'model':
-          return st.status?.version_name ? `${st.status.version_name}@${st.status.version}` : '';
+          return st.status?.model_name ? `${st.status.model_name}@${st.status.model_version}` : '';
         default:
           return st.name;
       }
@@ -402,10 +403,7 @@ export class PgcStores extends PgcElement {
                             <tr>
                               ${this._sortTh('name', t('Store'))}
                               <th>${t('Description')}</th>
-                              <th>
-                                ${t('Model')}
-                                ${help('The registry version the store runs, or unmanaged when its model was built in place.')}
-                              </th>
+                              ${this._sortTh('model', t('Model'), help('The registry version the store runs, or unmanaged when its model was built in place.'))}
                               <th>${t('Your access')}</th>
                               ${this._sortTh('created', t('Created at'))}
                               ${this._sortTh('updated', t('Updated at'), help('The latest model, condition or tuple change in the audit trail.'))}

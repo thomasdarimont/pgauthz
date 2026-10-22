@@ -44,6 +44,7 @@ export class PgcModel extends PgcElement {
 
   constructor() {
     super();
+    /** @type {import('../types.js').ModelResponse|null} */
     this.m = null;
     this.view = 'dsl';
     this.busy = false;
@@ -55,6 +56,7 @@ export class PgcModel extends PgcElement {
     this.confirming = false;
     this.dslEdit = false; // the DSL view as an editor
     this.dslText = '';
+    /** @type {import('../types.js').DSLReport|null} */
     this.dslReport = null; // the importer's report after an apply
     this.defOpen = false;
     try {

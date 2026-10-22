@@ -68,6 +68,7 @@ export class PgcTest extends PgcElement {
     this.at = ''; // single check: decide as of this instant (datetime-local, local time); '' = now
     this.redact = false; // explain: types and reasons only, no identifiers
     this.asked = null; // the question the current result answers // single check: 'can' = a permission (what they can do), 'is' = a relation (what they are)
+    /** @type {import('../types.js').Meta|null} */
     this.meta = null;
     this.subject = '';
     this.action = '';
@@ -438,6 +439,7 @@ export class PgcTest extends PgcElement {
   // this person may ask beyond their own access. The UI mirrors it so the
   // forms only offer what will be allowed.
   _policy() {
+    /** @type {import('../types.js').Capabilities} */
     const c = this.caps ?? {};
     return {
       others: !!c.can_test_others,
@@ -915,6 +917,7 @@ export class PgcTest extends PgcElement {
 
   _asMe() {
     const d = this.decided;
+    /** @type {import('../types.js').DecideDetail} */
     const detail = d?.detail ?? {};
     const hooks = detail.hooks_loaded ?? [];
     const denials = detail.hook_denials ?? [];

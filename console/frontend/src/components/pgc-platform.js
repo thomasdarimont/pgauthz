@@ -20,6 +20,7 @@ export class PgcPlatform extends PgcElement {
   constructor() {
     super();
     this.tab = 'access';
+    /** @type {import('../types.js').PlatformInfo|null} */
     this.d = null;
     this.busy = false;
     this.error = '';

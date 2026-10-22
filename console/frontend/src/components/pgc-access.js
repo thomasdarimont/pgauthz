@@ -27,6 +27,7 @@ export class PgcAccess extends PgcElement {
   constructor() {
     super();
     this.scope = 'store';
+    /** @type {import('../types.js').AccessResponse|null} */
     this.d = null;
     this.busy = false;
     this.error = '';

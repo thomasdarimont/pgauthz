@@ -27,7 +27,9 @@ export class PgcRegistry extends PgcElement {
     super();
     this.store = '';
     this.model = '';
+    /** @type {import('../types.js').RegistryResponse|null} */
     this.d = null;
+    /** @type {import('../types.js').StoreRow[]|null} */
     this.stores = null;
     this.q = '';
     this.busy = false;
