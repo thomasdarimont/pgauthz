@@ -105,6 +105,7 @@ export class PgcStore extends PgcElement {
       case 'data':
         return html`<pgc-data
           .store=${this.store}
+          .me=${this.me}
           .caps=${caps}
           .nsCaps=${this.info?.namespaces}
           @changed=${this._refresh}

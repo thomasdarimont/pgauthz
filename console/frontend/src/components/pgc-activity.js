@@ -96,8 +96,15 @@ export class PgcActivity extends PgcElement {
       p?.db_role
         ? html`<span class="mono muted">${p.db_role}: ${(p.actions ?? []).join(', ') || t('all')}</span>`
         : nothing;
+    // A share: as whom, on what, how many grants and revokes.
+    const share = (p) =>
+      p?.op === 'share'
+        ? html`<span class="mono muted"
+            >${p.actor} → ${p.object}: ${p.grants} ${t('grant(s)')}, ${p.revokes} ${t('revoke(s)')}</span
+          >`
+        : nothing;
     const summary = (p) =>
-      html`${exp(p)}${rec(p)}${test(p)}${p?.model ? html`<span class="mono">${p.model}${p.version ? '@' + p.version : ''}</span> ` : nothing}${
+      html`${exp(p)}${rec(p)}${share(p)}${test(p)}${p?.model ? html`<span class="mono">${p.model}${p.version ? '@' + p.version : ''}</span> ` : nothing}${
         p?.edit ? html`<span class="mono muted">${JSON.stringify(p.edit).slice(0, 120)}</span>` : nothing
       }${p?.ops ? html`<span class="mono muted">${p.ops.length} ${t('operations')}</span>` : nothing}${
         p?.tuple

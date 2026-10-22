@@ -73,6 +73,14 @@ export const api = {
   tuplesExportURL: (store, format) => `api/stores/${enc(store)}/tuples/export?format=${enc(format)}`,
   /** @returns {Promise<import('./types.js').ImportPreview|import('./types.js').ImportResult>} */
   tuplesImport: (store, text, apply) => call(`api/stores/${enc(store)}/tuples/import`, { text, apply }),
+  /** @returns {Promise<import('./types.js').ShareOptions>} */
+  shareOptions: (store, o) =>
+    call(
+      `api/stores/${enc(store)}/share?object_type=${enc(o.object_type)}&object_id=${enc(o.object_id)}&actor_type=${enc(o.actor_type)}&actor_id=${enc(o.actor_id)}`,
+    ),
+  /** @returns {Promise<{ok: boolean, result: {granted: number, revoked: number}}>} */
+  shareApply: (store, o, grants, revokes) =>
+    call(`api/stores/${enc(store)}/share`, { ...o, grants, revokes }),
   /** @returns {Promise<import('./types.js').OffboardResult>} */
   offboard: (store, userType, userId, apply) =>
     call(`api/stores/${enc(store)}/tuples/offboard`, { user_type: userType, user_id: userId, apply }),

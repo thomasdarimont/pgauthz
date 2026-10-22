@@ -9,6 +9,16 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Console: the share dialog.** Data → Share…: pick an object and whom
+  to act as (yourself by default); `grant_options` renders, per relation
+  with a grant rule, whether that actor may grant and revoke it and who may
+  hold it, with today's holders; additions and removals queue up and are
+  saved as one `apply_grants` transaction, each decided by the engine under
+  the object's lock, recorded as the person (`GET`/`POST
+  /api/stores/{store}/share`, console gate `can_grant` scoped to the object
+  type's namespace). Go test against the database: options for an owner and
+  for a stranger, a refused and an accepted save. This completes the
+  Model tab's grant rules: declare them there, watch them decide here.
 - **Console: batch import, export and offboarding on the Data tab.**
   Export the store's tuples as JSON (the native shape, round-trippable with
   conditions, context and expiry), CSV with the same columns, or the OpenFGA

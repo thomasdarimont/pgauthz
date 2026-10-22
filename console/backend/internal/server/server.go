@@ -115,6 +115,8 @@ func (s *Server) Routes() http.Handler {
 	h("GET /api/stores/{store}/tuples/export", s.handleTuplesExport)
 	h("POST /api/stores/{store}/tuples/import", s.handleTuplesImport)
 	h("POST /api/stores/{store}/tuples/offboard", s.handleOffboard)
+	h("GET /api/stores/{store}/share", s.handleShareOptions)
+	h("POST /api/stores/{store}/share", s.handleShareApply)
 
 	// Test
 	h("GET /api/stores/{store}/meta", s.handleMeta)

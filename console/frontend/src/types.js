@@ -173,6 +173,10 @@
 /** @typedef {{count: number, shape: string, object_types: string[], preview: TupleRow[], applied: false}} ImportPreview */
 /** @typedef {{count: number, shape: string, written: number, applied: true}} ImportResult */
 /** @typedef {{count: number, applied: boolean, removed?: number}} OffboardResult */
+/** @typedef {{relation: string, can_grant: boolean, can_revoke: boolean, requires: string, requires_revoke: string, grantee_types: string[]}} GrantOption */
+/** @typedef {{relation: string, user_type: string, user_id: string, user_relation: string, condition_name: string, expires_at: string|null}} HolderRow */
+/** @typedef {{object_type: string, object_id: string, actor_type: string, actor_id: string}} ShareObject */
+/** @typedef {{object: ShareObject, options: GrantOption[], holders: HolderRow[]}} ShareOptions the share dialog: what the actor may grant and revoke, who holds what */
 
 // ── test ───────────────────────────────────────────────────────────────────
 

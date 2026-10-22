@@ -23,7 +23,9 @@ export class PgcData extends PgcElement {
     busy: { state: true },
     error: { state: true },
     adding: { state: true },
-    panel: { state: true }, // 'import' | 'offboard' | null
+    me: { attribute: false }, // who is signed in: the share dialog's default actor
+    panel: { state: true }, // 'import' | 'offboard' | 'share' | null
+    share: { state: true }, // the share dialog: object, actor, options, holders, pending changes
     imp: { state: true }, // import: { text, preview, result }
     off: { state: true }, // offboarding: { user_type, user_id, count, result }
     form: { state: true },
@@ -58,6 +60,8 @@ export class PgcData extends PgcElement {
     this.error = '';
     this.adding = false;
     this.panel = null;
+    /** @type {{object_type?: string, object_id?: string, actor?: string, d?: import('../types.js').ShareOptions|null, add?: Object<string, string>, grants: import('../types.js').TupleRow[], revokes: import('../types.js').TupleRow[], result?: {granted: number, revoked: number}|null}} */
+    this.share = { grants: [], revokes: [] };
     /** @type {{text: string, preview?: import('../types.js').ImportPreview|null, result?: import('../types.js').ImportResult|null}} */
     this.imp = { text: '' };
     /** @type {{user_type?: string, user_id?: string, count?: number, confirming?: boolean, result?: import('../types.js').OffboardResult|null}} */
@@ -447,6 +451,263 @@ export class PgcData extends PgcElement {
     </section>`;
   }
 
+  // The share dialog: sharing under the model's grant rules as a chosen
+  // actor of the managed store (what an application's share dialog does
+  // through pgauthzd). grant_options renders what the actor may grant and
+  // revoke per relation; additions and removals queue up and are saved as
+  // one apply_grants transaction, decided by the engine.
+  _shareObject() {
+    const sh = this.share;
+    const [actor_type, ...rest] = String(sh.actor ?? '').split(':');
+    return {
+      object_type: sh.object_type?.trim() ?? '',
+      object_id: sh.object_id?.trim() ?? '',
+      actor_type: actor_type?.trim() ?? '',
+      actor_id: rest.join(':').trim(),
+    };
+  }
+
+  async _shareLoad() {
+    const o = this._shareObject();
+    const d = await this._wrap(() => api.shareOptions(this.store, o));
+    if (d) this.share = { ...this.share, d, grants: [], revokes: [], add: {}, result: null };
+  }
+
+  _shareKey(x) {
+    return `${x.user_type}:${x.user_id}${x.user_relation ? '#' + x.user_relation : ''}|${x.relation}`;
+  }
+
+  // Queue a grant or a revoke; queuing the opposite of a queued change
+  // cancels it instead of queuing both.
+  _shareQueue(kind, tu) {
+    const other = kind === 'grants' ? 'revokes' : 'grants';
+    const cancelled = this.share[other].some((x) => this._shareKey(x) === this._shareKey(tu));
+    const sh = {
+      ...this.share,
+      [other]: this.share[other].filter((x) => this._shareKey(x) !== this._shareKey(tu)),
+    };
+    if (!cancelled && !sh[kind].some((x) => this._shareKey(x) === this._shareKey(tu)))
+      sh[kind] = [...sh[kind], tu];
+    this.share = sh;
+  }
+
+  _shareUnqueue(kind, tu) {
+    this.share = {
+      ...this.share,
+      [kind]: this.share[kind].filter((x) => this._shareKey(x) !== this._shareKey(tu)),
+    };
+  }
+
+  async _shareApply() {
+    const o = this._shareObject();
+    const r = await this._wrap(() => api.shareApply(this.store, o, this.share.grants, this.share.revokes));
+    if (r) {
+      await this._shareLoad();
+      this.share = { ...this.share, result: r.result };
+      await this._load();
+      this.dispatchEvent(new CustomEvent('changed'));
+    }
+  }
+
+  _sharePanel() {
+    const sh = this.share;
+    const d = sh.d;
+    const queuedRevoke = (h) => sh.revokes.some((x) => this._shareKey(x) === this._shareKey(h));
+    const pending = sh.grants.length + sh.revokes.length;
+    const types = this.meta?.types ?? [];
+    return html`<section class="card" data-testid="data-share">
+      <h3>
+        ${t('Share an object')}
+        ${help("Sharing as an application's share dialog would, under the model's grant rules: pick the object and whom to act as, then what that actor may grant or revoke per relation is offered (grant_options), and nothing else. Changes queue up and are saved as one transaction (apply_grants), each decided by the engine under the object's lock — one refusal rolls the whole save back. Recorded as you.")}
+      </h3>
+      <form
+        class="form"
+        data-testid="data-share-form"
+        @submit=${(e) => {
+          e.preventDefault();
+          void this._shareLoad();
+        }}
+      >
+        <label class="field"
+          ><span>${t('Object type')} ${help('The type of the object to share, e.g. doc.')}</span
+          ><input
+            class="mono"
+            required
+            list="dl-share-types"
+            .value=${sh.object_type ?? ''}
+            @input=${(e) => (this.share = { ...this.share, object_type: e.target.value, d: null })}
+            data-testid="data-share-type"
+        /></label>
+        <datalist id="dl-share-types">${types.map((x) => html`<option value=${x}></option>`)}</datalist>
+        <label class="field"
+          ><span>${t('Object id')} ${help('The object, e.g. plan.')}</span
+          ><input
+            class="mono"
+            required
+            .value=${sh.object_id ?? ''}
+            @input=${(e) => (this.share = { ...this.share, object_id: e.target.value, d: null })}
+            data-testid="data-share-id"
+        /></label>
+        <label class="field"
+          ><span
+            >${t('Acting as')}
+            ${help('The subject of this store whose grant rules decide, as type:id — yourself by default (user:<your name>), or anyone whose rights you need to see or exercise. What is offered below is what this actor may do.')}</span
+          ><input
+            class="mono"
+            required
+            .value=${sh.actor ?? ''}
+            @input=${(e) => (this.share = { ...this.share, actor: e.target.value, d: null })}
+            data-testid="data-share-actor"
+        /></label>
+        <div class="actions wide">
+          <button class="sm" ?disabled=${this.busy} data-testid="data-share-load">
+            ${t('Show options')}
+          </button>
+          <button type="button" class="sm" @click=${() => (this.panel = null)}>${t('Close')}</button>
+        </div>
+      </form>
+      ${
+        d
+          ? d.options.length
+            ? html`<div class="table-wrap">
+                  <table class="compact" data-testid="data-share-table">
+                    <thead>
+                      <tr>
+                        <th>${t('Relation')}</th>
+                        <th>
+                          ${t('Who holds it')}
+                          ${help('The subjects holding this relation on the object today; × queues a revoke when the actor may revoke.')}
+                        </th>
+                        <th>
+                          ${t('Grant to')}
+                          ${help('A subject as type:id (team:x#member for a userset), of the types the relation may hold; + queues a grant when the actor may grant.')}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${d.options.map((opt) => {
+                        const holders = d.holders.filter((h) => h.relation === opt.relation);
+                        const queued = sh.grants.filter((g) => g.relation === opt.relation);
+                        const draft = sh.add?.[opt.relation] ?? '';
+                        const queue = () => {
+                          const [ut, ...rest] = draft.trim().split(':');
+                          const [uid, urel] = rest.join(':').split('#');
+                          if (!ut || !uid) return;
+                          this._shareQueue('grants', {
+                            user_type: ut,
+                            user_id: uid,
+                            user_relation: urel ?? '',
+                            relation: opt.relation,
+                            object_type: d.object.object_type,
+                            object_id: d.object.object_id,
+                          });
+                          this.share = { ...this.share, add: { ...this.share.add, [opt.relation]: '' } };
+                        };
+                        const grantees = (this.meta?.subjects ?? []).filter((x) =>
+                          opt.grantee_types.some((g) => x.startsWith(g.replace(/[#:].*$/, '') + ':')),
+                        );
+                        return html`<tr data-testid=${`data-share-rel-${opt.relation}`}>
+                          <td>
+                            <span class="mono">${opt.relation}</span>
+                            <div class="help">
+                              ${opt.can_grant ? html`<span class="badge ok">${t('may grant')}</span>` : html`<span class="badge muted" title=${t('the actor needs {rel}', { rel: opt.requires })}>${t('cannot grant')}</span>`}
+                              ${opt.can_revoke ? html`<span class="badge ok">${t('may revoke')}</span>` : html`<span class="badge muted" title=${t('the actor needs {rel}', { rel: opt.requires_revoke || opt.requires })}>${t('cannot revoke')}</span>`}
+                            </div>
+                          </td>
+                          <td>
+                            <div class="chips">
+                              ${holders.map(
+                                (h) =>
+                                  html`<span
+                                    class="chip ${queuedRevoke(h) ? 'deny' : ''}"
+                                    data-testid=${`data-share-holder-${opt.relation}-${h.user_type}-${h.user_id}`}
+                                    >${subjectOf(h)}${h.condition_name ? html` <span class="muted">· ${h.condition_name}</span>` : nothing}
+                                    ${
+                                      opt.can_revoke
+                                        ? queuedRevoke(h)
+                                          ? html`<button
+                                              type="button"
+                                              class="link"
+                                              @click=${() => this._shareUnqueue('revokes', h)}
+                                            >
+                                              ${t('undo')}
+                                            </button>`
+                                          : html`<button
+                                              type="button"
+                                              class="link"
+                                              title=${t('revoke')}
+                                              data-testid=${`data-share-revoke-${opt.relation}-${h.user_id}`}
+                                              @click=${() => this._shareQueue('revokes', { user_type: h.user_type, user_id: h.user_id, user_relation: h.user_relation, relation: h.relation, object_type: d.object.object_type, object_id: d.object.object_id })}
+                                            >
+                                              ×
+                                            </button>`
+                                        : nothing
+                                    }</span
+                                  >`,
+                              )}
+                              ${queued.map((g) => html`<span class="chip ok" data-testid=${`data-share-queued-${opt.relation}-${g.user_id}`}>+ ${subjectOf(g)} <button type="button" class="link" @click=${() => this._shareUnqueue('grants', g)}>${t('undo')}</button></span>`)}
+                              ${!holders.length && !queued.length ? html`<span class="dim">${t('nobody')}</span>` : nothing}
+                            </div>
+                          </td>
+                          <td>
+                            ${
+                              opt.can_grant
+                                ? html`<span class="inline">
+                                    <input
+                                      class="mono"
+                                      list=${`dl-share-${opt.relation}`}
+                                      .value=${draft}
+                                      @input=${(e) => (this.share = { ...this.share, add: { ...this.share.add, [opt.relation]: e.target.value } })}
+                                      @keydown=${(e) => {
+                                        if (e.key === 'Enter') {
+                                          e.preventDefault();
+                                          queue();
+                                        }
+                                      }}
+                                      data-testid=${`data-share-add-${opt.relation}`}
+                                    />
+                                    <datalist id=${`dl-share-${opt.relation}`}>
+                                      ${grantees.map((x) => html`<option value=${x}></option>`)}
+                                    </datalist>
+                                    <button
+                                      type="button"
+                                      class="sm"
+                                      ?disabled=${!draft.trim()}
+                                      data-testid=${`data-share-queue-${opt.relation}`}
+                                      @click=${queue}
+                                    >
+                                      +
+                                    </button>
+                                    <span class="help">${opt.grantee_types.join(', ')}</span>
+                                  </span>`
+                                : html`<span class="dim">—</span>`
+                            }
+                          </td>
+                        </tr>`;
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div class="actions" style="margin-top:var(--s-3)">
+                  <button
+                    class="primary sm"
+                    ?disabled=${this.busy || !pending}
+                    data-testid="data-share-apply"
+                    @click=${this._shareApply}
+                  >
+                    ${t('Save {n} change(s)', { n: pending })}
+                  </button>
+                  ${pending ? html`<span class="help">${t('{g} grant(s), {r} revoke(s), in one transaction', { g: sh.grants.length, r: sh.revokes.length })}</span>` : nothing}
+                  ${sh.result ? html`<span class="help" data-testid="data-share-result">${t('saved: {g} granted, {r} revoked', { g: sh.result.granted, r: sh.result.revoked })}</span>` : nothing}
+                </div>`
+            : html`<p class="help">
+                ${t('No relation of {type} has a grant rule, so nothing can be shared through authz.grant on it. Grant rules are declared on the Model tab.', { type: d.object.object_type })}
+              </p>`
+          : nothing
+      }
+    </section>`;
+  }
+
   // Offboarding: every tuple whose subject is this one — count, then remove.
   async _offboardCount() {
     const o = this.off;
@@ -625,6 +886,21 @@ export class PgcData extends PgcElement {
                   </button>
                   <button
                     class="sm"
+                    data-testid="data-share-open"
+                    @click=${() => {
+                      this.panel = this.panel === 'share' ? null : 'share';
+                      this.adding = false;
+                      if (!this.share.actor)
+                        this.share = {
+                          ...this.share,
+                          actor: `${this.me?.subject?.split(':')[0] ?? 'user'}:${this.me?.username ?? ''}`,
+                        };
+                    }}
+                  >
+                    ${t('Share…')}
+                  </button>
+                  <button
+                    class="sm"
                     data-testid="data-offboard-open"
                     @click=${() => {
                       this.panel = this.panel === 'offboard' ? null : 'offboard';
@@ -646,7 +922,7 @@ export class PgcData extends PgcElement {
           }
         </div>
       </div>
-      ${this.panel === 'import' ? this._importPanel() : this.panel === 'offboard' ? this._offboardPanel() : nothing}
+      ${this.panel === 'import' ? this._importPanel() : this.panel === 'offboard' ? this._offboardPanel() : this.panel === 'share' ? this._sharePanel() : nothing}
       ${this.error ? errorBox(this.error) : nothing}
       ${
         this.adding
