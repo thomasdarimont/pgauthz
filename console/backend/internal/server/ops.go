@@ -141,6 +141,7 @@ func (s *Server) opsOverview(ctx context.Context, q querier, store string) (*ops
 		return nil, err
 	}
 	if o.Derived.Installed {
+		//goland:noinspection SqlResolve -- an optional install (db/replication/materialized_relations.sql), absent from a plain schema
 		err := q.QueryRow(ctx, `SELECT row_to_json(r) FROM authz.materialized_relations_status() r WHERE r.store = $1`, store).Scan(&o.Derived.Status)
 		var pgErr *pgconn.PgError
 		switch {

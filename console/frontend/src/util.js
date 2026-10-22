@@ -11,6 +11,7 @@ const CAP_LABELS = {
   can_rollout: 'roll out',
   can_grant: 'share',
   can_view_audit: 'audit',
+  can_export: 'export',
   can_view_decisions: 'decisions',
   can_manage_access: 'manage access',
 };
@@ -27,6 +28,7 @@ const ROLE_HELP = {
   tester: 'test their own access: checks and redacted trees (the test policy)',
   supporter: "look up and explain anyone's access with full trees; never edits",
   auditor: 'read the audit trail, action log and decisions',
+  exporter: "export the store's tuples (JSON, CSV, OpenFGA); every export is recorded",
   viewer: 'read-only: model, data, rollout state',
   admin: 'platform admin: sees every store, adopts unclaimed stores, reassigns owners',
 };

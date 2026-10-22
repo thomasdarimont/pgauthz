@@ -330,7 +330,7 @@ func (s *Server) asPersonAuthorized(ctx context.Context, p *principal, authorize
 // storeCapabilities are the console relations a store screen is gated by.
 var storeCapabilities = []string{
 	"can_view", "can_run_tests", "can_edit_model", "can_publish", "can_rollout",
-	"can_grant", "can_view_audit", "can_view_decisions", "can_manage_access",
+	"can_grant", "can_view_audit", "can_export", "can_view_decisions", "can_manage_access",
 	// the test policy (see test.go): what a tester may ask beyond their own access
 	"can_test_others", "can_test_explain_full", "can_test_search", "can_test_history",
 }
@@ -342,5 +342,5 @@ var storeCapabilities = []string{
 // adds up.
 var homeCapabilities = []string{
 	"can_view", "can_run_tests", "can_edit_model", "can_publish", "can_rollout",
-	"can_grant", "can_view_audit", "can_view_decisions", "can_manage_access",
+	"can_grant", "can_view_audit", "can_export", "can_view_decisions", "can_manage_access",
 }

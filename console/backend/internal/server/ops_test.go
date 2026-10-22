@@ -32,11 +32,11 @@ func TestOpsOverviewAndActions(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `SELECT authz.delete_store($1, p_purge_audit => true)`, store)
 	}()
 	p := &principal{typ: "user", id: "ops_owner", ctxTuples: "[]"}
-	if _, err := pool.Exec(ctx, `SELECT authz.write_tuple(`+q(cs)+`, 'user', 'ops_owner', 'owner', 'store', $1)`, store); err != nil {
+	if _, err := pool.Exec(ctx, `SELECT authz.write_tuple($1, 'user', 'ops_owner', 'owner', 'store', $2)`, cs, store); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
-		_, _ = pool.Exec(context.Background(), `SELECT authz.delete_tuple(`+q(cs)+`, 'user', 'ops_owner', 'owner', 'store', $1)`, store)
+		_, _ = pool.Exec(context.Background(), `SELECT authz.delete_tuple($1, 'user', 'ops_owner', 'owner', 'store', $2)`, cs, store)
 	}()
 
 	// the allowlist, as the person

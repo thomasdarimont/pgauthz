@@ -51,9 +51,10 @@
 --       define tester: [user, team#member]
 --       define supporter: [user, team#member]   # support: looks up other people's access, never edits
 --       define auditor: [user, team#member]
+--       define exporter: [user, team#member]    # may export the store's tuples (every export is recorded)
 --       define viewer: [user, team#member]
 --       define can_view: viewer or tester or supporter or sharer or author or publisher
---                        or auditor or owner or admin from platform
+--                        or auditor or exporter or owner or admin from platform
 --       define can_run_tests: tester or supporter or author or publisher or owner
 --       # the test policy: what a tester may ask beyond their own access
 --       define can_test_others: supporter or author or publisher or owner      # subjects other than yourself
@@ -65,6 +66,7 @@
 --       define can_rollout: publisher or owner
 --       define can_grant: sharer or owner
 --       define can_view_audit: auditor or owner
+--       define can_export: exporter or owner     # export tuples: sensitive, dedicated role, recorded
 --       define can_view_decisions: auditor or publisher or owner
 --       define can_manage_access: owner or admin from platform
 --       define namespace: [namespace]            # the store's namespaces (link, see below)
@@ -114,10 +116,10 @@ SELECT authz.model_register_type(:'cs', 'namespace', p_description => 'a namespa
 ----------------------------------------------------------------------
 SELECT authz.model_register_relation(:'cs', r) FROM unnest(ARRAY[
     'member', 'admin', 'platform',
-    'owner', 'author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'viewer',
+    'owner', 'author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'exporter', 'viewer',
     'can_manage_issuers', 'can_view_health', 'can_create_store', 'can_view_all_stores',
     'can_view', 'can_run_tests', 'can_edit_model', 'can_publish', 'can_rollout',
-    'can_grant', 'can_view_audit', 'can_view_decisions', 'can_manage_access',
+    'can_grant', 'can_view_audit', 'can_export', 'can_view_decisions', 'can_manage_access',
     'can_test_others', 'can_test_explain_full', 'can_test_search', 'can_test_history',
     'store', 'namespace'
 ]) AS r;
@@ -159,15 +161,15 @@ SELECT authz.model_add_rule(:'cs', 'store', 'platform', 'direct');
 SELECT authz.model_add_type_restriction(:'cs', 'store', 'platform', 'platform');
 
 SELECT authz.model_add_rule(:'cs', 'store', r, 'direct')
-  FROM unnest(ARRAY['owner', 'author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'viewer']) AS r;
+  FROM unnest(ARRAY['owner', 'author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'exporter', 'viewer']) AS r;
 SELECT authz.model_add_type_restriction(:'cs', 'store', r, 'user')
-  FROM unnest(ARRAY['owner', 'author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'viewer']) AS r;
+  FROM unnest(ARRAY['owner', 'author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'exporter', 'viewer']) AS r;
 SELECT authz.model_add_type_restriction(:'cs', 'store', r, 'team', 'member')
-  FROM unnest(ARRAY['owner', 'author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'viewer']) AS r;
+  FROM unnest(ARRAY['owner', 'author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'exporter', 'viewer']) AS r;
 
 -- can_view: every store role sees the store, and so does the platform admin.
 SELECT authz.model_add_rule(:'cs', 'store', 'can_view', 'computed', r)
-  FROM unnest(ARRAY['viewer', 'tester', 'supporter', 'sharer', 'author', 'publisher', 'auditor', 'owner']) AS r;
+  FROM unnest(ARRAY['viewer', 'tester', 'supporter', 'sharer', 'author', 'publisher', 'auditor', 'exporter', 'owner']) AS r;
 SELECT authz.model_add_rule(:'cs', 'store', 'can_view', 'ttu', NULL, 'platform', 'admin');
 -- namespace roles open the store (link tuples written by the console)
 SELECT authz.model_add_rule(:'cs', 'store', 'namespace', 'direct');
@@ -198,6 +200,10 @@ SELECT authz.model_add_rule(:'cs', 'store', 'can_grant', 'computed', r)
   FROM unnest(ARRAY['sharer', 'owner']) AS r;
 SELECT authz.model_add_rule(:'cs', 'store', 'can_view_audit', 'computed', r)
   FROM unnest(ARRAY['auditor', 'owner']) AS r;
+-- can_export: the store's tuples leave the system — a dedicated role, and
+-- the console records every export in its action log (who, when, format, rows).
+SELECT authz.model_add_rule(:'cs', 'store', 'can_export', 'computed', r)
+  FROM unnest(ARRAY['exporter', 'owner']) AS r;
 SELECT authz.model_add_rule(:'cs', 'store', 'can_view_decisions', 'computed', r)
   FROM unnest(ARRAY['auditor', 'publisher', 'owner']) AS r;
 SELECT authz.model_add_rule(:'cs', 'store', 'can_manage_access', 'computed', 'owner');
@@ -223,7 +229,7 @@ SELECT authz.model_add_rule(:'cs', 'namespace', 'can_grant', 'ttu', NULL, 'store
 -- takes tuples follows from its rules. Inference below only fills in what is
 -- left undeclared.
 SELECT authz.model_set_relation_metadata(:'cs', r, '{"kind": "permission"}')
-  FROM unnest(ARRAY['can_create_store', 'can_edit_model', 'can_grant', 'can_manage_access', 'can_manage_issuers', 'can_publish', 'can_rollout', 'can_run_tests', 'can_view', 'can_view_all_stores', 'can_view_audit', 'can_view_decisions', 'can_view_health', 'can_test_others', 'can_test_explain_full', 'can_test_search', 'can_test_history']) AS r;
+  FROM unnest(ARRAY['can_create_store', 'can_edit_model', 'can_grant', 'can_manage_access', 'can_manage_issuers', 'can_publish', 'can_rollout', 'can_run_tests', 'can_view', 'can_view_all_stores', 'can_view_audit', 'can_export', 'can_view_decisions', 'can_view_health', 'can_test_others', 'can_test_explain_full', 'can_test_search', 'can_test_history']) AS r;
 SELECT * FROM authz.infer_relation_kinds(:'cs', true);
 
 SELECT authz.describe_model(:'cs');

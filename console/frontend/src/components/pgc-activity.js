@@ -85,8 +85,18 @@ export class PgcActivity extends PgcElement {
               >${[p.subject, p.action, p.resource].filter(Boolean).join(' ')}${p.at ? ' @ ' + p.at : ''}</span
             >`
           : nothing;
+    // An export: the format and how many rows left the system.
+    const exp = (p) =>
+      p?.op === 'export'
+        ? html`<span class="mono muted">${p.format} · ${p.count} ${t('tuples')}</span>`
+        : nothing;
+    // A recorder allowlist change: the role and the actions.
+    const rec = (p) =>
+      p?.db_role
+        ? html`<span class="mono muted">${p.db_role}: ${(p.actions ?? []).join(', ') || t('all')}</span>`
+        : nothing;
     const summary = (p) =>
-      html`${test(p)}${p?.model ? html`<span class="mono">${p.model}${p.version ? '@' + p.version : ''}</span> ` : nothing}${
+      html`${exp(p)}${rec(p)}${test(p)}${p?.model ? html`<span class="mono">${p.model}${p.version ? '@' + p.version : ''}</span> ` : nothing}${
         p?.edit ? html`<span class="mono muted">${JSON.stringify(p.edit).slice(0, 120)}</span>` : nothing
       }${p?.ops ? html`<span class="mono muted">${p.ops.length} ${t('operations')}</span>` : nothing}${
         p?.tuple

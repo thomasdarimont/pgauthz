@@ -63,6 +63,10 @@ export const api = {
       `api/stores/${enc(store)}/tuples?q=${enc(q ?? '')}&limit=${enc(limit ?? 500)}&offset=${enc(offset)}&sort=${enc(sort)}&dir=${enc(dir)}`,
     ),
   writeTuple: (store, t) => call(`api/stores/${enc(store)}/tuples`, t),
+  tuplesExportURL: (store, format) => `api/stores/${enc(store)}/tuples/export?format=${enc(format)}`,
+  tuplesImport: (store, text, apply) => call(`api/stores/${enc(store)}/tuples/import`, { text, apply }),
+  offboard: (store, userType, userId, apply) =>
+    call(`api/stores/${enc(store)}/tuples/offboard`, { user_type: userType, user_id: userId, apply }),
   deleteTuples: (store, tuples) => call(`api/stores/${enc(store)}/tuples/delete`, { tuples }),
 
   meta: (store) => call(`api/stores/${enc(store)}/meta`),

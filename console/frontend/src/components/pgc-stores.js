@@ -20,6 +20,7 @@ export class PgcStores extends PgcElement {
     q: { state: true }, // search text: matches name and description, instantly
     sort: { state: true }, // { key, dir }
     pageSize: { state: true },
+    showRetired: { state: true }, // retired stores are hidden unless asked for (per browser)
     page: { state: true }, // 0-based
   };
 
@@ -37,6 +38,12 @@ export class PgcStores extends PgcElement {
     this.q = '';
     this.sort = { key: 'name', dir: 1 };
     this.pageSize = 25;
+    this.showRetired = false;
+    try {
+      this.showRetired = localStorage.getItem('pgc_stores_show_retired') === '1';
+    } catch {
+      /* storage unavailable */
+    }
     this.page = 0;
     try {
       const stored = Number(localStorage.getItem('pgc_store_page_size'));
@@ -127,10 +134,26 @@ export class PgcStores extends PgcElement {
 
   // Search is client-side (the list is small and already loaded): a store
   // matches when its name or description contains every word typed.
+  _retired() {
+    return (this.data?.stores ?? []).filter((st) => st.retired_at).length;
+  }
+
+  _toggleRetired(e) {
+    this.showRetired = e.target.checked;
+    this.page = 0;
+    try {
+      localStorage.setItem('pgc_stores_show_retired', this.showRetired ? '1' : '0');
+    } catch {
+      /* storage unavailable */
+    }
+  }
+
   _visible() {
     const words = this.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    const rows = (this.data?.stores ?? []).filter((st) =>
-      words.every((w) => `${st.name} ${st.description ?? ''}`.toLowerCase().includes(w)),
+    const rows = (this.data?.stores ?? []).filter(
+      (st) =>
+        (this.showRetired || !st.retired_at) &&
+        words.every((w) => `${st.name} ${st.description ?? ''}`.toLowerCase().includes(w)),
     );
     const { key, dir } = this.sort;
     const val = (st) => {
@@ -342,6 +365,22 @@ export class PgcStores extends PgcElement {
                         >
                           ↻ ${t('Refresh')}
                         </button>
+                        ${
+                          this._retired()
+                            ? html`<label
+                                class="check"
+                                title=${t('Retired stores keep their history and name; they serve no decisions.')}
+                              >
+                                <input
+                                  type="checkbox"
+                                  .checked=${this.showRetired}
+                                  @change=${this._toggleRetired}
+                                  data-testid="stores-show-retired"
+                                />
+                                ${t('show retired')} (${this._retired()})
+                              </label>`
+                            : nothing
+                        }
                         <label class="check page-size">
                           ${t('Show')}
                           <select

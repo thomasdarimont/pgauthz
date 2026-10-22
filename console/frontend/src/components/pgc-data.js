@@ -22,6 +22,9 @@ export class PgcData extends PgcElement {
     busy: { state: true },
     error: { state: true },
     adding: { state: true },
+    panel: { state: true }, // 'import' | 'offboard' | null
+    imp: { state: true }, // import: { text, preview, result }
+    off: { state: true }, // offboarding: { user_type, user_id, count, result }
     form: { state: true },
     selected: { state: true },
     confirming: { state: true },
@@ -52,6 +55,9 @@ export class PgcData extends PgcElement {
     this.busy = false;
     this.error = '';
     this.adding = false;
+    this.panel = null;
+    this.imp = { text: '' };
+    this.off = {};
     this.form = {};
     this.selected = new Set();
     this.confirming = false;
@@ -316,6 +322,228 @@ export class PgcData extends PgcElement {
     }
   }
 
+  // Import: paste or pick a file (JSON array, OpenFGA ReadTuples JSON, or
+  // CSV with the export's header), see what was understood, then write it
+  // all in one transaction as you.
+  async _importPreview() {
+    const r = await this._wrap(() => api.tuplesImport(this.store, this.imp.text, false));
+    if (r) this.imp = { ...this.imp, preview: r, result: null };
+  }
+
+  async _importApply() {
+    const r = await this._wrap(() => api.tuplesImport(this.store, this.imp.text, true));
+    if (r) {
+      this.imp = { text: '', preview: null, result: r };
+      await this._load();
+      this.dispatchEvent(new CustomEvent('changed'));
+    }
+  }
+
+  _importFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    file.text().then((text) => (this.imp = { ...this.imp, text, preview: null, result: null }));
+  }
+
+  _importPanel() {
+    const im = this.imp;
+    const pv = im.preview;
+    return html`<section class="card" data-testid="data-import">
+      <h3>
+        ${t('Import tuples')}
+        ${help('Paste or pick a file: a JSON array of tuples (the Export JSON shape), an OpenFGA ReadTuples export ({"tuples": [{"key": {user, relation, object}}]}), or CSV with the export\'s header. Preview shows what was understood; Import writes everything in one transaction as you — an existing tuple is left as it is, a tuple the model refuses fails the whole import. Up to 10000 tuples.')}
+      </h3>
+      <div class="form">
+        <label class="field wide"
+          ><span
+            >${t('Tuples')} ${help('JSON, OpenFGA JSON or CSV; the shape is detected from the text.')}</span
+          ><textarea
+            class="mono"
+            rows="8"
+            spellcheck="false"
+            .value=${im.text}
+            @input=${(e) => (this.imp = { ...this.imp, text: e.target.value, preview: null, result: null })}
+            data-testid="data-import-text"
+          ></textarea>
+        </label>
+        <label class="field"
+          ><span>${t('or a file')}</span
+          ><input
+            type="file"
+            accept=".json,.csv,application/json,text/csv"
+            @change=${this._importFile}
+            data-testid="data-import-file"
+        /></label>
+        <div class="actions wide">
+          <button
+            class="sm"
+            ?disabled=${this.busy || !im.text.trim()}
+            data-testid="data-import-preview"
+            @click=${this._importPreview}
+          >
+            ${t('Preview')}
+          </button>
+          ${
+            pv
+              ? html`<span class="help" data-testid="data-import-count">
+                    ${t('{n} tuples understood as {shape}, on {types}', { n: pv.count, shape: pv.shape.toUpperCase(), types: pv.object_types.join(', ') })}
+                  </span>
+                  <button
+                    class="primary sm"
+                    ?disabled=${this.busy}
+                    data-testid="data-import-apply"
+                    @click=${this._importApply}
+                  >
+                    ${t('Import {n} tuples', { n: pv.count })}
+                  </button>`
+              : nothing
+          }
+          ${im.result ? html`<span class="help" data-testid="data-import-result">${t('{n} tuples written', { n: im.result.written })}</span>` : nothing}
+          <button type="button" class="sm" @click=${() => (this.panel = null)}>${t('Close')}</button>
+        </div>
+      </div>
+      ${
+        pv?.preview?.length
+          ? html`<div class="table-wrap">
+              <table class="compact" data-testid="data-import-table">
+                <thead>
+                  <tr>
+                    <th>${t('Subject')}</th>
+                    <th>${t('Relation')}</th>
+                    <th>${t('Object')}</th>
+                    <th>${t('Condition')}</th>
+                    <th>${t('Expires at')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${pv.preview.map(
+                    (x) =>
+                      html`<tr>
+                        <td class="mono">${subjectOf(x)}</td>
+                        <td class="mono">${x.relation}</td>
+                        <td class="mono">${x.object_type}:${x.object_id}</td>
+                        <td class="mono">${x.condition ?? ''}</td>
+                        <td class="muted">${x.expires_at ?? ''}</td>
+                      </tr>`,
+                  )}
+                  ${
+                    pv.count > pv.preview.length
+                      ? html`<tr>
+                          <td colspan="5" class="muted">
+                            ${t('… and {n} more', { n: pv.count - pv.preview.length })}
+                          </td>
+                        </tr>`
+                      : nothing
+                  }
+                </tbody>
+              </table>
+            </div>`
+          : nothing
+      }
+    </section>`;
+  }
+
+  // Offboarding: every tuple whose subject is this one — count, then remove.
+  async _offboardCount() {
+    const o = this.off;
+    const r = await this._wrap(() => api.offboard(this.store, o.user_type?.trim(), o.user_id?.trim(), false));
+    if (r) this.off = { ...this.off, count: r.count, result: null, confirming: false };
+  }
+
+  async _offboardApply() {
+    const o = this.off;
+    const r = await this._wrap(() => api.offboard(this.store, o.user_type?.trim(), o.user_id?.trim(), true));
+    if (r) {
+      this.off = { ...this.off, count: undefined, confirming: false, result: r };
+      await this._load();
+      this.dispatchEvent(new CustomEvent('changed'));
+    }
+  }
+
+  _offboardPanel() {
+    const o = this.off;
+    const ready = !!(o.user_type?.trim() && o.user_id?.trim());
+    return html`<section class="card" data-testid="data-offboard">
+      <h3>
+        ${t('Offboard a subject')}
+        ${help('Removes every tuple this subject holds in the store (delete_user_tuples), as a direct subject and as the subject of usersets — a leaver, a decommissioned service account. Audited as you; every decision that depended on those tuples changes immediately. Count first, then confirm.')}
+      </h3>
+      <form
+        class="form"
+        data-testid="data-offboard-form"
+        @submit=${(e) => {
+          e.preventDefault();
+          this._offboardCount();
+        }}
+      >
+        <label class="field"
+          ><span>${t('Subject type')} ${help('The type of the subject, e.g. user or team.')}</span
+          ><input
+            class="mono"
+            required
+            .value=${o.user_type ?? ''}
+            @input=${(e) => (this.off = { ...this.off, user_type: e.target.value, count: undefined, result: null })}
+            data-testid="data-offboard-type"
+        /></label>
+        <label class="field"
+          ><span>${t('Subject id')} ${help('The subject, e.g. alice.')}</span
+          ><input
+            class="mono"
+            required
+            .value=${o.user_id ?? ''}
+            @input=${(e) => (this.off = { ...this.off, user_id: e.target.value, count: undefined, result: null })}
+            data-testid="data-offboard-id"
+        /></label>
+        <div class="actions wide">
+          <button class="sm" ?disabled=${this.busy || !ready} data-testid="data-offboard-count">
+            ${t('Count tuples')}
+          </button>
+          ${
+            o.count !== undefined
+              ? o.count === 0
+                ? html`<span class="help" data-testid="data-offboard-none"
+                    >${t('no tuples for this subject')}</span
+                  >`
+                : o.confirming
+                  ? html`<span class="help"
+                        >${t('Remove all {n} tuples of {subject}?', { n: o.count, subject: `${o.user_type}:${o.user_id}` })}</span
+                      >
+                      <button
+                        type="button"
+                        class="sm danger"
+                        ?disabled=${this.busy}
+                        data-testid="data-offboard-confirm"
+                        @click=${this._offboardApply}
+                      >
+                        ${t('Yes, remove them')}
+                      </button>
+                      <button
+                        type="button"
+                        class="sm"
+                        @click=${() => (this.off = { ...this.off, confirming: false })}
+                      >
+                        ${t('Cancel')}
+                      </button>`
+                  : html`<span class="help" data-testid="data-offboard-countval"
+                        >${t('{n} tuples', { n: o.count })}</span
+                      >
+                      <button
+                        type="button"
+                        class="sm danger"
+                        data-testid="data-offboard-remove"
+                        @click=${() => (this.off = { ...this.off, confirming: true })}
+                      >
+                        ${t('Remove them…')}
+                      </button>`
+              : nothing
+          }
+          ${o.result ? html`<span class="help" data-testid="data-offboard-result">${t('{n} removed', { n: o.result.removed })}</span>` : nothing}
+          <button type="button" class="sm" @click=${() => (this.panel = null)}>${t('Close')}</button>
+        </div>
+      </form>
+    </section>`;
+  }
+
   render() {
     const can = !!this.caps?.can_grant || Object.values(this.nsCaps ?? {}).some((c) => c.can_grant);
     return html`
@@ -350,14 +578,59 @@ export class PgcData extends PgcElement {
             ${t('rows')}
           </label>
           ${
+            this.caps?.can_export
+              ? html`<span class="seg" data-testid="data-export">
+                  <a
+                    class="btn sm"
+                    href=${api.tuplesExportURL(this.store, 'json')}
+                    download
+                    title=${t('Every tuple of the store as JSON — the native shape, with conditions, context and expiry; what Import takes back.')}
+                    data-testid="data-export-json"
+                    >${t('Export')} JSON</a
+                  >
+                  <a
+                    class="btn sm"
+                    href=${api.tuplesExportURL(this.store, 'csv')}
+                    download
+                    title=${t('The same columns as CSV, for a spreadsheet; Import takes it back.')}
+                    data-testid="data-export-csv"
+                    >CSV</a
+                  >
+                  <a
+                    class="btn sm"
+                    href=${api.tuplesExportURL(this.store, 'openfga')}
+                    download
+                    title=${t('The OpenFGA ReadTuples shape (no conditions or expiry).')}
+                    data-testid="data-export-openfga"
+                    >OpenFGA</a
+                  >
+                </span>`
+              : nothing
+          }
+          ${
             can
-              ? html`<button class="primary" @click=${() => (this.adding = !this.adding)}>
-                  ${t('Add')}
-                </button>`
+              ? html`<button
+                    class="sm"
+                    data-testid="data-import-open"
+                    @click=${() => ((this.panel = this.panel === 'import' ? null : 'import'), (this.adding = false))}
+                  >
+                    ${t('Import…')}
+                  </button>
+                  <button
+                    class="sm"
+                    data-testid="data-offboard-open"
+                    @click=${() => ((this.panel = this.panel === 'offboard' ? null : 'offboard'), (this.adding = false))}
+                  >
+                    ${t('Offboard…')}
+                  </button>
+                  <button class="primary" @click=${() => ((this.adding = !this.adding), (this.panel = null))}>
+                    ${t('Add')}
+                  </button>`
               : html`<span class="help">${t('writing needs "share" (sharer or owner)')}</span>`
           }
         </div>
       </div>
+      ${this.panel === 'import' ? this._importPanel() : this.panel === 'offboard' ? this._offboardPanel() : nothing}
       ${this.error ? errorBox(this.error) : nothing}
       ${
         this.adding
@@ -462,7 +735,8 @@ export class PgcData extends PgcElement {
       ${
         this.rows
           ? this.rows.length
-            ? html`<div class="table-wrap">
+            ? html`<section class="card panel" data-testid="data-table">
+                <div class="table-wrap">
                   <table>
                     <thead>
                       <tr>
@@ -514,7 +788,8 @@ export class PgcData extends PgcElement {
                       ? t('{shown} of {total} tuples shown', { shown: this.rows.length, total: this.total })
                       : t2('{n} tuple shown', '{n} tuples shown', this.rows.length)
                   }
-                </p>`
+                </p>
+              </section>`
             : html`<div class="empty">
                 ${this.q ? t('No tuples match the filter.') : t('No tuples in this store yet.')}
               </div>`

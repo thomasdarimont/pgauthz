@@ -94,16 +94,19 @@ func (s *Server) handleTuples(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"tuples": out, "limit": limit, "offset": offset, "total": total})
 }
 
+// tupleReq is a tuple as the UI sends it and as the import hands it to
+// write_tuples_jsonb: the optional parts are omitted when empty, since the
+// engine reads an empty condition name or expiry as given, not as absent.
 type tupleReq struct {
 	UserType         string          `json:"user_type"`
 	UserID           string          `json:"user_id"`
-	UserRelation     string          `json:"user_relation"`
+	UserRelation     string          `json:"user_relation,omitempty"`
 	Relation         string          `json:"relation"`
 	ObjectType       string          `json:"object_type"`
 	ObjectID         string          `json:"object_id"`
-	Condition        string          `json:"condition"`
-	ConditionContext json.RawMessage `json:"condition_context"`
-	ExpiresAt        string          `json:"expires_at"`
+	Condition        string          `json:"condition,omitempty"`
+	ConditionContext json.RawMessage `json:"condition_context,omitempty"`
+	ExpiresAt        string          `json:"expires_at,omitempty"`
 }
 
 func (t tupleReq) valid() bool {

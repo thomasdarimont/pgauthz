@@ -112,6 +112,9 @@ func (s *Server) Routes() http.Handler {
 	h("GET /api/stores/{store}/tuples/stats", s.handleTupleStats)
 	h("POST /api/stores/{store}/tuples", s.handleWriteTuple)
 	h("POST /api/stores/{store}/tuples/delete", s.handleDeleteTuple)
+	h("GET /api/stores/{store}/tuples/export", s.handleTuplesExport)
+	h("POST /api/stores/{store}/tuples/import", s.handleTuplesImport)
+	h("POST /api/stores/{store}/tuples/offboard", s.handleOffboard)
 
 	// Test
 	h("GET /api/stores/{store}/meta", s.handleMeta)

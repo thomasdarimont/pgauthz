@@ -22,9 +22,9 @@ func TestRetireStoreKeepsHistoryAndRoles(t *testing.T) {
 	}
 	defer func() {
 		_, _ = pool.Exec(context.Background(), `SELECT authz.delete_store($1, p_purge_audit => true)`, store)
-		_, _ = pool.Exec(context.Background(), `SELECT authz.delete_tuple(`+q(cs)+`, 'user', 'retire_owner', 'owner', 'store', $1)`, store)
+		_, _ = pool.Exec(context.Background(), `SELECT authz.delete_tuple($1, 'user', 'retire_owner', 'owner', 'store', $2)`, cs, store)
 	}()
-	if _, err := pool.Exec(ctx, `SELECT authz.write_tuple(`+q(cs)+`, 'user', 'retire_owner', 'owner', 'store', $1)`, store); err != nil {
+	if _, err := pool.Exec(ctx, `SELECT authz.write_tuple($1, 'user', 'retire_owner', 'owner', 'store', $2)`, cs, store); err != nil {
 		t.Fatal(err)
 	}
 	// a model with every kind of versioned part, as the person (performed_by)
@@ -112,7 +112,7 @@ func TestRetireStoreKeepsHistoryAndRoles(t *testing.T) {
 	var owners int
 	if err := pool.QueryRow(ctx, `
 		SELECT count(*) FROM authz.tuples t JOIN authz.types ot ON ot.id = t.object_type JOIN authz.relations rl ON rl.id = t.relation
-		 WHERE t.store_id = (SELECT id FROM authz.stores WHERE name = `+q(cs)+`) AND ot.name = 'store' AND t.object_id = $1 AND rl.name = 'owner'`, store).Scan(&owners); err != nil {
+		 WHERE t.store_id = (SELECT id FROM authz.stores WHERE name = $1) AND ot.name = 'store' AND t.object_id = $2 AND rl.name = 'owner'`, cs, store).Scan(&owners); err != nil {
 		t.Fatal(err)
 	}
 	if owners != 1 {

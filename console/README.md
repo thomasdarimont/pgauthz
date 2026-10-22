@@ -85,7 +85,7 @@ views `demo`; eva audits it).
 |---|---|---|
 | **Stores** | the stores you can see, with your capabilities; unclaimed stores (platform admin) and *New store* | `store#can_view`; `platform#can_view_all_stores`, `platform#can_create_store` |
 | Store → **Model** | three read views of the live model (DSL, canonical JSON, SQL calls); "Edit as DSL" to write the whole model in that DSL (a starter model for an empty store); the structured editor, one tab per section (types with their namespace and labels, relations with their rules and type restrictions in one step and their payload schema, rules, type restrictions, conditions, temporal gates, grant rules), each section's add button and edit form inside its tab; the section is in the URL (`stores/<store>/model/<section>`) | `can_view`; editing `can_edit_model` |
-| Store → **Data** | tuples with filter; grant/revoke | `can_view`; writes `can_grant` |
+| Store → **Data** | tuples with filter; grant/revoke; **Export** as JSON (native, round-trippable with conditions, context and expiry), CSV or the OpenFGA ReadTuples shape — a dedicated capability, and every export is recorded in the console's action log (who, when, format, rows); **Import** of any of the three (shape detected, preview, then one transaction as you, scoped by the namespaces of the object types touched, up to 10000 tuples); **Offboard** a subject (count, confirm, `delete_user_tuples`) | `can_view`; writes `can_grant`; export `can_export` (exporter, owner) |
 | Store → **Test** | four modes: single check + explain; matrix (subjects × actions × resources, one batch call); reverse search (which objects can X reach / who can reach Y); "as me via pgauthzd" (your own token, with the detail envelope: OPA, hooks, veto). The **test policy** limits a plain tester to their own access with redacted trees, no enumeration and no history; every test is recorded in the console's action log | `can_run_tests`; `can_test_others`, `can_test_explain_full`, `can_test_search`, `can_test_history` widen it |
 | Store → **Rollout** | managed-model state and drift, the versions of the store's model (an unmanaged store picks a registry model first), plan (dry run), apply; publish the live model | `can_view`; `can_rollout` to apply; `can_publish` on the store **and** `registry#can_publish` to publish |
 | Store → **Activity** | console actions on this store, the relationship audit trail, the model change history (rules, conditions, gates, grant rules added or removed, by whom), the store's action log | `can_view_audit` |
@@ -113,7 +113,8 @@ its Admin tab (owners and platform admins), after its name is typed back:
 tuples go and every live API refuses the store from then on, but the model
 dictionary, the audit history and the name stay, the console roles on it
 stay, and the store shows as *retired* (Activity, Access and Admin remain
-usable; a retired store's action log is live-only and comes back empty);
+usable; a retired store's action log is live-only and comes back empty;
+the home table hides retired stores unless "show retired" is ticked);
 **Delete** in the "Danger zone" (`authz.delete_store`) removes it for good,
 retired or not, with the choice to purge the audit history too, and the
 console roles on that store go with it. Stores carry a description
@@ -145,7 +146,20 @@ The console's own store is created by `./start.sh --console` from
 `examples/models/console/model.sql` + `seed.sql` when it is missing, and
 never reset afterwards; the test suite loads the same fixture under the name
 `console_test` (psql variable `cs`), so a test run leaves the live grants
-alone.
+alone. When a release extends the console model (a new role or capability),
+an existing console store needs that delta applied once, as the engine's
+admin role — the fixture is the reference; the statements are idempotent.
+The `exporter` role and `can_export` (2026-10) are:
+
+```sql
+SELECT authz.model_register_relation('console', r) FROM unnest(ARRAY['exporter', 'can_export']) AS r;
+SELECT authz.model_add_rule('console', 'store', 'exporter', 'direct');
+SELECT authz.model_add_type_restriction('console', 'store', 'exporter', 'user');
+SELECT authz.model_add_type_restriction('console', 'store', 'exporter', 'team', 'member');
+SELECT authz.model_add_rule('console', 'store', 'can_view', 'computed', 'exporter');
+SELECT authz.model_add_rule('console', 'store', 'can_export', 'computed', r) FROM unnest(ARRAY['exporter', 'owner']) AS r;
+SELECT authz.model_set_relation_metadata('console', 'can_export', '{"kind": "permission"}');
+```
 
 The console store's model, in OpenFGA style, is in
 [`examples/models/console/model.sql`](../examples/models/console/model.sql);
@@ -296,6 +310,9 @@ empty).
   the Access tab, and it changes every tuple in the console store — a
   deliberate open item while there are no deployments to migrate. Until
   then, treat username reuse as an IdP policy question.
+- **The share dialog.** The Data tab writes tuples directly; a dialog built
+  on `grant_options` / `apply_grants` (what the actor may grant on an
+  object under the model's grant rules) is not built yet.
 - **End-user sharing semantics.** The Data tab writes tuples directly for
   console sharers; `authz.grant`/`revoke` under per-object grant rules stays
   the application's path through pgauthzd.

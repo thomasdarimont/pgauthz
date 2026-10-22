@@ -9,6 +9,23 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Console: batch import, export and offboarding on the Data tab.**
+  Export the store's tuples as JSON (the native shape, round-trippable with
+  conditions, context and expiry), CSV with the same columns, or the OpenFGA
+  ReadTuples shape (`GET /api/stores/{store}/tuples/export?format=`).
+  Import any of the three, pasted or from a file (the shape is detected):
+  a preview says what was understood and on which object types, then one
+  transaction as the person through `write_tuples_jsonb`, scoped like every
+  Data-tab write by the namespaces of the object types touched, up to
+  10000 tuples. Offboard a subject: count its tuples, confirm, then
+  `delete_user_tuples` as the person. Go unit test for the three parsers.
+  **Exports are sensitive:** the console model gains an `exporter` store
+  role and `can_export` (exporter or owner); an export needs it, and every
+  export is recorded in the console's action log with store, format and
+  row count before the rows are read (Activity → Console actions). Existing
+  console stores need the model delta once (console README).
+  The stores home hides retired stores unless "show retired (n)" is ticked
+  (remembered per browser).
 - **Console: an Operations tab per store and for the fleet.** Store →
   Operations (reads `can_view_audit`, actions `can_manage_access`, as the
   person, recorded): gate readiness (`events_readiness`, every clause's

@@ -119,7 +119,13 @@ button.primary:hover { filter: brightness(1.07); }
 button.danger { color: var(--c-deny); border-color: var(--c-deny); background: transparent; }
 button.ghost { background: transparent; border-color: transparent; color: var(--c-accent); }
 button.ghost:hover { background: var(--c-accent-soft); }
-button.sm { padding: 2px var(--s-2); font-size: var(--t-xs); }
+button.sm, .btn.sm { padding: 2px var(--s-2); font-size: var(--t-xs); }
+a.btn { display: inline-block; text-decoration: none; color: var(--c-fg); background: var(--c-surface); line-height: 1.5; }
+a.btn:hover { border-color: var(--c-muted); }
+.seg a.btn { border-radius: 0; }
+.seg a.btn:first-child { border-radius: var(--r-md) 0 0 var(--r-md); }
+.seg a.btn:last-child { border-radius: 0 var(--r-md) var(--r-md) 0; }
+.seg a.btn + a.btn { border-left: none; }
 input, select, textarea { padding: var(--s-2); border: 1px solid var(--c-border); border-radius: var(--r-md);
   background: var(--c-surface); color: var(--c-fg); font: inherit; font-size: var(--t-sm); min-width: 0; }
 input.mono, textarea.mono, select.mono { font-family: var(--f-mono); }
