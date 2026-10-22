@@ -4,6 +4,7 @@ import { api } from '../api.js';
 import { t } from '../i18n.js';
 import { run } from '../util.js';
 import './pgc-access.js';
+import './pgc-fleet-ops.js';
 
 // Platform: who administers the console (Admins), and how it is wired
 // (Configuration: issuer, team-claim mapping, engine and pgauthzd health).
@@ -102,10 +103,21 @@ export class PgcPlatform extends PgcElement {
         </div>
       </div>
       <nav class="tabs">
-        <a href="platform/access" class=${this.tab !== 'settings' ? 'active' : ''}>${t('Admins')}</a>
+        <a href="platform/access" class=${this.tab !== 'settings' && this.tab !== 'ops' ? 'active' : ''}
+          >${t('Admins')}</a
+        >
         <a href="platform/settings" class=${this.tab === 'settings' ? 'active' : ''}>${t('Configuration')}</a>
+        <a href="platform/ops" class=${this.tab === 'ops' ? 'active' : ''} data-testid="platform-tab-ops"
+          >${t('Operations')}</a
+        >
       </nav>
-      ${this.tab === 'settings' ? this._settings() : html`<pgc-access scope="platform" .me=${this.me}></pgc-access>`}
+      ${
+        this.tab === 'settings'
+          ? this._settings()
+          : this.tab === 'ops'
+            ? html`<pgc-fleet-ops .me=${this.me}></pgc-fleet-ops>`
+            : html`<pgc-access scope="platform" .me=${this.me}></pgc-access>`
+      }
     `;
   }
 }

@@ -224,7 +224,8 @@ GRANT authz_namespace_bypass  TO authz_console;
 GRANT SELECT ON authz.stores, authz.types, authz.relations, authz.conditions, authz.tuples,
                 authz.models_view, authz.type_restrictions_view, authz.model_registry,
                 authz.tuples_audit, authz.models_audit, authz.conditions_audit,
-                authz.model_gates_audit, authz.grant_rules_audit TO authz_console;  -- store-wide audit listing + model change history (Activity tab), last-change times
+                authz.model_gates_audit, authz.grant_rules_audit,
+                authz.recorder_actions TO authz_console;  -- audit listing + model change history (Activity tab), last-change times, recorder allowlists (Operations tab)
 
 -- Watch/changefeed consumer role: a dedicated read-only LOGIN role for the
 -- watch-API example (examples/watch). Granted authz_auditor (which INHERITs

@@ -443,3 +443,17 @@ pgc-json { display: block; min-width: 0; }
    intrinsic width that stretches to the cell, with its own scrollbar. */
 tr.detail-row td > .src, tr.detail-row td > .detail { width: 0; min-width: 100%; }
 .src pre.code { overflow-x: auto; max-height: 36rem; background: var(--c-surface); border: 1px solid var(--c-border); }
+
+/* Operations: two-up forms and facts, compact tables */
+.ops-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr)); gap: var(--s-4); margin-top: var(--s-3); }
+.ops-grid h4 { margin: 0 0 var(--s-2); font-size: var(--t-sm); display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; }
+table.compact { font-size: var(--t-xs); }
+table.compact th, table.compact td { padding: var(--s-1) var(--s-2); }
+.panel table.compact, .card table.compact { min-width: 0; }
+
+/* Registry: the store chips and the applied version */
+.chip.active { border-color: var(--c-accent); color: var(--c-accent); background: var(--c-accent-soft); }
+a.chip { text-decoration: none; }
+a.chip .muted, a.chip .dim { margin-left: 4px; }
+table tr.current td { background: var(--c-accent-soft); }
+details.card > section + section { border-top: 1px solid var(--c-border); margin-top: var(--s-3); padding-top: var(--s-3); }

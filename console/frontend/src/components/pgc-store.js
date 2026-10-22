@@ -10,6 +10,7 @@ import './pgc-rollout.js';
 import './pgc-activity.js';
 import './pgc-access.js';
 import './pgc-admin.js';
+import './pgc-ops.js';
 import './pgc-policies.js';
 
 // One store: header (description, documentation link, status, sizes, your
@@ -26,6 +27,7 @@ const TABS = [
   { id: 'activity', label: 'Activity', cap: 'can_view_audit' },
   { id: 'policies', label: 'Policies', cap: 'can_view' },
   { id: 'access', label: 'Access', cap: 'can_view' },
+  { id: 'ops', label: 'Operations', cap: 'can_view_audit' },
   { id: 'admin', label: 'Admin', cap: 'can_manage_access' },
 ];
 const RETIRED_TABS = new Set(['activity', 'access', 'admin']);
@@ -122,6 +124,8 @@ export class PgcStore extends PgcElement {
         ></pgc-access>`;
       case 'policies':
         return html`<pgc-policies .store=${this.store} .caps=${caps}></pgc-policies>`;
+      case 'ops':
+        return html`<pgc-ops .store=${this.store} .caps=${caps} .info=${this.info}></pgc-ops>`;
       case 'admin':
         return html`<pgc-admin
           .store=${this.store}

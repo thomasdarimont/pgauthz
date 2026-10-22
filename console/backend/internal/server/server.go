@@ -131,6 +131,14 @@ func (s *Server) Routes() http.Handler {
 	// Activity
 	h("GET /api/stores/{store}/activity", s.handleActivity)
 
+	// Operations (per store) — reads need can_view_audit, actions can_manage_access
+	h("GET /api/stores/{store}/ops", s.handleOps)
+	h("POST /api/stores/{store}/ops/recorders", s.handleOpsRecorderGrant)
+	h("POST /api/stores/{store}/ops/recorders/revoke", s.handleOpsRecorderRevoke)
+	h("POST /api/stores/{store}/ops/purge-events", s.handleOpsPurgeEvents)
+	h("POST /api/stores/{store}/ops/cleanup-expired", s.handleOpsCleanupExpired)
+	h("POST /api/stores/{store}/ops/redundant", s.handleOpsRedundant)
+
 	// Access (who may manage this store in the console)
 	h("GET /api/stores/{store}/access", s.handleAccess)
 	h("POST /api/stores/{store}/access", s.handleAccessAdd)
@@ -147,6 +155,10 @@ func (s *Server) Routes() http.Handler {
 	h("GET /api/platform/access", s.handlePlatformAccess)
 	h("POST /api/platform/access", s.handlePlatformAccessAdd)
 	h("POST /api/platform/access/remove", s.handlePlatformAccessRemove)
+	// Platform → Operations (fleet): partitions and retention of both logs
+	h("GET /api/platform/ops", s.handlePlatformOps)
+	h("POST /api/platform/partitions/ensure", s.handlePlatformEnsurePartitions)
+	h("POST /api/platform/partitions/drop-events", s.handlePlatformDropEventPartitions)
 
 	mux.HandleFunc(bp+"/", s.handleStatic)
 	if bp != "" {

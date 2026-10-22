@@ -80,6 +80,22 @@ export const api = {
 
   activity: (store) => call(`api/stores/${enc(store)}/activity`),
 
+  ops: (store) => call(`api/stores/${enc(store)}/ops`),
+  opsRecorderGrant: (store, dbRole, actions) =>
+    call(`api/stores/${enc(store)}/ops/recorders`, { db_role: dbRole, actions }),
+  opsRecorderRevoke: (store, dbRole, actions) =>
+    call(`api/stores/${enc(store)}/ops/recorders/revoke`, { db_role: dbRole, actions }),
+  opsPurgeEvents: (store, before, force) =>
+    call(`api/stores/${enc(store)}/ops/purge-events`, { before, force }),
+  opsCleanupExpired: (store, grace) => call(`api/stores/${enc(store)}/ops/cleanup-expired`, { grace }),
+  opsRedundant: (store, objectType, relation, apply) =>
+    call(`api/stores/${enc(store)}/ops/redundant`, { object_type: objectType, relation, apply }),
+  platformOps: () => call('api/platform/ops'),
+  platformEnsurePartitions: (monthsAhead) =>
+    call('api/platform/partitions/ensure', { months_ahead: monthsAhead }),
+  platformDropEventPartitions: (before, force) =>
+    call('api/platform/partitions/drop-events', { before, force }),
+
   access: (store) => call(`api/stores/${enc(store)}/access`),
   accessAdd: (store, a) => call(`api/stores/${enc(store)}/access`, a),
   accessRemove: (store, items) => call(`api/stores/${enc(store)}/access/remove`, { items }),

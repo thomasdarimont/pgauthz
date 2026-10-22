@@ -11,7 +11,7 @@ import './pgc-settings.js';
 
 // The shell: top bar with the three areas, language switch, login gate, and
 // a tiny path router under <base href>. Routes: "" (stores),
-// "stores/<name>/<tab>[/<sub>]", "registry", "platform/<tab>", "settings". Links are plain <a href>
+// "stores/<name>/<tab>[/<sub>]", "registry[/<store> | /model/<name>]", "platform/<tab>", "settings". Links are plain <a href>
 // relative to the base; clicks become pushState so the BFF's SPA fallback
 // serves index.html on reload.
 export class PgcApp extends PgcElement {
@@ -109,7 +109,12 @@ export class PgcApp extends PgcElement {
 
   _page() {
     const parts = this.path.split('/').filter(Boolean);
-    if (parts[0] === 'registry') return html`<pgc-registry .me=${this.me}></pgc-registry>`;
+    if (parts[0] === 'registry')
+      return html`<pgc-registry
+        .me=${this.me}
+        store=${parts[1] === 'model' ? '' : (parts[1] ?? '')}
+        model=${parts[1] === 'model' ? (parts[2] ?? '') : ''}
+      ></pgc-registry>`;
     if (parts[0] === 'settings') return html`<pgc-settings .me=${this.me}></pgc-settings>`;
     if (parts[0] === 'platform')
       return html`<pgc-platform .me=${this.me} tab=${parts[1] ?? 'access'}></pgc-platform>`;

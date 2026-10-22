@@ -9,6 +9,36 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Console: an Operations tab per store and for the fleet.** Store →
+  Operations (reads `can_view_audit`, actions `can_manage_access`, as the
+  person, recorded): gate readiness (`events_readiness`, every clause's
+  window from `gate_windows`), the recorder allowlist
+  (`grant_recorder_actions` / `revoke_recorder_actions`, with the
+  database's login roles and the store's relations suggested), tuple
+  maintenance (`cleanup_expired_tuples` with a grace, `find_redundant_tuples`
+  then `cleanup_redundant_tuples` behind a confirmation), this store's
+  action-log retention (`purge_events`; the engine's gate guard reaches the
+  person as the error, force is a checkbox), the changefeed cursor and
+  `watch_safe_until`, the derived-permissions status when
+  `materialized_relations_status` is installed, and the partitions of both
+  logs. Platform → Operations (`can_view_health` / `can_manage_access`):
+  the monthly partitions with sizes and months of coverage ahead,
+  `ensure_audit_partitions` + `ensure_event_partitions` ahead by N months,
+  `drop_event_partitions_before` (gate-guarded, force optional), gate
+  readiness per store, the fleet's longest gate window, store sizes with
+  the storage their tuple partitions take (`pg_total_relation_size` per
+  object-type partition, summed per store). The **Registry** page is one
+  picker over models and stores: the models are the landing chips (few by
+  design), typing searches models and stores by name, description and
+  model, matches capped at 20 of each with a "more — keep typing" hint so
+  a large fleet is never rendered as chips. A model (`registry/model/<name>`)
+  shows its versions and its fleet (a (?) explains it: every store running
+  the model, green current, grey older, amber drifted); a store
+  (`registry/<store>`) shows the model and version it runs, the versions
+  with the applied one marked, and the fleet.
+  `roles.sql` grants `authz_console` SELECT on `recorder_actions`. Go test:
+  the overview read as `authz_console`, the allowlist round trip, the purge
+  guard refusing a cutoff inside a live gate window.
 - **Console: the rest of the model, retiring a store, the model's history.**
   The Model tab now edits what it only showed before: **grant rules** (a
   section of their own: add, edit, remove, Details with the SQL call —
