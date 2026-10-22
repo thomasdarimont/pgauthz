@@ -78,12 +78,16 @@ export async function run(el, fn) {
   try {
     return await fn();
   } catch (e) {
-    el.error = e.message || String(e);
+    if (!(e instanceof FieldInvalid)) el.error = e.message || String(e);
     return undefined;
   } finally {
     el.busy = false;
   }
 }
+
+// Thrown by a handler after it reported a mistake next to the field it is
+// in (PgcJson.report): run() then shows no page-level box for it.
+export class FieldInvalid extends Error {}
 
 // A 403 from the BFF says which console capability was missing.
 export function forbiddenText(e) {

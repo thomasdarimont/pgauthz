@@ -1,5 +1,5 @@
 import { html, nothing } from 'lit';
-import { PgcElement } from '../base.js';
+import { PgcElement, errorBox } from '../base.js';
 import { api } from '../api.js';
 import { t, initI18n } from '../i18n.js';
 import { forbiddenText } from '../util.js';
@@ -11,7 +11,7 @@ import './pgc-settings.js';
 
 // The shell: top bar with the three areas, language switch, login gate, and
 // a tiny path router under <base href>. Routes: "" (stores),
-// "stores/<name>/<tab>", "registry", "platform/<tab>", "settings". Links are plain <a href>
+// "stores/<name>/<tab>[/<sub>]", "registry", "platform/<tab>", "settings". Links are plain <a href>
 // relative to the base; clicks become pushState so the BFF's SPA fallback
 // serves index.html on reload.
 export class PgcApp extends PgcElement {
@@ -118,6 +118,7 @@ export class PgcApp extends PgcElement {
         .me=${this.me}
         store=${parts[1]}
         tab=${parts[2] ?? 'model'}
+        sub=${parts[3] ?? ''}
         @navigate=${(e) => this.navigate(e.detail)}
       ></pgc-store>`;
     return html`<pgc-stores .me=${this.me} @navigate=${(e) => this.navigate(e.detail)}></pgc-stores>`;
@@ -190,7 +191,7 @@ export class PgcApp extends PgcElement {
                   <p class="muted">
                     ${t('Design, test, share and roll out authorization models — with your access decided by pgauthz itself.')}
                   </p>
-                  ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
+                  ${this.error ? errorBox(this.error) : nothing}
                   ${
                     this.login.oidc
                       ? html`<button class="primary wide" @click=${() => api.login()}>

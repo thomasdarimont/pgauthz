@@ -132,9 +132,9 @@ func (s *Server) modelOpNamespace(ctx context.Context, store, op string, e model
 	switch op {
 	case "add_type":
 		return e.Namespace, nil
-	case "remove_type":
+	case "remove_type", "set_type_labels":
 		return s.typeNamespace(ctx, store, e.Name)
-	case "add_rule", "add_restriction", "add_gate", "remove_gate":
+	case "add_rule", "add_restriction", "add_gate", "remove_gate", "add_grant_rule", "remove_grant_rule":
 		return s.typeNamespace(ctx, store, e.ObjectType)
 	case "remove_rule":
 		var typ string
@@ -151,7 +151,7 @@ func (s *Server) modelOpNamespace(ctx context.Context, store, op string, e model
 		}
 		return s.typeNamespace(ctx, store, typ)
 	}
-	return "", nil // relations, conditions, metadata: store-wide
+	return "", nil // relations, conditions, metadata, payload schemas: store-wide
 }
 
 // ── Access to namespaces (Access tab) ──────────────────────────────────────

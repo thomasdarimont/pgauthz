@@ -98,6 +98,7 @@ func (s *Server) Routes() http.Handler {
 	h("POST /api/stores/{store}/adopt", s.handleAdoptStore)
 	h("GET /api/stores/{store}", s.handleStore)
 	h("POST /api/stores/{store}/delete", s.handleDeleteStore)
+	h("POST /api/stores/{store}/retire", s.handleRetireStore)
 	h("POST /api/stores/{store}/settings", s.handleStoreSettings)
 
 	// Model

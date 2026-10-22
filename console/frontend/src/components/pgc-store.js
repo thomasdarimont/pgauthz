@@ -1,8 +1,8 @@
 import { html, nothing } from 'lit';
-import { PgcElement, help } from '../base.js';
+import { PgcElement, help, errorBox } from '../base.js';
 import { api } from '../api.js';
 import { t, t2 } from '../i18n.js';
-import { capLabel, run, forbiddenText } from '../util.js';
+import { capLabel, run, forbiddenText, fmtTime } from '../util.js';
 import './pgc-model.js';
 import './pgc-data.js';
 import './pgc-test.js';
@@ -15,7 +15,9 @@ import './pgc-policies.js';
 // One store: header (description, documentation link, status, sizes, your
 // capabilities) and the tab strip. Tabs are gated by the console store's
 // answer: a tab you lack the capability for is shown locked, so people see
-// what exists and whom to ask.
+// what exists and whom to ask. A RETIRED store (soft-deleted: live APIs
+// refuse it, the audit history stays) keeps only the tabs that read history
+// or manage the store itself.
 const TABS = [
   { id: 'model', label: 'Model', cap: 'can_view' },
   { id: 'data', label: 'Data', cap: 'can_view' },
@@ -26,12 +28,14 @@ const TABS = [
   { id: 'access', label: 'Access', cap: 'can_view' },
   { id: 'admin', label: 'Admin', cap: 'can_manage_access' },
 ];
+const RETIRED_TABS = new Set(['activity', 'access', 'admin']);
 
 export class PgcStore extends PgcElement {
   static properties = {
     me: { attribute: false },
     store: { type: String },
     tab: { type: String },
+    sub: { type: String }, // the tab's own sub-path (Model: the Structure section)
     info: { state: true },
     busy: { state: true },
     error: { state: true },
@@ -90,6 +94,10 @@ export class PgcStore extends PgcElement {
       return html`<div class="empty">
         ${t('This tab needs "{capability}" on {object}. Ask an owner of the store (see Access).', { capability: capLabel(tab.cap), object: 'store:' + this.store })}
       </div>`;
+    if (this.info?.retired_at && !RETIRED_TABS.has(tab.id))
+      return html`<div class="empty" data-testid="store-retired-tab">
+        ${t('This store is retired: it has no live model or data any more. Its history is on the Activity tab; the Admin tab deletes it for good.')}
+      </div>`;
     switch (tab.id) {
       case 'data':
         return html`<pgc-data
@@ -115,10 +123,16 @@ export class PgcStore extends PgcElement {
       case 'policies':
         return html`<pgc-policies .store=${this.store} .caps=${caps}></pgc-policies>`;
       case 'admin':
-        return html`<pgc-admin .store=${this.store} .caps=${caps}></pgc-admin>`;
+        return html`<pgc-admin
+          .store=${this.store}
+          .caps=${caps}
+          .retiredAt=${this.info?.retired_at ?? null}
+          @changed=${this._refresh}
+        ></pgc-admin>`;
       default:
         return html`<pgc-model
           .store=${this.store}
+          section=${this.sub ?? ''}
           .caps=${caps}
           .info=${this.info}
           @changed=${this._refresh}
@@ -144,7 +158,6 @@ export class PgcStore extends PgcElement {
         >
         <input
           type="url"
-          placeholder="https://wiki.example.com/…"
           .value=${this.form.docs_url ?? i.docs_url ?? ''}
           @input=${(e) => (this.form = { ...this.form, docs_url: e.target.value })}
       /></label>
@@ -160,7 +173,7 @@ export class PgcStore extends PgcElement {
     const caps = i?.capabilities ?? {};
     return html`
       <div class="crumbs"><a href="">${t('Stores')}</a> / <span class="mono">${this.store}</span></div>
-      ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
+      ${this.error ? errorBox(this.error) : nothing}
       ${
         i
           ? html`
@@ -171,7 +184,7 @@ export class PgcStore extends PgcElement {
                     <span>${i.description || t('no description')}</span>
                     ${i.docs_url ? html`<a href=${i.docs_url} target="_blank" rel="noopener">${t('documentation')} ↗</a>` : nothing}
                     ${
-                      caps.can_manage_access
+                      caps.can_manage_access && !i.retired_at
                         ? html`<button
                             class="ghost sm"
                             @click=${() => ((this.editing = !this.editing), (this.form = {}))}
@@ -183,6 +196,13 @@ export class PgcStore extends PgcElement {
                   </div>
                 </div>
               </div>
+              ${
+                i.retired_at
+                  ? html`<p class="notice" data-testid="store-retired-banner">
+                      ${t('Retired on {when}: live checks and writes are refused, the live tuples are gone; the model dictionary and the audit history are kept for point-in-time questions and the name stays reserved. Delete the store on the Admin tab to purge it.', { when: fmtTime(i.retired_at) })}
+                    </p>`
+                  : nothing
+              }
               ${this.editing ? this._settingsForm(i) : nothing}
               <details class="caps-details">
                 <summary class="caps yours">
@@ -212,8 +232,9 @@ export class PgcStore extends PgcElement {
                   (tab) =>
                     html`<a
                       href="stores/${this.store}/${tab.id}"
-                      class="${this.tab === tab.id ? 'active' : ''} ${caps[tab.cap] ? '' : 'locked'}"
-                      title=${caps[tab.cap] ? '' : t('needs {capability}', { capability: capLabel(tab.cap) })}
+                      class="${this.tab === tab.id ? 'active' : ''} ${caps[tab.cap] && !(i.retired_at && !RETIRED_TABS.has(tab.id)) ? '' : 'locked'}"
+                      title=${!caps[tab.cap] ? t('needs {capability}', { capability: capLabel(tab.cap) }) : i.retired_at && !RETIRED_TABS.has(tab.id) ? t('retired store') : ''}
+                      data-testid=${'store-tab-' + tab.id}
                       >${t(tab.label)}</a
                     >`,
                 )}

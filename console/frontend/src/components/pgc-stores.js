@@ -1,5 +1,5 @@
 import { html, nothing } from 'lit';
-import { PgcElement, help } from '../base.js';
+import { PgcElement, help, errorBox } from '../base.js';
 import { api } from '../api.js';
 import { t, t2 } from '../i18n.js';
 import { capLabel, statusBadge, run, forbiddenText, fmtTime, fmtRelative } from '../util.js';
@@ -186,6 +186,16 @@ export class PgcStores extends PgcElement {
         </a>
       </td>
       <td class="muted desc">
+        ${
+          st.retired_at
+            ? html`<span
+                class="badge warn"
+                data-testid="store-retired-badge"
+                title=${t('retired on {when}', { when: fmtTime(st.retired_at) })}
+                >${t('retired')}</span
+              > `
+            : nothing
+        }
         ${st.description || html`<span class="dim">${t('no description')}</span>`}
         ${
           st.docs_url
@@ -249,32 +259,30 @@ export class PgcStores extends PgcElement {
         </div>
         ${d?.can_create ? html`<button class="primary" @click=${() => (this.creating = !this.creating)}>${t('New store')}</button>` : nothing}
       </div>
-      ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
+      ${this.error ? errorBox(this.error) : nothing}
       ${
         this.creating
           ? html`<form class="card form" @submit=${this._create}>
               <label class="field"
                 ><span
                   >${t('Store name')}
-                  ${help('Letters, digits and underscores; also the package segment of OPA hooks for this store.')}</span
+                  ${help('Letters, digits and underscores, e.g. tenant_acme; also the package segment of OPA hooks for this store.')}</span
                 >
-                <input
-                  class="mono"
-                  required
-                  pattern="[a-zA-Z_][a-zA-Z0-9_]*"
-                  placeholder="tenant_acme"
-                  @input=${this._set('name')}
+                <input class="mono" required pattern="[a-zA-Z_][a-zA-Z0-9_]*" @input=${this._set('name')}
               /></label>
               <label class="field wide"
-                ><span>${t('Description')}</span>
-                <input placeholder=${t('What this store authorizes')} @input=${this._set('description')}
+                ><span
+                  >${t('Description')}
+                  ${help('One line about what this store authorizes; shown on the store card.')}</span
+                >
+                <input @input=${this._set('description')}
               /></label>
               <label class="field wide"
                 ><span
                   >${t('Documentation link')}
                   ${help('An http(s) link to where this model is described in depth — a wiki page, a design document, a ticket.')}</span
                 >
-                <input type="url" placeholder="https://wiki.example.com/…" @input=${this._set('docs_url')}
+                <input type="url" @input=${this._set('docs_url')}
               /></label>
               <div class="actions wide">
                 <button class="primary" ?disabled=${this.busy}>${t('Create — you become its owner')}</button>

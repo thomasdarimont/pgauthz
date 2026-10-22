@@ -31,7 +31,7 @@
   --t-xs: .75rem; --t-sm: .83rem; --t-base: 15px; --t-lg: 1.15rem; --t-xl: 1.5rem;
   --s-1: .25rem; --s-2: .5rem; --s-3: .75rem; --s-4: 1rem; --s-5: 1.5rem; --s-6: 2.25rem;
   --r-sm: 4px; --r-md: 7px; --r-lg: 10px;
-  --content: 1180px;
+  --content: 1600px; /* widescreen first; the body gutter keeps it off the edges on narrower screens */
 
   /* tokens the explain tree reads (shadow DOM) */
   --pg-allow-fg: var(--c-ok); --pg-deny-fg: var(--c-deny); --pg-muted: var(--c-muted);
@@ -162,6 +162,17 @@ label.check { display: inline-flex; align-items: center; gap: var(--s-2); font-s
 .tabs a:hover { color: var(--c-fg); }
 .tabs a.active { color: var(--c-accent); border-color: var(--c-accent); }
 .tabs a.locked { opacity: .5; }
+.tabs.sub { margin: var(--s-3) 0; }
+.tabs.sub a { padding: var(--s-1) var(--s-2); font-size: var(--t-sm); }
+.tabs.sub .count { color: var(--c-muted); font-weight: 400; margin-left: 2px; }
+.tabs.sub a.active .count { color: inherit; }
+.panel-head { margin-top: 0; justify-content: flex-start; gap: var(--s-3); }
+.panel-head h3 { margin: 0; }
+.panel-head .sec-filter { display: flex; align-items: center; gap: var(--s-2); flex: 0 1 auto; margin: 0; }
+.panel-head .filter-label { color: var(--c-muted); font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
+.panel-head .filter-box { flex: 0 1 260px; }
+.panel-head .sec-filter > .muted { white-space: nowrap; flex: 0 0 auto; } /* the "shown / total" count stays on one line */
+.panel-head > button { margin-left: auto; }
 .seg { display: inline-flex; }
 .seg button { border-radius: 0; }
 .seg button:first-child { border-radius: var(--r-md) 0 0 var(--r-md); }
@@ -202,9 +213,6 @@ pre.code .line::before { content: counter(line); display: inline-block; width: 3
 .sentence input { font-family: var(--f-mono); color: var(--c-code); }
 /* identifiers (type:id) may be UUIDs: wide enough for one on a line */
 .sentence input.id { width: min(28rem, 100%); flex: 1 1 22rem; max-width: 34rem; }
-.log { list-style: none; margin: 0; padding: 0; }
-.log li { display: grid; grid-template-columns: 9rem 1fr; gap: var(--s-3); padding: var(--s-2) 0; border-bottom: 1px solid var(--c-border); font-size: var(--t-sm); }
-.log .when { color: var(--c-muted); font-variant-numeric: tabular-nums; }
 .plan { font-family: var(--f-mono); font-size: var(--t-sm); }
 .plan .add { color: var(--c-ok); } .plan .remove { color: var(--c-deny); } .plan .update { color: var(--c-warn); }
 .help { font-size: var(--t-xs); color: var(--c-muted); }
@@ -249,10 +257,6 @@ a.settings:hover, a.settings.active { color: var(--c-accent); background: var(--
 .badge.doc { text-decoration: none; background: var(--c-surface-2); color: var(--c-accent); }
 .store-card .actions { gap: var(--s-2); }
 .store-head-desc { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-3); align-items: center; color: var(--c-muted); }
-nav.jump { position: sticky; top: calc(52px + env(safe-area-inset-top, 0px)); z-index: 5; display: flex; flex-wrap: wrap; gap: var(--s-1);
-  padding: var(--s-2) 0; margin-bottom: var(--s-2); background: var(--c-surface); border-bottom: 1px solid var(--c-border); }
-nav.jump a { font-size: var(--t-sm); text-decoration: none; padding: 2px var(--s-2); border-radius: var(--r-md); color: var(--c-muted); }
-nav.jump a:hover { background: var(--c-accent-soft); color: var(--c-accent); }
 #sec-types, #sec-relations, #sec-rules, #sec-restrictions, #sec-conditions { scroll-margin-top: 110px; }
 /* Filter input with a leading icon (Data tab) */
 .filter-box { display: flex; align-items: center; gap: var(--s-2); flex: 1 1 420px; max-width: 640px; min-width: 0;
@@ -265,10 +269,25 @@ nav.jump a:hover { background: var(--c-accent-soft); color: var(--c-accent); }
 /* Model tab: relations in two rows (permissions / relations) */
 .rel-group { margin: var(--s-3) 0; }
 .rel-row-head { display: flex; align-items: center; gap: var(--s-2); margin-bottom: var(--s-2); }
-table.rel-table td.num { width: 3rem; }
+/* Structure tables never squeeze below a readable width: the wrapper scrolls
+   instead, so column heads cannot run into each other. Heads stay on one line. */
+.panel table { min-width: 44rem; }
+.panel th { white-space: nowrap; min-width: 7rem; }
+.panel th.sel, .panel th.num, .panel th:empty { min-width: 0; }
+.panel th.wide { min-width: 18rem; } /* prose columns (description, definition) keep room instead of collapsing */
+/* the two relation groups are two tables: a fixed layout with shared column widths keeps them aligned */
+table.rel-table { table-layout: fixed; min-width: 52rem; }
+table.rel-table col.c-grip { width: 2.5rem; }
+table.rel-table col.c-name { width: 22%; }
+table.rel-table col.c-on { width: 22%; }
+table.rel-table col.c-payload { width: 7rem; }
+table.rel-table col.c-actions { width: 9.5rem; }
+table.rel-table td { overflow-wrap: anywhere; }
+table.rel-table td.num { width: auto; }
 /* A table cell must stay a table cell: the flex layout of .actions is for
    toolbars, inside a row it breaks the row box and pulls the next row up. */
 td.actions { display: table-cell; white-space: nowrap; vertical-align: middle; }
+td.details { overflow-wrap: anywhere; } /* long unbroken tokens (JSON, ids) wrap instead of forcing a horizontal scrollbar */
 td.actions > * + * { margin-left: var(--s-1); }
 .rel-actions button { padding: 0 var(--s-1); }
 .explain-options { margin-top: var(--s-3); font-size: var(--t-sm); color: var(--c-muted); }
@@ -394,6 +413,20 @@ td.id { color: var(--c-muted); font-family: var(--f-mono); font-size: var(--t-xs
 .try-cond textarea { width: 100%; }
 @media (max-width: 1100px) { .detail.three { grid-template-columns: 1fr; } }
 .try-cond textarea.invalid { border-color: var(--c-warn); }
+/* pgc-json: the textarea (transparent text, visible caret) over the highlighted copy, same metrics */
+pgc-json { display: block; min-width: 0; }
+.json-editor { display: grid; border: 1px solid var(--c-border); border-radius: var(--r-md); background: var(--c-surface); overflow: hidden; }
+.json-editor > * { grid-area: 1 / 1; margin: 0; padding: var(--s-2) var(--s-3); font: var(--t-sm)/1.5 var(--f-mono); white-space: pre; tab-size: 2; min-width: 0; }
+.json-editor .json-hl { overflow: hidden; color: var(--c-fg); pointer-events: none; }
+.json-editor .json-hl .line { display: block; min-height: 1.5em; }
+.json-editor .json-hl .errline { background: var(--c-warn-bg); display: block; margin: 0 calc(-1 * var(--s-3)); padding: 0 var(--s-3); }
+.json-editor textarea { background: transparent; color: transparent; caret-color: var(--c-fg); border: none; border-radius: 0; resize: vertical; overflow: auto; position: relative; z-index: 1; }
+.json-editor textarea:focus-visible { outline: none; }
+.json-editor:focus-within { outline: 2px solid var(--c-accent); outline-offset: 1px; }
+.json-editor.invalid { border-color: var(--c-warn); }
+.json-status { display: flex; align-items: center; gap: var(--s-2); min-height: 1.4em; font-size: var(--t-xs); margin-top: 2px; }
+.json-status .json-ok { color: var(--c-ok); }
+.json-status .json-warn { color: var(--c-warn); }
 .json-warn { color: var(--c-warn); font-size: var(--t-xs); }
 
 /* (?) tooltips: one fixed element, shown after 500 ms (see base.js) */

@@ -20,13 +20,14 @@ type storeRow struct {
 	Capabilities map[string]bool            `json:"capabilities"`
 	Status       *pgauthzadm.Status         `json:"status,omitempty"`
 	Counts       map[string]int             `json:"counts,omitempty"`
-	Claimed      bool                       `json:"claimed"` // has a platform tuple in the console store
+	Claimed      bool                       `json:"claimed"`              // has a platform tuple in the console store
+	RetiredAt    *time.Time                 `json:"retired_at,omitempty"` // set when the store was retired (soft-deleted): live APIs refuse it, the audit history stays
 }
 
 // allStores lists the engine's live stores with descriptions.
 func (s *Server) allStores(ctx context.Context) ([]storeRow, error) {
 	rows, err := s.engine.Query(ctx, `
-		SELECT s.name, coalesce(s.description,''), coalesce(s.docs_url,''), s.created_at,
+		SELECT s.name, coalesce(s.description,''), coalesce(s.docs_url,''), s.created_at, s.deleted_at,
 		       GREATEST((SELECT max(a.performed_at) FROM authz.tuples_audit a WHERE a.store_id = s.id),
 		                (SELECT max(a.performed_at) FROM authz.models_audit a WHERE a.store_id = s.id),
 		                (SELECT max(a.performed_at) FROM authz.conditions_audit a WHERE a.store_id = s.id))
@@ -38,7 +39,7 @@ func (s *Server) allStores(ctx context.Context) ([]storeRow, error) {
 	var out []storeRow
 	for rows.Next() {
 		var r storeRow
-		if err := rows.Scan(&r.Name, &r.Description, &r.DocsURL, &r.CreatedAt, &r.LastChangeAt); err != nil {
+		if err := rows.Scan(&r.Name, &r.Description, &r.DocsURL, &r.CreatedAt, &r.RetiredAt, &r.LastChangeAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -116,8 +117,10 @@ func (s *Server) handleStores(w http.ResponseWriter, r *http.Request) {
 		st.Claimed = claimed[st.Name]
 		switch {
 		case st.Capabilities["can_view"]:
-			if status, err := pgauthzadm.ModelStatus(ctx, s.engine, st.Name); err == nil {
-				st.Status = status
+			if st.RetiredAt == nil { // a retired store has no live model to report on
+				if status, err := pgauthzadm.ModelStatus(ctx, s.engine, st.Name); err == nil {
+					st.Status = status
+				}
 			}
 			visible = append(visible, st)
 		case admin && !st.Claimed:
@@ -145,9 +148,11 @@ func (s *Server) handleStore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	row := storeRow{Name: store, Capabilities: caps[store], Namespaces: nsCaps, Counts: map[string]int{}}
-	_ = s.engine.QueryRow(ctx, `SELECT coalesce(description,''), coalesce(docs_url,'') FROM authz.stores WHERE name=$1`, store).Scan(&row.Description, &row.DocsURL)
-	if st, err := pgauthzadm.ModelStatus(ctx, s.engine, store); err == nil {
-		row.Status = st
+	_ = s.engine.QueryRow(ctx, `SELECT coalesce(description,''), coalesce(docs_url,''), deleted_at FROM authz.stores WHERE name=$1`, store).Scan(&row.Description, &row.DocsURL, &row.RetiredAt)
+	if row.RetiredAt == nil {
+		if st, err := pgauthzadm.ModelStatus(ctx, s.engine, store); err == nil {
+			row.Status = st
+		}
 	}
 	var types, rels, tuples, conds int
 	_ = s.engine.QueryRow(ctx, `
@@ -298,60 +303,57 @@ type deleteStoreReq struct {
 	PurgeAudit bool   `json:"purge_audit"` // also drop the audit history (default: keep)
 }
 
-// handleDeleteStore — remove a store (authz.delete_store) and its console
-// access tuples, as the person, after the name was typed back. Owners and
-// platform admins (can_manage_access). The console store itself is refused.
-func (s *Server) handleDeleteStore(w http.ResponseWriter, r *http.Request) {
+// requireLifecycle is the common front of the store lifecycle handlers
+// (delete, retire): a valid store name, a logged-in person who may manage
+// the store — owners and platform admins (can_manage_access); an UNCLAIMED
+// store has nobody to ask, so whoever may create stores may remove it — the
+// store's name typed back, and never the console's own store. It returns the
+// principal and the in-transaction gate that re-asks the same question under
+// the store's lock (asPersonAuthorized), or nil after writing the response.
+func (s *Server) requireLifecycle(w http.ResponseWriter, r *http.Request, verb string, confirm string) (*principal, string, func(tx pgx.Tx) error) {
 	store := r.PathValue("store")
 	if !validName.MatchString(store) {
 		writeError(w, http.StatusBadRequest, "invalid store name")
-		return
+		return nil, "", nil
 	}
 	p := s.principal(r)
 	if p == nil {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
-		return
+		return nil, "", nil
 	}
-	// Owners (and platform admins through the platform tuple) delete claimed
-	// stores; an UNCLAIMED store has nobody to ask, so whoever may create
-	// stores may remove it.
-	allowed, err := s.can(r.Context(), p, "can_manage_access", "store", store)
+	ctx := r.Context()
+	allowed, err := s.can(ctx, p, "can_manage_access", "store", store)
 	if err != nil {
 		writeEngineError(w, err)
-		return
+		return nil, "", nil
 	}
 	if !allowed {
-		claimed, cerr := s.claimedStores(r.Context())
+		claimed, cerr := s.claimedStores(ctx)
 		if cerr != nil {
 			writeEngineError(w, cerr)
-			return
+			return nil, "", nil
 		}
 		if !claimed[store] {
-			allowed, err = s.can(r.Context(), p, "can_create_store", "platform", s.cfg.PlatformID)
+			allowed, err = s.can(ctx, p, "can_create_store", "platform", s.cfg.PlatformID)
 			if err != nil {
 				writeEngineError(w, err)
-				return
+				return nil, "", nil
 			}
 		}
 	}
 	if !allowed {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "you are not allowed to delete this store", "required": "can_manage_access", "object": "store:" + store})
-		return
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "you are not allowed to " + verb + " this store", "required": "can_manage_access", "object": "store:" + store})
+		return nil, "", nil
 	}
-	var req deleteStoreReq
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	if req.Confirm != store {
+	if confirm != store {
 		writeError(w, http.StatusBadRequest, "type the store name to confirm")
-		return
+		return nil, "", nil
 	}
 	if store == s.cfg.ConsoleStore {
-		writeError(w, http.StatusConflict, "the console's own store cannot be deleted from the console")
-		return
+		writeError(w, http.StatusConflict, "the console's own store cannot be "+verb+"d from the console")
+		return nil, "", nil
 	}
-	ctx := r.Context()
-	deleteGate := func(tx pgx.Tx) error {
+	gate := func(tx pgx.Tx) error {
 		ok, err := s.canQ(ctx, tx, p, "can_manage_access", "store", store)
 		if err != nil || ok {
 			return err
@@ -365,7 +367,24 @@ func (s *Server) handleDeleteStore(w http.ResponseWriter, r *http.Request) {
 		}
 		return s.platformGate(ctx, p, "can_create_store")(tx)
 	}
-	err = s.asPersonAuthorized(ctx, p, deleteGate, "can_manage_access", "store", store, map[string]any{"op": "delete_store", "purge_audit": req.PurgeAudit}, func(tx pgx.Tx) error {
+	return p, store, gate
+}
+
+// handleDeleteStore — remove a store (authz.delete_store) and its console
+// access tuples, as the person, after the name was typed back. Owners and
+// platform admins (can_manage_access). The console store itself is refused.
+// A retired store is deleted the same way: this is how it is purged.
+func (s *Server) handleDeleteStore(w http.ResponseWriter, r *http.Request) {
+	var req deleteStoreReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	p, store, deleteGate := s.requireLifecycle(w, r, "delete", req.Confirm)
+	if p == nil {
+		return
+	}
+	ctx := r.Context()
+	err := s.asPersonAuthorized(ctx, p, deleteGate, "can_manage_access", "store", store, map[string]any{"op": "delete_store", "purge_audit": req.PurgeAudit}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SELECT authz.delete_store($1, $2)`, store, req.PurgeAudit); err != nil {
 			return err
 		}
@@ -406,6 +425,37 @@ func (s *Server) handleDeleteStore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": store})
+}
+
+type retireStoreReq struct {
+	Confirm string `json:"confirm"` // must equal the store name
+}
+
+// handleRetireStore — soft-delete a store (authz.retire_store): the live
+// tuples go and every live API refuses the store from now on, but its
+// dictionary and audit history stay, so point-in-time questions about it
+// keep their answers and the name stays reserved. The console roles on the
+// store stay too: its owners still see it (marked retired) and may purge it
+// later with Delete. Same gate as delete.
+func (s *Server) handleRetireStore(w http.ResponseWriter, r *http.Request) {
+	var req retireStoreReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	p, store, gate := s.requireLifecycle(w, r, "retire", req.Confirm)
+	if p == nil {
+		return
+	}
+	ctx := r.Context()
+	err := s.asPersonAuthorized(ctx, p, gate, "can_manage_access", "store", store, map[string]any{"op": "retire_store"}, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `SELECT authz.retire_store($1)`, store)
+		return err
+	})
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "retired": store})
 }
 
 var errAlreadyClaimed = errors.New("store is already managed")

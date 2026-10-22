@@ -9,6 +9,57 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Console: the rest of the model, retiring a store, the model's history.**
+  The Model tab now edits what it only showed before: **grant rules** (a
+  section of their own: add, edit, remove, Details with the SQL call —
+  `model_add_grant_rule` / `model_drop_grant_rule`), the **payload schema**
+  of an action ("Payload…" on a relation, `model_set_payload_schema`; a
+  `schema` badge marks relations that have one) and the **labels** of a type
+  ("Labels…", `model_set_type_labels`; a Labels column). All three are
+  namespace-scoped like the rest of the editor (a namespace author may set
+  the labels and grant rules of their own types). The Admin tab gains
+  **Retire store** (`authz.retire_store`, `POST /api/stores/{store}/retire`,
+  typed-name confirmation, same gate as delete): the live data goes, the
+  dictionary, the audit history and the console roles stay; a retired store
+  is marked as such on the home table and the store page, keeps its
+  Activity, Access and Admin tabs, and Delete purges it. The Activity tab
+  gains **Model changes**: the union of `models_audit`, `conditions_audit`,
+  `model_gates_audit` and `grant_rules_audit` with ids resolved to names,
+  newest first — who added or removed which rule, condition, gate or grant
+  rule, and what it said. The Structure card is now **one tab per
+  section** (Types, Relations, Rules, Type restrictions, Conditions, Gates,
+  Grant rules, with counts), the section in the URL
+  (`stores/<store>/model/<section>`, remembered per browser), and each
+  section's add button and edit form inside its own tab, so Edit on a gate
+  or grant rule no longer jumps to the top of the page; the selection bar
+  stays above the tabs since a selection spans sections. Each section's
+  filter is labelled and sits beside the title; the tables sort by any
+  column (click a head, click again to reverse) except the relations, whose
+  order is the stored ui_order; the two relation groups share one column
+  layout. **JSON fields**
+  (gate clauses, payload schema, a condition's required context and its
+  Try-it contexts, a tuple's condition context, the Test tab's request
+  context) are one shared editor (`pgc-json`): highlighted as you type,
+  parsed on every keystroke with the line and column of a syntax error, a
+  Format button, and the browser's own form validation refusing the submit
+  while the text is invalid. Form inputs carry no placeholder text any more;
+  the example moved into the field's label or (?) text (search and filter
+  boxes keep their hint). A JSON mistake is reported next to its field
+  (focus and the browser's message, opening a collapsed section if need
+  be), never in the page-top box; that box now says "Error:" first. The
+  four Activity logs share one shape — When, Change, What, Details, By —
+  so console actions, the relationship audit, the model changes and the
+  action log read alike; long tokens in their Details column wrap instead
+  of scrolling. The content column is 1600px wide (was 1180px), the body
+  gutter still keeps it off the edges on narrower screens. New controls carry `data-testid` attributes
+  (`<tab>-<thing>[-<key>]`, see the console README) for a future Playwright
+  suite. `db/security/roles.sql` grants `authz_console` SELECT on
+  `model_gates_audit` and `grant_rules_audit` (re-run it on an existing
+  database). Go tests: the editor's new operations (`modelEditSQL`) and,
+  against the database, retire keeping history and roles plus the history
+  query — read as `authz_console` (`SET LOCAL ROLE`), so a missing table
+  grant fails the test instead of the Activity tab.
+
 - **Deployments: derived relations in the Helm chart, a Docker Compose
   deployment.** `derivedRelations.enabled` installs
   `db/replication/materialized_relations.sql` through the migration Job,

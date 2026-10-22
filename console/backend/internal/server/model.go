@@ -149,6 +149,10 @@ type modelEdit struct {
 	Spec                json.RawMessage `json:"spec"` // add_gate: the gate object (all_of, description, mode)
 	ID                  int             `json:"id"`   // rule / restriction id to remove
 	Force               bool            `json:"force"`
+	Labels              []string        `json:"labels"`          // set_type_labels: the type's labels (empty clears)
+	Requires            string          `json:"requires"`        // add_grant_rule: relation the actor needs to grant
+	RequiresRevoke      string          `json:"requires_revoke"` // add_grant_rule: … to revoke (empty = same as requires)
+	PayloadSchema       json.RawMessage `json:"payload_schema"`  // set_payload_schema: the schema (null / empty clears)
 }
 
 // modelEditSQL maps one editor operation onto the engine call that performs
@@ -162,6 +166,14 @@ func modelEditSQL(store, op string, e modelEdit) (sql string, args []any, ok boo
 		sql, args = `SELECT authz.model_remove_type($1, $2, $3)`, []any{store, e.Name, e.Force}
 	case "set_type_namespace": // move a type into / out of a namespace; store-wide (see modelOpNamespace)
 		sql, args = `SELECT authz.model_set_type_namespace($1, $2, $3)`, []any{store, e.Name, e.Namespace}
+	case "set_type_labels": // replace the advisory labels of a type (no access-control effect)
+		labels := make([]string, 0, len(e.Labels))
+		for _, l := range e.Labels {
+			if l = strings.TrimSpace(l); l != "" {
+				labels = append(labels, l)
+			}
+		}
+		sql, args = `SELECT authz.model_set_type_labels($1, $2, $3::text[])`, []any{store, e.Name, labels}
 	case "add_relation":
 		var md any
 		if e.Kind != "" {
@@ -206,6 +218,13 @@ func modelEditSQL(store, op string, e modelEdit) (sql string, args []any, ok boo
 		args = []any{store, e.ObjectType, e.Relation, e.Name, nullableJSON(e.Spec)}
 	case "remove_gate":
 		sql, args = `SELECT authz.drop_gate($1, $2, $3, $4)`, []any{store, e.ObjectType, e.Relation, e.Name}
+	case "add_grant_rule": // upsert by (object type, relation): re-adding changes the requirements
+		sql = `SELECT authz.model_add_grant_rule($1, $2, $3, $4, $5)`
+		args = []any{store, e.ObjectType, e.Relation, e.Requires, nullable(e.RequiresRevoke)}
+	case "remove_grant_rule":
+		sql, args = `SELECT authz.model_drop_grant_rule($1, $2, $3)`, []any{store, e.ObjectType, e.Relation}
+	case "set_payload_schema": // the payload shape events for this action must have; null clears it
+		sql, args = `SELECT authz.model_set_payload_schema($1, $2, $3::jsonb)`, []any{store, e.Name, nullableJSON(e.PayloadSchema)}
 	default:
 		return "", nil, false
 	}

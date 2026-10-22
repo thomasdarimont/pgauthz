@@ -48,6 +48,7 @@ export const api = {
   adoptStore: (store) => call(`api/stores/${enc(store)}/adopt`, {}),
   deleteStore: (store, confirm, purgeAudit) =>
     call(`api/stores/${enc(store)}/delete`, { confirm, purge_audit: purgeAudit }),
+  retireStore: (store, confirm) => call(`api/stores/${enc(store)}/retire`, { confirm }),
   store: (store) => call(`api/stores/${enc(store)}`),
 
   model: (store) => call(`api/stores/${enc(store)}/model`),

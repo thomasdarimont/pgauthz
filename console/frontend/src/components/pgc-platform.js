@@ -1,5 +1,5 @@
 import { html, nothing } from 'lit';
-import { PgcElement, help } from '../base.js';
+import { PgcElement, help, errorBox } from '../base.js';
 import { api } from '../api.js';
 import { t } from '../i18n.js';
 import { run } from '../util.js';
@@ -31,8 +31,7 @@ export class PgcPlatform extends PgcElement {
 
   _settings() {
     const d = this.d;
-    if (!d)
-      return html`${this.error ? html`<p class="error">${this.error}</p>` : html`<p class="muted">${t('Loading…')}</p>`}`;
+    if (!d) return html`${this.error ? errorBox(this.error) : html`<p class="muted">${t('Loading…')}</p>`}`;
     return html`
       <section class="card">
         <h3>${t('Health')}</h3>

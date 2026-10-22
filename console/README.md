@@ -84,14 +84,14 @@ views `demo`; eva audits it).
 | Area | Screen | Needs (console store) |
 |---|---|---|
 | **Stores** | the stores you can see, with your capabilities; unclaimed stores (platform admin) and *New store* | `store#can_view`; `platform#can_view_all_stores`, `platform#can_create_store` |
-| Store → **Model** | three read views of the live model (DSL, canonical JSON, SQL calls); "Edit as DSL" to write the whole model in that DSL (a starter model for an empty store); the structured editor (types, relations with their rules and type restrictions in one step, rules, type restrictions, conditions) | `can_view`; editing `can_edit_model` |
+| Store → **Model** | three read views of the live model (DSL, canonical JSON, SQL calls); "Edit as DSL" to write the whole model in that DSL (a starter model for an empty store); the structured editor, one tab per section (types with their namespace and labels, relations with their rules and type restrictions in one step and their payload schema, rules, type restrictions, conditions, temporal gates, grant rules), each section's add button and edit form inside its tab; the section is in the URL (`stores/<store>/model/<section>`) | `can_view`; editing `can_edit_model` |
 | Store → **Data** | tuples with filter; grant/revoke | `can_view`; writes `can_grant` |
 | Store → **Test** | four modes: single check + explain; matrix (subjects × actions × resources, one batch call); reverse search (which objects can X reach / who can reach Y); "as me via pgauthzd" (your own token, with the detail envelope: OPA, hooks, veto). The **test policy** limits a plain tester to their own access with redacted trees, no enumeration and no history; every test is recorded in the console's action log | `can_run_tests`; `can_test_others`, `can_test_explain_full`, `can_test_search`, `can_test_history` widen it |
 | Store → **Rollout** | managed-model state and drift, the versions of the store's model (an unmanaged store picks a registry model first), plan (dry run), apply; publish the live model | `can_view`; `can_rollout` to apply; `can_publish` on the store **and** `registry#can_publish` to publish |
-| Store → **Activity** | console actions on this store, the relationship audit trail, the store's action log | `can_view_audit` |
+| Store → **Activity** | console actions on this store, the relationship audit trail, the model change history (rules, conditions, gates, grant rules added or removed, by whom), the store's action log | `can_view_audit` |
 | Store → **Access** | who has which console role on the store; grant/remove; a store never loses its last owner. **Namespaces**: `author` / `viewer` on one namespace of the store (an application team's slice) | `can_view`; `can_manage_access` to change |
 | Store → **Policies** | when OPA fronts the deployment: the Rego that applies to this store — its hooks, the global hooks, shared libraries, platform policy — with sources, plus OPA's version and bundle revisions; read-only (policies are authored in git and shipped as validated bundles) | `can_view`; `CONSOLE_OPA_URL` + `CONSOLE_OPA_TOKEN` on the BFF |
-| Store → **Admin** | the store's lifecycle: delete it (typed name, optional audit purge) | `can_manage_access` |
+| Store → **Admin** | the store's lifecycle: retire it (soft delete — live data gone, history and name kept) or delete it (typed name, optional audit purge) | `can_manage_access` |
 | **Registry** | every model name, its versions and the fleet running each | `registry#can_view` |
 | **Platform** | admins (grant/remove; never zero), configuration and health | `platform#can_view_health`, `platform#can_manage_access` |
 
@@ -106,10 +106,16 @@ permission.
 
 Removing anything (model parts, tuples, role assignments) is select →
 "Remove selected…" → an inline confirmation that lists what goes → one
-transaction; there is no single-click delete. Deleting a whole store is the
-"Danger zone" on its Admin tab (owners and platform admins): an owner types
-the store's name, chooses whether to purge the audit history too (`authz.delete_store`),
-and the console roles on that store go with it. Stores carry a description
+transaction; there is no single-click delete. A whole store leaves through
+its Admin tab (owners and platform admins), after its name is typed back:
+**Retire** (`authz.retire_store`) is the audit-safe way out — the live
+tuples go and every live API refuses the store from then on, but the model
+dictionary, the audit history and the name stay, the console roles on it
+stay, and the store shows as *retired* (Activity, Access and Admin remain
+usable; a retired store's action log is live-only and comes back empty);
+**Delete** in the "Danger zone" (`authz.delete_store`) removes it for good,
+retired or not, with the choice to purge the audit history too, and the
+console roles on that store go with it. Stores carry a description
 and a documentation link (`authz.update_store`), edited by owners on the
 store header. The home page lists the stores you can see as a table with
 their model status, your access, the creation time (`stores.created_at`)
@@ -121,7 +127,11 @@ last-changed times, and a *Details* row showing the SQL call that recreates
 the item and its JSON (a condition's row also has *Try it*: a request
 context and a mocked stored context evaluated without any tuple); both are edited in place (a save under the same name
 replaces the definition; gate clauses are JSON with one template per
-primitive). The UI is in English by default with a German translation
+primitive; every JSON field is one shared editor that highlights, parses as
+you type and names the line and column of a mistake, and the form will not
+submit while it is invalid). Inputs carry no placeholder text: what goes in
+and an example are in the label or the (?) next to it, so the guidance stays
+once you start typing. The UI is in English by default with a German translation
 (chosen on the personal Settings page behind the gear in the top bar), and
 columns and sections carry (?) help texts. Dictionaries are plain JSON
 (`frontend/src/i18n/<lang>.json`, English strings are the keys). An operator
@@ -220,6 +230,17 @@ them as mandatory (`PGAUTHZ_TEST_REQUIRE_DATABASE=1`) and drops the store;
 `tests/test-all.sh` and CI include it. The access model's own SQL checks are
 `../examples/models/console/tests.sql` (run by `tests/test.sh`).
 
+### Test ids
+
+Every control an end-to-end test would drive carries a `data-testid`, named
+`<tab>-<thing>[-<key>]` in kebab-case: the tab or screen first (`model`,
+`admin`, `activity`, `store`), then the element, then the item it belongs to
+when there is one (`model-type-labels-edit-document`,
+`model-grant-rule-document-viewer`, `admin-retire-submit`,
+`activity-view-model`, `store-tab-admin`). New UI gets them as it is built,
+so a Playwright suite can select by role and test id instead of by text,
+which is translated.
+
 ## Pieces
 
 - `backend/` — the Go BFF (`cmd/console`, `internal/{config,oidc,server}`):
@@ -261,9 +282,6 @@ empty).
   (ADR 0014) with a service token would lift that.
 - **Saved test scenarios.** The matrix a tester builds is not yet saved as a
   `tests.authz.yaml` fixture; the runner lives in pgauthzctl.
-- **Grant rules and payload schemas** are shown (SQL view) but not edited;
-  the editor covers types, relations, rules, type restrictions, conditions,
-  temporal gates and namespaces.
 - **Replacing the playground.** The console is the successor of
   [`playground/`](../playground/README.md); still to move over before the
   playground goes: the resolution-path **graph** (the explain tree is shown

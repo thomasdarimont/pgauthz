@@ -1,5 +1,5 @@
 import { html, nothing } from 'lit';
-import { PgcElement, help } from '../base.js';
+import { PgcElement, help, errorBox } from '../base.js';
 import { api } from '../api.js';
 import { t, t2 } from '../i18n.js';
 import { run, fmtTime } from '../util.js';
@@ -38,7 +38,7 @@ export class PgcRegistry extends PgcElement {
           </div>
         </div>
       </div>
-      ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
+      ${this.error ? errorBox(this.error) : nothing}
       ${
         d
           ? d.models.length

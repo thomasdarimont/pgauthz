@@ -1,10 +1,11 @@
 import { html, nothing } from 'lit';
-import { PgcElement, help } from '../base.js';
+import { PgcElement, help, errorBox } from '../base.js';
 import { api } from '../api.js';
 import { t } from '../i18n.js';
 import { run, copyText, forbiddenText, byOrder, statusBadge, fmtTime, fmtRelative } from '../util.js';
 import { selectionCell, selectAllCell, removeBar, clearSelection } from './pgc-select.js';
 import { highlightDSL, highlightSQL, highlightJSON } from '../highlight.js';
+import { PgcJson } from './pgc-json.js';
 
 // Model tab. Three read views of the SAME live model — DSL (OpenFGA-style,
 // lossy), JSON (the registry's canonical export) and SQL (the engine calls
@@ -15,6 +16,7 @@ import { highlightDSL, highlightSQL, highlightJSON } from '../highlight.js';
 export class PgcModel extends PgcElement {
   static properties = {
     store: { type: String },
+    section: { type: String }, // the active Structure section, from the URL (stores/<store>/model/<section>)
     caps: { attribute: false },
     info: { attribute: false },
     m: { state: true },
@@ -34,6 +36,7 @@ export class PgcModel extends PgcElement {
     dslReport: { state: true },
     detail: { state: true }, // keys of the rows whose definition is expanded
     filters: { state: true }, // per-section filter text (types, relations, rules, restrictions, conditions, gates)
+    sorts: { state: true }, // per-section sort: { key, dir } (relations keep their stored order)
     tryCond: { state: true }, // per-condition try-it state (contexts, result)
     renaming: { state: true }, // namespace being renamed
     renameTo: { state: true },
@@ -48,7 +51,7 @@ export class PgcModel extends PgcElement {
     this.copied = false;
     this.edit = null; // which add-form is open
     this.form = {};
-    this.selected = new Set(); // keys: type:<name> | rule:<id> | restriction:<id> | condition:<name>
+    this.selected = new Set(); // keys: type:<name> | rule:<id> | restriction:<id> | condition:<name> | gate:… | grant:<type>.<relation>
     this.confirming = false;
     this.dslEdit = false; // the DSL view as an editor
     this.dslText = '';
@@ -63,6 +66,7 @@ export class PgcModel extends PgcElement {
     this.renaming = null;
     this.renameTo = '';
     this.filters = {};
+    this.sorts = {};
     this.tryCond = {};
     this.draft = {}; // unsaved drag order per group: { permission: [names], relation: [names] }
     this.dragging = null; // { group, name } while a row is being dragged
@@ -70,6 +74,13 @@ export class PgcModel extends PgcElement {
 
   willUpdate(changed) {
     if (changed.has('store') && this.store) this._load();
+    if (changed.has('section') && this.section) {
+      try {
+        localStorage.setItem('pgc_model_section', this.section);
+      } catch {
+        /* storage unavailable */
+      }
+    }
   }
 
   async _load() {
@@ -144,7 +155,7 @@ type document
   // Selected keys → batch operations, dependants first (rules and type
   // restrictions before types; conditions before types that might need them).
   _selectedOps() {
-    const order = { gate: 0, rule: 1, restriction: 2, condition: 3, type: 4 };
+    const order = { grant: 0, gate: 1, rule: 2, restriction: 3, condition: 4, type: 5 };
     return [...this.selected]
       .map((k) => {
         const i = k.indexOf(':');
@@ -160,8 +171,20 @@ type document
               ? { op: 'remove_condition', name: id }
               : kind === 'gate'
                 ? { op: 'remove_gate', ...this._gateRef(id) }
-                : { op: 'remove_type', name: id },
+                : kind === 'grant'
+                  ? { op: 'remove_grant_rule', ...this._grantRef(id) }
+                  : { op: 'remove_type', name: id },
       );
+  }
+
+  // Grant rule keys are "grant:<object_type>.<relation>" (one rule per pair).
+  _grantRef(id) {
+    const [object_type, relation] = id.split('.');
+    return { object_type, relation };
+  }
+
+  _grantKey(g) {
+    return `grant:${g.object_type}.${g.relation}`;
   }
 
   // Gate keys are "gate:<object_type>.<relation>/<name>".
@@ -179,6 +202,10 @@ type document
     if (k.startsWith('gate:')) {
       const r = this._gateRef(k.slice(5));
       return `${t('gate')}: ${r.object_type}.${r.relation} — ${r.name}`;
+    }
+    if (k.startsWith('grant:')) {
+      const r = this._grantRef(k.slice(6));
+      return `${t('grant rule')}: ${r.object_type}.${r.relation}`;
     }
     const i = k.indexOf(':');
     const kind = k.slice(0, i);
@@ -226,9 +253,26 @@ type document
         try {
           f.required_context = JSON.parse(f.required_context);
         } catch {
-          this.error = t('required context must be JSON');
+          PgcJson.report(this);
           return;
         }
+      }
+      if (f.labels_text !== undefined) {
+        f.labels = String(f.labels_text)
+          .split(',')
+          .map((x) => x.trim())
+          .filter(Boolean);
+        delete f.labels_text;
+      }
+      if (f.payload_schema_text !== undefined) {
+        const text = String(f.payload_schema_text).trim();
+        try {
+          f.payload_schema = text ? JSON.parse(text) : null;
+        } catch {
+          PgcJson.report(this);
+          return;
+        }
+        delete f.payload_schema_text;
       }
       this._op(op, f);
     };
@@ -384,6 +428,7 @@ type document
     e.preventDefault();
     const f = this.form;
     const clauses = this._gateClauses();
+    if (!clauses && PgcJson.report(this)) return; // not JSON: said next to the field
     if (!clauses || !clauses.length) {
       this.error = t('the clauses must be a JSON array with at least one clause');
       return;
@@ -430,8 +475,10 @@ type document
 
   _formActions(label) {
     return html`<div class="actions wide">
-      <button class="primary" ?disabled=${this.busy}>${t(label)}</button>
-      <button type="button" @click=${() => (this.edit = null)}>${t('Cancel')}</button>
+      <button class="primary" ?disabled=${this.busy} data-testid="model-form-submit">${t(label)}</button>
+      <button type="button" data-testid="model-form-cancel" @click=${() => (this.edit = null)}>
+        ${t('Cancel')}
+      </button>
     </div>`;
   }
 
@@ -456,7 +503,7 @@ type document
             ><span
               >${t('Namespace')}
               ${help('Optional: the application or team this type belongs to. Namespace roles (Access tab) may edit the model and data inside their namespace only; a type without one is store-wide.')}</span
-            ><input class="mono" list="dl-namespaces" placeholder="billing" @input=${this._set('namespace')}
+            ><input class="mono" list="dl-namespaces" @input=${this._set('namespace')}
           /></label>
           <datalist id="dl-namespaces">
             ${this._namespaces().map((n) => html`<option value=${n}></option>`)}
@@ -513,21 +560,13 @@ type document
                   ><span
                     >${t('Derived from')}
                     ${help('Relations this permission is implied by, on each selected type: "viewer, owner" means viewer or owner. Inheritance through related objects (ttu) is added afterwards with "+ rule".')}</span
-                  ><input
-                    class="mono"
-                    list="dl-rels"
-                    placeholder="viewer, owner"
-                    @input=${this._set('derived_from')}
+                  ><input class="mono" list="dl-rels" @input=${this._set('derived_from')}
                 /></label>`
               : html`<label class="field wide"
                   ><span
                     >${t('Accepts subject types')}
                     ${help('Type restrictions for the tuples of this relation on each selected type: "user" a user; "team#member" the members of a team (userset); "user:*" also the wildcard for everyone of that type. Empty = no restriction (any subject).')}</span
-                  ><input
-                    class="mono"
-                    list="dl-types"
-                    placeholder="user, team#member, user:*"
-                    @input=${this._set('accepts')}
+                  ><input class="mono" list="dl-types" @input=${this._set('accepts')}
                 /></label>`
           }
           ${this._formActions('Add relation')}
@@ -680,12 +719,12 @@ type document
           <label class="field wide"
             ><span
               >${t('Expression')}
-              ${help('SQL: $1 is the request context, $2 the tuple context (jsonb). CEL: request and tuple variables.')}</span
+              ${help("SQL: $1 is the request context, $2 the tuple context (jsonb), e.g. ($1->>'ip')::inet << '10.0.0.0/8'::inet. CEL: request and tuple variables.")}</span
             ><textarea
               class="mono"
               rows="2"
               required
-              placeholder="($1->>'ip')::inet << '10.0.0.0/8'::inet"
+              spellcheck="false"
               .value=${f.expression ?? ''}
               @input=${this._set('expression')}
             ></textarea>
@@ -693,13 +732,14 @@ type document
           <label class="field wide"
             ><span
               >${t('Required context (JSON, optional)')}
-              ${help('Keys the request must supply; a decision without them is "conditional", not a silent deny.')}</span
-            ><input
-              class="mono"
-              placeholder='{"request": ["ip"]}'
+              ${help('Keys the request must supply, as {"request": ["ip"]}; a decision without them is "conditional", not a silent deny.')}</span
+            ><pgc-json
+              rows="3"
+              testid="model-input-required-context"
               .value=${f.required_context ?? ''}
-              @input=${this._set('required_context')}
-          /></label>
+              @json-input=${(e) => (this.form = { ...this.form, required_context: e.detail.text })}
+            ></pgc-json
+          ></label>
           ${this._formActions(f.editing ? 'Save condition' : 'Add condition')}
         </form>`;
       case 'set_type_namespace':
@@ -712,7 +752,6 @@ type document
             ><input
               class="mono"
               list="dl-namespaces"
-              placeholder=${t('empty = store-wide')}
               .value=${f.namespace ?? ''}
               @input=${this._set('namespace')}
           /></label>
@@ -720,6 +759,107 @@ type document
             ${this._namespaces().map((n) => html`<option value=${n}></option>`)}
           </datalist>
           ${this._formActions('Save namespace')}
+        </form>`;
+      case 'set_type_labels':
+        return html`<form
+          class="card form"
+          data-testid="model-form-set-type-labels"
+          @submit=${this._submit('set_type_labels')}
+        >
+          <h3 class="wide">${t('Labels of type')} <span class="mono">${f.name}</span></h3>
+          <label class="field wide"
+            ><span
+              >${t('Labels')}
+              ${help('Advisory key:value tags for grouping and tooling (group:accounting, tier:core), comma-separated. They have no access-control effect. Empty clears them.')}</span
+            ><input
+              class="mono"
+              .value=${f.labels_text ?? ''}
+              @input=${this._set('labels_text')}
+              data-testid="model-input-labels"
+          /></label>
+          ${this._formActions('Save labels')}
+        </form>`;
+      case 'set_payload_schema':
+        return html`<form
+          class="card form"
+          data-testid="model-form-set-payload-schema"
+          @submit=${this._submit('set_payload_schema')}
+        >
+          <h3 class="wide">${t('Payload schema of action')} <span class="mono">${f.name}</span></h3>
+          <label class="field wide"
+            ><span
+              >${t('Schema (JSON)')}
+              ${help('The shape events recorded for this action must have: "required" maps payload paths to types (input.amount: number, input.currency: string); "kinds" refines it per event kind (request, response). record_event enforces it, add_gate cross-checks it. Empty clears the schema.')}</span
+            ><pgc-json
+              rows="8"
+              testid="model-input-payload-schema"
+              .value=${f.payload_schema_text ?? ''}
+              @json-input=${(e) => (this.form = { ...this.form, payload_schema_text: e.detail.text })}
+            ></pgc-json>
+          </label>
+          ${this._formActions('Save schema')}
+        </form>`;
+      case 'add_grant_rule':
+        return html`<form
+          class="card form grant-form"
+          data-testid="model-form-add-grant-rule"
+          @submit=${this._submit('add_grant_rule')}
+        >
+          ${dl}
+          <h3 class="wide">
+            ${f.editing ? t('Edit grant rule') : t('New grant rule')}
+            ${help('The sharing policy: an actor may grant this relation on an object through authz.grant when they are allowed the required relation on that same object, and revoke it when allowed the revoke requirement. A relation without a rule cannot be granted that way at all (the writer role is unaffected). Saving for an existing type and relation replaces that rule.')}
+          </h3>
+          <label class="field"
+            ><span>${t('On object type')}</span
+            ><select
+              class="mono"
+              required
+              @change=${this._set('object_type')}
+              data-testid="model-input-grant-object-type"
+            >
+              <option value="" ?selected=${!f.object_type}>${t('choose…')}</option>
+              ${types.map((ty) => html`<option value=${ty} ?selected=${f.object_type === ty}>${ty}</option>`)}
+            </select></label
+          >
+          <label class="field"
+            ><span>${t('Relation granted')}</span
+            ><select
+              class="mono"
+              required
+              @change=${this._set('relation')}
+              data-testid="model-input-grant-relation"
+            >
+              <option value="" ?selected=${!f.relation}>${t('choose…')}</option>
+              ${rels.map((r) => html`<option value=${r} ?selected=${f.relation === r}>${r}</option>`)}
+            </select></label
+          >
+          <label class="field"
+            ><span
+              >${t('To grant, the actor needs')}
+              ${help('A relation or permission the actor must be allowed on the same object, e.g. can_share or owner.')}</span
+            ><select
+              class="mono"
+              required
+              @change=${this._set('requires')}
+              data-testid="model-input-grant-requires"
+            >
+              <option value="" ?selected=${!f.requires}>${t('choose…')}</option>
+              ${rels.map((r) => html`<option value=${r} ?selected=${f.requires === r}>${r}</option>`)}
+            </select></label
+          >
+          <label class="field"
+            ><span>${t('To revoke, the actor needs')} ${help('Empty: the same as to grant.')}</span
+            ><select
+              class="mono"
+              @change=${this._set('requires_revoke')}
+              data-testid="model-input-grant-requires-revoke"
+            >
+              <option value="" ?selected=${!f.requires_revoke}>${t('same as to grant')}</option>
+              ${rels.map((r) => html`<option value=${r} ?selected=${f.requires_revoke === r}>${r}</option>`)}
+            </select></label
+          >
+          ${this._formActions(f.editing ? 'Save grant rule' : 'Add grant rule')}
         </form>`;
       case 'add_gate': {
         const clauses = this._gateClauses();
@@ -788,20 +928,19 @@ type document
                   </button>`,
               )}
             </div>
-            <textarea
-              class="mono"
+            <pgc-json
               rows="8"
               required
-              placeholder='[{"count_within": {"window": "1h", "max": 5, "plus": 1}}]'
+              testid="model-input-gate-clauses"
               .value=${f.all_of ?? ''}
-              @input=${this._set('all_of')}
-            ></textarea>
+              @json-input=${(e) => (this.form = { ...this.form, all_of: e.detail.text })}
+            ></pgc-json>
             ${
               clauses
                 ? html`<ul class="clauses">
                     ${clauses.map((c) => html`<li>${this._clauseText(c)}</li>`)}
                   </ul>`
-                : html`<span class="error">${t('not valid JSON')}</span>`
+                : nothing
             }
           </div>
           ${this._formActions(f.editing ? 'Save gate' : 'Add gate')}
@@ -823,7 +962,94 @@ type document
 
   // Section filters: every word typed must appear somewhere in the row's
   // searchable fields. Client-side, since the model is already loaded.
+  // What each sortable column of a section sorts by (the row → a value).
+  _sorters() {
+    const times = this.m?.condition_times ?? {};
+    return {
+      types: {
+        name: (x) => x.name,
+        namespace: (x) => x.namespace ?? '',
+        description: (x) => x.description ?? '',
+        labels: (x) => (x.labels ?? []).join(' '),
+      },
+      rules: {
+        id: (r) => r.id,
+        object_type: (r) => r.object_type,
+        relation: (r) => r.relation,
+        defined: (r) =>
+          r.rule_type === 'direct'
+            ? 'direct'
+            : r.rule_type === 'computed'
+              ? r.computed_relation
+              : `${r.tupleset_computed} from ${r.tupleset_relation}`,
+        group: (r) => r.group_id,
+      },
+      restrictions: {
+        id: (x) => x.id,
+        object_type: (x) => x.object_type,
+        relation: (x) => x.relation,
+        accepts: (x) => `${x.allowed_user_type}#${x.allowed_user_relation ?? ''}`,
+        condition: (x) => x.condition ?? '',
+      },
+      conditions: {
+        name: (c) => c.name,
+        description: (c) => c.description ?? '',
+        lang: (c) => c.lang,
+        created: (c) => times[c.name]?.created_at ?? '',
+        updated: (c) => times[c.name]?.updated_at ?? '',
+      },
+      gates: {
+        on: (g) => `${g.object_type}.${g.relation}`,
+        name: (g) => g.name,
+        mode: (g) => g.spec?.mode ?? 'enforce',
+        clauses: (g) => (g.spec?.all_of ?? []).length,
+      },
+      grant_rules: {
+        object_type: (g) => g.object_type,
+        relation: (g) => g.relation,
+        requires: (g) => g.requires,
+        requires_revoke: (g) => g.requires_revoke ?? '',
+      },
+    };
+  }
+
+  _toggleSort(section, key) {
+    const cur = this.sorts[section];
+    this.sorts = { ...this.sorts, [section]: cur?.key === key ? { key, dir: -cur.dir } : { key, dir: 1 } };
+  }
+
+  // A sortable column head: click sorts, click again reverses. cls "wide"
+  // marks a prose column (description, definition) that keeps room.
+  _sortTh(section, key, label, extra, cls = '') {
+    const cur = this.sorts[section];
+    const active = cur?.key === key;
+    return html`<th
+      class="sortable ${active ? 'active' : ''} ${cls}"
+      title=${t('sort')}
+      data-testid=${`model-sort-${section}-${key}`}
+      @click=${() => this._toggleSort(section, key)}
+    >
+      ${label} ${extra ?? nothing}
+      <span class="sort-ind">${active ? (cur.dir > 0 ? '▲' : '▼') : '↕'}</span>
+    </th>`;
+  }
+
+  // The rows of a section as shown: filtered, then sorted by the chosen
+  // column (the engine's order otherwise).
   _filtered(section, items, fields) {
+    const rows = this._filteredOnly(section, items, fields);
+    const sort = this.sorts[section];
+    const val = sort && this._sorters()[section]?.[sort.key];
+    if (!val) return rows;
+    return [...rows].sort((a, b) => {
+      const x = val(a);
+      const y = val(b);
+      const c = typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y));
+      return c * sort.dir;
+    });
+  }
+
+  _filteredOnly(section, items, fields) {
     const words = (this.filters[section] ?? '').trim().toLowerCase().split(/\s+/).filter(Boolean);
     if (!words.length) return items;
     return items.filter((x) => {
@@ -839,6 +1065,10 @@ type document
   _filterBox(section, shown, total) {
     const q = this.filters[section] ?? '';
     return html`<div class="sec-filter">
+      <span class="filter-label"
+        >${t('Filter')}
+        ${help('Every word typed must appear somewhere in the row; #id finds one item by its engine id.')}</span
+      >
       <label class="filter-box" aria-label=${t('Filter')}>
         <svg class="filter-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
           <path
@@ -851,7 +1081,6 @@ type document
         </svg>
         <input
           type="search"
-          placeholder=${t('filter… (#id for one item)')}
           .value=${q}
           @input=${(e) => (this.filters = { ...this.filters, [section]: e.target.value })}
         />
@@ -872,6 +1101,43 @@ type document
     this.form = { name: x.name, namespace: x.namespace ?? '', editing: true };
     this.edit = 'set_type_namespace';
     clearSelection(this);
+  }
+
+  _editTypeLabels(x) {
+    this.form = { name: x.name, labels_text: (x.labels ?? []).join(', '), editing: true };
+    this.edit = 'set_type_labels';
+    clearSelection(this);
+  }
+
+  _editPayloadSchema(r) {
+    this.form = {
+      name: r.name,
+      payload_schema_text: r.payload_schema ? JSON.stringify(r.payload_schema, null, 2) : '',
+      editing: true,
+    };
+    this.edit = 'set_payload_schema';
+    clearSelection(this);
+  }
+
+  _editGrantRule(g) {
+    this.form = {
+      object_type: g.object_type,
+      relation: g.relation,
+      requires: g.requires,
+      requires_revoke: g.requires_revoke ?? '',
+      editing: true,
+    };
+    this.edit = 'add_grant_rule';
+    clearSelection(this);
+    this.updateComplete.then(() =>
+      this.querySelector('form.grant-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+    );
+  }
+
+  _grantSQL(g) {
+    const args = [this.store, g.object_type, g.relation, g.requires].map((x) => this._q(x));
+    if (g.requires_revoke) args.push(`p_requires_revoke => ${this._q(g.requires_revoke)}`);
+    return `SELECT authz.model_add_grant_rule(${args.join(', ')});`;
   }
 
   _renameNamespace = async (e) => {
@@ -1001,24 +1267,20 @@ type document
       }
       <label class="field"
         ><span>${t('Request context')} <span class="mono muted">$1</span></span
-        ><textarea
-          class="mono ${reqP.error ? 'invalid' : ''}"
+        ><pgc-json
           rows="4"
-          spellcheck="false"
           .value=${req}
-          @input=${(e) => this._trySet(c.name, { request: e.target.value })}
-        ></textarea>
+          @json-input=${(e) => this._trySet(c.name, { request: e.detail.text })}
+        ></pgc-json>
         ${warn(reqP)}
       </label>
       <label class="field"
         ><span>${t('Stored context (mocked tuple)')} <span class="mono muted">$2</span></span
-        ><textarea
-          class="mono ${stoP.error ? 'invalid' : ''}"
+        ><pgc-json
           rows="4"
-          spellcheck="false"
           .value=${stored}
-          @input=${(e) => this._trySet(c.name, { stored: e.target.value })}
-        ></textarea>
+          @json-input=${(e) => this._trySet(c.name, { stored: e.detail.text })}
+        ></pgc-json>
         ${warn(stoP)}
       </label>
       <div class="actions">
@@ -1189,12 +1451,24 @@ type document
           items.length
             ? html`<div class="table-wrap">
                 <table class="rel-table">
+                  <colgroup>
+                    <col class="c-grip" />
+                    <col class="c-name" />
+                    <col class="c-desc" />
+                    <col class="c-on" />
+                    <col class="c-payload" />
+                    ${can ? html`<col class="c-actions" />` : nothing}
+                  </colgroup>
                   <thead>
                     <tr>
                       <th class="num"></th>
                       <th>${t('Name')}</th>
                       <th>${t('Description')}</th>
                       <th>${t('Defined on')} ${help('The object types with a rule for this relation.')}</th>
+                      <th>
+                        ${t('Payload')}
+                        ${help('For actions recorded in the action log: the payload shape their events must have (record_event enforces it). Set with "Payload…".')}
+                      </th>
                       ${can ? html`<th></th>` : nothing}
                     </tr>
                   </thead>
@@ -1215,15 +1489,36 @@ type document
                           <td class="mono">${r.name}</td>
                           <td class="muted">${r.description ?? ''}</td>
                           <td class="mono muted">${usedOn(r.name).join(', ')}</td>
+                          <td>
+                            ${
+                              r.payload_schema
+                                ? html`<span
+                                    class="badge accent"
+                                    title=${JSON.stringify(r.payload_schema)}
+                                    data-testid=${`model-relation-payload-badge-${r.name}`}
+                                    >${t('schema')}</span
+                                  >`
+                                : html`<span class="dim">—</span>`
+                            }
+                          </td>
                           ${
                             can
                               ? html`<td class="actions rel-actions">
                                   <button
                                     class="sm ghost"
                                     title=${t(moveLabel)}
+                                    data-testid=${`model-relation-kind-${r.name}`}
                                     @click=${() => this._op('set_relation_kind', { name: r.name, kind: otherKind })}
                                   >
                                     ⇄
+                                  </button>
+                                  <button
+                                    class="sm"
+                                    title=${t('the payload shape events for this action must have')}
+                                    data-testid=${`model-relation-payload-${r.name}`}
+                                    @click=${() => this._editPayloadSchema(r)}
+                                  >
+                                    ${t('Payload…')}
                                   </button>
                                 </td>`
                               : nothing
@@ -1243,132 +1538,167 @@ type document
     `;
   }
 
-  _editor() {
-    const m = this.m;
+  // The Structure card's sections, one tab each: id, label, the (?) text,
+  // the add button (op, label) and the ops whose form belongs in it.
+  static SECTIONS = [
+    {
+      id: 'types',
+      label: 'Types',
+      help: 'Object and subject types of this store. A type with tuples cannot be removed.',
+      add: ['add_type', 'type'],
+      ops: ['add_type', 'set_type_namespace', 'set_type_labels'],
+    },
+    {
+      id: 'relations',
+      label: 'Relations',
+      help: 'Relation and permission names declared for this store; rules give them meaning per type. The order here (drag the rows, then Save order) is stored in the relation metadata as ui_order and used wherever the console lists them; it never affects evaluation.',
+      add: ['add_relation', 'relation'],
+      ops: ['add_relation', 'set_payload_schema'],
+    },
+    {
+      id: 'rules',
+      label: 'Rules',
+      help: 'How each relation is defined on each type: direct (by tuple), computed (from another relation), ttu (from a related object). Rows with the same group form a union; other groups intersect or exclude.',
+      add: ['add_rule', 'rule'],
+      ops: ['add_rule'],
+    },
+    {
+      id: 'restrictions',
+      label: 'Type restrictions',
+      help: 'Which subject types (or usersets like team#member) a direct relation accepts in tuples; the engine rejects other tuples.',
+      add: ['add_restriction', 'type restriction'],
+      ops: ['add_restriction'],
+    },
+    {
+      id: 'conditions',
+      label: 'Conditions',
+      help: 'Named expressions evaluated at decision time against the request context; a tuple can carry one, and a type restriction can require one.',
+      add: ['add_condition', 'condition'],
+      ops: ['add_condition'],
+    },
+    {
+      id: 'gates',
+      label: 'Gates',
+      help: 'History-dependent vetoes over the action log: quotas, prior approval, separation of duties. Evaluated after the graph allows, for the checked principal only; a gate never grants.',
+      add: ['add_gate', 'gate'],
+      ops: ['add_gate'],
+    },
+    {
+      id: 'grant_rules',
+      label: 'Grant rules',
+      help: 'The sharing policy: which relation an actor needs on an object to grant — and to revoke — a relation on it through authz.grant / revoke, the path an application’s share dialog takes. Part of the model: versioned and rolled out with it.',
+      add: ['add_grant_rule', 'grant rule'],
+      ops: ['add_grant_rule'],
+    },
+  ];
+
+  // The active section: the URL's part (stores/<store>/model/<section>),
+  // else the one last used in this browser, else types.
+  _section() {
+    const ids = PgcModel.SECTIONS.map((x) => x.id);
+    if (ids.includes(this.section)) return this.section;
+    try {
+      const last = localStorage.getItem('pgc_model_section');
+      if (ids.includes(last)) return last;
+    } catch {
+      /* storage unavailable */
+    }
+    return 'types';
+  }
+
+  _openForm(op) {
+    this.edit = op;
+    this.form = {};
+    clearSelection(this);
+  }
+
+  _cells() {
     const can = this._canEdit();
-    const sel = (key) => (can ? selectionCell(this, key) : nothing);
-    const selAll = (keys) => (can ? selectAllCell(this, keys) : nothing);
-    const vis = {
-      types: this._filtered('types', m.json.types, (x) => [x.name, x.namespace, x.description]),
-      // searchable text = the raw fields plus the forms the rows render
-      // (team#member, user:*, doc.viewer, "viewer from parent")
-      rules: this._filtered('rules', m.rules, (r) => [
-        '#' + r.id,
-        r.object_type,
-        r.relation,
-        `${r.object_type}.${r.relation}`,
-        r.rule_type,
-        r.computed_relation,
-        r.tupleset_relation && `${r.tupleset_computed} from ${r.tupleset_relation}`,
-        r.group_op,
-      ]),
-      restrictions: this._filtered('restrictions', m.restrictions, (x) => [
-        '#' + x.id,
-        x.object_type,
-        x.relation,
-        `${x.object_type}.${x.relation}`,
-        x.allowed_user_relation ? `${x.allowed_user_type}#${x.allowed_user_relation}` : x.allowed_user_type,
-        x.allow_wildcard && `${x.allowed_user_type}:*`,
-        x.condition,
-      ]),
-      conditions: this._filtered('conditions', m.json.conditions, (c) => [
-        c.name,
-        c.description,
-        c.lang,
-        c.expression,
-      ]),
-      gates: this._filtered('gates', m.json.gates ?? [], (g) => [
-        `${g.object_type}.${g.relation}`,
-        g.name,
-        g.spec?.description,
-        g.spec?.mode ?? 'enforce',
-        JSON.stringify(g.spec?.all_of ?? []),
-      ]),
+    return {
+      can,
+      sel: (key) => (can ? selectionCell(this, key) : nothing),
+      selAll: (keys) => (can ? selectAllCell(this, keys) : nothing),
     };
-    const addButtons = [
-      ['add_type', 'type'],
-      ['add_relation', 'relation'],
-      ['add_rule', 'rule'],
-      ['add_restriction', 'type restriction'],
-      ['add_condition', 'condition'],
-      ['add_gate', 'gate'],
-    ];
-    return html` <section class="card">
-      <div class="toolbar">
-        <h3>
-          ${t('Structure')}
-          ${help('The model as the engine stores it. Each change below is one engine call, applied immediately and audited as you.')}
-        </h3>
-        ${
-          can
-            ? html`<div class="actions">
-                ${addButtons.map(([op, label]) => html`<button class="sm" @click=${() => ((this.edit = op), (this.form = {}), clearSelection(this))}>+ ${t(label)}</button>`)}
-              </div>`
-            : html`<span class="help">${t('read-only: editing needs "edit model" (author or owner)')}</span>`
-        }
-      </div>
-      <nav class="jump" aria-label=${t('Sections')}>
-        ${[
-          ['types', 'Types'],
-          ['relations', 'Relations'],
-          ['rules', 'Rules'],
-          ['restrictions', 'Type restrictions'],
-          ['conditions', 'Conditions'],
-          ['gates', 'Gates'],
-        ].map(
-          ([id, label]) =>
-            html`<a
-              href="#"
-              @click=${(e) => {
-                e.preventDefault();
-                this.querySelector('#sec-' + id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-              }}
-              >${t(label)}</a
-            >`,
-        )}
-      </nav>
-      ${this._forms()}
-      ${removeBar(this, {
-        one: 'item',
-        many: 'items',
-        describe: (k) => this._describe(k),
-        warning:
-          'A type can only go when no tuples reference it; rules and type restrictions are removed before types.',
-        onConfirm: () => this._removeSelected(),
-      })}
-      ${this._filterBox('types', vis.types.length, m.json.types.length)}
+  }
+
+  // A section's head line: its title with the (?) text, the filter, and —
+  // for editors — the add button whose form opens right below, inside the
+  // section, so nothing jumps.
+  _panelHead(sec, shown, total) {
+    return html`<div class="toolbar panel-head">
+      <h3>${t(sec.label)} ${help(sec.help)}</h3>
+      ${this._filterBox(sec.id, shown, total)}
+      ${
+        this._canEdit()
+          ? html`<button
+              class="sm"
+              data-testid=${'model-' + sec.add[0].replaceAll('_', '-')}
+              @click=${() => this._openForm(sec.add[0])}
+            >
+              + ${t(sec.add[1])}
+            </button>`
+          : nothing
+      }
+    </div>`;
+  }
+
+  _panelTypes(sec) {
+    const m = this.m;
+    const { can, sel, selAll } = this._cells();
+    const vis = this._filtered('types', m.json.types, (x) => [
+      x.name,
+      x.namespace,
+      x.description,
+      (x.labels ?? []).join(' '),
+    ]);
+    return html`${this._panelHead(sec, vis.length, m.json.types.length)}
+      ${sec.ops.includes(this.edit) ? this._forms() : nothing}
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              ${selAll(vis.types.map((x) => 'type:' + x.name))}
-              <th id="sec-types">
-                ${t('Type')}
-                ${help('Object and subject types of this store. A type with tuples cannot be removed.')}
-              </th>
-              <th>
-                ${t('Namespace')}
-                ${help('The application or team the type belongs to; namespace roles (Access tab) edit inside it. Changing it is a store-wide change.')}
-              </th>
-              <th>${t('Description')}</th>
-              ${this.caps?.can_edit_model ? html`<th></th>` : nothing}
+              ${selAll(vis.map((x) => 'type:' + x.name))} ${this._sortTh('types', 'name', t('Type'))}
+              ${this._sortTh('types', 'namespace', t('Namespace'), help('The application or team the type belongs to; namespace roles (Access tab) edit inside it. Changing it is a store-wide change.'))}
+              ${this._sortTh('types', 'description', t('Description'), undefined, 'wide')}
+              ${this._sortTh('types', 'labels', t('Labels'), help('Advisory key:value tags on a type (group:accounting, tier:core) for grouping and tooling; no access-control effect.'))}
+              ${can ? html`<th></th>` : nothing}
             </tr>
           </thead>
           <tbody>
-            ${vis.types.map(
+            ${vis.map(
               (x) =>
-                html`<tr>
+                html`<tr data-testid=${`model-type-row-${x.name}`}>
                   ${sel('type:' + x.name)}
                   <td class="mono">${x.name}</td>
                   <td>
                     ${x.namespace ? html`<span class="badge muted">${x.namespace}</span>` : html`<span class="dim">${t('store-wide')}</span>`}
                   </td>
                   <td class="muted">${x.description ?? ''}</td>
+                  <td>
+                    <div class="chips" data-testid=${`model-type-labels-${x.name}`}>
+                      ${(x.labels ?? []).map((l) => html`<span class="chip">${l}</span>`)}
+                    </div>
+                  </td>
                   ${
-                    this.caps?.can_edit_model
+                    can
                       ? html`<td class="actions">
-                          <button class="sm" @click=${() => this._editTypeNamespace(x)}>
-                            ${t('Namespace…')}
+                          ${
+                            this.caps?.can_edit_model
+                              ? html`<button
+                                  class="sm"
+                                  data-testid=${`model-type-namespace-${x.name}`}
+                                  @click=${() => this._editTypeNamespace(x)}
+                                >
+                                  ${t('Namespace…')}
+                                </button>`
+                              : nothing
+                          }
+                          <button
+                            class="sm"
+                            data-testid=${`model-type-labels-edit-${x.name}`}
+                            @click=${() => this._editTypeLabels(x)}
+                          >
+                            ${t('Labels…')}
                           </button>
                         </td>`
                       : nothing
@@ -1423,31 +1753,44 @@ type document
               }
             </div>`
           : nothing
-      }
-      <h3 id="sec-relations" style="margin-top:var(--s-4)">
-        ${t('Relations')}
-        ${help('Relation and permission names declared for this store; rules give them meaning per type. The order here (drag the rows, then Save order) is stored in the relation metadata as ui_order and used wherever the console lists them; it never affects evaluation.')}
-      </h3>
-      ${this._filterBox('relations', '', '')} ${this._relationRows()}
-      <h3 id="sec-rules" style="margin-top:var(--s-4)">
-        ${t('Rules')}
-        ${help('How each relation is defined on each type: direct (by tuple), computed (from another relation), ttu (from a related object). Rows with the same group form a union; other groups intersect or exclude.')}
-      </h3>
-      ${this._filterBox('rules', vis.rules.length, m.rules.length)}
+      }`;
+  }
+
+  _panelRelations(sec) {
+    return html`${this._panelHead(sec, '', '')} ${sec.ops.includes(this.edit) ? this._forms() : nothing}
+    ${this._relationRows()}`;
+  }
+
+  _panelRules(sec) {
+    const m = this.m;
+    const { sel, selAll } = this._cells();
+    // searchable text = the raw fields plus the forms the rows render
+    // (doc.viewer, "viewer from parent")
+    const vis = this._filtered('rules', m.rules, (r) => [
+      '#' + r.id,
+      r.object_type,
+      r.relation,
+      `${r.object_type}.${r.relation}`,
+      r.rule_type,
+      r.computed_relation,
+      r.tupleset_relation && `${r.tupleset_computed} from ${r.tupleset_relation}`,
+      r.group_op,
+    ]);
+    return html`${this._panelHead(sec, vis.length, m.rules.length)}
+      ${sec.ops.includes(this.edit) ? this._forms() : nothing}
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              ${selAll(vis.rules.map((r) => 'rule:' + r.id))}
-              <th class="num">ID</th>
-              <th>${t('Object type')}</th>
-              <th>${t('Relation')}</th>
-              <th>${t('Defined as')}</th>
-              <th>${t('Group')}</th>
+              ${selAll(vis.map((r) => 'rule:' + r.id))} ${this._sortTh('rules', 'id', 'ID')}
+              ${this._sortTh('rules', 'object_type', t('Object type'))}
+              ${this._sortTh('rules', 'relation', t('Relation'))}
+              ${this._sortTh('rules', 'defined', t('Defined as'), undefined, 'wide')}
+              ${this._sortTh('rules', 'group', t('Group'))}
             </tr>
           </thead>
           <tbody>
-            ${vis.rules.map(
+            ${vis.map(
               (r) =>
                 html`<tr>
                   ${sel('rule:' + r.id)} ${this._idCell(r.id)}
@@ -1463,26 +1806,36 @@ type document
             )}
           </tbody>
         </table>
-      </div>
-      <h3 id="sec-restrictions" style="margin-top:var(--s-4)">
-        ${t('Type restrictions')}
-        ${help('Which subject types (or usersets like team#member) a direct relation accepts in tuples; the engine rejects other tuples.')}
-      </h3>
-      ${this._filterBox('restrictions', vis.restrictions.length, m.restrictions.length)}
+      </div>`;
+  }
+
+  _panelRestrictions(sec) {
+    const m = this.m;
+    const { sel, selAll } = this._cells();
+    const vis = this._filtered('restrictions', m.restrictions, (x) => [
+      '#' + x.id,
+      x.object_type,
+      x.relation,
+      `${x.object_type}.${x.relation}`,
+      x.allowed_user_relation ? `${x.allowed_user_type}#${x.allowed_user_relation}` : x.allowed_user_type,
+      x.allow_wildcard && `${x.allowed_user_type}:*`,
+      x.condition,
+    ]);
+    return html`${this._panelHead(sec, vis.length, m.restrictions.length)}
+      ${sec.ops.includes(this.edit) ? this._forms() : nothing}
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              ${selAll(vis.restrictions.map((x) => 'restriction:' + x.id))}
-              <th class="num">ID</th>
-              <th>${t('Object type')}</th>
-              <th>${t('Relation')}</th>
-              <th>${t('Accepts')}</th>
-              <th>${t('Condition')}</th>
+              ${selAll(vis.map((x) => 'restriction:' + x.id))} ${this._sortTh('restrictions', 'id', 'ID')}
+              ${this._sortTh('restrictions', 'object_type', t('Object type'))}
+              ${this._sortTh('restrictions', 'relation', t('Relation'))}
+              ${this._sortTh('restrictions', 'accepts', t('Accepts'))}
+              ${this._sortTh('restrictions', 'condition', t('Condition'))}
             </tr>
           </thead>
           <tbody>
-            ${vis.restrictions.map(
+            ${vis.map(
               (x) =>
                 html`<tr>
                   ${sel('restriction:' + x.id)} ${this._idCell(x.id)}
@@ -1496,128 +1849,247 @@ type document
             )}
           </tbody>
         </table>
+      </div>`;
+  }
+
+  _panelConditions(sec) {
+    const m = this.m;
+    const { can, sel, selAll } = this._cells();
+    const vis = this._filtered('conditions', m.json.conditions, (c) => [
+      c.name,
+      c.description,
+      c.lang,
+      c.expression,
+    ]);
+    return html`${this._panelHead(sec, vis.length, m.json.conditions.length)}
+    ${sec.ops.includes(this.edit) ? this._forms() : nothing}
+    ${
+      m.json.conditions.length
+        ? html`<div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  ${selAll(vis.map((c) => 'condition:' + c.name))}
+                  ${this._sortTh('conditions', 'name', t('Name'))}
+                  ${this._sortTh('conditions', 'description', t('Description'), undefined, 'wide')}
+                  ${this._sortTh('conditions', 'lang', t('Language'))}
+                  ${this._sortTh('conditions', 'created', t('Created at'))}
+                  ${this._sortTh('conditions', 'updated', t('Updated at'))}
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                ${vis.map((c) => {
+                  const key = 'condition:' + c.name;
+                  const tm = m.condition_times?.[c.name];
+                  return html`<tr>
+                      ${sel(key)}
+                      <td class="mono">${c.name}</td>
+                      <td class="muted">${c.description ?? ''}</td>
+                      <td>${c.lang}</td>
+                      <td class="muted nowrap" title=${tm?.created_at ?? ''}>
+                        ${tm ? fmtTime(tm.created_at) : ''}
+                      </td>
+                      <td class="muted nowrap" title=${tm?.updated_at ?? ''}>
+                        ${tm ? fmtRelative(tm.updated_at) : ''}
+                      </td>
+                      <td class="actions">
+                        <button class="sm" @click=${() => this._toggleDetail(key)}>
+                          ${this.detail.has(key) ? t('Hide') : t('Details')}
+                        </button>
+                        ${can ? html`<button class="sm" data-testid=${`model-condition-edit-${c.name}`} @click=${() => this._editCondition(c)}>${t('Edit')}</button>` : nothing}
+                      </td>
+                    </tr>
+                    ${this.detail.has(key) ? this._detailRow(7, this._conditionSQL(c), c, this._tryPanel(c)) : nothing}`;
+                })}
+              </tbody>
+            </table>
+          </div>`
+        : html`<p class="help">${t('No conditions in this model.')}</p>`
+    }`;
+  }
+
+  _panelGates(sec) {
+    const m = this.m;
+    const { can, sel, selAll } = this._cells();
+    const gates = m.json.gates ?? [];
+    const vis = this._filtered('gates', gates, (g) => [
+      `${g.object_type}.${g.relation}`,
+      g.name,
+      g.spec?.description,
+      g.spec?.mode ?? 'enforce',
+      JSON.stringify(g.spec?.all_of ?? []),
+    ]);
+    return html`${this._panelHead(sec, vis.length, gates.length)}
+    ${sec.ops.includes(this.edit) ? this._forms() : nothing}
+    ${
+      gates.length
+        ? html`<div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  ${selAll(vis.map((g) => this._gateKey(g)))} ${this._sortTh('gates', 'on', t('On'))}
+                  ${this._sortTh('gates', 'name', t('Name'))} ${this._sortTh('gates', 'mode', t('Mode'))}
+                  ${this._sortTh('gates', 'clauses', t('Clauses'))}
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                ${vis.map(
+                  (g) =>
+                    html`<tr data-testid=${`model-gate-${g.object_type}-${g.relation}-${g.name}`}>
+                        ${sel(this._gateKey(g))}
+                        <td class="mono">${g.object_type}.${g.relation}</td>
+                        <td>
+                          <span class="mono">${g.name}</span>
+                          ${g.spec.description ? html`<div class="help">${g.spec.description}</div>` : nothing}
+                        </td>
+                        <td>${this._gateMode(g.spec.mode)}</td>
+                        <td>
+                          <ul class="clauses">
+                            ${(g.spec.all_of ?? []).map((c) => html`<li>${this._clauseText(c)}</li>`)}
+                          </ul>
+                        </td>
+                        <td class="actions">
+                          <button class="sm" @click=${() => this._toggleDetail(this._gateKey(g))}>
+                            ${this.detail.has(this._gateKey(g)) ? t('Hide') : t('Details')}
+                          </button>
+                          ${can ? html`<button class="sm" data-testid=${`model-gate-edit-${g.object_type}-${g.relation}-${g.name}`} @click=${() => this._editGate(g)}>${t('Edit')}</button>` : nothing}
+                        </td>
+                      </tr>
+                      ${this.detail.has(this._gateKey(g)) ? this._detailRow(6, this._gateSQL(g), g.spec) : nothing}`,
+                )}
+              </tbody>
+            </table>
+          </div>`
+        : html`<p class="help">${t('No temporal gates in this model.')}</p>`
+    }`;
+  }
+
+  _panelGrantRules(sec) {
+    const m = this.m;
+    const { can, sel, selAll } = this._cells();
+    const rules = m.json.grant_rules ?? [];
+    const vis = this._filtered('grant_rules', rules, (g) => [
+      `${g.object_type}.${g.relation}`,
+      g.object_type,
+      g.relation,
+      g.requires,
+      g.requires_revoke,
+    ]);
+    return html`${this._panelHead(sec, vis.length, rules.length)}
+    ${sec.ops.includes(this.edit) ? this._forms() : nothing}
+    ${
+      rules.length
+        ? html`<div class="table-wrap">
+            <table data-testid="model-grant-rules">
+              <thead>
+                <tr>
+                  ${selAll(vis.map((g) => this._grantKey(g)))}
+                  ${this._sortTh('grant_rules', 'object_type', t('Object type'))}
+                  ${this._sortTh('grant_rules', 'relation', t('Relation granted'))}
+                  ${this._sortTh('grant_rules', 'requires', t('To grant, the actor needs'))}
+                  ${this._sortTh('grant_rules', 'requires_revoke', t('To revoke, the actor needs'))}
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                ${vis.map(
+                  (g) =>
+                    html`<tr data-testid=${`model-grant-rule-${g.object_type}-${g.relation}`}>
+                        ${sel(this._grantKey(g))}
+                        <td class="mono">${g.object_type}</td>
+                        <td class="mono">${g.relation}</td>
+                        <td class="mono">${g.requires}</td>
+                        <td class="mono">
+                          ${g.requires_revoke ?? html`<span class="dim">${t('same as to grant')}</span>`}
+                        </td>
+                        <td class="actions">
+                          <button class="sm" @click=${() => this._toggleDetail(this._grantKey(g))}>
+                            ${this.detail.has(this._grantKey(g)) ? t('Hide') : t('Details')}
+                          </button>
+                          ${can ? html`<button class="sm" data-testid=${`model-grant-rule-edit-${g.object_type}-${g.relation}`} @click=${() => this._editGrantRule(g)}>${t('Edit')}</button>` : nothing}
+                        </td>
+                      </tr>
+                      ${this.detail.has(this._grantKey(g)) ? this._detailRow(6, this._grantSQL(g), g) : nothing}`,
+                )}
+              </tbody>
+            </table>
+          </div>`
+        : html`<p class="help">
+            ${t('No grant rules in this model: nothing can be shared through authz.grant. Add one to let, say, anyone with can_share grant viewer.')}
+          </p>`
+    }`;
+  }
+
+  // The Structure card: one tab per section (the URL carries it, so a
+  // section can be linked and tested), the section's add button and form
+  // inside its panel, and the selection bar above the tabs — a selection
+  // spans sections (a type with its rules), so it stays in view on every tab.
+  _editor() {
+    const m = this.m;
+    const can = this._canEdit();
+    const active = this._section();
+    const counts = {
+      types: m.json.types.length,
+      relations: m.json.relations.length,
+      rules: m.rules.length,
+      restrictions: m.restrictions.length,
+      conditions: m.json.conditions.length,
+      gates: (m.json.gates ?? []).length,
+      grant_rules: (m.json.grant_rules ?? []).length,
+    };
+    const sec = PgcModel.SECTIONS.find((x) => x.id === active);
+    const panel = {
+      types: () => this._panelTypes(sec),
+      relations: () => this._panelRelations(sec),
+      rules: () => this._panelRules(sec),
+      restrictions: () => this._panelRestrictions(sec),
+      conditions: () => this._panelConditions(sec),
+      gates: () => this._panelGates(sec),
+      grant_rules: () => this._panelGrantRules(sec),
+    }[active];
+    return html` <section class="card" data-testid="model-structure">
+      <div class="toolbar">
+        <h3>
+          ${t('Structure')}
+          ${help('The model as the engine stores it, one section per tab. Each change is one engine call, applied immediately and audited as you; adding and editing happens inside the section.')}
+        </h3>
+        ${can ? nothing : html`<span class="help">${t('read-only: editing needs "edit model" (author or owner)')}</span>`}
       </div>
-      ${
-        m.json.conditions.length
-          ? html`<h3 id="sec-conditions" style="margin-top:var(--s-4)">
-                ${t('Conditions')}
-                ${help('Named expressions evaluated at decision time against the request context; a tuple can carry one, and a type restriction can require one.')}
-              </h3>
-              ${this._filterBox('conditions', vis.conditions.length, m.json.conditions.length)}
-              <div class="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      ${selAll(vis.conditions.map((c) => 'condition:' + c.name))}
-                      <th>${t('Name')}</th>
-                      <th>${t('Description')}</th>
-                      <th>${t('Language')}</th>
-                      <th>${t('Created at')}</th>
-                      <th>${t('Updated at')}</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${vis.conditions.map((c) => {
-                      const key = 'condition:' + c.name;
-                      const tm = m.condition_times?.[c.name];
-                      return html`<tr>
-                          ${sel(key)}
-                          <td class="mono">${c.name}</td>
-                          <td class="muted">${c.description ?? ''}</td>
-                          <td>${c.lang}</td>
-                          <td class="muted nowrap" title=${tm?.created_at ?? ''}>
-                            ${tm ? fmtTime(tm.created_at) : ''}
-                          </td>
-                          <td class="muted nowrap" title=${tm?.updated_at ?? ''}>
-                            ${tm ? fmtRelative(tm.updated_at) : ''}
-                          </td>
-                          <td class="actions">
-                            <button class="sm" @click=${() => this._toggleDetail(key)}>
-                              ${this.detail.has(key) ? t('Hide') : t('Details')}
-                            </button>
-                            ${can ? html`<button class="sm" @click=${() => this._editCondition(c)}>${t('Edit')}</button>` : nothing}
-                          </td>
-                        </tr>
-                        ${this.detail.has(key) ? this._detailRow(7, this._conditionSQL(c), c, this._tryPanel(c)) : nothing}`;
-                    })}
-                  </tbody>
-                </table>
-              </div>`
-          : html`<h3 id="sec-conditions" style="margin-top:var(--s-4)">${t('Conditions')}</h3>
-              <p class="help">${t('No conditions in this model.')}</p>`
-      }
-      ${
-        m.json.gates?.length
-          ? html`<h3 id="sec-gates" style="margin-top:var(--s-4)">
-                ${t('Temporal gates')}
-                ${help('History-dependent vetoes over the action log: quotas, prior approval, separation of duties. Evaluated after the graph allows, for the checked principal only; a gate never grants.')}
-              </h3>
-              ${this._filterBox('gates', vis.gates.length, m.json.gates.length)}
-              <div class="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      ${selAll(vis.gates.map((g) => this._gateKey(g)))}
-                      <th>${t('On')}</th>
-                      <th>${t('Name')}</th>
-                      <th>${t('Mode')}</th>
-                      <th>${t('Clauses')}</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${vis.gates.map(
-                      (g) =>
-                        html`<tr>
-                            ${sel(this._gateKey(g))}
-                            <td class="mono">${g.object_type}.${g.relation}</td>
-                            <td>
-                              <span class="mono">${g.name}</span>
-                              ${g.spec.description ? html`<div class="help">${g.spec.description}</div>` : nothing}
-                            </td>
-                            <td>${this._gateMode(g.spec.mode)}</td>
-                            <td>
-                              <ul class="clauses">
-                                ${(g.spec.all_of ?? []).map((c) => html`<li>${this._clauseText(c)}</li>`)}
-                              </ul>
-                            </td>
-                            <td class="actions">
-                              <button class="sm" @click=${() => this._toggleDetail(this._gateKey(g))}>
-                                ${this.detail.has(this._gateKey(g)) ? t('Hide') : t('Details')}
-                              </button>
-                              ${can ? html`<button class="sm" @click=${() => this._editGate(g)}>${t('Edit')}</button>` : nothing}
-                            </td>
-                          </tr>
-                          ${this.detail.has(this._gateKey(g)) ? this._detailRow(6, this._gateSQL(g), g.spec) : nothing}`,
-                    )}
-                  </tbody>
-                </table>
-              </div>`
-          : html`<h3 id="sec-gates" style="margin-top:var(--s-4)">${t('Temporal gates')}</h3>
-              <p class="help">${t('No temporal gates in this model.')}</p>`
-      }
-      ${
-        m.json.grant_rules?.length
-          ? html`<p class="help">
-              ${t('This model also has {rules} grant rules — see the SQL view; the console does not edit those yet.', { rules: m.json.grant_rules.length })}
-            </p>`
-          : nothing
-      }
+      ${removeBar(this, {
+        one: 'item',
+        many: 'items',
+        describe: (k) => this._describe(k),
+        warning:
+          'A type can only go when no tuples reference it; rules and type restrictions are removed before types.',
+        onConfirm: () => this._removeSelected(),
+      })}
+      <nav class="tabs sub" aria-label=${t('Sections')} data-testid="model-sections">
+        ${PgcModel.SECTIONS.map(
+          (x) =>
+            html`<a
+              href="stores/${this.store}/model/${x.id}"
+              class=${x.id === active ? 'active' : ''}
+              data-testid=${'model-section-' + x.id}
+              >${t(x.label)} <span class="count">${counts[x.id]}</span></a
+            >`,
+        )}
+      </nav>
+      <div class="panel" data-testid=${'model-panel-' + active}>${panel()}</div>
     </section>`;
   }
 
   render() {
     const m = this.m;
-    if (!m)
-      return html`${this.error ? html`<p class="error">${this.error}</p>` : html`<p class="muted">${t('Loading…')}</p>`}`;
+    if (!m) return html`${this.error ? errorBox(this.error) : html`<p class="muted">${t('Loading…')}</p>`}`;
     const views = [
       ['dsl', 'DSL', 'OpenFGA-style; display only (conditions, gates, grant rules have no DSL form)'],
       ['json', 'JSON', 'the canonical export — what publish stores in the registry'],
       ['sql', 'SQL', 'the engine calls that rebuild this model; runnable in psql'],
     ];
     return html`
-      ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
+      ${this.error ? errorBox(this.error) : nothing}
       <div class="stats model-stats">
         <span
           >${statusBadge(this.info?.status)}
@@ -1629,6 +2101,7 @@ type document
         <span><b>${m.restrictions.length}</b> ${t('type restrictions')}</span>
         <span><b>${m.json.conditions.length}</b> ${t('conditions')}</span>
         ${m.json.gates?.length ? html`<span><b>${m.json.gates.length}</b> ${t('gates')}</span>` : nothing}
+        ${m.json.grant_rules?.length ? html`<span><b>${m.json.grant_rules.length}</b> ${t('grant rules')}</span>` : nothing}
       </div>
       ${
         this.dslReport

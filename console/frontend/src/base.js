@@ -18,6 +18,13 @@ export class PgcElement extends LitElement {
   }
 }
 
+// The page-level error box: what went wrong, said as an error so it is not
+// mistaken for a notice. Field-level mistakes (a JSON syntax error) are
+// reported next to their field instead; this is for what the server said.
+export function errorBox(text) {
+  return html`<p class="error" role="alert"><b>${t('Error')}:</b> ${text}</p>`;
+}
+
 // A (?) that explains a column or section on hover and focus. `text` is
 // English, translated like everything else.
 export function help(text) {

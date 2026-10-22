@@ -1,5 +1,5 @@
 import { html, nothing } from 'lit';
-import { PgcElement, help } from '../base.js';
+import { PgcElement, help, errorBox } from '../base.js';
 import { api } from '../api.js';
 import { t } from '../i18n.js';
 import { run, copyText } from '../util.js';
@@ -98,8 +98,7 @@ export class PgcPolicies extends PgcElement {
 
   render() {
     const d = this.d;
-    if (!d)
-      return html`${this.error ? html`<p class="error">${this.error}</p>` : html`<p class="muted">${t('Loading…')}</p>`}`;
+    if (!d) return html`${this.error ? errorBox(this.error) : html`<p class="muted">${t('Loading…')}</p>`}`;
     if (!d.configured)
       return html`<section class="card">
         <h3>${t('OPA policies')}</h3>
@@ -110,8 +109,7 @@ export class PgcPolicies extends PgcElement {
     const prov = d.opa ?? {};
     const bundles = prov.bundles ? Object.entries(prov.bundles) : [];
     return html`
-      ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
-      ${d.error ? html`<p class="error">${d.error}</p>` : nothing}
+      ${this.error ? errorBox(this.error) : nothing} ${d.error ? errorBox(d.error) : nothing}
       <section class="card">
         <h3>
           ${t('OPA')}

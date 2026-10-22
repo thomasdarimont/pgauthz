@@ -1,5 +1,5 @@
 import { html, nothing } from 'lit';
-import { PgcElement, help } from '../base.js';
+import { PgcElement, help, errorBox } from '../base.js';
 import { api } from '../api.js';
 import { t, t2 } from '../i18n.js';
 import { run, fmtTime, forbiddenText } from '../util.js';
@@ -173,11 +173,10 @@ export class PgcRollout extends PgcElement {
 
   render() {
     const d = this.d;
-    if (!d)
-      return html`${this.error ? html`<p class="error">${this.error}</p>` : html`<p class="muted">${t('Loading…')}</p>`}`;
+    if (!d) return html`${this.error ? errorBox(this.error) : html`<p class="muted">${t('Loading…')}</p>`}`;
     const st = d.status;
     return html`
-      ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
+      ${this.error ? errorBox(this.error) : nothing}
       ${this.message ? html`<p class="notice">${this.message}</p>` : nothing}
       <section class="card">
         <h3>

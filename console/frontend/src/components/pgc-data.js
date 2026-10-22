@@ -1,7 +1,8 @@
 import { html, nothing } from 'lit';
-import { PgcElement, help } from '../base.js';
+import { PgcElement, help, errorBox } from '../base.js';
 import { api } from '../api.js';
 import { t, t2 } from '../i18n.js';
+import { PgcJson } from './pgc-json.js';
 import { run, subjectOf, forbiddenText, fmtTime, fmtRelative } from '../util.js';
 import { selectionCell, selectAllCell, removeBar, clearSelection } from './pgc-select.js';
 
@@ -283,7 +284,7 @@ export class PgcData extends PgcElement {
       try {
         f.condition_context = JSON.parse(f.condition_context);
       } catch {
-        this.error = t('condition context must be JSON');
+        PgcJson.report(this);
         return;
       }
     }
@@ -357,63 +358,57 @@ export class PgcData extends PgcElement {
           }
         </div>
       </div>
-      ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
+      ${this.error ? errorBox(this.error) : nothing}
       ${
         this.adding
           ? html`<form class="card form" @submit=${this._write}>
               <label class="field"
-                ><span>${t('Subject type')}</span
-                ><input class="mono" required @input=${this._set('user_type')} placeholder="user"
+                ><span>${t('Subject type')} ${help('The type of the subject, e.g. user or team.')}</span
+                ><input class="mono" required @input=${this._set('user_type')}
               /></label>
               <label class="field"
                 ><span
                   >${t('Subject id')}
-                  ${help('The subject, or * for everyone of that type (when the rule allows wildcards).')}</span
-                ><input class="mono" required @input=${this._set('user_id')} placeholder="alice"
+                  ${help('The subject, e.g. alice, or * for everyone of that type (when the rule allows wildcards).')}</span
+                ><input class="mono" required @input=${this._set('user_id')}
               /></label>
               <label class="field"
                 ><span
                   >${t('Subject relation (userset)')}
-                  ${help('Grant to a group: member makes the subject team:x#member.')}</span
-                ><input class="mono" @input=${this._set('user_relation')} placeholder="member"
+                  ${help('Optional. Grant to a group: member makes the subject team:x#member.')}</span
+                ><input class="mono" @input=${this._set('user_relation')}
               /></label>
               <label class="field"
-                ><span>${t('Relation')}</span
-                ><input
-                  class="mono"
-                  required
-                  list="dl-assignable"
-                  @input=${this._set('relation')}
-                  placeholder="viewer"
+                ><span
+                  >${t('Relation')}
+                  ${help('What the subject becomes on the object, e.g. viewer; only assignable relations are suggested.')}</span
+                ><input class="mono" required list="dl-assignable" @input=${this._set('relation')}
               /></label>
               <label class="field"
-                ><span>${t('Object type')}</span
-                ><input
-                  class="mono"
-                  required
-                  list="dl-object-types"
-                  @input=${this._set('object_type')}
-                  placeholder="document"
+                ><span>${t('Object type')} ${help('The type of the object, e.g. document.')}</span
+                ><input class="mono" required list="dl-object-types" @input=${this._set('object_type')}
               /></label>
               <label class="field"
-                ><span>${t('Object id')}</span
-                ><input class="mono" required @input=${this._set('object_id')} placeholder="doc_1"
+                ><span>${t('Object id')} ${help('The object, e.g. doc_1.')}</span
+                ><input class="mono" required @input=${this._set('object_id')}
               /></label>
               <label class="field"
                 ><span
                   >${t('Condition')}
-                  ${help('A named condition of this model that must hold at decision time for this tuple to count.')}</span
-                ><input class="mono" @input=${this._set('condition')} placeholder="in_office_hours"
+                  ${help('Optional: a named condition of this model that must hold at decision time for this tuple to count.')}</span
+                ><input class="mono" @input=${this._set('condition')}
               /></label>
               <label class="field"
                 ><span
                   >${t('Condition context (JSON)')}
-                  ${help('Values stored with the tuple that the condition reads ($2).')}</span
-                ><input
-                  class="mono"
-                  @input=${this._set('condition_context')}
-                  placeholder='{"tz":"Europe/Berlin"}'
-              /></label>
+                  ${help('Values stored with the tuple that the condition reads ($2), e.g. {"tz": "Europe/Berlin"}.')}</span
+                ><pgc-json
+                  rows="2"
+                  testid="data-input-condition-context"
+                  .value=${this.form.condition_context ?? ''}
+                  @json-input=${(e) => (this.form = { ...this.form, condition_context: e.detail.text })}
+                ></pgc-json
+              ></label>
               <label class="field wide"
                 ><span
                   >${t('Expires at')}

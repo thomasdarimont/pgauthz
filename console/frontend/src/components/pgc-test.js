@@ -1,9 +1,10 @@
 import { html, nothing } from 'lit';
-import { PgcElement, help } from '../base.js';
+import { PgcElement, help, errorBox } from '../base.js';
 import { api } from '../api.js';
 import { highlightJSON } from '../highlight.js';
 import { t, t2 } from '../i18n.js';
-import { run, copyText, forbiddenText, parseList, fmtTime, fmtRelative } from '../util.js';
+import { PgcJson } from './pgc-json.js';
+import { run, copyText, forbiddenText, parseList, fmtTime, fmtRelative, FieldInvalid } from '../util.js';
 import { PgcExplainTree } from './pgc-explain-tree.js';
 
 // Test tab, four ways to ask the managed store:
@@ -129,7 +130,8 @@ export class PgcTest extends PgcElement {
     try {
       return JSON.parse(this.context);
     } catch {
-      throw new Error(t('context must be JSON'));
+      PgcJson.report(this); // the field says what is wrong, next to itself
+      throw new FieldInvalid();
     }
   }
 
@@ -304,6 +306,25 @@ export class PgcTest extends PgcElement {
     return { person, subject, subject2, objectType, object, object2, action, action2 };
   }
 
+  // Under a sentence form: what goes into its boxes, with examples taken
+  // from this model (the boxes themselves carry no placeholder text).
+  _shapesHelp(search = false) {
+    const p = this._ph();
+    return html`<p class="help">
+      ${
+        search
+          ? t(
+              'A type alone ({type}) or a subject/resource as type:id ({subject}, {object}); actions are the relations of the resource type ({action}). The lists suggest what the store knows.',
+              { type: p.objectType, subject: p.subject, object: p.object, action: p.action },
+            )
+          : t(
+              'Subjects and resources are type:id, e.g. {subject} and {object}; actions are the relations of the resource type, e.g. {action}. The lists suggest what the store knows.',
+              { subject: p.subject, object: p.object, action: p.action },
+            )
+      }
+    </p>`;
+  }
+
   _actionPicker(onChange, anyType = false) {
     let rels = anyType ? this._rels() : this._askedRels();
     if (!rels.length) rels = this._allRels();
@@ -314,7 +335,6 @@ export class PgcTest extends PgcElement {
         required
         .value=${this.action}
         @input=${onChange}
-        placeholder=${this._ph().action}
         style="width:11rem"
       />`;
     if (this.action && !rels.some((r) => r.name === this.action))
@@ -535,13 +555,15 @@ export class PgcTest extends PgcElement {
   _contextField() {
     return html`<details style="margin-top:var(--s-3)">
       <summary class="help">${t('Request context (JSON, for conditions)')}</summary>
-      <textarea
-        class="mono"
+      <span class="help"
+        >${t('What a check would send for the conditions to read, e.g. {"ip": "10.1.2.3", "mfa": true}.')}</span
+      >
+      <pgc-json
         rows="3"
-        placeholder='{"ip": "10.1.2.3", "mfa": true}'
+        testid="test-input-context"
         .value=${this.context}
-        @input=${(e) => (this.context = e.target.value)}
-      ></textarea>
+        @json-input=${(e) => (this.context = e.detail.text)}
+      ></pgc-json>
     </details>`;
   }
 
@@ -584,7 +606,6 @@ export class PgcTest extends PgcElement {
             ?readonly=${!this._policy().others}
             title=${this._policy().others ? '' : t('The test policy limits you to your own access.')}
             @input=${(e) => (this.subject = e.target.value)}
-            placeholder=${this._ph().subject}
           />
           <span class="muted">${this._sentenceWords().before}</span>
           ${this._actionPicker((e) => (this.action = e.target.value))}
@@ -595,12 +616,11 @@ export class PgcTest extends PgcElement {
             required
             .value=${this.resource}
             @input=${(e) => this._setResource(e.target.value)}
-            placeholder=${this._ph().object}
           />
           <span class="muted">?</span>
           <button class="primary" ?disabled=${this.busy}>${t('Check')}</button>
         </div>
-        ${this._atField()} ${this._explainOptions()} ${this._contextField()}
+        ${this._shapesHelp()} ${this._atField()} ${this._explainOptions()} ${this._contextField()}
       </form>
       ${this._hints(this.decision === false)}
       ${
@@ -681,12 +701,13 @@ export class PgcTest extends PgcElement {
           ${help('One engine call (check_access_batch) over the cross product of the three lists; one per line or comma-separated. Up to 2000 decisions.')}
         </h3>
         <label class="field ids"
-          ><span>${t('Subjects')}</span
+          ><span
+            >${t('Subjects')}
+            ${help('type:id, one per line or comma-separated, e.g. {a} and {b}.', { a: this._ph().subject, b: this._ph().subject2 })}</span
           ><textarea
             class="list"
             required
             spellcheck="false"
-            placeholder=${`${this._ph().subject}\n${this._ph().subject2}`}
             .value=${this._policy().others ? this.subjects : (this.subjects = this._selfSubject())}
             ?readonly=${!this._policy().others}
             title=${this._policy().others ? '' : t('The test policy limits you to your own access.')}
@@ -695,23 +716,25 @@ export class PgcTest extends PgcElement {
           ${this._policy().others ? nothing : this._policyNote(t('only your own access'))}
         </label>
         <label class="field acts"
-          ><span>${t('Actions')}</span
+          ><span
+            >${t('Actions')}
+            ${help('Relations or permissions of the resource type, e.g. {a} and {b}.', { a: this._ph().action, b: this._ph().action2 })}</span
           ><textarea
             class="list"
             required
             spellcheck="false"
-            placeholder=${`${this._ph().action}\n${this._ph().action2}`}
             .value=${this.actions}
             @input=${(e) => (this.actions = e.target.value)}
           ></textarea>
         </label>
         <label class="field ids"
-          ><span>${t('Resources')}</span
+          ><span
+            >${t('Resources')}
+            ${help('type:id, one per line or comma-separated, e.g. {a} and {b}.', { a: this._ph().object, b: this._ph().object2 })}</span
           ><textarea
             class="list"
             required
             spellcheck="false"
-            placeholder=${`${this._ph().object}\n${this._ph().object2}`}
             .value=${this.resources}
             @input=${(e) => (this.resources = e.target.value)}
           ></textarea>
@@ -758,7 +781,6 @@ export class PgcTest extends PgcElement {
                     required
                     .value=${this.resource.includes(':') ? '' : this.resource}
                     @input=${(e) => (this.resource = e.target.value)}
-                    placeholder=${this._ph().objectType}
                     style="width:10rem"
                   />
                   <span class="muted">${t('can')}</span>
@@ -768,7 +790,6 @@ export class PgcTest extends PgcElement {
                     required
                     .value=${this.subject}
                     @input=${(e) => (this.subject = e.target.value)}
-                    placeholder=${this._ph().subject}
                   />`
               : html`<span class="muted">${t('which')}</span>
                   <input
@@ -777,7 +798,6 @@ export class PgcTest extends PgcElement {
                     required
                     .value=${this.subject.includes(':') ? '' : this.subject}
                     @input=${(e) => (this.subject = e.target.value)}
-                    placeholder=${this._ph().person}
                     style="width:10rem"
                   />
                   <span class="muted">${t('can')}</span>`
@@ -793,13 +813,12 @@ export class PgcTest extends PgcElement {
                     required
                     .value=${this.resource}
                     @input=${(e) => (this.resource = e.target.value)}
-                    placeholder=${this._ph().object}
                   />`
           }
           <span class="muted">?</span>
           <button class="primary" ?disabled=${this.busy}>${t('Search')}</button>
         </div>
-        ${this._contextField()}
+        ${this._shapesHelp(true)} ${this._contextField()}
       </form>
       ${
         h
@@ -887,12 +906,11 @@ export class PgcTest extends PgcElement {
             required
             .value=${this.resource}
             @input=${(e) => (this.resource = e.target.value)}
-            placeholder=${this._ph().object}
           />
           <span class="muted">?</span>
           <button class="primary" ?disabled=${this.busy}>${t('Decide')}</button>
         </div>
-        ${this._contextField()}
+        ${this._shapesHelp()} ${this._contextField()}
       </form>
       ${
         d
@@ -947,7 +965,7 @@ export class PgcTest extends PgcElement {
           })}
         </div>
       </div>
-      ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
+      ${this.error ? errorBox(this.error) : nothing}
       ${this.mode === 'matrix' ? this._matrix() : this.mode === 'search' ? this._search() : this.mode === 'asme' ? this._asMe() : this._single()}
     `;
   }

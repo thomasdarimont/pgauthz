@@ -1,5 +1,5 @@
 import { html, nothing } from 'lit';
-import { PgcElement, help } from '../base.js';
+import { PgcElement, help, errorBox } from '../base.js';
 import { api } from '../api.js';
 import { t } from '../i18n.js';
 import { run, roleHelp, forbiddenText } from '../util.js';
@@ -245,10 +245,12 @@ export class PgcAccess extends PgcElement {
               >
               <label class="field"
                 ><span
-                  >${this.nsForm.subject_type === 'team' ? t('Team id (role_<realm role>, group_<path>, org_<alias>)') : t('Username')}</span
+                  >${this.nsForm.subject_type === 'team' ? t('Team id') : t('Username')}
+                  ${this.nsForm.subject_type === 'team' ? help('A team from the token: role_<realm role>, group_<path> or org_<alias>, e.g. role_authz_writer. Known teams are suggested.') : help('The preferred_username of the person, e.g. bob.')}</span
                 ><input
                   class="mono"
                   required
+                  list="dl-teams"
                   .value=${this.nsForm.subject_id ?? ''}
                   @input=${this._nsSet('subject_id')}
               /></label>
@@ -276,12 +278,11 @@ export class PgcAccess extends PgcElement {
 
   render() {
     const d = this.d;
-    if (!d)
-      return html`${this.error ? html`<p class="error">${this.error}</p>` : html`<p class="muted">${t('Loading…')}</p>`}`;
+    if (!d) return html`${this.error ? errorBox(this.error) : html`<p class="muted">${t('Loading…')}</p>`}`;
     const platform = this.scope === 'platform';
     const what = platform ? t('the platform') : html`<span class="mono">store:${this.store}</span>`;
     return html`
-      ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
+      ${this.error ? errorBox(this.error) : nothing}
       <section class="card">
         <div class="toolbar">
           <h3>
@@ -375,7 +376,8 @@ export class PgcAccess extends PgcElement {
               >
               <label class="field"
                 ><span
-                  >${this.form.subject_type === 'team' ? t('Team id (role_<realm role>, group_<path>, org_<alias>)') : t('Username')}</span
+                  >${this.form.subject_type === 'team' ? t('Team id') : t('Username')}
+                  ${this.form.subject_type === 'team' ? help('A team from the token: role_<realm role>, group_<path> or org_<alias>, e.g. role_authz_writer. Known teams are suggested.') : help('The preferred_username of the person, e.g. bob.')}</span
                 >
                 <input
                   class="mono"
@@ -383,7 +385,6 @@ export class PgcAccess extends PgcElement {
                   list="dl-teams"
                   .value=${this.form.subject_id ?? ''}
                   @input=${this._set('subject_id')}
-                  placeholder=${this.form.subject_type === 'team' ? 'role_authz_writer' : 'bob'}
               /></label>
               <datalist id="dl-teams">
                 ${this.form.subject_type === 'team' ? (d.teams ?? []).map((x) => html`<option value=${x}></option>`) : nothing}
