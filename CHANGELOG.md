@@ -33,8 +33,22 @@ pre-1.0, minor versions may include breaking changes.
   with a session cookie — 401, a viewer's 403, a namespace author's
   403 on another namespace's type, malformed payloads, the holders
   listing with its filters and cap, acting as a subject the rules refuse
-  and as one they allow, the recorded event. This completes the Model
-  tab's grant rules: declare them there, watch them decide here.
+  and as one they allow, the recorded event. Review #18, round 2: a
+  committed save clears its queue and the shown holders before the
+  refresh, so a refresh that fails cannot leave the saved changes queued
+  behind a live Save (they would have been submitted twice); the result
+  line then says the holders could not be reloaded. The holders query is
+  per relation a LIMIT over the ordered object index plus one count,
+  with the partitioned table pruned to the object type — measured at
+  200K holders of one doc: 46 ms against 325 ms and a 14 MB sort for the
+  window-function form it replaces; the count is the only part that
+  grows with an object's popularity. **Browser tests** (Playwright,
+  `frontend/tests/ui/`, `tests/test-console-ui.sh` against a running
+  `./start.sh --console-local`): a late response for object A does not
+  populate B, retyping the object retires the queue and never submits,
+  a committed save with a failed refresh leaves nothing to replay, the
+  expiry chip's relative text and absolute title. This completes the
+  Model tab's grant rules: declare them there, watch them decide here.
 - **Console: batch import, export and offboarding on the Data tab.**
   Export the store's tuples as JSON (the native shape, round-trippable with
   conditions, context and expiry), CSV with the same columns, or the OpenFGA

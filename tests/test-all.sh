@@ -65,6 +65,7 @@ echo ""
 echo "==> Running console Go tests (database-backed, mandatory)..."
 echo ""
 run_tests "$SCRIPT_DIR/test-console-go.sh"
+run_tests "$SCRIPT_DIR/test-console-ui.sh"   # skips without a running console (./start.sh --console-local)
 
 echo ""
 echo "==> Running pgauthzctl CLI integration tests..."

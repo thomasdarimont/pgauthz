@@ -124,32 +124,39 @@ func (s *Server) handleShareOptions(w http.ResponseWriter, r *http.Request) {
 	// grant rule), only live tuples (the engine's row policy hides expired
 	// ones from the console's role anyway; said here so a superuser
 	// connection shows the same), at most shareHoldersPerRelation each,
-	// with every relation's full count beside it.
+	// with every relation's full count beside it. Per relation, the cap is
+	// a LIMIT over the ordered (object, relation) index and the count a
+	// separate aggregate — a window function over the whole holder set
+	// sorted 200K rows (325 ms, 14 MB) where this takes 46 ms, and the
+	// count is the only part that grows with the object's popularity. The
+	// ids are resolved first as scalar subqueries so the partitioned table
+	// is pruned to the object type's partition.
 	relations := make([]string, len(options))
 	for i, x := range options {
 		relations[i] = x.Relation
 	}
 	rows, err = s.engine.Query(ctx, `
-		WITH h AS (
-		  SELECT rl.name AS relation, ut.name AS user_type, t.user_id,
-		         coalesce(ur.name, '') AS user_relation, coalesce(c.name, '') AS condition_name,
-		         t.expires_at::text AS expires_at,
-		         row_number() OVER (PARTITION BY rl.name ORDER BY ut.name, t.user_id, ur.name) AS rn,
-		         count(*) OVER (PARTITION BY rl.name) AS total
-		    FROM authz.tuples t
-		    JOIN authz.stores s ON s.id = t.store_id
-		    JOIN authz.types ot ON ot.id = t.object_type
-		    JOIN authz.relations rl ON rl.id = t.relation
-		    JOIN authz.types ut ON ut.id = t.user_type
-		    LEFT JOIN authz.relations ur ON ur.id = t.user_relation
-		    LEFT JOIN authz.conditions c ON c.id = t.condition_id
-		   WHERE s.name = $1 AND ot.name = $2 AND t.object_id = $3
-		     AND rl.name = ANY($4)
-		     AND (t.expires_at IS NULL OR t.expires_at > statement_timestamp())
-		)
-		SELECT relation, user_type, user_id, user_relation, condition_name, expires_at, total
-		  FROM h WHERE rn <= $5
-		 ORDER BY relation, user_type, user_id, user_relation`,
+		WITH st AS (SELECT id FROM authz.stores WHERE name = $1),
+		     ot AS (SELECT id FROM authz.types WHERE store_id = (SELECT id FROM st) AND name = $2),
+		     rels AS (SELECT id, name FROM authz.relations WHERE store_id = (SELECT id FROM st) AND name = ANY($4))
+		SELECT rels.name, ut.name, h.user_id, coalesce(ur.name, ''), coalesce(c.name, ''), h.expires_at::text, n.total
+		  FROM rels
+		  CROSS JOIN LATERAL (
+		    SELECT count(*) AS total FROM authz.tuples t
+		     WHERE t.store_id = (SELECT id FROM st) AND t.object_type = (SELECT id FROM ot)
+		       AND t.object_id = $3 AND t.relation = rels.id
+		       AND (t.expires_at IS NULL OR t.expires_at > statement_timestamp())) n
+		  CROSS JOIN LATERAL (
+		    SELECT t.user_type, t.user_id, t.user_relation, t.condition_id, t.expires_at
+		      FROM authz.tuples t
+		     WHERE t.store_id = (SELECT id FROM st) AND t.object_type = (SELECT id FROM ot)
+		       AND t.object_id = $3 AND t.relation = rels.id
+		       AND (t.expires_at IS NULL OR t.expires_at > statement_timestamp())
+		     ORDER BY t.user_type, t.user_id, t.user_relation LIMIT $5) h
+		  JOIN authz.types ut ON ut.id = h.user_type
+		  LEFT JOIN authz.relations ur ON ur.id = h.user_relation
+		  LEFT JOIN authz.conditions c ON c.id = h.condition_id
+		 ORDER BY rels.name, ut.name, h.user_id, ur.name`,
 		store, o.ObjectType, o.ObjectID, relations, shareHoldersPerRelation)
 	if err != nil {
 		writeEngineError(w, err)

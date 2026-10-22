@@ -520,6 +520,10 @@ export class PgcData extends PgcElement {
     }
     const r = await this._wrap(() => api.shareApply(this.store, o, this.share.grants, this.share.revokes));
     if (r) {
+      // Committed: the queue is spent and the shown holders are stale, both
+      // before the refresh — a refresh that fails must not leave the saved
+      // changes queued behind a live Save (they would be submitted twice).
+      this.share = { ...this.share, d: null, grants: [], revokes: [], add: {}, result: r.result };
       await this._shareLoad();
       this.share = { ...this.share, result: r.result };
       await this._load();
@@ -728,7 +732,12 @@ export class PgcData extends PgcElement {
             : html`<p class="help">
                 ${t('No relation of {type} has a grant rule, so nothing can be shared through authz.grant on it. Grant rules are declared on the Model tab.', { type: d.object.object_type })}
               </p>`
-          : nothing
+          : sh.result
+            ? html`<p class="help" data-testid="data-share-result">
+                ${t('saved: {g} granted, {r} revoked', { g: sh.result.granted, r: sh.result.revoked })}
+                ${t('— the holders could not be reloaded; Show options again')}
+              </p>`
+            : nothing
       }
     </section>`;
   }

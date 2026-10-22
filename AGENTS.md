@@ -78,6 +78,7 @@ With OPA overlay: Application → pgauthzd (validates JWT) → OPA (Rego policy-
 ./tests/test-conformance.sh  # OpenID conformance suite AuthZEN PDP plans (Docker, minutes; conformance/)
 ./tests/test-concurrency.sh # two-session locking tests (type removal vs writer, partial preconditions)
 ./tests/test-console-go.sh  # console Go tests against the DB (race tests mandatory; fixture store console_gotest)
+./tests/test-console-ui.sh  # console browser tests (Playwright) against a running ./start.sh --console-local; skips without one
 ./tests/test-deploy-compose.sh # the deploy/compose deployment end to end (needs the pgauthz-pgauthzd/-migrations/-console images)
 ./tests/test-all.sh      # init.sh + all test suites
 ```

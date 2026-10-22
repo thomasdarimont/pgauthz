@@ -245,6 +245,19 @@ them as mandatory (`PGAUTHZ_TEST_REQUIRE_DATABASE=1`) and drops the store;
 `tests/test-all.sh` and CI include it. The access model's own SQL checks are
 `../examples/models/console/tests.sql` (run by `tests/test.sh`).
 
+The **browser tests** (`frontend/tests/ui/`, Playwright on headless
+Chromium) cover what handler tests cannot: the share dialog's
+request/response race, Save's binding to the loaded object, the post-save
+state when the refresh fails, the expiry chip. They need a running console
+with the local admin — `./start.sh --console-local`, then
+`../tests/test-console-ui.sh`, which loads `frontend/tests/ui/fixture.sql`
+as the store `console_uitest`, runs `npx playwright test` (installing the
+pinned Chromium build into Playwright's cache on first use) and drops the
+store; without a console at `CONSOLE_URL` (default
+`http://localhost:8095/console/`) it skips, with
+`PGAUTHZ_TEST_REQUIRE_CONSOLE=1` it fails instead. `tests/test-all.sh`
+includes it; CI does not start the console stack yet, so it skips there.
+
 ### API shapes
 
 `frontend/src/types.js` holds the BFF's response shapes as JSDoc typedefs
