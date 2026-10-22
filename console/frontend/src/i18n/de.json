@@ -870,6 +870,8 @@
   "The subjects holding this relation on the object today; × queues a revoke when the actor may revoke.": "Die Subjekte, die diese Relation heute auf dem Objekt halten; × stellt einen Entzug in die Warteschlange, wenn der Handelnde entziehen darf.",
   "The type of the object to share, e.g. doc.": "Der Typ des zu teilenden Objekts, z. B. doc.",
   "Who holds it": "Wer sie hält",
+  "expires {when}": "läuft ab {when}",
+  "… and {n} more (the first {limit} are shown; revoke the rest from the tuple list)": "… und {n} weitere (die ersten {limit} werden gezeigt; den Rest in der Tupelliste entziehen)",
   "cannot grant": "darf nicht erteilen",
   "cannot revoke": "darf nicht entziehen",
   "may grant": "darf erteilen",

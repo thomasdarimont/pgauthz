@@ -85,7 +85,7 @@ views `demo`; eva audits it).
 |---|---|---|
 | **Stores** | the stores you can see, with your capabilities; unclaimed stores (platform admin) and *New store* | `store#can_view`; `platform#can_view_all_stores`, `platform#can_create_store` |
 | Store → **Model** | three read views of the live model (DSL, canonical JSON, SQL calls); "Edit as DSL" to write the whole model in that DSL (a starter model for an empty store); the structured editor, one tab per section (types with their namespace and labels, relations with their rules and type restrictions in one step and their payload schema, rules, type restrictions, conditions, temporal gates, grant rules), each section's add button and edit form inside its tab; the section is in the URL (`stores/<store>/model/<section>`) | `can_view`; editing `can_edit_model` |
-| Store → **Data** | tuples with filter; grant/revoke; **Export** as JSON (native, round-trippable with conditions, context and expiry), CSV or the OpenFGA ReadTuples shape — a dedicated capability, and every export is recorded in the console's action log (who, when, format, rows); **Import** of any of the three (shape detected, preview, then one transaction as you, scoped by the namespaces of the object types touched, up to 10000 tuples); **Offboard** a subject (count, confirm, `delete_user_tuples`); **Share** an object under the model's grant rules as a chosen actor of the store — `grant_options` says what that actor may grant and revoke per relation and who may hold it, additions and removals queue up and are saved as one `apply_grants` transaction, each decided by the engine | `can_view`; writes and sharing `can_grant`; export `can_export` (exporter, owner) |
+| Store → **Data** | tuples with filter; grant/revoke; **Export** as JSON (native, round-trippable with conditions, context and expiry), CSV or the OpenFGA ReadTuples shape — a dedicated capability, and every export is recorded in the console's action log (who, when, format, rows); **Import** of any of the three (shape detected, preview, then one transaction as you, scoped by the namespaces of the object types touched, up to 10000 tuples); **Offboard** a subject (count, confirm, `delete_user_tuples`); **Share** an object under the model's grant rules as a chosen actor of the store — `grant_options` says what that actor may grant and revoke per relation and who may hold it, additions and removals queue up and are saved as one `apply_grants` transaction, each decided by the engine; holders are live tuples of the offered relations, 200 per relation with the full count | `can_view`; writes and sharing `can_grant`; export `can_export` (exporter, owner) |
 | Store → **Test** | four modes: single check + explain; matrix (subjects × actions × resources, one batch call); reverse search (which objects can X reach / who can reach Y); "as me via pgauthzd" (your own token, with the detail envelope: OPA, hooks, veto). The **test policy** limits a plain tester to their own access with redacted trees, no enumeration and no history; every test is recorded in the console's action log | `can_run_tests`; `can_test_others`, `can_test_explain_full`, `can_test_search`, `can_test_history` widen it |
 | Store → **Rollout** | managed-model state and drift, the versions of the store's model (an unmanaged store picks a registry model first), plan (dry run), apply; publish the live model | `can_view`; `can_rollout` to apply; `can_publish` on the store **and** `registry#can_publish` to publish |
 | Store → **Activity** | console actions on this store, the relationship audit trail, the model change history (rules, conditions, gates, grant rules added or removed, by whom), the store's action log | `can_view_audit` |
@@ -322,7 +322,15 @@ empty).
   for console sharers; its Share dialog exercises `apply_grants` under the
   grant rules as a chosen actor, which is what an application does through
   pgauthzd with the token's subject — the console lets a sharer act as any
-  subject, pgauthzd does not.
+  subject, pgauthzd does not. That is the contract, not an oversight: the
+  actor is *chosen*, so `can_grant` (sharer, owner, namespace author) is a
+  highly trusted console role — the same trust the tab's direct Add/Remove
+  carries, bounded by the engine's grant rules for the chosen actor rather
+  than by nothing — and every save is recorded as the signed-in person
+  with the actor and object named, so the trail shows who acted as whom.
+  The dialog lists live holders of the offered relations only, the first
+  200 per relation with the full count beside them; the rest are revoked
+  from the tuple list.
 - **pgauthzd as the data plane.** The BFF goes to the engine directly (one
   service role, gated by the console store). Routing writes through
   pgauthzd-full with the person's token as an ADR 0014 PEP client would add

@@ -9,6 +9,15 @@ package server
 // lock exactly as authz.grant / authz.revoke would. The console's own gate
 // is can_grant (sharer, owner), scoped to the object type's namespace like
 // every Data-tab write; the engine's grant rules decide for the actor.
+//
+// The actor is CHOSEN, not authenticated: a console sharer may act as any
+// subject of the managed store (pgauthzd derives the actor from the token;
+// the console is the administrative surface where "what could alice share,
+// and do it for her" is the point). That makes can_grant a highly trusted
+// console role — the same trust the Data tab's direct Add/Remove already
+// carries, with the difference that the engine's grant rules bound what the
+// chosen actor can do. Every save is recorded as the signed-in person with
+// the actor named in the event, so the trail shows who acted as whom.
 
 import (
 	"encoding/json"
@@ -32,8 +41,15 @@ type holderRow struct {
 	UserID        string  `json:"user_id"`
 	UserRelation  string  `json:"user_relation"`
 	ConditionName string  `json:"condition_name"`
-	ExpiresAt     *string `json:"expires_at"`
+	ExpiresAt     *string `json:"expires_at"` // set when the tuple expires; expired ones are not listed
 }
+
+// shareHoldersPerRelation caps "who holds it" per relation: a widely shared
+// object (a public doc with a hundred thousand viewers) must not become a
+// hundred-thousand-chip dialog or a multi-megabyte response. The response
+// says how many holders each relation has, so the dialog can say "… and
+// N more"; revoking beyond the cap is the Data tab's job (filter, delete).
+const shareHoldersPerRelation = 200
 
 type shareObject struct {
 	ObjectType string `json:"object_type"`
@@ -104,37 +120,63 @@ func (s *Server) handleShareOptions(w http.ResponseWriter, r *http.Request) {
 		writeEngineError(w, err)
 		return
 	}
+	// Who holds what: only the relations the dialog offers (the ones with a
+	// grant rule), only live tuples (the engine's row policy hides expired
+	// ones from the console's role anyway; said here so a superuser
+	// connection shows the same), at most shareHoldersPerRelation each,
+	// with every relation's full count beside it.
+	relations := make([]string, len(options))
+	for i, x := range options {
+		relations[i] = x.Relation
+	}
 	rows, err = s.engine.Query(ctx, `
-		SELECT rl.name, ut.name, t.user_id, coalesce(ur.name, ''), coalesce(c.name, ''), t.expires_at::text
-		  FROM authz.tuples t
-		  JOIN authz.stores s ON s.id = t.store_id
-		  JOIN authz.types ot ON ot.id = t.object_type
-		  JOIN authz.relations rl ON rl.id = t.relation
-		  JOIN authz.types ut ON ut.id = t.user_type
-		  LEFT JOIN authz.relations ur ON ur.id = t.user_relation
-		  LEFT JOIN authz.conditions c ON c.id = t.condition_id
-		 WHERE s.name = $1 AND ot.name = $2 AND t.object_id = $3
-		 ORDER BY rl.name, ut.name, t.user_id, ur.name`, store, o.ObjectType, o.ObjectID)
+		WITH h AS (
+		  SELECT rl.name AS relation, ut.name AS user_type, t.user_id,
+		         coalesce(ur.name, '') AS user_relation, coalesce(c.name, '') AS condition_name,
+		         t.expires_at::text AS expires_at,
+		         row_number() OVER (PARTITION BY rl.name ORDER BY ut.name, t.user_id, ur.name) AS rn,
+		         count(*) OVER (PARTITION BY rl.name) AS total
+		    FROM authz.tuples t
+		    JOIN authz.stores s ON s.id = t.store_id
+		    JOIN authz.types ot ON ot.id = t.object_type
+		    JOIN authz.relations rl ON rl.id = t.relation
+		    JOIN authz.types ut ON ut.id = t.user_type
+		    LEFT JOIN authz.relations ur ON ur.id = t.user_relation
+		    LEFT JOIN authz.conditions c ON c.id = t.condition_id
+		   WHERE s.name = $1 AND ot.name = $2 AND t.object_id = $3
+		     AND rl.name = ANY($4)
+		     AND (t.expires_at IS NULL OR t.expires_at > statement_timestamp())
+		)
+		SELECT relation, user_type, user_id, user_relation, condition_name, expires_at, total
+		  FROM h WHERE rn <= $5
+		 ORDER BY relation, user_type, user_id, user_relation`,
+		store, o.ObjectType, o.ObjectID, relations, shareHoldersPerRelation)
 	if err != nil {
 		writeEngineError(w, err)
 		return
 	}
 	holders := []holderRow{}
+	totals := map[string]int{} // relation → holders on the object, shown or not
 	for rows.Next() {
 		var h holderRow
-		if err := rows.Scan(&h.Relation, &h.UserType, &h.UserID, &h.UserRelation, &h.ConditionName, &h.ExpiresAt); err != nil {
+		var total int
+		if err := rows.Scan(&h.Relation, &h.UserType, &h.UserID, &h.UserRelation, &h.ConditionName, &h.ExpiresAt, &total); err != nil {
 			rows.Close()
 			writeEngineError(w, err)
 			return
 		}
 		holders = append(holders, h)
+		totals[h.Relation] = total
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		writeEngineError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"object": o, "options": options, "holders": holders})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"object": o, "options": options, "holders": holders,
+		"holder_totals": totals, "holders_limit": shareHoldersPerRelation,
+	})
 }
 
 type shareReq struct {
@@ -159,6 +201,12 @@ func (s *Server) handleShareApply(w http.ResponseWriter, r *http.Request) {
 	if !req.valid() {
 		writeError(w, http.StatusBadRequest, "object_type, object_id, actor_type and actor_id are required")
 		return
+	}
+	if req.Grants == nil { // a save of only revokes (or only grants): the engine wants arrays, not null
+		req.Grants = []tupleReq{}
+	}
+	if req.Revokes == nil {
+		req.Revokes = []tupleReq{}
 	}
 	if len(req.Grants)+len(req.Revokes) == 0 || len(req.Grants)+len(req.Revokes) > 200 {
 		writeError(w, http.StatusBadRequest, "1 to 200 changes per save")

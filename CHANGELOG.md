@@ -16,9 +16,25 @@ pre-1.0, minor versions may include breaking changes.
   saved as one `apply_grants` transaction, each decided by the engine under
   the object's lock, recorded as the person (`GET`/`POST
   /api/stores/{store}/share`, console gate `can_grant` scoped to the object
-  type's namespace). Go test against the database: options for an owner and
-  for a stranger, a refused and an accepted save. This completes the
-  Model tab's grant rules: declare them there, watch them decide here.
+  type's namespace). The holders listed are the live tuples of the offered
+  relations only (a relation without a grant rule is not shown, an expired
+  grant is not a holder; a grant with an expiry says when it runs out), at
+  most 200 per relation with every relation's full count beside it, so a
+  widely shared object never becomes a hundred-thousand-chip dialog. A
+  response that arrives after the object or actor was retyped is dropped,
+  and Save is bound to the object the options were loaded for, never to
+  the form (review #18, P2). A save with only revokes (no `grants` key)
+  works (it sent JSON `null` to the engine). The actor is a *chosen*
+  subject, by contract — `can_grant` is a highly trusted console role,
+  bounded by the engine's grant rules for that actor and recorded as the
+  person with the actor named (console README). Go tests against the
+  database: the engine calls (options for an owner and for a stranger, a
+  refused and an accepted save) and the HTTP handlers through the router
+  with a session cookie — 401, a viewer's 403, a namespace author's
+  403 on another namespace's type, malformed payloads, the holders
+  listing with its filters and cap, acting as a subject the rules refuse
+  and as one they allow, the recorded event. This completes the Model
+  tab's grant rules: declare them there, watch them decide here.
 - **Console: batch import, export and offboarding on the Data tab.**
   Export the store's tuples as JSON (the native shape, round-trippable with
   conditions, context and expiry), CSV with the same columns, or the OpenFGA

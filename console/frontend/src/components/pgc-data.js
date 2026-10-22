@@ -6,6 +6,13 @@ import { PgcJson } from './pgc-json.js';
 import { run, subjectOf, forbiddenText, fmtTime, fmtRelative } from '../util.js';
 import { selectionCell, selectAllCell, removeBar, clearSelection } from './pgc-select.js';
 
+/** @param {import('../types.js').ShareObject} a @param {import('../types.js').ShareObject} b */
+const sameShareObject = (a, b) =>
+  a.object_type === b.object_type &&
+  a.object_id === b.object_id &&
+  a.actor_type === b.actor_type &&
+  a.actor_id === b.actor_id;
+
 // Data tab: the store's relationship tuples, with grant/revoke for console
 // sharers. The engine still enforces the model (type restrictions,
 // conditions), and every write is audited as you. Revoking goes through
@@ -467,10 +474,17 @@ export class PgcData extends PgcElement {
     };
   }
 
+  // Loads the options for the object and actor as typed NOW. The form may
+  // change while the request is in flight; a response is only shown when
+  // it is the latest request AND still describes what the form says, so
+  // the dialog never shows doc:A's holders under doc:B — and Save is bound
+  // to the loaded object (d.object), never to the form.
   async _shareLoad() {
     const o = this._shareObject();
+    const seq = (this._shareSeq = (this._shareSeq ?? 0) + 1);
     const d = await this._wrap(() => api.shareOptions(this.store, o));
-    if (d) this.share = { ...this.share, d, grants: [], revokes: [], add: {}, result: null };
+    if (!d || seq !== this._shareSeq || !sameShareObject(o, this._shareObject())) return;
+    this.share = { ...this.share, d, grants: [], revokes: [], add: {}, result: null };
   }
 
   _shareKey(x) {
@@ -499,7 +513,11 @@ export class PgcData extends PgcElement {
   }
 
   async _shareApply() {
-    const o = this._shareObject();
+    const o = this.share.d?.object; // what was loaded, not what the form says now
+    if (!o || !sameShareObject(o, this._shareObject())) {
+      this.share = { ...this.share, d: null, grants: [], revokes: [] }; // reload first
+      return;
+    }
     const r = await this._wrap(() => api.shareApply(this.store, o, this.share.grants, this.share.revokes));
     if (r) {
       await this._shareLoad();
@@ -621,7 +639,7 @@ export class PgcData extends PgcElement {
                                   html`<span
                                     class="chip ${queuedRevoke(h) ? 'deny' : ''}"
                                     data-testid=${`data-share-holder-${opt.relation}-${h.user_type}-${h.user_id}`}
-                                    >${subjectOf(h)}${h.condition_name ? html` <span class="muted">· ${h.condition_name}</span>` : nothing}
+                                    >${subjectOf(h)}${h.condition_name ? html` <span class="muted">· ${h.condition_name}</span>` : nothing}${h.expires_at ? html` <span class="muted" title=${fmtTime(h.expires_at)}>· ${t('expires {when}', { when: fmtRelative(h.expires_at) })}</span>` : nothing}
                                     ${
                                       opt.can_revoke
                                         ? queuedRevoke(h)
@@ -647,6 +665,13 @@ export class PgcData extends PgcElement {
                               )}
                               ${queued.map((g) => html`<span class="chip ok" data-testid=${`data-share-queued-${opt.relation}-${g.user_id}`}>+ ${subjectOf(g)} <button type="button" class="link" @click=${() => this._shareUnqueue('grants', g)}>${t('undo')}</button></span>`)}
                               ${!holders.length && !queued.length ? html`<span class="dim">${t('nobody')}</span>` : nothing}
+                              ${
+                                (d.holder_totals?.[opt.relation] ?? 0) > holders.length
+                                  ? html`<span class="help" data-testid=${`data-share-more-${opt.relation}`}
+                                      >${t('… and {n} more (the first {limit} are shown; revoke the rest from the tuple list)', { n: d.holder_totals[opt.relation] - holders.length, limit: d.holders_limit })}</span
+                                    >`
+                                  : nothing
+                              }
                             </div>
                           </td>
                           <td>
