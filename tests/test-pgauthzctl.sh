@@ -56,8 +56,8 @@ cleanup() {
 trap cleanup EXIT
 cleanup
 
-echo "==> Building pgauthzctl..."
-(cd "$ROOT/pgauthzctl" && go build -o pgauthzctl .)
+echo "==> Unit tests (the admin-API mode against a fake server) + build..."
+(cd "$ROOT/pgauthzctl" && go test ./... && go build -o pgauthzctl .)
 CTL="$ROOT/pgauthzctl/pgauthzctl"
 
 echo ""

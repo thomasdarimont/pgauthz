@@ -84,6 +84,10 @@ pre-1.0, minor versions may include breaking changes.
   endpoints) instead of just the outcome; Reset clears every filter back to
   the window; Refresh reloads it. A test pins that every filter value
   reaches SQL as a bound argument.
+- **pgauthzctl unit tests for the admin-API mode** (`api_test.go`): a fake
+  admin API checks the bearer token, the error mapping, the issuers, model
+  and store verbs' requests and output, and an mTLS handshake with a
+  generated CA; CI and `tests/test-pgauthzctl.sh` run them.
 - **`pgauthzctl store list | get | set | delete | recorders | recorder-set |
   recorder-lift | namespaces | namespace-grant | namespace-revoke`** — the
   first command group on the admin API only (no `--dsn` form).

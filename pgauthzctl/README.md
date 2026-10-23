@@ -99,6 +99,15 @@ pgauthzctl store delete tenant_a --purge-audit          # the erasure path
 
 Every verb takes `--json` for the API's answer verbatim.
 
+## Tests
+
+`go test ./...` runs the unit tests: the admin-API mode against a fake
+pgauthzd (`api_test.go` — credentials, the error mapping, every verb's
+request shape and output, an mTLS handshake with a generated CA); no stack
+needed. `../tests/test-pgauthzctl.sh` runs them, builds the binary and
+exercises the real lifecycle against the dev stack over `--dsn` and, when
+the admin listener is up, over `--server`.
+
 ## Issuer bindings as code
 
 What each trusted identity provider's tokens may do — the stores they
