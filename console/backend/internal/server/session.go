@@ -30,7 +30,17 @@ func InitSchema(ctx context.Context, db *pgxpool.Pool) error {
 	}
 	// local: a session of the local admin sign-in (no token; memberships from
 	// the configuration). Existing tables gain the column.
-	_, err = db.Exec(ctx, `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS local boolean NOT NULL DEFAULT false`)
+	if _, err = db.Exec(ctx, `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS local boolean NOT NULL DEFAULT false`); err != nil {
+		return err
+	}
+	// scenarios: one tests.authz.yaml per managed store (scenarios.go).
+	_, err = db.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS scenarios (
+			store      text PRIMARY KEY,
+			yaml       text NOT NULL,
+			updated_at timestamptz NOT NULL DEFAULT now(),
+			updated_by text
+		)`)
 	return err
 }
 

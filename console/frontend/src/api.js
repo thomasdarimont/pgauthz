@@ -94,6 +94,15 @@ export const api = {
   search: (store, q) => call(`api/stores/${enc(store)}/search`, q),
   evaluateCondition: (store, name, q) => call(`api/stores/${enc(store)}/conditions/${enc(name)}/evaluate`, q),
   decide: (store, q) => call(`api/stores/${enc(store)}/decide`, q),
+  /** @returns {Promise<import('./types.js').Scenarios>} */
+  scenarios: (store) => call(`api/stores/${enc(store)}/scenarios`),
+  scenariosSave: (store, yaml) => call(`api/stores/${enc(store)}/scenarios`, { yaml }, { method: 'PUT' }),
+  /** @returns {Promise<import('./types.js').ScenariosRun>} */
+  scenariosRun: (store, yaml) => call(`api/stores/${enc(store)}/scenarios/run`, { yaml }),
+  /** @returns {Promise<import('./types.js').ScenariosExport>} */
+  scenariosExport: (store) => call(`api/stores/${enc(store)}/scenarios/export`),
+  // the store's tuples in the native export shape — can_export, recorded as an export
+  tuplesExportJSON: (store) => call(`api/stores/${enc(store)}/tuples/export?format=json`),
 
   /** @returns {Promise<import('./types.js').RolloutResponse>} */
   rollout: (store) => call(`api/stores/${enc(store)}/rollout`),

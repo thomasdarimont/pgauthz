@@ -86,7 +86,7 @@ views `demo`; eva audits it).
 | **Stores** | the stores you can see, with your capabilities; unclaimed stores (platform admin) and *New store* | `store#can_view`; `platform#can_view_all_stores`, `platform#can_create_store` |
 | Store → **Model** | three read views of the live model (DSL, canonical JSON, SQL calls); "Edit as DSL" to write the whole model in that DSL (a starter model for an empty store); the structured editor, one tab per section (types with their namespace and labels, relations with their rules and type restrictions in one step and their payload schema, rules, type restrictions, conditions, temporal gates, grant rules), each section's add button and edit form inside its tab; the section is in the URL (`stores/<store>/model/<section>`) | `can_view`; editing `can_edit_model` |
 | Store → **Data** | tuples with filter; grant/revoke; **Export** as JSON (native, round-trippable with conditions, context and expiry), CSV or the OpenFGA ReadTuples shape — a dedicated capability, and every export is recorded in the console's action log (who, when, format, rows); **Import** of any of the three (shape detected, preview, then one transaction as you, scoped by the namespaces of the object types touched, up to 10000 tuples); **Offboard** a subject (count, confirm, `delete_user_tuples`); **Share** an object under the model's grant rules as a chosen actor of the store — `grant_options` says what that actor may grant and revoke per relation and who may hold it, additions and removals queue up and are saved as one `apply_grants` transaction, each decided by the engine; holders are live tuples of the offered relations, 200 per relation with the full count | `can_view`; writes and sharing `can_grant`; export `can_export` (exporter, owner) |
-| Store → **Test** | four modes: single check + explain; matrix (subjects × actions × resources, one batch call); reverse search (which objects can X reach / who can reach Y); "as me via pgauthzd" (your own token, with the detail envelope: OPA, hooks, veto). The **test policy** limits a plain tester to their own access with redacted trees, no enumeration and no history; every test is recorded in the console's action log | `can_run_tests`; `can_test_others`, `can_test_explain_full`, `can_test_search`, `can_test_history` widen it |
+| Store → **Test** | four modes: single check + explain; matrix (subjects × actions × resources, one batch call); reverse search (which objects can X reach / who can reach Y); "as me via pgauthzd" (your own token, with the detail envelope: OPA, hooks, veto). The **test policy** limits a plain tester to their own access with redacted trees, no enumeration and no history; every test is recorded in the console's action log; **Scenarios**: the store's saved checks as a `tests.authz.yaml` fixture (append a single check or a search result as a case, or write it), run through pgauthzadm's runner — the one behind `pgauthzctl model test` — in an ephemeral store rebuilt from this store's current model (or a registry model), saved for the team, exported with the model as DSL for the CLI and CI | `can_run_tests`; `can_test_others`, `can_test_explain_full`, `can_test_search`, `can_test_history` widen it; saving scenarios `can_edit_model`; seeding a fixture from the store's data `can_export` |
 | Store → **Rollout** | managed-model state and drift, the versions of the store's model (an unmanaged store picks a registry model first), plan (dry run), apply; publish the live model | `can_view`; `can_rollout` to apply; `can_publish` on the store **and** `registry#can_publish` to publish |
 | Store → **Activity** | console actions on this store, the relationship audit trail, the model change history (rules, conditions, gates, grant rules added or removed, by whom), the store's action log | `can_view_audit` |
 | Store → **Access** | who has which console role on the store; grant/remove; a store never loses its last owner. **Namespaces**: `author` / `viewer` on one namespace of the store (an application team's slice) | `can_view`; `can_manage_access` to change |
@@ -333,6 +333,19 @@ empty).
   the Access tab, and it changes every tuple in the console store — a
   deliberate open item while there are no deployments to migrate. Until
   then, treat username reuse as an IdP policy question.
+- **Scenarios never touch real data.** A scenario run creates an ephemeral
+  store, rebuilds the managed store's current model in it (or applies a
+  registry model), writes the fixture's own tuples and decides there; the
+  fixture cannot name the store it runs in, and nothing of the managed
+  store's tuples takes part — a check that passes on live data fails in a
+  scenario until the fixture lists the facts it needs. The one way real data
+  enters a fixture is "Seed from the store's data", which is an export: it
+  goes through the Data tab's export endpoint, needs `can_export` and is
+  recorded in the console's action log like any export, capped at 500
+  tuples. A saved fixture is readable by everyone with `can_run_tests` on
+  the store (as the Data tab is with `can_view`), and the export for
+  pgauthzctl returns that fixture plus the model as DSL — the model, not
+  the data.
 - **End-user sharing semantics.** The Data tab's Add writes tuples directly
   for console sharers; its Share dialog exercises `apply_grants` under the
   grant rules as a chosen actor, which is what an application does through

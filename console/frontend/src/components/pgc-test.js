@@ -6,6 +6,7 @@ import { t, t2 } from '../i18n.js';
 import { PgcJson } from './pgc-json.js';
 import { run, copyText, forbiddenText, parseList, fmtTime, fmtRelative, FieldInvalid } from '../util.js';
 import { PgcExplainTree } from './pgc-explain-tree.js';
+import { checkCaseYAML, listCaseYAML, appendCase } from './pgc-scenarios.js';
 
 // Test tab, four ways to ask the managed store:
 //   single — one subject, one action, one resource, with the resolution tree
@@ -27,6 +28,11 @@ const MODES = [
     'asme',
     'As me via pgauthzd',
     'Your own token through pgauthzd, the way an application asks. Shows whether OPA and which policy hooks took part.',
+  ],
+  [
+    'scenarios',
+    'Scenarios',
+    "Saved checks as a tests.authz.yaml fixture, run against the store's current model in an ephemeral store — the runner behind pgauthzctl model test.",
   ],
 ];
 
@@ -58,6 +64,8 @@ export class PgcTest extends PgcElement {
     busy: { state: true },
     error: { state: true },
     copied: { state: true },
+    scenarioYaml: { state: true }, // the Scenarios editor's text; null until loaded
+    added: { state: true }, // the case just appended (feedback)
   };
 
   constructor() {
@@ -86,11 +94,27 @@ export class PgcTest extends PgcElement {
     this.busy = false;
     this.error = '';
     this.copied = false;
+    this.scenarioYaml = null;
+    this.added = '';
+  }
+
+  // Appends a case to the Scenarios editor (loading the saved fixture
+  // first when the editor was never opened) and switches to it.
+  async _addToScenarios(caseYaml) {
+    if (this.scenarioYaml === null) {
+      const d = await this._wrap(() => api.scenarios(this.store));
+      if (!d) return;
+      this.scenarioYaml = d.yaml;
+    }
+    this.scenarioYaml = appendCase(this.scenarioYaml, caseYaml);
+    this.added = caseYaml;
+    this.mode = 'scenarios';
   }
 
   willUpdate(changed) {
     if (changed.has('store') && this.store) {
       this._clear();
+      this.scenarioYaml = null;
       void this._load();
     }
   }
@@ -670,6 +694,27 @@ export class PgcTest extends PgcElement {
                   <button class="sm" @click=${() => this._copy(PgcExplainTree.toText(this.tree))}>
                     ${t('Copy resolution')}
                   </button>
+                  ${
+                    this.asked && !this.asked.at
+                      ? html`<button
+                          class="sm"
+                          title=${t('Append this check with its outcome as a case of the saved scenarios (tests.authz.yaml).')}
+                          data-testid="test-add-scenario"
+                          @click=${() =>
+                            this._addToScenarios(
+                              checkCaseYAML({
+                                subject: this.asked.subject,
+                                action: this.asked.action,
+                                resource: this.asked.resource,
+                                decision: this.decision,
+                                context: this.asked.context,
+                              }),
+                            )}
+                        >
+                          ${t('Add to scenarios')}
+                        </button>`
+                      : nothing
+                  }
                 </div>
               </div>
               <div class="decided-by">
@@ -855,9 +900,32 @@ export class PgcTest extends PgcElement {
       ${
         h
           ? html`<section class="card">
-              <h3>
-                ${t2('{n} result', '{n} results', h.hits.length)}${h.next ? ' ' + t('(more available — narrow the question)') : ''}
-              </h3>
+              <div class="toolbar">
+                <h3>
+                  ${t2('{n} result', '{n} results', h.hits.length)}${h.next ? ' ' + t('(more available — narrow the question)') : ''}
+                </h3>
+                ${
+                  objects && !h.next
+                    ? html`<button
+                        class="sm"
+                        title=${t('Append this search with its results as a list_objects case of the saved scenarios.')}
+                        data-testid="test-add-scenario-search"
+                        @click=${() =>
+                          this._addToScenarios(
+                            listCaseYAML({
+                              subject: this.subject.trim(),
+                              action: this.action.trim(),
+                              type: this.resource.trim(),
+                              ids: h.hits.map((x) => x.id),
+                              context: this._ctx(),
+                            }),
+                          )}
+                      >
+                        ${t('Add to scenarios')}
+                      </button>`
+                    : nothing
+                }
+              </div>
               ${
                 h.hits.length
                   ? html`<div class="table-wrap">
@@ -1002,7 +1070,22 @@ export class PgcTest extends PgcElement {
         </div>
       </div>
       ${this.error ? errorBox(this.error) : nothing}
-      ${this.mode === 'matrix' ? this._matrix() : this.mode === 'search' ? this._search() : this.mode === 'asme' ? this._asMe() : this._single()}
+      ${
+        this.mode === 'matrix'
+          ? this._matrix()
+          : this.mode === 'search'
+            ? this._search()
+            : this.mode === 'asme'
+              ? this._asMe()
+              : this.mode === 'scenarios'
+                ? html`<pgc-scenarios
+                    .store=${this.store}
+                    .caps=${this.caps}
+                    .yaml=${this.scenarioYaml}
+                    @yaml-change=${(e) => (this.scenarioYaml = e.detail)}
+                  ></pgc-scenarios>`
+                : this._single()
+      }
     `;
   }
 }

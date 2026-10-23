@@ -22,15 +22,19 @@ func httpSession(t *testing.T, s *Server, username string) *http.Cookie {
 	ctx := context.Background()
 	if s.db == nil {
 		s.db = s.engine
-		var existed bool
-		if err := s.db.QueryRow(ctx, `SELECT to_regclass('public.sessions') IS NOT NULL`).Scan(&existed); err != nil {
-			t.Fatal(err)
+		// InitSchema's tables (sessions, scenarios): created here, dropped
+		// afterwards when this test created them.
+		for _, table := range []string{"sessions", "scenarios"} {
+			var existed bool
+			if err := s.db.QueryRow(ctx, `SELECT to_regclass('public.'||$1) IS NOT NULL`, table).Scan(&existed); err != nil {
+				t.Fatal(err)
+			}
+			if !existed {
+				t.Cleanup(func() { _, _ = s.engine.Exec(context.Background(), `DROP TABLE IF EXISTS public.`+table) })
+			}
 		}
 		if err := InitSchema(ctx, s.db); err != nil {
 			t.Fatal(err)
-		}
-		if !existed {
-			t.Cleanup(func() { _, _ = s.engine.Exec(context.Background(), `DROP TABLE IF EXISTS public.sessions`) })
 		}
 	}
 	claims, _ := json.Marshal(map[string]any{"preferred_username": username, "name": "Test " + username})

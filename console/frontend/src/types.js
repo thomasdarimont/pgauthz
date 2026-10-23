@@ -176,6 +176,10 @@
 /** @typedef {{relation: string, can_grant: boolean, can_revoke: boolean, requires: string, requires_revoke: string, grantee_types: string[]}} GrantOption */
 /** @typedef {{relation: string, user_type: string, user_id: string, user_relation: string, condition_name: string, expires_at: string|null}} HolderRow */
 /** @typedef {{object_type: string, object_id: string, actor_type: string, actor_id: string}} ShareObject */
+/** @typedef {{yaml: string, updated_at: string|null, updated_by: string, can_edit: boolean, cases: number}} Scenarios the store's saved tests.authz.yaml */
+/** @typedef {{name: string, failed: boolean, detail?: string}} ScenarioResult */
+/** @typedef {{results: ScenarioResult[], passed: number, failed: number, duration_ms: number}} ScenariosRun */
+/** @typedef {{store: string, yaml: string, model_fga?: string, command: string}} ScenariosExport the fixture for pgauthzctl, model_file filled in, the model as DSL */
 /** @typedef {{object: ShareObject, options: GrantOption[], holders: HolderRow[], holder_totals: Record<string, number>, holders_limit: number}} ShareOptions the share dialog: what the actor may grant and revoke, who holds what (live tuples of the offered relations, at most holders_limit per relation; holder_totals has every relation's full count) */
 
 // ── test ───────────────────────────────────────────────────────────────────

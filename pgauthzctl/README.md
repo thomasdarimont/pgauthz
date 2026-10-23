@@ -102,9 +102,9 @@ tests:
         expect_reasons: [no_direct_tuple, computed]
 ```
 
-The runner creates an ephemeral store per run (hermetic, repeatable),
-imports the model, seeds the tuples, runs the assertions, and drops the
-store. `--junit out.xml` emits JUnit XML for CI; `--keep-store` retains the
+The runner (`pgauthzadm.RunFixture`, shared with the console's Scenarios)
+creates an ephemeral store per run (hermetic, repeatable), imports the
+model, seeds the tuples, runs the assertions, and drops the store. `--junit out.xml` emits JUnit XML for CI; `--keep-store` retains the
 store for debugging. Fixtures using `contextual_tuples` need a DSN whose
 role holds `authz_contextual_reader` (the injection API is deliberately
 gated) — a superuser test database also works.

@@ -126,6 +126,11 @@ func (s *Server) Routes() http.Handler {
 	h("POST /api/stores/{store}/search", s.handleSearch)
 	h("POST /api/stores/{store}/decide", s.handleDecide)
 	h("POST /api/stores/{store}/conditions/{name}/evaluate", s.handleEvaluateCondition)
+	// Saved scenarios (tests.authz.yaml per store, run by pgauthzadm's runner)
+	h("GET /api/stores/{store}/scenarios", s.handleScenarios)
+	h("PUT /api/stores/{store}/scenarios", s.handleScenariosSave)
+	h("POST /api/stores/{store}/scenarios/run", s.handleScenariosRun)
+	h("GET /api/stores/{store}/scenarios/export", s.handleScenariosExport)
 
 	// Rollout
 	h("GET /api/stores/{store}/rollout", s.handleRollout)

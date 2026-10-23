@@ -9,6 +9,27 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Saved test scenarios (console) and the fixture runner as a library.**
+  The `tests.authz.yaml` runner moves from the pgauthzctl binary into
+  `pgauthzadm` (`ParseFixture`, `Fixture.Validate`, `RunFixture`,
+  `JUnit`, `ParseRef`), so the CLI and the console run the same fixtures
+  the same way: `pgauthzctl model test` is a thin wrapper with identical
+  output, and `RunOptions.Model` rebuilds a live store's model loss-free in
+  the ephemeral store through `RenderSQL` (the OpenFGA JSON import cannot
+  carry conditions, gates and grant rules). Store → Test gains
+  **Scenarios**: the store's fixture in an editor, a single check or a
+  search result appended as a case with its outcome, Run (an ephemeral
+  store, this store's current model or `model: name@version`, the test
+  policy applied: other subjects, enumeration, explain), Save for the team
+  (`can_edit_model`, recorded), Export for pgauthzctl (the fixture with
+  `model_file` filled in plus the model as DSL), and Seed from the store's
+  data — an export, gated and recorded as one (`can_export`), capped at
+  500 tuples (`GET/PUT /api/stores/{store}/scenarios`, `POST …/run`,
+  `GET …/export`; the fixture lives in the console's own database,
+  `InitSchema` adds the table). Go tests: the library's parser, validator
+  and JUnit writer; the endpoints through the router (refused
+  `model_file`, a tester's 403, a hermetic run, a failing assertion as a
+  result, no ephemeral store left, the export).
 - **Console: the share dialog.** Data → Share…: pick an object and whom
   to act as (yourself by default); `grant_options` renders, per relation
   with a grant rule, whether that actor may grant and revoke it and who may

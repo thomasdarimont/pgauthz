@@ -1,6 +1,7 @@
 // Package pgauthzadm is the embeddable administration library for pgauthz:
-// model export and rendering, and the model registry lifecycle (status,
-// versions, plan, publish, apply, rollout). It is the shared part of the
+// model export and rendering, the model registry lifecycle (status,
+// versions, plan, publish, apply, rollout), and the tests.authz.yaml
+// fixture format with its runner (fixture.go). It is the shared part of the
 // pgauthzctl CLI, extracted so long-running processes (the management
 // console's BFF) call the engine in-process instead of spawning a CLI.
 //
