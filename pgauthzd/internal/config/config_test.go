@@ -623,3 +623,54 @@ func TestManagementListener(t *testing.T) {
 		t.Fatalf("public health off without a management listener must be refused, got %v", err)
 	}
 }
+
+// ADMIN_CLIENT_CERTS: parsed and validated (one identifier, scope issuer
+// needs its issuer), needs the client CA; mTLS needs all three files and
+// the admin API on its own listener; a mapping is an admin gate.
+func TestAdminClientCertsConfig(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://u:p@h/db")
+	t.Setenv("JWKS_FILE", "")
+	t.Setenv("JWKS_URL", "")
+	t.Setenv("JWT_ISSUERS", `[{"issuer":"https://idp","audience":"api","jwks_file":"/dev/null","stores":["demo"]}]`)
+	t.Setenv("CURSOR_SEAL_KEY", "0123456789abcdef0123456789abcdef")
+	t.Setenv("DEPLOYMENT_ENVIRONMENT", "dev")
+	t.Setenv("PGAUTHORIZER_PROFILE", "full")
+	t.Setenv("ADMIN_API_ENABLED", "true")
+	t.Setenv("ADMIN_LISTEN_ADDR", ":8082")
+
+	t.Setenv("ADMIN_CLIENT_CERTS", `[{"cn":"terraform"}]`)
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "ADMIN_CLIENT_CA") {
+		t.Fatalf("mappings without a CA must be refused, got %v", err)
+	}
+	t.Setenv("ADMIN_CLIENT_CA", "/ca.pem")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "together") {
+		t.Fatalf("a CA without the server cert/key must be refused, got %v", err)
+	}
+	t.Setenv("ADMIN_TLS_CERT", "/srv.pem")
+	t.Setenv("ADMIN_TLS_KEY", "/srv.key")
+	c, err := Load()
+	if err != nil || len(c.AdminClientCerts) != 1 || c.AdminClientCerts[0].CN != "terraform" || !c.HasAdminGate() {
+		t.Fatalf("a mapping with mTLS is a gate: %+v %v", c, err)
+	}
+	for _, bad := range []string{
+		`[{"cn":"a","uri":"spiffe://x"}]`,
+		`[{"scope":"platform"}]`,
+		`[{"cn":"a","scope":"issuer"}]`,
+		`[{"cn":"a","scope":"galaxy"}]`,
+		`[{"cn":"a","issuer":"https://x"}]`,
+		`[{"cn":"a","bogus":1}]`,
+	} {
+		t.Setenv("ADMIN_CLIENT_CERTS", bad)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "ADMIN_CLIENT_CERTS") {
+			t.Errorf("%s must be refused, got %v", bad, err)
+		}
+	}
+	t.Setenv("ADMIN_CLIENT_CERTS", `[{"uri":"spiffe://acme/ci","scope":"issuer","issuer":"https://idp"}]`)
+	if c, err = Load(); err != nil || c.AdminClientCerts[0].Issuer != "https://idp" {
+		t.Fatalf("scope issuer: %v", err)
+	}
+	t.Setenv("ADMIN_LISTEN_ADDR", "")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "ADMIN_LISTEN_ADDR") {
+		t.Fatalf("mTLS needs the admin listener, got %v", err)
+	}
+}

@@ -471,8 +471,19 @@ at all — can live in the database instead of `JWT_ISSUERS`
   "scope":"platform"}}` — or the single-issuer shorthand `ADMIN_ROLE`.
   Management is **scoped per tenant**: an admin binding manages its own
   issuer unless `scope: platform`; `GET /pgauthz/v1/issuers` shows a caller
-  its own issuer only. See
+  its own issuer only. For machines — CI, a Terraform runner — put mTLS on
+  the admin listener (`ADMIN_TLS_CERT` / `ADMIN_TLS_KEY` /
+  `ADMIN_CLIENT_CA`) and map their client certificates with
+  `ADMIN_CLIENT_CERTS` (`cn`, SAN `uri` or full `subject` → scope): a
+  verified certificate is the credential, no token, and the audit names it
+  (`cert:…`). Issue those certificates short-lived from an internal CA or a
+  mesh: Go verifies chains, not revocation lists. People keep using
+  tokens, so the audit names a person. See
   [pgauthzd/README.md → Admin API](../pgauthzd/README.md#admin-api-full-profile-admin_api_enabled).
+- **`pgauthzctl` over the admin API** (`--server` with `--token` or
+  `--cert/--key`) is the long-run way to operate: no database credentials
+  outside the cluster, the actor is the credential's. `--dsn` stays for
+  installation-time work and break-glass.
 - **Checklist:** keep `REQUIRE_STORE_BINDING=true` — the environment's
   binding is the ceiling a row narrows within, so an issuer unbound in the
   environment stays unbound unless a row binds it; give the admin identity

@@ -47,7 +47,7 @@ check_fails() {
 cleanup() {
     psqlq "DO \$\$ BEGIN PERFORM authz.delete_store('ctl_it_tenant'); EXCEPTION WHEN OTHERS THEN NULL; END \$\$;" >/dev/null 2>&1 || true
     psqlq "DELETE FROM authz.model_registry WHERE name = 'ctl_it_model';" >/dev/null 2>&1 || true
-    psqlq "DELETE FROM authz.issuer_bindings WHERE issuer LIKE 'https://ctl-it.example/%';" >/dev/null 2>&1 || true
+    psqlq "DELETE FROM authz.issuer_bindings WHERE issuer LIKE 'https://ctl-it.example/%' OR description = 'ctl-it over the admin API';" >/dev/null 2>&1 || true
     rm -f /tmp/ctl-it-issuers.json /tmp/ctl-it-issuers-2.json
 }
 trap cleanup EXIT
@@ -136,6 +136,45 @@ check "the audit trail names the actor"     sh -c "docker exec -i '$DB_CONTAINER
 check_fails "issuers import refuses a bad pattern (the engine's validation)"     sh -c "echo '{\"bindings\":[{\"issuer\":\"https://ctl-it.example/a\",\"stores\":[\"ctl_(\"],\"enabled\":true}]}' > /tmp/ctl-it-issuers-2.json && '$CTL' issuers import /tmp/ctl-it-issuers-2.json"
 check "issuers delete drops the row"     sh -c "'$CTL' issuers delete https://ctl-it.example/a | grep -q '^deleted'"
 check_fails "issuers delete of a missing row exits non-zero"     "$CTL" issuers delete https://ctl-it.example/a
+
+# The same verbs over the admin API (the long-run transport): the demo
+# stack serves it on :8096 behind ADMIN_ROLE=pgauthz_admin; a token of the
+# demo issuer with that role is the credential, and the audit names it.
+ADMIN_URL="${PGAUTHZD_ADMIN_URL:-http://localhost:8096}"
+if curl -sf "$ADMIN_URL/livez" >/dev/null 2>&1; then
+    echo ""
+    echo "==> Running pgauthzctl issuers checks over the admin API ($ADMIN_URL)..."
+    echo ""
+    # shellcheck source=lib/make-token.sh
+    source "$SCRIPT_DIR/lib/make-token.sh"
+    export PGAUTHZ_SERVER="$ADMIN_URL"
+    export PGAUTHZ_TOKEN
+    PGAUTHZ_TOKEN=$(make_token ctl-ops internal_user '["pgauthz_admin"]')
+    cat > /tmp/ctl-it-issuers.json <<'JSON'
+{"bindings": [
+  {"issuer": "https://auth.example.com", "stores": ["demo", "todo", "gdrive", "aia_acme", "agents", "fourq", "authzen_cert", "console.*"], "db_roles": [], "client_db_roles": {}, "pep_clients": {}, "enabled": true, "description": "ctl-it over the admin API"}
+]}
+JSON
+    echo '{"bindings":[{"issuer":"https://ctl-it.example/api","stores":["x"],"enabled":true}]}' > /tmp/ctl-it-issuers-2.json
+    check "api: issuers list answers with the revision" \
+        sh -c "'$CTL' issuers list | grep -q '^revision '"
+    check "api: an untrusted issuer is refused by the daemon (cannot add trust)" \
+        sh -c "'$CTL' issuers import /tmp/ctl-it-issuers-2.json 2>&1 | grep -q 'cannot add trust'"
+    check "api: issuers import binds the demo issuer (a narrowing row)" \
+        sh -c "'$CTL' issuers import /tmp/ctl-it-issuers.json | grep -q 'applied over the admin API: 1 created'"
+    check "api: the audit names the token's subject, not a flag" \
+        sh -c "docker exec -i '$DB_CONTAINER' psql -Atq -U authz -d authz -c \"SELECT performed_by FROM authz.list_issuer_bindings_audit('https://auth.example.com', 1)\" | grep -q '^internal_user:ctl-ops\$'"
+    check "api: issuers export round-trips" \
+        sh -c "'$CTL' issuers export --out /tmp/ctl-it-issuers-2.json && '$CTL' issuers import /tmp/ctl-it-issuers-2.json | grep -q '^no changes'"
+    check "api: issuers delete restores the environment binding" \
+        sh -c "'$CTL' issuers delete https://auth.example.com | grep -q '^deleted'"
+    check_fails "api: a token without the admin role is refused (403)" \
+        sh -c "PGAUTHZ_TOKEN=\$(make_token ctl-nobody internal_user '[]') '$CTL' issuers list"
+    unset PGAUTHZ_SERVER PGAUTHZ_TOKEN
+else
+    echo ""
+    echo "==> Admin API not served at $ADMIN_URL — the API-mode issuers checks are skipped"
+fi
 
 echo ""
 echo "==> $pass_count passed, $fail_count failed (of $total checks)"

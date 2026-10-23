@@ -7,6 +7,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/subtle"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -74,7 +75,8 @@ const (
 	ctxDetail
 	ctxOnBehalfOf
 	ctxClient
-	ctxClaims // the verified claims (the admin gate reads scopes and claim values)
+	ctxClaims     // the verified claims (the admin gate reads scopes and claim values)
+	ctxClientCert // the verified client certificate (*x509.Certificate) of a token-less admin call
 )
 
 // onBehalfOf is the token subject a delegated actor acts for (ACTOR_CLAIM).
@@ -210,6 +212,10 @@ type JWTConfig struct {
 	// (ISSUERS_SOURCE=env+db); the middleware then reads it instead of
 	// building its own from Issuers.
 	Set *Issuers
+	// AllowClientCert lets a request without a token through when the
+	// listener verified a client certificate (the admin listener's mTLS);
+	// the admin gate then matches the certificate (ADMIN_CLIENT_CERTS).
+	AllowClientCert bool
 
 	JWKSURL            string
 	JWKSFile           string // Alternative: load JWKS from a local file
@@ -287,6 +293,15 @@ func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
+			// A client certificate the listener verified (mTLS with
+			// RequireAndVerifyClientCert — the admin listener) is a
+			// credential of its own: the request goes on without a token,
+			// and the admin gate decides from the certificate's identity.
+			// Routes that need a token subject still refuse (no subject).
+			if m.cfg.AllowClientCert && r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxClientCert, r.TLS.PeerCertificates[0])))
+				return
+			}
 			metrics.JWTFailures.WithLabelValues("missing").Inc()
 			writeUnauthorized(w)
 			return
@@ -822,4 +837,13 @@ func claimValues(claims jwt.MapClaims, path string) map[string]bool {
 		}
 	}
 	return out
+}
+
+// ClientCertFromContext returns the client certificate the listener
+// verified for a token-less request (the admin listener under mTLS), or nil.
+func ClientCertFromContext(ctx context.Context) *x509.Certificate {
+	if c, ok := ctx.Value(ctxClientCert).(*x509.Certificate); ok {
+		return c
+	}
+	return nil
 }

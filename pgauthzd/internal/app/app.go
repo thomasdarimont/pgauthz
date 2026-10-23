@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -238,8 +239,16 @@ func Run(name, version string) error {
 		}
 		if cfg.AdminListenAddr != "" {
 			hAdm := api.NewHandler(nil, raw, rawWrite, cfg, dlogOpt, verOpt, issOpt)
-			servers = append(servers, newServer(cfg, cfg.AdminListenAddr, api.NewAdminRouter(hAdm, jwtMW)))
-			slog.Info("admin API listener", "addr", cfg.AdminListenAddr, "gate", adminGateLabel(cfg))
+			admSrv := newServer(cfg, cfg.AdminListenAddr, api.NewAdminRouter(hAdm, jwtMW))
+			tlsCfg, terr := mtlsConfig(cfg.AdminTLSCert, cfg.AdminTLSKey, cfg.AdminClientCA, "admin")
+			if terr != nil {
+				return terr
+			}
+			if tlsCfg != nil {
+				admSrv.TLSConfig = tlsCfg
+			}
+			servers = append(servers, admSrv)
+			slog.Info("admin API listener", "addr", cfg.AdminListenAddr, "gate", adminGateLabel(cfg), "mtls", tlsCfg != nil)
 		} else {
 			slog.Info("admin API on the public listener", "prefix", "/pgauthz/v1/admin/", "gate", adminGateLabel(cfg))
 		}
@@ -325,23 +334,30 @@ func Run(name, version string) error {
 // verifies a client certificate chained to the CA — so only the OPA sidecar
 // holding a matching cert can connect. This layers under the service token.
 func internalTLSConfig(cfg *config.Config) (*tls.Config, error) {
-	if cfg.InternalTLSCert == "" && cfg.InternalTLSKey == "" && cfg.InternalClientCA == "" {
-		return nil, nil // plain HTTP — fine for same-pod/localhost or mesh-provided mTLS
+	return mtlsConfig(cfg.InternalTLSCert, cfg.InternalTLSKey, cfg.InternalClientCA, "internal")
+}
+
+// mtlsConfig builds a require-and-verify client-certificate TLS config for
+// a listener (the internal callback, the admin API), or nil when none of
+// the three settings is set.
+func mtlsConfig(certFile, keyFile, caFile, listener string) (*tls.Config, error) {
+	if certFile == "" && keyFile == "" && caFile == "" {
+		return nil, nil
 	}
-	if cfg.InternalTLSCert == "" || cfg.InternalTLSKey == "" || cfg.InternalClientCA == "" {
-		return nil, fmt.Errorf("internal-listener mTLS requires INTERNAL_TLS_CERT, INTERNAL_TLS_KEY, and INTERNAL_CLIENT_CA together")
+	if certFile == "" || keyFile == "" || caFile == "" {
+		return nil, fmt.Errorf("%s-listener mTLS requires %s_TLS_CERT, %s_TLS_KEY, and %s_CLIENT_CA together", listener, strings.ToUpper(listener), strings.ToUpper(listener), strings.ToUpper(listener))
 	}
-	serverCert, err := tls.LoadX509KeyPair(cfg.InternalTLSCert, cfg.InternalTLSKey)
+	serverCert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
-		return nil, fmt.Errorf("loading internal TLS server cert/key: %w", err)
+		return nil, fmt.Errorf("loading %s TLS server cert/key: %w", listener, err)
 	}
-	caPEM, err := os.ReadFile(cfg.InternalClientCA)
+	caPEM, err := os.ReadFile(caFile)
 	if err != nil {
-		return nil, fmt.Errorf("reading internal client CA: %w", err)
+		return nil, fmt.Errorf("reading %s client CA: %w", listener, err)
 	}
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(caPEM) {
-		return nil, fmt.Errorf("internal client CA %q contains no valid certificates", cfg.InternalClientCA)
+		return nil, fmt.Errorf("%s client CA %q contains no valid certificates", listener, caFile)
 	}
 	return &tls.Config{
 		Certificates: []tls.Certificate{serverCert},
@@ -612,12 +628,15 @@ func adminGateLabel(cfg *config.Config) string {
 			n++
 		}
 	}
-	switch {
-	case n > 0 && cfg.AdminRole != "":
-		return fmt.Sprintf("%d issuer admin binding(s) + ADMIN_ROLE", n)
-	case n > 0:
-		return fmt.Sprintf("%d issuer admin binding(s)", n)
-	default:
-		return "ADMIN_ROLE"
+	var parts []string
+	if n > 0 {
+		parts = append(parts, fmt.Sprintf("%d issuer admin binding(s)", n))
 	}
+	if cfg.AdminRole != "" {
+		parts = append(parts, "ADMIN_ROLE")
+	}
+	if len(cfg.AdminClientCerts) > 0 {
+		parts = append(parts, fmt.Sprintf("%d client certificate mapping(s)", len(cfg.AdminClientCerts)))
+	}
+	return strings.Join(parts, " + ")
 }

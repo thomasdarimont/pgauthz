@@ -2,9 +2,13 @@ package api
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -328,5 +332,89 @@ func TestClaimValues(t *testing.T) {
 	json.NewEncoder(&b).Encode(claims)
 	if ClaimsFromContext(context.Background()) != nil {
 		t.Fatal("no claims without a token")
+	}
+}
+
+// A client certificate the listener verified is a credential of its own:
+// the JWT middleware lets the token-less request through, the gate maps it
+// by cn / uri / subject to a scope, and writes are recorded as cert:<id>.
+func TestAdminGateClientCertificate(t *testing.T) {
+	h, stub := adminFixture(t)
+	h.cfg.AdminClientCA = "/ca.pem" // set in the config; the TLS layer is the app's
+	h.cfg.AdminClientCerts = []config.AdminClientCert{
+		{CN: "terraform", Scope: "platform"},
+		{URI: "spiffe://acme/ci/tenant-a", Scope: "issuer", Issuer: "https://tenant-a"},
+		{Subject: "CN=auditor,O=acme"},
+	}
+	cert := func(cn string, org []string, uris ...string) *x509.Certificate {
+		c := &x509.Certificate{Subject: pkix.Name{CommonName: cn, Organization: org}}
+		for _, u := range uris {
+			parsed, _ := url.Parse(u)
+			c.URIs = append(c.URIs, parsed)
+		}
+		return c
+	}
+	withCert := func(c *x509.Certificate, method, target, body string) *http.Request {
+		r := httptest.NewRequest(method, target, strings.NewReader(body))
+		return r.WithContext(context.WithValue(r.Context(), ctxClientCert, c))
+	}
+
+	// cn → platform
+	scope, err := h.adminGate(withCert(cert("terraform", nil), "GET", "/", ""))
+	if err != nil || !scope.platform {
+		t.Fatalf("cn mapping: %+v %v", scope, err)
+	}
+	// uri → one tenant
+	scope, err = h.adminGate(withCert(cert("ci", nil, "spiffe://acme/ci/tenant-a"), "GET", "/", ""))
+	if err != nil || scope.platform || scope.issuer != "https://tenant-a" {
+		t.Fatalf("uri mapping: %+v %v", scope, err)
+	}
+	// full subject → platform (the default scope)
+	scope, err = h.adminGate(withCert(cert("auditor", []string{"acme"}), "GET", "/", ""))
+	if err != nil || !scope.platform {
+		t.Fatalf("subject mapping: %+v %v", scope, err)
+	}
+	// an unmapped certificate is refused, and never falls back to the token gate
+	if _, err := h.adminGate(withCert(cert("stranger", nil), "GET", "/", "")); err == nil || !strings.Contains(err.Error(), "not mapped") {
+		t.Fatalf("unmapped: %v", err)
+	}
+
+	// a tenant certificate manages its own issuer only; the actor is the certificate
+	w := do(h, h.adminSetIssuerBinding, withCert(cert("ci", nil, "spiffe://acme/ci/tenant-a"), "PUT", "/pgauthz/v1/admin/issuer-bindings",
+		`{"issuer":"https://tenant-a","stores":["a_docs"],"enabled":true}`))
+	if w.Code != 200 || stub.by[len(stub.by)-1] != "cert:spiffe://acme/ci/tenant-a" {
+		t.Fatalf("tenant cert write: %d %s (by %v)", w.Code, w.Body.String(), stub.by)
+	}
+	w = do(h, h.adminSetIssuerBinding, withCert(cert("ci", nil, "spiffe://acme/ci/tenant-a"), "PUT", "/pgauthz/v1/admin/issuer-bindings",
+		`{"issuer":"https://tenant-b","stores":["b_docs"],"enabled":true}`))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("tenant cert reaching another tenant: %d", w.Code)
+	}
+	w = do(h, h.adminIssuerBindings, withCert(cert("terraform", nil), "GET", "/pgauthz/v1/admin/issuer-bindings", ""))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "tenant-b") {
+		t.Fatalf("platform cert reads every binding: %d %s", w.Code, w.Body.String())
+	}
+
+	// the middleware: a token-less request passes only with AllowClientCert and a peer certificate
+	mw := NewJWTMiddleware(JWTConfig{Set: h.issuers, AllowClientCert: true})
+	seen := false
+	next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { seen = ClientCertFromContext(r.Context()) != nil })
+	r := httptest.NewRequest("GET", "/pgauthz/v1/admin/issuers", nil)
+	r.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert("terraform", nil)}}
+	rec := httptest.NewRecorder()
+	mw.Middleware(next).ServeHTTP(rec, r)
+	if rec.Code != 200 || !seen {
+		t.Fatalf("verified certificate without a token: %d seen=%v", rec.Code, seen)
+	}
+	rec = httptest.NewRecorder()
+	mw.Middleware(next).ServeHTTP(rec, httptest.NewRequest("GET", "/pgauthz/v1/admin/issuers", nil))
+	if rec.Code != 401 {
+		t.Fatalf("no certificate, no token: %d", rec.Code)
+	}
+	mw = NewJWTMiddleware(JWTConfig{Set: h.issuers}) // the public listener never accepts a certificate as a credential
+	rec = httptest.NewRecorder()
+	mw.Middleware(next).ServeHTTP(rec, r)
+	if rec.Code != 401 {
+		t.Fatalf("certificate on a listener without AllowClientCert: %d", rec.Code)
 	}
 }

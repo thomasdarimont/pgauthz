@@ -426,6 +426,18 @@ type Config struct {
 	AdminAPIEnabled bool
 	AdminListenAddr string
 	AdminRole       string
+	// mTLS on the admin listener (ADMIN_TLS_CERT / ADMIN_TLS_KEY /
+	// ADMIN_CLIENT_CA, all three together, ADMIN_LISTEN_ADDR required): the
+	// listener terminates TLS and REQUIRES a client certificate chained to
+	// the CA. A verified certificate is a credential of its own — no token
+	// — when ADMIN_CLIENT_CERTS maps its identity to an admin scope:
+	// machine identities (CI, Terraform runners) without an identity
+	// provider round trip. Humans keep using tokens, so the audit names a
+	// person. Trust anchors, like JWT_ISSUERS: never the database's.
+	AdminTLSCert     string
+	AdminTLSKey      string
+	AdminClientCA    string
+	AdminClientCerts []AdminClientCert
 
 	// Tracing (TRACING): "auto" (default — on only when the OTEL_* environment
 	// configures an OTLP exporter), "on" (propagation + spans, exported when
@@ -539,6 +551,9 @@ func Load() (*Config, error) {
 		AdminAPIEnabled:               envBool("ADMIN_API_ENABLED", false),
 		AdminListenAddr:               env("ADMIN_LISTEN_ADDR", ""),
 		AdminRole:                     env("ADMIN_ROLE", ""),
+		AdminTLSCert:                  env("ADMIN_TLS_CERT", ""),
+		AdminTLSKey:                   env("ADMIN_TLS_KEY", ""),
+		AdminClientCA:                 env("ADMIN_CLIENT_CA", ""),
 		IssuersSource:                 strings.ToLower(env("ISSUERS_SOURCE", "env")),
 		IssuersPollInterval:           envInt("ISSUERS_POLL_INTERVAL", 30),
 		IssuersRequiredRole:           env("ISSUERS_REQUIRED_ROLE", ""),
@@ -688,12 +703,53 @@ func Load() (*Config, error) {
 	if c.PublicHealthDisabled && c.MetricsListenAddr == "" {
 		return nil, fmt.Errorf("PUBLIC_HEALTH_ENABLED=false needs a management listener for the probes: set MANAGEMENT_LISTEN_ADDR")
 	}
+	if raw := strings.TrimSpace(env("ADMIN_CLIENT_CERTS", "")); raw != "" {
+		dec := json.NewDecoder(strings.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&c.AdminClientCerts); err != nil {
+			return nil, fmt.Errorf("ADMIN_CLIENT_CERTS: %w (expected a JSON array of {subject|cn|uri, scope: platform|issuer, issuer})", err)
+		}
+		for i, e := range c.AdminClientCerts {
+			n := 0
+			for _, v := range []string{e.Subject, e.CN, e.URI} {
+				if strings.TrimSpace(v) != "" {
+					n++
+				}
+			}
+			if n != 1 {
+				return nil, fmt.Errorf("ADMIN_CLIENT_CERTS[%d]: exactly one of subject, cn or uri identifies the certificate", i)
+			}
+			switch e.Scope {
+			case "", issuers.AdminScopePlatform:
+				if e.Issuer != "" {
+					return nil, fmt.Errorf("ADMIN_CLIENT_CERTS[%d]: issuer is only for scope issuer", i)
+				}
+			case issuers.AdminScopeIssuer:
+				if strings.TrimSpace(e.Issuer) == "" {
+					return nil, fmt.Errorf("ADMIN_CLIENT_CERTS[%d]: scope issuer needs the issuer it manages", i)
+				}
+			default:
+				return nil, fmt.Errorf("ADMIN_CLIENT_CERTS[%d]: scope %q: expected platform (default) or issuer", i, e.Scope)
+			}
+		}
+		if c.AdminClientCA == "" {
+			return nil, fmt.Errorf("ADMIN_CLIENT_CERTS needs ADMIN_CLIENT_CA (the CA the admin listener verifies client certificates against)")
+		}
+	}
+	if c.AdminTLSCert != "" || c.AdminTLSKey != "" || c.AdminClientCA != "" {
+		if c.AdminTLSCert == "" || c.AdminTLSKey == "" || c.AdminClientCA == "" {
+			return nil, fmt.Errorf("admin-listener mTLS requires ADMIN_TLS_CERT, ADMIN_TLS_KEY and ADMIN_CLIENT_CA together")
+		}
+		if !c.AdminAPIEnabled || c.AdminListenAddr == "" {
+			return nil, fmt.Errorf("admin-listener mTLS needs ADMIN_API_ENABLED=true and its own listener (ADMIN_LISTEN_ADDR): the public listener cannot require client certificates")
+		}
+	}
 	if c.AdminAPIEnabled {
 		if c.Profile != ProfileFull && c.Profile != "" {
 			return nil, fmt.Errorf("ADMIN_API_ENABLED=true needs the full profile (a decision-only instance never serves management)")
 		}
 		if !c.HasAdminGate() {
-			return nil, fmt.Errorf("ADMIN_API_ENABLED=true needs an admin gate: an issuer with an \"admin\" binding in JWT_ISSUERS (scopes / claims / clients) or ADMIN_ROLE")
+			return nil, fmt.Errorf("ADMIN_API_ENABLED=true needs an admin gate: an issuer with an \"admin\" binding in JWT_ISSUERS (scopes / claims / clients), ADMIN_ROLE, or ADMIN_CLIENT_CERTS with mTLS")
 		}
 		if c.IsProduction() && c.AdminListenAddr == "" {
 			log.Printf("WARNING: ADMIN_API_ENABLED=true on the PUBLIC listener of a production instance — set ADMIN_LISTEN_ADDR and keep that listener reachable by management clients only")
@@ -993,10 +1049,26 @@ func (c *Config) FreshnessEnabled() bool {
 	return len(c.FreshnessKeys) > 0
 }
 
-// HasAdminGate reports whether any token could pass the admin gate: an
-// issuer with an admin binding, or ADMIN_ROLE.
+// AdminClientCert maps a client certificate the admin listener verified
+// (ADMIN_CLIENT_CA) to what it may manage — one JSON entry of
+// ADMIN_CLIENT_CERTS: {"subject": "CN=terraform,O=acme"} (the certificate
+// subject, RFC 2253 as Go prints it) or {"cn": "terraform"} (the common
+// name alone) or {"uri": "spiffe://acme/ci/terraform"} (a SAN URI, what a
+// mesh issues), plus "scope": "platform" (every issuer; the default for a
+// certificate, since a machine credential is the operator's) or "issuer"
+// with "issuer": "<iss>" (that tenant's binding only).
+type AdminClientCert struct {
+	Subject string `json:"subject,omitempty"`
+	CN      string `json:"cn,omitempty"`
+	URI     string `json:"uri,omitempty"`
+	Scope   string `json:"scope,omitempty"`
+	Issuer  string `json:"issuer,omitempty"`
+}
+
+// HasAdminGate reports whether any credential could pass the admin gate: an
+// issuer with an admin binding, ADMIN_ROLE, or a client-certificate mapping.
 func (c *Config) HasAdminGate() bool {
-	if c.AdminRole != "" {
+	if c.AdminRole != "" || len(c.AdminClientCerts) > 0 {
 		return true
 	}
 	for _, iss := range c.Issuers {

@@ -84,6 +84,18 @@ pre-1.0, minor versions may include breaking changes.
   endpoints) instead of just the outcome; Reset clears every filter back to
   the window; Refresh reloads it. A test pins that every filter value
   reaches SQL as a bound argument.
+- **Client certificates as an admin credential, and pgauthzctl over the
+  admin API.** `ADMIN_TLS_CERT` / `ADMIN_TLS_KEY` / `ADMIN_CLIENT_CA` put
+  mTLS on the admin listener; `ADMIN_CLIENT_CERTS` maps a verified
+  certificate (`cn`, SAN `uri` or full `subject`) to an admin scope, so a
+  machine identity — CI, a Terraform runner — manages without a token and
+  the audit names the certificate (`cert:spiffe://…`). pgauthzctl gains
+  `--server` / `PGAUTHZ_SERVER` with `--token` or `--cert/--key` (`--ca`):
+  the `issuers` verbs run over the admin API, the actor being the
+  credential's; `--dsn` stays for installation-time work, `model test` and
+  the verbs without an endpoint yet, and is on its way out for routine
+  operations. `tests/test-pgauthzctl.sh` covers the API mode against the
+  demo stack; `tests/lib/make-token.sh` is the shared token helper.
 - **`pgauthzctl issuers list | export | import [--prune] [--dry-run] |
   delete`**: the issuer bindings as a JSON file in git, imported as an
   upsert in one transaction (the engine validates; `--prune` drops rows the

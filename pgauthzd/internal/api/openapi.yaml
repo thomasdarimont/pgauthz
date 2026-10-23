@@ -73,7 +73,9 @@ tags:
       serves none of these routes, and this document omits them). Every call
       passes the admin gate: the token's issuer carries an `admin` binding in
       `JWT_ISSUERS` whose scopes / claims / clients the token satisfies, or the
-      token holds `ADMIN_ROLE`. Management is scoped per tenant: an issuer's
+      token holds `ADMIN_ROLE` — or, on an admin listener with mTLS, the
+      verified client certificate is mapped by `ADMIN_CLIENT_CERTS` and the
+      call carries no token at all. Management is scoped per tenant: an issuer's
       admin binding manages that issuer's own binding (`scope: issuer`, the
       default); only `scope: platform` (and `ADMIN_ROLE`) reaches every
       issuer. Writes are recorded with the token's subject and client.

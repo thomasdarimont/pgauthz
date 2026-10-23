@@ -29,17 +29,30 @@ from. Like the authzen binaries, the version is stamped at build time
 
 ## Connection
 
-`--dsn` or `PGAUTHZ_DSN`, e.g. the dev stack:
+Two transports. **The admin API** of a pgauthzd (`ADMIN_API_ENABLED`,
+[ADR 0016](../docs/adr/0016-issuer-bindings-and-admin-api.md)) is the
+long-run one — no database credentials on laptops or in pipelines, the gate
+and the audit are pgauthzd's, and the actor recorded is whoever
+authenticated:
 
 ```bash
-export PGAUTHZ_DSN=postgres://authz:authz@localhost:55433/authz
+# a person: a token of the admin identity provider
+export PGAUTHZ_SERVER=https://pgauthz-admin.example:8082
+export PGAUTHZ_TOKEN=$(…)                         # or --token
+# a machine (CI, a Terraform runner): a client certificate the admin
+# listener's mTLS verifies and ADMIN_CLIENT_CERTS maps to a scope
+pgauthzctl issuers list --server https://pgauthz-admin.example:8082 \
+    --cert ci.crt --key ci.key --ca admin-ca.crt
 ```
 
-pgauthzctl is an **operator/CI tool** in the same trust tier as psql — model
-and registry operations are admin-by-design (deliberately not exposed via
-the OPA front door). `plan`, `diff`, `export`, `status`, `versions` and
-`rollout` work with a reader-grade DSN; `import`, `publish`, `apply` and
-`test` need admin (store creation / model writes).
+Today the `issuers` verbs run over it; the `model` verbs follow as their
+admin endpoints land. **The direct database connection** (`--dsn` or
+`PGAUTHZ_DSN`, e.g. `postgres://authz:authz@localhost:55433/authz`) stays
+for installation-time work, `model test` (ephemeral stores), break-glass,
+and the verbs without an endpoint yet — the same trust tier as psql. It is
+on its way out for routine operations. `plan`, `diff`, `export`, `status`,
+`versions`, `rollout`, `issuers list` and `issuers export` work with a
+reader-grade DSN; the rest needs admin.
 
 ## Lifecycle
 
@@ -91,10 +104,12 @@ Issuers use. Validation is the engine's (anchored patterns, PEP clients
 within stores); a row for an issuer no instance trusts, or one that widens
 the environment's `stores`, is stored but reported and ignored by the
 instances (their logs, `pgauthzd_issuers_reloads_total{result="rejected"}`,
-the console's *not applied* badge). `list` / `export` need a reader DSN,
-`import` / `delete` the admin tier (`authz_admin`); every write is recorded
-in `authz.issuer_bindings_audit` with `--performed-by` (default
-`pgauthzctl`).
+the console's *not applied* badge). Over the admin API (`--server`) a write is recorded
+with the credential's identity (`internal_user:alice`, `cert:spiffe://…`)
+and an import is one PUT per issuer, in order, stopping at the first
+refusal; over `--dsn` it is one transaction recorded as `--performed-by`
+(default `pgauthzctl`), `list` / `export` need a reader DSN and `import` /
+`delete` the admin tier (`authz_admin`).
 
 ## Test fixtures (`tests.authz.yaml`)
 

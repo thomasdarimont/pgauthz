@@ -331,8 +331,10 @@ func Run(ctx context.Context, opts Options) *Report {
 	switch {
 	case !cfg.AdminAPIEnabled:
 		add("admin api", StatusSkip, "off (ADMIN_API_ENABLED=false): this instance cannot be managed over HTTP")
+	case cfg.AdminListenAddr != "" && cfg.AdminClientCA != "":
+		add("admin api", StatusOK, fmt.Sprintf("on, own listener %s under /pgauthz/v1/admin/ with mTLS (client certificates chained to ADMIN_CLIENT_CA; %d mapped as admin credentials)", cfg.AdminListenAddr, len(cfg.AdminClientCerts)))
 	case cfg.AdminListenAddr != "":
-		add("admin api", StatusOK, "on, own listener "+cfg.AdminListenAddr+" under /pgauthz/v1/admin/ (keep it reachable by management clients only)")
+		add("admin api", StatusOK, "on, own listener "+cfg.AdminListenAddr+" under /pgauthz/v1/admin/ (keep it reachable by management clients only; ADMIN_TLS_* + ADMIN_CLIENT_CA for mTLS)")
 	case prod:
 		add("admin api", StatusWarn, "on the PUBLIC listener of a production instance under /pgauthz/v1/admin/ — set ADMIN_LISTEN_ADDR")
 	default:

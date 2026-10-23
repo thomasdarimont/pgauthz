@@ -570,6 +570,8 @@ All configuration is via environment variables.
 | `ADMIN_API_ENABLED` | `false` | Serve the [admin API](#admin-api-full-profile-admin_api_enabled) (`/pgauthz/v1/admin/…`). `full` profile only, DB role holding `authz_admin` (`pgauthzd_admin`, asserted at startup), and a gate: an issuer with an `admin` binding or `ADMIN_ROLE` — enabled without one is a startup error |
 | `ADMIN_LISTEN_ADDR` | | Serve the admin API on its own listener (recommended; production warns without it) — the public listener then has no `/admin/` route and its OpenAPI document omits them. Health probes are served there too |
 | `ADMIN_ROLE` | | Single-issuer shorthand for the admin gate: a role (`JWT_ROLES_CLAIM`) the token must hold; platform scope (every issuer) |
+| `ADMIN_TLS_CERT` / `ADMIN_TLS_KEY` / `ADMIN_CLIENT_CA` | | mTLS on the admin listener (all three; needs `ADMIN_LISTEN_ADDR`): the listener terminates TLS and **requires** a client certificate chained to the CA. A verified certificate is a credential of its own when `ADMIN_CLIENT_CERTS` maps it |
+| `ADMIN_CLIENT_CERTS` | | JSON array mapping verified client certificates to admin scopes: `[{"cn":"terraform","scope":"platform"},{"uri":"spiffe://acme/ci/tenant-a","scope":"issuer","issuer":"https://idp.tenant-a"}]` (`subject` for the full RFC 2253 subject). The certificate's identity (SAN URI, else subject) is the recorded actor (`cert:…`). For machine identities — CI, Terraform runners; people keep using tokens |
 | `TRACING` | `auto` | **OpenTelemetry master switch.** `auto`: tracing is on only when the `OTEL_*` environment configures an OTLP exporter — so it is **off by default**; `on`: propagation and spans even without an exporter (a caller's `traceparent` reaches the decision log); `off`: nothing — no header read, no span, no ids on the log line. Off means the untraced code path: no handler wrapper, no query tracer, no OPA transport wrapper |
 | `TRACING_IDENTIFIERS` | `false` | Put subject and resource **ids** on the decision span (`pgauthz.subject`, `pgauthz.resource`). Default: the **types** only (`pgauthz.subject.type`, `pgauthz.resource.type`) — a tracing backend is usually shared more widely than the decision log, which keeps the ids and is joined by `trace_id` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | | Set it (or `OTEL_TRACES_EXPORTER=otlp`) and pgauthzd exports spans over OTLP: one server span per request (health probes excluded), one `pgauthz.<endpoint>` span per decision with `pgauthz.store`, `.subject`, `.action`, `.resource`, `.decision`, `.state`, `.reason`, `.client`, a client span per engine query named after the `authz.*` function it calls (statement text and parameter count, never the arguments), and a client span per OPA call; the request's own span carries `pgauthz.store`, so traces are queried by store without parsing paths. The other standard variables apply as the SDK defines them: `OTEL_EXPORTER_OTLP_PROTOCOL` (`http/protobuf`, default, or `grpc`), `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME` (default `pgauthzd`), `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER` / `_ARG`; `OTEL_TRACES_EXPORTER=none` disables export. With tracing on, W3C `traceparent` and B3 are honoured and forwarded, exporter or not: the decision log's `trace_id` / `span_id` join a line to the application's trace, and `X-Request-ID` defaults to the trace id. Demo: `./start.sh --tracing` adds a Jaeger (`compose-tracing.yml`) and points every instance at it |
@@ -770,7 +772,14 @@ as the decision paths) that passes the admin gate:
   `client_id`) listed when clients are. An empty admin binding is refused
   (it would admit every token of the issuer). The database never grants
   management: admin bindings are the environment's;
-- or — the single-issuer shorthand — the token holds **`ADMIN_ROLE`**.
+- or — the single-issuer shorthand — the token holds **`ADMIN_ROLE`**;
+- or, on an admin listener with **mTLS** (`ADMIN_TLS_CERT/KEY` +
+  `ADMIN_CLIENT_CA`), the call carries no token and the verified **client
+  certificate** is mapped by `ADMIN_CLIENT_CERTS` (`cn`, `uri` or full
+  `subject` → `scope`). That is the credential for machines — `pgauthzctl
+  --server … --cert/--key`, a Terraform runner — where an identity-provider
+  round trip is unwanted or not yet possible (bootstrap). Revocation is the
+  CA's: Go verifies chains, not CRLs, so issue short-lived certificates.
 
 **Multi-tenancy: scoped management.** A fleet trusts one identity provider per
 tenant, each bound to its stores; a tenant must never see or touch another's.

@@ -77,6 +77,19 @@ shape (PUT as upsert, read-back), so a Terraform provider can be generated
 from the OpenAPI document and every console management feature gets its
 endpoint here.
 
+**Machines authenticate with certificates (added 2026-10-24).** The admin
+listener can terminate mTLS (`ADMIN_TLS_CERT/KEY`, `ADMIN_CLIENT_CA`); a
+verified client certificate mapped by `ADMIN_CLIENT_CERTS` (`cn`, SAN `uri`
+or full `subject` → `scope`) is a credential of its own — no token — and
+its identity is the recorded actor (`cert:…`). This is the credential for
+CI and Terraform runners, and for bootstrap before an admin identity
+provider is bound; people keep using tokens so the audit names a person.
+The mapping is the environment's, like the admin bindings. Revocation is
+the CA's (short-lived certificates); the public listener never accepts a
+certificate as a credential. `pgauthzctl --server` uses either; the direct
+database connection is kept for installation-time work and break-glass and
+is on its way out for routine operations.
+
 **Three ways to manage, one truth.** The console's Platform → Issuers tab
 (writes through SQL as the person; reads the set in force over the
 callback), the admin API (tokens of a trusted admin identity provider),

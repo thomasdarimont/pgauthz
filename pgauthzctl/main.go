@@ -45,9 +45,17 @@ pgauthzd running ISSUERS_SOURCE=env+db (trust itself stays in JWT_ISSUERS):
 Further command groups (tuple, store, watch, ...) are planned.
 
 Connection:
-  --dsn or PGAUTHZ_DSN (e.g. postgres://authz:authz@localhost:55433/authz)
-  Most verbs need admin; plan/diff/export/status/versions/rollout and
-  issuers list/export work with a reader DSN.
+  --server or PGAUTHZ_SERVER: pgauthzd's admin API (the long-run transport,
+    ADMIN_API_ENABLED on a full instance), with --token / PGAUTHZ_TOKEN (a
+    bearer token of the admin identity provider) or --cert/--key /
+    PGAUTHZ_CLIENT_CERT/_KEY (a client certificate the admin listener's mTLS
+    maps) and --ca / PGAUTHZ_CA; the audit names the credential. Today the
+    issuers verbs run over it; the model verbs follow as their endpoints land.
+  --dsn or PGAUTHZ_DSN (e.g. postgres://authz:authz@localhost:55433/authz):
+    the direct database connection — installation-time work, model test,
+    break-glass, and the verbs without an admin endpoint yet. Most need
+    admin; plan/diff/export/status/versions/rollout and issuers list/export
+    work with a reader DSN.
 `
 
 func main() {

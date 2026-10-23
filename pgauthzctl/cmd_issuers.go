@@ -13,7 +13,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -21,6 +23,130 @@ import (
 
 	"github.com/jackc/pgx/v5"
 )
+
+// issuerStore is what the verbs need: the rows and their revision, an
+// upsert, a delete — over the admin API (the long-run transport) or the
+// database (installation-time, break-glass).
+type issuerStore interface {
+	list(ctx context.Context) ([]issuerBinding, int64, error)
+	set(ctx context.Context, b issuerBinding, performedBy string) (int64, error)
+	delete(ctx context.Context, issuer, performedBy string) (bool, error)
+	close(ctx context.Context)
+}
+
+// openIssuerStore picks the transport: --server wins; else --dsn.
+func openIssuerStore(ctx context.Context, sf serverFlags, dsn string) (issuerStore, error) {
+	if sf.set() {
+		c, err := newAdminClient(sf)
+		if err != nil {
+			return nil, err
+		}
+		return &apiIssuerStore{c: c}, nil
+	}
+	conn, err := connect(ctx, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("%w — or use the admin API: --server (PGAUTHZ_SERVER) with --token or --cert/--key", err)
+	}
+	return &dbIssuerStore{conn: conn}, nil
+}
+
+// dbIssuerStore runs the engine's functions on a connection (or, inside an
+// import, on its transaction: q is the executor).
+type dbIssuerStore struct {
+	conn *pgx.Conn
+	q    interface {
+		QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	}
+}
+
+func (s *dbIssuerStore) exec() interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+} {
+	if s.q != nil {
+		return s.q
+	}
+	return s.conn
+}
+
+func (s *dbIssuerStore) list(ctx context.Context) ([]issuerBinding, int64, error) {
+	rows, err := readIssuerBindings(ctx, s.conn)
+	if err != nil {
+		return nil, 0, err
+	}
+	var rev int64
+	if err := s.conn.QueryRow(ctx, `SELECT authz.issuer_bindings_revision()`).Scan(&rev); err != nil {
+		return nil, 0, err
+	}
+	return rows, rev, nil
+}
+
+func (s *dbIssuerStore) set(ctx context.Context, b issuerBinding, by string) (int64, error) {
+	cdr, _ := json.Marshal(b.ClientDBRoles)
+	pep, _ := json.Marshal(b.PEPClients)
+	var desc any
+	if b.Description != "" {
+		desc = b.Description
+	}
+	var rev int64
+	err := s.exec().QueryRow(ctx, `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8)`,
+		b.Issuer, b.Stores, b.DBRoles, string(cdr), string(pep), b.Enabled, desc, by).Scan(&rev)
+	return rev, err
+}
+
+func (s *dbIssuerStore) delete(ctx context.Context, issuer, by string) (bool, error) {
+	var existed bool
+	err := s.exec().QueryRow(ctx, `SELECT authz.delete_issuer_binding($1, $2)`, issuer, by).Scan(&existed)
+	return existed, err
+}
+
+func (s *dbIssuerStore) close(ctx context.Context) { s.conn.Close(ctx) }
+
+// apiIssuerStore: the admin API's issuer-bindings resource. The actor is the
+// credential's; performedBy is not sent.
+type apiIssuerStore struct{ c *adminClient }
+
+func (s *apiIssuerStore) list(ctx context.Context) ([]issuerBinding, int64, error) {
+	var rows struct {
+		Bindings []issuerBinding `json:"bindings"`
+	}
+	if err := s.c.do(ctx, "GET", "/pgauthz/v1/admin/issuer-bindings", nil, &rows); err != nil {
+		return nil, 0, err
+	}
+	var eff struct {
+		Revision int64 `json:"revision"`
+	}
+	if err := s.c.do(ctx, "GET", "/pgauthz/v1/admin/issuers", nil, &eff); err != nil {
+		return nil, 0, err
+	}
+	out := make([]issuerBinding, 0, len(rows.Bindings))
+	for _, b := range rows.Bindings {
+		out = append(out, normalizeBinding(b))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Issuer < out[j].Issuer })
+	return out, eff.Revision, nil
+}
+
+func (s *apiIssuerStore) set(ctx context.Context, b issuerBinding, _ string) (int64, error) {
+	var res struct {
+		Revision int64 `json:"revision"`
+	}
+	b.CreatedAt, b.CreatedBy, b.UpdatedAt, b.UpdatedBy = nil, "", nil, ""
+	if err := s.c.do(ctx, "PUT", "/pgauthz/v1/admin/issuer-bindings", b, &res); err != nil {
+		return 0, err
+	}
+	return res.Revision, nil
+}
+
+func (s *apiIssuerStore) delete(ctx context.Context, issuer, _ string) (bool, error) {
+	err := s.c.do(ctx, "DELETE", "/pgauthz/v1/admin/issuer-bindings?issuer="+url.QueryEscape(issuer), nil, nil)
+	var ae *apiError
+	if errors.As(err, &ae) && ae.Status == 404 {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (s *apiIssuerStore) close(context.Context) {}
 
 // issuerBinding is one row, the JSON shape of the export file (the same
 // fields the admin API and the console use).
@@ -85,20 +211,17 @@ func sameBinding(a, b issuerBinding) bool {
 
 func cmdIssuersList(args []string) error {
 	fs, dsn := newFlags("issuers list")
+	sf := newServerFlags(fs)
 	asJSON := fs.Bool("json", false, "print the rows as JSON (the export shape)")
 	parseAll(fs, args)
 	ctx := context.Background()
-	conn, err := connect(ctx, *dsn)
+	st, err := openIssuerStore(ctx, sf, *dsn)
 	if err != nil {
 		return err
 	}
-	defer conn.Close(ctx)
-	rows, err := readIssuerBindings(ctx, conn)
+	defer st.close(ctx)
+	rows, rev, err := st.list(ctx)
 	if err != nil {
-		return err
-	}
-	var rev int64
-	if err := conn.QueryRow(ctx, `SELECT authz.issuer_bindings_revision()`).Scan(&rev); err != nil {
 		return err
 	}
 	if *asJSON {
@@ -142,15 +265,16 @@ func fmtTime(t *time.Time) string {
 // cmdIssuersExport — the rows as a JSON file: the thing to keep in git.
 func cmdIssuersExport(args []string) error {
 	fs, dsn := newFlags("issuers export")
+	sf := newServerFlags(fs)
 	out := fs.String("out", "", "write to this file instead of stdout")
 	parseAll(fs, args)
 	ctx := context.Background()
-	conn, err := connect(ctx, *dsn)
+	st, err := openIssuerStore(ctx, sf, *dsn)
 	if err != nil {
 		return err
 	}
-	defer conn.Close(ctx)
-	rows, err := readIssuerBindings(ctx, conn)
+	defer st.close(ctx)
+	rows, _, err := st.list(ctx)
 	if err != nil {
 		return err
 	}
@@ -170,9 +294,10 @@ func cmdIssuersExport(args []string) error {
 // rows the file does not name; --dry-run only says what would change.
 func cmdIssuersImport(args []string) error {
 	fs, dsn := newFlags("issuers import")
+	sf := newServerFlags(fs)
 	prune := fs.Bool("prune", false, "delete the bindings the file does not name")
 	dryRun := fs.Bool("dry-run", false, "report the changes without applying them")
-	by := fs.String("performed-by", "pgauthzctl", "recorded as the actor in the audit trail")
+	by := fs.String("performed-by", "pgauthzctl", "recorded as the actor in the audit trail (--dsn only; over the admin API the actor is the credential's)")
 	pos := parseAll(fs, args)
 	if len(pos) != 1 {
 		return fmt.Errorf("usage: pgauthzctl issuers import <bindings.json> [--prune] [--dry-run] [--performed-by <who>]")
@@ -204,12 +329,12 @@ func cmdIssuersImport(args []string) error {
 	}
 
 	ctx := context.Background()
-	conn, err := connect(ctx, *dsn)
+	st, err := openIssuerStore(ctx, sf, *dsn)
 	if err != nil {
 		return err
 	}
-	defer conn.Close(ctx)
-	have, err := readIssuerBindings(ctx, conn)
+	defer st.close(ctx)
+	have, _, err := st.list(ctx)
 	if err != nil {
 		return err
 	}
@@ -255,40 +380,49 @@ func cmdIssuersImport(args []string) error {
 		return nil
 	}
 
-	// one transaction: the fleet sees the whole file or nothing
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return err
+	// over the database: one transaction, the fleet sees the whole file or
+	// nothing; over the admin API: one PUT / DELETE per issuer, in order,
+	// stopping at the first refusal (what was applied before it stays)
+	writer := st
+	var commit func() error
+	if db, ok := st.(*dbIssuerStore); ok {
+		tx, err := db.conn.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		writer = &dbIssuerStore{conn: db.conn, q: tx}
+		commit = func() error { return tx.Commit(ctx) }
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
 	var rev int64
+	done := 0
 	for _, iss := range append(append([]string{}, creates...), updates...) {
-		b := want[iss]
-		cdr, _ := json.Marshal(b.ClientDBRoles)
-		pep, _ := json.Marshal(b.PEPClients)
-		var desc any
-		if b.Description != "" {
-			desc = b.Description
+		r, err := writer.set(ctx, want[iss], *by)
+		if err != nil {
+			return fmt.Errorf("%s: %w (%d change(s) before it: %s)", iss, err, done, map[bool]string{true: "rolled back", false: "applied"}[commit != nil])
 		}
-		if err := tx.QueryRow(ctx, `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8)`,
-			b.Issuer, b.Stores, b.DBRoles, string(cdr), string(pep), b.Enabled, desc, *by).Scan(&rev); err != nil {
-			return fmt.Errorf("%s: %w", iss, err)
-		}
+		rev, done = r, done+1
 	}
 	for _, iss := range deletes {
-		var existed bool
-		if err := tx.QueryRow(ctx, `SELECT authz.delete_issuer_binding($1, $2)`, iss, *by).Scan(&existed); err != nil {
-			return fmt.Errorf("%s: %w", iss, err)
+		if _, err := writer.delete(ctx, iss, *by); err != nil {
+			return fmt.Errorf("%s: %w (%d change(s) before it: %s)", iss, err, done, map[bool]string{true: "rolled back", false: "applied"}[commit != nil])
+		}
+		done++
+	}
+	if commit != nil {
+		if err := commit(); err != nil {
+			return err
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
 	if rev == 0 {
-		_ = conn.QueryRow(ctx, `SELECT authz.issuer_bindings_revision()`).Scan(&rev)
+		_, rev, _ = st.list(ctx)
 	}
-	fmt.Printf("applied: %d created, %d updated, %d deleted, %d unchanged — revision %d (every ISSUERS_SOURCE=env+db instance applies it within its poll interval)\n",
-		len(creates), len(updates), len(deletes), unchanged, rev)
+	how := "over the admin API"
+	if commit != nil {
+		how = "in one transaction"
+	}
+	fmt.Printf("applied %s: %d created, %d updated, %d deleted, %d unchanged — revision %d (every ISSUERS_SOURCE=env+db instance applies it within its poll interval)\n",
+		how, len(creates), len(updates), len(deletes), unchanged, rev)
 	return nil
 }
 
@@ -296,19 +430,20 @@ func cmdIssuersImport(args []string) error {
 // environment bindings.
 func cmdIssuersDelete(args []string) error {
 	fs, dsn := newFlags("issuers delete")
-	by := fs.String("performed-by", "pgauthzctl", "recorded as the actor in the audit trail")
+	sf := newServerFlags(fs)
+	by := fs.String("performed-by", "pgauthzctl", "recorded as the actor in the audit trail (--dsn only)")
 	pos := parseAll(fs, args)
 	if len(pos) != 1 {
-		return fmt.Errorf("usage: pgauthzctl issuers delete <issuer> [--performed-by <who>]")
+		return fmt.Errorf("usage: pgauthzctl issuers delete <issuer> [--server … | --dsn …] [--performed-by <who>]")
 	}
 	ctx := context.Background()
-	conn, err := connect(ctx, *dsn)
+	st, err := openIssuerStore(ctx, sf, *dsn)
 	if err != nil {
 		return err
 	}
-	defer conn.Close(ctx)
-	var existed bool
-	if err := conn.QueryRow(ctx, `SELECT authz.delete_issuer_binding($1, $2)`, pos[0], *by).Scan(&existed); err != nil {
+	defer st.close(ctx)
+	existed, err := st.delete(ctx, pos[0], *by)
+	if err != nil {
 		return err
 	}
 	if !existed {

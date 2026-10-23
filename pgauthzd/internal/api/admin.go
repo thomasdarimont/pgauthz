@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 
+	"crypto/x509"
+	"thomasdarimont.de/authz/pgauthzd/internal/config"
 	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
 	"thomasdarimont.de/authz/pgauthzd/pkg/issuers"
 )
@@ -46,11 +48,26 @@ type adminScope struct {
 
 func (s adminScope) covers(issuer string) bool { return s.platform || issuer == s.issuer }
 
-// adminGate decides whether the request's token may manage, and what.
+// adminGate decides whether the request's credential may manage, and what:
+// a token passing its issuer's admin binding or ADMIN_ROLE, or — on the
+// mTLS admin listener — a client certificate mapped by ADMIN_CLIENT_CERTS.
 func (h *Handler) adminGate(r *http.Request) (adminScope, error) {
+	if cert := ClientCertFromContext(r.Context()); cert != nil {
+		if h.cfg != nil {
+			for _, e := range h.cfg.AdminClientCerts {
+				if certMatches(cert, e) {
+					if e.Scope == issuers.AdminScopeIssuer {
+						return adminScope{issuer: e.Issuer}, nil
+					}
+					return adminScope{platform: true, issuer: ""}, nil
+				}
+			}
+		}
+		return adminScope{}, errors.New("the client certificate " + certIdentity(cert) + " is not mapped to an admin scope (ADMIN_CLIENT_CERTS)")
+	}
 	iss := IssuerFromContext(r.Context())
 	if iss == "" {
-		return adminScope{}, errors.New("management needs a verified token of an issuer with an admin binding")
+		return adminScope{}, errors.New("management needs a verified token of an issuer with an admin binding, or a mapped client certificate")
 	}
 	var reasons []string
 	if ab := h.issuers.Current().admin[iss]; ab != nil {
@@ -71,6 +88,33 @@ func (h *Handler) adminGate(r *http.Request) (adminScope, error) {
 		reasons = append(reasons, "the token does not hold the admin role (ADMIN_ROLE)")
 	}
 	return adminScope{}, errors.New(strings.Join(reasons, "; "))
+}
+
+// certMatches: the entry names the certificate by its full subject (RFC
+// 2253 as Go prints it), its common name, or a SAN URI.
+func certMatches(cert *x509.Certificate, e config.AdminClientCert) bool {
+	switch {
+	case e.Subject != "":
+		return cert.Subject.String() == e.Subject
+	case e.CN != "":
+		return cert.Subject.CommonName == e.CN
+	case e.URI != "":
+		for _, u := range cert.URIs {
+			if u.String() == e.URI {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// certIdentity names a certificate for the audit trail and the logs: the
+// first SAN URI when there is one (a mesh identity), else the subject.
+func certIdentity(cert *x509.Certificate) string {
+	if len(cert.URIs) > 0 {
+		return cert.URIs[0].String()
+	}
+	return cert.Subject.String()
 }
 
 // requireAdmin writes the 403 and says why; the scope when the caller may manage.
@@ -304,6 +348,9 @@ func (h *Handler) adminDeleteIssuerBinding(w http.ResponseWriter, r *http.Reques
 // actorLabel is who a management write is recorded as: the token's subject,
 // and its client when it has one.
 func actorLabel(r *http.Request) string {
+	if cert := ClientCertFromContext(r.Context()); cert != nil {
+		return "cert:" + certIdentity(cert)
+	}
 	st, sid := SubjectFromContext(r.Context())
 	label := ""
 	if sid != "" {
@@ -338,12 +385,19 @@ func registerAdmin(mux *http.ServeMux, h *Handler) {
 
 // NewAdminRouter is the dedicated admin listener (ADMIN_LISTEN_ADDR): the
 // management routes and the health probes, behind the same JWT middleware
-// as the public listener (the admin gate is per route), without CORS.
+// as the public listener (the admin gate is per route), without CORS. Under
+// mTLS a verified client certificate passes the middleware without a token
+// (AllowClientCert) and the gate matches it against ADMIN_CLIENT_CERTS.
 func NewAdminRouter(h *Handler, jwtMW *JWTMiddleware) http.Handler {
 	h.listener = "admin"
 	mux := newAdminMux(h)
 	var handler http.Handler = spanNamed(mux)
 	handler = MaxBody(h.cfg.HTTPMaxBodyBytes)(handler)
+	if h.cfg.AdminClientCA != "" {
+		cfg := jwtMW.cfg
+		cfg.AllowClientCert = true
+		jwtMW = &JWTMiddleware{cfg: cfg, set: jwtMW.set}
+	}
 	handler = jwtMW.Middleware(handler)
 	handler = RequestID(handler)
 	handler = Logging(handler)
