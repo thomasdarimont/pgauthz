@@ -801,6 +801,12 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- **Go 1.27.3** across every module (`pgauthzd`, `pgauthzadm`, `pgauthzctl`,
+  `console/backend`, `conformance`, `playground/backend` — the last three
+  were still on 1.26) and the three `golang:1.27.3-alpine` builder images;
+  CI reads the version from `pgauthzd/go.mod`. `go mod tidy` on pgauthzd
+  swapped one indirect module (`rogpeppe/go-internal` in,
+  `go.yaml.in/yaml/v2` out).
 - **Derived permissions: userset and object-reference deltas expand through
   the engine; the snapshot is the blast radius of every tuple.** Characterizing
   the worker on the 50 k-user `drive` store (BENCHMARKS.md addendum

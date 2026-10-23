@@ -1,7 +1,7 @@
 # Build context is the REPO ROOT (see compose-console.yml) because the backend
 # depends on the sibling module pgauthzadm/ via a go.mod replace directive. The
 # image bundles the Go BFF and the Lit SPA (frontend/) into one container.
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27.3-alpine AS builder
 # compose passes --build-arg VERSION=<tag> (compose-console.yml); dev otherwise.
 ARG VERSION=dev
 ARG REVISION=

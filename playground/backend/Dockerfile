@@ -1,6 +1,6 @@
 # Build context is ./playground (see compose) so the image can bundle BOTH the Go
 # backend (backend/) and the SPA (frontend/) into one self-contained container.
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27.3-alpine AS builder
 WORKDIR /src
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download

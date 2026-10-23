@@ -1,6 +1,6 @@
 module thomasdarimont.de/authz/conformance
 
-go 1.27.1
+go 1.27.3
 
 require (
 	github.com/moby/moby/api v1.55.0
