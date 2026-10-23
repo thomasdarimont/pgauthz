@@ -115,6 +115,22 @@ test('filters narrow the list and the summary, and a top-list entry narrows by c
   await expect(tid(page, 'decisions-subject')).toHaveValue('user:bob');
   await expect(tid(page, 'decisions-outcome')).toHaveValue('deny');
   await expect(tid(page, 'decisions-row')).toHaveCount(10);
+
+  // a reason narrows too, and Reset clears every filter back to the window
+  await tid(page, 'decisions-reset').click();
+  await expect(tid(page, 'decisions-subject')).toHaveValue('');
+  await expect(tid(page, 'decisions-outcome')).toHaveValue('');
+  await expect(tid(page, 'decisions-reset')).toBeDisabled();
+  await expect(tid(page, 'decisions-summary').getByRole('heading', { level: 3 })).toHaveText(
+    '30 decision(s)',
+  );
+  await tid(page, 'decisions-summary').getByRole('link', { name: 'no_matching_rule' }).click();
+  await expect(tid(page, 'decisions-reason')).toHaveValue('no_matching_rule');
+  await expect(tid(page, 'decisions-row')).toHaveCount(10);
+  await tid(page, 'decisions-refresh').click();
+  await expect(tid(page, 'decisions-row')).toHaveCount(10);
+  await tid(page, 'decisions-reset').click();
+  await expect(tid(page, 'decisions-row')).toHaveCount(25);
 });
 
 test('a trace id finds its line, and the detail shows the trace', async ({ page }) => {

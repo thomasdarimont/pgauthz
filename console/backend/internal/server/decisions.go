@@ -65,6 +65,7 @@ type decisionFilter struct {
 	subject, resource       string // type:id, or a bare id
 	action, outcome, listen string
 	endpoint, actor, client string
+	reason                  string
 	trace                   string // OpenTelemetry trace id
 	from, to                time.Time
 }
@@ -74,7 +75,7 @@ func parseDecisionFilter(r *http.Request, store string) (decisionFilter, error) 
 	f := decisionFilter{store: store, subject: strings.TrimSpace(q.Get("subject")), resource: strings.TrimSpace(q.Get("resource")),
 		action: strings.TrimSpace(q.Get("action")), outcome: q.Get("outcome"), listen: q.Get("listener"),
 		endpoint: q.Get("endpoint"), actor: strings.TrimSpace(q.Get("actor")), client: strings.TrimSpace(q.Get("client")),
-		trace: strings.ToLower(strings.TrimSpace(q.Get("trace")))}
+		reason: strings.TrimSpace(q.Get("reason")), trace: strings.ToLower(strings.TrimSpace(q.Get("trace")))}
 	switch f.outcome {
 	case "", "allow", "deny", "conditional", "error":
 	default:
@@ -93,6 +94,11 @@ func parseDecisionFilter(r *http.Request, store string) (decisionFilter, error) 
 }
 
 // where renders the filter as SQL conditions with positional arguments.
+// The SQL text is assembled from string constants in THIS function only —
+// column names, operators, the `?` placeholders that `add` turns into $n —
+// and every request value travels as a bound argument, never into the text.
+// Keep it that way: a caller-controlled column or operator would be an
+// injection (TestDecisionsFilterIsParameterised pins the contract).
 func (f decisionFilter) where() (string, []any) {
 	conds := []string{"store = $1"}
 	args := []any{f.store}
@@ -131,6 +137,9 @@ func (f decisionFilter) where() (string, []any) {
 	if f.client != "" {
 		add("client = ?", f.client)
 	}
+	if f.reason != "" {
+		add("coalesce(reason, '') = ?", f.reason)
+	}
 	if f.trace != "" {
 		add("trace_id = ?", f.trace)
 	}
@@ -159,7 +168,7 @@ const decisionColumns = `id, ts, coalesce(request_id,''), coalesce(trace_id,''),
 	coalesce(latency_ms, 0), coalesce(error,''), line`
 
 // handleDecisions — GET .../decisions?subject=&resource=&action=&outcome=
-// &listener=&endpoint=&actor=&client=&from=&to=&limit=&before=<ts>,<id>:
+// &listener=&endpoint=&actor=&client=&reason=&from=&to=&limit=&before=<ts>,<id>:
 // the newest decisions first, paged by keyset.
 func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {
 	p, store := s.requireStore(w, r, "can_view_decisions")

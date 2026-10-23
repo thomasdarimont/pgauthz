@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -148,6 +151,12 @@ func TestDecisionsHTTP(t *testing.T) {
 	if _, m := get("?client=mail-app", owner); len(rowsOf(m)) != 2 {
 		t.Errorf("client filter: %v", m)
 	}
+	if _, m := get("?reason=no_matching_rule", owner); len(rowsOf(m)) == 0 {
+		t.Errorf("reason filter: %v", m)
+	}
+	if _, m := get("?reason=nope", owner); len(rowsOf(m)) != 0 {
+		t.Errorf("reason filter (no match): %v", m)
+	}
 	// keyset paging: 2 + 2 + 1
 	_, m = get("?limit=2", owner)
 	if len(rowsOf(m)) != 2 || m["next"] == "" {
@@ -179,5 +188,32 @@ func TestDecisionsHTTP(t *testing.T) {
 	}
 	if code, _ := get("/summary", tester); code != 403 {
 		t.Errorf("tester summary: %d", code)
+	}
+}
+
+// The decision filters reach the SQL as bound arguments only: a value
+// shaped like an injection matches nothing and breaks nothing, and the
+// rendered text carries no request value.
+func TestDecisionsFilterIsParameterised(t *testing.T) {
+	hostile := "' OR 1=1 -- "
+	q := url.Values{}
+	for _, k := range []string{"subject", "resource", "action", "client", "reason", "actor", "listener", "endpoint", "trace"} {
+		q.Set(k, hostile)
+	}
+	f, err := parseDecisionFilter(httptest.NewRequest("GET", "/?"+q.Encode(), nil), "s\"; DROP TABLE x; --")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cond, args := f.where()
+	if strings.Contains(cond, "OR 1=1") || strings.Contains(cond, "DROP") || strings.Contains(cond, hostile) {
+		t.Fatalf("a request value reached the SQL text: %s", cond)
+	}
+	if n := strings.Count(cond, "$"); n != len(args) {
+		t.Fatalf("%d placeholders for %d arguments: %s", n, len(args), cond)
+	}
+	for i := range args {
+		if !strings.Contains(cond, "$"+strconv.Itoa(i+1)) {
+			t.Fatalf("argument %d is not referenced: %s", i+1, cond)
+		}
 	}
 }

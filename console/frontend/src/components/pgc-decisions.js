@@ -24,6 +24,7 @@ export class PgcDecisions extends PgcElement {
     client: { state: true },
     trace: { state: true },
     outcome: { state: true },
+    reason: { state: true },
     range: { state: true },
     open: { state: true },
     limit: { state: true }, // rows per page
@@ -53,6 +54,7 @@ export class PgcDecisions extends PgcElement {
     this.client = '';
     this.trace = '';
     this.outcome = '';
+    this.reason = '';
     this.range = '24h';
     this.open = null;
     this.limit = 25;
@@ -75,6 +77,7 @@ export class PgcDecisions extends PgcElement {
     if (this.client.trim()) p.client = this.client.trim();
     if (this.trace.trim()) p.trace = this.trace.trim();
     if (this.outcome) p.outcome = this.outcome;
+    if (this.reason.trim()) p.reason = this.reason.trim();
     const ms = PgcDecisions.RANGES.find(([k]) => k === this.range)?.[1] ?? 0;
     if (ms) p.from = new Date(Date.now() - ms).toISOString();
     return p;
@@ -186,6 +189,32 @@ export class PgcDecisions extends PgcElement {
     void this._load();
   }
 
+  // Back to the whole window: every filter cleared.
+  _reset() {
+    Object.assign(this, {
+      subject: '',
+      resource: '',
+      action: '',
+      client: '',
+      trace: '',
+      outcome: '',
+      reason: '',
+    });
+    void this._load();
+  }
+
+  _filtered() {
+    return !!(
+      this.subject ||
+      this.resource ||
+      this.action ||
+      this.client ||
+      this.trace ||
+      this.outcome ||
+      this.reason
+    );
+  }
+
   // Hands the line to the Test tab: the same question explained now, or
   // replayed at the instant it was decided (audit_check_access).
   _toTest(row, at) {
@@ -290,6 +319,15 @@ export class PgcDecisions extends PgcElement {
             @input=${(e) => (this.client = e.target.value)}
         /></label>
         <label
+          >${t('Reason')}
+          <input
+            class="mono"
+            placeholder="no_matching_rule"
+            data-testid="decisions-reason"
+            .value=${this.reason}
+            @input=${(e) => (this.reason = e.target.value)}
+        /></label>
+        <label
           >${t('Trace')}
           <input
             class="mono"
@@ -313,6 +351,25 @@ export class PgcDecisions extends PgcElement {
           </select></label
         >
         <button class="primary" ?disabled=${this.busy} data-testid="decisions-search">${t('Search')}</button>
+        <button
+          type="button"
+          class="sm"
+          ?disabled=${this.busy || !this._filtered()}
+          data-testid="decisions-reset"
+          @click=${() => this._reset()}
+        >
+          ${t('Reset')}
+        </button>
+        <button
+          type="button"
+          class="sm"
+          ?disabled=${this.busy}
+          title=${t('Reload the window with the same filters')}
+          data-testid="decisions-refresh"
+          @click=${() => this._load()}
+        >
+          ↻ ${t('Refresh')}
+        </button>
       </div>
       <span class="help"
         >${t("A subject or resource is type:id, or a bare id; the client is the application (the token's azp); the trace is an OpenTelemetry trace id; the window is the time of the decision.")}</span
@@ -356,10 +413,10 @@ export class PgcDecisions extends PgcElement {
         </div>
       </div>
       <div class="top-lists">
-        ${list(t('Denied: by reason'), s.denied_reasons, () => ({ outcome: 'deny' }))}
+        ${list(t('Denied: by reason'), s.denied_reasons, (k) => ({ outcome: 'deny', reason: k }))}
         ${list(t('Denied: by action'), s.denied_actions, (k) => ({ outcome: 'deny', action: k }))}
         ${list(t('Denied: by subject'), s.denied_subjects, (k) => ({ outcome: 'deny', subject: k }))}
-        ${list(t('Allowed: by reason'), s.allowed_reasons, () => ({ outcome: 'allow' }))}
+        ${list(t('Allowed: by reason'), s.allowed_reasons, (k) => ({ outcome: 'allow', reason: k }))}
         ${list(t('Denied: by client'), s.denied_clients ?? [], (k) => ({ outcome: 'deny', client: k }))}
       </div>
       ${help("The window divided by outcome, and what lies behind the denials: the engine's reason, the action asked for, the subject refused. Click an entry to narrow the list to it.")}

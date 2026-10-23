@@ -48,6 +48,11 @@ pre-1.0, minor versions may include breaking changes.
   `doctor` reports the admin API; compose/Helm (`admin.*`) and the demo
   stack (`:8096`, `ADMIN_ROLE=pgauthz_admin`) wire it; `tests/test-authzen.sh`
   covers the gate, the scope, narrowing and the fleet applying a PUT.
+- **Console Decisions tab: reason filter, Reset, Refresh.** A clicked
+  "by reason" entry now narrows to that reason (`reason=` on both decisions
+  endpoints) instead of just the outcome; Reset clears every filter back to
+  the window; Refresh reloads it. A test pins that every filter value
+  reaches SQL as a bound argument.
 - **Console: Platform → Issuers** (`platform#can_manage_issuers`): the
   fleet's issuer bindings — create, edit (the engine validates; a replace
   keeps `created_by`), pause (`enabled`), remove with confirmation, the

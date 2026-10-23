@@ -1075,5 +1075,6 @@
   "Who": "Wer",
   "Which identity providers the instances trust is their configuration (JWT_ISSUERS: issuer, audience, keys). What a trusted issuer's tokens may do here — the stores they reach, the DB roles they may claim, which clients may assert subjects, whether they are accepted at all — is decided here, for every instance running ISSUERS_SOURCE=env+db, without a restart. A row can narrow an issuer's reach, never widen it or add trust.": "Welchen Identity Providern die Instanzen vertrauen, ist ihre Konfiguration (JWT_ISSUERS: Issuer, Audience, Schlüssel). Was die Tokens eines vertrauten Identity Providers hier dürfen — welche Stores sie erreichen, welche DB-Rollen sie beanspruchen, welche Clients Subjekte behaupten dürfen, ob sie überhaupt akzeptiert werden — wird hier entschieden, für jede Instanz mit ISSUERS_SOURCE=env+db, ohne Neustart. Eine Zeile kann die Reichweite eines Identity Providers einengen, nie erweitern oder Vertrauen hinzufügen.",
   "Every change to the bindings (authz.issuer_bindings_audit), newest first: the row as it was after the change, or before a removal.": "Jede Änderung an den Bindungen (authz.issuer_bindings_audit), neueste zuerst: die Zeile nach der Änderung bzw. vor dem Entfernen.",
-  "No changes recorded yet.": "Noch keine Änderungen aufgezeichnet."
+  "No changes recorded yet.": "Noch keine Änderungen aufgezeichnet.",
+  "Reload the window with the same filters": "Das Zeitfenster mit denselben Filtern neu laden"
 }
