@@ -1,0 +1,132 @@
+# Demo scenarios for the demo model (an advisory firm: engagements,
+# assignments, internal and client data spaces) — paste into the console's
+# Store → Test → Scenarios editor of a store running this model and Run.
+# Hermetic: the run creates an ephemeral store with the store's current model
+# and ONLY these tuples (nothing of the store's data takes part).
+# CLI: pgauthzctl model test scenarios.authz.yaml --store demo
+tuples:
+  # teams and the client organisation
+  - user: internal_user:alice
+    relation: member
+    object: team:payroll_team
+  - user: client_user:carol
+    relation: member
+    object: client_org:acme
+  # the engagement: advisor, assistant, client
+  - user: internal_user:bob
+    relation: advisor
+    object: engagement:eng_42
+  - user: internal_user:julia
+    relation: assistant
+    object: engagement:eng_42
+  - user: client_org:acme
+    relation: client
+    object: engagement:eng_42
+  # the payroll assignment, staffed by the payroll team
+  - user: engagement:eng_42
+    relation: parent_engagement
+    object: assignment:eng_42_payroll
+  - user: team:payroll_team#member
+    relation: payroll_clerk
+    object: assignment:eng_42_payroll
+  # internal data spaces: payroll (under the assignment) and tax (engagement only)
+  - user: assignment:eng_42_payroll
+    relation: parent_assignment
+    object: internal_data_space:eng_42_payroll_internal
+  - user: engagement:eng_42
+    relation: parent_engagement
+    object: internal_data_space:eng_42_payroll_internal
+  - user: engagement:eng_42
+    relation: parent_engagement
+    object: internal_data_space:eng_42_tax_internal
+  # the client data space
+  - user: engagement:eng_42
+    relation: parent_engagement
+    object: client_data_space:eng_42_client
+  - user: client_org:acme
+    relation: client_org
+    object: client_data_space:eng_42_client
+  - user: internal_user:julia
+    relation: direct_internal_manager
+    object: client_data_space:eng_42_client
+  # documents in the spaces, an auditor over all documents
+  - user: internal_data_space:eng_42_payroll_internal
+    relation: in_internal_space
+    object: document:doc_payroll_001
+  - user: internal_data_space:eng_42_tax_internal
+    relation: in_internal_space
+    object: document:doc_tax_001
+  - user: client_data_space:eng_42_client
+    relation: in_client_space
+    object: document:doc_client_001
+  - user: internal_user:nadia_auditor
+    relation: viewer
+    object: document:*
+  # an upload request towards the client
+  - user: client_data_space:eng_42_client
+    relation: in_client_space
+    object: upload_request:req_2026_001
+  - user: client_org:acme#member
+    relation: requested_from
+    object: upload_request:req_2026_001
+  - user: internal_user:bob
+    relation: created_by
+    object: upload_request:req_2026_001
+
+tests:
+  - name: a payroll clerk works her assignment and its documents
+    check:
+      - user: internal_user:alice
+        object: assignment:eng_42_payroll
+        assertions: { can_view: true, can_edit: true, can_approve: true, can_manage_access: false }
+      - user: internal_user:alice
+        object: document:doc_payroll_001
+        assertions: { can_read: true, can_edit: true }
+      - user: internal_user:alice
+        object: document:doc_tax_001
+        assertions: { can_read: false }
+
+  - name: the advisor manages access and reaches every internal space
+    check:
+      - user: internal_user:bob
+        object: engagement:eng_42
+        assertions: { can_manage_access: true, can_view: true }
+      - user: internal_user:bob
+        object: document:doc_tax_001
+        assertions: { can_read: true, can_edit: true, can_delete: true }
+      - user: internal_user:bob
+        object: document:doc_client_001
+        assertions: { can_read: false }
+
+  - name: the client reads its own space, nothing internal
+    check:
+      - user: client_user:carol
+        object: document:doc_client_001
+        assertions: { can_read: true }
+      - user: client_user:carol
+        object: document:doc_payroll_001
+        assertions: { can_read: false }
+      - user: client_user:carol
+        object: client_data_space:eng_42_client
+        assertions: { can_view: true, can_upload: true, can_manage_sharing: false }
+
+  - name: the assistant manages client sharing
+    check:
+      - user: internal_user:julia
+        object: document:doc_client_001
+        assertions: { can_share_with_client: true, can_read: false }
+
+  - name: "an upload request: the client submits, its creator only views"
+    check:
+      - user: client_user:carol
+        object: upload_request:req_2026_001
+        assertions: { can_submit: true, can_view: true }
+      - user: internal_user:bob
+        object: upload_request:req_2026_001
+        assertions: { can_view: true, can_submit: false, can_manage: true }
+
+  - name: the auditor's wildcard reads every document
+    check:
+      - user: internal_user:nadia_auditor
+        object: document:doc_tax_001
+        assertions: { can_read: true, can_edit: false }

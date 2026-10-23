@@ -80,6 +80,7 @@ func TestFixtureValidate(t *testing.T) {
 	for name, yml := range map[string]string{
 		"neither model":       "tests: []\n",
 		"both models":         "model_file: m.fga\nmodel: saas_core@3\n",
+		"model and store":     "model: saas_core@3\nstore: gdrive\n",
 		"bad registry ref":    "model: saas_core@three\n",
 		"bad tuple user":      "model: saas_core\ntuples:\n  - user: alice\n    relation: member\n    object: group:eng\n",
 		"tuple sans relation": "model: saas_core\ntuples:\n  - user: user:alice\n    object: group:eng\n",
@@ -91,6 +92,9 @@ func TestFixtureValidate(t *testing.T) {
 	}
 	if _, err := ParseFixture([]byte("model: saas_core@3\ntests:\n  - name: t\n")); err != nil {
 		t.Errorf("registry ref fixture rejected: %v", err)
+	}
+	if _, err := ParseFixture([]byte("store: gdrive\ntests:\n  - name: t\n")); err != nil {
+		t.Errorf("live-store fixture rejected: %v", err)
 	}
 }
 

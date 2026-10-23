@@ -215,7 +215,13 @@ func RenderSQL(store string, m *Model) string {
 			if rules[i].Relation != rules[j].Relation {
 				return rules[i].Relation < rules[j].Relation
 			}
-			return rules[i].GroupID < rules[j].GroupID
+			if rules[i].GroupID != rules[j].GroupID {
+				return rules[i].GroupID < rules[j].GroupID
+			}
+			// a group's base rule before its negated ones: the engine refuses
+			// a negated rule whose group has no base yet (an exclusion with
+			// nothing to exclude from would grant everyone not excluded)
+			return !rules[i].Negated && rules[j].Negated
 		})
 		for _, r := range rules {
 			args := []string{q(store), q(r.ObjectType), q(r.Relation), q(r.RuleType)}

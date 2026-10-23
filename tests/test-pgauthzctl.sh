@@ -67,6 +67,13 @@ check "model test fixture passes (8 checks + junit)" \
     "$CTL" model test "$ROOT/pgauthzctl/testdata/tests.authz.yaml" --junit /tmp/pgauthzctl-junit.xml
 check "junit file written" test -s /tmp/pgauthzctl-junit.xml
 
+# The examples' scenarios against the live fixture stores test.sh loads
+# (--store: the store's current model, copied into the ephemeral store).
+for pair in demo:demo todo:todo gdrive:gdrive aia-acme:aia_acme agents:agents fourquestions:fourq; do
+    check "examples/models/${pair%%:*}/scenarios.authz.yaml passes against store ${pair##*:}" \
+        "$CTL" model test "$ROOT/examples/models/${pair%%:*}/scenarios.authz.yaml" --store "${pair##*:}"
+done
+
 # Lifecycle: publish v1 → apply (plan-gated) → status.
 check "publish v1 from .fga" \
     "$CTL" model publish "$ROOT/pgauthzctl/testdata/model.fga" --name ctl_it_model --message it-v1

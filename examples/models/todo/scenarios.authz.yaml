@@ -1,0 +1,66 @@
+# Demo scenarios for the todo model — paste into the console's
+# Store → Test → Scenarios editor of a store running this model and Run.
+# Hermetic: the run creates an ephemeral store with the store's current model
+# and ONLY these tuples (nothing of the store's data takes part).
+# CLI: pgauthzctl model test scenarios.authz.yaml --store todo
+tuples:
+  # the list and its roles
+  - user: user:rick
+    relation: admin
+    object: todo:todo-1
+  - user: user:rick
+    relation: evil_genius
+    object: todo:todo-1
+  - user: user:morty
+    relation: editor
+    object: todo:todo-1
+  - user: user:jerry
+    relation: viewer
+    object: todo:todo-1
+  # items belong to the list; each has an owner
+  - user: todo:todo-1
+    relation: parent
+    object: todo:item_morty
+  - user: user:morty
+    relation: owner
+    object: todo:item_morty
+  - user: todo:todo-1
+    relation: parent
+    object: todo:item_jerry
+  - user: user:jerry
+    relation: owner
+    object: todo:item_jerry
+
+tests:
+  - name: the admin manages the list
+    check:
+      - user: user:rick
+        object: todo:todo-1
+        assertions: { can_manage_todo_items: true, can_create_todo: true, can_read_todos: true }
+
+  - name: an editor manages, a viewer only reads
+    check:
+      - user: user:morty
+        object: todo:todo-1
+        assertions: { can_manage_todo_items: true, can_read_todos: true }
+      - user: user:jerry
+        object: todo:todo-1
+        assertions: { can_read_todos: true, can_manage_todo_items: false, can_create_todo: false }
+
+  - name: updating an item needs managing the list AND owning the item
+    check:
+      - user: user:morty
+        object: todo:item_morty
+        assertions: { can_update_todo: true, can_delete_todo: true }
+      - user: user:morty
+        object: todo:item_jerry
+        assertions: { can_update_todo: false }
+      - user: user:jerry
+        object: todo:item_jerry
+        assertions: { can_update_todo: false, can_delete_todo: false }
+
+  - name: the evil genius updates anything, the admin deletes anything
+    check:
+      - user: user:rick
+        object: todo:item_jerry
+        assertions: { can_update_todo: true, can_delete_todo: true }

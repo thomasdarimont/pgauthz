@@ -19,9 +19,10 @@ func cmdTest(args []string) error {
 	fs, dsn := newFlags("model test")
 	junit := fs.String("junit", "", "write JUnit XML to this path")
 	keep := fs.Bool("keep-store", false, "keep the ephemeral store for debugging")
+	liveStore := fs.String("store", "", "test a live store's current model (a fixture without model_file / model; or its store: key)")
 	pos := parseAll(fs, args)
 	if len(pos) != 1 {
-		return fmt.Errorf("usage: pgauthzctl model test <tests.authz.yaml> [--junit out.xml]")
+		return fmt.Errorf("usage: pgauthzctl model test <tests.authz.yaml> [--store <live store>] [--junit out.xml]")
 	}
 	fixPath := pos[0]
 
@@ -29,8 +30,17 @@ func cmdTest(args []string) error {
 	if err != nil {
 		return err
 	}
-	fix, err := pgauthzadm.ParseFixture(raw)
-	if err != nil {
+	var fix pgauthzadm.Fixture
+	if err := pgauthzadm.UnmarshalFixture(raw, &fix); err != nil {
+		return fmt.Errorf("%s: %w", fixPath, err)
+	}
+	if *liveStore != "" {
+		if fix.ModelFile != "" || fix.Model != "" {
+			return fmt.Errorf("--store: %s already names its model (model_file / model)", fixPath)
+		}
+		fix.Store = *liveStore
+	}
+	if err := fix.Validate(); err != nil {
 		return fmt.Errorf("%s: %w", fixPath, err)
 	}
 
@@ -56,7 +66,7 @@ func cmdTest(args []string) error {
 	}
 	defer conn.Close(ctx)
 
-	report, err := pgauthzadm.RunFixture(ctx, conn, fix, opts)
+	report, err := pgauthzadm.RunFixture(ctx, conn, &fix, opts)
 	if err != nil {
 		return err
 	}

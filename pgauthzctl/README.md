@@ -72,6 +72,7 @@ A superset of OpenFGA's store-test format; pgauthz extensions are additive
 
 ```yaml
 model_file: ./model.fga        # or: model: saas_core@3 (registry ref)
+                               # or: store: gdrive (a live store's current model)
 
 tuples:
   - user: user:alice
@@ -104,7 +105,13 @@ tests:
 
 The runner (`pgauthzadm.RunFixture`, shared with the console's Scenarios)
 creates an ephemeral store per run (hermetic, repeatable), imports the
-model, seeds the tuples, runs the assertions, and drops the store. `--junit out.xml` emits JUnit XML for CI; `--keep-store` retains the
+model, seeds the tuples, runs the assertions, and drops the store. The
+model comes from `model_file` (DSL or OpenFGA JSON), `model` (the registry)
+or `store` — a live store's current model, copied loss-free (conditions,
+gates and grant rules included, which the DSL cannot carry); a fixture
+without a model line takes the store from `--store`, which is how the
+console's saved scenarios and the examples' `scenarios.authz.yaml` run:
+`pgauthzctl model test examples/models/gdrive/scenarios.authz.yaml --store gdrive`. `--junit out.xml` emits JUnit XML for CI; `--keep-store` retains the
 store for debugging. Fixtures using `contextual_tuples` need a DSN whose
 role holds `authz_contextual_reader` (the injection API is deliberately
 gated) — a superuser test database also works.

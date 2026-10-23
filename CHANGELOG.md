@@ -26,10 +26,20 @@ pre-1.0, minor versions may include breaking changes.
   data — an export, gated and recorded as one (`can_export`), capped at
   500 tuples (`GET/PUT /api/stores/{store}/scenarios`, `POST …/run`,
   `GET …/export`; the fixture lives in the console's own database,
-  `InitSchema` adds the table). Go tests: the library's parser, validator
+  `InitSchema` adds the table). A fixture's model is one of `model_file`,
+  `model` (registry) or the new **`store`**: a live store's current model,
+  which `pgauthzctl model test --store <name>` fills in for a fixture
+  without a model line — the console and the CLI run the same file the
+  same way. Every example model ships a **`scenarios.authz.yaml`** (its
+  story as named scenarios with assertions; gates hold back what the
+  empty action log cannot prove), verified through the CLI; the CLI suite
+  runs the loaded ones. Found on the way and fixed: `RenderSQL` emitted a
+  "but not" group's negated rule before its base rule when the export
+  listed it first, which the engine's validation refuses — base rules now
+  come first within a group. Go tests: the library's parser, validator
   and JUnit writer; the endpoints through the router (refused
-  `model_file`, a tester's 403, a hermetic run, a failing assertion as a
-  result, no ephemeral store left, the export).
+  `model_file` and another store, a tester's 403, a hermetic run, a
+  failing assertion as a result, no ephemeral store left, the export).
 - **Console: the share dialog.** Data → Share…: pick an object and whom
   to act as (yourself by default); `grant_options` renders, per relation
   with a grant rule, whether that actor may grant and revoke it and who may

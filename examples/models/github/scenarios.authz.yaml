@@ -1,0 +1,68 @@
+# Demo scenarios for the github model — paste into the console's
+# Store → Test → Scenarios editor of a store running this model and Run.
+# Hermetic: the run creates an ephemeral store with the store's current model
+# and ONLY these tuples (nothing of the store's data takes part).
+# CLI: pgauthzctl model test scenarios.authz.yaml --store github
+tuples:
+  # the organisation and its people
+  - user: user:anne
+    relation: owner
+    object: organization:acme
+  - user: user:beth
+    relation: member
+    object: organization:acme
+  # every member of acme may read acme's repositories
+  - user: organization:acme#member
+    relation: repo_reader
+    object: organization:acme
+  # the repository, owned by the organisation
+  - user: organization:acme
+    relation: owner
+    object: repo:pgauthz
+  - user: user:carl
+    relation: writer
+    object: repo:pgauthz
+  # a team maintains it
+  - user: user:dan
+    relation: member
+    object: team:core
+  - user: team:core#member
+    relation: maintainer
+    object: repo:pgauthz
+
+tests:
+  - name: the org owner is a member, so a reader of every acme repo
+    check:
+      - user: user:anne
+        object: repo:pgauthz
+        assertions: { reader: true, writer: false, admin: false }
+
+  - name: a plain member reads
+    check:
+      - user: user:beth
+        object: repo:pgauthz
+        assertions: { reader: true, triager: false, writer: false }
+
+  - name: a writer triages and reads, but does not maintain
+    check:
+      - user: user:carl
+        object: repo:pgauthz
+        assertions: { writer: true, triager: true, reader: true, maintainer: false, admin: false }
+
+  - name: the maintaining team writes through its membership
+    check:
+      - user: user:dan
+        object: repo:pgauthz
+        assertions: { maintainer: true, writer: true, reader: true, admin: false }
+
+  - name: an outsider sees nothing
+    check:
+      - user: user:mallory
+        object: repo:pgauthz
+        assertions: { reader: false }
+
+  - name: which repositories carl writes
+    list_objects:
+      - user: user:carl
+        type: repo
+        assertions: { writer: [repo:pgauthz] }

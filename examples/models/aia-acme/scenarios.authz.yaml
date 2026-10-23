@@ -1,0 +1,128 @@
+# Demo scenarios for the aia-acme model (Authorization in Action's ACME as
+# ReBAC) — paste into the console's Store → Test → Scenarios editor of a
+# store running this model and Run.
+# Hermetic: the run creates an ephemeral store with the store's current model
+# and ONLY these tuples (nothing of the store's data takes part).
+# CLI: pgauthzctl model test scenarios.authz.yaml --store aia_acme
+tuples:
+  # the org chart and the teams
+  - user: employee:carol
+    relation: manager
+    object: employee:alice
+  - user: employee:bob
+    relation: employee_member
+    object: team:q3-readers
+  - user: employee:dan
+    relation: employee_member
+    object: team:legal
+  - user: customer:kate
+    relation: customer_member
+    object: team:custco-readers
+  - user: team:legal#employee_member
+    relation: reviewer
+    object: classification:legal
+  # q3-plan: alice's, confidential, shared with a team of readers and a customer team
+  - user: employee:alice
+    relation: owner
+    object: document:q3-plan
+  - user: classification:confidential
+    relation: classification
+    object: document:q3-plan
+  - user: team:q3-readers#employee_member
+    relation: employee_readers
+    object: document:q3-plan
+  - user: team:custco-readers#customer_member
+    relation: customer_readers
+    object: document:q3-plan
+  - user: employee:*
+    relation: delegatable
+    object: document:q3-plan
+  - user: employee:eve
+    relation: employee_viewer
+    object: document:q3-plan
+  # legal-review: dan's, legal, readable by the team — but restricted
+  - user: employee:dan
+    relation: owner
+    object: document:legal-review
+  - user: classification:legal
+    relation: classification
+    object: document:legal-review
+  - user: team:q3-readers#employee_member
+    relation: employee_readers
+    object: document:legal-review
+  - user: employee:*
+    relation: restricted
+    object: document:legal-review
+  # board-deck: alice's, delegatable but share-locked
+  - user: employee:alice
+    relation: owner
+    object: document:board-deck
+  - user: employee:*
+    relation: delegatable
+    object: document:board-deck
+  - user: employee:*
+    relation: share_locked
+    object: document:board-deck
+  # the global conditions, unconditional for the demo: everyone is on a
+  # managed device during business hours (the seed makes these conditional)
+  - user: employee:*
+    relation: managed_device
+    object: document:*
+  - user: employee:*
+    relation: business_hours
+    object: document:*
+
+tests:
+  - name: the owner views, edits and shares
+    check:
+      - user: employee:alice
+        object: document:q3-plan
+        assertions: { view: true, edit: true, share: true }
+
+  - name: a team reader views and may share (delegatable), but not edit
+    check:
+      - user: employee:bob
+        object: document:q3-plan
+        assertions: { view: true, share: true, edit: false }
+
+  - name: the owner's manager views and edits
+    check:
+      - user: employee:carol
+        object: document:q3-plan
+        assertions: { view: true, edit: true }
+
+  - name: a customer reader views only
+    check:
+      - user: customer:kate
+        object: document:q3-plan
+        assertions: { view: true }
+
+  - name: a viewer without delegation cannot share
+    check:
+      - user: employee:eve
+        object: document:q3-plan
+        assertions: { view: true, share: false, edit: false }
+
+  - name: a restricted document hides from its readers, not from its owner
+    check:
+      - user: employee:bob
+        object: document:legal-review
+        assertions: { view: false }
+      - user: employee:dan
+        object: document:legal-review
+        assertions: { view: true, edit: true }
+
+  - name: the legal team reviews legal documents
+    check:
+      - user: employee:dan
+        object: document:legal-review
+        assertions: { employee_can_edit: true }
+      - user: employee:dan
+        object: document:q3-plan
+        assertions: { view: false }
+
+  - name: share-locked beats delegation, even for the owner
+    check:
+      - user: employee:alice
+        object: document:board-deck
+        assertions: { view: true, share: false }

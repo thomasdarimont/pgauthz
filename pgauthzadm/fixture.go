@@ -22,12 +22,16 @@ import (
 // Fixture is a tests.authz.yaml file — a superset of OpenFGA's store-test
 // YAML, so existing OpenFGA tests port by renaming. pgauthz extensions are
 // additive: per-check `context` (condition input), `contextual_tuples`, and
-// `explain` golden reason paths. Exactly one of ModelFile / Model names the
-// model: a DSL or JSON file relative to the fixture (the caller resolves it
-// into RunOptions.ModelJSON), or a registry ref name[@version].
+// `explain` golden reason paths. Exactly one of ModelFile / Model / Store
+// names the model: a DSL or JSON file relative to the fixture (the caller
+// resolves it into RunOptions.ModelJSON), a registry ref name[@version], or
+// a live store whose CURRENT model is copied loss-free into the ephemeral
+// store (conditions, gates and grant rules included — what the console's
+// Scenarios and `pgauthzctl model test --store` do).
 type Fixture struct {
 	ModelFile string         `yaml:"model_file" json:"model_file,omitempty"`
 	Model     string         `yaml:"model" json:"model,omitempty"`
+	Store     string         `yaml:"store" json:"store,omitempty"`
 	Tuples    []FixtureTuple `yaml:"tuples" json:"tuples"`
 	Tests     []FixtureTest  `yaml:"tests" json:"tests"`
 }
@@ -101,7 +105,8 @@ type RunOptions struct {
 	// Model is the alternative to ModelJSON: a canonical model (ExportModel
 	// of a store), rebuilt in the ephemeral store through RenderSQL — the
 	// loss-free copy of a live store's model, conditions, gates and grant
-	// rules included, which the OpenFGA JSON import cannot carry.
+	// rules included, which the OpenFGA JSON import cannot carry. For a
+	// fixture naming a Store it is exported from that store when nil.
 	Model *Model
 	// Store is the ephemeral store's name; empty generates pgauthzadm_test_<hex>.
 	Store string
@@ -138,8 +143,14 @@ func UnmarshalFixture(raw []byte, fix *Fixture) error {
 
 // Validate checks what the runner needs before touching the database.
 func (f *Fixture) Validate() error {
-	if (f.ModelFile == "") == (f.Model == "") {
-		return fmt.Errorf("exactly one of model_file / model (registry ref) is required")
+	named := 0
+	for _, v := range []string{f.ModelFile, f.Model, f.Store} {
+		if v != "" {
+			named++
+		}
+	}
+	if named != 1 {
+		return fmt.Errorf("exactly one of model_file / model (registry ref) / store (a live store's model) is required")
 	}
 	if f.Model != "" {
 		if _, _, err := ParseModelRef(f.Model); err != nil {
@@ -221,11 +232,19 @@ func RunFixture(ctx context.Context, db DB, fix *Fixture, opts RunOptions) (*Run
 		}()
 	}
 
+	model := opts.Model
+	if fix.Store != "" && model == nil {
+		m, err := ExportModel(ctx, db, fix.Store)
+		if err != nil {
+			return nil, fmt.Errorf("model of store %s: %w", fix.Store, err)
+		}
+		model = m
+	}
 	switch {
-	case fix.ModelFile != "" && opts.Model != nil:
+	case model != nil && fix.Model == "":
 		// no arguments: pgx sends the script in one simple-protocol round
 		// trip, statement by statement, as psql would
-		if _, err := db.Exec(ctx, RenderSQL(store, opts.Model)); err != nil {
+		if _, err := db.Exec(ctx, RenderSQL(store, model)); err != nil {
 			return nil, err
 		}
 	case fix.ModelFile != "":

@@ -1,0 +1,76 @@
+# Demo scenarios for the fourquestions model — paste into the console's
+# Store → Test → Scenarios editor of a store running this model and Run.
+# Hermetic: the run creates an ephemeral store with the store's current model
+# and ONLY these tuples (nothing of the store's data takes part). Gates read
+# the action log, which is empty in the ephemeral store: "review" needs an
+# accepted NDA on record, "execute_large" two distinct approvals — both are
+# denied here; "download" (at most three a day) starts at zero.
+# CLI: pgauthzctl model test scenarios.authz.yaml --store fourq
+tuples:
+  - user: user:alice
+    relation: member
+    object: team:marketing
+  - user: user:bob
+    relation: member
+    object: team:marketing
+  - user: team:marketing#member
+    relation: editor
+    object: folder:campaign
+  - user: user:bob
+    relation: blocked
+    object: folder:campaign
+  - user: user:carol
+    relation: reviewer
+    object: folder:campaign
+  - user: folder:campaign
+    relation: parent
+    object: doc:brief
+  - user: folder:campaign
+    relation: parent
+    object: doc:budget
+  - user: user:dave
+    relation: requester
+    object: payment:p1
+
+tests:
+  - name: team editors read and edit the folder's docs
+    check:
+      - user: user:alice
+        object: doc:brief
+        assertions: { can_read: true, can_edit: true, download: true }
+
+  - name: a blocked member loses everything, membership notwithstanding
+    check:
+      - user: user:bob
+        object: doc:brief
+        assertions: { can_read: false, can_edit: false, download: false }
+      - user: user:bob
+        object: folder:campaign
+        assertions: { can_read: false }
+
+  # A gate guards the relation it is declared on: doc.review waits for the
+  # NDA, while doc.download ("can_read or review") reaches review through the
+  # graph and is open — gates do not travel along computed relations.
+  - name: the reviewer reviews the folder; the doc review waits for the NDA (gate)
+    check:
+      - user: user:carol
+        object: folder:campaign
+        assertions: { review: true, can_read: false }
+      - user: user:carol
+        object: doc:brief
+        assertions: { review: false, download: true, can_read: false }
+
+  - name: the requester executes; a large payment needs four eyes (gate)
+    check:
+      - user: user:dave
+        object: payment:p1
+        assertions: { execute: true, execute_large: false }
+      - user: user:alice
+        object: payment:p1
+        assertions: { execute: false }
+
+  - name: what alice can read
+    list_objects:
+      - user: user:alice
+        type: doc
+        assertions: { can_read: [doc:brief, doc:budget] }

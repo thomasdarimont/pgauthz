@@ -32,10 +32,6 @@ import (
 
 const scenariosMaxBytes = 256 << 10
 
-// storeModelMarker stands in for model_file while a console fixture is
-// validated and run: "the store's current model".
-const storeModelMarker = "<store model>"
-
 type scenariosRow struct {
 	YAML      string     `json:"yaml"`
 	UpdatedAt *time.Time `json:"updated_at"`
@@ -57,8 +53,9 @@ func (s *Server) loadScenarios(ctx context.Context, store string) (scenariosRow,
 }
 
 // parseConsoleFixture — ParseFixture with the console's model rule: no
-// model_file (the store's current model instead, unless a registry ref).
-func parseConsoleFixture(yml string) (*pgauthzadm.Fixture, error) {
+// model_file, no other store (this store's current model instead, unless
+// a registry ref). The fixture's Store is this store when it names none.
+func parseConsoleFixture(store, yml string) (*pgauthzadm.Fixture, error) {
 	if len(yml) > scenariosMaxBytes {
 		return nil, fmt.Errorf("scenarios exceed %d KiB", scenariosMaxBytes>>10)
 	}
@@ -69,8 +66,11 @@ func parseConsoleFixture(yml string) (*pgauthzadm.Fixture, error) {
 	if fix.ModelFile != "" {
 		return nil, fmt.Errorf("model_file is not available in the console: leave the model out to test this store's current model, or name a registry model (model: name@version)")
 	}
+	if fix.Store != "" && fix.Store != store {
+		return nil, fmt.Errorf("store: %s — scenarios here test this store's current model; leave the store out", fix.Store)
+	}
 	if fix.Model == "" {
-		fix.ModelFile = storeModelMarker
+		fix.Store = store
 	}
 	if err := fix.Validate(); err != nil {
 		return nil, err
@@ -97,7 +97,7 @@ func (s *Server) handleScenarios(w http.ResponseWriter, r *http.Request) {
 	}
 	cases := 0
 	if row.YAML != "" {
-		if fix, err := parseConsoleFixture(row.YAML); err == nil {
+		if fix, err := parseConsoleFixture(store, row.YAML); err == nil {
 			cases = countCases(fix)
 		}
 	}
@@ -138,7 +138,7 @@ func (s *Server) handleScenariosSave(w http.ResponseWriter, r *http.Request) {
 	}
 	cases := 0
 	if strings.TrimSpace(req.YAML) != "" {
-		fix, err := parseConsoleFixture(req.YAML)
+		fix, err := parseConsoleFixture(store, req.YAML)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -190,7 +190,7 @@ func (s *Server) handleScenariosRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "no scenarios to run")
 		return
 	}
-	fix, err := parseConsoleFixture(yml)
+	fix, err := parseConsoleFixture(store, yml)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -217,15 +217,9 @@ func (s *Server) handleScenariosRun(w http.ResponseWriter, r *http.Request) {
 
 	b := make([]byte, 4)
 	_, _ = rand.Read(b)
+	// fix.Store is this store (parseConsoleFixture): RunFixture exports its
+	// live model and rebuilds it in the ephemeral store, loss-free
 	opts := pgauthzadm.RunOptions{Store: "console_scenarios_" + hex.EncodeToString(b), PurgeAudit: true}
-	if fix.ModelFile == storeModelMarker {
-		model, err := pgauthzadm.ExportModel(ctx, s.engine, store)
-		if err != nil {
-			writeEngineError(w, err)
-			return
-		}
-		opts.Model = model // the store's live model, loss-free (RenderSQL)
-	}
 	var report *pgauthzadm.RunReport
 	err = s.asPerson(ctx, p, "can_run_tests", "store", store, map[string]any{"op": "scenarios_run", "cases": countCases(fix), "tests": len(fix.Tests)}, func(tx pgx.Tx) error {
 		var err error
@@ -260,14 +254,14 @@ func (s *Server) handleScenariosExport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no scenarios saved")
 		return
 	}
-	fix, err := parseConsoleFixture(row.YAML)
+	fix, err := parseConsoleFixture(store, row.YAML)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	out := map[string]any{"store": store}
 	yml := row.YAML
-	if fix.ModelFile == storeModelMarker {
+	if fix.Store == store {
 		dsl, err := pgauthzadm.DescribeModel(ctx, s.engine, store)
 		if err != nil {
 			writeEngineError(w, err)

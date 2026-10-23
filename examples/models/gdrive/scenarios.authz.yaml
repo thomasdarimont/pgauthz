@@ -1,0 +1,92 @@
+# Demo scenarios for the gdrive model — paste into the console's
+# Store → Test → Scenarios editor of a store running this model and Run.
+# Hermetic: the run creates an ephemeral store with the store's current model
+# and ONLY these tuples (nothing of the store's data takes part).
+# CLI: pgauthzctl model test scenarios.authz.yaml --store gdrive
+tuples:
+  # the folder tree: root → projects, public
+  - user: user:alice
+    relation: owner
+    object: folder:root
+  - user: folder:root
+    relation: parent
+    object: folder:projects
+  - user: folder:root
+    relation: parent
+    object: folder:public
+  - user: folder:projects
+    relation: parent
+    object: doc:design_spec
+  - user: folder:projects
+    relation: parent
+    object: doc:budget
+  - user: folder:public
+    relation: parent
+    object: doc:announcement
+  # direct grants on a doc
+  - user: user:frank
+    relation: owner
+    object: doc:design_spec
+  - user: user:bob
+    relation: viewer
+    object: doc:design_spec
+  # a group reads the projects folder
+  - user: user:charlie
+    relation: member
+    object: group:engineering
+  - user: group:engineering#member
+    relation: viewer
+    object: folder:projects
+  # the public folder is readable by everyone
+  - user: user:*
+    relation: viewer
+    object: folder:public
+
+tests:
+  - name: the root owner writes everywhere through the folder tree
+    check:
+      - user: user:alice
+        object: doc:budget
+        assertions: { can_read: true, can_write: true, can_share: true }
+      - user: user:alice
+        object: doc:announcement
+        assertions: { can_write: true }
+
+  - name: a viewer reads and downloads, nothing more
+    check:
+      - user: user:bob
+        object: doc:design_spec
+        assertions: { can_read: true, download: true, can_write: false, can_share: false }
+
+  - name: the doc owner shares and hands over ownership
+    check:
+      - user: user:frank
+        object: doc:design_spec
+        assertions: { can_share: true, can_change_owner: true, can_write: true }
+      - user: user:frank
+        object: doc:budget
+        assertions: { can_read: false }
+
+  - name: group membership reaches the docs of the folder
+    check:
+      - user: user:charlie
+        object: doc:budget
+        assertions: { can_read: true, can_write: false }
+      - user: user:charlie
+        object: doc:design_spec
+        assertions: { can_read: true }
+
+  - name: the public folder is readable by anyone, writable by nobody else
+    check:
+      - user: user:mallory
+        object: doc:announcement
+        assertions: { can_read: true, can_write: false }
+      - user: user:mallory
+        object: doc:budget
+        assertions: { can_read: false }
+
+  - name: what bob can reach
+    list_objects:
+      - user: user:bob
+        type: doc
+        assertions: { can_read: [doc:design_spec, doc:announcement], can_write: [] }

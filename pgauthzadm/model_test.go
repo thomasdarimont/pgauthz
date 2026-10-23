@@ -107,3 +107,19 @@ func TestRelationKind(t *testing.T) {
 		t.Errorf("declared kind = %q", k)
 	}
 }
+
+// A "but not" group renders its base rule before the negated one whatever
+// order the export lists them in — the engine's model validation refuses a
+// negated rule whose group has no base yet.
+func TestRenderSQLBaseRuleBeforeNegated(t *testing.T) {
+	blocked, editor := "blocked", "editor"
+	m := &Model{Rules: []ModelRule{
+		{ObjectType: "folder", Relation: "can_read", RuleType: "computed", ComputedRelation: &blocked, GroupID: 1, GroupOp: "exclusion", Negated: true},
+		{ObjectType: "folder", Relation: "can_read", RuleType: "computed", ComputedRelation: &editor, GroupID: 1, GroupOp: "exclusion"},
+	}}
+	out := RenderSQL("s", m)
+	i, j := strings.Index(out, "'editor'"), strings.Index(out, "'blocked'")
+	if i < 0 || j < 0 || i > j {
+		t.Fatalf("base rule must come first:\n%s", out)
+	}
+}

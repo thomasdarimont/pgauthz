@@ -1,0 +1,42 @@
+# Demo scenarios for the helloworld model — paste into the console's
+# Store → Test → Scenarios editor of a store running this model and Run.
+# Hermetic: the run creates an ephemeral store with the store's current model
+# and ONLY these tuples (nothing of the store's data takes part).
+# CLI: pgauthzctl model test scenarios.authz.yaml --store <store running this model>
+tuples:
+  - user: user:alice
+    relation: editor
+    object: document:readme
+  - user: user:bob
+    relation: viewer
+    object: document:readme
+
+tests:
+  - name: the editor reads and writes
+    check:
+      - user: user:alice
+        object: document:readme
+        assertions: { can_read: true, can_write: true }
+
+  - name: the viewer only reads
+    check:
+      - user: user:bob
+        object: document:readme
+        assertions: { can_read: true, can_write: false }
+    explain:
+      - user: user:bob
+        relation: can_write
+        object: document:readme
+        expect_reasons: [no_direct_tuple, computed]
+
+  - name: a stranger has nothing
+    check:
+      - user: user:mallory
+        object: document:readme
+        assertions: { can_read: false, can_write: false }
+
+  - name: what bob can reach
+    list_objects:
+      - user: user:bob
+        type: document
+        assertions: { can_read: [document:readme], can_write: [] }

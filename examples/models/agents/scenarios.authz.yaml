@@ -1,0 +1,109 @@
+# Demo scenarios for the agents model (agentic delegation) — paste into the
+# console's Store → Test → Scenarios editor of a store running this model
+# and Run.
+# Hermetic: the run creates an ephemeral store with the store's current model
+# and ONLY these tuples (nothing of the store's data takes part). Gates read
+# the action log, which is empty in the ephemeral store: a permission behind
+# a "formerly_within" gate is denied until the required action was recorded,
+# a "count_within" cap starts at zero.
+# CLI: pgauthzctl model test scenarios.authz.yaml --store agents
+tuples:
+  # alice and her account team
+  - user: user:alice
+    relation: member
+    object: team:custco-account-team
+  - user: team:custco-account-team#member
+    relation: member
+    object: customer:CustCo
+  # alice operates acme_assist; agents reach themselves
+  - user: user:alice
+    relation: operator
+    object: agent:acme_assist
+  - user: agent:acme_assist
+    relation: reach
+    object: agent:acme_assist
+  - user: agent:research_agent
+    relation: reach
+    object: agent:research_agent
+  # customer documents
+  - user: customer:CustCo
+    relation: customer
+    object: customer_doc:custco-briefing
+  - user: customer:Globex
+    relation: customer
+    object: customer_doc:globex-plan
+  # acme_assist may read for CustCo and Globex, but its task is scoped to CustCo
+  - user: agent:acme_assist#reach
+    relation: agent_reader
+    object: customer:CustCo
+  - user: agent:acme_assist#reach
+    relation: agent_reader
+    object: customer:Globex
+  - user: agent:acme_assist
+    relation: task_scope
+    object: customer:CustCo
+  # automations, the mailbox, a partner agent
+  - user: agent:acme_assist
+    relation: run
+    object: automation:nightly-report
+  - user: user:alice
+    relation: create
+    object: automation:nightly-report
+  - user: user:alice
+    relation: owner
+    object: mailbox:alice
+  - user: agent:acme_assist
+    relation: send_email
+    object: mailbox:alice
+  - user: agent:acme_assist
+    relation: pay
+    object: partner_agent:payco
+
+tests:
+  - name: the account team reads its customer's documents
+    check:
+      - user: user:alice
+        object: customer_doc:custco-briefing
+        assertions: { documents_read: true, documents_search: true, documents_summarize: true }
+      - user: user:alice
+        object: customer_doc:globex-plan
+        assertions: { documents_read: false }
+
+  - name: an agent reads only within its task scope
+    check:
+      - user: agent:acme_assist
+        object: customer_doc:custco-briefing
+        assertions: { documents_read: true, documents_summarize: true }
+      - user: agent:acme_assist
+        object: customer_doc:globex-plan
+        assertions: { documents_read: false }
+      - user: agent:research_agent
+        object: customer_doc:custco-briefing
+        assertions: { documents_read: false }
+
+  - name: the agent runs the automation, the operator does not run it herself
+    check:
+      - user: agent:acme_assist
+        object: automation:nightly-report
+        assertions: { run: true }
+      - user: user:alice
+        object: automation:nightly-report
+        assertions: { create: true, run: false }
+
+  - name: nobody mails before a summary was produced in the last hour (gate; the log is empty here)
+    check:
+      - user: user:alice
+        object: mailbox:alice
+        assertions: { send_email: false, owner: true }
+      - user: agent:acme_assist
+        object: mailbox:alice
+        assertions: { send_email: false }
+
+  - name: paying a partner is allowed while it kept its promises (gate, no events yet)
+    check:
+      - user: agent:acme_assist
+        object: partner_agent:payco
+        assertions: { pay: true }
+      - user: agent:research_agent
+        object: partner_agent:payco
+        assertions: { pay: false }

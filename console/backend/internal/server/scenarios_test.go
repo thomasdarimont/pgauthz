@@ -80,6 +80,9 @@ func TestScenariosHTTP(t *testing.T) {
 	if code, m := do("PUT", base, body("tuples:\n  - user: alice\n    relation: viewer\n    object: doc:a\n"), owner); code != 400 {
 		t.Errorf("bad reference accepted: %d %v", code, m)
 	}
+	if code, m := do("PUT", base, body("store: gdrive\ntests: []\n"), owner); code != 400 {
+		t.Errorf("another store's model accepted: %d %v", code, m)
+	}
 	// a tester may not save
 	const fixture = `tuples:
   - user: user:bob
