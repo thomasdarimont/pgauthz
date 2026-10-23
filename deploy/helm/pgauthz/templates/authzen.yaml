@@ -67,6 +67,7 @@ spec:
             {{- include "pgauthz.audienceEnv" $ | nindent 12 }}
             - { name: DEFAULT_STORE, value: {{ .Values.opa.defaultStore | quote }} }
             - { name: ALLOW_SUBJECT_OVERRIDE, value: "false" }
+            - { name: CONTEXTUAL_TUPLES, value: {{ .Values.contextualTuples | default "trusted-peps" | quote }} }
             # input.deployment.environment for policy hooks (ADR 0011) — the
             # gateway-specific value overrides the chart-wide one — plus the
             # diagnostic-surface gates (production profile).

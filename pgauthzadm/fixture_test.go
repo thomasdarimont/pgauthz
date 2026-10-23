@@ -138,3 +138,64 @@ func TestJUnit(t *testing.T) {
 		}
 	}
 }
+
+// Contextual tuples on every case kind, and their rendering for the
+// engine's *_with_contextual_tuples_jsonb functions.
+func TestFixtureContextualTuples(t *testing.T) {
+	fix, err := ParseFixture([]byte(`
+store: gdrive
+tests:
+  - name: with a hypothetical membership
+    check:
+      - user: user:frank
+        object: doc:x
+        assertions: { can_read: true }
+        contextual_tuples:
+          - user: group:eng#member
+            relation: viewer
+            object: doc:x
+    list_objects:
+      - user: user:frank
+        type: doc
+        assertions: { can_read: [doc:x] }
+        contextual_tuples:
+          - { user: user:frank, relation: viewer, object: doc:x }
+    list_subjects:
+      - object: doc:x
+        type: user
+        assertions: { can_read: [user:frank] }
+        contextual_tuples:
+          - { user: user:frank, relation: viewer, object: doc:x }
+    list_actions:
+      - user: user:frank
+        object: doc:x
+        expect: [viewer, can_read]
+        contextual_tuples:
+          - { user: user:frank, relation: viewer, object: doc:x }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tc := fix.Tests[0]
+	if len(tc.Check[0].ContextualTuples) != 1 || len(tc.ListObjects[0].ContextualTuples) != 1 ||
+		len(tc.ListSubjects[0].ContextualTuples) != 1 || len(tc.ListActions[0].ContextualTuples) != 1 {
+		t.Fatalf("contextual tuples not parsed on every case kind: %+v", tc)
+	}
+	raw, err := ContextualTuplesJSON(tc.Check[0].ContextualTuples)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"object_id":"x","object_type":"doc","relation":"viewer","user_id":"eng","user_relation":"member","user_type":"group"}]`
+	if string(raw) != want {
+		t.Errorf("rendered %s, want %s", raw, want)
+	}
+	if raw, err := ContextualTuplesJSON(nil); raw != nil || err != nil {
+		t.Errorf("none: %s %v, want nil", raw, err)
+	}
+	if _, err := ContextualTuplesJSON([]FixtureTuple{{User: "frank", Relation: "viewer", Object: "doc:x"}}); err == nil {
+		t.Error("a bare user id must be refused")
+	}
+	if _, err := ContextualTuplesJSON([]FixtureTuple{{User: "user:frank", Object: "doc:x"}}); err == nil {
+		t.Error("a missing relation must be refused")
+	}
+}

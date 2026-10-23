@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
+	"thomasdarimont.de/authz/pgauthzd/internal/config"
 	"thomasdarimont.de/authz/pgauthzd/internal/decisionlog"
 	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
 )
@@ -80,11 +81,28 @@ func (h *Handler) NativeCheck(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	entry := h.decisionEntry(r, "check", evalReq, "engine")
 	if len(req.ContextualTuples) > 0 {
+		n, err := contextualTupleCount(req.ContextualTuples)
+		if err != nil {
+			writeBadRequest(w, "contextual_tuples must be a JSON array of tuples")
+			return
+		}
+		if n == 0 {
+			// an empty array is no contextual tuples at all
+			req.ContextualTuples = nil
+		}
+	}
+	if len(req.ContextualTuples) > 0 {
+		if !h.mayUseContextualTuples(r, store) {
+			metrics.AuthzDenied.WithLabelValues("contextual_tuples").Inc()
+			writeForbidden(w, contextualTuplesDenied(h.cfg.ContextualTuples))
+			return
+		}
 		cc, ok := h.raw.(authz.ContextualChecker)
 		if !ok {
 			writeError(w, http.StatusNotImplemented, "contextual-tuple checks require the direct backend")
 			return
 		}
+		entry.ContextualTuples, _ = contextualTupleCount(req.ContextualTuples)
 		decision, err := cc.CheckWithContextualTuples(r.Context(), evalReq, req.ContextualTuples)
 		recordDecision(store, metrics.APINative, decision, err)
 		h.logDecision(r.Context(), entry, start, decision, nil, err)
@@ -406,4 +424,22 @@ func listResponse(key string, ids []string, page *authz.PageResponse, freshTok s
 		out["next_token"] = bindCursor(page.NextToken, freshTok)
 	}
 	return out
+}
+
+// contextualTupleCount is the number of tuples in a contextual_tuples value,
+// or an error when it is not a JSON array.
+func contextualTupleCount(raw json.RawMessage) (int, error) {
+	var arr []json.RawMessage
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return 0, err
+	}
+	return len(arr), nil
+}
+
+// contextualTuplesDenied says why a caller may not send contextual tuples.
+func contextualTuplesDenied(mode string) string {
+	if mode == config.ContextualTuplesOff {
+		return "contextual tuples are disabled on this listener (CONTEXTUAL_TUPLES=off)"
+	}
+	return "contextual tuples are accepted from trusted PEPs only (CONTEXTUAL_TUPLES=trusted-peps): the caller's client is not a pep_clients entry of its issuer for this store"
 }

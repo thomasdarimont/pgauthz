@@ -351,6 +351,11 @@ REVOKE EXECUTE ON FUNCTION authz.check_access_with_contextual_tuples_jsonb(text,
 GRANT EXECUTE ON FUNCTION authz.check_access_with_contextual_tuples(text, text, text, text, text, text, jsonb, authz.tuple_input[]) TO authz_contextual_reader;
 GRANT EXECUTE ON FUNCTION authz.check_access_with_contextual_tuples_jsonb(text, text, text, text, text, text, jsonb, jsonb) TO authz_contextual_reader;
 GRANT EXECUTE ON FUNCTION authz.check_access_batch_with_contextual_tuples_jsonb(text, jsonb, jsonb, jsonb) TO authz_contextual_reader;
+-- The search and explain counterparts: the same injection, so the same role.
+GRANT EXECUTE ON FUNCTION authz.list_objects_with_contextual_tuples_jsonb(text, text, text, text, text, jsonb, jsonb, int, int, text) TO authz_contextual_reader;
+GRANT EXECUTE ON FUNCTION authz.list_subjects_with_contextual_tuples_jsonb(text, text, text, text, text, jsonb, jsonb, int, int, text) TO authz_contextual_reader;
+GRANT EXECUTE ON FUNCTION authz.list_actions_with_contextual_tuples_jsonb(text, text, text, text, text, jsonb, jsonb) TO authz_contextual_reader;
+GRANT EXECUTE ON FUNCTION authz.explain_access_with_contextual_tuples_jsonb(text, text, text, text, text, text, jsonb, jsonb, boolean, boolean) TO authz_contextual_reader;
 GRANT EXECUTE ON FUNCTION authz.check_access_batch(text, jsonb, jsonb, text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.check_access_batch_typed(text, authz.access_check[], jsonb, text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.check_access_batch_typed_jsonb(text, jsonb, jsonb, text) TO authz_reader;
@@ -461,6 +466,10 @@ ALTER FUNCTION authz.check_access_batch(text, jsonb, jsonb, text) SECURITY DEFIN
 -- posture explicit and gets them search_path pinning below). See SECURITY-AUDIT F1.
 ALTER FUNCTION authz.check_access_with_contextual_tuples_jsonb(text, text, text, text, text, text, jsonb, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.check_access_batch_with_contextual_tuples_jsonb(text, jsonb, jsonb, jsonb) SECURITY DEFINER;
+ALTER FUNCTION authz.list_objects_with_contextual_tuples_jsonb(text, text, text, text, text, jsonb, jsonb, int, int, text) SECURITY DEFINER;
+ALTER FUNCTION authz.list_subjects_with_contextual_tuples_jsonb(text, text, text, text, text, jsonb, jsonb, int, int, text) SECURITY DEFINER;
+ALTER FUNCTION authz.list_actions_with_contextual_tuples_jsonb(text, text, text, text, text, jsonb, jsonb) SECURITY DEFINER;
+ALTER FUNCTION authz.explain_access_with_contextual_tuples_jsonb(text, text, text, text, text, text, jsonb, jsonb, boolean, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.check_access_batch_typed_jsonb(text, jsonb, jsonb, text) SECURITY DEFINER;
 ALTER FUNCTION authz.list_objects(text, text, text, text, text, jsonb, int, int, text) SECURITY DEFINER;
 ALTER FUNCTION authz.list_subjects(text, text, text, text, text, jsonb, int, int, text) SECURITY DEFINER;

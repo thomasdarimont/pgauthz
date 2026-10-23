@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"gopkg.in/yaml.v3"
 )
 
@@ -73,35 +74,40 @@ type CheckCase struct {
 }
 
 // ListCase asserts the objects of a type a subject reaches per relation.
+// Contextual tuples take part in the search like stored ones (they seed
+// and extend paths and the final decision sees them).
 type ListCase struct {
-	User        string              `yaml:"user" json:"user"`
-	Type        string              `yaml:"type" json:"type"`
-	Assertions  map[string][]string `yaml:"assertions" json:"assertions"` // relation → expected object refs
-	Notes       map[string]string   `yaml:"notes,omitempty" json:"notes,omitempty"`
-	Description string              `yaml:"description,omitempty" json:"description,omitempty"`
-	Context     map[string]any      `yaml:"context,omitempty" json:"context,omitempty"`
+	User             string              `yaml:"user" json:"user"`
+	Type             string              `yaml:"type" json:"type"`
+	Assertions       map[string][]string `yaml:"assertions" json:"assertions"` // relation → expected object refs
+	Notes            map[string]string   `yaml:"notes,omitempty" json:"notes,omitempty"`
+	Description      string              `yaml:"description,omitempty" json:"description,omitempty"`
+	Context          map[string]any      `yaml:"context,omitempty" json:"context,omitempty"`
+	ContextualTuples []FixtureTuple      `yaml:"contextual_tuples,omitempty" json:"contextual_tuples,omitempty"`
 }
 
 // ListSubjectsCase asserts the subjects of a type that reach an object per
 // relation (the reverse search); a wildcard grant lists as type:*.
 type ListSubjectsCase struct {
-	Object      string              `yaml:"object" json:"object"`
-	Type        string              `yaml:"type" json:"type"`             // the subject type to list
-	Assertions  map[string][]string `yaml:"assertions" json:"assertions"` // relation → expected subject refs
-	Notes       map[string]string   `yaml:"notes,omitempty" json:"notes,omitempty"`
-	Description string              `yaml:"description,omitempty" json:"description,omitempty"`
-	Context     map[string]any      `yaml:"context,omitempty" json:"context,omitempty"`
+	Object           string              `yaml:"object" json:"object"`
+	Type             string              `yaml:"type" json:"type"`             // the subject type to list
+	Assertions       map[string][]string `yaml:"assertions" json:"assertions"` // relation → expected subject refs
+	Notes            map[string]string   `yaml:"notes,omitempty" json:"notes,omitempty"`
+	Description      string              `yaml:"description,omitempty" json:"description,omitempty"`
+	Context          map[string]any      `yaml:"context,omitempty" json:"context,omitempty"`
+	ContextualTuples []FixtureTuple      `yaml:"contextual_tuples,omitempty" json:"contextual_tuples,omitempty"`
 }
 
 // ListActionsCase asserts the full set of actions (the declared
 // permissions) a subject may perform on an object — what authz.list_actions
 // answers, so the assertion is "exactly these, nothing more".
 type ListActionsCase struct {
-	User        string         `yaml:"user" json:"user"`
-	Object      string         `yaml:"object" json:"object"`
-	Expect      []string       `yaml:"expect" json:"expect"` // the expected actions, as a set
-	Description string         `yaml:"description,omitempty" json:"description,omitempty"`
-	Context     map[string]any `yaml:"context,omitempty" json:"context,omitempty"`
+	User             string         `yaml:"user" json:"user"`
+	Object           string         `yaml:"object" json:"object"`
+	Expect           []string       `yaml:"expect" json:"expect"` // the expected actions, as a set
+	Description      string         `yaml:"description,omitempty" json:"description,omitempty"`
+	Context          map[string]any `yaml:"context,omitempty" json:"context,omitempty"`
+	ContextualTuples []FixtureTuple `yaml:"contextual_tuples,omitempty" json:"contextual_tuples,omitempty"`
 }
 
 // ExplainCase asserts the ordered reason codes of a resolution trace.
@@ -286,14 +292,10 @@ func RunFixture(ctx context.Context, db DB, fix *Fixture, opts RunOptions) (*Run
 // ExplainFixtureCheck sets the fixture up like RunFixture and, instead of
 // the assertions, explains ONE check — the resolution tree of
 // authz.explain_access for the case's subject and object and the relation,
-// with the case's request context — inside the fixture's world (its model,
-// its tuples, nothing else). successfulOnly and redact are passed through.
-// A case with contextual tuples cannot be explained (the engine's explain
-// takes none) and is refused.
+// with the case's request context and contextual tuples — inside the
+// fixture's world (its model, its tuples, nothing else). successfulOnly and
+// redact are passed through.
 func ExplainFixtureCheck(ctx context.Context, db DB, fix *Fixture, opts RunOptions, c CheckCase, relation string, successfulOnly, redact bool) (json.RawMessage, error) {
-	if len(c.ContextualTuples) > 0 {
-		return nil, fmt.Errorf("a check with contextual_tuples cannot be explained")
-	}
 	u, err := ParseRef(c.User)
 	if err != nil {
 		return nil, err
@@ -306,12 +308,53 @@ func ExplainFixtureCheck(ctx context.Context, db DB, fix *Fixture, opts RunOptio
 	if c.Context != nil {
 		ctxJSON, _ = json.Marshal(c.Context)
 	}
+	ctJSON, err := ContextualTuplesJSON(c.ContextualTuples)
+	if err != nil {
+		return nil, err
+	}
 	var raw []byte
 	err = WithFixture(ctx, db, fix, opts, func(store string) error {
+		if ctJSON != nil {
+			return db.QueryRow(ctx, "SELECT authz.explain_access_with_contextual_tuples_jsonb($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$10)",
+				store, u.Type, u.ID, relation, o.Type, o.ID, ctxJSON, ctJSON, successfulOnly, redact).Scan(&raw)
+		}
 		return db.QueryRow(ctx, "SELECT authz.explain_access($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9)",
 			store, u.Type, u.ID, relation, o.Type, o.ID, ctxJSON, successfulOnly, redact).Scan(&raw)
 	})
 	return raw, err
+}
+
+// ContextualTuplesJSON renders contextual tuples (OpenFGA notation) as the
+// JSONB array the engine's *_with_contextual_tuples_jsonb functions take:
+// [{"user_type","user_id","user_relation"?,"relation","object_type","object_id"}].
+// nil for none, so a caller can branch on it.
+func ContextualTuplesJSON(ts []FixtureTuple) ([]byte, error) {
+	if len(ts) == 0 {
+		return nil, nil
+	}
+	cts := make([]map[string]any, 0, len(ts))
+	for _, t := range ts {
+		tu, err := ParseRef(t.User)
+		if err != nil {
+			return nil, fmt.Errorf("contextual tuple user %q: %w", t.User, err)
+		}
+		to, err := ParseRef(t.Object)
+		if err != nil {
+			return nil, fmt.Errorf("contextual tuple object %q: %w", t.Object, err)
+		}
+		if t.Relation == "" {
+			return nil, fmt.Errorf("contextual tuple %s → %s: relation is required", t.User, t.Object)
+		}
+		ct := map[string]any{
+			"user_type": tu.Type, "user_id": tu.ID, "relation": t.Relation,
+			"object_type": to.Type, "object_id": to.ID,
+		}
+		if tu.Relation != "" {
+			ct["user_relation"] = tu.Relation
+		}
+		cts = append(cts, ct)
+	}
+	return json.Marshal(cts)
 }
 
 // WithFixture creates the ephemeral store, rebuilds the model in it and
@@ -474,9 +517,21 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 			if l.Context != nil {
 				ctxJSON, _ = json.Marshal(l.Context)
 			}
-			rows, err := db.Query(ctx,
-				"SELECT object_id FROM authz.list_objects($1,$2,$3,$4,$5,$6)",
-				store, u.Type, u.ID, rel, l.Type, ctxJSON)
+			ctJSON, err := ContextualTuplesJSON(l.ContextualTuples)
+			if err != nil {
+				fail(name, err.Error())
+				continue
+			}
+			var rows pgx.Rows
+			if ctJSON != nil {
+				rows, err = db.Query(ctx,
+					"SELECT object_id FROM authz.list_objects_with_contextual_tuples_jsonb($1,$2,$3,$4,$5,$6,$7)",
+					store, u.Type, u.ID, rel, l.Type, ctxJSON, ctJSON)
+			} else {
+				rows, err = db.Query(ctx,
+					"SELECT object_id FROM authz.list_objects($1,$2,$3,$4,$5,$6)",
+					store, u.Type, u.ID, rel, l.Type, ctxJSON)
+			}
 			if err != nil {
 				fail(name, err.Error())
 				continue
@@ -514,9 +569,21 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 			if l.Context != nil {
 				ctxJSON, _ = json.Marshal(l.Context)
 			}
-			rows, err := db.Query(ctx,
-				"SELECT subject_id, is_wildcard FROM authz.list_subjects($1,$2,$3,$4,$5,$6)",
-				store, l.Type, rel, o.Type, o.ID, ctxJSON)
+			ctJSON, err := ContextualTuplesJSON(l.ContextualTuples)
+			if err != nil {
+				fail(name, err.Error())
+				continue
+			}
+			var rows pgx.Rows
+			if ctJSON != nil {
+				rows, err = db.Query(ctx,
+					"SELECT subject_id, is_wildcard FROM authz.list_subjects_with_contextual_tuples_jsonb($1,$2,$3,$4,$5,$6,$7)",
+					store, l.Type, rel, o.Type, o.ID, ctxJSON, ctJSON)
+			} else {
+				rows, err = db.Query(ctx,
+					"SELECT subject_id, is_wildcard FROM authz.list_subjects($1,$2,$3,$4,$5,$6)",
+					store, l.Type, rel, o.Type, o.ID, ctxJSON)
+			}
 			if err != nil {
 				fail(name, err.Error())
 				continue
@@ -562,9 +629,21 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 		if a.Context != nil {
 			ctxJSON, _ = json.Marshal(a.Context)
 		}
-		rows, err := db.Query(ctx,
-			"SELECT action FROM authz.list_actions($1,$2,$3,$4,$5,$6)",
-			store, u.Type, u.ID, o.Type, o.ID, ctxJSON)
+		ctJSON, err := ContextualTuplesJSON(a.ContextualTuples)
+		if err != nil {
+			fail(name, err.Error())
+			continue
+		}
+		var rows pgx.Rows
+		if ctJSON != nil {
+			rows, err = db.Query(ctx,
+				"SELECT action FROM authz.list_actions_with_contextual_tuples_jsonb($1,$2,$3,$4,$5,$6,$7)",
+				store, u.Type, u.ID, o.Type, o.ID, ctxJSON, ctJSON)
+		} else {
+			rows, err = db.Query(ctx,
+				"SELECT action FROM authz.list_actions($1,$2,$3,$4,$5,$6)",
+				store, u.Type, u.ID, o.Type, o.ID, ctxJSON)
+		}
 		if err != nil {
 			fail(name, err.Error())
 			continue
@@ -714,27 +793,11 @@ func runFixtureCheck(ctx context.Context, db DB, store string, u Ref, rel string
 		ctxJSON, _ = json.Marshal(c.Context)
 	}
 	var allowed bool
-	if len(c.ContextualTuples) > 0 {
-		cts := make([]map[string]any, 0, len(c.ContextualTuples))
-		for _, t := range c.ContextualTuples {
-			tu, err := ParseRef(t.User)
-			if err != nil {
-				return false, err
-			}
-			to, err := ParseRef(t.Object)
-			if err != nil {
-				return false, err
-			}
-			ct := map[string]any{
-				"user_type": tu.Type, "user_id": tu.ID, "relation": t.Relation,
-				"object_type": to.Type, "object_id": to.ID,
-			}
-			if tu.Relation != "" {
-				ct["user_relation"] = tu.Relation
-			}
-			cts = append(cts, ct)
-		}
-		ctJSON, _ := json.Marshal(cts)
+	ctJSON, err := ContextualTuplesJSON(c.ContextualTuples)
+	if err != nil {
+		return false, err
+	}
+	if ctJSON != nil {
 		err := db.QueryRow(ctx,
 			"SELECT authz.check_access_with_contextual_tuples_jsonb($1,$2,$3,$4,$5,$6,$7,$8)",
 			store, u.Type, u.ID, rel, o.Type, o.ID, ctxJSON, ctJSON).Scan(&allowed)
@@ -746,7 +809,7 @@ func runFixtureCheck(ctx context.Context, db DB, store string, u Ref, rel string
 			store, u.Type, u.ID, rel, o.Type, o.ID, ctxJSON).Scan(&allowed)
 		return allowed, err
 	}
-	err := db.QueryRow(ctx,
+	err = db.QueryRow(ctx,
 		"SELECT authz.check_access($1,$2,$3,$4,$5,$6)",
 		store, u.Type, u.ID, rel, o.Type, o.ID).Scan(&allowed)
 	return allowed, err

@@ -335,6 +335,18 @@ type Config struct {
 	// PEP/PDP deployments that evaluate access for arbitrary subjects.
 	AllowSubjectOverride bool
 
+	// ContextualTuples (CONTEXTUAL_TUPLES) says who may send contextual
+	// tuples — ephemeral "what-if" relationships evaluated with a native
+	// check — on the PUBLIC listener: "off" (never), "trusted-peps" (default:
+	// only a caller that may assert a subject for the store — a pep_clients
+	// entry, or ALLOW_SUBJECT_OVERRIDE=true — the same trust that lets a
+	// caller shape the question), or "any" (every authenticated caller;
+	// refused in production). The callback listener always accepts them:
+	// its caller is OPA. Nothing is ever written; the switch bounds who can
+	// forge a decision to their own question and probe the graph with
+	// hypotheticals.
+	ContextualTuples string
+
 	// pgbackend only
 	DatabaseURL string
 	DBPoolMax   int
@@ -482,6 +494,7 @@ func Load() (*Config, error) {
 		RequireStoreBinding:           envBool("REQUIRE_STORE_BINDING", false),
 		RequireDBRoleBinding:          envBool("REQUIRE_DB_ROLE_BINDING", false),
 		AllowSubjectOverride:          envBool("ALLOW_SUBJECT_OVERRIDE", false),
+		ContextualTuples:              env("CONTEXTUAL_TUPLES", ContextualTuplesTrustedPEPs),
 		DatabaseURL:                   env("DATABASE_URL", ""),
 		DBPoolMax:                     envInt("DB_POOL_MAX", 25),
 		DefaultDBRole:                 env("DEFAULT_DB_ROLE", ""),
@@ -709,6 +722,20 @@ func Load() (*Config, error) {
 		}
 	}
 
+	// Contextual tuples on the public listener: a known mode, and "any" —
+	// every authenticated caller may inject what-if tuples — never under the
+	// production label (a warning elsewhere).
+	switch c.ContextualTuples {
+	case ContextualTuplesOff, ContextualTuplesTrustedPEPs:
+	case ContextualTuplesAny:
+		if c.IsProduction() {
+			return nil, fmt.Errorf("CONTEXTUAL_TUPLES=any lets EVERY authenticated caller inject what-if tuples into its own checks (forged decisions, graph probing); use trusted-peps or off (DEPLOYMENT_ENVIRONMENT=%s refuses any)", c.DeploymentEnvironment)
+		}
+		log.Printf("WARNING: CONTEXTUAL_TUPLES=any — every authenticated caller may inject what-if tuples into its own checks; prefer trusted-peps (the default) or off")
+	default:
+		return nil, fmt.Errorf("unknown CONTEXTUAL_TUPLES %q (off | trusted-peps | any)", c.ContextualTuples)
+	}
+
 	// Subject assertion (ADR 0014): the coarse switch and the per-client map
 	// together mean the map is dead configuration — every token may assert.
 	// Say so; in production refuse, like the other ALLOW_* overrides.
@@ -784,6 +811,13 @@ var envErrs []string
 func envFail(key, v, want string) {
 	envErrs = append(envErrs, fmt.Sprintf("%s=%q is invalid (%s)", key, v, want))
 }
+
+// The CONTEXTUAL_TUPLES modes.
+const (
+	ContextualTuplesOff         = "off"
+	ContextualTuplesTrustedPEPs = "trusted-peps"
+	ContextualTuplesAny         = "any"
+)
 
 func env(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {

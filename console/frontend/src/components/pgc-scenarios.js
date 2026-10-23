@@ -1890,6 +1890,10 @@ export function fixtureYAML(fx) {
           );
         if (l.description) out.push(`        description: ${str(l.description)}`);
         if (l.context) out.push(`        context: ${JSON.stringify(l.context)}`);
+        if (l.contextual_tuples?.length) {
+          out.push('        contextual_tuples:');
+          for (const x of l.contextual_tuples) tuple(x, 10);
+        }
       }
     }
     if (tc.list_subjects?.length) {
@@ -1910,6 +1914,10 @@ export function fixtureYAML(fx) {
           );
         if (l.description) out.push(`        description: ${str(l.description)}`);
         if (l.context) out.push(`        context: ${JSON.stringify(l.context)}`);
+        if (l.contextual_tuples?.length) {
+          out.push('        contextual_tuples:');
+          for (const x of l.contextual_tuples) tuple(x, 10);
+        }
       }
     }
     if (tc.list_actions?.length) {
@@ -1920,6 +1928,10 @@ export function fixtureYAML(fx) {
         out.push(`        expect: [${(a.expect ?? []).map(yamlScalar).join(', ')}]`);
         if (a.description) out.push(`        description: ${str(a.description)}`);
         if (a.context) out.push(`        context: ${JSON.stringify(a.context)}`);
+        if (a.contextual_tuples?.length) {
+          out.push('        contextual_tuples:');
+          for (const x of a.contextual_tuples) tuple(x, 10);
+        }
       }
     }
     if (tc.explain?.length) {
@@ -1944,7 +1956,7 @@ function flowMap(m) {
 }
 
 // Renders one check as a fixture case, appended under tests:.
-export function checkCaseYAML({ subject, action, resource, decision, context }) {
+export function checkCaseYAML({ subject, action, resource, decision, context, contextualTuples }) {
   const lines = [
     `  - name: ${yamlScalar(`${subject} ${action} ${resource}`)}`,
     `    check:`,
@@ -1953,11 +1965,49 @@ export function checkCaseYAML({ subject, action, resource, decision, context }) 
     `        assertions: { ${yamlScalar(action)}: ${decision ? 'true' : 'false'} }`,
   ];
   if (context && Object.keys(context).length) lines.push(`        context: ${JSON.stringify(context)}`);
+  lines.push(...contextualTuplesYAML(contextualTuples));
   return lines.join('\n') + '\n';
 }
 
+// The contextual_tuples: block of a case (one flow map per tuple), at the
+// case's key indentation; nothing for none.
+export function contextualTuplesYAML(tuples, indent = 8) {
+  if (!tuples?.length) return [];
+  const p = ' '.repeat(indent);
+  return [
+    `${p}contextual_tuples:`,
+    ...tuples.map(
+      (x) =>
+        `${p}  - { user: ${yamlScalar(x.user)}, relation: ${yamlScalar(x.relation)}, object: ${yamlScalar(x.object)} }`,
+    ),
+  ];
+}
+
+// Parses contextual tuples typed one per line — "subject relation object"
+// in OpenFGA notation (user:anne viewer doc:x; a userset subject as
+// group:eng#member); blank lines and # comments are skipped. Throws with
+// the 1-based line of the first malformed one.
+export function parseTupleLines(text) {
+  const out = [];
+  const lines = String(text ?? '').split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i].trim();
+    if (!l || l.startsWith('#')) continue;
+    const parts = l.split(/\s+/);
+    if (parts.length !== 3 || !parts[0].includes(':') || !parts[2].includes(':')) {
+      throw new Error(
+        t('Contextual tuple on line {n} must read "subject relation object", e.g. user:anne viewer doc:x', {
+          n: i + 1,
+        }),
+      );
+    }
+    out.push({ user: parts[0], relation: parts[1], object: parts[2] });
+  }
+  return out;
+}
+
 // Renders a list_objects result as a fixture case.
-export function listCaseYAML({ subject, action, type, ids, context }) {
+export function listCaseYAML({ subject, action, type, ids, context, contextualTuples }) {
   const lines = [
     `  - name: ${yamlScalar(`${subject} ${action} ${type} objects`)}`,
     `    list_objects:`,
@@ -1966,6 +2016,7 @@ export function listCaseYAML({ subject, action, type, ids, context }) {
     `        assertions: { ${yamlScalar(action)}: [${ids.map((id) => yamlScalar(`${type}:${id}`)).join(', ')}] }`,
   ];
   if (context && Object.keys(context).length) lines.push(`        context: ${JSON.stringify(context)}`);
+  lines.push(...contextualTuplesYAML(contextualTuples));
   return lines.join('\n') + '\n';
 }
 
@@ -2043,7 +2094,7 @@ export function assertionLine(yaml, r) {
 }
 
 // Renders a list_actions result as a fixture case: exactly these actions.
-export function listActionsCaseYAML({ subject, resource, actions, context }) {
+export function listActionsCaseYAML({ subject, resource, actions, context, contextualTuples }) {
   const lines = [
     `  - name: ${yamlScalar(`what ${subject} may do on ${resource}`)}`,
     `    list_actions:`,
@@ -2052,11 +2103,12 @@ export function listActionsCaseYAML({ subject, resource, actions, context }) {
     `        expect: [${actions.map(yamlScalar).join(', ')}]`,
   ];
   if (context && Object.keys(context).length) lines.push(`        context: ${JSON.stringify(context)}`);
+  lines.push(...contextualTuplesYAML(contextualTuples));
   return lines.join('\n') + '\n';
 }
 
 // Renders a list_subjects result as a fixture case.
-export function listSubjectsCaseYAML({ object, action, type, ids, context }) {
+export function listSubjectsCaseYAML({ object, action, type, ids, context, contextualTuples }) {
   const lines = [
     `  - name: ${yamlScalar(`${type} ${action} on ${object}`)}`,
     `    list_subjects:`,
@@ -2065,6 +2117,7 @@ export function listSubjectsCaseYAML({ object, action, type, ids, context }) {
     `        assertions: { ${yamlScalar(action)}: [${ids.map((id) => yamlScalar(`${type}:${id}`)).join(', ')}] }`,
   ];
   if (context && Object.keys(context).length) lines.push(`        context: ${JSON.stringify(context)}`);
+  lines.push(...contextualTuplesYAML(contextualTuples));
   return lines.join('\n') + '\n';
 }
 

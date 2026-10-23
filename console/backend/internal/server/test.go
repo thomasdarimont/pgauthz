@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"thomasdarimont.de/authz/pgauthzadm"
 )
 
 // handleMeta — names for the Test tab's autocompletion: types, relations,
@@ -86,6 +88,10 @@ type checkReq struct {
 	Action   string          `json:"action"`   // relation
 	Resource string          `json:"resource"` // type:id
 	Context  json.RawMessage `json:"context"`
+	// Contextual tuples (OpenFGA notation, the fixture's shape): ephemeral
+	// relationships that take part in this question only — "would bob be
+	// allowed if he were a member of team X?". Nothing is written.
+	ContextualTuples []pgauthzadm.FixtureTuple `json:"contextual_tuples"`
 	// explain only: keep just the steps that contributed to the decision
 	// (p_successful_only), and strip identifiers and free text (p_redact).
 	SuccessfulOnly bool `json:"successful_only"`
@@ -184,8 +190,23 @@ func (s *Server) checkInput(w http.ResponseWriter, r *http.Request) (*principal,
 	if !pol.ExplainFull {
 		q.Redact = true // forced, whatever the UI sent
 	}
+	if _, err := pgauthzadm.ContextualTuplesJSON(q.ContextualTuples); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return nil, "", q, parts, false
+	}
 	parts = [4]string{st, sid, ot, oid}
 	return p, store, q, parts, true
+}
+
+// contextualTuplesArg renders contextual tuples for a `$n::jsonb` argument
+// (NULL for none). Validated already by the caller (checkInput, or an
+// explicit check) — a malformed tuple here is a programming error.
+func contextualTuplesArg(ts []pgauthzadm.FixtureTuple) any {
+	raw, err := pgauthzadm.ContextualTuplesJSON(ts)
+	if err != nil || raw == nil {
+		return nil
+	}
+	return string(raw)
 }
 
 // recordTest — the question (never the answer) in the console's action log,
@@ -210,10 +231,18 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	err := s.recordTest(r.Context(), p, store, map[string]any{"op": "check", "subject": q.Subject, "action": q.Action, "resource": q.Resource, "at": q.At}, func(tx pgx.Tx) error {
+	if q.At != "" && len(q.ContextualTuples) > 0 {
+		writeError(w, http.StatusBadRequest, "contextual tuples are live only: a check at another point in time replays the audit trail")
+		return
+	}
+	err := s.recordTest(r.Context(), p, store, map[string]any{"op": "check", "subject": q.Subject, "action": q.Action, "resource": q.Resource, "at": q.At, "contextual_tuples": len(q.ContextualTuples)}, func(tx pgx.Tx) error {
 		if q.At != "" {
 			return tx.QueryRow(r.Context(), `SELECT authz.audit_check_access($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
 				store, x[0], x[1], q.Action, x[2], x[3], at, nullableJSON(q.Context)).Scan(&allowed)
+		}
+		if len(q.ContextualTuples) > 0 {
+			return tx.QueryRow(r.Context(), `SELECT authz.check_access_with_contextual_tuples_jsonb($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb)`,
+				store, x[0], x[1], q.Action, x[2], x[3], nullableJSON(q.Context), contextualTuplesArg(q.ContextualTuples)).Scan(&allowed)
 		}
 		return tx.QueryRow(r.Context(), `SELECT authz.check_access_with_context($1,$2,$3,$4,$5,$6,$7::jsonb)`,
 			store, x[0], x[1], q.Action, x[2], x[3], nullableJSON(q.Context)).Scan(&allowed)
@@ -226,9 +255,10 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 type actionsReq struct {
-	Subject  string          `json:"subject"`  // type:id
-	Resource string          `json:"resource"` // type:id
-	Context  json.RawMessage `json:"context"`
+	Subject          string                    `json:"subject"`  // type:id
+	Resource         string                    `json:"resource"` // type:id
+	Context          json.RawMessage           `json:"context"`
+	ContextualTuples []pgauthzadm.FixtureTuple `json:"contextual_tuples"`
 }
 
 // handleActions — POST .../actions: everything the subject holds and may
@@ -260,10 +290,21 @@ func (s *Server) handleActions(w http.ResponseWriter, r *http.Request) {
 		writePolicyDenied(w, "can_test_others", "the test policy limits you to your own access: the subject must be you ("+p.typ+":"+p.id+" or a configured person type with that id)")
 		return
 	}
+	if _, err := pgauthzadm.ContextualTuplesJSON(q.ContextualTuples); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	actions := []string{}
-	err = s.recordTest(r.Context(), p, store, map[string]any{"op": "actions", "subject": q.Subject, "resource": q.Resource}, func(tx pgx.Tx) error {
-		rows, err := tx.Query(r.Context(), `SELECT action FROM authz.list_actions($1,$2,$3,$4,$5,$6::jsonb) ORDER BY 1`,
-			store, st, sid, ot, oid, nullableJSON(q.Context))
+	err = s.recordTest(r.Context(), p, store, map[string]any{"op": "actions", "subject": q.Subject, "resource": q.Resource, "contextual_tuples": len(q.ContextualTuples)}, func(tx pgx.Tx) error {
+		var rows pgx.Rows
+		var err error
+		if len(q.ContextualTuples) > 0 {
+			rows, err = tx.Query(r.Context(), `SELECT action FROM authz.list_actions_with_contextual_tuples_jsonb($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb) ORDER BY 1`,
+				store, st, sid, ot, oid, nullableJSON(q.Context), contextualTuplesArg(q.ContextualTuples))
+		} else {
+			rows, err = tx.Query(r.Context(), `SELECT action FROM authz.list_actions($1,$2,$3,$4,$5,$6::jsonb) ORDER BY 1`,
+				store, st, sid, ot, oid, nullableJSON(q.Context))
+		}
 		if err != nil {
 			return err
 		}
@@ -295,7 +336,11 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var raw []byte
-	err := s.recordTest(r.Context(), p, store, map[string]any{"op": "explain", "subject": q.Subject, "action": q.Action, "resource": q.Resource, "redact": q.Redact}, func(tx pgx.Tx) error {
+	err := s.recordTest(r.Context(), p, store, map[string]any{"op": "explain", "subject": q.Subject, "action": q.Action, "resource": q.Resource, "redact": q.Redact, "contextual_tuples": len(q.ContextualTuples)}, func(tx pgx.Tx) error {
+		if len(q.ContextualTuples) > 0 {
+			return tx.QueryRow(r.Context(), `SELECT authz.explain_access_with_contextual_tuples_jsonb($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$10)`,
+				store, x[0], x[1], q.Action, x[2], x[3], nullableJSON(q.Context), contextualTuplesArg(q.ContextualTuples), q.SuccessfulOnly, q.Redact).Scan(&raw)
+		}
 		return tx.QueryRow(r.Context(), `SELECT authz.explain_access($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9)`,
 			store, x[0], x[1], q.Action, x[2], x[3], nullableJSON(q.Context), q.SuccessfulOnly, q.Redact).Scan(&raw)
 	})
@@ -311,10 +356,11 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 // ── Matrix: many subjects × actions × resources in one engine round trip ────
 
 type batchReq struct {
-	Subjects  []string        `json:"subjects"`  // type:id
-	Actions   []string        `json:"actions"`   // relations
-	Resources []string        `json:"resources"` // type:id
-	Context   json.RawMessage `json:"context"`
+	Subjects         []string                  `json:"subjects"`  // type:id
+	Actions          []string                  `json:"actions"`   // relations
+	Resources        []string                  `json:"resources"` // type:id
+	Context          json.RawMessage           `json:"context"`
+	ContextualTuples []pgauthzadm.FixtureTuple `json:"contextual_tuples"` // shared by every cell
 }
 
 type batchCell struct {
@@ -367,12 +413,24 @@ func (s *Server) handleCheckBatch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if _, err := pgauthzadm.ContextualTuplesJSON(q.ContextualTuples); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	raw, _ := json.Marshal(checks)
 	cells := make([]batchCell, 0, n)
-	err = s.recordTest(r.Context(), p, store, map[string]any{"op": "matrix", "subjects": q.Subjects, "actions": q.Actions, "resources": q.Resources, "checks": n}, func(tx pgx.Tx) error {
-		rows, err := tx.Query(r.Context(), `
-		SELECT user_type, user_id, relation, object_type, object_id, decision
-		  FROM authz.check_access_batch_typed_jsonb($1, $2::jsonb, $3::jsonb)`, store, string(raw), nullableJSON(q.Context))
+	err = s.recordTest(r.Context(), p, store, map[string]any{"op": "matrix", "subjects": q.Subjects, "actions": q.Actions, "resources": q.Resources, "checks": n, "contextual_tuples": len(q.ContextualTuples)}, func(tx pgx.Tx) error {
+		var rows pgx.Rows
+		var err error
+		if len(q.ContextualTuples) > 0 {
+			rows, err = tx.Query(r.Context(), `
+			SELECT user_type, user_id, relation, object_type, object_id, decision
+			  FROM authz.check_access_batch_with_contextual_tuples_jsonb($1, $2::jsonb, $3::jsonb, $4::jsonb)`, store, string(raw), nullableJSON(q.Context), contextualTuplesArg(q.ContextualTuples))
+		} else {
+			rows, err = tx.Query(r.Context(), `
+			SELECT user_type, user_id, relation, object_type, object_id, decision
+			  FROM authz.check_access_batch_typed_jsonb($1, $2::jsonb, $3::jsonb)`, store, string(raw), nullableJSON(q.Context))
+		}
 		if err != nil {
 			return err
 		}
@@ -397,13 +455,14 @@ func (s *Server) handleCheckBatch(w http.ResponseWriter, r *http.Request) {
 // ── Reverse search: the candidates you do not know ─────────────────────────
 
 type searchReq struct {
-	Mode     string          `json:"mode"`     // objects | subjects
-	Subject  string          `json:"subject"`  // objects: type:id; subjects: the subject TYPE to list
-	Action   string          `json:"action"`   // relation
-	Resource string          `json:"resource"` // objects: the object TYPE to list; subjects: type:id
-	Context  json.RawMessage `json:"context"`
-	Limit    int             `json:"limit"`
-	After    string          `json:"after"` // keyset cursor from the previous page
+	Mode             string                    `json:"mode"`     // objects | subjects
+	Subject          string                    `json:"subject"`  // objects: type:id; subjects: the subject TYPE to list
+	Action           string                    `json:"action"`   // relation
+	Resource         string                    `json:"resource"` // objects: the object TYPE to list; subjects: type:id
+	Context          json.RawMessage           `json:"context"`
+	ContextualTuples []pgauthzadm.FixtureTuple `json:"contextual_tuples"` // walked like stored tuples
+	Limit            int                       `json:"limit"`
+	After            string                    `json:"after"` // keyset cursor from the previous page
 }
 
 // handleSearch — "which <type> can this subject <action>?" (list_objects) and
@@ -429,6 +488,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writePolicyDenied(w, "can_test_search", "the test policy does not let you enumerate objects or subjects")
 		return
 	}
+	if _, err := pgauthzadm.ContextualTuplesJSON(q.ContextualTuples); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ctx := len(q.ContextualTuples) > 0
 	var sql string
 	var args []any
 	switch q.Mode {
@@ -438,16 +502,26 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "objects mode needs subject (type:id), action and the resource type")
 			return
 		}
-		sql = `SELECT object_id, is_wildcard FROM authz.list_objects($1, $2, $3, $4, $5, $6::jsonb, $7, 0, $8)`
-		args = []any{store, st, sid, q.Action, q.Resource, nullableJSON(q.Context), q.Limit, nullable(q.After)}
+		if ctx {
+			sql = `SELECT object_id, is_wildcard FROM authz.list_objects_with_contextual_tuples_jsonb($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, 0, $9)`
+			args = []any{store, st, sid, q.Action, q.Resource, nullableJSON(q.Context), contextualTuplesArg(q.ContextualTuples), q.Limit, nullable(q.After)}
+		} else {
+			sql = `SELECT object_id, is_wildcard FROM authz.list_objects($1, $2, $3, $4, $5, $6::jsonb, $7, 0, $8)`
+			args = []any{store, st, sid, q.Action, q.Resource, nullableJSON(q.Context), q.Limit, nullable(q.After)}
+		}
 	case "subjects":
 		ot, oid, ok := splitRef(q.Resource)
 		if !ok || q.Action == "" || q.Subject == "" {
 			writeError(w, http.StatusBadRequest, "subjects mode needs the subject type, action and resource (type:id)")
 			return
 		}
-		sql = `SELECT subject_id, is_wildcard FROM authz.list_subjects($1, $2, $3, $4, $5, $6::jsonb, $7, 0, $8)`
-		args = []any{store, q.Subject, q.Action, ot, oid, nullableJSON(q.Context), q.Limit, nullable(q.After)}
+		if ctx {
+			sql = `SELECT subject_id, is_wildcard FROM authz.list_subjects_with_contextual_tuples_jsonb($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, 0, $9)`
+			args = []any{store, q.Subject, q.Action, ot, oid, nullableJSON(q.Context), contextualTuplesArg(q.ContextualTuples), q.Limit, nullable(q.After)}
+		} else {
+			sql = `SELECT subject_id, is_wildcard FROM authz.list_subjects($1, $2, $3, $4, $5, $6::jsonb, $7, 0, $8)`
+			args = []any{store, q.Subject, q.Action, ot, oid, nullableJSON(q.Context), q.Limit, nullable(q.After)}
+		}
 	default:
 		writeError(w, http.StatusBadRequest, "mode must be objects or subjects")
 		return
@@ -457,7 +531,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Wildcard bool   `json:"wildcard"`
 	}
 	hits := []hit{}
-	err = s.recordTest(r.Context(), p, store, map[string]any{"op": "search", "mode": q.Mode, "subject": q.Subject, "action": q.Action, "resource": q.Resource}, func(tx pgx.Tx) error {
+	err = s.recordTest(r.Context(), p, store, map[string]any{"op": "search", "mode": q.Mode, "subject": q.Subject, "action": q.Action, "resource": q.Resource, "contextual_tuples": len(q.ContextualTuples)}, func(tx pgx.Tx) error {
 		rows, err := tx.Query(r.Context(), sql, args...)
 		if err != nil {
 			return err

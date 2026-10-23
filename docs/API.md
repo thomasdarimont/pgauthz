@@ -31,6 +31,7 @@ always uses explicit separate parameters for type, ID, and relation.
 - [Functions](#functions)
   - [check_access — "Can user X do Y on object Z?"](#check_access--can-user-x-do-y-on-object-z)
   - [check_access_with_contextual_tuples — with ephemeral per-request tuples](#check_access_with_contextual_tuples--with-ephemeral-per-request-tuples)
+  - [Contextual tuples in search and explain — the `_with_contextual_tuples_jsonb` family](#contextual-tuples-in-search-and-explain--the-_with_contextual_tuples_jsonb-family)
   - [list_objects — "Which objects of type Z can user X do Y on?"](#list_objects--which-objects-of-type-z-can-user-x-do-y-on)
   - [list_subjects — "Which users of type X can do Y on object Z?"](#list_subjects--which-users-of-type-x-can-do-y-on-object-z)
   - [list_actions — "What can user X do on object Z?"](#list_actions--what-can-user-x-do-on-object-z)
@@ -497,6 +498,48 @@ order. At most `authz.max_batch_checks` checks per call (a GUC, default
 5000: `SET authz.max_batch_checks = 20000` or `ALTER ROLE … SET`).
 Contextual-reader tier, like the single-check variant. The management
 console computes a person's capabilities on every store this way.
+
+### Contextual tuples in search and explain — the `_with_contextual_tuples_jsonb` family
+
+The searches and the explanation take contextual tuples too — the same
+JSON shape, the same `authz_contextual_reader` tier, and the same
+semantics as the checks: the tuples exist for this call only, nothing is
+written.
+
+```sql
+authz.list_objects_with_contextual_tuples_jsonb(p_store, p_user_type, p_user_id, p_relation, p_object_type,
+    context jsonb DEFAULT NULL, p_contextual_tuples jsonb DEFAULT NULL,
+    p_limit int DEFAULT NULL, p_offset int DEFAULT 0, p_after text DEFAULT NULL)
+  RETURNS TABLE (object_id text, is_wildcard boolean)
+authz.list_subjects_with_contextual_tuples_jsonb(p_store, p_subject_type, p_relation, p_object_type, p_object_id,
+    context jsonb DEFAULT NULL, p_contextual_tuples jsonb DEFAULT NULL,
+    p_limit int DEFAULT NULL, p_offset int DEFAULT 0, p_after text DEFAULT NULL)
+  RETURNS TABLE (subject_id text, is_wildcard boolean)
+authz.list_actions_with_contextual_tuples_jsonb(p_store, p_user_type, p_user_id, p_object_type, p_object_id,
+    context jsonb DEFAULT NULL, p_contextual_tuples jsonb DEFAULT NULL)
+  RETURNS TABLE (action text)
+authz.explain_access_with_contextual_tuples_jsonb(p_store, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
+    context jsonb DEFAULT NULL, p_contextual_tuples jsonb DEFAULT NULL,
+    p_successful_only boolean DEFAULT false, p_redact boolean DEFAULT false)
+  RETURNS jsonb
+```
+
+In the searches a contextual tuple takes part in the **candidate
+enumeration** exactly like a stored one — it seeds a path (the subject's
+own grant), extends one (a userset or a tuple-to-userset link) or names a
+concrete subject — so an object that has no stored tuples at all is found
+through a contextual grant, and the final per-candidate decision sees the
+tuples as well. In the explanation a step granted by one carries the reason
+`contextual_tuple`. The plain functions (`list_objects`, `explain_access`,
+…) never see contextual tuples, whatever the transaction loaded before.
+
+```sql
+-- "Which documents could dave read if he were frank's deputy on the spec?"
+SELECT * FROM authz.list_objects_with_contextual_tuples_jsonb('gdrive',
+    'user', 'dave', 'can_read', 'doc', NULL,
+    '[{"user_type":"user","user_id":"dave","relation":"viewer","object_type":"doc","object_id":"design_spec"}]');
+-- => design_spec (through the contextual grant), announcement (public)
+```
 
 ### evaluate_condition — A condition's verdict for mocked contexts
 

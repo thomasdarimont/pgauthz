@@ -13,6 +13,7 @@ import {
   listSubjectsCaseYAML,
   listActionsCaseYAML,
   appendCase,
+  parseTupleLines,
 } from './pgc-scenarios.js';
 
 // Test tab, four ways to ask the managed store:
@@ -75,6 +76,8 @@ export class PgcTest extends PgcElement {
     actions: { state: true },
     resources: { state: true },
     context: { state: true },
+    ctxTuples: { state: true }, // contextual tuples, one per line: subject relation object
+    ctxOpen: { state: true }, // the contextual tuples disclosure, as the person left it (kept across modes)
     searchMode: { state: true },
     decision: { state: true },
     actionSet: { state: true }, // the actions mode's answer: {subject, resource, actions, context}
@@ -107,6 +110,8 @@ export class PgcTest extends PgcElement {
     this.actions = '';
     this.resources = '';
     this.context = '';
+    this.ctxTuples = '';
+    this.ctxOpen = false;
     this.searchMode = 'objects';
     this.decision = null;
     this.tree = null;
@@ -211,6 +216,14 @@ export class PgcTest extends PgcElement {
     }
   }
 
+  // The contextual tuples of the question — [{user, relation, object}] in
+  // OpenFGA notation, undefined for none; a malformed line is the run's
+  // error (run() shows it).
+  _ctxTuples() {
+    const ts = parseTupleLines(this.ctxTuples);
+    return ts.length ? ts : undefined;
+  }
+
   _wrap(fn) {
     return run(this, async () => {
       try {
@@ -230,6 +243,7 @@ export class PgcTest extends PgcElement {
         action: this.action.trim(),
         resource: this.resource.trim(),
         context: this._ctx(),
+        contextual_tuples: this._ctxTuples(),
       };
       const at = this.at ? new Date(this.at).toISOString() : '';
       const [c, x] = await Promise.all([
@@ -249,7 +263,12 @@ export class PgcTest extends PgcElement {
     e?.preventDefault();
     this._clear();
     await this._wrap(async () => {
-      const q = { subject: this.subject.trim(), resource: this.resource.trim(), context: this._ctx() };
+      const q = {
+        subject: this.subject.trim(),
+        resource: this.resource.trim(),
+        context: this._ctx(),
+        contextual_tuples: this._ctxTuples(),
+      };
       const r = await api.actions(this.store, q);
       this.actionSet = { ...q, actions: r.actions };
     });
@@ -318,6 +337,7 @@ export class PgcTest extends PgcElement {
                   resource: a.resource,
                   actions: a.actions,
                   context: a.context,
+                  contextualTuples: a.contextual_tuples,
                 }),
               )}
           >
@@ -363,6 +383,7 @@ export class PgcTest extends PgcElement {
         actions: parseList(this.actions),
         resources: parseList(this.resources),
         context: this._ctx(),
+        contextual_tuples: this._ctxTuples(),
       });
       this.cells = r.cells;
     });
@@ -378,6 +399,7 @@ export class PgcTest extends PgcElement {
         action: this.action.trim(),
         resource: this.resource.trim(),
         context: this._ctx(),
+        contextual_tuples: this._ctxTuples(),
       });
     });
   }
@@ -409,6 +431,21 @@ export class PgcTest extends PgcElement {
     const [st, sid] = this.subject.split(':');
     const [ot, oid] = this.resource.split(':');
     const args = [this.store, st, sid, this.action, ot, oid].map(esc);
+    const ts = this.asked?.contextual_tuples;
+    if (ts?.length) {
+      // the contextual variant: the tuples as the engine's JSON shape
+      const cts = ts.map((x) => {
+        const [ut, rest] = x.user.split(/:(.*)/s);
+        const [uid, urel] = rest.split('#');
+        const [ot2, oid2] = x.object.split(/:(.*)/s);
+        const o = { user_type: ut, user_id: uid, relation: x.relation, object_type: ot2, object_id: oid2 };
+        if (urel) o.user_relation = urel;
+        return o;
+      });
+      args.push(this.context.trim() ? `${esc(this.context.trim())}::jsonb` : 'NULL');
+      args.push(`${esc(JSON.stringify(cts))}::jsonb`);
+      return `SELECT authz.explain_access_with_contextual_tuples_jsonb(${args.join(', ')});`;
+    }
     if (this.context.trim()) args.push(`${esc(this.context.trim())}::jsonb`);
     return `SELECT authz.explain_access(${args.join(', ')});`;
   }
@@ -741,21 +778,55 @@ export class PgcTest extends PgcElement {
       ${a.at ? html`<span class="badge warn">${t('at')} ${fmtTime(a.at)} · ${fmtRelative(a.at)}</span>` : html`<span class="badge muted">${t('now')}</span>`}
       ${this.successfulOnly ? html`<span class="badge muted">${t('deciding path only')}</span>` : nothing}
       ${this.redact ? html`<span class="badge muted">${t('redacted')}</span>` : nothing}
+      ${a.contextual_tuples?.length ? html`<span class="badge warn">${t('{n} contextual tuple(s)', { n: a.contextual_tuples.length })}</span>` : nothing}
     </div>`;
   }
 
   _contextField() {
     return html`<details style="margin-top:var(--s-3)">
-      <summary class="help">${t('Request context (JSON, for conditions)')}</summary>
+        <summary class="help">${t('Request context (JSON, for conditions)')}</summary>
+        <span class="help"
+          >${t('What a check would send for the conditions to read, e.g. {"ip": "10.1.2.3", "mfa": true}.')}</span
+        >
+        <pgc-json
+          rows="3"
+          testid="test-input-context"
+          .value=${this.context}
+          @json-input=${(e) => (this.context = e.detail.text)}
+        ></pgc-json>
+      </details>
+      ${this._ctxTuplesField()}`;
+  }
+
+  // Contextual tuples: ephemeral relationships that take part in this
+  // question only — "would bob be allowed if he were a member of team X?".
+  // Shared by the single check, the matrix and every search direction;
+  // not by "As me via pgauthzd" (AuthZEN carries none). Nothing is written.
+  _ctxTuplesField() {
+    const n = this.ctxTuples.split('\n').filter((l) => l.trim() && !l.trim().startsWith('#')).length;
+    return html`<details
+      style="margin-top:var(--s-3)"
+      ?open=${this.ctxOpen}
+      @toggle=${(e) => (this.ctxOpen = e.target.open)}
+    >
+      <summary class="help">
+        ${t('Contextual tuples')}
+        ${help('Hypothetical relationships for this question only — "would they be allowed if this tuple existed?". They take part in the check, its tree and the searches like stored tuples; nothing is written.')}
+        ${n ? html`<span class="badge warn">${t('{n} contextual tuple(s)', { n })}</span>` : nothing}
+      </summary>
       <span class="help"
-        >${t('What a check would send for the conditions to read, e.g. {"ip": "10.1.2.3", "mfa": true}.')}</span
+        >${t('One per line: subject relation object, e.g. user:bob member team:eng or team:eng#member viewer doc:x. # starts a comment.')}</span
       >
-      <pgc-json
+      <textarea
+        class="mono"
         rows="3"
-        testid="test-input-context"
-        .value=${this.context}
-        @json-input=${(e) => (this.context = e.detail.text)}
-      ></pgc-json>
+        spellcheck="false"
+        data-testid="test-input-ctx-tuples"
+        placeholder="user:bob viewer doc:x
+# a commented-out line"
+        .value=${this.ctxTuples}
+        @input=${(e) => (this.ctxTuples = e.target.value)}
+      ></textarea>
     </details>`;
   }
 
@@ -844,6 +915,7 @@ export class PgcTest extends PgcElement {
                                 resource: this.asked.resource,
                                 decision: this.decision,
                                 context: this.asked.context,
+                                contextualTuples: this.asked.contextual_tuples,
                               }),
                             )}
                         >
@@ -1069,6 +1141,7 @@ export class PgcTest extends PgcElement {
                                   type: this.resource.trim(),
                                   ids: h.hits.map((x) => x.id),
                                   context: this._ctx(),
+                                  contextualTuples: this._ctxTuples(),
                                 })
                               : listSubjectsCaseYAML({
                                   object: this.resource.trim(),
@@ -1076,6 +1149,7 @@ export class PgcTest extends PgcElement {
                                   type: this.subject.trim(),
                                   ids: h.hits.map((x) => x.id),
                                   context: this._ctx(),
+                                  contextualTuples: this._ctxTuples(),
                                 }),
                           )}
                       >

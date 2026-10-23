@@ -91,6 +91,27 @@ tests:
         type: doc
         assertions: { can_read: [doc:design_spec, doc:announcement], can_write: [] }
 
+  # Contextual tuples: relationships that exist for this question only —
+  # a deputy arrangement the application asserts at request time, say. They
+  # take part in checks and searches like stored tuples; nothing is written.
+  - name: a vacation substitute reads the spec while the handover lasts
+    check:
+      - user: user:dave
+        object: doc:design_spec
+        assertions: { can_read: true, download: true, can_write: false }
+        contextual_tuples:
+          - { user: user:dave, relation: viewer, object: doc:design_spec }
+      - user: user:dave
+        object: doc:design_spec
+        assertions: { can_read: false }
+        description: without the contextual grant dave is a stranger to the spec
+    list_objects:
+      - user: user:dave
+        type: doc
+        assertions: { can_read: [doc:design_spec, doc:announcement] }
+        contextual_tuples:
+          - { user: user:dave, relation: viewer, object: doc:design_spec }
+
   # The reverse search: who reaches a doc, per relation — alice through the
   # tree, frank as owner, bob directly, charlie through the group; the public
   # folder's wildcard lists as user:*.

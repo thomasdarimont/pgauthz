@@ -73,6 +73,27 @@ END;
 $$;
 
 ------------------------------------------------------------------------
+-- _ctx_tuples: the transaction's contextual tuples as rows — empty when
+-- none were loaded (the temp table does not exist) — for the candidate
+-- enumeration of the search functions: a contextual tuple seeds or
+-- extends a grant path exactly like a stored one. Loaded by
+-- _load_contextual_tuples (access.sql); the ids are the store's.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._ctx_tuples()
+RETURNS TABLE (user_type integer, user_id text, user_relation integer,
+               relation integer, object_type integer, object_id text)
+LANGUAGE plpgsql STABLE ROWS 10 AS $$
+BEGIN
+    IF to_regclass('pg_temp.ctx_tuples') IS NULL THEN
+        RETURN;
+    END IF;
+    RETURN QUERY EXECUTE '
+        SELECT user_type, user_id, user_relation, relation, object_type, object_id
+          FROM pg_temp.ctx_tuples';
+END;
+$$;
+
+------------------------------------------------------------------------
 -- _eval_direct: evaluates a DIRECT model rule — exact tuple match,
 -- wildcard match, condition evaluation, contextual tuples, and
 -- userset expansion. Writes trace steps when p_trace is true.

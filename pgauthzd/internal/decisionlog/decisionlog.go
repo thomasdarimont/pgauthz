@@ -50,7 +50,11 @@ type Entry struct {
 	HookDenials []HookDenial `json:"hook_denials,omitempty"`
 	// ContextKeys: names of the request-context keys supplied, sorted. Never values.
 	ContextKeys []string `json:"context_keys,omitempty"`
-	Actor       string   `json:"actor,omitempty"` // authenticated caller, "type:id"
+	// ContextualTuples: how many what-if tuples the caller injected into this
+	// decision (native check) — a line with it answers a hypothetical, not
+	// the stored graph. Never the tuples themselves.
+	ContextualTuples int    `json:"contextual_tuples,omitempty"`
+	Actor            string `json:"actor,omitempty"` // authenticated caller, "type:id"
 	// Client: the calling application — the token's azp (else client_id). Set
 	// even when the credential names no user subject (a PEP's service token),
 	// so every line says which app asked about whom (ADR 0014).

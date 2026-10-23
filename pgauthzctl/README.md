@@ -68,7 +68,8 @@ a pinned `name@version`) and use `rollout` as the progress/retry view — see
 ## Test fixtures (`tests.authz.yaml`)
 
 A superset of OpenFGA's store-test format; pgauthz extensions are additive
-(`context`, `contextual_tuples`, golden `explain` reason paths):
+(`context` and `contextual_tuples` on check and every list case, golden
+`explain` reason paths):
 
 ```yaml
 model_file: ./model.fga        # or: model: saas_core@3 (registry ref)

@@ -483,3 +483,36 @@ func TestPEPClientsWithCoarseSwitch(t *testing.T) {
 		t.Fatalf("outside production the combination is a warning, got %v", err)
 	}
 }
+
+func TestContextualTuplesMode(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://u:p@h/db")
+	t.Setenv("JWKS_FILE", "")
+	t.Setenv("JWKS_URL", "")
+	t.Setenv("JWT_ISSUERS", `[{"issuer":"https://idp","audience":"api","jwks_file":"/dev/null","stores":["demo"]}]`)
+	t.Setenv("CURSOR_SEAL_KEY", "0123456789abcdef0123456789abcdef")
+	t.Setenv("DEPLOYMENT_ENVIRONMENT", "dev")
+
+	c, err := Load()
+	if err != nil || c.ContextualTuples != ContextualTuplesTrustedPEPs {
+		t.Fatalf("default must be trusted-peps, got %q %v", c.ContextualTuples, err)
+	}
+	t.Setenv("CONTEXTUAL_TUPLES", "sometimes")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CONTEXTUAL_TUPLES") {
+		t.Fatalf("an unknown mode must be refused, got %v", err)
+	}
+	t.Setenv("CONTEXTUAL_TUPLES", "any")
+	if _, err := Load(); err != nil {
+		t.Fatalf("any outside production is a warning, got %v", err)
+	}
+	t.Setenv("DEPLOYMENT_ENVIRONMENT", "production")
+	t.Setenv("SEARCH_REQUIRED_ROLE", "authz_auditor")
+	t.Setenv("EXPLAIN_REQUIRED_ROLE", "authz_auditor")
+	t.Setenv("WATCH_REQUIRED_ROLE", "authz_auditor")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CONTEXTUAL_TUPLES=any") {
+		t.Fatalf("production must refuse any, got %v", err)
+	}
+	t.Setenv("CONTEXTUAL_TUPLES", "off")
+	if _, err := Load(); err != nil && strings.Contains(err.Error(), "CONTEXTUAL_TUPLES") {
+		t.Fatalf("off is fine in production, got %v", err)
+	}
+}

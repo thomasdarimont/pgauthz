@@ -374,6 +374,9 @@ is the only backend ([ADR 0007](adr/0007-pgauthzd-front-door.md)).
 - `list_objects` — which objects can a user access?
 - `list_subjects` — who can access an object?
 - `list_actions` — what can a user do on an object?
+- `list_objects_with_contextual_tuples_jsonb` / `list_subjects_…` /
+  `list_actions_…` / `explain_access_…` — the same with ephemeral tuples
+  (contextual-reader tier, like `check_access_with_contextual_tuples`)
 
 **Write operations:**
 - `write_tuple` / `delete_tuple` — single tuple

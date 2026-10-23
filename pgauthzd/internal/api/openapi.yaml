@@ -2013,7 +2013,9 @@ components:
           description: >
             Ephemeral tuples evaluated alongside the stored graph for this
             check only (never persisted). Requires the contextual-reader
-            capability on the connection role.
+            capability on the connection role, and a caller the instance's
+            CONTEXTUAL_TUPLES mode admits (default trusted-peps: a client
+            that may assert a subject for the store); otherwise 403.
       required: [action, resource]
     NativeCheckResponse:
       type: object

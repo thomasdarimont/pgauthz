@@ -67,7 +67,9 @@ by `init.sh` on every run.
       ask for an arbitrary subject. See [OPA read subject policy](#opa-read-subject-policy-require_token_for_reads).
 - [ ] **Grant `authz_contextual_reader` only to trusted callers** (it lets a
       caller inject ephemeral tuples into a decision). It is granted to no one
-      by default. See [Role recipes](#role-recipes).
+      by default. See [Role recipes](#role-recipes). On pgauthzd, keep
+      `CONTEXTUAL_TUPLES=trusted-peps` (default) or set `off`; see
+      [Contextual tuples policy](#contextual-tuples-policy).
 - [ ] **Set a real JWKS / JWT issuer / audience** (`JWKS_URL`, `JWT_ISSUER`,
       `JWT_AUDIENCE`) for OPA and the AuthZEN services. The AuthZEN services can
       trust several issuers at once via `JWT_ISSUERS` (JSON array of
@@ -355,6 +357,30 @@ the audit author (`performed_by`). The writer always runs as `authz_writer`
 regardless of token contents, so a forged or over-scoped role claim cannot reach
 admin operations. Admin/model management is intentionally **out of** the
 write path — perform it via a separate `authz_admin` channel.
+
+## Contextual tuples policy
+
+A native check may carry `contextual_tuples`: what-if relationships
+evaluated with the stored graph for that one decision, never written. The
+engine gates the capability by DB role (`authz_contextual_reader`, held by
+pgauthzd's `authzen_direct`), and pgauthzd gates it by caller on the public
+listener with `CONTEXTUAL_TUPLES`:
+
+- **`trusted-peps` (default):** only a caller that may assert a subject for
+  the store — a `pep_clients` entry of its issuer, or `ALLOW_SUBJECT_OVERRIDE=true`.
+  The same trust boundary as the subject policy below: a caller that may
+  say *who* is asked about may also say *what if*.
+- **`off`:** nobody on the public listener. Choose this when no application
+  needs what-if checks.
+- **`any`:** every authenticated caller. Refused under the production label.
+
+The OPA callback listener always accepts them (its caller is OPA; a policy
+may compute ephemeral tuples from token claims). A refused request is a
+`403`; an accepted one is logged with `contextual_tuples: <count>` so the
+decision log tells a hypothetical from a decision on the stored graph. What
+a caller gains by injecting is bounded: a forged allow to its *own*
+question and what-if probing of the graph; nothing persists, and the
+`list_*`/`explain` plain functions never see the tuples.
 
 ## AuthZEN subject policy
 

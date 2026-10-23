@@ -314,6 +314,22 @@ When no JWT subject is present (e.g. a no-auth/system deployment), the body
 subject is used regardless of the flag. A PEP credential for the OpenID
 conformance suite therefore carries no `sub` (see `conformance/`).
 
+**Contextual tuples.** The native check takes `contextual_tuples`: what-if
+relationships evaluated with the stored graph for that one decision and
+never written ("would alice be allowed if she were a member of team X?").
+A caller that can shape the question this way can forge an allow to its
+own question and probe the graph with hypotheticals, so
+`CONTEXTUAL_TUPLES` says who may, on the public listener: `off` (nobody),
+`trusted-peps` (the default: only a caller that may assert a subject for
+the store — a `pep_clients` entry, or `ALLOW_SUBJECT_OVERRIDE=true` — the
+same trust boundary as above), or `any` (every authenticated caller;
+refused in production). Anyone else gets `403`. The OPA callback listener
+always accepts them: its caller is OPA. A decision-log line of such a
+check carries `contextual_tuples: <count>` (never the tuples), so an
+auditor can tell a hypothetical from a decision on the stored graph. The
+engine-side gate stays: the instance's DB role must hold
+`authz_contextual_reader` (`authzen_direct` does).
+
 ### Two ways to call pgauthzd
 
 The flag encodes a choice every integration makes: **whose token** reaches
@@ -525,6 +541,7 @@ All configuration is via environment variables.
 | `ACTOR_CLAIM` | *(unset)* | Dotted path of a claim naming a **delegated actor** (RFC 8693 `act.client_id`; Keycloak token-exchange delegation). When it resolves to a non-empty string, the principal is `ACTOR_SUBJECT_TYPE:<value>` and the token's own subject is carried as `on_behalf_of` (decision log). Unset = such tokens are their subject |
 | `ACTOR_SUBJECT_TYPE` | `agent` | Subject type of a delegated actor |
 | `ALLOW_SUBJECT_OVERRIDE` | `false` | Let EVERY token assert a request-body subject (a PDP for trusted callers only). Default false = self-subject: a mismatched body subject is `403` — unless the token's client is a `pep_clients` entry of its issuer for that store ([ADR 0014](../docs/adr/0014-subject-assertion-policy.md)). Refused in production next to `pep_clients` |
+| `CONTEXTUAL_TUPLES` | `trusted-peps` | Who may send `contextual_tuples` (what-if tuples) with a native check on the public listener: `off` (nobody), `trusted-peps` (callers that may assert a subject for the store: `pep_clients` / `ALLOW_SUBJECT_OVERRIDE`), `any` (every authenticated caller; refused in production). Others get `403`; the OPA callback listener always accepts them. The decision log counts them per line |
 | `DEFAULT_STORE` | `demo` | Default authorization store |
 | `STORE_HEADER` | `X-PGAuthz-Store` | HTTP header for store selection |
 | `REQUIRE_STORE_BINDING` | `false` | Refuse to start unless **every** trusted issuer has a `stores` binding (recommended `true` for multi-tenant deployments); off = unbound issuers are unrestricted, with a startup warning when several issuers are configured |
@@ -674,7 +691,7 @@ Without a configured native backend the routes return `501 Not Implemented`.
 
 | Method | Path | Profile | Description |
 |--------|------|---------|-------------|
-| POST | `/pgauthz/v1/check` | direct | Raw, **policy-free** access decision (`{"allowed":bool}`); `context` for conditions, `detail:true` for the rich result, `contextual_tuples` for an ephemeral-tuple check (needs `authz_contextual_reader`). |
+| POST | `/pgauthz/v1/check` | direct | Raw, **policy-free** access decision (`{"allowed":bool}`); `context` for conditions, `detail:true` for the rich result, `contextual_tuples` for an ephemeral-tuple check (needs `authz_contextual_reader` on the DB role, and a caller `CONTEXTUAL_TUPLES` admits — trusted PEPs by default). |
 | POST | `/pgauthz/v1/check-batch` | direct | Many raw decisions in one round-trip (`{"results":[bool,…]}`); optional `semantic`. |
 | POST | `/pgauthz/v1/list-objects` | direct | Objects of a type the subject can act on (`list_objects`); keyset-paginated. |
 | POST | `/pgauthz/v1/list-subjects` | direct | Subjects of a type that can act on the object (`list_subjects`); keyset-paginated. |

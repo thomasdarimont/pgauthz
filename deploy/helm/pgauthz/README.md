@@ -500,7 +500,10 @@ allow-list, which is why it's off by default.
 - Only the front door (the OPA-fronted pgauthzd / OPA's policy API, and optionally
   the AuthZEN direct API) is exposed; the pgauthzd reader/writer callbacks +
   Postgres are ClusterIP + default-deny NetworkPolicy.
-- `opa.requireTokenForReads=true`, AuthZEN `ALLOW_SUBJECT_OVERRIDE=false`.
+- `opa.requireTokenForReads=true`, AuthZEN `ALLOW_SUBJECT_OVERRIDE=false`,
+  `contextualTuples: trusted-peps` (→ `CONTEXTUAL_TUPLES`; `off` to refuse
+  what-if tuples on the public listeners entirely, `any` is refused in
+  production).
 - Override `secrets.*` (dev defaults) and `opa.jwks` before real use; prefer
   `secrets.existingSecret` backed by a secret store.
 

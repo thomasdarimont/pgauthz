@@ -374,6 +374,7 @@ These are where real compromise would come from — they are assumptions the eng
 | OPA compromise / wrong policy | OPA is the PEP — a bad policy or breach bypasses authn/authz. Team-added Rego packages need an explicit line in the `system_authz` public-path allowlist, so that file is the governance chokepoint | Review Rego; pin/version OPA; gate `system_authz.rego` edits in CI/CODEOWNERS; treat policies as security-critical |
 | Playground deployed beyond dev | Arbitrary-subject probing if `PLAYGROUND_EXPLORE_ROLE` unset (read-only; P1) | Keep it opt-in/dev-only; set `PLAYGROUND_EXPLORE_ROLE`; never host-expose |
 | `authz_contextual_reader` granted too broadly | "What-if" tuple injection can probe for unpublished grants | Grant only to trusted backends (default: not granted to `authz_reader`) |
+| `CONTEXTUAL_TUPLES=any` on a public pgauthzd listener | Every authenticated caller can forge an allow to its own question and probe the graph with what-if tuples (never persisted; the decision log counts them) | Keep `trusted-peps` (default: `pep_clients` / `ALLOW_SUBJECT_OVERRIDE` callers) or `off`; `any` is refused in production |
 | Dev secrets shipped (`authz` passwords, `opaAdminToken`) | Defaults are DEV ONLY | Override every secret; use a secret store (see PRODUCTION.md) |
 | Superuser can bypass audit triggers | `session_replication_role` defeats any trigger (inherent to PostgreSQL) | Restrict superuser logins administratively |
 
@@ -386,7 +387,7 @@ Deploy-time (most are in [`PRODUCTION.md`](PRODUCTION.md) — this cross-checks 
 - [ ] **Freshness (if enabled):** strong per-deployment `FRESHNESS_TOKEN_KEYS`; rotation via the three-phase keyring overlap (PRODUCTION.md); `FRESHNESS_PRIMARY_URL` (if used) is a **reader-role** DSN, decision-only + non-OPA.
 - [ ] **Metrics:** `METRICS_LISTEN_ADDR` non-public; scrape restricted to Prometheus (chart `NetworkPolicy` / no host port).
 - [ ] Every secret overridden; `opa.requireTokenForReads=true` unless a trusted PEP fronts reads.
-- [ ] `authz_contextual_reader` granted only to trusted services (and only if used).
+- [ ] `authz_contextual_reader` granted only to trusted services (and only if used); pgauthzd `CONTEXTUAL_TUPLES` left at `trusted-peps` or set to `off`.
 - [ ] **Event retention ≥ the longest gate window:** `SELECT authz.max_gate_window();` against the retention schedule. The engine refuses a shorter cutoff (`drop_event_partitions_before` / `purge_events` raise unless `p_force`), so a retention job should never need `p_force` in production.
 - [ ] **Production profile on:** `DEPLOYMENT_ENVIRONMENT=production` with `SEARCH_REQUIRED_ROLE`, `EXPLAIN_REQUIRED_ROLE` and `WATCH_REQUIRED_ROLE` set to an auditor-grade role (chart: `values-production.yaml`); `ALLOW_OPEN_DIAGNOSTICS` / `diagnostics.allowOpenInProduction` **not** set.
 - [ ] **`authz_recorder` / `RECORDER_ROLE` issued only to enforcement points and ingestion services** — never to end-user-facing clients: recorded events drive temporal gates, so a recorder can move a gate (fabricate an approval, lock a principal out, spend a quota). Per-recorder action allowlists (`grant_recorder_actions`) and `recorded_by` pins on sensitive clauses in place. (ADR 0012 §3; external review 2026-09.)

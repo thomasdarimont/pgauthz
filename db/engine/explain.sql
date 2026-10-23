@@ -176,16 +176,21 @@ $$;
 --       'internal_user', 'alice', 'can_read', 'document', 'doc_payroll_001');
 --   SELECT authz.explain_access('demo', ..., p_redact => true);
 ------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION authz.explain_access(
+-- The explanation lives in _explain_access; explain_access is the public,
+-- stored-tuples-only entry point and explain_access_with_contextual_tuples_jsonb
+-- (below) the one that also sees the transaction's contextual tuples
+-- (p_has_ctx — a match on one is a `contextual_tuple` step).
+CREATE OR REPLACE FUNCTION authz._explain_access(
     p_store           text,
     p_user_type       text,
     p_user_id         text,
     p_relation        text,
     p_object_type     text,
     p_object_id       text,
-    context           jsonb DEFAULT NULL,
-    p_successful_only boolean DEFAULT false,
-    p_redact          boolean DEFAULT false
+    context           jsonb,
+    p_successful_only boolean,
+    p_redact          boolean,
+    p_has_ctx         boolean
 ) RETURNS jsonb
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -214,7 +219,8 @@ BEGIN
         v_relation,
         v_object_type,
         p_object_id,
-        context
+        context,
+        p_has_ctx
     );
     PERFORM authz._trace_end();
 
@@ -341,6 +347,55 @@ BEGIN
         'trace',    v_trace,
         'tree',     v_tree
     );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION authz.explain_access(
+    p_store           text,
+    p_user_type       text,
+    p_user_id         text,
+    p_relation        text,
+    p_object_type     text,
+    p_object_id       text,
+    context           jsonb DEFAULT NULL,
+    p_successful_only boolean DEFAULT false,
+    p_redact          boolean DEFAULT false
+) RETURNS jsonb
+LANGUAGE plpgsql AS $$
+BEGIN
+    RETURN authz._explain_access(
+        p_store, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
+        context, p_successful_only, p_redact, false);
+END;
+$$;
+
+------------------------------------------------------------------------
+-- explain_access_with_contextual_tuples_jsonb: explain_access with
+-- ephemeral tuples for this call (the shape of
+-- check_access_with_contextual_tuples_jsonb; see _load_contextual_tuples
+-- in access.sql). A step granted by one of them carries the reason
+-- `contextual_tuple`. Gated by authz_contextual_reader like the
+-- contextual checks.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.explain_access_with_contextual_tuples_jsonb(
+    p_store             text,
+    p_user_type         text,
+    p_user_id           text,
+    p_relation          text,
+    p_object_type       text,
+    p_object_id         text,
+    context             jsonb DEFAULT NULL,
+    p_contextual_tuples jsonb DEFAULT NULL,
+    p_successful_only   boolean DEFAULT false,
+    p_redact            boolean DEFAULT false
+) RETURNS jsonb
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_has_ctx boolean := authz._load_contextual_tuples(authz._s(p_store), p_contextual_tuples);
+BEGIN
+    RETURN authz._explain_access(
+        p_store, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
+        context, p_successful_only, p_redact, v_has_ctx);
 END;
 $$;
 

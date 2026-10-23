@@ -135,6 +135,26 @@ func (h *Handler) mayAssertSubject(r *http.Request, store string) bool {
 	return false
 }
 
+// mayUseContextualTuples applies CONTEXTUAL_TUPLES to a request that carries
+// contextual tuples: the callback listener always may (its caller is OPA, a
+// trusted sidecar); on the public listener "off" never, "any" every caller,
+// and "trusted-peps" (the default) only a caller that may assert a subject
+// for the store — the same trust boundary that lets a caller shape the
+// question (pep_clients / ALLOW_SUBJECT_OVERRIDE).
+func (h *Handler) mayUseContextualTuples(r *http.Request, store string) bool {
+	if h.listener == "callback" {
+		return true
+	}
+	switch h.cfg.ContextualTuples {
+	case config.ContextualTuplesAny:
+		return true
+	case config.ContextualTuplesOff:
+		return false
+	default:
+		return h.mayAssertSubject(r, store)
+	}
+}
+
 // assertionDenied explains a refused assertion: who tried, for which store.
 // It IS an errSubjectForbidden (errors.Is), so the 403 mapping applies.
 func (h *Handler) assertionDenied(r *http.Request, store string) error {

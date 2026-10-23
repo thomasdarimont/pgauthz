@@ -9,6 +9,36 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **`CONTEXTUAL_TUPLES` — who may inject what-if tuples (pgauthzd).** The
+  native check accepted `contextual_tuples` from every authenticated caller
+  of the public listener, the instance's DB role holding
+  `authz_contextual_reader` for the OPA callback's sake. The new setting
+  bounds it: `off` (nobody), `trusted-peps` (the default: callers that may
+  assert a subject for the store — `pep_clients` / `ALLOW_SUBJECT_OVERRIDE`
+  — the same trust boundary that lets a caller shape the question), `any`
+  (every authenticated caller; refused under the production label, a
+  startup warning elsewhere). Others get a `403`; the OPA callback listener
+  always accepts them. The decision log counts a check's contextual tuples
+  (`contextual_tuples`, never the tuples), `pgauthzd doctor` reports the
+  mode, and the Helm chart (`contextualTuples`) and both compose files set
+  it.
+- **Contextual tuples in search and explain, and on the console's Test
+  tab.** The engine gains `list_objects_with_contextual_tuples_jsonb`,
+  `list_subjects_…`, `list_actions_…` and `explain_access_…` (gated by
+  `authz_contextual_reader` like the contextual checks; one shared loader,
+  `_load_contextual_tuples`): a contextual tuple takes part in the
+  candidate enumeration like a stored one — it seeds a path, extends a
+  userset or tuple-to-userset link, or names a concrete subject — and the
+  explanation reports a `contextual_tuple` step; the plain functions never
+  see the loaded tuples (the contextual branches are gated out of their
+  plans). Store → Test: the single check, the matrix and every search
+  direction take contextual tuples (one per line, `user:bob member
+  team:eng`; the result badge counts them, Copy as SQL renders the
+  contextual variant, an appended scenario case carries them); recorded
+  with the question. Fixtures: `contextual_tuples` on the list cases too,
+  and a check case with them can now be explained
+  (`pgauthzadm.ContextualTuplesJSON`); the gdrive example shows a vacation
+  substitute.
 - **Saved test scenarios (console) and the fixture runner as a library.**
   The `tests.authz.yaml` runner moves from the pgauthzctl binary into
   `pgauthzadm` (`ParseFixture`, `Fixture.Validate`, `RunFixture`,

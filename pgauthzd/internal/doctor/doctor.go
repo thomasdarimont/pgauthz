@@ -247,6 +247,16 @@ func Run(ctx context.Context, opts Options) *Report {
 		add("subject override", StatusOK, "the token subject is authoritative")
 	}
 
+	// ── contextual tuples (what-if checks on the public listener) ────────
+	switch cfg.ContextualTuples {
+	case config.ContextualTuplesOff:
+		add("contextual tuples", StatusOK, "CONTEXTUAL_TUPLES=off: the public listener refuses what-if tuples (the OPA callback listener still accepts them)")
+	case config.ContextualTuplesAny:
+		add("contextual tuples", StatusWarn, "CONTEXTUAL_TUPLES=any: every authenticated caller may inject what-if tuples into its own checks — forged decisions to its own question, graph probing; prefer trusted-peps or off (refused in production)")
+	default:
+		add("contextual tuples", StatusOK, "CONTEXTUAL_TUPLES=trusted-peps: what-if tuples only from callers that may assert a subject for the store (pep_clients / ALLOW_SUBJECT_OVERRIDE); the OPA callback listener always")
+	}
+
 	// ── cursor sealing / freshness ───────────────────────────────────────
 	if cfg.UsesOPA() && cfg.CursorSealKey == "" {
 		status := StatusWarn

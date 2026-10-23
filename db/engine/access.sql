@@ -205,6 +205,56 @@ $$;
 --   ]}
 ------------------------------------------------------------------------
 ------------------------------------------------------------------------
+-- _load_contextual_tuples: the one loader behind every
+-- *_with_contextual_tuples_jsonb entry point. Validates the JSONB array
+-- ({"user_type","user_id","relation","object_type","object_id"}, optionally
+-- "user_relation"), checks namespace access for every object type the
+-- tuples mention, and loads them — resolved to the store's ids — into the
+-- per-transaction temp table pg_temp.ctx_tuples (ON COMMIT DROP; an
+-- earlier load of the same transaction is replaced). Returns true when
+-- tuples were loaded — the p_has_ctx_tuples the decision path takes —
+-- false for NULL or an empty array, in which case nothing is touched.
+-- VOLATILE (DDL on the temp table), so its callers are too: the plain,
+-- STABLE search and explain functions never see the table (they pass
+-- false), whatever the transaction loaded before.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._load_contextual_tuples(
+    p_store_id          integer,
+    p_contextual_tuples jsonb
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF p_contextual_tuples IS NULL THEN
+        RETURN false;
+    END IF;
+    PERFORM authz._validate_tuple_jsonb(p_contextual_tuples);
+    IF jsonb_array_length(p_contextual_tuples) = 0 THEN
+        RETURN false;
+    END IF;
+    PERFORM authz._check_namespace_access(p_store_id, authz._t(p_store_id, x.object_type), 'can_read')
+       FROM (SELECT DISTINCT t->>'object_type' AS object_type FROM jsonb_array_elements(p_contextual_tuples) t) x;
+    CREATE TEMP TABLE IF NOT EXISTS ctx_tuples (
+        user_type     integer,
+        user_id       text,
+        user_relation integer,
+        relation      integer,
+        object_type   integer,
+        object_id     text
+    ) ON COMMIT DROP;
+    TRUNCATE pg_temp.ctx_tuples;
+    INSERT INTO pg_temp.ctx_tuples (user_type, user_id, user_relation, relation, object_type, object_id)
+    SELECT authz._t(p_store_id, t->>'user_type'),
+           t->>'user_id',
+           CASE WHEN t->>'user_relation' IS NULL THEN NULL ELSE authz._r(p_store_id, t->>'user_relation') END,
+           authz._r(p_store_id, t->>'relation'),
+           authz._t(p_store_id, t->>'object_type'),
+           t->>'object_id'
+      FROM jsonb_array_elements(p_contextual_tuples) t;
+    RETURN true;
+END;
+$$;
+
+------------------------------------------------------------------------
 -- check_access_batch_with_contextual_tuples_jsonb: many checks, one set of
 -- contextual tuples, one call. The contextual tuples are validated and
 -- loaded into the per-transaction temp table ONCE; every check then runs
@@ -242,29 +292,7 @@ BEGIN
     END IF;
     PERFORM authz._validate_tuple_jsonb(p_checks);
 
-    IF p_contextual_tuples IS NOT NULL AND jsonb_array_length(p_contextual_tuples) > 0 THEN
-        PERFORM authz._validate_tuple_jsonb(p_contextual_tuples);
-        PERFORM authz._check_namespace_access(v_store_id, authz._t(v_store_id, x.object_type), 'can_read')
-           FROM (SELECT DISTINCT t->>'object_type' AS object_type FROM jsonb_array_elements(p_contextual_tuples) t) x;
-        CREATE TEMP TABLE IF NOT EXISTS ctx_tuples (
-            user_type     integer,
-            user_id       text,
-            user_relation integer,
-            relation      integer,
-            object_type   integer,
-            object_id     text
-        ) ON COMMIT DROP;
-        TRUNCATE pg_temp.ctx_tuples;
-        INSERT INTO pg_temp.ctx_tuples (user_type, user_id, user_relation, relation, object_type, object_id)
-        SELECT authz._t(v_store_id, t->>'user_type'),
-               t->>'user_id',
-               CASE WHEN t->>'user_relation' IS NULL THEN NULL ELSE authz._r(v_store_id, t->>'user_relation') END,
-               authz._r(v_store_id, t->>'relation'),
-               authz._t(v_store_id, t->>'object_type'),
-               t->>'object_id'
-          FROM jsonb_array_elements(p_contextual_tuples) t;
-        v_has_ctx := true;
-    END IF;
+    v_has_ctx := authz._load_contextual_tuples(v_store_id, p_contextual_tuples);
 
     FOR v_c IN
         SELECT c->>'user_type' AS user_type, c->>'user_id' AS user_id, c->>'relation' AS relation,
@@ -610,16 +638,23 @@ $$;
 -- degrades to the same O(all objects) as a candidate scan — the win
 -- is for the common case of grant-sparse users on large stores.
 ------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION authz.list_objects(
+-- The walk lives in _list_objects; list_objects is the public, stored-
+-- tuples-only entry point and list_objects_with_contextual_tuples_jsonb
+-- (below) the one that also walks the transaction's contextual tuples
+-- (p_has_ctx): they seed and extend paths like stored tuples do, and the
+-- final _decide sees them too. With p_has_ctx false the contextual
+-- branches are gated out of the plan (a one-time filter on a constant).
+CREATE OR REPLACE FUNCTION authz._list_objects(
     p_store       text,
     p_user_type   text,
     p_user_id     text,
     p_relation    text,
     p_object_type text,
-    context       jsonb DEFAULT NULL,
-    p_limit       int DEFAULT NULL,
-    p_offset      int DEFAULT 0,
-    p_after       text DEFAULT NULL   -- keyset cursor: last object_id of the previous page
+    context       jsonb,
+    p_limit       int,
+    p_offset      int,
+    p_after       text,               -- keyset cursor: last object_id of the previous page
+    p_has_ctx     boolean
 ) RETURNS TABLE (object_id text, is_wildcard boolean)
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
@@ -670,6 +705,14 @@ BEGIN
                -- must be an ARRAY parameter: an IN (subselect) was planned as
                -- a join on 18.4 and pruned nothing.
                AND t.object_type   = ANY (v_type_ids)
+          UNION ALL
+            -- Contextual tuples seed paths exactly like stored ones.
+            SELECT ct.object_type, ct.object_id, ct.relation
+              FROM authz._ctx_tuples() ct
+             WHERE p_has_ctx
+               AND ct.user_type     = v_user_type
+               AND ct.user_id       IN (p_user_id, '*')
+               AND ct.user_relation IS NULL
           UNION
             -- Expansion: from each reached (object A, relation r),
             -- follow every mechanism that can grant something further.
@@ -710,6 +753,28 @@ BEGIN
                      AND t.user_id       = r.object_id
                      AND t.user_relation IS NULL
                      AND t.object_type   = ANY (v_type_ids)  -- pruning (see seed scan)
+                UNION ALL
+                  -- userset via a contextual tuple
+                  SELECT ct.object_type, ct.object_id, ct.relation
+                    FROM authz._ctx_tuples() ct
+                   WHERE p_has_ctx
+                     AND ct.user_type     = r.object_type
+                     AND ct.user_id       = r.object_id
+                     AND ct.user_relation = r.relation
+                UNION ALL
+                  -- TTU via a contextual link tuple
+                  SELECT ct.object_type, ct.object_id, m.relation
+                    FROM authz._ctx_tuples() ct
+                    JOIN authz.models m
+                      ON m.store_id          = v_store_id
+                     AND m.object_type       = ct.object_type
+                     AND m.rule_type         = authz._rel_ttu()
+                     AND m.tupleset_relation = ct.relation
+                     AND m.tupleset_computed = r.relation
+                   WHERE p_has_ctx
+                     AND ct.user_type     = r.object_type
+                     AND ct.user_id       = r.object_id
+                     AND ct.user_relation IS NULL
               ) AS e (object_type, object_id, relation)
         )
         SELECT c.object_id, c.object_id = '*'
@@ -722,11 +787,56 @@ BEGIN
                    AND (p_after IS NULL OR r.object_id > p_after)
                  ORDER BY r.object_id) c
          WHERE authz._decide(v_store_id, v_user_type, p_user_id, v_relation, v_object_type, c.object_id, context,
-                             p_gates => v_gates)
+                             p_has_ctx_tuples => p_has_ctx, p_gates => v_gates)
          ORDER BY c.object_id
          -- p_after (keyset) takes precedence over p_offset when supplied.
          OFFSET (CASE WHEN p_after IS NULL THEN p_offset ELSE 0 END)
          LIMIT p_limit;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION authz.list_objects(
+    p_store       text,
+    p_user_type   text,
+    p_user_id     text,
+    p_relation    text,
+    p_object_type text,
+    context       jsonb DEFAULT NULL,
+    p_limit       int DEFAULT NULL,
+    p_offset      int DEFAULT 0,
+    p_after       text DEFAULT NULL   -- keyset cursor: last object_id of the previous page
+) RETURNS TABLE (object_id text, is_wildcard boolean)
+LANGUAGE plpgsql STABLE AS $$
+BEGIN
+    RETURN QUERY SELECT * FROM authz._list_objects(
+        p_store, p_user_type, p_user_id, p_relation, p_object_type, context, p_limit, p_offset, p_after, false);
+END;
+$$;
+
+------------------------------------------------------------------------
+-- list_objects_with_contextual_tuples_jsonb: list_objects with ephemeral
+-- tuples for this call (the shape of check_access_with_contextual_tuples_jsonb;
+-- see _load_contextual_tuples). Gated by authz_contextual_reader like the
+-- contextual checks: the caller can inject the very grant being searched.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.list_objects_with_contextual_tuples_jsonb(
+    p_store             text,
+    p_user_type         text,
+    p_user_id           text,
+    p_relation          text,
+    p_object_type       text,
+    context             jsonb DEFAULT NULL,
+    p_contextual_tuples jsonb DEFAULT NULL,
+    p_limit             int DEFAULT NULL,
+    p_offset            int DEFAULT 0,
+    p_after             text DEFAULT NULL
+) RETURNS TABLE (object_id text, is_wildcard boolean)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_has_ctx boolean := authz._load_contextual_tuples(authz._s(p_store), p_contextual_tuples);
+BEGIN
+    RETURN QUERY SELECT * FROM authz._list_objects(
+        p_store, p_user_type, p_user_id, p_relation, p_object_type, context, p_limit, p_offset, p_after, v_has_ctx);
 END;
 $$;
 
@@ -742,16 +852,20 @@ $$;
 -- — and must never drop the row: it is the one that says the object
 -- is public.
 ------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION authz.list_subjects(
+-- As for list_objects: the walk is _list_subjects, the public entry points
+-- list_subjects (stored tuples only) and
+-- list_subjects_with_contextual_tuples_jsonb (contextual tuples walked too).
+CREATE OR REPLACE FUNCTION authz._list_subjects(
     p_store        text,
     p_subject_type text,
     p_relation     text,
     p_object_type  text,
     p_object_id    text,
-    context        jsonb DEFAULT NULL,
-    p_limit        int DEFAULT NULL,
-    p_offset       int DEFAULT 0,
-    p_after        text DEFAULT NULL   -- keyset cursor: last subject_id of the previous page
+    context        jsonb,
+    p_limit        int,
+    p_offset       int,
+    p_after        text,               -- keyset cursor: last subject_id of the previous page
+    p_has_ctx      boolean
 ) RETURNS TABLE (subject_id text, is_wildcard boolean)
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
@@ -815,26 +929,64 @@ BEGIN
                      AND m.object_type = r.object_type
                      AND m.rule_type   = authz._rel_ttu()
                      AND m.relation    = r.relation
+                UNION ALL
+                  -- userset via a contextual tuple (B, R, A#ur) ⇒ (A, ur)
+                  SELECT ct.user_type, ct.user_id, ct.user_relation
+                    FROM authz._ctx_tuples() ct
+                   WHERE p_has_ctx
+                     AND ct.object_type   = r.object_type
+                     AND ct.object_id     IN (r.object_id, '*')
+                     AND ct.relation      = r.relation
+                     AND ct.user_relation IS NOT NULL
+                UNION ALL
+                  -- TTU via a contextual link tuple (B, ts, A) ⇒ (A, C)
+                  SELECT ct.user_type, ct.user_id, m.tupleset_computed
+                    FROM authz.models m
+                    JOIN authz._ctx_tuples() ct
+                      ON ct.object_type   = r.object_type
+                     AND ct.object_id     IN (r.object_id, '*')
+                     AND ct.relation      = m.tupleset_relation
+                     AND ct.user_relation IS NULL
+                   WHERE p_has_ctx
+                     AND m.store_id    = v_store_id
+                     AND m.object_type = r.object_type
+                     AND m.rule_type   = authz._rel_ttu()
+                     AND m.relation    = r.relation
               ) AS e (object_type, object_id, relation)
         )
         SELECT c.subject_id, c.subject_id = '*'
           FROM (
               -- Concrete subjects of the requested type sitting at any
-              -- reached node (object-wildcard grants via object_id = '*').
-              SELECT DISTINCT t.user_id AS subject_id
-                FROM reach r
-                JOIN authz.tuples t
-                  ON t.store_id      = v_store_id
-                 AND t.object_type   = r.object_type
-                 AND t.object_id     IN (r.object_id, '*')
-                 AND t.relation      = r.relation
-                 AND t.user_type     = v_subject_type
-                 AND t.user_relation IS NULL
-                 -- keyset cursor: only candidates after the previous page.
-                 AND (p_after IS NULL OR t.user_id > p_after)
+              -- reached node (object-wildcard grants via object_id = '*'),
+              -- stored or contextual.
+              SELECT DISTINCT x.subject_id
+                FROM (
+                    SELECT t.user_id AS subject_id
+                      FROM reach r
+                      JOIN authz.tuples t
+                        ON t.store_id      = v_store_id
+                       AND t.object_type   = r.object_type
+                       AND t.object_id     IN (r.object_id, '*')
+                       AND t.relation      = r.relation
+                       AND t.user_type     = v_subject_type
+                       AND t.user_relation IS NULL
+                       -- keyset cursor: only candidates after the previous page.
+                       AND (p_after IS NULL OR t.user_id > p_after)
+                  UNION ALL
+                    SELECT ct.user_id
+                      FROM reach r
+                      JOIN authz._ctx_tuples() ct
+                        ON ct.object_type   = r.object_type
+                       AND ct.object_id     IN (r.object_id, '*')
+                       AND ct.relation      = r.relation
+                       AND ct.user_type     = v_subject_type
+                       AND ct.user_relation IS NULL
+                     WHERE p_has_ctx
+                       AND (p_after IS NULL OR ct.user_id > p_after)
+                ) x
           ) c
          WHERE authz._decide(v_store_id, v_subject_type, c.subject_id, v_relation, v_object_type, p_object_id, context,
-                             p_gates => v_gates)
+                             p_has_ctx_tuples => p_has_ctx, p_gates => v_gates)
          ORDER BY c.subject_id
          -- p_after (keyset) takes precedence over p_offset when supplied.
          OFFSET (CASE WHEN p_after IS NULL THEN p_offset ELSE 0 END)
@@ -842,17 +994,61 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION authz.list_subjects(
+    p_store        text,
+    p_subject_type text,
+    p_relation     text,
+    p_object_type  text,
+    p_object_id    text,
+    context        jsonb DEFAULT NULL,
+    p_limit        int DEFAULT NULL,
+    p_offset       int DEFAULT 0,
+    p_after        text DEFAULT NULL   -- keyset cursor: last subject_id of the previous page
+) RETURNS TABLE (subject_id text, is_wildcard boolean)
+LANGUAGE plpgsql STABLE AS $$
+BEGIN
+    RETURN QUERY SELECT * FROM authz._list_subjects(
+        p_store, p_subject_type, p_relation, p_object_type, p_object_id, context, p_limit, p_offset, p_after, false);
+END;
+$$;
+
+------------------------------------------------------------------------
+-- list_subjects_with_contextual_tuples_jsonb: list_subjects with ephemeral
+-- tuples for this call (see _load_contextual_tuples); authz_contextual_reader.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.list_subjects_with_contextual_tuples_jsonb(
+    p_store             text,
+    p_subject_type      text,
+    p_relation          text,
+    p_object_type       text,
+    p_object_id         text,
+    context             jsonb DEFAULT NULL,
+    p_contextual_tuples jsonb DEFAULT NULL,
+    p_limit             int DEFAULT NULL,
+    p_offset            int DEFAULT 0,
+    p_after             text DEFAULT NULL
+) RETURNS TABLE (subject_id text, is_wildcard boolean)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_has_ctx boolean := authz._load_contextual_tuples(authz._s(p_store), p_contextual_tuples);
+BEGIN
+    RETURN QUERY SELECT * FROM authz._list_subjects(
+        p_store, p_subject_type, p_relation, p_object_type, p_object_id, context, p_limit, p_offset, p_after, v_has_ctx);
+END;
+$$;
+
 ------------------------------------------------------------------------
 -- list_actions: find all permitted relations for a user on an object.
 -- AuthZen Action Search: "What can user X do on object Z?"
 ------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION authz.list_actions(
+CREATE OR REPLACE FUNCTION authz._list_actions(
     p_store       text,
     p_user_type   text,
     p_user_id     text,
     p_object_type text,
     p_object_id   text,
-    context       jsonb DEFAULT NULL
+    context       jsonb,
+    p_has_ctx     boolean
 ) RETURNS TABLE (action text)
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
@@ -870,7 +1066,45 @@ BEGIN
                  AND mr.object_type = v_object_type
           ) dr
           JOIN authz.relations r ON r.id = dr.relation
-         WHERE authz._decide(v_store_id, v_user_type, p_user_id, dr.relation, v_object_type, p_object_id, context);
+         WHERE authz._decide(v_store_id, v_user_type, p_user_id, dr.relation, v_object_type, p_object_id, context,
+                             p_has_ctx_tuples => p_has_ctx);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION authz.list_actions(
+    p_store       text,
+    p_user_type   text,
+    p_user_id     text,
+    p_object_type text,
+    p_object_id   text,
+    context       jsonb DEFAULT NULL
+) RETURNS TABLE (action text)
+LANGUAGE plpgsql STABLE AS $$
+BEGIN
+    RETURN QUERY SELECT * FROM authz._list_actions(
+        p_store, p_user_type, p_user_id, p_object_type, p_object_id, context, false);
+END;
+$$;
+
+------------------------------------------------------------------------
+-- list_actions_with_contextual_tuples_jsonb: list_actions with ephemeral
+-- tuples for this call (see _load_contextual_tuples); authz_contextual_reader.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.list_actions_with_contextual_tuples_jsonb(
+    p_store             text,
+    p_user_type         text,
+    p_user_id           text,
+    p_object_type       text,
+    p_object_id         text,
+    context             jsonb DEFAULT NULL,
+    p_contextual_tuples jsonb DEFAULT NULL
+) RETURNS TABLE (action text)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_has_ctx boolean := authz._load_contextual_tuples(authz._s(p_store), p_contextual_tuples);
+BEGIN
+    RETURN QUERY SELECT * FROM authz._list_actions(
+        p_store, p_user_type, p_user_id, p_object_type, p_object_id, context, v_has_ctx);
 END;
 $$;
 

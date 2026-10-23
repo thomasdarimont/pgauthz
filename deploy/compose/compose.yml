@@ -45,6 +45,9 @@ x-pgauthzd-env: &pgauthzd-env
   # Token-only: the JWT subject is authoritative; a PEP that asserts request
   # body subjects needs pep_clients (JWT_ISSUERS) — never a blanket override.
   ALLOW_SUBJECT_OVERRIDE: "false"
+  # What-if (contextual) tuples on the public listener: trusted PEPs only
+  # (pep_clients); "off" refuses them entirely, "any" is refused in production.
+  CONTEXTUAL_TUPLES: "${CONTEXTUAL_TUPLES:-trusted-peps}"
   # Production profile: refuses to start with open diagnostic surfaces.
   DEPLOYMENT_ENVIRONMENT: "${DEPLOYMENT_ENVIRONMENT:-production}"
   SEARCH_REQUIRED_ROLE: "${SEARCH_REQUIRED_ROLE:-authz_auditor}"

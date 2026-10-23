@@ -704,6 +704,91 @@ END;
 $$;
 SELECT * FROM _test_teardown_contextual();
 
+-- ================================================================
+-- Contextual tuples in search and explain
+-- (*_with_contextual_tuples_jsonb: the same injection as the checks)
+-- ================================================================
+
+-- ctx_s_01..08: within ONE transaction, so the loaded temp table is still
+-- there when the plain functions run — they must ignore it.
+DO $$
+DECLARE
+    v_ids  text;
+    v_x    jsonb;
+BEGIN
+    PERFORM _test_setup_contextual();
+
+    -- a contextual tuple on an object that has no stored tuples at all:
+    -- the candidate enumeration must find it through the contextual tuple
+    SELECT string_agg(object_id, ',' ORDER BY object_id) INTO v_ids
+      FROM authz.list_objects_with_contextual_tuples_jsonb('test_contextual', 'user', 'frank', 'viewer', 'doc', NULL,
+        '[{"user_type":"user","user_id":"frank","relation":"viewer","object_type":"doc","object_id":"doc9"}]');
+    PERFORM _test_assert('ctx_s_01_list_objects_via_contextual_tuple', v_ids, 'doc9');
+
+    SELECT coalesce(string_agg(object_id, ',' ORDER BY object_id), '') INTO v_ids
+      FROM authz.list_objects('test_contextual', 'user', 'frank', 'viewer', 'doc');
+    PERFORM _test_assert('ctx_s_02_plain_list_objects_ignores_loaded_tuples', v_ids, '');
+
+    -- a contextual LINK tuple (folder f1 is doc3's parent): carol views f1,
+    -- so the TTU expansion must reach doc3 through the contextual link
+    SELECT string_agg(object_id, ',' ORDER BY object_id) INTO v_ids
+      FROM authz.list_objects_with_contextual_tuples_jsonb('test_contextual', 'user', 'carol', 'viewer', 'doc', NULL,
+        '[{"user_type":"folder","user_id":"f1","relation":"parent","object_type":"doc","object_id":"doc3"}]');
+    PERFORM _test_assert('ctx_s_03_list_objects_ttu_via_contextual_link', v_ids, 'doc3');
+
+    -- the reverse search over the same contextual link
+    SELECT string_agg(subject_id, ',' ORDER BY subject_id) INTO v_ids
+      FROM authz.list_subjects_with_contextual_tuples_jsonb('test_contextual', 'user', 'viewer', 'doc', 'doc3', NULL,
+        '[{"user_type":"folder","user_id":"f1","relation":"parent","object_type":"doc","object_id":"doc3"}]');
+    PERFORM _test_assert('ctx_s_04_list_subjects_ttu_via_contextual_link', v_ids, 'carol');
+
+    -- a contextual direct grant adds a subject next to the stored ones
+    -- (alice's stored grant is conditional and has no context: denied)
+    SELECT string_agg(subject_id, ',' ORDER BY subject_id) INTO v_ids
+      FROM authz.list_subjects_with_contextual_tuples_jsonb('test_contextual', 'user', 'viewer', 'doc', 'doc1', NULL,
+        '[{"user_type":"user","user_id":"dave","relation":"viewer","object_type":"doc","object_id":"doc1"}]');
+    PERFORM _test_assert('ctx_s_05_list_subjects_contextual_direct', v_ids, 'bob,dave');
+
+    SELECT string_agg(action, ',' ORDER BY action) INTO v_ids
+      FROM authz.list_actions_with_contextual_tuples_jsonb('test_contextual', 'user', 'dave', 'doc', 'doc1', NULL,
+        '[{"user_type":"user","user_id":"dave","relation":"editor","object_type":"doc","object_id":"doc1"}]');
+    PERFORM _test_assert('ctx_s_06_list_actions_contextual', v_ids, 'editor');
+
+    v_x := authz.explain_access_with_contextual_tuples_jsonb('test_contextual', 'user', 'dave', 'viewer', 'doc', 'doc1', NULL,
+        '[{"user_type":"user","user_id":"dave","relation":"viewer","object_type":"doc","object_id":"doc1"}]');
+    PERFORM _test_assert('ctx_s_07_explain_allowed_by_contextual_tuple',
+        (v_x->'decision'->>'allowed') || ':' ||
+        (SELECT count(*) FROM jsonb_array_elements(v_x->'trace') s WHERE s->>'reason' = 'contextual_tuple' AND (s->>'result')::boolean)::text,
+        'true:1');
+
+    PERFORM _test_assert('ctx_s_08_plain_explain_ignores_loaded_tuples',
+        (authz.explain_access('test_contextual', 'user', 'dave', 'viewer', 'doc', 'doc1')->'decision'->>'allowed'), 'false');
+
+    -- an empty array is "no contextual tuples": the plain answer
+    SELECT coalesce(string_agg(object_id, ',' ORDER BY object_id), '') INTO v_ids
+      FROM authz.list_objects_with_contextual_tuples_jsonb('test_contextual', 'user', 'frank', 'viewer', 'doc', NULL, '[]');
+    PERFORM _test_assert('ctx_s_09_empty_array_is_plain', v_ids, '');
+END;
+$$;
+SELECT * FROM _test_teardown_contextual();
+
+-- ctx_s_10: the search/explain variants are gated like the contextual checks —
+-- authz_contextual_reader may, the general authz_reader may not
+DO $$
+BEGIN
+    PERFORM _test_assert('ctx_s_10_contextual_search_gated_by_role',
+        has_function_privilege('authz_reader', 'authz.list_objects_with_contextual_tuples_jsonb(text,text,text,text,text,jsonb,jsonb,int,int,text)', 'EXECUTE')::text
+        || ',' || has_function_privilege('authz_reader', 'authz.list_subjects_with_contextual_tuples_jsonb(text,text,text,text,text,jsonb,jsonb,int,int,text)', 'EXECUTE')::text
+        || ',' || has_function_privilege('authz_reader', 'authz.list_actions_with_contextual_tuples_jsonb(text,text,text,text,text,jsonb,jsonb)', 'EXECUTE')::text
+        || ',' || has_function_privilege('authz_reader', 'authz.explain_access_with_contextual_tuples_jsonb(text,text,text,text,text,text,jsonb,jsonb,boolean,boolean)', 'EXECUTE')::text
+        || '|' || has_function_privilege('authz_contextual_reader', 'authz.list_objects_with_contextual_tuples_jsonb(text,text,text,text,text,jsonb,jsonb,int,int,text)', 'EXECUTE')::text
+        || ',' || has_function_privilege('authz_contextual_reader', 'authz.list_subjects_with_contextual_tuples_jsonb(text,text,text,text,text,jsonb,jsonb,int,int,text)', 'EXECUTE')::text
+        || ',' || has_function_privilege('authz_contextual_reader', 'authz.list_actions_with_contextual_tuples_jsonb(text,text,text,text,text,jsonb,jsonb)', 'EXECUTE')::text
+        || ',' || has_function_privilege('authz_contextual_reader', 'authz.explain_access_with_contextual_tuples_jsonb(text,text,text,text,text,text,jsonb,jsonb,boolean,boolean)', 'EXECUTE')::text,
+        'false,false,false,false|true,true,true,true');
+END;
+$$;
+
 DROP FUNCTION IF EXISTS _test_teardown_contextual();
 DROP FUNCTION IF EXISTS _test_setup_contextual();
 
