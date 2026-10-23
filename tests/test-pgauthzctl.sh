@@ -50,6 +50,7 @@ cleanup() {
     psqlq "DELETE FROM authz.issuer_bindings WHERE issuer LIKE 'https://ctl-it.example/%' OR description = 'ctl-it over the admin API';" >/dev/null 2>&1 || true
     psqlq "DO \$\$ BEGIN PERFORM authz.delete_store('ctl_it_api', p_purge_audit => true); EXCEPTION WHEN OTHERS THEN NULL; END \$\$;" >/dev/null 2>&1 || true
     psqlq "DELETE FROM authz.model_registry WHERE name = 'ctl_it_api_model';" >/dev/null 2>&1 || true
+    psqlq "DO \$\$ BEGIN PERFORM authz.delete_store('ctl_it_store', p_purge_audit => true); EXCEPTION WHEN OTHERS THEN NULL; END \$\$;" >/dev/null 2>&1 || true
     rm -f /tmp/ctl-it-issuers.json /tmp/ctl-it-issuers-2.json
 }
 trap cleanup EXIT
@@ -204,6 +205,23 @@ JSON
         "$CTL" model apply ctl_it_api_model --store ctl_it_api
     check_fails "api: model plan exits non-zero on blockers" \
         "$CTL" model plan ctl_it_api_model --store ctl_it_api
+    # the store group: admin API only
+    check_fails "api: store verbs refuse to run without --server" \
+        sh -c "PGAUTHZ_SERVER= '$CTL' store list"
+    check "api: store set creates ctl_it_store" \
+        sh -c "'$CTL' store set ctl_it_store --description 'ctl-it store group' | grep -q '^created store ctl_it_store'"
+    check "api: store set updates it" \
+        sh -c "'$CTL' store set ctl_it_store --docs-url https://example.com/x | grep -q '^updated store ctl_it_store'"
+    check "api: store list shows it live and unmanaged" \
+        sh -c "'$CTL' store list | grep -q '^ctl_it_store *live *unmanaged'"
+    check "api: store get prints the JSON" \
+        sh -c "'$CTL' store get ctl_it_store | grep -q '\"docs_url\": \"https://example.com/x\"'"
+    check "api: store namespace-grant / namespaces / namespace-revoke" \
+        sh -c "'$CTL' store namespace-grant ctl_it_store hr app_hr --read | grep -q 'read=true write=false' && '$CTL' store namespaces ctl_it_store | grep -q 'hr .*access=app_hr:r-' && '$CTL' store namespace-revoke ctl_it_store hr app_hr | grep -q '^removed'"
+    check "api: store recorders is empty, recorder-set needs a declared action" \
+        sh -c "'$CTL' store recorders ctl_it_store | grep -q '^no allowlists' && ! '$CTL' store recorder-set ctl_it_store svc nope 2>/dev/null"
+    check "api: store set --retired, then delete --purge-audit" \
+        sh -c "'$CTL' store set ctl_it_store --retired | grep -q '^updated' && '$CTL' store list | grep -q '^ctl_it_store *RETIRED' && '$CTL' store delete ctl_it_store --purge-audit | grep -q '^deleted'"
     unset PGAUTHZ_SERVER PGAUTHZ_TOKEN
 else
     echo ""

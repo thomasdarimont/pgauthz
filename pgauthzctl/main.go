@@ -20,6 +20,7 @@ Usage:
 Commands:
   model     Model-as-code lifecycle (the verbs below)
   issuers   Issuer bindings as code (the verbs below)
+  store     Stores, recorder allowlists and namespace grants (admin API only)
   version   Print the pgauthzctl version
 
 Model verbs (pgauthzctl model <verb>):
@@ -42,7 +43,12 @@ pgauthzd running ISSUERS_SOURCE=env+db (trust itself stays in JWT_ISSUERS):
   import    Upsert the bindings of a file (--prune: delete the rest; --dry-run)
   delete    Drop one binding (the issuer falls back to its environment)
 
-Further command groups (tuple, store, watch, ...) are planned.
+Store verbs (pgauthzctl store <verb>, over the admin API only):
+  list | get | set | delete           stores as upserts (--description, --docs-url, --retired)
+  recorders | recorder-set | recorder-lift
+  namespaces | namespace-grant | namespace-revoke
+
+Further command groups (tuple, watch, ...) are planned.
 
 Connection:
   --server or PGAUTHZ_SERVER: pgauthzd's admin API (the long-run transport,
@@ -62,13 +68,20 @@ func main() {
 		cmdVersion()
 		return
 	}
-	if len(os.Args) < 3 || (os.Args[1] != "model" && os.Args[1] != "issuers") {
+	if len(os.Args) < 3 || (os.Args[1] != "model" && os.Args[1] != "issuers" && os.Args[1] != "store") {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
 	group, verb, args := os.Args[1], os.Args[2], os.Args[3:]
 
 	var err error
+	if group == "store" {
+		if err := cmdStore(verb, args); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if group == "issuers" {
 		switch verb {
 		case "list":

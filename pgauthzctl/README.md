@@ -81,6 +81,24 @@ For large fleets, orchestrate `apply` per store (or in bounded batches with
 a pinned `name@version`) and use `rollout` as the progress/retry view — see
 [MODEL_DESIGN §16](../docs/MODEL_DESIGN.md#16-sharing-one-model-across-stores-model-registry).
 
+## Stores, recorders and namespaces (admin API only)
+
+The `store` group is the first born on the admin API — there is no `--dsn`
+form. Stores as upserts, their recorder allowlists (ADR 0012) and their
+namespace grants, within the credential's scope:
+
+```bash
+pgauthzctl store list                                   # name, live/retired, model@version, description
+pgauthzctl store set tenant_a --description "tenant A" # create or update; --retired retires
+pgauthzctl store recorder-set tenant_a svc_approvals approve_sale,pay
+pgauthzctl store recorder-lift tenant_a svc_approvals
+pgauthzctl store namespace-grant tenant_a hr app_hr --read --write
+pgauthzctl store namespace-revoke tenant_a hr app_hr
+pgauthzctl store delete tenant_a --purge-audit          # the erasure path
+```
+
+Every verb takes `--json` for the API's answer verbatim.
+
 ## Issuer bindings as code
 
 What each trusted identity provider's tokens may do — the stores they
