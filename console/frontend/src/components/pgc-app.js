@@ -146,7 +146,9 @@ export class PgcApp extends PgcElement {
                   <a href="" class=${area === 'stores' ? 'active' : ''}>${t('Stores')}</a>
                   ${me.registry?.can_view ? html`<a href="registry" class=${area === 'registry' ? 'active' : ''}>${t('Registry')}</a>` : nothing}
                   ${
-                    me.platform?.can_view_health || me.platform?.can_manage_access
+                    me.platform?.can_view_health ||
+                    me.platform?.can_manage_access ||
+                    me.platform?.can_manage_issuers
                       ? html`<a href="platform" class=${area === 'platform' ? 'active' : ''}
                           >${t('Platform')}</a
                         >`

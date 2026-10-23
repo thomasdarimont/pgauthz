@@ -48,6 +48,17 @@ pre-1.0, minor versions may include breaking changes.
   `doctor` reports the admin API; compose/Helm (`admin.*`) and the demo
   stack (`:8096`, `ADMIN_ROLE=pgauthz_admin`) wire it; `tests/test-authzen.sh`
   covers the gate, the scope, narrowing and the fleet applying a PUT.
+- **Console: Platform → Issuers** (`platform#can_manage_issuers`): the
+  fleet's issuer bindings — create, edit (the engine validates; a replace
+  keeps `created_by`), pause (`enabled`), remove with confirmation, the
+  history (keyset-paged by `seq`: `list_issuer_bindings_audit` gained
+  `p_before_seq`, `count_issuer_bindings_audit` is new) with a refresh — and, with `PGAUTHZD_INTERNAL_URL` + `PGAUTHZD_SERVICE_TOKEN`
+  (the writer's callback listener; set by the console overlays, compose and
+  Helm), the set in force: every trusted issuer, binding source, applied
+  revision, and per row applied / not applied / untrusted.
+  `GET|PUT /api/platform/issuers`, `POST /api/platform/issuers/delete`,
+  recorded in the console's action log and `authz.issuer_bindings_audit`;
+  Go HTTP test and a Playwright spec (`issuers.spec.js`).
 - **Browser tests for the Decisions tab** (`console/frontend/tests/ui/decisions.spec.js`):
   summary and newest-first list, keyset paging through the pager and page
   size, filters and the summary's click-to-narrow, a trace id finding its

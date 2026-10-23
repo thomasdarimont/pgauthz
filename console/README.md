@@ -95,7 +95,7 @@ views `demo`; eva audits it).
 | Store → **Operations** | can the gates be trusted (`events_readiness`, every clause's window); the recorder allowlist (`grant_recorder_actions` / `revoke_recorder_actions`); tuple maintenance (reclaim expired tuples with a grace, find and remove redundant tuples); this store's action-log retention (`purge_events`, refused inside a live gate window unless forced); the changefeed cursor and safe-until, the derived-permissions status when installed; the partitions of both logs (read-only here) | `can_view_audit`; actions `can_manage_access` |
 | Store → **Admin** | the store's lifecycle: retire it (soft delete — live data gone, history and name kept) or delete it (typed name, optional audit purge) | `can_manage_access` |
 | **Registry** | one picker over models and stores: the models are the landing chips (few by design), typing searches models and stores by name, description and model (matches capped, never the whole fleet as chips). A model (`registry/model/<name>`) shows its versions and its fleet — every store running it, a (?) explaining the colours; a store (`registry/<store>`) shows the model and version it runs, the versions with the applied one marked, and the fleet | `registry#can_view` |
-| **Platform** | admins (grant/remove; never zero), configuration and health; **Operations**: the monthly partitions of both logs with sizes and coverage ahead, create them ahead (`ensure_audit_partitions` + `ensure_event_partitions`), fleet-wide action-log retention (`drop_event_partitions_before`, gate-guarded), gate readiness per store, the longest gate window, store sizes | `platform#can_view_health`, `platform#can_manage_access` |
+| **Platform** | admins (grant/remove; never zero), configuration and health; **Operations**: the monthly partitions of both logs with sizes and coverage ahead, create them ahead (`ensure_audit_partitions` + `ensure_event_partitions`), fleet-wide action-log retention (`drop_event_partitions_before`, gate-guarded), gate readiness per store, the longest gate window, store sizes; **Issuers**: the trusted identity providers' bindings for the whole fleet (`authz.issuer_bindings`) — what each issuer's tokens may do (stores, DB roles, client roles, PEP clients, enabled), created and edited here with the engine's validation, the history, and — when the console can reach a pgauthzd callback (`PGAUTHZD_INTERNAL_URL` + `PGAUTHZD_SERVICE_TOKEN`) — the set in force: every issuer the instance trusts, whether its bindings come from the environment or a row, the applied revision, and per row whether it is applied, not applied (rejected: a row may only narrow) or untrusted. Trust itself (issuer, audience, keys) stays in the instances' `JWT_ISSUERS`; see [pgauthzd's `ISSUERS_SOURCE`](../pgauthzd/README.md#configuration) and its [admin API](../pgauthzd/README.md#admin-api-full-profile-admin_api_enabled), the same rows over HTTP for configuration as code | `platform#can_view_health`, `platform#can_manage_access`, `platform#can_manage_issuers` |
 
 Relations carry a kind (migration 0019): **what a subject is** (a relation:
 viewer, owner, member) versus **what a subject can do** (a permission:
@@ -252,7 +252,9 @@ request/response race, Save's binding to the loaded object, the post-save
 state when the refresh fails, the expiry chip; the Decisions tab's summary,
 pager, filters, detail with its trace, and the replay hand-over into Test
 (`decisions.spec.js`, over 30 lines `decisions.sql` loads into the console's
-database through the console-db service — the spec skips without it). They need a running console
+database through the console-db service — the spec skips without it); Platform →
+Issuers' create / validate / edit / history / remove round trip (`issuers.spec.js`,
+one issuer per run under `https://uitest.example/`, deleted on exit). They need a running console
 with the local admin — `./start.sh --console-local`, then
 `../tests/test-console-ui.sh`, which loads `frontend/tests/ui/fixture.sql`
 as the store `console_uitest`, runs `npx playwright test` (installing the
@@ -307,7 +309,7 @@ Configuration (environment): `ENGINE_DSN`, `PG_DSN` (sessions), `ISSUER`,
 `CLIENT_ID`/`CLIENT_SECRET`, `REDIRECT_URI`, `BASE_URL`, `BASE_PATH`,
 `TLS_CA_FILE`, `CONSOLE_STORE` (default `console`), `CONSOLE_PLATFORM_ID`,
 `CONSOLE_REGISTRY_ID`, `CONSOLE_SUBJECT_TYPE`, `CONSOLE_SELF_SUBJECT_TYPES`, `CONSOLE_TEAM_CLAIMS`,
-`CONSOLE_I18N_DIR` (translation overrides), `CONSOLE_OPA_URL` / `CONSOLE_OPA_TOKEN` (Policies tab), `PGAUTHZD_URL` (readiness shown on Settings), `PGAUTHZD_DECISION_URL` (the
+`CONSOLE_I18N_DIR` (translation overrides), `CONSOLE_OPA_URL` / `CONSOLE_OPA_TOKEN` (Policies tab), `PGAUTHZD_URL` (readiness shown on Settings), `PGAUTHZD_INTERNAL_URL` / `PGAUTHZD_SERVICE_TOKEN` (a pgauthzd's internal callback listener and OPA's service token — Platform → Issuers shows the issuer set in force; empty: the rows only), `PGAUTHZD_DECISION_URL` (the
 "as me" test mode; empty hides it), `CONSOLE_TRACE_URL` (the tracing UI's trace page with a
 `{trace_id}` placeholder — the Decisions tab links a decision into the application's trace), `CONSOLE_LOCAL_ADMIN_USER` / `_PASSWORD` /
 `_TEAMS` / `_ALLOW_IN_PRODUCTION` (the local admin sign-in; `ISSUER` may then be

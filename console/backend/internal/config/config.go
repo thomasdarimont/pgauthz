@@ -49,6 +49,13 @@ type Config struct {
 	// tester sees the real PEP path — including OPA and its hooks — for
 	// themselves. Empty = the mode is hidden.
 	DecisionURL string
+	// PgauthzdInternalURL / PgauthzdServiceToken (optional): a pgauthzd's
+	// internal callback listener (INTERNAL_LISTEN_ADDR, the service token OPA
+	// presents) — Platform → Issuers reads the EFFECTIVE issuer set there
+	// (every trusted issuer, binding source, applied revision). Empty = the
+	// tab shows the database rows only.
+	PgauthzdInternalURL  string
+	PgauthzdServiceToken string
 	// TraceURL (optional) is the tracing UI's trace page with a {trace_id}
 	// placeholder, e.g. https://jaeger.example.com/trace/{trace_id}: the
 	// Decisions tab links a logged decision into the application's trace.
@@ -158,6 +165,8 @@ func Load() Config {
 
 		PgauthzdURL:           env("PGAUTHZD_URL", ""),
 		DecisionURL:           env("PGAUTHZD_DECISION_URL", ""),
+		PgauthzdInternalURL:   env("PGAUTHZD_INTERNAL_URL", ""),
+		PgauthzdServiceToken:  env("PGAUTHZD_SERVICE_TOKEN", ""),
 		TraceURL:              env("CONSOLE_TRACE_URL", ""),
 		I18nDir:               env("CONSOLE_I18N_DIR", ""),
 		OPAURL:                env("CONSOLE_OPA_URL", ""),

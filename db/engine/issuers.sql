@@ -35,10 +35,12 @@ LANGUAGE sql STABLE AS $$
      ORDER BY issuer;
 $$;
 
--- list_issuer_bindings_audit: the change history, newest first.
+-- list_issuer_bindings_audit: the change history, newest first; keyset
+-- paged — p_before_seq continues below the last seq of the previous page.
 CREATE OR REPLACE FUNCTION authz.list_issuer_bindings_audit(
-    p_issuer text DEFAULT NULL,
-    p_limit  int  DEFAULT 200
+    p_issuer     text   DEFAULT NULL,
+    p_limit      int    DEFAULT 200,
+    p_before_seq bigint DEFAULT NULL
 )
 RETURNS TABLE (
     seq             bigint,
@@ -56,7 +58,15 @@ RETURNS TABLE (
 LANGUAGE sql STABLE AS $$
     SELECT seq, action, performed_at, performed_by, issuer, stores, db_roles, client_db_roles, pep_clients, enabled, description
       FROM authz.issuer_bindings_audit
-     WHERE p_issuer IS NULL OR issuer = p_issuer
+     WHERE (p_issuer IS NULL OR issuer = p_issuer)
+       AND (p_before_seq IS NULL OR seq < p_before_seq)
      ORDER BY seq DESC
      LIMIT p_limit;
+$$;
+
+-- count_issuer_bindings_audit: how many history rows (for a pager).
+CREATE OR REPLACE FUNCTION authz.count_issuer_bindings_audit(p_issuer text DEFAULT NULL)
+RETURNS bigint
+LANGUAGE sql STABLE AS $$
+    SELECT count(*) FROM authz.issuer_bindings_audit WHERE p_issuer IS NULL OR issuer = p_issuer;
 $$;

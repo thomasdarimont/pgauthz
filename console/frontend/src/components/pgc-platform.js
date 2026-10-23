@@ -5,9 +5,11 @@ import { t } from '../i18n.js';
 import { run } from '../util.js';
 import './pgc-access.js';
 import './pgc-fleet-ops.js';
+import './pgc-issuers.js';
 
-// Platform: who administers the console (Admins), and how it is wired
-// (Configuration: issuer, team-claim mapping, engine and pgauthzd health).
+// Platform: who administers the console (Admins), how it is wired
+// (Configuration: issuer, team-claim mapping, engine and pgauthzd health),
+// the fleet's Operations, and the trusted issuers' bindings (Issuers).
 export class PgcPlatform extends PgcElement {
   static properties = {
     me: { attribute: false },
@@ -104,20 +106,32 @@ export class PgcPlatform extends PgcElement {
         </div>
       </div>
       <nav class="tabs">
-        <a href="platform/access" class=${this.tab !== 'settings' && this.tab !== 'ops' ? 'active' : ''}
+        <a href="platform/access" class=${!['settings', 'ops', 'issuers'].includes(this.tab) ? 'active' : ''}
           >${t('Admins')}</a
         >
         <a href="platform/settings" class=${this.tab === 'settings' ? 'active' : ''}>${t('Configuration')}</a>
         <a href="platform/ops" class=${this.tab === 'ops' ? 'active' : ''} data-testid="platform-tab-ops"
           >${t('Operations')}</a
         >
+        ${
+          this.me?.platform?.can_manage_issuers
+            ? html`<a
+                href="platform/issuers"
+                class=${this.tab === 'issuers' ? 'active' : ''}
+                data-testid="platform-tab-issuers"
+                >${t('Issuers')}</a
+              >`
+            : nothing
+        }
       </nav>
       ${
         this.tab === 'settings'
           ? this._settings()
           : this.tab === 'ops'
             ? html`<pgc-fleet-ops .me=${this.me}></pgc-fleet-ops>`
-            : html`<pgc-access scope="platform" .me=${this.me}></pgc-access>`
+            : this.tab === 'issuers'
+              ? html`<pgc-issuers .me=${this.me}></pgc-issuers>`
+              : html`<pgc-access scope="platform" .me=${this.me}></pgc-access>`
       }
     `;
   }

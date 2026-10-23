@@ -157,6 +157,14 @@ export const api = {
   platformAccess: () => call('api/platform/access'),
   platformAccessAdd: (a) => call('api/platform/access', a),
   platformAccessRemove: (items) => call('api/platform/access/remove', { items }),
+  // Platform → Issuers: the database-managed issuer bindings.
+  /** @returns {Promise<import('./types.js').IssuersResponse>} */
+  platformIssuers: () => call('api/platform/issuers'),
+  /** @returns {Promise<import('./types.js').IssuerAuditPage>} */
+  platformIssuersAudit: (p = {}) => call(`api/platform/issuers/audit?${new URLSearchParams(p)}`),
+  /** @param {import('./types.js').IssuerBinding} b */
+  platformIssuerSave: (b) => call('api/platform/issuers', b, { method: 'PUT' }),
+  platformIssuerDelete: (issuer) => call('api/platform/issuers/delete', { issuer }),
   /** @returns {Promise<import('./types.js').PoliciesResponse>} */
   policies: (store) => call(`api/stores/${enc(store)}/policies`),
   /** @returns {Promise<import('./types.js').NamespacesResponse>} */

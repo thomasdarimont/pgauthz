@@ -62,6 +62,10 @@ services:
       # The direct instances of the default stack (no OPA here).
       PGAUTHZD_URL: http://pgauthzd-full:8080
       PGAUTHZD_DECISION_URL: http://pgauthzd-decision:8080
+      # Platform → Issuers: the effective issuer set, read over the writer's
+      # internal callback listener with the service token OPA uses.
+      PGAUTHZD_INTERNAL_URL: http://pgauthzd-full:8081
+      PGAUTHZD_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
       # CONSOLE_I18N_DIR: /i18n
       # The tracing UI's trace page ({trace_id}): the Decisions tab links into it.
       CONSOLE_TRACE_URL: "${CONSOLE_TRACE_URL:-}"

@@ -367,6 +367,46 @@
  * @property {{ok: boolean, version?: string, role?: string, stores?: number, error?: string}} engine
  * @property {{url: string, ok: boolean, status?: number, error?: string}} [pgauthzd]
  */
+/**
+ * @typedef {Object} IssuerBinding one row of authz.issuer_bindings (api/platform/issuers)
+ * @property {string} issuer
+ * @property {string[]} stores
+ * @property {string[]} db_roles
+ * @property {Object<string, string>} client_db_roles
+ * @property {Object<string, string[]>} pep_clients
+ * @property {boolean} enabled
+ * @property {string} description
+ * @property {string} [created_at]
+ * @property {string} [created_by]
+ * @property {string} [updated_at]
+ * @property {string} [updated_by]
+ */
+/**
+ * @typedef {Object} EffectiveIssuer one issuer of pgauthzd's GET /pgauthz/v1/issuers
+ * @property {string} issuer
+ * @property {string} audience
+ * @property {boolean} enabled
+ * @property {'env'|'db'} binding_source
+ * @property {string[]} stores
+ * @property {string[]} db_roles
+ * @property {Object<string, string[]>} [pep_clients]
+ * @property {{scopes?: string[], claims?: Object<string, string[]>, clients?: string[], scope?: string}} [admin]
+ */
+/**
+ * @typedef {Object} IssuersResponse api/platform/issuers
+ * @property {IssuerBinding[]} bindings
+ * @property {number} revision the database's revision
+ * @property {{available: boolean, url?: string, error?: string, source?: string, revision: number, issuers?: EffectiveIssuer[]}} effective
+ */
+/** @typedef {{seq: number, action: string, performed_at: string, performed_by: string, issuer: string, stores: string[], enabled: boolean|null, description: string}} IssuerAuditRow */
+/**
+ * @typedef {Object} IssuerAuditPage api/platform/issuers/audit — one page, newest first
+ * @property {IssuerAuditRow[]} rows
+ * @property {string} next the cursor (`before`) of the following page; empty on the last
+ * @property {number} total
+ * @property {number} limit
+ */
+/** @typedef {{issuer: string, stores: string, db_roles: string, client_db_roles: string, pep_clients: string, enabled: boolean, description: string, isNew: boolean}} IssuerForm the editor's state (lists one per line, maps as JSON text) */
 /** @typedef {{id: string, package: string, name: string, raw: string}} PolicyInfo */
 /** @typedef {{configured: boolean, error?: string, opa?: Object, global: PolicyInfo[], store: PolicyInfo[], libs: PolicyInfo[], platform: PolicyInfo[], contract: string}} PoliciesResponse */
 

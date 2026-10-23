@@ -429,7 +429,8 @@ GRANT EXECUTE ON FUNCTION authz.revoke_recorder_actions(text, text, text[]) TO a
 -- secrets — pgauthzd instances poll it); writing is admin tier.
 GRANT EXECUTE ON FUNCTION authz.issuer_bindings_revision() TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.list_issuer_bindings() TO authz_reader;
-GRANT EXECUTE ON FUNCTION authz.list_issuer_bindings_audit(text, int) TO authz_auditor;
+GRANT EXECUTE ON FUNCTION authz.list_issuer_bindings_audit(text, int, bigint) TO authz_auditor;
+GRANT EXECUTE ON FUNCTION authz.count_issuer_bindings_audit(text) TO authz_auditor;
 GRANT EXECUTE ON FUNCTION authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.delete_issuer_binding(text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.find_redundant_tuples(text, text, text, jsonb) TO authz_admin;
@@ -533,7 +534,8 @@ ALTER FUNCTION authz.grant_recorder_actions(text, text, text[]) SECURITY DEFINER
 ALTER FUNCTION authz.revoke_recorder_actions(text, text, text[]) SECURITY DEFINER;
 ALTER FUNCTION authz.issuer_bindings_revision() SECURITY DEFINER;
 ALTER FUNCTION authz.list_issuer_bindings() SECURITY DEFINER;
-ALTER FUNCTION authz.list_issuer_bindings_audit(text, int) SECURITY DEFINER;
+ALTER FUNCTION authz.list_issuer_bindings_audit(text, int, bigint) SECURITY DEFINER;
+ALTER FUNCTION authz.count_issuer_bindings_audit(text) SECURITY DEFINER;
 ALTER FUNCTION authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_issuer_binding(text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.find_redundant_tuples(text, text, text, jsonb) SECURITY DEFINER;

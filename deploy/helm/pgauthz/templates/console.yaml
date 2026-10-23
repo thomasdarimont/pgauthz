@@ -114,6 +114,12 @@ spec:
             {{- end }}
             # Settings: the writer instance's readiness (its JWT listener).
             - { name: PGAUTHZD_URL, value: http://{{ $full }}-writer:8080 }
+            # Platform → Issuers: the effective issuer set over the writer's
+            # internal callback listener (the service token OPA presents).
+            - { name: PGAUTHZD_INTERNAL_URL, value: http://{{ $full }}-writer:8081 }
+            - name: PGAUTHZD_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef: { name: {{ include "pgauthz.secretName" . }}, key: native-service-token }
             # The Test tab's "as me through pgauthzd": the AuthZEN front door.
             {{- if .Values.authzen.opa.enabled }}
             - { name: PGAUTHZD_DECISION_URL, value: http://{{ $full }}-pgauthzd-opa:8080 }

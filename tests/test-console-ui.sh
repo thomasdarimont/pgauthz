@@ -63,6 +63,8 @@ console_psql() {
 }
 cleanup() {
     psql_exec "$PG_DB" -q -c "SELECT authz.delete_store('$STORE', p_purge_audit => true);" >/dev/null 2>&1 || true
+    # the Issuers spec's bindings (one issuer per run under https://uitest.example/)
+    psql_exec "$PG_DB" -q -c "DELETE FROM authz.issuer_bindings WHERE issuer LIKE 'https://uitest.example/%';" >/dev/null 2>&1 || true
     if [ "${CONSOLE_UI_DECISIONS:-0}" = "1" ]; then
         console_psql -c "DELETE FROM decisionlog.decisions WHERE store = '$STORE';" >/dev/null 2>&1 || true
     fi

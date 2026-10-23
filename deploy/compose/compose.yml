@@ -283,6 +283,8 @@ services:
       CONSOLE_SELF_SUBJECT_TYPES: "${CONSOLE_SELF_SUBJECT_TYPES:-user}"
       CONSOLE_TEAM_CLAIMS: "${CONSOLE_TEAM_CLAIMS:-role=realm_access.roles,group=groups,org=organization}"
       PGAUTHZD_URL: "http://pgauthzd-full:8080"                         # Settings: writer readiness
+      PGAUTHZD_INTERNAL_URL: "http://pgauthzd-full:8081"                # Platform → Issuers: the effective issuer set (callback listener)
+      PGAUTHZD_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-}"
       PGAUTHZD_DECISION_URL: "${CONSOLE_DECISION_URL:-http://pgauthzd-decision:8080}"   # Test tab "as me"; http://pgauthzd-opa:8080 with the opa profile
       CONSOLE_OPA_URL: "${CONSOLE_OPA_URL:-}"                          # http://opa:8181 with the opa profile (Policies tab)
       CONSOLE_OPA_TOKEN: "${OPA_ADMIN_TOKEN:-}"

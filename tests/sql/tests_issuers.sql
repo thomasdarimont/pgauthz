@@ -34,6 +34,14 @@ BEGIN
         (SELECT string_agg(action || ':' || performed_by || ':' || enabled::text, ',' ORDER BY seq)
            FROM authz.list_issuer_bindings_audit('https://test-issuer/a')), 'INSERT:alice:true,UPDATE:bob:false');
 
+    -- ib_06b: the history pages by seq (newest first, then below the last seen), and counts
+    PERFORM _test_assert('ib_06b_audit_paged',
+        (SELECT string_agg(action, ',' ORDER BY seq DESC) FROM authz.list_issuer_bindings_audit('https://test-issuer/a', 1))
+        || '|' || (SELECT string_agg(action, ',') FROM authz.list_issuer_bindings_audit('https://test-issuer/a', 10,
+                      (SELECT max(seq) FROM authz.list_issuer_bindings_audit('https://test-issuer/a', 1))))
+        || '|' || authz.count_issuer_bindings_audit('https://test-issuer/a')::text,
+        'UPDATE|INSERT|2');
+
     -- ib_07..10: validation
     BEGIN
         PERFORM authz.set_issuer_binding('https://test-issuer/b', ARRAY['tenant-('], '{}', '{}', '{}');
@@ -80,7 +88,7 @@ BEGIN
         || has_function_privilege('authz_reader', 'authz.issuer_bindings_revision()', 'EXECUTE')::text || ','
         || has_function_privilege('authz_reader', 'authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text)', 'EXECUTE')::text || ','
         || has_function_privilege('authz_admin', 'authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text)', 'EXECUTE')::text || ','
-        || has_function_privilege('authz_auditor', 'authz.list_issuer_bindings_audit(text, int)', 'EXECUTE')::text,
+        || has_function_privilege('authz_auditor', 'authz.list_issuer_bindings_audit(text, int, bigint)', 'EXECUTE')::text,
         'true,true,false,true,true');
 
     DELETE FROM authz.issuer_bindings WHERE issuer LIKE 'https://test-issuer%';
