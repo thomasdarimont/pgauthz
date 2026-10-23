@@ -88,6 +88,21 @@ const REGO = [
   ['', /\s+|./y],
 ];
 
+// YAML as the scenario fixtures use it: comments, "- " list markers, keys
+// before a colon, quoted strings, numbers, booleans/null, and type:id
+// references as plain scalars (left uncoloured but kept as one token).
+const YAML = [
+  ['comment', /#[^\n]*/y],
+  ['key', /(?<=^|\n|[ \t]|- )[A-Za-z_][\w.-]*(?=\s*:(?:\s|$|\n))/y],
+  ['op', /(?<=^|\n|[ \t])-(?=\s)/y],
+  ['string', /"(?:[^"\\\n]|\\.)*"|'(?:[^'\n]|'')*'/y],
+  ['keyword', /\b(?:true|false|null|yes|no|on|off)\b/y],
+  ['number', /(?<![\w:.-])-?\d+(?:\.\d+)?(?![\w:.-])/y],
+  ['ident', /[A-Za-z_*][\w:#*@/.-]*/y],
+  ['', /\s+|./y],
+];
+
+export const highlightYAML = (text) => tokens(text ?? '', YAML);
 export const highlightRego = (text) => tokens(text ?? '', REGO);
 export const highlightDSL = (text) => tokens(text ?? '', DSL);
 export const highlightSQL = (text) => tokens(text ?? '', SQL);

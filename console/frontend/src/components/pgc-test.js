@@ -6,6 +6,7 @@ import { t, t2 } from '../i18n.js';
 import { PgcJson } from './pgc-json.js';
 import { run, copyText, forbiddenText, parseList, fmtTime, fmtRelative, FieldInvalid } from '../util.js';
 import { PgcExplainTree } from './pgc-explain-tree.js';
+import { explainOptions } from './pgc-explain-options.js';
 import { checkCaseYAML, listCaseYAML, appendCase } from './pgc-scenarios.js';
 
 // Test tab, four ways to ask the managed store:
@@ -16,6 +17,17 @@ import { checkCaseYAML, listCaseYAML, appendCase } from './pgc-scenarios.js';
 //   as me  — the real PEP path: your own token through pgauthzd (and OPA
 //            when it fronts the instance), with the detail envelope that says
 //            who decided — engine, OPA, which hooks, any veto
+// The modes' URL names: stores/<store>/test/<mode>[/<view>] — a deep link
+// and the browser's history (back returns to the previous mode or view).
+const MODE_SLUGS = {
+  single: 'single-check',
+  matrix: 'matrix',
+  search: 'search',
+  asme: 'as-me',
+  scenarios: 'scenarios',
+};
+const SLUG_MODES = Object.fromEntries(Object.entries(MODE_SLUGS).map(([k, v]) => [v, k]));
+
 const MODES = [
   ['single', 'Single check', 'One decision for any subject, with the resolution tree.'],
   ['matrix', 'Matrix', 'Many subjects, actions and resources at once — one engine call, one grid.'],
@@ -41,7 +53,9 @@ export class PgcTest extends PgcElement {
     store: { type: String },
     caps: { attribute: false },
     me: { attribute: false },
+    sub: { type: String }, // the URL's sub-path under test/: "<mode>[/<view>]"
     mode: { state: true },
+    scenarioView: { state: true }, // the scenarios' view from the URL: harness | edit-as-yaml
     ask: { state: true },
     successfulOnly: { state: true },
     at: { state: true },
@@ -71,6 +85,7 @@ export class PgcTest extends PgcElement {
   constructor() {
     super();
     this.mode = 'single';
+    this.scenarioView = 'harness';
     this.ask = 'can';
     this.successfulOnly = false; // explain: only the steps that decided
     this.at = ''; // single check: decide as of this instant (datetime-local, local time); '' = now
@@ -108,7 +123,7 @@ export class PgcTest extends PgcElement {
     }
     this.scenarioYaml = appendCase(this.scenarioYaml, caseYaml);
     this.added = caseYaml;
-    this.mode = 'scenarios';
+    this._go('scenarios', 'harness');
   }
 
   willUpdate(changed) {
@@ -117,6 +132,22 @@ export class PgcTest extends PgcElement {
       this.scenarioYaml = null;
       void this._load();
     }
+    if (changed.has('sub')) {
+      const [slug, view] = (this.sub ?? '').split('/');
+      const mode = SLUG_MODES[slug] ?? 'single';
+      if (mode !== this.mode) {
+        this.mode = mode;
+        this._clear();
+      }
+      this.scenarioView = view === 'edit-as-yaml' ? 'yaml' : 'harness';
+    }
+  }
+
+  // Navigates to a mode (and, for the scenarios, a view): the URL is the
+  // state, the app's router turns it into properties (sub) and history.
+  _go(mode, view) {
+    const rel = `stores/${this.store}/test/${MODE_SLUGS[mode]}${mode === 'scenarios' && view ? '/' + view : ''}`;
+    this.dispatchEvent(new CustomEvent('navigate', { detail: rel, bubbles: true, composed: true }));
   }
 
   _clear() {
@@ -238,7 +269,8 @@ export class PgcTest extends PgcElement {
     this.subject = subject;
     this.action = action;
     this.resource = resource;
-    this.mode = 'single';
+    this.mode = 'single'; // set before navigating: the URL change then finds the mode in place and keeps the result
+    this._go('single');
     void this._runSingle();
   }
 
@@ -519,45 +551,19 @@ export class PgcTest extends PgcElement {
 
   // The explain options, chosen with the question: they shape the tree.
   _explainOptions() {
-    const rerun = () => this.decision !== null && this._runSingle();
-    return html`<div class="actions explain-options">
-      <label
-        class="check"
-        title=${t('Keep only the steps that contributed to the decision (p_successful_only).')}
-      >
-        <input
-          type="checkbox"
-          .checked=${this.successfulOnly}
-          @change=${(e) => {
-            this.successfulOnly = e.target.checked;
-            rerun();
-          }}
-        />
-        ${t('Only the deciding path')}
-      </label>
-      <label
-        class="check"
-        title=${t('Strip subject and object identifiers and free text; keep types, relations, reasons and results (p_redact) — what an untrusted UI should see.')}
-      >
-        <input
-          type="checkbox"
-          .checked=${this.redact || !this._policy().explainFull}
-          ?disabled=${!this._policy().explainFull}
-          @change=${(e) => {
-            this.redact = e.target.checked;
-            rerun();
-          }}
-        />
-        ${t('Redact identifiers')}
-      </label>
-      ${this._policy().explainFull ? nothing : this._policyNote(t('identifiers are always redacted for you'))}
-      ${help('"Only the deciding path" hides the branches that were tried and failed; "Redact" shows the trace the way a client without audit rights would get it.')}
-    </div>`;
+    return explainOptions({
+      successfulOnly: this.successfulOnly,
+      redact: this.redact,
+      explainFull: this._policy().explainFull,
+      policyNote: this._policyNote(t('identifiers are always redacted for you')),
+      onChange: ({ successfulOnly, redact }) => {
+        this.successfulOnly = successfulOnly;
+        this.redact = redact;
+        if (this.decision !== null) void this._runSingle();
+      },
+    });
   }
 
-  // Time-bound access: the granting tuples on the deciding path and their
-  // expiries. When every granting tuple expires, the access itself ends at
-  // the latest of them; one unbounded tuple keeps it open.
   _timeBound() {
     const found = [];
     const walk = (n) => {
@@ -1055,17 +1061,21 @@ export class PgcTest extends PgcElement {
         <div class="seg">
           ${modes.map(([id, label, tip]) => {
             const locked = id === 'search' && !this._policy().search;
-            return html`<button
-              class=${this.mode === id ? 'active' : ''}
-              ?disabled=${locked}
-              title=${locked ? t('The test policy does not let you enumerate objects or subjects (needs can_test_search).') : t(tip)}
-              @click=${() => {
-                this.mode = id;
-                this._clear();
-              }}
-            >
-              ${t(label)}${locked ? ' 🔒' : ''}
-            </button>`;
+            return locked
+              ? html`<button
+                  class=${this.mode === id ? 'active' : ''}
+                  disabled
+                  title=${t('The test policy does not let you enumerate objects or subjects (needs can_test_search).')}
+                >
+                  ${t(label)} 🔒
+                </button>`
+              : html`<a
+                  class="btn ${this.mode === id ? 'active' : ''}"
+                  href=${`stores/${this.store}/test/${MODE_SLUGS[id]}`}
+                  title=${t(tip)}
+                  data-testid=${`test-mode-${id}`}
+                  >${t(label)}</a
+                >`;
           })}
         </div>
       </div>
@@ -1081,7 +1091,9 @@ export class PgcTest extends PgcElement {
                 ? html`<pgc-scenarios
                     .store=${this.store}
                     .caps=${this.caps}
+                    .meta=${this.meta}
                     .yaml=${this.scenarioYaml}
+                    view=${this.scenarioView}
                     @yaml-change=${(e) => (this.scenarioYaml = e.detail)}
                   ></pgc-scenarios>`
                 : this._single()

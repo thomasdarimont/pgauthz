@@ -84,10 +84,12 @@ tuples:
 
 tests:
   - name: group members read via folder inheritance
+    description: "REQ-12 — folder viewers read every document below"   # free text, shown with a failure
     check:
       - user: user:alice
         object: doc:design
         assertions: { can_read: true, can_write: false }
+        notes: { can_write: "JIRA-4711: viewers never write" }         # per assertion
       - user: user:alice
         object: doc:design
         context: { current_time: "2026-07-05T10:00:00Z" }   # condition input
@@ -105,7 +107,11 @@ tests:
 
 The runner (`pgauthzadm.RunFixture`, shared with the console's Scenarios)
 creates an ephemeral store per run (hermetic, repeatable), imports the
-model, seeds the tuples, runs the assertions, and drops the store. The
+model, seeds the tuples, runs the assertions, and drops the store — all in
+one transaction, with the engine's `authz.ephemeral_store` setting on, so
+the store's types get no tuples partitions (no DDL, no lock on the engine's
+tuples table while the run lasts) and the store never appears in the
+committed state unless `--keep-store`. The
 model comes from `model_file` (DSL or OpenFGA JSON), `model` (the registry)
 or `store` — a live store's current model, copied loss-free (conditions,
 gates and grant rules included, which the DSL cannot carry); a fixture

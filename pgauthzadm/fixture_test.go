@@ -34,10 +34,13 @@ tuples:
     object: group:eng
 tests:
   - name: alice reads
+    description: "Alice should be able to read the design document"
     check:
       - user: user:alice
         object: doc:design
+        description: "US-7: the designer's view"
         assertions: { can_read: true }
+        notes: { can_read: "REQ-12: group members read via the folder" }
         context: { current_time: "2026-07-05T10:00:00Z" }
     list_objects:
       - user: user:bob
@@ -58,6 +61,12 @@ tests:
 	tc := fix.Tests[0]
 	if len(tc.Check) != 1 || tc.Check[0].Assertions["can_read"] != true || tc.Check[0].Context["current_time"] == nil {
 		t.Errorf("check case %+v", tc.Check)
+	}
+	if tc.Check[0].Notes["can_read"] != "REQ-12: group members read via the folder" {
+		t.Errorf("note not parsed: %+v", tc.Check[0].Notes)
+	}
+	if tc.Description != "Alice should be able to read the design document" || tc.Check[0].Description != "US-7: the designer's view" {
+		t.Errorf("descriptions not parsed: test %q, case %q", tc.Description, tc.Check[0].Description)
 	}
 	if len(tc.ListObjects) != 1 || tc.ListObjects[0].Assertions["can_write"][0] != "doc:readme" {
 		t.Errorf("list case %+v", tc.ListObjects)

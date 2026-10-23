@@ -83,6 +83,18 @@ func TestScenariosHTTP(t *testing.T) {
 	if code, m := do("PUT", base, body("store: gdrive\ntests: []\n"), owner); code != 400 {
 		t.Errorf("another store's model accepted: %d %v", code, m)
 	}
+	// the editor's validation: a YAML error names its line, a semantic one does not
+	if code, m := do("POST", base+"/validate", body("tests:\n  - name: x: y\n"), owner); code != 200 || m["ok"] != false || m["line"] != float64(2) {
+		t.Errorf("validate yaml error: %d %v, want ok=false line=2", code, m)
+	}
+	if code, m := do("POST", base+"/validate", body("tuples:\n  - user: alice\n    relation: viewer\n    object: doc:a\n"), owner); code != 200 || m["ok"] != false || m["line"] != nil {
+		t.Errorf("validate reference error: %d %v, want ok=false without a line", code, m)
+	}
+	if code, m := do("POST", base+"/validate", body("tests:\n  - name: t\n    check:\n      - user: user:bob\n        object: doc:a\n        assertions: { can_read: true }\n"), owner); code != 200 || m["ok"] != true || m["cases"] != float64(1) {
+		t.Errorf("validate ok: %d %v, want ok=true cases=1", code, m)
+	} else if fx, _ := m["fixture"].(map[string]any); fx["store"] != nil || len(fx["tests"].([]any)) != 1 {
+		t.Errorf("validate fixture: %v, want the parsed tests without the implied store", fx)
+	}
 	// a tester may not save
 	const fixture = `tuples:
   - user: user:bob
@@ -115,6 +127,31 @@ tests:
 	code, m := do("POST", base+"/run", body(""), owner)
 	if code != 200 || m["passed"] != float64(3) || m["failed"] != float64(0) {
 		t.Fatalf("run: %d %v", code, m)
+	}
+	if prov, _ := m["model"].(map[string]any); prov["store"] != store || prov["checksum"] == "" || prov["checksum"] == nil {
+		t.Errorf("run provenance: %v, want the store and its live model's checksum", m["model"])
+	}
+	// only the second test: its result keeps index 1
+	code, m = do("POST", base+"/run", `{"yaml":"","only":[1]}`, owner)
+	if res, _ := m["results"].([]any); code != 200 || len(res) != 1 || res[0].(map[string]any)["test"] != float64(1) {
+		t.Errorf("run only [1]: %d %v", code, m)
+	}
+	if code, m := do("POST", base+"/run", `{"yaml":"","only":[7]}`, owner); code != 400 {
+		t.Errorf("run only [7]: %d %v, want 400", code, m)
+	}
+	// explain one assertion inside the fixture: a tree, from the ephemeral store
+	code, m = do("POST", base+"/explain", `{"yaml":"","test":0,"user":"user:bob","relation":"can_read","object":"doc:a"}`, owner)
+	if tree, _ := m["tree"].(map[string]any); code != 200 || tree == nil {
+		t.Errorf("explain: %d %v", code, m)
+	}
+	if code, m := do("POST", base+"/explain", `{"yaml":"","test":0,"user":"user:bob","relation":"can_read","object":"doc:a","successful_only":true,"redact":true}`, owner); code != 200 || m["redacted"] != true || m["successful_only"] != true {
+		t.Errorf("explain with options: %d %v", code, m)
+	}
+	if code, m := do("POST", base+"/explain", `{"yaml":"","test":0,"user":"user:bob","relation":"owner","object":"doc:zzz"}`, owner); code != 404 {
+		t.Errorf("explain of a missing assertion: %d %v, want 404", code, m)
+	}
+	if code, m := do("POST", base+"/explain", `{"yaml":"","test":0,"user":"user:bob","relation":"can_read","object":"doc:a"}`, tester); code != 403 {
+		t.Errorf("tester explained: %d %v, want 403", code, m)
 	}
 	// a draft with a wrong expectation: a failed result, not an error
 	code, m = do("POST", base+"/run", body(strings.Replace(fixture, "can_read: true, owner: false", "can_read: false, owner: false", 1)), owner)

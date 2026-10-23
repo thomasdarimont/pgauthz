@@ -46,29 +46,37 @@ type FixtureTuple struct {
 	ExpiresAt string         `yaml:"expires_at,omitempty" json:"expires_at,omitempty"` // server-time expiry (RFC3339)
 }
 
-// FixtureTest is one named scenario: checks, searches and explains.
+// FixtureTest is one named scenario: checks, searches and explains. The
+// description (and a case's) is free text for people — the reasoning, a
+// requirement, a ticket — carried through unchanged, shown with a failure.
 type FixtureTest struct {
 	Name        string        `yaml:"name" json:"name"`
+	Description string        `yaml:"description,omitempty" json:"description,omitempty"`
 	Check       []CheckCase   `yaml:"check,omitempty" json:"check,omitempty"`
 	ListObjects []ListCase    `yaml:"list_objects,omitempty" json:"list_objects,omitempty"`
 	Explain     []ExplainCase `yaml:"explain,omitempty" json:"explain,omitempty"`
 }
 
-// CheckCase asserts relations of one subject on one object.
+// CheckCase asserts relations of one subject on one object. Notes are
+// per assertion (relation → text): why this outcome is expected.
 type CheckCase struct {
-	User             string          `yaml:"user" json:"user"`
-	Object           string          `yaml:"object" json:"object"`
-	Assertions       map[string]bool `yaml:"assertions" json:"assertions"`
-	Context          map[string]any  `yaml:"context,omitempty" json:"context,omitempty"`
-	ContextualTuples []FixtureTuple  `yaml:"contextual_tuples,omitempty" json:"contextual_tuples,omitempty"`
+	User             string            `yaml:"user" json:"user"`
+	Object           string            `yaml:"object" json:"object"`
+	Assertions       map[string]bool   `yaml:"assertions" json:"assertions"`
+	Notes            map[string]string `yaml:"notes,omitempty" json:"notes,omitempty"`
+	Description      string            `yaml:"description,omitempty" json:"description,omitempty"`
+	Context          map[string]any    `yaml:"context,omitempty" json:"context,omitempty"`
+	ContextualTuples []FixtureTuple    `yaml:"contextual_tuples,omitempty" json:"contextual_tuples,omitempty"`
 }
 
 // ListCase asserts the objects of a type a subject reaches per relation.
 type ListCase struct {
-	User       string              `yaml:"user" json:"user"`
-	Type       string              `yaml:"type" json:"type"`
-	Assertions map[string][]string `yaml:"assertions" json:"assertions"` // relation → expected object refs
-	Context    map[string]any      `yaml:"context,omitempty" json:"context,omitempty"`
+	User        string              `yaml:"user" json:"user"`
+	Type        string              `yaml:"type" json:"type"`
+	Assertions  map[string][]string `yaml:"assertions" json:"assertions"` // relation → expected object refs
+	Notes       map[string]string   `yaml:"notes,omitempty" json:"notes,omitempty"`
+	Description string              `yaml:"description,omitempty" json:"description,omitempty"`
+	Context     map[string]any      `yaml:"context,omitempty" json:"context,omitempty"`
 }
 
 // ExplainCase asserts the ordered reason codes of a resolution trace.
@@ -77,13 +85,26 @@ type ExplainCase struct {
 	Relation      string   `yaml:"relation" json:"relation"`
 	Object        string   `yaml:"object" json:"object"`
 	ExpectReasons []string `yaml:"expect_reasons" json:"expect_reasons"`
+	Description   string   `yaml:"description,omitempty" json:"description,omitempty"`
 }
 
-// Result is one assertion's outcome.
+// Result is one assertion's outcome; Test is the index of the FixtureTest
+// it belongs to (the n-th entry under tests:), for callers that point back
+// at the fixture.
 type Result struct {
 	Name   string `json:"name"`
 	Failed bool   `json:"failed"`
 	Detail string `json:"detail,omitempty"`
+	Test   int    `json:"test"`
+	Note   string `json:"note,omitempty"` // the assertion's note, else the case's or the test's description
+	// What was asserted, structurally (the name is for people): the case
+	// kind — check, list_objects, explain — and its subject, relation and
+	// object (the object TYPE for list_objects), so a caller can point back
+	// at the assertion in the fixture.
+	Kind     string `json:"kind"`
+	User     string `json:"user"`
+	Relation string `json:"relation"`
+	Object   string `json:"object"`
 }
 
 // RunReport is a fixture run: every assertion, the store it ran in (kept
@@ -211,11 +232,71 @@ func ParseRef(s string) (Ref, error) {
 // contextual_tuples need a connection role holding authz_contextual_reader
 // (the injection API is deliberately gated).
 func RunFixture(ctx context.Context, db DB, fix *Fixture, opts RunOptions) (*RunReport, error) {
-	if err := fix.Validate(); err != nil {
+	var report *RunReport
+	err := WithFixture(ctx, db, fix, opts, func(store string) error {
+		start := time.Now()
+		report = &RunReport{Store: store, Results: []Result{}}
+		for i, tc := range fix.Tests {
+			for _, r := range runFixtureCase(ctx, db, store, tc) {
+				r.Test = i
+				report.Results = append(report.Results, r)
+			}
+		}
+		for _, r := range report.Results {
+			if r.Failed {
+				report.Failed++
+			}
+		}
+		report.Duration = time.Since(start)
+		return nil
+	})
+	return report, err
+}
+
+// ExplainFixtureCheck sets the fixture up like RunFixture and, instead of
+// the assertions, explains ONE check — the resolution tree of
+// authz.explain_access for the case's subject and object and the relation,
+// with the case's request context — inside the fixture's world (its model,
+// its tuples, nothing else). successfulOnly and redact are passed through.
+// A case with contextual tuples cannot be explained (the engine's explain
+// takes none) and is refused.
+func ExplainFixtureCheck(ctx context.Context, db DB, fix *Fixture, opts RunOptions, c CheckCase, relation string, successfulOnly, redact bool) (json.RawMessage, error) {
+	if len(c.ContextualTuples) > 0 {
+		return nil, fmt.Errorf("a check with contextual_tuples cannot be explained")
+	}
+	u, err := ParseRef(c.User)
+	if err != nil {
 		return nil, err
 	}
+	o, err := ParseRef(c.Object)
+	if err != nil {
+		return nil, err
+	}
+	var ctxJSON []byte
+	if c.Context != nil {
+		ctxJSON, _ = json.Marshal(c.Context)
+	}
+	var raw []byte
+	err = WithFixture(ctx, db, fix, opts, func(store string) error {
+		return db.QueryRow(ctx, "SELECT authz.explain_access($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9)",
+			store, u.Type, u.ID, relation, o.Type, o.ID, ctxJSON, successfulOnly, redact).Scan(&raw)
+	})
+	return raw, err
+}
+
+// WithFixture creates the ephemeral store, rebuilds the model in it and
+// writes the fixture's tuples, then calls fn with the store's name; the
+// store is dropped afterwards unless opts.KeepStore. RunFixture and
+// ExplainFixtureCheck are built on it. Call it with a TRANSACTION (pgx.Tx):
+// the run marks its store ephemeral through a transaction-local setting,
+// and the whole run then commits or rolls back as one — the store never
+// appears in the committed state (unless kept).
+func WithFixture(ctx context.Context, db DB, fix *Fixture, opts RunOptions, fn func(store string) error) error {
+	if err := fix.Validate(); err != nil {
+		return err
+	}
 	if fix.ModelFile != "" && len(opts.ModelJSON) == 0 && opts.Model == nil {
-		return nil, fmt.Errorf("fixture names model_file %q: RunOptions.ModelJSON or Model is required", fix.ModelFile)
+		return fmt.Errorf("fixture names model_file %q: RunOptions.ModelJSON or Model is required", fix.ModelFile)
 	}
 	store := opts.Store
 	if store == "" {
@@ -223,8 +304,17 @@ func RunFixture(ctx context.Context, db DB, fix *Fixture, opts RunOptions) (*Run
 		_, _ = rand.Read(b)
 		store = "pgauthzadm_test_" + hex.EncodeToString(b)
 	}
+	// Ephemeral: the store's types get no dedicated tuples partitions, so a
+	// run is DML only — no DDL on the shared parent, no ACCESS EXCLUSIVE
+	// lock that would stall every check in every store for the run's
+	// duration, no catalog churn (model.sql, model_register_type). The
+	// setting is transaction-local: db must be a transaction (the console
+	// runs in one; the CLI opens one) for it to take effect.
+	if _, err := db.Exec(ctx, "SELECT set_config('authz.ephemeral_store', 'on', true)"); err != nil {
+		return err
+	}
 	if _, err := db.Exec(ctx, "SELECT authz.create_store($1, 'fixture run')", store); err != nil {
-		return nil, err
+		return err
 	}
 	if !opts.KeepStore {
 		defer func() {
@@ -236,7 +326,7 @@ func RunFixture(ctx context.Context, db DB, fix *Fixture, opts RunOptions) (*Run
 	if fix.Store != "" && model == nil {
 		m, err := ExportModel(ctx, db, fix.Store)
 		if err != nil {
-			return nil, fmt.Errorf("model of store %s: %w", fix.Store, err)
+			return fmt.Errorf("model of store %s: %w", fix.Store, err)
 		}
 		model = m
 	}
@@ -245,36 +335,24 @@ func RunFixture(ctx context.Context, db DB, fix *Fixture, opts RunOptions) (*Run
 		// no arguments: pgx sends the script in one simple-protocol round
 		// trip, statement by statement, as psql would
 		if _, err := db.Exec(ctx, RenderSQL(store, model)); err != nil {
-			return nil, err
+			return err
 		}
 	case fix.ModelFile != "":
 		if _, err := ImportModel(ctx, db, store, opts.ModelJSON); err != nil {
-			return nil, err
+			return err
 		}
 	default:
 		name, version, _ := ParseModelRef(fix.Model)
 		if _, err := db.Exec(ctx, "SELECT authz.apply_model($1, $2, $3)", store, name, VersionArg(version)); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	for _, t := range fix.Tuples {
 		if err := writeFixtureTuple(ctx, db, store, t); err != nil {
-			return nil, fmt.Errorf("fixture tuple %s %s %s: %w", t.User, t.Relation, t.Object, err)
+			return fmt.Errorf("fixture tuple %s %s %s: %w", t.User, t.Relation, t.Object, err)
 		}
 	}
-
-	start := time.Now()
-	report := &RunReport{Store: store, Results: []Result{}}
-	for _, tc := range fix.Tests {
-		report.Results = append(report.Results, runFixtureCase(ctx, db, store, tc)...)
-	}
-	for _, r := range report.Results {
-		if r.Failed {
-			report.Failed++
-		}
-	}
-	report.Duration = time.Since(start)
-	return report, nil
+	return fn(store)
 }
 
 func writeFixtureTuple(ctx context.Context, db DB, store string, t FixtureTuple) error {
@@ -301,10 +379,25 @@ func writeFixtureTuple(ctx context.Context, db DB, store string, t FixtureTuple)
 
 func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []Result {
 	var out []Result
-	fail := func(name, detail string) { out = append(out, Result{name, true, detail}) }
-	pass := func(name string) { out = append(out, Result{name, false, ""}) }
+	note := tc.Description
+	var at Result // the current assertion's kind/user/relation/object
+	fail := func(name, detail string) {
+		out = append(out, Result{Name: name, Failed: true, Detail: detail, Note: note, Kind: at.Kind, User: at.User, Relation: at.Relation, Object: at.Object})
+	}
+	pass := func(name string) {
+		out = append(out, Result{Name: name, Note: note, Kind: at.Kind, User: at.User, Relation: at.Relation, Object: at.Object})
+	}
+	first := func(ss ...string) string {
+		for _, s := range ss {
+			if s != "" {
+				return s
+			}
+		}
+		return ""
+	}
 
 	for _, c := range tc.Check {
+		at = Result{Kind: "check", User: c.User, Object: c.Object}
 		u, err := ParseRef(c.User)
 		if err != nil {
 			fail(tc.Name+"/check", err.Error())
@@ -317,6 +410,8 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 		}
 		for rel, want := range c.Assertions {
 			name := fmt.Sprintf("%s: %s %s %s = %v", tc.Name, c.User, rel, c.Object, want)
+			at.Relation = rel
+			note = first(c.Notes[rel], c.Description, tc.Description)
 			got, err := runFixtureCheck(ctx, db, store, u, rel, o, c)
 			if err != nil {
 				fail(name, err.Error())
@@ -329,6 +424,7 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 	}
 
 	for _, l := range tc.ListObjects {
+		at = Result{Kind: "list_objects", User: l.User, Object: l.Type}
 		u, err := ParseRef(l.User)
 		if err != nil {
 			fail(tc.Name+"/list_objects", err.Error())
@@ -336,6 +432,8 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 		}
 		for rel, want := range l.Assertions {
 			name := fmt.Sprintf("%s: list %s %s for %s", tc.Name, l.Type, rel, l.User)
+			at.Relation = rel
+			note = first(l.Notes[rel], l.Description, tc.Description)
 			var ctxJSON []byte
 			if l.Context != nil {
 				ctxJSON, _ = json.Marshal(l.Context)
@@ -374,9 +472,11 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 	}
 
 	for _, e := range tc.Explain {
+		at = Result{Kind: "explain", User: e.User, Relation: e.Relation, Object: e.Object}
 		u, err1 := ParseRef(e.User)
 		o, err2 := ParseRef(e.Object)
 		name := fmt.Sprintf("%s: explain %s %s %s", tc.Name, e.User, e.Relation, e.Object)
+		note = first(e.Description, tc.Description)
 		if err1 != nil || err2 != nil {
 			fail(name, "bad reference")
 			continue

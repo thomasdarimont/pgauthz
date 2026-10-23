@@ -66,8 +66,19 @@ func cmdTest(args []string) error {
 	}
 	defer conn.Close(ctx)
 
-	report, err := pgauthzadm.RunFixture(ctx, conn, &fix, opts)
+	// One transaction: the run's store is ephemeral (no partitions, no lock
+	// on the engine's tuples table) and gone with the rollback or commit —
+	// kept, with --keep-store, only through the commit.
+	tx, err := conn.Begin(ctx)
 	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // a no-op after Commit
+	report, err := pgauthzadm.RunFixture(ctx, tx, &fix, opts)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	if *keep {
@@ -76,6 +87,9 @@ func cmdTest(args []string) error {
 	for _, r := range report.Results {
 		if r.Failed {
 			fmt.Printf("    FAIL  %s  (%s)\n", r.Name, r.Detail)
+			if r.Note != "" {
+				fmt.Printf("          note: %s\n", r.Note)
+			}
 		} else {
 			fmt.Printf("    PASS  %s\n", r.Name)
 		}

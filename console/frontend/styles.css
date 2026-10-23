@@ -185,6 +185,7 @@ label.check { display: inline-flex; align-items: center; gap: var(--s-2); font-s
 .seg button:last-child { border-radius: 0 var(--r-md) var(--r-md) 0; }
 .seg button + button { border-left: none; }
 .seg button.active { background: var(--c-accent); color: var(--c-accent-fg); border-color: var(--c-accent); }
+.seg a.btn.active { background: var(--c-accent); color: var(--c-accent-fg); border-color: var(--c-accent); }
 
 /* ── Tables ── */
 .table-wrap { overflow-x: auto; }
@@ -426,6 +427,75 @@ pgc-json { display: block; min-width: 0; }
 .json-editor .json-hl { overflow: hidden; color: var(--c-fg); pointer-events: none; }
 .json-editor .json-hl .line { display: block; min-height: 1.5em; }
 .json-editor .json-hl .errline { background: var(--c-warn-bg); display: block; margin: 0 calc(-1 * var(--s-3)); padding: 0 var(--s-3); }
+.json-editor .json-hl .selline { background: var(--c-accent-bg, var(--c-surface-2)); box-shadow: inset 3px 0 0 var(--c-accent); display: block; margin: 0 calc(-1 * var(--s-3)); padding: 0 var(--s-3); }
+/* Line numbers on an overlay editor: a counter in the highlighted copy's gutter (5ch), the
+   textarea padded by the same width so the typed text stays over the coloured text */
+.json-editor.numbered .json-hl { counter-reset: line; }
+.json-editor.numbered .json-hl .line { counter-increment: line; }
+.json-editor.numbered .json-hl .line::before { content: counter(line); display: inline-block; width: 3ch; margin-right: 1.5ch; padding-right: .5ch; text-align: right; color: var(--c-muted); border-right: 1px solid var(--c-border); user-select: none; }
+.json-editor.numbered textarea { padding-left: calc(var(--s-3) + 5ch); }
+/* The numbered editor's height is the textarea's (rows, then the resize corner), not the
+   highlighted copy's: in the shared grid the copy would stretch the row to the whole text */
+.json-editor.numbered { position: relative; display: block; }
+.json-editor.numbered .json-hl { position: absolute; inset: 0; }
+.json-editor.numbered textarea { display: block; width: 100%; box-sizing: border-box; }
+/* Scenario harness: blocks with a fold toggle, a body of tables, inline add rows */
+.fx-block { margin-top: var(--s-2); }
+.fx-head { display: flex; align-items: center; gap: var(--s-2); font-size: var(--t-xs); min-height: 1.8em; }
+/* The fold toggle: a drawn chevron (the ▸ glyph is tiny in the UI font), a 2em hit area */
+.fx-toggle { width: 2.2em; height: 2em; display: inline-flex; align-items: center; justify-content: center; padding: 0; border-radius: var(--r-sm); color: var(--c-muted); }
+.fx-toggle::before { content: ''; width: .55em; height: .55em; border: solid currentColor; border-width: 0 2px 2px 0; transform: rotate(-45deg) translate(-1px, 0); transition: transform .12s; }
+.fx-toggle[aria-expanded="true"]::before { transform: rotate(45deg) translate(0, -2px); }
+.fx-toggle:hover { background: var(--c-surface-2); color: var(--c-fg); }
+.fx-head .fx-label.pick, .fx-head .fx-num { cursor: pointer; }
+.fx-num { min-width: 1.6em; }
+.fx-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; font-weight: 600; }
+.fx-lines { margin-left: auto; white-space: nowrap; }
+.fx-name { font: inherit; font-weight: 600; border: 1px solid transparent; border-radius: var(--r-sm); padding: 1px var(--s-1); min-width: 12rem; flex: 0 1 28rem; background: transparent; color: var(--c-fg); }
+.fx-name:hover, .fx-name:focus { border-color: var(--c-border); background: var(--c-surface); }
+.fx-test { border-left: 3px solid var(--c-border); padding-left: var(--s-2); }
+.fx-test.picked { border-left-color: var(--c-accent); }
+.fx-body { margin: var(--s-1) 0 var(--s-2) 1.6em; }
+.fx-body table + table { margin-top: var(--s-2); }
+.fx-add.inline { display: flex; flex-wrap: wrap; gap: var(--s-1); align-items: center; margin-top: var(--s-2); padding: var(--s-2); background: var(--c-surface-2); border-radius: var(--r-sm); }
+.fx-add.inline input { flex: 1 1 9rem; min-width: 7rem; }
+.fx-add.inline input.fx-note { flex: 2 1 14rem; }
+.fx-desc { display: block; width: 100%; box-sizing: border-box; font-size: var(--t-xs); border: 1px solid var(--c-border); border-radius: var(--r-sm); padding: 2px var(--s-1); background: var(--c-surface); color: var(--c-fg); }
+.fx-descline { margin: 2px 0 var(--s-2); font-size: var(--t-xs); color: var(--c-muted); }
+.fx-text { color: var(--c-muted); }
+.fx-text .link { padding: 0 2px; opacity: .5; }
+.fx-text:hover .link { opacity: 1; }
+.fx-text-add { font-size: var(--t-xs); opacity: .6; }
+.fx-text-add:hover { opacity: 1; }
+.chip .link { padding: 0 2px; }
+.chip.noted { border-bottom: 2px dotted var(--c-accent); }
+/* The YAML editor's play column: a layer over the textarea's left edge (2ch), the track shifted by
+   the textarea's scrollTop; the line numbers move right by the same 2ch, the text too */
+.json-editor.numbered.playable .json-hl .line::before { margin-left: 3ch; }
+.json-editor.numbered.playable textarea { padding-left: calc(var(--s-3) + 8ch); }
+.json-editor > .fx-play-layer { position: absolute; top: 0; bottom: 0; left: 0; width: calc(var(--s-3) + 3ch); padding: 0; overflow: hidden; z-index: 2; pointer-events: none; white-space: normal; }
+.fx-play-track { position: relative; font: var(--t-sm)/1.5 var(--f-mono); }
+/* The play button fills its line (1.5em tall, 3ch wide) with a glyph most of that size */
+.fx-play { position: absolute; left: calc(var(--s-3) - 4px); width: calc(3ch + 4px); height: 1.5em; padding: 0; border: none; background: transparent; color: var(--c-muted); font: inherit; line-height: 1.5; cursor: pointer; pointer-events: auto; border-radius: var(--r-sm); display: inline-flex; align-items: center; justify-content: center; }
+.fx-play > span { font-size: 1.35em; line-height: 1; }
+.fx-play { color: var(--c-fg); opacity: .55; }
+.fx-play:hover, .fx-play.ok, .fx-play.deny { opacity: 1; }
+.fx-play:hover { color: var(--c-accent); background: var(--c-surface-2); }
+.fx-play.ok { color: var(--c-ok); }
+.fx-play.deny { color: var(--c-deny); }
+.fx-outline { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-2); margin-bottom: var(--s-2); font-size: var(--t-xs); }
+.fx-outline-item { display: inline-flex; align-items: center; gap: 2px; padding: 1px var(--s-1); border: 1px solid var(--c-border); border-radius: var(--r-sm); background: var(--c-surface-2); }
+.fx-outline-item.ok { border-color: var(--c-ok); }
+.fx-outline-item.deny { border-color: var(--c-deny); }
+.fx-outline-item .link { padding: 0 2px; }
+button.fx-outline-item { font: inherit; font-size: var(--t-xs); cursor: pointer; color: var(--c-fg); }
+button.fx-outline-item.active { background: var(--c-surface); box-shadow: inset 0 0 0 1px var(--c-accent); }
+.chip .fx-note-add { opacity: .35; }
+.chip:hover .fx-note-add, .chip .fx-note-add:focus-visible { opacity: 1; }
+.chip input.fx-note { font-size: var(--t-xs); min-width: 14rem; margin-left: var(--s-1); }
+table.scenario-results tr.pick { cursor: pointer; }
+table.scenario-results tr.pick:hover td { background: var(--c-surface-2); }
+table.scenario-results tr.deny td.mono { color: var(--c-deny); }
 .json-editor textarea { background: transparent; color: transparent; caret-color: var(--c-fg); border: none; border-radius: 0; resize: vertical; overflow: auto; position: relative; z-index: 1; }
 .json-editor textarea:focus-visible { outline: none; }
 .json-editor:focus-within { outline: 2px solid var(--c-accent); outline-offset: 1px; }
@@ -463,3 +533,7 @@ a.chip { text-decoration: none; }
 a.chip .muted, a.chip .dim { margin-left: 4px; }
 table tr.current td { background: var(--c-accent-soft); }
 details.card > section + section { border-top: 1px solid var(--c-border); margin-top: var(--s-3); padding-top: var(--s-3); }
+.fx-explained { margin-top: var(--s-3); border-top: 1px solid var(--c-border); padding-top: var(--s-2); }
+.fx-history select { max-width: 40rem; }
+table.scenario-results tr.explaining td { background: var(--c-accent-bg, var(--c-surface-2)); }
+table.scenario-results tr.explaining td:first-child { box-shadow: inset 3px 0 0 var(--c-accent); }

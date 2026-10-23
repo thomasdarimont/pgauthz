@@ -174,3 +174,32 @@ DROP FUNCTION IF EXISTS _test_teardown_part();
 DROP FUNCTION IF EXISTS _test_setup_part();
 
 SELECT _test_report('partition checks');
+
+
+-- ---------------------------------------------------------------------
+-- authz.ephemeral_store: a type registered under the GUC gets no dedicated
+-- partition (no DDL on the parent, no ACCESS EXCLUSIVE lock), its tuples
+-- live in tuples_default, and delete_store cleans up without a partition.
+-- ---------------------------------------------------------------------
+BEGIN;
+SELECT set_config('authz.ephemeral_store', 'on', true);
+SELECT authz.create_store('test_ephem', 'ephemeral');
+SELECT authz.model_register_type('test_ephem', 'user');
+SELECT authz.model_register_type('test_ephem', 'thing');
+SELECT authz.model_register_relation('test_ephem', 'viewer');
+SELECT authz.model_add_rule('test_ephem', 'thing', 'viewer', 'direct');
+SELECT authz.write_tuple('test_ephem', 'user', 'eve', 'viewer', 'thing', 't1');
+SELECT _test_assert_true('ephemeral: no partition for the type',
+    NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class WHERE relname = 'tuples_test_ephem_thing'));
+SELECT _test_assert_true('ephemeral: the tuple lives in tuples_default',
+    EXISTS (SELECT 1 FROM authz.tuples_default t JOIN authz.stores s ON s.id = t.store_id WHERE s.name = 'test_ephem'));
+SELECT _test_assert('ephemeral: the check decides from the default partition',
+    authz.check_access('test_ephem', 'user', 'eve', 'viewer', 'thing', 't1')::text, 'true');
+SELECT _test_assert_true('ephemeral: no ACCESS EXCLUSIVE lock on the parent',
+    NOT EXISTS (SELECT 1 FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+                 WHERE c.relname = 'tuples' AND c.relnamespace = 'authz'::regnamespace
+                   AND l.pid = pg_backend_pid() AND l.mode = 'AccessExclusiveLock'));
+SELECT authz.delete_store('test_ephem', p_purge_audit => true);
+SELECT _test_assert_true('ephemeral: delete_store removed the rows',
+    NOT EXISTS (SELECT 1 FROM authz.tuples_default t JOIN authz.stores s ON s.id = t.store_id WHERE s.name = 'test_ephem'));
+COMMIT;

@@ -111,7 +111,12 @@ export class PgcStore extends PgcElement {
           @changed=${this._refresh}
         ></pgc-data>`;
       case 'test':
-        return html`<pgc-test .store=${this.store} .caps=${caps} .me=${this.me}></pgc-test>`;
+        return html`<pgc-test
+          .store=${this.store}
+          .caps=${caps}
+          .me=${this.me}
+          sub=${this.sub ?? ''}
+        ></pgc-test>`;
       case 'rollout':
         return html`<pgc-rollout .store=${this.store} .caps=${caps} @changed=${this._refresh}></pgc-rollout>`;
       case 'activity':
@@ -188,7 +193,7 @@ export class PgcStore extends PgcElement {
                   <h1 class="mono">${this.store}</h1>
                   <div class="store-head-desc">
                     <span>${i.description || t('no description')}</span>
-                    ${i.docs_url ? html`<a href=${i.docs_url} target="_blank" rel="noopener">${t('documentation')} ↗</a>` : nothing}
+                    ${i.docs_url ? html`<a href=${i.docs_url} target="_blank" rel="noopener noreferrer nofollow">${t('documentation')} ↗</a>` : nothing}
                     ${
                       caps.can_manage_access && !i.retired_at
                         ? html`<button

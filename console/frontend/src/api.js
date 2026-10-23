@@ -98,7 +98,12 @@ export const api = {
   scenarios: (store) => call(`api/stores/${enc(store)}/scenarios`),
   scenariosSave: (store, yaml) => call(`api/stores/${enc(store)}/scenarios`, { yaml }, { method: 'PUT' }),
   /** @returns {Promise<import('./types.js').ScenariosRun>} */
-  scenariosRun: (store, yaml) => call(`api/stores/${enc(store)}/scenarios/run`, { yaml }),
+  scenariosRun: (store, yaml, only) =>
+    call(`api/stores/${enc(store)}/scenarios/run`, only?.length ? { yaml, only } : { yaml }),
+  /** @returns {Promise<{ok: boolean, cases?: number, tests?: number, error?: string, line?: number}>} */
+  scenariosValidate: (store, yaml) => call(`api/stores/${enc(store)}/scenarios/validate`, { yaml }),
+  /** @returns {Promise<{tree: object, redacted: boolean}>} */
+  scenariosExplain: (store, yaml, q) => call(`api/stores/${enc(store)}/scenarios/explain`, { yaml, ...q }), // q: test, user, relation, object, successful_only, redact
   /** @returns {Promise<import('./types.js').ScenariosExport>} */
   scenariosExport: (store) => call(`api/stores/${enc(store)}/scenarios/export`),
   // the store's tuples in the native export shape — can_export, recorded as an export

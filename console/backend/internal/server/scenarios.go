@@ -20,9 +20,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -123,6 +126,7 @@ func countCases(fix *pgauthzadm.Fixture) int {
 
 type scenariosReq struct {
 	YAML string `json:"yaml"`
+	Only []int  `json:"only,omitempty"` // run: these tests only (indices under tests:), all when empty
 }
 
 // handleScenariosSave — PUT .../scenarios: validate and store the fixture,
@@ -164,6 +168,40 @@ func (s *Server) handleScenariosSave(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cases": cases})
 }
 
+var yamlLineRe = regexp.MustCompile(`(?:^|\s)line (\d+)[:,]`)
+
+// handleScenariosValidate — POST .../scenarios/validate: the editor's
+// draft through the runner's own parser and validator, without a run —
+// {ok, cases} or {ok: false, error, line} (the YAML parser's line when it
+// names one), for the warning under the editor.
+func (s *Server) handleScenariosValidate(w http.ResponseWriter, r *http.Request) {
+	p, store := s.requireStore(w, r, "can_run_tests")
+	if p == nil {
+		return
+	}
+	var req scenariosReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.YAML) == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cases": 0, "tests": 0})
+		return
+	}
+	fix, err := parseConsoleFixture(store, req.YAML)
+	if err != nil {
+		out := map[string]any{"ok": false, "error": err.Error()}
+		if m := yamlLineRe.FindStringSubmatch(err.Error()); m != nil {
+			out["line"], _ = strconv.Atoi(m[1])
+		}
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	if fix.Store == store {
+		fix.Store = "" // implied, not written: the harness regenerates the YAML from this
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cases": countCases(fix), "tests": len(fix.Tests), "fixture": fix})
+}
+
 // handleScenariosRun — POST .../scenarios/run: run the posted fixture (the
 // editor's draft; the saved one when the body is empty) in an ephemeral
 // store, as the person, bound by the test policy.
@@ -194,6 +232,25 @@ func (s *Server) handleScenariosRun(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	// a selection of tests: the subset runs, every result keeps its index
+	// in the full fixture (the harness points back by it)
+	indexOf := make([]int, len(fix.Tests))
+	for i := range indexOf {
+		indexOf[i] = i
+	}
+	if len(req.Only) > 0 {
+		var subset []pgauthzadm.FixtureTest
+		indexOf = indexOf[:0]
+		for _, i := range req.Only {
+			if i < 0 || i >= len(fix.Tests) {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("only: no test %d", i))
+				return
+			}
+			subset = append(subset, fix.Tests[i])
+			indexOf = append(indexOf, i)
+		}
+		fix.Tests = subset
 	}
 	pol, err := s.testPolicyFor(ctx, p, store)
 	if err != nil {
@@ -230,10 +287,107 @@ func (s *Server) handleScenariosRun(w http.ResponseWriter, r *http.Request) {
 		writeEngineError(w, err)
 		return
 	}
+	for i := range report.Results {
+		report.Results[i].Test = indexOf[report.Results[i].Test]
+	}
+	// Provenance: a run decides against a model as it was at that moment —
+	// the store's live model (its registry name and version when managed,
+	// its checksum always) or the registry model the fixture names — so a
+	// result read later, copied or screenshotted, says what it tested.
+	prov := map[string]any{"store": store}
+	if fix.Model != "" {
+		prov["model_ref"] = fix.Model
+	} else if st, err := pgauthzadm.ModelStatus(ctx, s.engine, store); err == nil {
+		prov["model_name"], prov["model_version"], prov["in_sync"], prov["checksum"] = st.ModelName, st.ModelVersion, st.InSync, st.LiveChecksum
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"results": report.Results, "failed": report.Failed, "passed": len(report.Results) - report.Failed,
-		"duration_ms": report.Duration.Milliseconds(),
+		"duration_ms": report.Duration.Milliseconds(), "only": req.Only, "model": prov,
 	})
+}
+
+type scenariosExplainReq struct {
+	YAML           string `json:"yaml"`
+	Test           int    `json:"test"`
+	User           string `json:"user"`
+	Relation       string `json:"relation"`
+	Object         string `json:"object"`
+	SuccessfulOnly bool   `json:"successful_only"` // keep only the steps that decided (p_successful_only)
+	Redact         bool   `json:"redact"`          // forced on without can_test_explain_full
+}
+
+// handleScenariosExplain — POST .../scenarios/explain: the resolution tree
+// of one check assertion of the draft (test index, subject, relation,
+// object), decided inside the fixture's world — the ephemeral store with
+// its model and tuples — not against the live data. Bound by the test
+// policy like explain on the Test tab: other subjects, and redaction unless
+// can_test_explain_full. Recorded as the person.
+func (s *Server) handleScenariosExplain(w http.ResponseWriter, r *http.Request) {
+	p, store := s.requireStore(w, r, "can_run_tests")
+	if p == nil {
+		return
+	}
+	var req scenariosExplainReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	ctx := r.Context()
+	yml := req.YAML
+	if strings.TrimSpace(yml) == "" {
+		row, err := s.loadScenarios(ctx, store)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		yml = row.YAML
+	}
+	fix, err := parseConsoleFixture(store, yml)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Test < 0 || req.Test >= len(fix.Tests) {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("no test %d", req.Test))
+		return
+	}
+	var c *pgauthzadm.CheckCase
+	for i := range fix.Tests[req.Test].Check {
+		x := &fix.Tests[req.Test].Check[i]
+		if x.User == req.User && x.Object == req.Object {
+			if _, ok := x.Assertions[req.Relation]; ok {
+				c = x
+				break
+			}
+		}
+	}
+	if c == nil {
+		writeError(w, http.StatusNotFound, "no such check assertion in the fixture (it may have been edited since the run)")
+		return
+	}
+	pol, err := s.testPolicyFor(ctx, p, store)
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	if !pol.Others {
+		writePolicyDenied(w, "can_test_others", "the test policy limits you to your own access; scenarios decide for other subjects")
+		return
+	}
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	opts := pgauthzadm.RunOptions{Store: "console_scenarios_" + hex.EncodeToString(b), PurgeAudit: true}
+	var tree json.RawMessage
+	redact := req.Redact || !pol.ExplainFull
+	err = s.asPerson(ctx, p, "can_run_tests", "store", store, map[string]any{"op": "scenarios_explain", "test": req.Test, "subject": req.User, "action": req.Relation, "resource": req.Object, "redact": redact, "successful_only": req.SuccessfulOnly}, func(tx pgx.Tx) error {
+		var err error
+		tree, err = pgauthzadm.ExplainFixtureCheck(ctx, tx, fix, opts, *c, req.Relation, req.SuccessfulOnly, redact)
+		return err
+	})
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tree": tree, "redacted": redact, "successful_only": req.SuccessfulOnly})
 }
 
 // handleScenariosExport — GET .../scenarios/export: the fixture for

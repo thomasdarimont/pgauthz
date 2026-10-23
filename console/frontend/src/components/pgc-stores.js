@@ -227,7 +227,7 @@ export class PgcStores extends PgcElement {
                 class="badge doc"
                 href=${st.docs_url}
                 target="_blank"
-                rel="noopener"
+                rel="noopener noreferrer nofollow"
                 title=${st.docs_url}
                 >${t('documentation')} ↗</a
               >`

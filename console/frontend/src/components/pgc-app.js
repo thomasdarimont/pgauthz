@@ -69,9 +69,12 @@ export class PgcApp extends PgcElement {
     this.navigate(href);
   }
   navigate(rel) {
+    // a new sub-path of the same page (a Test-tab mode, a Model section,
+    // the scenarios' view) keeps the scroll position; another page starts at the top
+    const samePage = rel.split('/').slice(0, 3).join('/') === this.path.split('/').slice(0, 3).join('/');
     history.pushState(null, '', this.base + rel);
     this.path = rel;
-    window.scrollTo(0, 0);
+    if (!samePage) window.scrollTo(0, 0);
   }
 
   // The local admin sign-in: POST the credentials, then reload who we are.
@@ -124,7 +127,7 @@ export class PgcApp extends PgcElement {
         .me=${this.me}
         store=${parts[1]}
         tab=${parts[2] ?? 'model'}
-        sub=${parts[3] ?? ''}
+        sub=${parts.slice(3).join('/')}
         @navigate=${(e) => this.navigate(e.detail)}
       ></pgc-store>`;
     return html`<pgc-stores .me=${this.me} @navigate=${(e) => this.navigate(e.detail)}></pgc-stores>`;

@@ -130,6 +130,8 @@ func (s *Server) Routes() http.Handler {
 	h("GET /api/stores/{store}/scenarios", s.handleScenarios)
 	h("PUT /api/stores/{store}/scenarios", s.handleScenariosSave)
 	h("POST /api/stores/{store}/scenarios/run", s.handleScenariosRun)
+	h("POST /api/stores/{store}/scenarios/validate", s.handleScenariosValidate)
+	h("POST /api/stores/{store}/scenarios/explain", s.handleScenariosExplain)
 	h("GET /api/stores/{store}/scenarios/export", s.handleScenariosExport)
 
 	// Rollout

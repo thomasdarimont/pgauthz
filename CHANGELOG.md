@@ -33,7 +33,76 @@ pre-1.0, minor versions may include breaking changes.
   same way. Every example model ships a **`scenarios.authz.yaml`** (its
   story as named scenarios with assertions; gates hold back what the
   empty action log cannot prove), verified through the CLI; the CLI suite
-  runs the loaded ones. Found on the way and fixed: `RenderSQL` emitted a
+  runs the loaded ones. Two views of the fixture: the **Test harness** (the
+  parsed fixture as a form — the tuples as a table with an add row, every
+  test as a collapsible block with its check, list_objects and explain
+  cases, the last run's outcome on each assertion; add, rename and remove
+  tests, add and remove assertions and tuples with the store's subjects,
+  objects and relations suggested; every edit regenerates the YAML) and
+  **Edit as YAML** (one YAML-highlighted, line-numbered editor; comments
+  survive there). The draft is validated as you type through the runner's
+  own parser (`POST …/scenarios/validate`, debounced, returning the parsed
+  fixture), the offending line marked; runs are numbered and every result
+  row points back at its scenario in either view; collapse all folds each
+  test on its own, so any one opens again. The format gains free text for
+  people: a `description` per test and per case, and `notes` per assertion
+  (relation → text: the reasoning, a requirement, a ticket), carried
+  through the runner into every result (`Result.Note`), printed by the
+  CLI with a failure and shown in the console's result table; the harness
+  edits all of them in place — a test's, a case's (the subject/object row),
+  an assertion's (✎ on its chip) — and renders http(s) links in them
+  clickable (bare URLs and markdown-style `[JIRA-99](https://…)`), so a
+  user story, a ticket or a document can sit next to the check it
+  motivated. Runs are the whole fixture or one test: ▶ on a test's block
+  in the harness, ▶ in the YAML editor's gutter on every test's `- name:`
+  line (coloured by the last outcome, scrolling with the text); the run posts `only`
+  with the test's index and results keep their index in the full fixture.
+  Runs of the session are kept client-side (the last 100), chosen from
+  an execution list above the results (run, time, outcome, selection);
+  the harness badges follow the chosen run; Clear hides the shown run,
+  clear history drops them all. A result row copies itself as one line
+  of text (outcome, assertion, detail, description), Copy results the
+  whole run; **explain** on a check result shows the engine's resolution
+  tree for that assertion decided inside the fixture's world — the server
+  rebuilds the ephemeral store (`pgauthzadm.WithFixture`,
+  `ExplainFixtureCheck`) and asks `explain_access` there, with the Single
+  check view's options — "Only the deciding path", "Redact identifiers"
+  (forced without `can_test_explain_full`) — as one shared control
+  (`pgc-explain-options.js`) (`POST …/scenarios/explain`). The harness
+  opens with every test collapsed; a test added there, or appended from
+  a result, opens itself. The Test tab's mode and the scenarios' view are
+  in the URL and the browser history —
+  `stores/<store>/test/<single-check|matrix|search|as-me|scenarios>` and
+  `…/test/scenarios/<harness|edit-as-yaml>` — so a deep link opens the
+  right place, a reload stays there, and Back returns to the previous
+  mode or view; switching within the tab keeps the scroll position. Every
+  run carries its provenance — the store, its model (registry name and
+  version, "drifted" when the live model differs, or unmanaged; or the
+  fixture's registry ref) and the live model's checksum — shown under the
+  run's title, kept per run in the session's history, and written into
+  the text copy and, as a leading `#` comment line, into the CSV, so a
+  result read later says what it tested. **Fixture runs are ephemeral
+  stores without partitions.** A store's types normally get a dedicated
+  tuples partition each, which is DDL on the shared parent — an ACCESS
+  EXCLUSIVE lock on `authz.tuples` held until the transaction commits,
+  during which every check in every store waits; a scenario run in one
+  transaction held it for the whole run (found by probing: a check from
+  another session blocked). New engine setting `authz.ephemeral_store`
+  (transaction-local, `set_config(…, true)`): types registered while it
+  is on get no partition, their rows live in `tuples_default` (same
+  indexes), no DDL, no lock, no catalog churn; `delete_store` and
+  `model_remove_type` already tolerate a type without a partition.
+  `pgauthzadm.WithFixture` sets it, so the console's runs and explains
+  and `pgauthzctl model test` (now one transaction per run, so the store
+  never appears in the committed state unless `--keep-store`) are DML
+  only. SQL suite: ephemeral registration creates no partition, the
+  tuple lives in the default partition, the check decides from it, no
+  exclusive lock is held, `delete_store` cleans up. A result carries what it asserted (kind,
+  subject, relation, object — `Result.Kind/User/Relation/Object`), so a
+  click in the YAML view lands on the assertion's own line; when that
+  assertion is gone it lands on its case, when the case is gone on the
+  test that defined it (found by name if tests were inserted or moved
+  since the run), and when the test is gone it stays put. Found on the way and fixed: `RenderSQL` emitted a
   "but not" group's negated rule before its base rule when the export
   listed it first, which the engine's validation refuses — base rules now
   come first within a group. Go tests: the library's parser, validator

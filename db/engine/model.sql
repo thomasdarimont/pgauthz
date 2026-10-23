@@ -50,7 +50,19 @@ BEGIN
     VALUES (v_store_id, p_type_name, p_namespace, p_description, COALESCE(p_labels, '{}'))
     RETURNING id INTO v_type_id;
 
-    PERFORM authz._ensure_tuple_partition(v_store_id, p_type_name, p_hash_modulus);
+    -- A dedicated tuples partition per type is the normal case. Creating it
+    -- is DDL on the shared parent (DETACH default, CREATE PARTITION OF,
+    -- ATTACH default): an ACCESS EXCLUSIVE lock on authz.tuples held until
+    -- the transaction commits, during which EVERY check in EVERY store
+    -- waits. Short-lived stores that exist for one transaction or one run —
+    -- the fixture runs behind `pgauthzctl model test` and the console's
+    -- scenarios — set authz.ephemeral_store = on first: their types get no
+    -- partition, their rows live in tuples_default (which carries the same
+    -- indexes), no DDL, no lock, no catalog churn; delete_store and
+    -- model_remove_type already tolerate a type without a partition.
+    IF COALESCE(current_setting('authz.ephemeral_store', true), '') NOT IN ('on', 'true', '1') THEN
+        PERFORM authz._ensure_tuple_partition(v_store_id, p_type_name, p_hash_modulus);
+    END IF;
 
     RETURN v_type_id;
 END;

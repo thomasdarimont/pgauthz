@@ -544,6 +544,30 @@ backfilled from the earliest audit entry) records when a store was created.
 SELECT authz.update_store('documents', 'Document sharing for the DMS', 'https://wiki.example.com/authz/documents');
 ```
 
+### Ephemeral stores — `authz.ephemeral_store`
+
+Registering a type (`model_register_type`, and through it `import_openfga_model`,
+`apply_model` and every rendered model) creates the type's tuples partition:
+DDL on the shared parent, an ACCESS EXCLUSIVE lock on `authz.tuples` held until
+the transaction commits, during which every check in every store waits. A store
+that exists for one transaction or one run — a fixture run of `pgauthzctl model
+test`, a console scenario — sets the transaction-local setting first:
+
+```sql
+SELECT set_config('authz.ephemeral_store', 'on', true);
+SELECT authz.create_store('run_7f3a', 'fixture run');
+SELECT authz.model_register_type('run_7f3a', 'doc');   -- no partition, no lock
+-- … tuples, checks …
+SELECT authz.delete_store('run_7f3a', p_purge_audit => true);
+```
+
+Types registered while it is on get no partition; their rows live in
+`tuples_default`, which carries the same indexes and is pruned by `object_type`
+like any partition, so decisions are unaffected. `delete_store` and
+`model_remove_type` tolerate a type without a partition. Not for long-lived
+stores: the default partition is shared and unbounded, and the operations views
+report no storage for such a store.
+
 ### model_remove_type — Remove a type and everything about it
 
 Removes a type from a store's dictionary together with its rules, the type
