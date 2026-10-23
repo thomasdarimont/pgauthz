@@ -7,7 +7,7 @@ import { PgcJson } from './pgc-json.js';
 import { run, copyText, forbiddenText, parseList, fmtTime, fmtRelative, FieldInvalid } from '../util.js';
 import { PgcExplainTree } from './pgc-explain-tree.js';
 import { explainOptions } from './pgc-explain-options.js';
-import { checkCaseYAML, listCaseYAML, appendCase } from './pgc-scenarios.js';
+import { checkCaseYAML, listCaseYAML, listSubjectsCaseYAML, appendCase } from './pgc-scenarios.js';
 
 // Test tab, four ways to ask the managed store:
 //   single — one subject, one action, one resource, with the resolution tree
@@ -911,20 +911,28 @@ export class PgcTest extends PgcElement {
                   ${t2('{n} result', '{n} results', h.hits.length)}${h.next ? ' ' + t('(more available — narrow the question)') : ''}
                 </h3>
                 ${
-                  objects && !h.next
+                  !h.next
                     ? html`<button
                         class="sm"
-                        title=${t('Append this search with its results as a list_objects case of the saved scenarios.')}
+                        title=${objects ? t('Append this search with its results as a list_objects case of the saved scenarios.') : t('Append this search with its results as a list_subjects case of the saved scenarios.')}
                         data-testid="test-add-scenario-search"
                         @click=${() =>
                           this._addToScenarios(
-                            listCaseYAML({
-                              subject: this.subject.trim(),
-                              action: this.action.trim(),
-                              type: this.resource.trim(),
-                              ids: h.hits.map((x) => x.id),
-                              context: this._ctx(),
-                            }),
+                            objects
+                              ? listCaseYAML({
+                                  subject: this.subject.trim(),
+                                  action: this.action.trim(),
+                                  type: this.resource.trim(),
+                                  ids: h.hits.map((x) => x.id),
+                                  context: this._ctx(),
+                                })
+                              : listSubjectsCaseYAML({
+                                  object: this.resource.trim(),
+                                  action: this.action.trim(),
+                                  type: this.subject.trim(),
+                                  ids: h.hits.map((x) => x.id),
+                                  context: this._ctx(),
+                                }),
                           )}
                       >
                         ${t('Add to scenarios')}

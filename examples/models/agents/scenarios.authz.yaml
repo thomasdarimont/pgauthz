@@ -107,3 +107,12 @@ tests:
       - user: agent:research_agent
         object: partner_agent:payco
         assertions: { pay: false }
+
+  - name: exactly what the agent may do with the customer's document
+    list_actions:
+      - user: agent:acme_assist
+        object: customer_doc:custco-briefing
+        expect: [documents_read, documents_search, documents_summarize]
+      - user: agent:research_agent
+        object: customer_doc:custco-briefing
+        expect: []

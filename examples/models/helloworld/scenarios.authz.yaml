@@ -40,3 +40,16 @@ tests:
       - user: user:bob
         type: document
         assertions: { can_read: [document:readme], can_write: [] }
+
+  - name: who reads the readme, and exactly what each may do
+    list_subjects:
+      - object: document:readme
+        type: user
+        assertions: { can_read: [user:alice, user:bob], can_write: [user:alice] }
+    list_actions:
+      - user: user:alice
+        object: document:readme
+        expect: [editor, can_read, can_write]
+      - user: user:bob
+        object: document:readme
+        expect: [viewer, can_read]

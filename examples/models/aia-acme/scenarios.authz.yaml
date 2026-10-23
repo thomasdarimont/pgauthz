@@ -126,3 +126,12 @@ tests:
       - user: employee:alice
         object: document:board-deck
         assertions: { view: true, share: false }
+
+  - name: who views the plan (the reverse search over readers, manager and customer)
+    list_subjects:
+      - object: document:q3-plan
+        type: employee
+        assertions: { view: [employee:alice, employee:bob, employee:carol, employee:eve] }
+      - object: document:q3-plan
+        type: customer
+        assertions: { view: [customer:kate] }

@@ -410,7 +410,7 @@
   "in sync": "synchron",
   "insert": "angelegt",
   "intersection (and)": "Schnitt (und)",
-  "is": "darf",
+  "is": "ist",
   "item": "Element",
   "items": "Elemente",
   "latest": "neueste",
@@ -984,5 +984,9 @@
   "Show {tc}": "{tc} zeigen",
   "{tc} only": "nur {tc}",
   "Test cases": "Testfälle",
-  "Add test case": "Testfall hinzufügen"
+  "Add test case": "Testfall hinzufügen",
+  "Reached by (list_subjects)": "Erreicht von (list_subjects)",
+  "May do exactly (list_actions)": "Darf genau (list_actions)",
+  "Append this search with its results as a list_subjects case of the saved scenarios.": "Hängt diese Suche mit ihren Ergebnissen als list_subjects-Fall an die gespeicherten Szenarien an.",
+  "may": "darf"
 }

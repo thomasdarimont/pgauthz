@@ -90,3 +90,32 @@ tests:
       - user: user:bob
         type: doc
         assertions: { can_read: [doc:design_spec, doc:announcement], can_write: [] }
+
+  # The reverse search: who reaches a doc, per relation — alice through the
+  # tree, frank as owner, bob directly, charlie through the group; the public
+  # folder's wildcard lists as user:*.
+  - name: who reaches the design spec and the announcement
+    list_subjects:
+      - object: doc:design_spec
+        type: user
+        assertions:
+          can_read: [user:alice, user:bob, user:charlie, user:frank]
+          can_write: [user:alice, user:frank]
+      - object: doc:announcement
+        type: user
+        assertions: { can_read: ["user:*", user:alice] }
+
+  # Exactly what a subject may do on a doc: the relations held and the
+  # permissions they imply, nothing more — a viewer reads and downloads, an
+  # owner everything, a stranger only what the public folder grants.
+  - name: the full action sets on the docs
+    list_actions:
+      - user: user:bob
+        object: doc:design_spec
+        expect: [viewer, can_read, download]
+      - user: user:frank
+        object: doc:design_spec
+        expect: [owner, can_read, can_write, can_share, can_change_owner, download]
+      - user: user:mallory
+        object: doc:announcement
+        expect: [can_read, download]

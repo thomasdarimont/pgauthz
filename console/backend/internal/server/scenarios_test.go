@@ -111,21 +111,30 @@ tests:
       - user: user:alice
         object: doc:x
         assertions: { can_read: false }
+  - name: sets
+    list_actions:
+      - user: user:bob
+        object: doc:a
+        expect: [viewer, can_read]
+    list_subjects:
+      - object: doc:a
+        type: user
+        assertions: { can_read: [user:bob] }
 `
 	if code, m := do("PUT", base, body(fixture), tester); code != 403 {
 		t.Errorf("tester saved scenarios: %d %v", code, m)
 	}
-	if code, m := do("PUT", base, body(fixture), owner); code != 200 || m["cases"] != float64(3) {
+	if code, m := do("PUT", base, body(fixture), owner); code != 200 || m["cases"] != float64(5) {
 		t.Fatalf("save: %d %v", code, m)
 	}
-	if code, m := do("GET", base, "", owner); code != 200 || m["yaml"] != fixture || m["updated_by"] != "user:scn_owner" || m["cases"] != float64(3) {
+	if code, m := do("GET", base, "", owner); code != 200 || m["yaml"] != fixture || m["updated_by"] != "user:scn_owner" || m["cases"] != float64(5) {
 		t.Errorf("load after save: %d %v", code, m)
 	}
 
 	// run the saved fixture: hermetic (alice's ownership in the store does not
 	// reach the ephemeral one), all three pass
 	code, m := do("POST", base+"/run", body(""), owner)
-	if code != 200 || m["passed"] != float64(3) || m["failed"] != float64(0) {
+	if code != 200 || m["passed"] != float64(5) || m["failed"] != float64(0) {
 		t.Fatalf("run: %d %v", code, m)
 	}
 	if prov, _ := m["model"].(map[string]any); prov["store"] != store || prov["checksum"] == "" || prov["checksum"] == nil {
@@ -155,7 +164,7 @@ tests:
 	}
 	// a draft with a wrong expectation: a failed result, not an error
 	code, m = do("POST", base+"/run", body(strings.Replace(fixture, "can_read: true, owner: false", "can_read: false, owner: false", 1)), owner)
-	if code != 200 || m["failed"] != float64(1) || m["passed"] != float64(2) {
+	if code != 200 || m["failed"] != float64(1) || m["passed"] != float64(4) {
 		t.Errorf("failing draft: %d %v", code, m)
 	}
 	// no ephemeral store survives a run

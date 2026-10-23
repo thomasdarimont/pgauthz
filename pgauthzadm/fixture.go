@@ -51,11 +51,13 @@ type FixtureTuple struct {
 // description (and a case's) is free text for people — the reasoning, a
 // requirement, a ticket — carried through unchanged, shown with a failure.
 type FixtureTest struct {
-	Name        string        `yaml:"name" json:"name"`
-	Description string        `yaml:"description,omitempty" json:"description,omitempty"`
-	Check       []CheckCase   `yaml:"check,omitempty" json:"check,omitempty"`
-	ListObjects []ListCase    `yaml:"list_objects,omitempty" json:"list_objects,omitempty"`
-	Explain     []ExplainCase `yaml:"explain,omitempty" json:"explain,omitempty"`
+	Name         string             `yaml:"name" json:"name"`
+	Description  string             `yaml:"description,omitempty" json:"description,omitempty"`
+	Check        []CheckCase        `yaml:"check,omitempty" json:"check,omitempty"`
+	ListObjects  []ListCase         `yaml:"list_objects,omitempty" json:"list_objects,omitempty"`
+	ListSubjects []ListSubjectsCase `yaml:"list_subjects,omitempty" json:"list_subjects,omitempty"`
+	ListActions  []ListActionsCase  `yaml:"list_actions,omitempty" json:"list_actions,omitempty"`
+	Explain      []ExplainCase      `yaml:"explain,omitempty" json:"explain,omitempty"`
 }
 
 // CheckCase asserts relations of one subject on one object. Notes are
@@ -78,6 +80,28 @@ type ListCase struct {
 	Notes       map[string]string   `yaml:"notes,omitempty" json:"notes,omitempty"`
 	Description string              `yaml:"description,omitempty" json:"description,omitempty"`
 	Context     map[string]any      `yaml:"context,omitempty" json:"context,omitempty"`
+}
+
+// ListSubjectsCase asserts the subjects of a type that reach an object per
+// relation (the reverse search); a wildcard grant lists as type:*.
+type ListSubjectsCase struct {
+	Object      string              `yaml:"object" json:"object"`
+	Type        string              `yaml:"type" json:"type"`             // the subject type to list
+	Assertions  map[string][]string `yaml:"assertions" json:"assertions"` // relation → expected subject refs
+	Notes       map[string]string   `yaml:"notes,omitempty" json:"notes,omitempty"`
+	Description string              `yaml:"description,omitempty" json:"description,omitempty"`
+	Context     map[string]any      `yaml:"context,omitempty" json:"context,omitempty"`
+}
+
+// ListActionsCase asserts the full set of actions (the declared
+// permissions) a subject may perform on an object — what authz.list_actions
+// answers, so the assertion is "exactly these, nothing more".
+type ListActionsCase struct {
+	User        string         `yaml:"user" json:"user"`
+	Object      string         `yaml:"object" json:"object"`
+	Expect      []string       `yaml:"expect" json:"expect"` // the expected actions, as a set
+	Description string         `yaml:"description,omitempty" json:"description,omitempty"`
+	Context     map[string]any `yaml:"context,omitempty" json:"context,omitempty"`
 }
 
 // ExplainCase asserts the ordered reason codes of a resolution trace.
@@ -106,6 +130,11 @@ type Result struct {
 	User     string `json:"user"`
 	Relation string `json:"relation"`
 	Object   string `json:"object"`
+	// Expected and Actual, structurally: ["true"]/["false"] for a check, the
+	// sets for the list kinds, the reason codes for explain — for exports
+	// that want columns rather than the name's text.
+	Expected []string `json:"expected"`
+	Actual   []string `json:"actual,omitempty"`
 }
 
 // RunReport is a fixture run: every assertion, the store it ran in (kept
@@ -383,10 +412,10 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 	note := tc.Description
 	var at Result // the current assertion's kind/user/relation/object
 	fail := func(name, detail string) {
-		out = append(out, Result{Name: name, Failed: true, Detail: detail, Note: note, Kind: at.Kind, User: at.User, Relation: at.Relation, Object: at.Object})
+		out = append(out, Result{Name: name, Failed: true, Detail: detail, Note: note, Kind: at.Kind, User: at.User, Relation: at.Relation, Object: at.Object, Expected: at.Expected, Actual: at.Actual})
 	}
 	pass := func(name string) {
-		out = append(out, Result{Name: name, Note: note, Kind: at.Kind, User: at.User, Relation: at.Relation, Object: at.Object})
+		out = append(out, Result{Name: name, Note: note, Kind: at.Kind, User: at.User, Relation: at.Relation, Object: at.Object, Expected: at.Expected, Actual: at.Actual})
 	}
 	first := func(ss ...string) string {
 		for _, s := range ss {
@@ -415,9 +444,13 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 			at.Relation = rel
 			note = first(c.Notes[rel], c.Description, tc.Description)
 			got, err := runFixtureCheck(ctx, db, store, u, rel, o, c)
+			at.Expected, at.Actual = []string{fmt.Sprint(want)}, nil
 			if err != nil {
 				fail(name, err.Error())
-			} else if got != want {
+				continue
+			}
+			at.Actual = []string{fmt.Sprint(got)}
+			if got != want {
 				fail(name, fmt.Sprintf("got %v", got))
 			} else {
 				pass(name)
@@ -434,7 +467,7 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 		}
 		for _, rel := range sortedKeys(l.Assertions) {
 			want := l.Assertions[rel]
-			name := fmt.Sprintf("%s: list %s %s for %s", tc.Name, l.Type, rel, l.User)
+			name := fmt.Sprintf("%s: list %s %s for %s = %s", tc.Name, l.Type, rel, l.User, setText(want))
 			at.Relation = rel
 			note = first(l.Notes[rel], l.Description, tc.Description)
 			var ctxJSON []byte
@@ -456,21 +489,99 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 				}
 			}
 			rows.Close()
-			ok := len(got) == len(want)
-			for _, w := range want {
-				if !got[w] {
-					ok = false
-				}
-			}
-			if !ok {
-				gotList := make([]string, 0, len(got))
-				for k := range got {
-					gotList = append(gotList, k)
-				}
-				fail(name, fmt.Sprintf("expected %v, got %v", want, gotList))
+			at.Expected, at.Actual = sortedCopy(want), keysOf(got)
+			if !sameSet(got, want) {
+				fail(name, fmt.Sprintf("expected %s, got %s", setText(want), setText(keysOf(got))))
 			} else {
 				pass(name)
 			}
+		}
+	}
+
+	for _, l := range tc.ListSubjects {
+		at = Result{Kind: "list_subjects", User: l.Type, Object: l.Object}
+		o, err := ParseRef(l.Object)
+		if err != nil {
+			fail(tc.Name+"/list_subjects", err.Error())
+			continue
+		}
+		for _, rel := range sortedKeys(l.Assertions) {
+			want := l.Assertions[rel]
+			name := fmt.Sprintf("%s: subjects %s %s on %s = %s", tc.Name, l.Type, rel, l.Object, setText(want))
+			at.Relation = rel
+			note = first(l.Notes[rel], l.Description, tc.Description)
+			var ctxJSON []byte
+			if l.Context != nil {
+				ctxJSON, _ = json.Marshal(l.Context)
+			}
+			rows, err := db.Query(ctx,
+				"SELECT subject_id, is_wildcard FROM authz.list_subjects($1,$2,$3,$4,$5,$6)",
+				store, l.Type, rel, o.Type, o.ID, ctxJSON)
+			if err != nil {
+				fail(name, err.Error())
+				continue
+			}
+			got := map[string]bool{}
+			for rows.Next() {
+				var id string
+				var wild bool
+				if err := rows.Scan(&id, &wild); err == nil {
+					got[l.Type+":"+id] = true
+				}
+			}
+			rows.Close()
+			at.Expected, at.Actual = sortedCopy(want), keysOf(got)
+			if !sameSet(got, want) {
+				fail(name, fmt.Sprintf("expected %s, got %s", setText(want), setText(keysOf(got))))
+			} else {
+				pass(name)
+			}
+		}
+	}
+
+	var perms map[string]bool // the model's declared permissions, loaded once a list_actions case needs them
+	for _, a := range tc.ListActions {
+		at = Result{Kind: "list_actions", User: a.User, Object: a.Object}
+		if perms == nil {
+			p, err := permissionNames(ctx, db, store)
+			if err != nil {
+				fail(fmt.Sprintf("%s: actions of %s on %s", tc.Name, a.User, a.Object), "relation kinds: "+err.Error())
+				continue
+			}
+			perms = p
+		}
+		name := fmt.Sprintf("%s: actions of %s on %s = %s", tc.Name, a.User, a.Object, actionsText(a.Expect, perms))
+		note = first(a.Description, tc.Description)
+		u, err1 := ParseRef(a.User)
+		o, err2 := ParseRef(a.Object)
+		if err1 != nil || err2 != nil {
+			fail(name, "bad reference")
+			continue
+		}
+		var ctxJSON []byte
+		if a.Context != nil {
+			ctxJSON, _ = json.Marshal(a.Context)
+		}
+		rows, err := db.Query(ctx,
+			"SELECT action FROM authz.list_actions($1,$2,$3,$4,$5,$6)",
+			store, u.Type, u.ID, o.Type, o.ID, ctxJSON)
+		if err != nil {
+			fail(name, err.Error())
+			continue
+		}
+		got := map[string]bool{}
+		for rows.Next() {
+			var action string
+			if err := rows.Scan(&action); err == nil {
+				got[action] = true
+			}
+		}
+		rows.Close()
+		at.Expected, at.Actual = sortedCopy(a.Expect), keysOf(got)
+		if !sameSet(got, a.Expect) {
+			fail(name, fmt.Sprintf("expected %s, got %s", actionsText(a.Expect, perms), actionsText(keysOf(got), perms)))
+		} else {
+			pass(name)
 		}
 	}
 
@@ -499,6 +610,7 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 		for _, t := range explain.Trace {
 			reasons = append(reasons, t.Reason)
 		}
+		at.Expected, at.Actual = e.ExpectReasons, reasons
 		if fmt.Sprint(reasons) != fmt.Sprint(e.ExpectReasons) {
 			fail(name, fmt.Sprintf("expected reasons %v, got %v", e.ExpectReasons, reasons))
 		} else {
@@ -507,6 +619,83 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 	}
 	return out
 }
+
+// setText — a set as "[a, b, c]", sorted, for result names and details.
+func setText(items []string) string {
+	s := append([]string(nil), items...)
+	sort.Strings(s)
+	return "[" + strings.Join(s, ", ") + "]"
+}
+
+// permissionNames — the relations the model declares as permissions
+// (metadata kind), so an action set can be read as "may …" (what the
+// subject can do) next to "is …" (the relations it holds). Empty when the
+// model declares no kinds (an OpenFGA-style model), and the set stays flat.
+//
+// Plain table reads through the public stores table (no internal helper
+// such as authz._s, which a service role may not execute); an error is
+// returned, never swallowed — inside a transaction a failed statement
+// aborts it, and a silent one would surface as "commit unexpectedly
+// resulted in rollback" much later.
+func permissionNames(ctx context.Context, db DB, store string) (map[string]bool, error) {
+	out := map[string]bool{}
+	rows, err := db.Query(ctx, `SELECT r.name FROM authz.relations r JOIN authz.stores s ON s.id = r.store_id
+	                             WHERE s.name = $1 AND r.metadata->>'kind' = 'permission'`, store)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out[n] = true
+	}
+	return out, rows.Err()
+}
+
+// actionsText — an action set as "may [perms] · is [relations]" when the
+// model declares kinds, else "[all]".
+func actionsText(items []string, perms map[string]bool) string {
+	if len(perms) == 0 {
+		return setText(items)
+	}
+	var may, is []string
+	for _, x := range items {
+		if perms[x] {
+			may = append(may, x)
+		} else {
+			is = append(is, x)
+		}
+	}
+	return "may " + setText(may) + " · is " + setText(is)
+}
+
+func sortedCopy(items []string) []string {
+	s := append([]string(nil), items...)
+	sort.Strings(s)
+	return s
+}
+
+// sameSet — got (a set) equals want (a list, duplicates ignored).
+func sameSet(got map[string]bool, want []string) bool {
+	w := map[string]bool{}
+	for _, x := range want {
+		w[x] = true
+	}
+	if len(w) != len(got) {
+		return false
+	}
+	for k := range w {
+		if !got[k] {
+			return false
+		}
+	}
+	return true
+}
+
+func keysOf(m map[string]bool) []string { return sortedKeys(m) }
 
 // sortedKeys — the assertions of a case in a stable order (a map has none),
 // so results, their ids and the CLI's lines come out the same every run.

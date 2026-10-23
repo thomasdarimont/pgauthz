@@ -64,3 +64,28 @@ tests:
       - user: user:rick
         object: todo:item_jerry
         assertions: { can_update_todo: true, can_delete_todo: true }
+
+  # The forward search: which items a subject may update — the intersection
+  # (manage the list AND own the item) keeps morty to his own item, while the
+  # evil genius reaches every item of the list.
+  - name: which items morty and rick may update
+    list_objects:
+      - user: user:morty
+        type: todo
+        assertions: { can_update_todo: [todo:item_morty] }
+      - user: user:rick
+        type: todo
+        assertions: { can_update_todo: [todo:item_morty, todo:item_jerry] }
+
+  - name: exactly what each may do on the list and on an item
+    list_actions:
+      - user: user:jerry
+        object: todo:todo-1
+        expect: [viewer, can_read_todos]
+      - user: user:morty
+        object: todo:item_morty
+        expect: [owner, can_update_todo, can_delete_todo]
+    list_subjects:
+      - object: todo:todo-1
+        type: user
+        assertions: { can_manage_todo_items: [user:rick, user:morty] }

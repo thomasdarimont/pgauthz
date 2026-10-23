@@ -415,7 +415,7 @@ export class PgcScenarios extends PgcElement {
   // carry commas; ";" is what spreadsheets in comma-decimal locales open
   // directly), RFC 4180 quoting for cells holding ";", quotes or line
   // breaks, CRLF line ends.
-  static runCSV(rep) {
+  static runCSV(rep, perms = new Set()) {
     const cell = (v) => {
       const str = v == null ? '' : String(v);
       return /[";\r\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
@@ -431,14 +431,43 @@ export class PgcScenarios extends PgcElement {
       'assertion_id',
       'test',
       'kind',
-      'subject',
+      'subject_type',
+      'subject_id',
+      'subject_relation',
       'relation',
-      'object',
+      'object_type',
+      'object_id',
       'assertion',
       'outcome',
+      'expected',
+      'actual',
+      'expected_may',
+      'expected_is',
+      'actual_may',
+      'actual_is',
       'detail',
       'description',
     ];
+    // type:id[#relation] as columns; a bare type (list_objects' object type,
+    // list_subjects' subject type) is the type with no id
+    const ref = (v) => {
+      const str = String(v ?? '');
+      const hash = str.indexOf('#');
+      const main = hash >= 0 ? str.slice(0, hash) : str;
+      const colon = main.indexOf(':');
+      return colon >= 0
+        ? [main.slice(0, colon), main.slice(colon + 1), hash >= 0 ? str.slice(hash + 1) : '']
+        : [main, '', ''];
+    };
+    // Sets are written sorted (stable output across runs); explain's reason
+    // codes are a path and keep their order.
+    const ordered = (r, items) => (r.kind === 'explain' ? [...(items ?? [])] : [...(items ?? [])].sort());
+    // may / is: an action set split by the model's declared permissions
+    const split = (r, items) => {
+      if (r.kind !== 'list_actions' || !perms.size) return ['', ''];
+      const xs = ordered(r, items);
+      return [xs.filter((x) => perms.has(x)).join(' '), xs.filter((x) => !perms.has(x)).join(' ')];
+    };
     const rows = rep.results.map((r) => {
       const g = groups.find((x) => x.results.includes(r));
       return [
@@ -449,11 +478,15 @@ export class PgcScenarios extends PgcElement {
         g?.ids.get(r) ?? '',
         r.test + 1,
         r.kind,
-        r.user,
+        ...ref(r.user),
         r.relation,
-        r.object,
+        ...ref(r.object).slice(0, 2),
         r.name,
         r.failed ? 'failed' : 'passed',
+        ordered(r, r.expected).join(' '),
+        ordered(r, r.actual).join(' '),
+        ...split(r, r.expected),
+        ...split(r, r.actual),
         r.failed ? r.detail : '',
         r.note ?? '',
       ];
@@ -506,6 +539,24 @@ export class PgcScenarios extends PgcElement {
   // The last run's result for one assertion, by the runner's result name.
   _result(name) {
     return this.report?.results.find((r) => r.name === name);
+  }
+
+  // The last run's result for a case, by what it asserted (kind, user,
+  // relation, object) — the name is for people and carries the expected set.
+  _resultOf(kind, user, relation, object) {
+    return this.report?.results.find(
+      (r) =>
+        r.kind === kind && r.user === user && (r.relation ?? '') === (relation ?? '') && r.object === object,
+    );
+  }
+
+  // Relation names the store's model declares as permissions (from the
+  // Test tab's meta), to read an action set as "may …" next to "is …".
+  _permissions() {
+    const by = this.meta?.relations_by_type ?? {};
+    const out = new Set();
+    for (const rels of Object.values(by)) for (const r of rels) if (r.kind === 'permission') out.add(r.name);
+    return out;
   }
 
   // --- harness edits: every one goes through _apply(fixture) ---
@@ -1026,11 +1077,17 @@ export class PgcScenarios extends PgcElement {
     const open = !this.folded.has(i);
     const mine = this.report ? this.report.results.filter((r) => r.test === i) : null;
     const failed = mine?.filter((r) => r.failed).length ?? 0;
-    const outcome = (name, text) => {
-      const r = this._result(name);
-      return html`<span class="chip ${r ? (r.failed ? 'deny' : 'ok') : ''}" title=${r?.failed ? r.detail : ''}
+    const outcome = (r, text) =>
+      html`<span class="chip ${r ? (r.failed ? 'deny' : 'ok') : ''}" title=${r?.failed ? r.detail : ''}
         >${r ? (r.failed ? '✘ ' : '✔ ') : ''}${text}</span
       >`;
+    const perms = this._permissions();
+    const actionsText = (items) => {
+      if (!perms.size) return (items ?? []).join(', ') || t('nothing');
+      const may = (items ?? []).filter((x) => perms.has(x));
+      const is = (items ?? []).filter((x) => !perms.has(x));
+      return html`<span class="muted">${t('may')}</span> ${may.join(', ') || '—'}
+        <span class="muted">· ${t('is')}</span> ${is.join(', ') || '—'}`;
     };
     const d = this.draft[i] ?? {};
     const ready = d.user?.trim() && d.object?.trim() && d.relation?.trim();
@@ -1221,7 +1278,7 @@ export class PgcScenarios extends PgcElement {
                                 <div class="chips">
                                   ${Object.entries(l.assertions ?? {}).map(([rel, ids]) =>
                                     outcome(
-                                      `${tc.name}: list ${l.type} ${rel} for ${l.user}`,
+                                      this._resultOf('list_objects', l.user, rel, l.type),
                                       html`<span class="mono"
                                         >${rel} → ${ids.length ? ids.join(', ') : t('nothing')}</span
                                       >`,
@@ -1255,6 +1312,108 @@ export class PgcScenarios extends PgcElement {
                   : nothing
               }
               ${
+                tc.list_subjects?.length
+                  ? html`<table class="compact">
+                      <thead>
+                        <tr>
+                          <th>${t('Object')}</th>
+                          <th>${t('Subject type')}</th>
+                          <th>${t('Reached by (list_subjects)')}</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${tc.list_subjects.map(
+                          (l, li) =>
+                            html`<tr>
+                              <td class="mono">${l.object}</td>
+                              <td class="mono">${l.type}</td>
+                              <td>
+                                <div class="chips">
+                                  ${Object.entries(l.assertions ?? {}).map(([rel, ids]) =>
+                                    outcome(
+                                      this._resultOf('list_subjects', l.type, rel, l.object),
+                                      html`<span class="mono"
+                                        >${rel} ← ${ids.length ? ids.join(', ') : t('nobody')}</span
+                                      >`,
+                                    ),
+                                  )}
+                                </div>
+                                <div class="fx-descline">
+                                  ${this._text(
+                                    `list_subjects/${i}/${li}`,
+                                    l.description,
+                                    (v) => this._setCaseDesc(i, 'list_subjects', li, v),
+                                    t('description: a user story, a ticket, [JIRA-99](https://…) links'),
+                                    `test-scenarios-subjects-desc-${i}-${li}`,
+                                  )}
+                                </div>
+                              </td>
+                              <td>
+                                <button
+                                  type="button"
+                                  class="link"
+                                  title=${t('remove')}
+                                  @click=${() => this._removeCase(i, 'list_subjects', li)}
+                                >
+                                  ×
+                                </button>
+                              </td>
+                            </tr>`,
+                        )}
+                      </tbody>
+                    </table>`
+                  : nothing
+              }
+              ${
+                tc.list_actions?.length
+                  ? html`<table class="compact">
+                      <thead>
+                        <tr>
+                          <th>${t('Subject')}</th>
+                          <th>${t('Object')}</th>
+                          <th>${t('May do exactly (list_actions)')}</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${tc.list_actions.map(
+                          (a, ai) =>
+                            html`<tr>
+                              <td class="mono">${a.user}</td>
+                              <td class="mono">${a.object}</td>
+                              <td>
+                                ${outcome(
+                                  this._resultOf('list_actions', a.user, '', a.object),
+                                  html`<span class="mono">${actionsText(a.expect)}</span>`,
+                                )}
+                                <div class="fx-descline">
+                                  ${this._text(
+                                    `list_actions/${i}/${ai}`,
+                                    a.description,
+                                    (v) => this._setCaseDesc(i, 'list_actions', ai, v),
+                                    t('description: a user story, a ticket, [JIRA-99](https://…) links'),
+                                    `test-scenarios-actions-desc-${i}-${ai}`,
+                                  )}
+                                </div>
+                              </td>
+                              <td>
+                                <button
+                                  type="button"
+                                  class="link"
+                                  title=${t('remove')}
+                                  @click=${() => this._removeCase(i, 'list_actions', ai)}
+                                >
+                                  ×
+                                </button>
+                              </td>
+                            </tr>`,
+                        )}
+                      </tbody>
+                    </table>`
+                  : nothing
+              }
+              ${
                 tc.explain?.length
                   ? html`<table class="compact">
                       <thead>
@@ -1275,7 +1434,7 @@ export class PgcScenarios extends PgcElement {
                               <td class="mono">${e.object}</td>
                               <td>
                                 ${outcome(
-                                  `${tc.name}: explain ${e.user} ${e.relation} ${e.object}`,
+                                  this._resultOf('explain', e.user, e.relation, e.object),
                                   html`<span class="mono">${(e.expect_reasons ?? []).join(' → ')}</span>`,
                                 )}
                                 <div class="fx-descline">
@@ -1543,7 +1702,7 @@ export class PgcScenarios extends PgcElement {
           class="sm"
           title=${t('the run as CSV: a header row, then one row per assertion with test, subject, relation, object, outcome, detail and description')}
           data-testid="test-scenarios-copy-csv"
-          @click=${() => this._copy('csv', PgcScenarios.runCSV(rep))}
+          @click=${() => this._copy('csv', PgcScenarios.runCSV(rep, this._permissions()))}
         >
           ${this.copied === 'csv' ? t('Copied') : t('Copy as CSV')}
         </button>
@@ -1656,6 +1815,8 @@ function countTest(tc) {
   let n = 0;
   for (const c of tc.check ?? []) n += Object.keys(c.assertions ?? {}).length;
   for (const l of tc.list_objects ?? []) n += Object.keys(l.assertions ?? {}).length;
+  for (const l of tc.list_subjects ?? []) n += Object.keys(l.assertions ?? {}).length;
+  n += (tc.list_actions ?? []).length;
   n += (tc.explain ?? []).length;
   return n;
 }
@@ -1731,6 +1892,36 @@ export function fixtureYAML(fx) {
         if (l.context) out.push(`        context: ${JSON.stringify(l.context)}`);
       }
     }
+    if (tc.list_subjects?.length) {
+      out.push('    list_subjects:');
+      for (const l of tc.list_subjects) {
+        out.push(`      - object: ${yamlScalar(l.object)}`);
+        out.push(`        type: ${yamlScalar(l.type)}`);
+        out.push(
+          `        assertions: { ${Object.entries(l.assertions ?? {})
+            .map(([k, ids]) => `${yamlScalar(k)}: [${(ids ?? []).map(yamlScalar).join(', ')}]`)
+            .join(', ')} }`,
+        );
+        if (l.notes && Object.keys(l.notes).length)
+          out.push(
+            `        notes: { ${Object.entries(l.notes)
+              .map(([k, v]) => `${yamlScalar(k)}: ${str(v)}`)
+              .join(', ')} }`,
+          );
+        if (l.description) out.push(`        description: ${str(l.description)}`);
+        if (l.context) out.push(`        context: ${JSON.stringify(l.context)}`);
+      }
+    }
+    if (tc.list_actions?.length) {
+      out.push('    list_actions:');
+      for (const a of tc.list_actions) {
+        out.push(`      - user: ${yamlScalar(a.user)}`);
+        out.push(`        object: ${yamlScalar(a.object)}`);
+        out.push(`        expect: [${(a.expect ?? []).map(yamlScalar).join(', ')}]`);
+        if (a.description) out.push(`        description: ${str(a.description)}`);
+        if (a.context) out.push(`        context: ${JSON.stringify(a.context)}`);
+      }
+    }
     if (tc.explain?.length) {
       out.push('    explain:');
       for (const e of tc.explain) {
@@ -1796,29 +1987,35 @@ export function assertionLine(yaml, r) {
     const m = new RegExp(`^\\s*(?:-\\s+)?${key}:\\s*(.*?)\\s*(?:#.*)?$`).exec(l);
     return m ? unq(m[1]) : null;
   };
+  // the case's identifying pair per kind: the first field opens a case
+  // ("- user:" / "- object:"), the second narrows it
+  const first = r.kind === 'list_subjects' ? 'object' : 'user';
+  const second = r.kind === 'list_objects' || r.kind === 'list_subjects' ? 'type' : 'object';
+  const wantFirst = r.kind === 'list_subjects' ? r.object : r.user;
+  const wantSecond = r.kind === 'list_subjects' ? r.user : r.object;
   let section = '';
-  let user = null;
-  let obj = null;
+  let a = null;
+  let b = null;
   for (let i = from; i < to; i++) {
     const l = lines[i];
-    const sec = /^\s{4}(check|list_objects|explain):\s*$/.exec(l);
+    const sec = /^\s{4}(check|list_objects|list_subjects|list_actions|explain):\s*$/.exec(l);
     if (sec) {
       section = sec[1];
-      user = obj = null;
+      a = b = null;
       continue;
     }
-    const u = field(l, 'user');
-    if (u !== null && /^\s*-\s+/.test(l)) {
-      user = u;
-      obj = null;
+    const f = field(l, first);
+    if (f !== null && /^\s*-\s+/.test(l)) {
+      a = f;
+      b = null;
     }
-    const o = field(l, r.kind === 'list_objects' ? 'type' : 'object');
-    if (o !== null) obj = o;
-    const sectionOk =
-      (section === 'check' && r.kind === 'check') ||
-      (section === 'list_objects' && r.kind === 'list_objects') ||
-      (section === 'explain' && r.kind === 'explain');
-    if (!sectionOk || user !== r.user || obj !== r.object) continue;
+    const g = field(l, second);
+    if (g !== null) b = g;
+    if (section !== r.kind || a !== wantFirst || b !== wantSecond) continue;
+    if (r.kind === 'list_actions') {
+      if (/^\s*expect:/.test(l)) return i + 1;
+      continue;
+    }
     if (r.kind === 'explain') {
       if (
         /^\s*expect_reasons:/.test(l) &&
@@ -1843,6 +2040,19 @@ export function assertionLine(yaml, r) {
     }
   }
   return 0;
+}
+
+// Renders a list_subjects result as a fixture case.
+export function listSubjectsCaseYAML({ object, action, type, ids, context }) {
+  const lines = [
+    `  - name: ${yamlScalar(`${type} ${action} on ${object}`)}`,
+    `    list_subjects:`,
+    `      - object: ${yamlScalar(object)}`,
+    `        type: ${yamlScalar(type)}`,
+    `        assertions: { ${yamlScalar(action)}: [${ids.map((id) => yamlScalar(`${type}:${id}`)).join(', ')}] }`,
+  ];
+  if (context && Object.keys(context).length) lines.push(`        context: ${JSON.stringify(context)}`);
+  return lines.join('\n') + '\n';
 }
 
 // The 1-based editor lines of every "- name:" entry under tests:, in order.

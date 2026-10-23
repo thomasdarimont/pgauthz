@@ -25,7 +25,7 @@ In each: `model.sql` defines the types/relations/rules (creates the store),
 queries, and `tests.sql` (demo, todo, gdrive, aia-acme, agents, fourquestions, authzen-cert) asserts expected decisions.
 `scenarios.authz.yaml` is the model's story as a **test fixture** (the
 `tests.authz.yaml` format of [pgauthzctl](../../pgauthzctl/README.md#test-fixtures-testsauthzyaml)):
-its own tuples plus named scenarios with assertions, hermetic — a run creates
+its own tuples plus named scenarios with assertions (checks, reverse searches, exact action sets, explain paths), hermetic — a run creates
 an ephemeral store with the model, writes only the fixture's tuples and
 decides there. Two ways to run one against a store carrying the model:
 paste it into the console's Store → Test → **Scenarios** editor and Run, or

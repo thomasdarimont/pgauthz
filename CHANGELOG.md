@@ -109,6 +109,16 @@ pre-1.0, minor versions may include breaking changes.
   and JUnit writer; the endpoints through the router (refused
   `model_file` and another store, a tester's 403, a hermetic run, a
   failing assertion as a result, no ephemeral store left, the export).
+- **Fixtures: `list_subjects` and `list_actions` cases.** Next to `check`,
+  `list_objects` and `explain`, a test can assert the reverse search
+  (`list_subjects`: the subjects of a type that reach an object per
+  relation, a wildcard grant listed as `type:*`) and the full action set
+  (`list_actions`: exactly what a subject may do on an object — the
+  relations it holds and the permissions they imply, as `authz.list_actions`
+  answers). Runner, console harness (tables, descriptions), YAML emitter,
+  the YAML view's jump-to-line, and "Add to scenarios" from a subjects
+  search; `list_subjects` is gated like `list_objects`
+  (`can_test_search`). The example fixtures show both.
 - **Console: the share dialog.** Data → Share…: pick an object and whom
   to act as (yourself by default); `grant_options` renders, per relation
   with a grant rule, whether that actor may grant and revoke it and who may

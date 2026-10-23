@@ -119,6 +119,10 @@ func countCases(fix *pgauthzadm.Fixture) int {
 		for _, l := range tc.ListObjects {
 			n += len(l.Assertions)
 		}
+		for _, l := range tc.ListSubjects {
+			n += len(l.Assertions)
+		}
+		n += len(tc.ListActions)
 		n += len(tc.Explain)
 	}
 	return n
@@ -262,8 +266,8 @@ func (s *Server) handleScenariosRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, tc := range fix.Tests {
-		if len(tc.ListObjects) > 0 && !pol.Search {
-			writePolicyDenied(w, "can_test_search", "the test policy does not let you enumerate objects (scenario "+tc.Name+" has list_objects)")
+		if (len(tc.ListObjects) > 0 || len(tc.ListSubjects) > 0) && !pol.Search {
+			writePolicyDenied(w, "can_test_search", "the test policy does not let you enumerate objects or subjects (scenario "+tc.Name+" has list_objects / list_subjects)")
 			return
 		}
 		if len(tc.Explain) > 0 && !pol.ExplainFull {

@@ -66,3 +66,16 @@ tests:
       - user: user:carl
         type: repo
         assertions: { writer: [repo:pgauthz] }
+
+  - name: who reads the repository, and the full role sets
+    list_subjects:
+      - object: repo:pgauthz
+        type: user
+        assertions: { reader: [user:anne, user:beth, user:carl, user:dan], admin: [] }
+    list_actions:
+      - user: user:carl
+        object: repo:pgauthz
+        expect: [writer, triager, reader]
+      - user: user:dan
+        object: repo:pgauthz
+        expect: [maintainer, writer, triager, reader]

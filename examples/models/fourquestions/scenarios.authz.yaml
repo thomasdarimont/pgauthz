@@ -74,3 +74,12 @@ tests:
       - user: user:alice
         type: doc
         assertions: { can_read: [doc:brief, doc:budget] }
+
+  - name: exactly what an editor and a blocked member may do on the brief
+    list_actions:
+      - user: user:alice
+        object: doc:brief
+        expect: [can_read, can_edit, download]
+      - user: user:bob
+        object: doc:brief
+        expect: []

@@ -98,6 +98,15 @@ tests:
       - user: user:bob
         type: doc
         assertions: { can_write: [doc:readme] }
+    list_subjects:                          # the reverse search; a wildcard grant lists as user:*
+      - object: doc:design
+        type: user
+        assertions: { can_read: [user:alice, user:bob] }
+    list_actions:                           # exactly what the subject holds and may do on the object
+      - user: user:bob
+        object: doc:readme
+        expect: [owner, can_read, can_write] # reported as "may [can_read, can_write] · is [owner]"
+                                            # when the model declares relation kinds
     explain:                                # golden resolution paths
       - user: user:alice
         relation: can_write

@@ -46,6 +46,14 @@ tests:
       - user: user:bob
         type: doc
         assertions: { can_write: [doc:readme] }
+    list_subjects:
+      - object: doc:design
+        type: user
+        assertions: { can_read: [user:alice, user:*] }
+    list_actions:
+      - user: user:bob
+        object: doc:readme
+        expect: [owner, can_read]
     explain:
       - user: user:alice
         relation: can_write
@@ -70,6 +78,12 @@ tests:
 	}
 	if len(tc.ListObjects) != 1 || tc.ListObjects[0].Assertions["can_write"][0] != "doc:readme" {
 		t.Errorf("list case %+v", tc.ListObjects)
+	}
+	if len(tc.ListSubjects) != 1 || tc.ListSubjects[0].Type != "user" || tc.ListSubjects[0].Assertions["can_read"][1] != "user:*" {
+		t.Errorf("list_subjects case %+v", tc.ListSubjects)
+	}
+	if len(tc.ListActions) != 1 || tc.ListActions[0].Expect[1] != "can_read" {
+		t.Errorf("list_actions case %+v", tc.ListActions)
 	}
 	if len(tc.Explain) != 1 || strings.Join(tc.Explain[0].ExpectReasons, ",") != "no_direct_tuple,computed" {
 		t.Errorf("explain case %+v", tc.Explain)

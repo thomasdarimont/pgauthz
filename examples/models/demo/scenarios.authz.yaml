@@ -130,3 +130,16 @@ tests:
       - user: internal_user:nadia_auditor
         object: document:doc_tax_001
         assertions: { can_read: true, can_edit: false }
+
+  - name: who reads the payroll document, and what the client may do with the request
+    list_subjects:
+      - object: document:doc_payroll_001
+        type: internal_user
+        assertions: { can_read: [internal_user:alice, internal_user:bob, internal_user:julia, internal_user:nadia_auditor] }
+    list_actions:
+      - user: client_user:carol
+        object: upload_request:req_2026_001
+        expect: [requested_from, can_submit, can_view]
+      - user: internal_user:bob
+        object: upload_request:req_2026_001
+        expect: [created_by, can_view, can_manage]
