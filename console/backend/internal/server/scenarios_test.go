@@ -185,6 +185,18 @@ tests:
 		t.Errorf("export: %d yaml=%q dsl=%q", code, yml, dsl)
 	}
 
+	// the Test tab's actions mode on the same store: what alice holds and may do
+	code, m = do("POST", "/api/stores/"+store+"/actions", `{"subject":"user:alice","resource":"doc:x"}`, owner)
+	if acts, _ := m["actions"].([]any); code != 200 || len(acts) != 2 || acts[0] != "can_read" || acts[1] != "owner" {
+		t.Errorf("actions: %d %v, want [can_read owner]", code, m)
+	}
+	if code, m := do("POST", "/api/stores/"+store+"/actions", `{"subject":"user:alice","resource":"doc:x"}`, tester); code != 403 || m["required"] != "can_test_others" {
+		t.Errorf("tester asked for another's actions: %d %v, want 403", code, m)
+	}
+	if code, m := do("POST", "/api/stores/"+store+"/actions", `{"subject":"alice","resource":"doc:x"}`, owner); code != 400 {
+		t.Errorf("bad subject: %d %v, want 400", code, m)
+	}
+
 	// deleting: an empty save
 	if code, m := do("PUT", base, body(""), owner); code != 200 {
 		t.Errorf("clear: %d %v", code, m)

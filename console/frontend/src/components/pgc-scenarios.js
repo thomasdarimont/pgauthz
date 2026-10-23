@@ -2042,6 +2042,19 @@ export function assertionLine(yaml, r) {
   return 0;
 }
 
+// Renders a list_actions result as a fixture case: exactly these actions.
+export function listActionsCaseYAML({ subject, resource, actions, context }) {
+  const lines = [
+    `  - name: ${yamlScalar(`what ${subject} may do on ${resource}`)}`,
+    `    list_actions:`,
+    `      - user: ${yamlScalar(subject)}`,
+    `        object: ${yamlScalar(resource)}`,
+    `        expect: [${actions.map(yamlScalar).join(', ')}]`,
+  ];
+  if (context && Object.keys(context).length) lines.push(`        context: ${JSON.stringify(context)}`);
+  return lines.join('\n') + '\n';
+}
+
 // Renders a list_subjects result as a fixture case.
 export function listSubjectsCaseYAML({ object, action, type, ids, context }) {
   const lines = [

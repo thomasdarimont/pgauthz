@@ -7,7 +7,13 @@ import { PgcJson } from './pgc-json.js';
 import { run, copyText, forbiddenText, parseList, fmtTime, fmtRelative, FieldInvalid } from '../util.js';
 import { PgcExplainTree } from './pgc-explain-tree.js';
 import { explainOptions } from './pgc-explain-options.js';
-import { checkCaseYAML, listCaseYAML, listSubjectsCaseYAML, appendCase } from './pgc-scenarios.js';
+import {
+  checkCaseYAML,
+  listCaseYAML,
+  listSubjectsCaseYAML,
+  listActionsCaseYAML,
+  appendCase,
+} from './pgc-scenarios.js';
 
 // Test tab, four ways to ask the managed store:
 //   single — one subject, one action, one resource, with the resolution tree
@@ -71,6 +77,7 @@ export class PgcTest extends PgcElement {
     context: { state: true },
     searchMode: { state: true },
     decision: { state: true },
+    actionSet: { state: true }, // the actions mode's answer: {subject, resource, actions, context}
     tree: { state: true },
     cells: { state: true },
     hits: { state: true },
@@ -106,6 +113,7 @@ export class PgcTest extends PgcElement {
     this.cells = null;
     this.hits = null;
     this.decided = null;
+    this.actionSet = null;
     this.busy = false;
     this.error = '';
     this.copied = false;
@@ -140,6 +148,17 @@ export class PgcTest extends PgcElement {
         this._clear();
       }
       this.scenarioView = view === 'edit-as-yaml' ? 'yaml' : 'harness';
+      if (mode === 'search') {
+        const dir = ['objects', 'subjects', 'actions'].includes(view)
+          ? view
+          : this._policy().search
+            ? 'objects'
+            : 'actions';
+        if (dir !== this.searchMode) {
+          this.searchMode = dir;
+          this._clear();
+        }
+      }
     }
   }
 
@@ -152,6 +171,7 @@ export class PgcTest extends PgcElement {
 
   _clear() {
     this.decision = null;
+    this.actionSet = null;
     this.tree = null;
     this.cells = null;
     this.hits = null;
@@ -222,6 +242,116 @@ export class PgcTest extends PgcElement {
       this.decision = c.allowed;
       this.tree = x ? (x.tree ?? x) : null; // explain_access wraps the resolution tree; none at another instant
     });
+  }
+
+  // The actions mode: everything the subject holds and may do on the object.
+  async _runActions(e) {
+    e?.preventDefault();
+    this._clear();
+    await this._wrap(async () => {
+      const q = { subject: this.subject.trim(), resource: this.resource.trim(), context: this._ctx() };
+      const r = await api.actions(this.store, q);
+      this.actionSet = { ...q, actions: r.actions };
+    });
+  }
+
+  // The third direction of Search: both sides given, the relations come
+  // back — everything the subject holds and may do on the object.
+  _actionsFields() {
+    return html`<span class="muted">${t('what may')}</span>
+      <input
+        class="mono id"
+        list="dl-subjects"
+        required
+        .value=${this.subject}
+        @input=${(e) => (this.subject = e.target.value)}
+        style="flex-basis:16rem;max-width:22rem"
+        data-testid="test-actions-subject"
+      />
+      <span class="muted">${t('do on')}</span>
+      <input
+        class="mono id"
+        list="dl-objects"
+        required
+        .value=${this.resource}
+        @input=${(e) => this._setResource(e.target.value)}
+        style="flex-basis:16rem;max-width:22rem"
+        data-testid="test-actions-resource"
+      />
+      <span class="muted">?</span>
+      <button class="primary" ?disabled=${this.busy} data-testid="test-actions-run">${t('Search')}</button>`;
+  }
+
+  _actionsResult() {
+    const a = this.actionSet;
+    if (!a) return nothing;
+    const kinds = new Map(this._rels(a.resource).map((r) => [r.name, r.kind]));
+    const may = a.actions.filter((x) => kinds.get(x) === 'permission');
+    const is = a.actions.filter((x) => kinds.get(x) !== 'permission');
+    const chip = (x) =>
+      html`<span class="chip ok">
+        <span class="mono">${x}</span>
+        <button
+          type="button"
+          class="link"
+          title=${t('explain this one')}
+          @click=${() => this._explainCell(a.subject, x, a.resource)}
+        >
+          ${t('why')}
+        </button>
+      </span>`;
+    return html`<section class="card" data-testid="test-actions-result">
+      <div class="toolbar">
+        <h3>
+          <span class="mono">${a.subject}</span> ${t('on')} <span class="mono">${a.resource}</span>
+          <span class="badge muted">${t('may {p} · is {r}', { p: may.length, r: is.length })}</span>
+        </h3>
+        <div class="actions">
+          <button
+            class="sm"
+            title=${t('Append this answer as a list_actions case of the saved scenarios: exactly these actions.')}
+            data-testid="test-add-scenario-actions"
+            @click=${() =>
+              this._addToScenarios(
+                listActionsCaseYAML({
+                  subject: a.subject,
+                  resource: a.resource,
+                  actions: a.actions,
+                  context: a.context,
+                }),
+              )}
+          >
+            ${t('Add to scenarios')}
+          </button>
+        </div>
+      </div>
+      ${
+        a.actions.length
+          ? html`<dl class="kv">
+              <dt>
+                ${t('may')}
+                ${help('Permissions: what the subject can do, the relations the model declares as permissions.')}
+              </dt>
+              <dd>
+                <div class="chips">
+                  ${may.length ? may.map(chip) : html`<span class="dim">${t('nothing')}</span>`}
+                </div>
+              </dd>
+              <dt>
+                ${t('is')}
+                ${help('Relations: what the subject is on the object, the relations it holds directly or through the graph.')}
+              </dt>
+              <dd>
+                <div class="chips">
+                  ${is.length ? is.map(chip) : html`<span class="dim">${t('nothing')}</span>`}
+                </div>
+              </dd>
+            </dl>`
+          : html`<p class="help">
+              ${t('Nothing: the subject holds no relation on this object and no permission reaches it.')}
+            </p>`
+      }
+    </section>`;
   }
 
   async _runMatrix(e) {
@@ -832,77 +962,91 @@ export class PgcTest extends PgcElement {
 
   _search() {
     const objects = this.searchMode === 'objects';
+    const actions = this.searchMode === 'actions';
     const h = this.hits;
-    return html`<form class="card" @submit=${this._runSearch}>
+    const canEnumerate = this._policy().search;
+    const dirLink = (dir, label, needsEnumeration) =>
+      needsEnumeration && !canEnumerate
+        ? html`<button
+            type="button"
+            class=${this.searchMode === dir ? 'active' : ''}
+            disabled
+            title=${t('The test policy does not let you enumerate objects or subjects (needs can_test_search).')}
+          >
+            ${t(label)} 🔒
+          </button>`
+        : html`<a
+            class="btn ${this.searchMode === dir ? 'active' : ''}"
+            href=${`stores/${this.store}/test/search/${dir}`}
+            data-testid=${`test-search-${dir}`}
+            >${t(label)}</a
+          >`;
+    return html`<form class="card" @submit=${actions ? this._runActions : this._runSearch}>
         <h3>
           ${t('Find the candidates')}
-          ${help('Reverse search over the graph: list_objects answers "which objects can this subject reach?", list_subjects answers "who can reach this object?". Paged by keyset; wildcards are marked.')}
+          ${help('Searches over the graph: list_objects answers "which objects can this subject reach?", list_subjects "who can reach this object?" (both paged by keyset, wildcards marked), and list_actions "what may this subject do on this object?" — everything held and implied, as may (permissions) and is (relations). The enumerating directions need can_test_search; asking about another subject needs can_test_others.')}
         </h3>
         <div class="seg" style="margin-bottom:var(--s-3)">
-          <button
-            type="button"
-            class=${objects ? 'active' : ''}
-            @click=${() => (this.searchMode = 'objects')}
-          >
-            ${t('Which objects can a subject reach?')}
-          </button>
-          <button
-            type="button"
-            class=${!objects ? 'active' : ''}
-            @click=${() => (this.searchMode = 'subjects')}
-          >
-            ${t('Who can reach an object?')}
-          </button>
+          ${dirLink('objects', 'Which objects can a subject reach?', true)}
+          ${dirLink('subjects', 'Who can reach an object?', true)}
+          ${dirLink('actions', 'What may a subject do on an object?', false)}
         </div>
         <div class="sentence">
           ${
-            objects
-              ? html`<span class="muted">${t('which')}</span>
-                  <input
-                    class="mono"
-                    list="dl-types"
-                    required
-                    .value=${this.resource.includes(':') ? '' : this.resource}
-                    @input=${(e) => (this.resource = e.target.value)}
-                    style="width:10rem"
-                  />
-                  <span class="muted">${t('can')}</span>
-                  <input
-                    class="mono id"
-                    list="dl-subjects"
-                    required
-                    .value=${this.subject}
-                    @input=${(e) => (this.subject = e.target.value)}
-                  />`
-              : html`<span class="muted">${t('which')}</span>
-                  <input
-                    class="mono"
-                    list="dl-types"
-                    required
-                    .value=${this.subject.includes(':') ? '' : this.subject}
-                    @input=${(e) => (this.subject = e.target.value)}
-                    style="width:10rem"
-                  />
-                  <span class="muted">${t('can')}</span>`
+            actions
+              ? this._actionsFields()
+              : objects
+                ? html`<span class="muted">${t('which')}</span>
+                    <input
+                      class="mono"
+                      list="dl-types"
+                      required
+                      .value=${this.resource.includes(':') ? '' : this.resource}
+                      @input=${(e) => (this.resource = e.target.value)}
+                      style="width:10rem"
+                    />
+                    <span class="muted">${t('can')}</span>
+                    <input
+                      class="mono id"
+                      list="dl-subjects"
+                      required
+                      .value=${this.subject}
+                      @input=${(e) => (this.subject = e.target.value)}
+                    />`
+                : html`<span class="muted">${t('which')}</span>
+                    <input
+                      class="mono"
+                      list="dl-types"
+                      required
+                      .value=${this.subject.includes(':') ? '' : this.subject}
+                      @input=${(e) => (this.subject = e.target.value)}
+                      style="width:10rem"
+                    />
+                    <span class="muted">${t('can')}</span>`
           }
-          ${this._actionPicker((e) => (this.action = e.target.value), true)}
           ${
-            objects
+            actions
               ? nothing
-              : html`<span class="muted">${t('on')}</span>
-                  <input
-                    class="mono id"
-                    list="dl-objects"
-                    required
-                    .value=${this.resource}
-                    @input=${(e) => (this.resource = e.target.value)}
-                  />`
+              : html`${this._actionPicker((e) => (this.action = e.target.value), true)}
+                  ${
+                    objects
+                      ? nothing
+                      : html`<span class="muted">${t('on')}</span>
+                          <input
+                            class="mono id"
+                            list="dl-objects"
+                            required
+                            .value=${this.resource}
+                            @input=${(e) => (this.resource = e.target.value)}
+                          />`
+                  }
+                  <span class="muted">?</span>
+                  <button class="primary" ?disabled=${this.busy}>${t('Search')}</button>`
           }
-          <span class="muted">?</span>
-          <button class="primary" ?disabled=${this.busy}>${t('Search')}</button>
         </div>
-        ${this._shapesHelp(true)} ${this._contextField()}
+        ${actions ? this._contextField() : html`${this._shapesHelp(true)} ${this._contextField()}`}
       </form>
+      ${this._actionsResult()}
       ${
         h
           ? html`<section class="card">
@@ -1068,7 +1212,7 @@ export class PgcTest extends PgcElement {
       <div class="toolbar">
         <div class="seg">
           ${modes.map(([id, label, tip]) => {
-            const locked = id === 'search' && !this._policy().search;
+            const locked = false;
             return locked
               ? html`<button
                   class=${this.mode === id ? 'active' : ''}

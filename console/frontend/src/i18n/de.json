@@ -988,5 +988,17 @@
   "Reached by (list_subjects)": "Erreicht von (list_subjects)",
   "May do exactly (list_actions)": "Darf genau (list_actions)",
   "Append this search with its results as a list_subjects case of the saved scenarios.": "Hängt diese Suche mit ihren Ergebnissen als list_subjects-Fall an die gespeicherten Szenarien an.",
-  "may": "darf"
+  "may": "darf",
+  "what may": "was darf",
+  "do on": "tun auf",
+  "Ask": "Fragen",
+  "Append this answer as a list_actions case of the saved scenarios: exactly these actions.": "Hängt diese Antwort als list_actions-Fall an die gespeicherten Szenarien an: genau diese Aktionen.",
+  "Permissions: what the subject can do, the relations the model declares as permissions.": "Berechtigungen: was das Subjekt tun darf, die Relationen, die das Modell als Berechtigung deklariert.",
+  "Relations: what the subject is on the object, the relations it holds directly or through the graph.": "Relationen: was das Subjekt auf dem Objekt ist, die Relationen, die es direkt oder über den Graphen hält.",
+  "Nothing: the subject holds no relation on this object and no permission reaches it.": "Nichts: das Subjekt hält keine Relation auf diesem Objekt und keine Berechtigung erreicht es.",
+  "explain this one": "diese erklären",
+  "why": "warum",
+  "may {p} · is {r}": "darf {p} · ist {r}",
+  "What may a subject do on an object?": "Was darf ein Subjekt auf einem Objekt?",
+  "Searches over the graph: list_objects answers \"which objects can this subject reach?\", list_subjects \"who can reach this object?\" (both paged by keyset, wildcards marked), and list_actions \"what may this subject do on this object?\" — everything held and implied, as may (permissions) and is (relations). The enumerating directions need can_test_search; asking about another subject needs can_test_others.": "Suchen über den Graphen: list_objects beantwortet „welche Objekte erreicht dieses Subjekt?“, list_subjects „wer erreicht dieses Objekt?“ (beide per Keyset paginiert, Wildcards markiert) und list_actions „was darf dieses Subjekt auf diesem Objekt?“ — alles Gehaltene und Abgeleitete, als darf (Berechtigungen) und ist (Relationen). Die aufzählenden Richtungen brauchen can_test_search; nach einem anderen Subjekt zu fragen braucht can_test_others."
 }

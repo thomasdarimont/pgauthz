@@ -3,10 +3,11 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"github.com/jackc/pgx/v5"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // handleMeta — names for the Test tab's autocompletion: types, relations,
@@ -222,6 +223,65 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"allowed": allowed, "at": nullable(q.At)})
+}
+
+type actionsReq struct {
+	Subject  string          `json:"subject"`  // type:id
+	Resource string          `json:"resource"` // type:id
+	Context  json.RawMessage `json:"context"`
+}
+
+// handleActions — POST .../actions: everything the subject holds and may
+// do on the object (authz.list_actions: the relations held and the
+// permissions they imply), for the Test tab's "What may they do?" mode.
+// Bound by the test policy like a check: another subject needs
+// can_test_others. Recorded as the person.
+func (s *Server) handleActions(w http.ResponseWriter, r *http.Request) {
+	p, store := s.requireStore(w, r, "can_run_tests")
+	if p == nil {
+		return
+	}
+	var q actionsReq
+	if !decodeJSON(w, r, &q) {
+		return
+	}
+	st, sid, ok1 := splitRef(q.Subject)
+	ot, oid, ok2 := splitRef(q.Resource)
+	if !ok1 || !ok2 {
+		writeError(w, http.StatusBadRequest, "subject (type:id) and resource (type:id) are required")
+		return
+	}
+	pol, err := s.testPolicyFor(r.Context(), p, store)
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	if !pol.Others && !s.isSelf(p, st, sid) {
+		writePolicyDenied(w, "can_test_others", "the test policy limits you to your own access: the subject must be you ("+p.typ+":"+p.id+" or a configured person type with that id)")
+		return
+	}
+	actions := []string{}
+	err = s.recordTest(r.Context(), p, store, map[string]any{"op": "actions", "subject": q.Subject, "resource": q.Resource}, func(tx pgx.Tx) error {
+		rows, err := tx.Query(r.Context(), `SELECT action FROM authz.list_actions($1,$2,$3,$4,$5,$6::jsonb) ORDER BY 1`,
+			store, st, sid, ot, oid, nullableJSON(q.Context))
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var a string
+			if err := rows.Scan(&a); err != nil {
+				return err
+			}
+			actions = append(actions, a)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"actions": actions})
 }
 
 // handleExplain — the resolution tree behind a decision.

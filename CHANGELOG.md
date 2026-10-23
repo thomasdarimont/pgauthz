@@ -109,6 +109,19 @@ pre-1.0, minor versions may include breaking changes.
   and JUnit writer; the endpoints through the router (refused
   `model_file` and another store, a tester's 403, a hermetic run, a
   failing assertion as a result, no ephemeral store left, the export).
+- **Console: Search gains "What may a subject do on an object?".** A third
+  direction next to the two enumerations, asking `authz.list_actions` for
+  everything a subject holds and may do on one object, shown as "may"
+  (permissions) and "is" (relations) from the model's declared kinds,
+  each with a "why" into the single check's tree, and "Add to scenarios"
+  producing a `list_actions` case — the search the fixtures' `list_actions`
+  assertions were missing on the tab (`POST /api/stores/{store}/actions`,
+  test policy as for a check: another subject needs `can_test_others`;
+  recorded as the person). The search direction is in the URL
+  (`…/test/search/objects|subjects|actions`); only the two enumerating
+  directions are locked without `can_test_search`, so a plain tester can
+  still ask what a subject may do. Closes the Test-tab part of
+  console-gaps item 4 except contextual tuples.
 - **Fixtures: `list_subjects` and `list_actions` cases.** Next to `check`,
   `list_objects` and `explain`, a test can assert the reverse search
   (`list_subjects`: the subjects of a type that reach an object per

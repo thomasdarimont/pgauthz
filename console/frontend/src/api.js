@@ -94,6 +94,8 @@ export const api = {
   search: (store, q) => call(`api/stores/${enc(store)}/search`, q),
   evaluateCondition: (store, name, q) => call(`api/stores/${enc(store)}/conditions/${enc(name)}/evaluate`, q),
   decide: (store, q) => call(`api/stores/${enc(store)}/decide`, q),
+  /** @returns {Promise<{actions: string[]}>} what the subject holds and may do on the object (list_actions) */
+  actions: (store, q) => call(`api/stores/${enc(store)}/actions`, q),
   /** @returns {Promise<import('./types.js').Scenarios>} */
   scenarios: (store) => call(`api/stores/${enc(store)}/scenarios`),
   scenariosSave: (store, yaml) => call(`api/stores/${enc(store)}/scenarios`, { yaml }, { method: 'PUT' }),
