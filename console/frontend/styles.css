@@ -537,3 +537,12 @@ details.card > section + section { border-top: 1px solid var(--c-border); margin
 .fx-history select { max-width: 40rem; }
 table.scenario-results tr.explaining td { background: var(--c-accent-bg, var(--c-surface-2)); }
 table.scenario-results tr.explaining td:first-child { box-shadow: inset 3px 0 0 var(--c-accent); }
+table.scenario-results tr.group td { background: var(--c-surface-2); border-top: 2px solid var(--c-border); cursor: pointer; }
+table.scenario-results tr.group .badge { margin-left: var(--s-2); }
+/* Assertion rows sit under their group row: the label indented, the number dimmer */
+table.scenario-results tr.pick td.mono { padding-left: calc(var(--s-3) + 1.5em); }
+table.scenario-results tr.pick td.num { opacity: .7; }
+/* The numbers follow the nesting too: the test's number sits at the column's left edge, the
+   assertions' numbers to its right (right-aligned in the same column) */
+table.scenario-results tr.group td.num { text-align: left; font-weight: 600; opacity: 1; }
+table.scenario-results tr.pick td.num { padding-left: 2.5em; }

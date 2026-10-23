@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -408,7 +409,8 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 			fail(tc.Name+"/check", err.Error())
 			continue
 		}
-		for rel, want := range c.Assertions {
+		for _, rel := range sortedKeys(c.Assertions) {
+			want := c.Assertions[rel]
 			name := fmt.Sprintf("%s: %s %s %s = %v", tc.Name, c.User, rel, c.Object, want)
 			at.Relation = rel
 			note = first(c.Notes[rel], c.Description, tc.Description)
@@ -430,7 +432,8 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 			fail(tc.Name+"/list_objects", err.Error())
 			continue
 		}
-		for rel, want := range l.Assertions {
+		for _, rel := range sortedKeys(l.Assertions) {
+			want := l.Assertions[rel]
 			name := fmt.Sprintf("%s: list %s %s for %s", tc.Name, l.Type, rel, l.User)
 			at.Relation = rel
 			note = first(l.Notes[rel], l.Description, tc.Description)
@@ -503,6 +506,17 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 		}
 	}
 	return out
+}
+
+// sortedKeys — the assertions of a case in a stable order (a map has none),
+// so results, their ids and the CLI's lines come out the same every run.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func runFixtureCheck(ctx context.Context, db DB, store string, u Ref, rel string, o Ref, c CheckCase) (bool, error) {

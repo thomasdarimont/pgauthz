@@ -150,8 +150,17 @@ export class PgcScenarios extends PgcElement {
       this.runs += 1;
       // the tests' names as they were when the run was made: a result points
       // back by index first, by name when the fixture changed since
-      const testNames = (this.check?.fixture?.tests ?? []).map((tc) => tc.name);
-      this.report = { ...r, run: this.runs, only: indices, at: new Date().toISOString(), testNames };
+      const tests = this.check?.fixture?.tests ?? [];
+      const testNames = tests.map((tc) => tc.name);
+      const testDescs = tests.map((tc) => tc.description ?? '');
+      this.report = {
+        ...r,
+        run: this.runs,
+        only: indices,
+        at: new Date().toISOString(),
+        testNames,
+        testDescs,
+      };
       this.history = [this.report, ...this.history].slice(0, historyLimit);
     }
   }
@@ -349,6 +358,45 @@ export class PgcScenarios extends PgcElement {
     return parts.join(' · ');
   }
 
+  // The run's results grouped by test, in order: {test, name, description,
+  // results, failed} — the table and the text copy show one group row per
+  // test and the assertions under it, without repeating the test's name.
+  // (The CSV stays flat: its test column carries the grouping.)
+  static groups(rep) {
+    const out = [];
+    for (const r of rep.results) {
+      let g = out.find((x) => x.test === r.test);
+      if (!g) {
+        g = {
+          test: r.test,
+          name: rep.testNames?.[r.test] ?? '',
+          description: rep.testDescs?.[r.test] ?? '',
+          results: [],
+          failed: 0,
+        };
+        out.push(g);
+      }
+      g.results.push(r);
+      if (r.failed) g.failed++;
+    }
+    for (const g of out) {
+      g.id = `TC${g.test + 1}`;
+      g.ids = new Map(g.results.map((r, k) => [r, `A${k + 1}`])); // the assertion's id within its test case
+    }
+    return out;
+  }
+
+  // "TC2.A3": a result's id in the run — the test case, the assertion within it.
+  static resultID(rep, r) {
+    const g = PgcScenarios.groups(rep).find((x) => x.results.includes(r));
+    return g ? `${g.id}.${g.ids.get(r)}` : '';
+  }
+
+  // The assertion part of a result's name (the runner prefixes the test's name).
+  static assertionLabel(r, testName) {
+    return testName && r.name.startsWith(testName + ': ') ? r.name.slice(testName.length + 2) : r.name;
+  }
+
   // A result as one line of text: outcome, assertion, detail, description.
   static resultText(r) {
     return [
@@ -374,9 +422,13 @@ export class PgcScenarios extends PgcElement {
     };
     // a comment line first — not a cell row — saying what the run tested
     const comment = `# ${PgcScenarios.provenance(rep)} · run #${rep.run} · ${rep.at}`;
+    const groups = PgcScenarios.groups(rep);
     const header = [
       'run',
       'at',
+      'category',
+      'test_case',
+      'assertion_id',
       'test',
       'kind',
       'subject',
@@ -387,30 +439,45 @@ export class PgcScenarios extends PgcElement {
       'detail',
       'description',
     ];
-    const rows = rep.results.map((r) => [
-      rep.run,
-      rep.at,
-      r.test + 1,
-      r.kind,
-      r.user,
-      r.relation,
-      r.object,
-      r.name,
-      r.failed ? 'failed' : 'passed',
-      r.failed ? r.detail : '',
-      r.note ?? '',
-    ]);
+    const rows = rep.results.map((r) => {
+      const g = groups.find((x) => x.results.includes(r));
+      return [
+        rep.run,
+        rep.at,
+        'assertion',
+        g?.id ?? '',
+        g?.ids.get(r) ?? '',
+        r.test + 1,
+        r.kind,
+        r.user,
+        r.relation,
+        r.object,
+        r.name,
+        r.failed ? 'failed' : 'passed',
+        r.failed ? r.detail : '',
+        r.note ?? '',
+      ];
+    });
     return [comment, ...[header, ...rows].map((row) => row.map(cell).join(';'))].join('\r\n') + '\r\n';
   }
 
   // A run as text: the header line, then one line per result.
   static runText(rep) {
-    const head = `Run #${rep.run}${rep.only?.length ? ` (test ${rep.only.map((x) => x + 1).join(', ')} only)` : ''}: ${rep.failed ? `${rep.failed} of ${rep.passed + rep.failed} failed` : `${rep.passed} passed`}, ${rep.duration_ms} ms`;
-    return (
-      [head, PgcScenarios.provenance(rep) + ` · ${rep.at}`, ...rep.results.map(PgcScenarios.resultText)].join(
-        '\n',
-      ) + '\n'
-    );
+    const head = `Run #${rep.run}${rep.only?.length ? ` (${rep.only.map((x) => `TC${x + 1}`).join(', ')} only)` : ''}: ${rep.failed ? `${rep.failed} of ${rep.passed + rep.failed} failed` : `${rep.passed} passed`}, ${rep.duration_ms} ms`;
+    const lines = [head, PgcScenarios.provenance(rep) + ` · ${rep.at}`];
+    for (const g of PgcScenarios.groups(rep)) {
+      lines.push('');
+      lines.push(
+        `${g.id} ${g.failed ? '✘' : '✔'} ${g.name}${g.description ? ` — ${g.description}` : ''} (${g.failed ? `${g.failed} of ${g.results.length} failed` : `${g.results.length} passed`})`,
+      );
+      for (const r of g.results) {
+        const note = r.note && r.note !== g.description ? ` — ${r.note}` : '';
+        lines.push(
+          `  ${g.ids.get(r)} ${r.failed ? '✘' : '✔'} ${PgcScenarios.assertionLabel(r, g.name)}${r.failed && r.detail ? ` (${r.detail})` : ''}${note}`,
+        );
+      }
+    }
+    return lines.join('\n') + '\n';
   }
 
   // Explains one check assertion inside the fixture's world (the server
@@ -446,7 +513,7 @@ export class PgcScenarios extends PgcElement {
   _addTest() {
     const fx = this._fixture() ?? {};
     fx.tests = fx.tests ?? [];
-    fx.tests.push({ name: t('scenario {n}', { n: fx.tests.length + 1 }), check: [] });
+    fx.tests.push({ name: `TC${fx.tests.length + 1}`, check: [] });
     this._apply(fx);
     const i = fx.tests.length - 1;
     this._fold(i, false);
@@ -657,7 +724,7 @@ export class PgcScenarios extends PgcElement {
             class="fx-play ${mine.length ? (failed ? 'deny' : 'ok') : ''}"
             style=${`top: calc(var(--s-2) + ${line - 1} * 1.5em)`}
             ?disabled=${this.busy || invalid}
-            title=${invalid ? t('fix the YAML first') : t('run test {n} only: {name}', { n: i + 1, name })}
+            title=${invalid ? t('fix the YAML first') : t('run {tc} only: {name}', { tc: `TC${i + 1}`, name })}
             data-testid=${`test-scenarios-play-${i}`}
             @click=${() => this._run([i])}
           >
@@ -750,7 +817,7 @@ export class PgcScenarios extends PgcElement {
       </div>
       <div class="fx-block">
         <div class="fx-head">
-          <span class="fx-label">${t('Tests')} <span class="muted">(${tests.length})</span></span>
+          <span class="fx-label">${t('Test cases')} <span class="muted">(${tests.length})</span></span>
           <span class="actions fx-lines">
             <button type="button" class="link" @click=${() => this._foldAll(true)}>
               ${t('collapse all')}
@@ -759,7 +826,7 @@ export class PgcScenarios extends PgcElement {
               ${t('expand all')}
             </button>
             <button type="button" class="sm" data-testid="test-scenarios-add-test" @click=${this._addTest}>
-              + ${t('Add test')}
+              + ${t('Add test case')}
             </button>
           </span>
         </div>
@@ -857,6 +924,54 @@ export class PgcScenarios extends PgcElement {
     </div>`;
   }
 
+  // One assertion's row in the run's table: i its index in the run, g its
+  // group (the test), whose name the label leaves out and whose description
+  // the description cell does not repeat.
+  _resultRow(r, i, g) {
+    return html`<tr
+      class="pick ${r.failed ? 'deny' : ''} ${this.explained?.result === r ? 'explaining' : ''}"
+      title=${t('Show {tc}', { tc: `TC${r.test + 1}` })}
+      data-testid=${`test-scenarios-result-${i + 1}`}
+      @click=${() => this._reveal(r)}
+    >
+      <td class="num muted">${g.ids.get(r)}</td>
+      <td>${r.failed ? '✘' : '✔'}</td>
+      <td class="mono">${PgcScenarios.assertionLabel(r, g.name)}</td>
+      <td class="muted">${r.failed ? r.detail : ''}</td>
+      <td class="muted">${r.note && r.note !== g.description ? linkify(r.note) : ''}</td>
+      <td class="nowrap">
+        ${
+          r.kind === 'check'
+            ? html`<button
+                type="button"
+                class="link"
+                title=${t("why: the engine's resolution tree for this assertion, inside the fixture's world")}
+                data-testid=${`test-scenarios-explain-${i + 1}`}
+                @click=${(e) => {
+                  e.stopPropagation();
+                  this._explain(r);
+                }}
+              >
+                ${this.explained?.result === r ? t('explained ↓') : t('explain')}
+              </button>`
+            : nothing
+        }
+        <button
+          type="button"
+          class="link"
+          title=${t('copy this assertion and its outcome as text')}
+          data-testid=${`test-scenarios-copy-${i + 1}`}
+          @click=${(e) => {
+            e.stopPropagation();
+            this._copy(`r${i}`, PgcScenarios.resultText(r));
+          }}
+        >
+          ${this.copied === `r${i}` ? t('Copied') : t('copy')}
+        </button>
+      </td>
+    </tr>`;
+  }
+
   // One assertion as a chip: the outcome of the last run when there was
   // one, its note (tooltip; ✎ edits it inline), × removes it.
   _chip(i, ci, rel, want, c, name) {
@@ -937,7 +1052,7 @@ export class PgcScenarios extends PgcElement {
       <div class="fx-head">
         ${this._toggle(i, open, `test-scenarios-fold-test-${i}`)}
         <span class="muted fx-num" title=${t('collapse / expand')} @click=${() => this._fold(i, open)}
-          >${i + 1}.</span
+          >TC${i + 1}</span
         >
         <input
           class="fx-name"
@@ -1331,7 +1446,7 @@ export class PgcScenarios extends PgcElement {
                             (h) =>
                               html`<option value=${h.run} ?selected=${rep === h}>
                                 ${t('Run #{n}', { n: h.run })} · ${fmtTime(h.at)} ·
-                                ${h.failed ? '✘ ' + t('{f} of {n} failed', { f: h.failed, n: h.passed + h.failed }) : '✔ ' + t('{n} passed', { n: h.passed })}${h.only?.length ? ' · ' + t('test {n} only', { n: h.only.map((x) => x + 1).join(', ') }) : ''}
+                                ${h.failed ? '✘ ' + t('{f} of {n} failed', { f: h.failed, n: h.passed + h.failed }) : '✔ ' + t('{n} passed', { n: h.passed })}${h.only?.length ? ' · ' + t('{tc} only', { tc: h.only.map((x) => `TC${x + 1}`).join(', ') }) : ''}
                               </option>`,
                           )}
                         </select>
@@ -1399,7 +1514,7 @@ export class PgcScenarios extends PgcElement {
   _runReport(rep) {
     return html`<div class="toolbar">
         <h3>
-          ${t('Run #{n}', { n: rep.run })}${rep.only?.length ? html` <span class="muted">· ${t('test {n} only', { n: rep.only.map((x) => x + 1).join(', ') })}</span>` : nothing}
+          ${t('Run #{n}', { n: rep.run })}${rep.only?.length ? html` <span class="muted">· ${t('{tc} only', { tc: rep.only.map((x) => `TC${x + 1}`).join(', ') })}</span>` : nothing}
         </h3>
         <span
           class="help mono"
@@ -1457,51 +1572,25 @@ export class PgcScenarios extends PgcElement {
             </tr>
           </thead>
           <tbody>
-            ${rep.results.map(
-              (r, i) =>
-                html`<tr
-                  class="pick ${r.failed ? 'deny' : ''} ${this.explained?.result === r ? 'explaining' : ''}"
-                  title=${t('Show scenario {n}', { n: r.test + 1 })}
-                  data-testid=${`test-scenarios-result-${i + 1}`}
-                  @click=${() => this._reveal(r)}
-                >
-                  <td class="num muted">${i + 1}</td>
-                  <td>${r.failed ? '✘' : '✔'}</td>
-                  <td class="mono">${r.name}</td>
-                  <td class="muted">${r.failed ? r.detail : ''}</td>
-                  <td class="muted">${r.note ? linkify(r.note) : ''}</td>
-                  <td class="nowrap">
-                    ${
-                      r.kind === 'check'
-                        ? html`<button
-                            type="button"
-                            class="link"
-                            title=${t("why: the engine's resolution tree for this assertion, inside the fixture's world")}
-                            data-testid=${`test-scenarios-explain-${i + 1}`}
-                            @click=${(e) => {
-                              e.stopPropagation();
-                              this._explain(r);
-                            }}
-                          >
-                            ${this.explained?.result === r ? t('explained ↓') : t('explain')}
-                          </button>`
-                        : nothing
-                    }
-                    <button
-                      type="button"
-                      class="link"
-                      title=${t('copy this assertion and its outcome as text')}
-                      data-testid=${`test-scenarios-copy-${i + 1}`}
-                      @click=${(e) => {
-                        e.stopPropagation();
-                        this._copy(`r${i}`, PgcScenarios.resultText(r));
-                      }}
-                    >
-                      ${this.copied === `r${i}` ? t('Copied') : t('copy')}
-                    </button>
-                  </td>
-                </tr>`,
-            )}
+            ${PgcScenarios.groups(rep).flatMap((g) => [
+              html`<tr
+                class="group"
+                title=${t('Show {tc}', { tc: `TC${g.test + 1}` })}
+                data-testid=${`test-scenarios-group-${g.test + 1}`}
+                @click=${() => this._reveal(g.results[0])}
+              >
+                <td class="num muted">${g.id}</td>
+                <td>${g.failed ? '✘' : '✔'}</td>
+                <td colspan="4">
+                  <b>${g.name}</b
+                  >${g.description ? html` <span class="muted">— ${linkify(g.description)}</span>` : nothing}
+                  <span class="badge ${g.failed ? 'deny' : 'ok'}"
+                    >${g.failed ? t('{f} of {n} failed', { f: g.failed, n: g.results.length }) : t('{n} passed', { n: g.results.length })}</span
+                  >
+                </td>
+              </tr>`,
+              ...g.results.map((r) => this._resultRow(r, rep.results.indexOf(r), g)),
+            ])}
           </tbody>
         </table>
       </div>`;
