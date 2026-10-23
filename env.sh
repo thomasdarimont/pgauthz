@@ -123,6 +123,8 @@ else
       COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-tracing.yml")
       export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}"
       export CONSOLE_TRACE_URL="${CONSOLE_TRACE_URL:-http://localhost:16686/trace/{trace_id}}"
+      export OPA_TRACING_TYPE="${OPA_TRACING_TYPE:-grpc}"
+      export OPA_TRACING_ADDRESS="${OPA_TRACING_ADDRESS:-jaeger:4317}"
       ;;
   esac
 

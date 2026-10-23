@@ -979,7 +979,9 @@ DECISION_LOG_SAMPLE=1          # required by DECISION_LOG_REQUIRED (complete evi
   decision's own span when spans are exported (`OTEL_EXPORTER_OTLP_ENDPOINT`
   / `OTEL_TRACES_EXPORTER=otlp`; one server span per request, one
   `pgauthz.<endpoint>` span per decision with the outcome as attributes,
-  a client span per OPA call), the propagated parent's otherwise. Propagation
+  a client span per OPA call — and OPA's own spans when its
+  `distributed_tracing` points at the same collector), the propagated
+  parent's otherwise. Propagation
   needs no exporter, so an application that traces its requests finds its
   decisions in the console's Decisions tab by trace id, and the tab links
   each line into the tracing UI (`CONSOLE_TRACE_URL`). Spans name subject and

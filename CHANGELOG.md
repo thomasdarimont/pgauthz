@@ -28,8 +28,10 @@ pre-1.0, minor versions may include breaking changes.
   console's Decisions tab filters by trace id and client, shows the client
   column and "Denied: by client", and links a line into the tracing UI
   (`CONSOLE_TRACE_URL`, `{trace_id}` placeholder). `./start.sh --tracing`
-  adds a Jaeger collector (`compose-tracing.yml`) and wires every instance
-  and the console to it for a demo.
+  adds a Jaeger collector (`compose-tracing.yml`) and wires every instance,
+  the console and — with `--opa` — the OPA sidecar to it (OPA's
+  `distributed_tracing` over OTLP/gRPC, `OPA_TRACING_TYPE`/`_ADDRESS`; chart
+  `otel.opaAddress`), so one trace shows gateway → OPA → callback → engine.
 - **Decisions tab + the decision log's PostgreSQL sink (ADR 0015).**
   `DECISION_LOG=postgres` writes pgauthzd's decision lines into a sink
   database (`DECISION_LOG_DSN`): the daemon creates `decisionlog.decisions`

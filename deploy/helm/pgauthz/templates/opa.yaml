@@ -98,6 +98,15 @@ spec:
             # DEV ONLY (see values.yaml): logs full decision inputs incl. JWTs.
             - --set=decision_logs.console=true
             {{- end }}
+            {{- with .Values.otel.opaAddress }}
+            # OpenTelemetry: OPA's spans (policy evaluation, the callback
+            # http.send) join pgauthzd's traces; OTLP over gRPC.
+            - --set=distributed_tracing.type=grpc
+            - --set=distributed_tracing.address={{ . }}
+            - --set=distributed_tracing.service_name=opa
+            - --set=distributed_tracing.sample_percentage={{ $.Values.otel.opaSamplePercentage | default 100 }}
+            - --set=distributed_tracing.encryption={{ $.Values.otel.opaEncryption | default "off" }}
+            {{- end }}
             - /policies
             - /data
           env:

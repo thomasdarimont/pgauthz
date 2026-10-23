@@ -1867,3 +1867,13 @@ services:
 Keep `opa/policies/` in version control alongside the SQL model. The policy
 and model should evolve together — a new relation in the SQL model may
 require a corresponding policy update in OPA.
+
+## Tracing (OpenTelemetry)
+
+OPA exports its own spans — the policy evaluation and every `http.send` to
+pgauthzd's native callback, with the trace context carried on — when its
+`distributed_tracing` is configured (OTLP over gRPC). pgauthzd forwards the
+caller's trace context to OPA, so one trace then reads gateway → OPA → native
+callback → engine queries. `./start.sh --tracing` wires it (`OPA_TRACING_TYPE=grpc`,
+`OPA_TRACING_ADDRESS=jaeger:4317` on the `opa` service; empty = off); the chart
+takes `otel.opaAddress`. pgauthzd's side: `pgauthzd/README.md` → `TRACING`.

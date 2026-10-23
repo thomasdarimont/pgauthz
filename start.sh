@@ -143,7 +143,10 @@ if [ "$TRACING" = 1 ]; then
   COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-tracing.yml")
   export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}"
   export CONSOLE_TRACE_URL="${CONSOLE_TRACE_URL:-http://localhost:16686/trace/{trace_id}}"
-  echo "==> Tracing enabled (compose-tracing.yml: Jaeger; every pgauthzd exports to it)"
+  # OPA (with --opa) traces too, over OTLP/gRPC, so the trace spans the sidecar.
+  export OPA_TRACING_TYPE="${OPA_TRACING_TYPE:-grpc}"
+  export OPA_TRACING_ADDRESS="${OPA_TRACING_ADDRESS:-jaeger:4317}"
+  echo "==> Tracing enabled (compose-tracing.yml: Jaeger; every pgauthzd — and OPA — exports to it)"
 fi
 
 # Git revision for the console footer (compose-console.yml build arg).

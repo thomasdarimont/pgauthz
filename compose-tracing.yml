@@ -9,7 +9,9 @@
 # OTLP endpoint is configured); start.sh/env.sh set OTEL_EXPORTER_OTLP_ENDPOINT
 # to this Jaeger for every pgauthzd instance of the stack, and CONSOLE_TRACE_URL
 # so the console's Decisions tab links a decision into its trace.
-# UI: http://localhost:16686 — the pgauthzd service, its traces by store
+# With --opa the OPA sidecar exports too (OTLP/gRPC, OPA_TRACING_*), so one
+# trace shows gateway → OPA policy → native callback → engine queries.
+# UI: http://localhost:16686 — services pgauthzd and opa; traces by store
 # (tag pgauthz.store) and decision (pgauthz.decision, pgauthz.reason).
 # Subject/resource IDS are not on spans unless TRACING_IDENTIFIERS=true.
 
@@ -20,4 +22,5 @@ services:
     ports:
       - "16686:16686"        # Jaeger UI
       - "4318:4318"          # OTLP/HTTP, for applications on the host that trace too
+      - "4317:4317"          # OTLP/gRPC (OPA exports over gRPC)
     restart: unless-stopped

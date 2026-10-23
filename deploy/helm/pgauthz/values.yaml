@@ -93,6 +93,11 @@ otel:
   protocol: ""        # OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf (default) | grpc
   sampler: ""         # OTEL_TRACES_SAMPLER, e.g. parentbased_traceidratio
   samplerArg: ""      # OTEL_TRACES_SAMPLER_ARG, e.g. "0.1"
+  # The OPA sidecar (opa.enabled) traces too when given a collector: OTLP over
+  # gRPC, host:port (OPA speaks gRPC only), e.g. otel-collector:4317.
+  opaAddress: ""
+  opaSamplePercentage: 100
+  opaEncryption: "off"   # off | tls | mtls (OPA's distributed_tracing.encryption)
 
 # ── Database: CloudNativePG cluster ──────────────────────────────────────────
 database:
