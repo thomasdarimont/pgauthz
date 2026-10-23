@@ -255,8 +255,10 @@ as the store `console_uitest`, runs `npx playwright test` (installing the
 pinned Chromium build into Playwright's cache on first use) and drops the
 store; without a console at `CONSOLE_URL` (default
 `http://localhost:8095/console/`) it skips, with
-`PGAUTHZ_TEST_REQUIRE_CONSOLE=1` it fails instead. `tests/test-all.sh`
-includes it; CI does not start the console stack yet, so it skips there.
+`PGAUTHZ_TEST_REQUIRE_CONSOLE=1` it waits up to a minute for one and fails
+instead. `tests/test-all.sh` includes it (skipping without a console); CI
+enforces it in its own job, `console-ui-test`, which brings up the
+console-local stack and runs the script with the require flag.
 
 ### API shapes
 

@@ -47,8 +47,12 @@ pre-1.0, minor versions may include breaking changes.
   `./start.sh --console-local`): a late response for object A does not
   populate B, retyping the object retires the queue and never submits,
   a committed save with a failed refresh leaves nothing to replay, the
-  expiry chip's relative text and absolute title. This completes the
-  Model tab's grant rules: declare them there, watch them decide here.
+  expiry chip's relative text and absolute title. Round 3: the race tests
+  synchronise on the intercepted response (no fixed waits), and CI
+  enforces the suite in its own job, `console-ui-test`, which brings up
+  the console-local stack and fails if the console is absent. This
+  completes the Model tab's grant rules: declare them there, watch them
+  decide here.
 - **Console: batch import, export and offboarding on the Data tab.**
   Export the store's tuples as JSON (the native shape, round-trippable with
   conditions, context and expiry), CSV with the same columns, or the OpenFGA

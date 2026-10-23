@@ -36,20 +36,26 @@ test.beforeEach(async ({ page }) => {
 
 test('a late response for object A does not populate object B', async ({ page }) => {
   // hold A's options back until B is typed, as a slow network would
+  const optionsForA = /\/share\?.*object_id=a(&|$)/;
   let releaseA;
   const held = new Promise((r) => (releaseA = r));
-  await page.route(/\/share\?.*object_id=a(&|$)/, async (route) => {
+  await page.route(optionsForA, async (route) => {
     await held;
     await route.continue();
   });
   await openShare(page, 'a');
+  const responseA = page.waitForResponse((r) => optionsForA.test(r.url()) && r.request().method() === 'GET');
   await tid(page, 'data-share-load').click();
   await tid(page, 'data-share-id').fill('b');
   releaseA();
-  // A's response arrives now; the form says b, so it is dropped
-  await page.waitForTimeout(500);
+  // A's response has fully arrived in the page before the assertion; the
+  // form says b, so the dialog must have dropped it — no table, no Save
+  const res = await responseA;
+  expect(res.status()).toBe(200);
+  await res.finished();
   await expect(tid(page, 'data-share-table')).toHaveCount(0);
-  await page.unroute(/\/share\?.*object_id=a(&|$)/);
+  await expect(tid(page, 'data-share-apply')).toHaveCount(0);
+  await page.unroute(optionsForA);
   // a proper load for b shows b's own (empty) holders
   await tid(page, 'data-share-load').click();
   await expect(tid(page, 'data-share-rel-viewer')).toContainText('nobody');
@@ -87,7 +93,9 @@ test('a committed save whose refresh fails leaves nothing queued to replay', asy
   await page.route(/\/share\?/, (route) =>
     route.fulfill({ status: 500, body: '{"error":"refresh failed"}' }),
   );
+  const failedRefresh = page.waitForResponse((r) => r.url().includes('/share?') && r.status() === 500);
   await tid(page, 'data-share-apply').click();
+  await (await failedRefresh).finished(); // the refresh has failed before the state is judged
   await expect(tid(page, 'data-share-result')).toContainText('saved: 1 granted');
   await expect(tid(page, 'data-share-apply')).toHaveCount(0); // nothing left to save
   expect(posts).toHaveLength(1);

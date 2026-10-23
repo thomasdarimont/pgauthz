@@ -159,6 +159,79 @@ jobs:
         if: always()
         run: docker compose -f compose.yml -f compose-opa.yml -f compose-authzen.yml down -v || true
 
+  # The console's browser tests (console/frontend/tests/ui, Playwright on
+  # headless Chromium) need the console-local stack — the console image built
+  # from source, the local admin sign-in — which no other job starts. This job
+  # brings it up and runs tests/test-console-ui.sh with
+  # PGAUTHZ_TEST_REQUIRE_CONSOLE=1, so a missing console FAILS instead of
+  # skipping (review #18, round 3).
+  console-ui-test:
+    name: Console browser tests (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: console/frontend/package-lock.json
+      - name: Cache sqlx-cli
+        id: cache-sqlx
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/sqlx
+          key: sqlx-cli-0.9.0-${{ runner.os }}
+      - name: Install sqlx-cli
+        if: steps.cache-sqlx.outputs.cache-hit != 'true'
+        run: cargo install sqlx-cli --version 0.9.0 --no-default-features --features rustls,postgres --locked
+
+      - name: Install the frontend's devDependencies (Playwright)
+        working-directory: console/frontend
+        run: npm ci
+      - name: Resolve the pinned Playwright version
+        id: pw
+        working-directory: console/frontend
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright's browser
+        id: cache-pw
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ steps.pw.outputs.version }}-${{ runner.os }}
+      # --with-deps also installs the system libraries the headless shell needs
+      # on the runner (the browser itself only when the cache missed).
+      - name: Install headless Chromium
+        working-directory: console/frontend
+        run: npx playwright install --with-deps chromium-headless-shell
+
+      # init.sh brings the stack up WITH the console overlay (env.sh reads
+      # PGAUTHZ_CONSOLE_LOCAL) and installs the engine; start.sh then creates
+      # the console store (model + seed), which the BFF waits for before it
+      # serves — the order the console README documents.
+      - name: Initialize database and bring up the console-local stack
+        run: |
+          PGAUTHZ_CONSOLE_LOCAL=1 ./init.sh
+          ./start.sh --console-local
+
+      - name: Console browser tests (fail if the console is absent)
+        run: PGAUTHZ_TEST_REQUIRE_CONSOLE=1 ./tests/test-console-ui.sh
+
+      - name: Upload Playwright traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-ui-test-results
+          path: console/frontend/test-results/
+          if-no-files-found: ignore
+      - name: Service logs on failure
+        if: failure()
+        run: docker compose -f compose.yml -f compose-authzen.yml -f compose-console-local.yml logs --no-color --tail=300 console-bff || true
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f compose.yml -f compose-authzen.yml -f compose-console-local.yml down -v || true
+
   # The OpenID conformance suite's AuthZEN PDP plans (conformance/): the suite
   # runs in Testcontainers on the runner and calls the stack's pgauthzd-decision
   # through the harness's https front; a failed module fails with the suite's

@@ -12,8 +12,9 @@
 # console_uitest (console/frontend/tests/ui/fixture.sql) and drops it after.
 # Without a reachable console the suite is SKIPPED (it needs the stack this
 # script does not start) — unless PGAUTHZ_TEST_REQUIRE_CONSOLE=1, then it
-# fails. CONSOLE_URL overrides the console's address. Reports in the shared
-# "==> N passed, M failed" format for test-all.sh.
+# waits up to a minute for the console and fails if none appears (CI's
+# console-ui-test job). CONSOLE_URL overrides the console's address. Reports
+# in the shared "==> N passed, M failed" format for test-all.sh.
 #
 set -uo pipefail
 
@@ -38,8 +39,16 @@ skip() {
 }
 
 command -v node >/dev/null 2>&1 || skip "node not on PATH"
-curl -fsS -o /dev/null --max-time 5 "${CONSOLE_URL%/}/healthz" 2>/dev/null \
-    || skip "no console at $CONSOLE_URL (./start.sh --console-local)"
+# The BFF serves only once the engine answers and the console store exists
+# (AwaitEngine), so a freshly started stack needs a moment.
+console_up() { curl -fsS -o /dev/null --max-time 5 "${CONSOLE_URL%/}/healthz" 2>/dev/null; }
+if ! console_up; then
+    if [ "${PGAUTHZ_TEST_REQUIRE_CONSOLE:-0}" = "1" ]; then
+        echo "==> Waiting for the console at $CONSOLE_URL..."
+        for _ in $(seq 1 30); do sleep 2; console_up && break; done
+    fi
+    console_up || skip "no console at $CONSOLE_URL (./start.sh --console-local)"
+fi
 
 cleanup() {
     psql_exec "$PG_DB" -q -c "SELECT authz.delete_store('$STORE', p_purge_audit => true);" >/dev/null 2>&1 || true
