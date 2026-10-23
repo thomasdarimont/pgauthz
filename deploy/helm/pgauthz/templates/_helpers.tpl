@@ -129,6 +129,11 @@ startup via ALLOW_OPEN_DIAGNOSTICS, so a hand-edited manifest cannot slip past).
 - { name: DECISION_LOG_DETAIL, value: {{ $dl.detail | default false | toString | quote }} }
 - { name: DECISION_LOG_REQUIRED, value: {{ $dl.required | default false | toString | quote }} }
 - { name: DECISION_LOG_SEARCHES, value: {{ $dl.searches | default false | toString | quote }} }
+{{- if eq . "postgres" }}
+- { name: DECISION_LOG_DSN, value: {{ required "decisionLog.dsn is required with decisionLog.sink=postgres" $dl.dsn | quote }} }
+- { name: DECISION_LOG_RETENTION_DAYS, value: {{ $dl.retentionDays | default 30 | toString | quote }} }
+- { name: DECISION_LOG_QUEUE, value: {{ $dl.queue | default 10000 | toString | quote }} }
+{{- end }}
 {{- end }}
 {{- if $d.allowOpenInProduction }}
 - { name: ALLOW_OPEN_DIAGNOSTICS, value: "true" }

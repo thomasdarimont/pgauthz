@@ -249,6 +249,13 @@
  */
 /** @typedef {{audit: AuditRow[], model: ModelChangeRow[], events: EventRow[], console: EventRow[], retired: boolean}} ActivityResponse */
 
+// ── decisions (the decision log's postgres sink) ───────────────────────────
+
+/** @typedef {{id: number, ts: string, request_id?: string, listener: string, endpoint: string, via?: string, subject_type?: string, subject_id?: string, action?: string, resource_type?: string, resource_id?: string, decision?: boolean, state?: string, reason?: string, actor?: string, client?: string, issuer?: string, latency_ms: number, error?: string, line: Object}} DecisionRow */
+/** @typedef {{configured: boolean, rows: DecisionRow[], next?: string, limit?: number}} DecisionsResponse */
+/** @typedef {{key: string, count: number}} DecisionBucket */
+/** @typedef {{configured: boolean, from?: string, to?: string, total?: number, allow?: number, deny?: number, conditional?: number, error?: number, denied_reasons?: DecisionBucket[], denied_actions?: DecisionBucket[], denied_subjects?: DecisionBucket[], allowed_reasons?: DecisionBucket[]}} DecisionsSummary */
+
 // ── access ─────────────────────────────────────────────────────────────────
 
 /** @typedef {{subject_type: string, subject_id: string, subject_relation: string, role: string, subject: string}} AccessRow */

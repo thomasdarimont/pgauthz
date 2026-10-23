@@ -414,8 +414,15 @@ type Config struct {
 
 	LogLevel string
 	// Decision log (ADR 0013): one JSON line per decision, emitted by the daemon.
-	// DecisionLog is the sink: off (default) | stdout | stderr | file:<path>.
-	DecisionLog string
+	// DecisionLog is the sink: off (default) | stdout | stderr | file:<path>
+	// | postgres (ADR 0015: a sink database, DecisionLogDSN, batched inserts
+	// into daily partitions, retention DecisionLogRetentionDays, at most
+	// DecisionLogQueue lines waiting between flushes — the console's
+	// Decisions tab reads that table).
+	DecisionLog              string
+	DecisionLogDSN           string
+	DecisionLogRetentionDays int
+	DecisionLogQueue         int
 	// DecisionLogSample in [0,1] samples ALLOW lines; denies, conditionals and
 	// errors are always written. Default 1 (everything).
 	DecisionLogSample float64
@@ -510,6 +517,9 @@ func Load() (*Config, error) {
 		ForwardTokenToOPA:             envBool("FORWARD_TOKEN_TO_OPA", false),
 		LogLevel:                      env("LOG_LEVEL", "info"),
 		DecisionLog:                   env("DECISION_LOG", "off"),
+		DecisionLogDSN:                env("DECISION_LOG_DSN", ""),
+		DecisionLogRetentionDays:      envInt("DECISION_LOG_RETENTION_DAYS", 30),
+		DecisionLogQueue:              envInt("DECISION_LOG_QUEUE", 10000),
 		DecisionLogSample:             envFloat("DECISION_LOG_SAMPLE", 1),
 		DecisionLogDetail:             envBool("DECISION_LOG_DETAIL", false),
 		DecisionLogRequired:           envBool("DECISION_LOG_REQUIRED", false),
@@ -650,8 +660,18 @@ func Load() (*Config, error) {
 	switch {
 	case c.DecisionLog == "" || c.DecisionLog == "off" || c.DecisionLog == "stdout" || c.DecisionLog == "stderr":
 	case strings.HasPrefix(c.DecisionLog, "file:") && len(c.DecisionLog) > len("file:"):
+	case c.DecisionLog == "postgres":
+		if strings.TrimSpace(c.DecisionLogDSN) == "" {
+			return nil, fmt.Errorf("DECISION_LOG=postgres needs DECISION_LOG_DSN (the sink database; never the engine's read-only role)")
+		}
+		if c.DecisionLogRetentionDays < 0 {
+			return nil, fmt.Errorf("DECISION_LOG_RETENTION_DAYS %d: expected 0 (keep) or a number of days", c.DecisionLogRetentionDays)
+		}
+		if c.DecisionLogQueue <= 0 {
+			return nil, fmt.Errorf("DECISION_LOG_QUEUE %d: expected a positive number of lines", c.DecisionLogQueue)
+		}
 	default:
-		return nil, fmt.Errorf("DECISION_LOG %q: expected off | stdout | stderr | file:<path>", c.DecisionLog)
+		return nil, fmt.Errorf("DECISION_LOG %q: expected off | stdout | stderr | file:<path> | postgres", c.DecisionLog)
 	}
 	if c.DecisionLogSample < 0 || c.DecisionLogSample > 1 {
 		return nil, fmt.Errorf("DECISION_LOG_SAMPLE %v: expected a fraction in [0,1]", c.DecisionLogSample)

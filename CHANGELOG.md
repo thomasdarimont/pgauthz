@@ -9,6 +9,28 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Decisions tab + the decision log's PostgreSQL sink (ADR 0015).**
+  `DECISION_LOG=postgres` writes pgauthzd's decision lines into a sink
+  database (`DECISION_LOG_DSN`): the daemon creates `decisionlog.decisions`
+  (daily partitions, indexed by store, subject and resource, the whole line
+  as `jsonb`), inserts in batches off the decision path (`COPY`, every
+  second or 500 lines, `DECISION_LOG_QUEUE`), drops partitions older than
+  `DECISION_LOG_RETENTION_DAYS` (default 30), marks itself down on a
+  failed insert (`DECISION_LOG_REQUIRED` fails closed until the next batch
+  succeeds; the probe line is the recovery attempt), and reports
+  `pgauthzd_decision_log_batches_total{result}` /
+  `_inserted_lines_total`; `pgauthzd doctor` pings the sink. Store →
+  **Decisions** (`can_view_decisions`) reads the table from the console's
+  own database: window and filters (subject, resource, action, outcome),
+  the window's summary (outcomes; the reasons, actions and subjects behind
+  the denials, the reasons behind the allows — click to narrow), the lines
+  newest first with keyset paging and the full record, and two hand-overs
+  into Test: explain the question now, replay it at that instant
+  (`GET /api/stores/{store}/decisions[/summary]`). The console compose
+  overlays point the decision instance at the console's database; the
+  chart takes `decisionLog.dsn`. ADR 0013's "no database sink" clause is
+  amended: this is a daemon-side, asynchronous sink in a separate database,
+  not a table the engine writes on the check path.
 - **`CONTEXTUAL_TUPLES` — who may inject what-if tuples (pgauthzd).** The
   native check accepted `contextual_tuples` from every authenticated caller
   of the public listener, the instance's DB role holding

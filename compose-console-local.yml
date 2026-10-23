@@ -69,5 +69,18 @@ services:
       # SPA mounted for live editing; the binary serves it from /web.
       - ./console/frontend:/web:ro
 
+  # The decision log's postgres sink (ADR 0015): the default stack's decision
+  # instance writes its lines into the console's own database, where the
+  # Decisions tab reads them. Set DECISION_LOG=off to keep it quiet.
+  pgauthzd-decision:
+    depends_on:
+      console-db:
+        condition: service_healthy
+    environment:
+      DECISION_LOG: "${DECISION_LOG:-postgres}"
+      DECISION_LOG_DSN: postgres://console:${CONSOLE_DB_PASSWORD:-console}@console-db:5432/pgauthz_console
+      DECISION_LOG_DETAIL: "${DECISION_LOG_DETAIL:-true}"
+      DECISION_LOG_RETENTION_DAYS: "${DECISION_LOG_RETENTION_DAYS:-30}"
+
 volumes:
   console-db-data:

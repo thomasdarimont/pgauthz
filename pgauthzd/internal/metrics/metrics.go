@@ -97,6 +97,17 @@ var (
 		Help: "Decision-log lines by result (logged|sampled_out|error).",
 	}, []string{"result"})
 
+	// The postgres decision-log sink (ADR 0015): insert batches by result
+	// and lines inserted — a sink that is down shows here before readiness.
+	DecisionLogBatches = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "pgauthzd_decision_log_batches_total",
+		Help: "Decision-log postgres sink insert batches by result (ok|error).",
+	}, []string{"result"})
+	DecisionLogInserted = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "pgauthzd_decision_log_inserted_lines_total",
+		Help: "Decision-log lines inserted into the postgres sink.",
+	})
+
 	// Search / graph enumeration.
 	SearchRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "pgauthzd_search_requests_total",

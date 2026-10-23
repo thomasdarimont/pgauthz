@@ -26,6 +26,14 @@ import {
 //            who decided — engine, OPA, which hooks, any veto
 // The modes' URL names: stores/<store>/test/<mode>[/<view>] — a deep link
 // and the browser's history (back returns to the previous mode or view).
+// An ISO instant as the value of a datetime-local input (local time, minutes).
+function toLocalInput(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 const MODE_SLUGS = {
   single: 'single-check',
   matrix: 'matrix',
@@ -144,6 +152,7 @@ export class PgcTest extends PgcElement {
       this._clear();
       this.scenarioYaml = null;
       void this._load();
+      this._prefill();
     }
     if (changed.has('sub')) {
       const [slug, view] = (this.sub ?? '').split('/');
@@ -165,6 +174,29 @@ export class PgcTest extends PgcElement {
         }
       }
     }
+  }
+
+  // A question handed over by another tab (the Decisions tab: "explain this
+  // line now" / "replay it at that instant"), left in sessionStorage for
+  // this store: taken once, then run as a single check.
+  _prefill() {
+    let p = null;
+    try {
+      const raw = sessionStorage.getItem('pgc-test-prefill');
+      if (raw) {
+        sessionStorage.removeItem('pgc-test-prefill');
+        p = JSON.parse(raw);
+      }
+    } catch {
+      return;
+    }
+    if (!p || p.store !== this.store || !p.subject || !p.action || !p.resource) return;
+    this.subject = p.subject;
+    this.action = p.action;
+    this.resource = p.resource;
+    this.at = p.at ? toLocalInput(p.at) : '';
+    this.mode = 'single';
+    if (p.run) void this._runSingle();
   }
 
   // Navigates to a mode (and, for the scenarios, a view): the URL is the

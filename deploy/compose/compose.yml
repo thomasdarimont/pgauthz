@@ -58,6 +58,10 @@ x-pgauthzd-env: &pgauthzd-env
   CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
   LOG_LEVEL: "${LOG_LEVEL:-info}"
   DECISION_LOG: "${DECISION_LOG:-off}"
+  # postgres sink (ADR 0015): the sink database, e.g. the console's
+  # (postgres://console:<pw>@console-db:5432/pgauthz_console) for the Decisions tab.
+  DECISION_LOG_DSN: "${DECISION_LOG_DSN:-}"
+  DECISION_LOG_RETENTION_DAYS: "${DECISION_LOG_RETENTION_DAYS:-30}"
   DECISION_LOG_SAMPLE: "${DECISION_LOG_SAMPLE:-1}"
   DECISION_LOG_DETAIL: "${DECISION_LOG_DETAIL:-false}"
   DECISION_LOG_REQUIRED: "${DECISION_LOG_REQUIRED:-false}"

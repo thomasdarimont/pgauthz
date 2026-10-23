@@ -143,6 +143,8 @@ func (s *Server) Routes() http.Handler {
 
 	// Activity
 	h("GET /api/stores/{store}/activity", s.handleActivity)
+	h("GET /api/stores/{store}/decisions", s.handleDecisions)
+	h("GET /api/stores/{store}/decisions/summary", s.handleDecisionsSummary)
 
 	// Operations (per store) — reads need can_view_audit, actions can_manage_access
 	h("GET /api/stores/{store}/ops", s.handleOps)

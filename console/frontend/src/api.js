@@ -120,6 +120,10 @@ export const api = {
 
   /** @returns {Promise<import('./types.js').ActivityResponse>} */
   activity: (store) => call(`api/stores/${enc(store)}/activity`),
+  // The decision log (postgres sink): p = {subject, resource, action, outcome, from, to, before, limit}
+  decisions: (store, p = {}) => call(`api/stores/${enc(store)}/decisions?${new URLSearchParams(p)}`),
+  decisionsSummary: (store, p = {}) =>
+    call(`api/stores/${enc(store)}/decisions/summary?${new URLSearchParams(p)}`),
 
   /** @returns {Promise<import('./types.js').OpsOverview>} */
   ops: (store) => call(`api/stores/${enc(store)}/ops`),

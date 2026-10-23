@@ -953,6 +953,19 @@ DECISION_LOG_SAMPLE=1          # required by DECISION_LOG_REQUIRED (complete evi
 - Off by default; the hot path is unchanged unless enabled. With
   `DECISION_LOG_DETAIL`, plain checks run the detailed evaluation (a second
   pass on `conditional` outcomes) — the caller's response is not affected.
+- **`DECISION_LOG=postgres`** ([ADR 0015](adr/0015-decision-log-postgres-sink.md))
+  writes the lines into a sink database (`DECISION_LOG_DSN`): the schema
+  `decisionlog` and the daily-partitioned table `decisionlog.decisions`,
+  created by the daemon at start, inserted in batches off the decision
+  path, kept for `DECISION_LOG_RETENTION_DAYS` (default 30). The console's
+  **Decisions** tab reads that table from its own database, so point the
+  instances whose decisions it should show at the console's `PG_DSN` (the
+  compose overlays do; the chart takes `decisionLog.dsn`). The DSN's role
+  needs to create the schema; never use the engine's read-only role. A
+  failed insert marks the sink down — `DECISION_LOG_REQUIRED` fails closed
+  until the next batch succeeds; a crash loses at most the queue
+  (`DECISION_LOG_QUEUE`), so evidence-grade per-line durability still means
+  the file sink.
 - A file sink is opened append-only and never rotated by the daemon; use
   copy-truncate rotation, or the container log pipeline via `stdout`.
 - Privacy: subject and resource **ids** are logged (the graph's own

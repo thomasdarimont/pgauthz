@@ -8,6 +8,7 @@ package decisionlog
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -107,11 +108,18 @@ type Gate struct {
 
 // Config is the operator-facing configuration (DECISION_LOG*).
 type Config struct {
-	// Sink: "off" (or ""), "stdout", "stderr", or "file:<path>".
+	// Sink: "off" (or ""), "stdout", "stderr", "file:<path>", or "postgres"
+	// (the sink database named by DSN; ADR 0015).
 	Sink string
 	// Sample in [0,1]: the fraction of ALLOW decisions written. Denies,
 	// conditionals and errors are always written.
 	Sample float64
+	// DSN, RetentionDays, QueueSize: the postgres sink's database, how many
+	// days of partitions to keep (0 = all), and how many lines may wait
+	// between flushes.
+	DSN           string
+	RetentionDays int
+	QueueSize     int
 }
 
 // Result labels for the lines counter.
@@ -138,6 +146,8 @@ type Logger struct {
 	// lastProbe (unix nanos) rate-limits Probe so a dead sink is retried at
 	// most once per ProbeInterval, not once per refused request.
 	lastProbe atomic.Int64
+	// Postgres is set for the postgres sink (metrics wiring); nil otherwise.
+	Postgres *PostgresSink
 }
 
 // ProbeInterval bounds how often Probe retries a failed sink.
@@ -199,8 +209,16 @@ func Open(cfg Config) (*Logger, error) {
 			return nil, fmt.Errorf("decision log sink %q: %w", sink, err)
 		}
 		w, closer = f, f
+	case sink == "postgres":
+		ps, err := OpenPostgres(context.Background(), PostgresConfig{DSN: cfg.DSN, RetentionDays: cfg.RetentionDays, QueueSize: cfg.QueueSize})
+		if err != nil {
+			return nil, err
+		}
+		l := New(ps, cfg.Sample, ps)
+		l.Postgres = ps
+		return l, nil
 	default:
-		return nil, fmt.Errorf("decision log sink %q: expected off | stdout | stderr | file:<path>", sink)
+		return nil, fmt.Errorf("decision log sink %q: expected off | stdout | stderr | file:<path> | postgres", sink)
 	}
 	return New(w, cfg.Sample, closer), nil
 }

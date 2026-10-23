@@ -156,13 +156,23 @@ func Run(name, version string) error {
 	//    serve read callbacks, a full instance serves read+write.
 	// Decision log (ADR 0013): off unless DECISION_LOG is set; one logger is
 	// shared by both listeners (lines carry the listener label).
-	dlog, err := decisionlog.Open(decisionlog.Config{Sink: cfg.DecisionLog, Sample: cfg.DecisionLogSample})
+	dlog, err := decisionlog.Open(decisionlog.Config{Sink: cfg.DecisionLog, Sample: cfg.DecisionLogSample,
+		DSN: cfg.DecisionLogDSN, RetentionDays: cfg.DecisionLogRetentionDays, QueueSize: cfg.DecisionLogQueue})
 	if err != nil {
 		return err
 	}
 	defer dlog.Close() //nolint:errcheck // best-effort flush on exit
 	if dlog.Enabled() {
 		slog.Info("decision log", "sink", cfg.DecisionLog, "sample", cfg.DecisionLogSample, "detail", cfg.DecisionLogDetail)
+		if ps := dlog.Postgres; ps != nil {
+			slog.Info("decision log sink", "table", decisionlog.Schema+"."+decisionlog.Table, "retention_days", cfg.DecisionLogRetentionDays, "queue", cfg.DecisionLogQueue)
+			ps.OnFlush = func(result string, lines int) {
+				metrics.DecisionLogBatches.WithLabelValues(result).Inc()
+				if result == "ok" {
+					metrics.DecisionLogInserted.Add(float64(lines))
+				}
+			}
+		}
 	}
 	dlogOpt := api.WithDecisionLog(dlog)
 	verOpt := api.WithVersion(version)

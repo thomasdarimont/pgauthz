@@ -311,6 +311,14 @@ func Run(ctx context.Context, opts Options) *Report {
 	// ── decision log sink ────────────────────────────────────────────────
 	if cfg.DecisionLog == "" || cfg.DecisionLog == "off" {
 		add("decision log", StatusSkip, "off")
+	} else if cfg.DecisionLog == "postgres" {
+		// ping only: the daemon creates the schema and table at start
+		if perr := decisionlog.PingPostgres(ctx, cfg.DecisionLogDSN); perr != nil {
+			add("decision log", StatusFail, "sink=postgres: "+perr.Error())
+		} else {
+			add("decision log", StatusOK, fmt.Sprintf("sink=postgres table=%s.%s retention_days=%d queue=%d sample=%v detail=%v",
+				decisionlog.Schema, decisionlog.Table, cfg.DecisionLogRetentionDays, cfg.DecisionLogQueue, cfg.DecisionLogSample, cfg.DecisionLogDetail))
+		}
 	} else if l, lerr := decisionlog.Open(decisionlog.Config{Sink: cfg.DecisionLog, Sample: cfg.DecisionLogSample}); lerr != nil {
 		add("decision log", StatusFail, lerr.Error())
 	} else {

@@ -546,3 +546,20 @@ table.scenario-results tr.pick td.num { opacity: .7; }
    assertions' numbers to its right (right-aligned in the same column) */
 table.scenario-results tr.group td.num { text-align: left; font-weight: 600; opacity: 1; }
 table.scenario-results tr.pick td.num { padding-left: 2.5em; }
+
+/* ── Decisions tab ─────────────────────────────────────────────────────── */
+.decisions-filters .filters { display: flex; flex-wrap: wrap; gap: var(--s-3); align-items: flex-end; }
+.decisions-filters .filters label { display: flex; flex-direction: column; gap: var(--s-1); font-size: var(--t-sm); color: var(--c-muted); }
+.decisions-filters .filters input { min-width: 12rem; }
+.top-lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: var(--s-4); margin: var(--s-3) 0; }
+.top-lists h4 { margin: 0 0 var(--s-2); font-size: var(--t-sm); color: var(--c-muted); font-weight: 600; }
+.top-lists ol { margin: 0; padding-left: 1.4em; font-size: var(--t-sm); }
+.top-lists li { display: flex; justify-content: space-between; gap: var(--s-2); }
+table.decisions tr.decision-row { cursor: pointer; }
+table.decisions tr.decision-row.open td { border-bottom: none; }
+table.decisions tr.decision-detail td { background: var(--c-surface-2, var(--c-bg)); }
+table.decisions tr.decision-detail td { max-width: 0; }
+table.decisions pre.json { margin-top: var(--s-3); max-height: 24rem; overflow: auto; font-size: var(--t-sm); white-space: pre-wrap; overflow-wrap: anywhere; }
+table.decisions pre.json .line { display: block; }
+.decisions-pager { font-size: var(--t-sm); }
+.decisions-pager label select { margin-left: var(--s-1); }

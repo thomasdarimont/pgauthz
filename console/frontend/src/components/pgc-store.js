@@ -8,6 +8,7 @@ import './pgc-data.js';
 import './pgc-test.js';
 import './pgc-rollout.js';
 import './pgc-activity.js';
+import './pgc-decisions.js';
 import './pgc-access.js';
 import './pgc-admin.js';
 import './pgc-ops.js';
@@ -25,12 +26,13 @@ const TABS = [
   { id: 'test', label: 'Test', cap: 'can_run_tests' },
   { id: 'rollout', label: 'Rollout', cap: 'can_view' },
   { id: 'activity', label: 'Activity', cap: 'can_view_audit' },
+  { id: 'decisions', label: 'Decisions', cap: 'can_view_decisions' },
   { id: 'policies', label: 'Policies', cap: 'can_view' },
   { id: 'access', label: 'Access', cap: 'can_view' },
   { id: 'ops', label: 'Operations', cap: 'can_view_audit' },
   { id: 'admin', label: 'Admin', cap: 'can_manage_access' },
 ];
-const RETIRED_TABS = new Set(['activity', 'access', 'admin']);
+const RETIRED_TABS = new Set(['activity', 'decisions', 'access', 'admin']);
 
 export class PgcStore extends PgcElement {
   static properties = {
@@ -121,6 +123,8 @@ export class PgcStore extends PgcElement {
         return html`<pgc-rollout .store=${this.store} .caps=${caps} @changed=${this._refresh}></pgc-rollout>`;
       case 'activity':
         return html`<pgc-activity .store=${this.store} .caps=${caps}></pgc-activity>`;
+      case 'decisions':
+        return html`<pgc-decisions .store=${this.store} .caps=${caps}></pgc-decisions>`;
       case 'access':
         return html`<pgc-access
           .store=${this.store}

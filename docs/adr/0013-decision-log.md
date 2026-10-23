@@ -1,6 +1,6 @@
 # ADR 0013 — The decision log: what pgauthzd decided, and why
 
-- **Status:** Accepted
+- **Status:** Accepted; the "no database sink" clause amended by [0015](0015-decision-log-postgres-sink.md) (a daemon-side, asynchronous sink in a separate database)
 - **Date:** 2026-09-28
 - **Deciders:** maintainers
 - **Relates to:** [0010](0010-metrics-observability.md) (metrics — counts,
