@@ -1,5 +1,5 @@
 import { html, nothing } from 'lit';
-import { PgcElement, help, errorBox } from '../base.js';
+import { PgcElement, help, errorBox, loading } from '../base.js';
 import { api } from '../api.js';
 import { t, t2 } from '../i18n.js';
 import { capLabel, run, forbiddenText, fmtTime } from '../util.js';
@@ -261,7 +261,7 @@ export class PgcStore extends PgcElement {
             `
           : this.error
             ? nothing
-            : html`<p class="muted">${t('Loading…')}</p>`
+            : loading()
       }
     `;
   }

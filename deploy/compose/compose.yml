@@ -34,7 +34,8 @@ x-pgauthzd-image: &pgauthzd-image
 # in each service.
 x-pgauthzd-env: &pgauthzd-env
   LISTEN_ADDR: ":8080"
-  METRICS_LISTEN_ADDR: ":9090"            # Prometheus /metrics — not published; scrape on the compose network
+  MANAGEMENT_LISTEN_ADDR: ":9090"         # the management listener: Prometheus /metrics + the probes — not published; scrape on the compose network
+  PUBLIC_HEALTH_ENABLED: "${PUBLIC_HEALTH_ENABLED:-true}"   # false: probes on the management listener only (the healthchecks below use it already)
   # JWT verification: your IdP's JWKS by URL (preferred) or a mounted file.
   JWKS_URL: "${JWKS_URL:-}"
   JWKS_FILE: "${JWKS_FILE:-}"
@@ -169,7 +170,7 @@ services:
     depends_on:
       migrate: { condition: service_completed_successfully }
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/readyz >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/readyz >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -203,7 +204,7 @@ services:
     depends_on:
       migrate: { condition: service_completed_successfully }
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/readyz >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/readyz >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 6

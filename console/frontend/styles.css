@@ -228,7 +228,15 @@ pre.code .line::before { content: counter(line); display: inline-block; width: 3
   .who span.name { display: none; }
   .log li { grid-template-columns: 1fr; }
 }
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* The loading skeleton (base.js loading()): grey bars where the content will
+   be, shimmering until it lands. */
+.skeleton { display: grid; gap: var(--s-3); padding: var(--s-4); background: var(--c-surface); border: 1px solid var(--c-border); border-radius: var(--r-lg); }
+.sk-row { display: grid; grid-template-columns: 2fr 3fr 1fr; gap: var(--s-4); }
+.sk-line { display: block; height: .9em; border-radius: var(--r-sm); background: linear-gradient(90deg, var(--c-surface-2) 25%, var(--c-border) 50%, var(--c-surface-2) 75%); background-size: 200% 100%; animation: sk-shimmer 1.4s ease-in-out infinite; }
+.sk-title { width: 30%; height: 1.2em; margin-bottom: var(--s-2); }
+@keyframes sk-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 
 /* ── Selection + confirmation (pgc-select.js) ── */
 th.sel, td.sel { width: 2rem; text-align: center; padding-left: var(--s-2); padding-right: 0; }

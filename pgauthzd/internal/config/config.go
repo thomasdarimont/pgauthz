@@ -272,11 +272,19 @@ type Config struct {
 	// not portable across replicas/restarts).
 	CursorSealKey string
 
-	// MetricsListenAddr, when set, serves the Prometheus `/metrics` endpoint on a
-	// SEPARATE listener (ADR 0010). Bind it to the pod/mesh network — never the
-	// public client listener (tenants must not scrape ops data). Empty = off. Env
-	// METRICS_LISTEN_ADDR (e.g. ":9090").
+	// MetricsListenAddr is the MANAGEMENT listener (ADR 0010): a SEPARATE,
+	// non-public listener serving the operator surface — Prometheus `/metrics`
+	// and the health probes `/livez`, `/readyz`, `/healthz`. Bind it to the
+	// pod/mesh network — never the public client listener (tenants must not
+	// scrape ops data). Empty = off. Env MANAGEMENT_LISTEN_ADDR (e.g. ":9090");
+	// METRICS_LISTEN_ADDR is the older name and still accepted.
 	MetricsListenAddr string
+	// PublicHealthDisabled (PUBLIC_HEALTH_ENABLED=false) takes the probes off
+	// the public listener, so a client can learn nothing about the backend
+	// from it: probes then exist on the management listener (required) and
+	// the admin listener only. Default: served on the public listener too,
+	// for deployments whose probes and healthchecks point there.
+	PublicHealthDisabled bool
 	// MetricsSampleIntervalSeconds bounds how often the engine/tenant gauges
 	// (per-store tuple counts, ADR 0010 Slice 3) are sampled from the DB. Only
 	// active when metrics are exposed. 0 disables the sampler. Env
@@ -504,7 +512,8 @@ func Load() (*Config, error) {
 		AllowMissingAudience:          envBool("ALLOW_MISSING_AUDIENCE", false),
 		OPAMaxResponseBytes:           int64(envInt("OPA_MAX_RESPONSE_BYTES", 10<<20)),
 		CursorSealKey:                 env("CURSOR_SEAL_KEY", ""),
-		MetricsListenAddr:             env("METRICS_LISTEN_ADDR", ""),
+		MetricsListenAddr:             env("MANAGEMENT_LISTEN_ADDR", env("METRICS_LISTEN_ADDR", "")),
+		PublicHealthDisabled:          !envBool("PUBLIC_HEALTH_ENABLED", true),
 		MetricsSampleIntervalSeconds:  envInt("METRICS_SAMPLE_INTERVAL_SECONDS", 30),
 		MetricsMaxStores:              envInt("METRICS_MAX_STORES", 100),
 		DefaultStore:                  env("DEFAULT_STORE", "demo"),
@@ -675,6 +684,9 @@ func Load() (*Config, error) {
 	}
 	if c.IssuersPollInterval <= 0 {
 		return nil, fmt.Errorf("ISSUERS_POLL_INTERVAL %d: expected a positive number of seconds", c.IssuersPollInterval)
+	}
+	if c.PublicHealthDisabled && c.MetricsListenAddr == "" {
+		return nil, fmt.Errorf("PUBLIC_HEALTH_ENABLED=false needs a management listener for the probes: set MANAGEMENT_LISTEN_ADDR")
 	}
 	if c.AdminAPIEnabled {
 		if c.Profile != ProfileFull && c.Profile != "" {
@@ -994,3 +1006,7 @@ func (c *Config) HasAdminGate() bool {
 	}
 	return false
 }
+
+// ManagementListenAddr is the management listener's address (MetricsListenAddr
+// under its current name).
+func (c *Config) ManagementListenAddr() string { return c.MetricsListenAddr }

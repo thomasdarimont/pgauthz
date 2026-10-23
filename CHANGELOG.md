@@ -48,6 +48,36 @@ pre-1.0, minor versions may include breaking changes.
   `doctor` reports the admin API; compose/Helm (`admin.*`) and the demo
   stack (`:8096`, `ADMIN_ROLE=pgauthz_admin`) wire it; `tests/test-authzen.sh`
   covers the gate, the scope, narrowing and the fleet applying a PUT.
+- **Data subject requests (GDPR).** `authz.list_subject_objects(store, type,
+  id, [relations], [object types])` (reader tier) answers the takeout
+  question as rows — every object the subject can reach, per relation,
+  wildcards as `*`, direct grants marked, per-pair cap — for a JOIN against
+  the application's tables or as CSV for the application teams (the console
+  downloads it). `authz.export_subject(store, type, id)`
+  (auditor tier) returns one JSON document with everything a store holds
+  about a subject: direct tuples (expired rows marked), tuples about the
+  subject, effective access per type and relation (through teams, computed
+  relations and wildcards; per-list cap with `truncated`), its events and
+  every audit row naming it. `authz.erase_subject(…)` (admin tier) removes
+  the tuples on either side incl. expired ones and the events, optionally
+  the audit rows; audited with the actor. Engine files `subject.sql` /
+  `subject_admin.sql`, `tests/sql/tests_subject.sql`, PRODUCTION.md section.
+  Console: Store → Operations → *Data subject* exports (with the subject's
+  decision-log lines) and erases (with confirmation).
+- **The management listener.** `MANAGEMENT_LISTEN_ADDR` (the former
+  `METRICS_LISTEN_ADDR`, still accepted) serves the probes `/livez`,
+  `/readyz`, `/healthz` next to `/metrics`; `PUBLIC_HEALTH_ENABLED=false`
+  takes them off the public listener (needs the management listener; the
+  served OpenAPI document omits them then). Helm probes and the console's
+  readiness check use the management port when `metrics.enabled`
+  (`metrics.publicHealth: false` to close the public probes); the compose
+  deployment's healthchecks use it; `doctor` reports both.
+- **Console: loading skeletons and a guarded rollout.** Every tab shows a
+  skeleton in the shape of its table while its data loads instead of
+  "Loading…" (no layout jump; still under `prefers-reduced-motion`).
+  Rollout: putting an unmanaged store under a registry model is an explicit
+  step, and applying a version that changes the store's model (first
+  adoption or another model) asks for confirmation that names the store.
 - **Console Decisions tab: reason filter, Reset, Refresh.** A clicked
   "by reason" entry now narrows to that reason (`reason=` on both decisions
   endpoints) instead of just the outcome; Reset clears every filter back to

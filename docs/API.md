@@ -33,6 +33,7 @@ always uses explicit separate parameters for type, ID, and relation.
   - [check_access_with_contextual_tuples — with ephemeral per-request tuples](#check_access_with_contextual_tuples--with-ephemeral-per-request-tuples)
   - [Contextual tuples in search and explain — the `_with_contextual_tuples_jsonb` family](#contextual-tuples-in-search-and-explain--the-_with_contextual_tuples_jsonb-family)
   - [list_objects — "Which objects of type Z can user X do Y on?"](#list_objects--which-objects-of-type-z-can-user-x-do-y-on)
+  - [list_subject_objects — "Which objects does user X relate to at all?"](#list_subject_objects--which-objects-does-user-x-relate-to-at-all)
   - [list_subjects — "Which users of type X can do Y on object Z?"](#list_subjects--which-users-of-type-x-can-do-y-on-object-z)
   - [list_actions — "What can user X do on object Z?"](#list_actions--what-can-user-x-do-on-object-z)
   - [explain_access — "WHY was access allowed or denied?"](#explain_access--why-was-access-allowed-or-denied)
@@ -40,6 +41,7 @@ always uses explicit separate parameters for type, ID, and relation.
   - [delete_tuple — Remove a relationship tuple](#delete_tuple--remove-a-relationship-tuple)
   - [write_tuples / delete_tuples — Batch operations](#write_tuples--delete_tuples--batch-operations)
   - [delete_user_tuples — Remove all tuples for a user](#delete_user_tuples--remove-all-tuples-for-a-user)
+  - [export_subject / erase_subject — Data subject requests](#export_subject--erase_subject--data-subject-requests)
   - [grant / revoke — Share on behalf of an actor](#grant--revoke--share-on-behalf-of-an-actor)
   - [model_register_relation / model_set_relation_metadata — Relations and their kind](#model_register_relation--model_set_relation_metadata--relations-and-their-kind)
   - [tuple_stats — What a store's data looks like](#tuple_stats--what-a-stores-data-looks-like)
@@ -122,6 +124,39 @@ SELECT * FROM authz.list_objects('demo',
 `list_objects` finds these by **reverse expansion**: it starts from Bob's
 own grants and walks the relationship graph outward, so its cost tracks
 how much Bob can reach — not how many documents exist in the store.
+
+### list_subject_objects — "Which objects does user X relate to at all?"
+
+The takeout question (a data subject request, or an offboarding review):
+every object the subject can effectively reach, across the model, one row
+per object and relation — for a JOIN against the application's own tables,
+or as CSV for the application teams to select the person's records.
+
+```sql
+SELECT * FROM authz.list_subject_objects('demo', 'internal_user', 'alice',
+    p_relations => ARRAY['owner', 'can_read'], p_object_types => ARRAY['document']);
+--  object_type | relation | object_id       | is_wildcard | direct | truncated
+-- -------------+----------+-----------------+-------------+--------+-----------
+--  document    | can_read | doc_payroll_001 | f           | f      | f
+--  …
+-- Every record of the application's table the person relates to:
+SELECT d.* FROM app.documents d
+  JOIN authz.list_subject_objects('demo', 'internal_user', 'alice', ARRAY['owner', 'can_read'], ARRAY['document']) o
+    ON o.object_id = d.id;
+-- The hand-over file:
+\copy (SELECT * FROM authz.list_subject_objects('demo', 'internal_user', 'alice')) TO 'alice-objects.csv' CSV HEADER
+```
+
+A wildcard grant is one row with `object_id = '*'` and `is_wildcard`;
+`direct` says a tuple names the subject on that object and relation itself
+(the rest is reached through teams, computed relations, parents); `p_limit`
+(default 10000) caps the objects per (type, relation) pair and the pair's
+last row says `truncated`. Reader tier, like `list_objects`, which it calls
+per pair — its cost is what the subject can reach, not the store's size.
+The console's Store → Operations → *Data subject* shows the same rows and
+downloads them as CSV. See
+[export_subject](#export_subject--erase_subject--data-subject-requests) for
+the whole document.
 
 ### list_subjects — "Which users of type X can do Y on object Z?"
 
@@ -364,6 +399,49 @@ SELECT authz.delete_user_tuples('demo', 'internal_user', 'grace');
 SELECT authz.delete_user_tuples('demo', 'internal_user', 'grace',
     p_performed_by => 'offboarding_service');
 ```
+
+### export_subject / erase_subject — Data subject requests
+
+Everything a store holds about one person, as one document (GDPR access
+and portability), and its removal (erasure). A tenant receiving "give me my
+data" does not know which applications' tuples, actions and history name
+that person — this answers it per store.
+
+```sql
+-- Art. 15 / 20: one JSON document (auditor tier)
+SELECT authz.export_subject('demo', 'internal_user', 'alice');
+-- => {
+--   "store": "demo", "subject": {"type": "internal_user", "id": "alice"}, "exported_at": …,
+--   "direct":    [ {object_type, object_id, relation, user_relation, condition, condition_context,
+--                   created_at, expires_at, expired} … ],   -- her grants and memberships, expired rows marked
+--   "as_object": [ {user_type, user_id, user_relation, relation, …} … ],   -- who may do what TO her
+--   "effective": [ {object_type, relation, objects: ["doc_1", "*", …], direct: [...], truncated} … ],
+--                -- what she can effectively reach, per (type, relation) of the model
+--                -- (list_subject_objects: through teams, computed relations and
+--                -- wildcards, '*' = every object; `direct` = granted by a tuple outright)
+--   "events":    [ … list_events rows … ], "events_truncated": false,   -- her recorded actions
+--   "audit":     [ … every tuple change that named her, either side … ], "audit_truncated": false
+-- }
+-- Narrow the effective listing, skip parts, raise the per-list cap:
+SELECT authz.export_subject('demo', 'internal_user', 'alice',
+    p_relations => ARRAY['owner', 'can_view'], p_include_audit => false, p_limit => 50000);
+
+-- Art. 17: erase (admin tier). Removes the tuples naming the subject on
+-- EITHER side (incl. expired ones) and the subject's recorded actions; the
+-- audit trail of those deletes is kept unless p_purge_audit, which also
+-- removes every historical row naming the subject. Returns the counts.
+SELECT authz.erase_subject('demo', 'internal_user', 'alice', p_performed_by => 'dpo');
+-- => {"tuples_as_subject": 4, "tuples_as_object": 1, "events": 2, "audit": 0, …}
+```
+
+Unlike `delete_user_tuples` (offboarding: the subject side only, within the
+caller's namespaces, writer tier) erasure crosses every namespace, takes the
+rows about the person too, and removes history — hence the admin tier.
+Purging a subject's events can only *relax* a temporal gate that counts
+them; the erasure is deliberate, so there is no cutoff guard. pgauthzd's
+decision log (ADR 0013/0015) is the daemon's own store: the console erases
+its sink rows alongside; a plain SQL deployment deletes them from the sink.
+See [PRODUCTION.md → Data subject requests](PRODUCTION.md#data-subject-requests-gdpr).
 
 ### grant / revoke — Share on behalf of an actor
 

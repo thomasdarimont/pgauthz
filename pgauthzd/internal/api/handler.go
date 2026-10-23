@@ -181,9 +181,14 @@ func newPublicMux(h *Handler, usesOPA bool) *http.ServeMux {
 	if h.cfg != nil && h.cfg.AdminAPIEnabled && h.cfg.AdminListenAddr == "" && h.rawWrite != nil {
 		registerAdmin(mux, h)
 	}
-	mux.HandleFunc("GET /healthz", h.Healthz) // deprecated alias of /readyz
-	mux.HandleFunc("GET /livez", h.Livez)
-	mux.HandleFunc("GET /readyz", h.Readyz)
+	// The probes: on the public listener unless PUBLIC_HEALTH_ENABLED=false
+	// (then on the management listener only — nothing about the backend is
+	// learnable from the client-facing port).
+	if h.cfg == nil || !h.cfg.PublicHealthDisabled {
+		mux.HandleFunc("GET /healthz", h.Healthz) // deprecated alias of /readyz
+		mux.HandleFunc("GET /livez", h.Livez)
+		mux.HandleFunc("GET /readyz", h.Readyz)
+	}
 	// The API contract, served unauthenticated (exempted in the JWT
 	// middleware) and INSTANCE-ACCURATE (an OPA-fronted instance's copy omits
 	// the native paths its public listener does not register). OPENAPI_ENABLED

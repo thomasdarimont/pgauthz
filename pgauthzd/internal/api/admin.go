@@ -350,3 +350,18 @@ func NewAdminRouter(h *Handler, jwtMW *JWTMiddleware) http.Handler {
 	handler = Recovery(handler)
 	return Metrics(mux, handler)
 }
+
+// NewManagementRouter is the management listener (MANAGEMENT_LISTEN_ADDR,
+// ADR 0010): the operator surface — Prometheus /metrics and the probes —
+// on a separate, non-public port. No authentication (bind it to the pod or
+// mesh network), no request metrics (a scrape must not count itself), no
+// tracing (newServer leaves the probes out).
+func NewManagementRouter(h *Handler, metricsHandler http.Handler) http.Handler {
+	h.listener = "management"
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", metricsHandler)
+	mux.HandleFunc("GET /healthz", h.Healthz) // deprecated alias of /readyz
+	mux.HandleFunc("GET /livez", h.Livez)
+	mux.HandleFunc("GET /readyz", h.Readyz)
+	return Recovery(mux)
+}

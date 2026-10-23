@@ -74,7 +74,10 @@ spec:
             # Deployment label + diagnostic-surface gates (production profile).
             {{- include "pgauthz.diagnosticsEnv" (dict "root" $ "env" .Values.deploymentEnvironment) | nindent 12 }}
             {{- if .Values.metrics.enabled }}
-            - { name: METRICS_LISTEN_ADDR, value: ":{{ .Values.metrics.port }}" }
+            - { name: MANAGEMENT_LISTEN_ADDR, value: ":{{ .Values.metrics.port }}" }
+            {{- if not .Values.metrics.publicHealth }}
+            - { name: PUBLIC_HEALTH_ENABLED, value: "false" }
+            {{- end }}
             {{- end }}
           ports:
             - { name: jwt,      containerPort: 8080 }
@@ -82,8 +85,9 @@ spec:
             {{- if .Values.metrics.enabled }}
             - { name: metrics,  containerPort: {{ .Values.metrics.port }} }
             {{- end }}
-          readinessProbe: { httpGet: { path: /readyz, port: 8080 }, initialDelaySeconds: 5 }
-          livenessProbe:  { httpGet: { path: /livez, port: 8080 }, initialDelaySeconds: 10 }
+          {{- $probePort := ternary (int .Values.metrics.port) 8080 (eq (toString .Values.metrics.enabled) "true") }}
+          readinessProbe: { httpGet: { path: /readyz, port: {{ $probePort }} }, initialDelaySeconds: 5 }
+          livenessProbe:  { httpGet: { path: /livez, port: {{ $probePort }} }, initialDelaySeconds: 10 }
           resources: {{- toYaml .Values.reader.resources | nindent 12 }}
           volumeMounts:
             - { name: jwks, mountPath: /jwks, readOnly: true }
@@ -185,7 +189,10 @@ spec:
             # Deployment label + diagnostic-surface gates (production profile).
             {{- include "pgauthz.diagnosticsEnv" (dict "root" $ "env" .Values.deploymentEnvironment) | nindent 12 }}
             {{- if .Values.metrics.enabled }}
-            - { name: METRICS_LISTEN_ADDR, value: ":{{ .Values.metrics.port }}" }
+            - { name: MANAGEMENT_LISTEN_ADDR, value: ":{{ .Values.metrics.port }}" }
+            {{- if not .Values.metrics.publicHealth }}
+            - { name: PUBLIC_HEALTH_ENABLED, value: "false" }
+            {{- end }}
             {{- end }}
           ports:
             - { name: jwt,      containerPort: 8080 }
@@ -196,8 +203,9 @@ spec:
             {{- if .Values.metrics.enabled }}
             - { name: metrics,  containerPort: {{ .Values.metrics.port }} }
             {{- end }}
-          readinessProbe: { httpGet: { path: /readyz, port: 8080 }, initialDelaySeconds: 5 }
-          livenessProbe:  { httpGet: { path: /livez, port: 8080 }, initialDelaySeconds: 10 }
+          {{- $probePort := ternary (int .Values.metrics.port) 8080 (eq (toString .Values.metrics.enabled) "true") }}
+          readinessProbe: { httpGet: { path: /readyz, port: {{ $probePort }} }, initialDelaySeconds: 5 }
+          livenessProbe:  { httpGet: { path: /livez, port: {{ $probePort }} }, initialDelaySeconds: 10 }
           resources: {{- toYaml .Values.writer.resources | nindent 12 }}
           volumeMounts:
             - { name: jwks, mountPath: /jwks, readOnly: true }

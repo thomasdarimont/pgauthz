@@ -112,8 +112,13 @@ spec:
             {{- with .Values.deploymentEnvironment }}
             - { name: DEPLOYMENT_ENVIRONMENT, value: {{ . | quote }} }
             {{- end }}
-            # Settings: the writer instance's readiness (its JWT listener).
+            # Settings: the writer instance's readiness — its management
+            # listener when there is one (the probes may be off the public port).
+            {{- if .Values.metrics.enabled }}
+            - { name: PGAUTHZD_URL, value: http://{{ $full }}-writer:{{ .Values.metrics.port }} }
+            {{- else }}
             - { name: PGAUTHZD_URL, value: http://{{ $full }}-writer:8080 }
+            {{- end }}
             # Platform → Issuers: the effective issuer set over the writer's
             # internal callback listener (the service token OPA presents).
             - { name: PGAUTHZD_INTERNAL_URL, value: http://{{ $full }}-writer:8081 }

@@ -1035,6 +1035,47 @@ models. Know these limits before sizing a deployment:
   **not yet characterized** — validate against your own data shape before relying
   on it at scale.
 
+## Data subject requests (GDPR)
+
+A tenant's customer asks what the tenant holds about them, or that it is
+removed. In pgauthz a person is a subject `type:id`; the store is the unit
+a tenant owns, and shared partitions are no obstacle — the audit and event
+partitions are by time, the tuple partitions by object type, and every row
+carries the store, so a per-subject or per-store delete is exact (only the
+fleet-wide *partition drop* is shared by design).
+
+- **Which records are the person's:** `SELECT * FROM
+  authz.list_subject_objects(store, type, id)` — every object the subject
+  can reach, one row per object and relation, narrowable to relations such
+  as `owner` and to object types. This is the hand-over to the application
+  teams: pgauthz knows the *references* (the record ids under each type),
+  the applications hold the records. As CSV from the console (Store →
+  Operations → *Data subject* → *Objects CSV*) or `\copy … CSV HEADER` in
+  psql; or as a JOIN against the application's tables where they share the
+  database.
+- **Access / portability:** `SELECT authz.export_subject(store, type, id)`
+  — one JSON document: the subject's grants and memberships (expired rows
+  marked), the tuples about the subject, what it can *effectively* do per
+  type and relation (through teams, computed relations, wildcards), its
+  recorded actions, and every tuple change that named it. Auditor tier;
+  Store → Operations → *Data subject* in the console (`can_view_audit`)
+  shows and downloads it together with the subject's lines of the decision
+  log. See [API.md](API.md#export_subject--erase_subject--data-subject-requests).
+- **Erasure:** `SELECT authz.erase_subject(store, type, id, p_performed_by
+  => 'dpo')` removes the tuples naming the subject on either side (incl.
+  expired) and its events; `p_purge_audit => true` removes the audit rows
+  that name it as well (otherwise the trail keeps that the rows existed and
+  went — the usual choice; time travel over the subject's grants is exact
+  only while it is kept). Admin tier; the console's *Erase* needs
+  `can_manage_access` and also deletes the subject's decision-log lines.
+  Purging events can only *relax* a gate that counts them.
+- **A whole tenant:** `retire_store` then `delete_store(p_purge_audit =>
+  true)` (above) plus `purge_events`; the decision log is deleted by store in
+  its sink.
+- Not covered: data a PEP put into `condition_context` or event payloads
+  under its own keys is exported as stored; what an application logged
+  elsewhere is the application's.
+
 ## Upgrades & migrations
 
 Schema **structure** is versioned as forward-only migrations in `db/migrations/`,

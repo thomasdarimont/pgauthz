@@ -1,5 +1,5 @@
 import { html, nothing } from 'lit';
-import { PgcElement, errorBox } from '../base.js';
+import { PgcElement, errorBox, loading } from '../base.js';
 import { api } from '../api.js';
 import { t, initI18n } from '../i18n.js';
 import { forbiddenText } from '../util.js';
@@ -191,7 +191,7 @@ export class PgcApp extends PgcElement {
       </header>
       ${
         me === undefined
-          ? html`<main><p class="muted">${t('Loading…')}</p></main>`
+          ? html`<main>${loading(3)}</main>`
           : me === null
             ? html`<main class="login">
                 <section class="login-card card">

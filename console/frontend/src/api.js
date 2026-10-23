@@ -134,6 +134,15 @@ export const api = {
   opsPurgeEvents: (store, before, force) =>
     call(`api/stores/${enc(store)}/ops/purge-events`, { before, force }),
   opsCleanupExpired: (store, grace) => call(`api/stores/${enc(store)}/ops/cleanup-expired`, { grace }),
+  // Data subject requests: the export document, its download link, the erasure.
+  /** @returns {Promise<import('./types.js').SubjectExport>} */
+  opsSubject: (store, subject, relations = '') =>
+    call(`api/stores/${enc(store)}/ops/subject?subject=${enc(subject)}&relations=${enc(relations)}`),
+  // format: json (the whole document) | csv (the objects the subject relates to, for the application teams)
+  opsSubjectExportURL: (store, subject, format = 'json', relations = '') =>
+    `api/stores/${enc(store)}/ops/subject?subject=${enc(subject)}&relations=${enc(relations)}&format=${enc(format)}&download=1`,
+  /** @returns {Promise<import('./types.js').SubjectErased>} */
+  opsSubjectErase: (store, body) => call(`api/stores/${enc(store)}/ops/subject/erase`, body),
   /** @returns {Promise<import('./types.js').RedundantResult>} */
   opsRedundant: (store, objectType, relation, apply) =>
     call(`api/stores/${enc(store)}/ops/redundant`, { object_type: objectType, relation, apply }),

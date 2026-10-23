@@ -478,9 +478,14 @@ authzen:
 # When enabled, each pgauthzd (reader + writer) serves Prometheus /metrics on a
 # dedicated container port + Service port (never the client/ingress path). A
 # ServiceMonitor (Prometheus Operator) can then scrape it.
+# The management listener of every pgauthzd (ADR 0010): Prometheus /metrics
+# and the health probes on a separate, non-public port. With it enabled the
+# probes and the console's readiness check use that port; publicHealth=false
+# then takes the probes off the client-facing port entirely.
 metrics:
   enabled: false
   port: 9090
+  publicHealth: true          # PUBLIC_HEALTH_ENABLED; false needs enabled=true
   serviceMonitor:
     enabled: false            # requires the Prometheus Operator CRD
     interval: 30s

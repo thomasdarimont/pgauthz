@@ -20,6 +20,8 @@ export class PgcRollout extends PgcElement {
     pubDesc: { state: true },
     message: { state: true },
     pick: { state: true }, // unmanaged store: the registry model whose versions are shown
+    adopting: { state: true }, // unmanaged store: the person asked to put it under a registry model
+    confirming: { state: true }, // the apply awaits its confirmation (model change / first adoption)
   };
 
   constructor() {
@@ -33,6 +35,16 @@ export class PgcRollout extends PgcElement {
     this.pubDesc = '';
     this.message = '';
     this.pick = '';
+    this.adopting = false;
+    this.confirming = false;
+  }
+
+  // Applying is routine when the store already runs the same model (a new
+  // version of it); it REPLACES the live model when the store is unmanaged
+  // or runs a different model — that asks for an explicit confirmation.
+  _changesModel() {
+    const st = this.d?.status;
+    return !st?.model_name || st.model_name !== this.planFor?.name;
   }
 
   willUpdate(changed) {
@@ -59,6 +71,7 @@ export class PgcRollout extends PgcElement {
 
   async _plan(name, version) {
     this.plan = null;
+    this.confirming = false;
     const p = await this._wrap(() => api.plan(this.store, name, version));
     if (p) {
       this.plan = p;
@@ -157,15 +170,48 @@ export class PgcRollout extends PgcElement {
       ${p.blockers?.length ? html`<p class="error">${t('Blockers')}: ${p.blockers.map((b) => (typeof b === 'string' ? b : JSON.stringify(b))).join('; ')}</p>` : nothing}
       ${
         p.can_apply && this.caps?.can_rollout
-          ? html`<div class="actions plan-apply">
-              <button
-                class="primary"
-                ?disabled=${this.busy}
-                @click=${() => this._apply(this.planFor.name, this.planFor.version)}
-              >
-                ${t('Apply this version')}
-              </button>
-            </div>`
+          ? this._changesModel()
+            ? this.confirming
+              ? html`<div class="danger-confirm" data-testid="rollout-confirm">
+                  <p>
+                    <b>${t('This replaces the live model of {store}.', { store: this.store })}</b>
+                    ${t('Every type, relation, rule, restriction and condition becomes what {version} defines; the store is then managed by {model} and the editor becomes read-only. The tuples stay (the plan above lists what would block). Publish the live model first if you want to keep a copy.', { version: `${this.planFor.name}@${this.planFor.version || t('latest')}`, model: this.planFor.name })}
+                  </p>
+                  <div class="actions">
+                    <button
+                      class="danger"
+                      ?disabled=${this.busy}
+                      data-testid="rollout-confirm-apply"
+                      @click=${() => this._apply(this.planFor.name, this.planFor.version)}
+                    >
+                      ${t('Replace the model and apply')}
+                    </button>
+                    <button class="sm" type="button" @click=${() => (this.confirming = false)}>
+                      ${t('Keep the live model')}
+                    </button>
+                  </div>
+                </div>`
+              : html`<div class="actions plan-apply">
+                  <button
+                    class="primary"
+                    ?disabled=${this.busy}
+                    data-testid="rollout-apply"
+                    @click=${() => (this.confirming = true)}
+                  >
+                    ${t('Apply this version…')}
+                  </button>
+                  <span class="help">${t('replaces the live model — asks for confirmation')}</span>
+                </div>`
+            : html`<div class="actions plan-apply">
+                <button
+                  class="primary"
+                  ?disabled=${this.busy}
+                  data-testid="rollout-apply"
+                  @click=${() => this._apply(this.planFor.name, this.planFor.version)}
+                >
+                  ${t('Apply this version')}
+                </button>
+              </div>`
           : nothing
       }
     </section>`;
@@ -252,27 +298,41 @@ export class PgcRollout extends PgcElement {
             st.model_name
               ? help('Immutable versions; Plan shows what applying one would change here.')
               : help(
-                  'This store is not managed yet. Pick a model from the registry to see its versions; applying one replaces the live model and puts the store under that model.',
+                  'This store is not managed yet. Putting it under a registry model REPLACES its live model with a version of that model; from then on the model changes through the registry only.',
                 )
           }
         </h3>
         ${
-          !st.model_name && d.versions.length && d.can_rollout
-            ? html`<label class="field">
-                <span>${t('Registry model')}</span>
-                <select .value=${this.pick} @change=${(e) => (this.pick = e.target.value)}>
-                  <option value="">${t('— choose a model —')}</option>
-                  ${[...new Set(d.versions.map((v) => v.name))]
-                    .sort()
-                    .map(
-                      (n) =>
-                        html`<option value=${n} ?selected=${n === this.pick}>
-                          ${n} (${d.versions.filter((v) => v.name === n).length})
-                        </option>`,
-                    )}
-                </select>
-              </label>`
-            : nothing
+          !st.model_name && d.versions.length && d.can_rollout && !this.adopting
+            ? html`<div class="actions">
+                <button
+                  class="sm"
+                  type="button"
+                  data-testid="rollout-adopt"
+                  @click=${() => (this.adopting = true)}
+                >
+                  ${t('Put this store under a registry model…')}
+                </button>
+                <span class="help"
+                  >${t("replaces the store's own model with a registry version; the plan shows the difference first")}</span
+                >
+              </div>`
+            : !st.model_name && d.versions.length && d.can_rollout
+              ? html`<label class="field">
+                  <span>${t('Registry model')}</span>
+                  <select .value=${this.pick} @change=${(e) => (this.pick = e.target.value)}>
+                    <option value="">${t('— choose a model —')}</option>
+                    ${[...new Set(d.versions.map((v) => v.name))]
+                      .sort()
+                      .map(
+                        (n) =>
+                          html`<option value=${n} ?selected=${n === this.pick}>
+                            ${n} (${d.versions.filter((v) => v.name === n).length})
+                          </option>`,
+                      )}
+                  </select>
+                </label>`
+              : nothing
         }
         ${
           !st.model_name && !d.can_rollout

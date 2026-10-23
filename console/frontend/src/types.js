@@ -312,6 +312,23 @@
  * @property {string|null} oldest_open_txn_age
  */
 /**
+ * @typedef {Object} SubjectExport api/stores/{store}/ops/subject — authz.export_subject plus the decision log
+ * @property {string} store
+ * @property {{type: string, id: string}} subject
+ * @property {string} exported_at
+ * @property {string} exported_by
+ * @property {Object[]} direct
+ * @property {Object[]} as_object
+ * @property {{object_type: string, relation: string, objects: string[], direct?: string[]|null, truncated: boolean}[]} effective
+ * @property {Object[]} events
+ * @property {boolean} events_truncated
+ * @property {Object[]} audit
+ * @property {boolean} audit_truncated
+ * @property {Object[]|null} decisions null when the console has no decision log
+ * @property {boolean} decisions_truncated
+ */
+/** @typedef {{tuples_as_subject: number, tuples_as_object: number, events: number, audit: number, decisions: number, decisions_error?: string}} SubjectErased */
+/**
  * @typedef {Object} OpsOverview api/stores/{store}/ops
  * @property {boolean} retired
  * @property {Readiness|null} readiness

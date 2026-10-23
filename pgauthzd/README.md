@@ -19,8 +19,8 @@ Both expose identical endpoints and require a valid JWT (ES256/RS256).
 | POST | `/access/v1/search/resource` | What can a subject access? |
 | POST | `/access/v1/search/action` | What actions can a subject perform? |
 | GET | `/.well-known/authzen-configuration` | PDP discovery (no auth) |
-| GET | `/livez` | Liveness — process alive, **no dependency checks** (no auth). Use for `livenessProbe` |
-| GET | `/readyz` | Readiness — backend (PostgreSQL/OPA) reachable (no auth). Use for `readinessProbe` |
+| GET | `/livez` | Liveness — process alive, **no dependency checks** (no auth). Use for `livenessProbe`. Also on the management listener (`MANAGEMENT_LISTEN_ADDR`, with `/metrics`), and only there with `PUBLIC_HEALTH_ENABLED=false` |
+| GET | `/readyz` | Readiness — backend (PostgreSQL/OPA) reachable (no auth). Use for `readinessProbe`; same listeners as `/livez` |
 | GET | `/healthz` | Deprecated alias of `/readyz` (no auth) |
 | GET | `/pgauthz/v1/openapi.json` / `.yaml` | This server's OpenAPI description (no auth) |
 
@@ -549,7 +549,8 @@ All configuration is via environment variables.
 | `FRESHNESS_TOKEN_KEYS` | *empty* | Ordered, comma-separated HMAC secrets enabling freshness tokens ([ADR 0009](../docs/adr/0009-freshness-tokens.md) read-your-writes): the **first** key mints, **every** key verifies — which is what makes key rotation a zero-downtime overlap (`old,new` → `new,old` → `new`; runbook in [PRODUCTION.md](../docs/PRODUCTION.md)). Set the **same** list on the writer and the readers. Empty = feature off: writes mint no token and an `at_least_as_fresh` read is rejected (`400`, fail closed) |
 | `FRESHNESS_TOKEN_KEY` | *empty* | Single-key alias for `FRESHNESS_TOKEN_KEYS` (setting both is a startup error) |
 | `OPENAPI_ENABLED` | `true` | Serve this instance's OpenAPI description at `GET /pgauthz/v1/openapi.{json,yaml}` (unauthenticated; instance-accurate). Set `false` to disable the endpoints entirely |
-| `METRICS_LISTEN_ADDR` | *empty* | When set (e.g. `:9090`), serves Prometheus `/metrics` on a **separate** listener ([ADR 0010](../docs/adr/0010-metrics-observability.md)). Bind to the pod/mesh network — **never** the public client listener. Empty = metrics disabled |
+| `MANAGEMENT_LISTEN_ADDR` | *empty* | The **management listener** (e.g. `:9090`; [ADR 0010](../docs/adr/0010-metrics-observability.md)): Prometheus `/metrics` and the probes `/livez`, `/readyz`, `/healthz` on a **separate** listener. Bind to the pod/mesh network — **never** the public client listener. Empty = no metrics, probes on the public listener only. `METRICS_LISTEN_ADDR` is the older name, still accepted |
+| `PUBLIC_HEALTH_ENABLED` | `true` | `false` takes the probes off the public listener (a client learns nothing about the backend from it); they then answer on the management listener (required) and the admin listener. Point probes, healthchecks and the console's `PGAUTHZD_URL` at the management listener first |
 | `METRICS_SAMPLE_INTERVAL_SECONDS` | `30` | Interval for the engine/tenant gauge sampler (per-store tuple counts). Only runs when metrics are exposed; `0` disables it |
 | `METRICS_MAX_STORES` | `100` | Cap on per-store series (top-N by tuple count); `pgauthzd_stores_total` still reports the true count |
 | `HTTP_READ_HEADER_TIMEOUT` | `5s` | Max time to read request headers on every listener (slowloris hardening) |

@@ -348,6 +348,8 @@ GRANT EXECUTE ON FUNCTION authz.watch_cursor(text) TO authz_auditor;
 GRANT EXECUTE ON FUNCTION authz.watch_safe_until(interval) TO authz_auditor;
 -- Action log inspection (ADR 0012) — per-principal behaviour, auditor-level.
 GRANT EXECUTE ON FUNCTION authz.list_events(text, text, text, text, text, text, text, text, timestamptz, timestamptz, timestamptz, bigint, int) TO authz_auditor;
+-- Data subject requests: the export reveals everything about a person (auditor).
+GRANT EXECUTE ON FUNCTION authz.export_subject(text, text, text, text[], boolean, boolean, boolean, int) TO authz_auditor;
 
 ------------------------------------------------------------------------
 -- authz_reader: access checks and search queries
@@ -377,6 +379,7 @@ GRANT EXECUTE ON FUNCTION authz.check_access_batch(text, jsonb, jsonb, text) TO 
 GRANT EXECUTE ON FUNCTION authz.check_access_batch_typed(text, authz.access_check[], jsonb, text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.check_access_batch_typed_jsonb(text, jsonb, jsonb, text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.list_objects(text, text, text, text, text, jsonb, int, int, text) TO authz_reader;
+GRANT EXECUTE ON FUNCTION authz.list_subject_objects(text, text, text, text[], text[], int) TO authz_reader;   -- the takeout question, as rows
 GRANT EXECUTE ON FUNCTION authz.list_subjects(text, text, text, text, text, jsonb, int, int, text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.list_actions(text, text, text, text, text, jsonb) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.validate_condition(text, text, jsonb, jsonb) TO authz_reader;
@@ -440,6 +443,7 @@ GRANT EXECUTE ON FUNCTION authz.ensure_audit_partitions(int) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.ensure_event_partitions(int) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.drop_event_partitions_before(date, boolean) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.purge_events(text, timestamptz, boolean) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.erase_subject(text, text, text, boolean, boolean, text) TO authz_admin;   -- data subject erasure (crosses namespaces, removes history)
 GRANT EXECUTE ON FUNCTION authz.purge_events(text, timestamptz, boolean) TO authz_playground_reset;   -- demo reset (see above)
 GRANT EXECUTE ON FUNCTION authz.create_store(text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.update_store(text, text, text) TO authz_admin;
@@ -497,6 +501,7 @@ ALTER FUNCTION authz.list_actions_with_contextual_tuples_jsonb(text, text, text,
 ALTER FUNCTION authz.explain_access_with_contextual_tuples_jsonb(text, text, text, text, text, text, jsonb, jsonb, boolean, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.check_access_batch_typed_jsonb(text, jsonb, jsonb, text) SECURITY DEFINER;
 ALTER FUNCTION authz.list_objects(text, text, text, text, text, jsonb, int, int, text) SECURITY DEFINER;
+ALTER FUNCTION authz.list_subject_objects(text, text, text, text[], text[], int) SECURITY DEFINER;
 ALTER FUNCTION authz.list_subjects(text, text, text, text, text, jsonb, int, int, text) SECURITY DEFINER;
 ALTER FUNCTION authz.list_actions(text, text, text, text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.validate_condition(text, text, jsonb, jsonb) SECURITY DEFINER;
@@ -550,6 +555,8 @@ ALTER FUNCTION authz.list_events(text, text, text, text, text, text, text, text,
 ALTER FUNCTION authz.ensure_event_partitions(int) SECURITY DEFINER;
 ALTER FUNCTION authz.drop_event_partitions_before(date, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.purge_events(text, timestamptz, boolean) SECURITY DEFINER;
+ALTER FUNCTION authz.export_subject(text, text, text, text[], boolean, boolean, boolean, int) SECURITY DEFINER;
+ALTER FUNCTION authz.erase_subject(text, text, text, boolean, boolean, text) SECURITY DEFINER;
 ALTER FUNCTION authz.create_store(text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.update_store(text, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.retire_store(text) SECURITY DEFINER;

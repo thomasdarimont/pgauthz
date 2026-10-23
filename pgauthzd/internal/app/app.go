@@ -245,12 +245,13 @@ func Run(name, version string) error {
 		}
 	}
 
-	// Prometheus metrics on a SEPARATE, non-public listener (ADR 0010).
+	// The management listener (ADR 0010): Prometheus /metrics and the health
+	// probes on a SEPARATE, non-public port. With PUBLIC_HEALTH_ENABLED=false
+	// it is the only place (besides the admin listener) the probes answer.
 	if cfg.MetricsListenAddr != "" {
-		mmux := http.NewServeMux()
-		mmux.Handle("GET /metrics", metrics.Handler())
-		servers = append(servers, newServer(cfg, cfg.MetricsListenAddr, mmux))
-		slog.Info("metrics listener", "addr", cfg.MetricsListenAddr)
+		hMgmt := api.NewHandler(backend, raw, rawWrite, cfg, dlogOpt, verOpt, issOpt)
+		servers = append(servers, newServer(cfg, cfg.MetricsListenAddr, api.NewManagementRouter(hMgmt, metrics.Handler())))
+		slog.Info("management listener", "addr", cfg.MetricsListenAddr, "probes_on_public", !cfg.PublicHealthDisabled)
 	}
 
 	// OPA callback listener (service-auth), available whenever a direct backend

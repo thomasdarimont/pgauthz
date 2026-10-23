@@ -1,5 +1,5 @@
 import { html, nothing } from 'lit';
-import { PgcElement, help, errorBox } from '../base.js';
+import { PgcElement, help, errorBox, loading } from '../base.js';
 import { api } from '../api.js';
 import { t, t2 } from '../i18n.js';
 import { PgcJson } from './pgc-json.js';
@@ -1119,7 +1119,7 @@ export class PgcData extends PgcElement {
             : html`<div class="empty">
                 ${this.q ? t('No tuples match the filter.') : t('No tuples in this store yet.')}
               </div>`
-          : html`<p class="muted">${t('Loading…')}</p>`
+          : loading()
       }
     `;
   }

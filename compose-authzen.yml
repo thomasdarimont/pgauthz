@@ -30,7 +30,7 @@ services:
       # dev/test stack opens it for auditor-role tokens.
       WATCH_REQUIRED_ROLE: "${WATCH_REQUIRED_ROLE:-authz_auditor}"
       LISTEN_ADDR: ":8080"
-      METRICS_LISTEN_ADDR: ":9090"
+      MANAGEMENT_LISTEN_ADDR: ":9090"   # /metrics + the probes (ADR 0010)
       PGAUTHORIZER_PROFILE: "decision-only"
       # Dedicated non-superuser, read-only role (inherits authz_reader),
       # created by db/security/initdb on first init. Never use the authz
@@ -107,7 +107,7 @@ services:
       - "9091:9090"   # Prometheus /metrics (ADR 0010)
     environment:
       LISTEN_ADDR: ":8080"
-      METRICS_LISTEN_ADDR: ":9090"
+      MANAGEMENT_LISTEN_ADDR: ":9090"   # /metrics + the probes (ADR 0010)
       PGAUTHORIZER_PROFILE: "full"
       # Writer-capable non-superuser role (inherits authz_writer), created by
       # db/security/roles.sql. This is the ONLY instance that can write. With

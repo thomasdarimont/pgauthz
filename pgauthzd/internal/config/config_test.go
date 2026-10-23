@@ -590,3 +590,36 @@ func TestAdminAPIConfig(t *testing.T) {
 		t.Fatalf("an unknown admin scope must be refused, got %v", err)
 	}
 }
+
+// The management listener: MANAGEMENT_LISTEN_ADDR, with METRICS_LISTEN_ADDR
+// as the older name; PUBLIC_HEALTH_ENABLED=false needs it.
+func TestManagementListener(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://u:p@h/db")
+	t.Setenv("JWKS_FILE", "")
+	t.Setenv("JWKS_URL", "")
+	t.Setenv("JWT_ISSUERS", `[{"issuer":"https://idp","audience":"api","jwks_file":"/dev/null","stores":["demo"]}]`)
+	t.Setenv("CURSOR_SEAL_KEY", "0123456789abcdef0123456789abcdef")
+	t.Setenv("DEPLOYMENT_ENVIRONMENT", "dev")
+
+	c, err := Load()
+	if err != nil || c.ManagementListenAddr() != "" || c.PublicHealthDisabled {
+		t.Fatalf("defaults: %+v %v", c.MetricsListenAddr, err)
+	}
+	t.Setenv("METRICS_LISTEN_ADDR", ":9090")
+	if c, err = Load(); err != nil || c.ManagementListenAddr() != ":9090" {
+		t.Fatalf("the older name must still work: %q %v", c.MetricsListenAddr, err)
+	}
+	t.Setenv("MANAGEMENT_LISTEN_ADDR", ":9091")
+	if c, err = Load(); err != nil || c.ManagementListenAddr() != ":9091" {
+		t.Fatalf("MANAGEMENT_LISTEN_ADDR wins: %q %v", c.MetricsListenAddr, err)
+	}
+	t.Setenv("PUBLIC_HEALTH_ENABLED", "false")
+	if c, err = Load(); err != nil || !c.PublicHealthDisabled {
+		t.Fatalf("public health off with a management listener: %v", err)
+	}
+	t.Setenv("MANAGEMENT_LISTEN_ADDR", "")
+	t.Setenv("METRICS_LISTEN_ADDR", "")
+	if _, err = Load(); err == nil || !strings.Contains(err.Error(), "MANAGEMENT_LISTEN_ADDR") {
+		t.Fatalf("public health off without a management listener must be refused, got %v", err)
+	}
+}

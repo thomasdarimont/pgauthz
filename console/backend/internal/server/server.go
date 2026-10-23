@@ -153,6 +153,9 @@ func (s *Server) Routes() http.Handler {
 	h("POST /api/stores/{store}/ops/purge-events", s.handleOpsPurgeEvents)
 	h("POST /api/stores/{store}/ops/cleanup-expired", s.handleOpsCleanupExpired)
 	h("POST /api/stores/{store}/ops/redundant", s.handleOpsRedundant)
+	// Data subject requests (GDPR): export needs can_view_audit, erasure can_manage_access
+	h("GET /api/stores/{store}/ops/subject", s.handleOpsSubject)
+	h("POST /api/stores/{store}/ops/subject/erase", s.handleOpsSubjectErase)
 
 	// Access (who may manage this store in the console)
 	h("GET /api/stores/{store}/access", s.handleAccess)

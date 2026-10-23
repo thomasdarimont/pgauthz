@@ -1,5 +1,5 @@
 import { html, nothing } from 'lit';
-import { PgcElement, help, errorBox } from '../base.js';
+import { PgcElement, help, errorBox, loading } from '../base.js';
 import { api } from '../api.js';
 import { t } from '../i18n.js';
 import { run, copyText } from '../util.js';
@@ -98,7 +98,7 @@ export class PgcPolicies extends PgcElement {
 
   render() {
     const d = this.d;
-    if (!d) return html`${this.error ? errorBox(this.error) : html`<p class="muted">${t('Loading…')}</p>`}`;
+    if (!d) return html`${this.error ? errorBox(this.error) : loading()}`;
     if (!d.configured)
       return html`<section class="card">
         <h3>${t('OPA policies')}</h3>

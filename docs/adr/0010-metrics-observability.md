@@ -249,3 +249,11 @@ not left to callers.
    `freshness_key_verifications_total{kid}` (rotation drain). Still open from
    the catalog: `freshness_deficit_bytes`, `replica_replay_lag_bytes`,
    `wal_receiver_up` (need engine-side sampling).
+5. **The metrics listener is the management listener (2026-10-23):** besides
+   `/metrics` it serves the probes `/livez`, `/readyz`, `/healthz`, so a
+   deployment points probes, healthchecks and the console's readiness check
+   at the operator port and can take the probes off the client-facing
+   listener (`PUBLIC_HEALTH_ENABLED=false`). The variable is now
+   `MANAGEMENT_LISTEN_ADDR`; `METRICS_LISTEN_ADDR` stays accepted. No
+   authentication and no request metrics on it (a scrape must not count
+   itself); the admin API keeps its own listener (`ADMIN_LISTEN_ADDR`).

@@ -1,5 +1,5 @@
 import { html, nothing } from 'lit';
-import { PgcElement, help, errorBox } from '../base.js';
+import { PgcElement, help, errorBox, loading } from '../base.js';
 import { api } from '../api.js';
 import { t } from '../i18n.js';
 import { run, copyText, forbiddenText, byOrder, statusBadge, fmtTime, fmtRelative } from '../util.js';
@@ -2087,7 +2087,7 @@ type document
 
   render() {
     const m = this.m;
-    if (!m) return html`${this.error ? errorBox(this.error) : html`<p class="muted">${t('Loading…')}</p>`}`;
+    if (!m) return html`${this.error ? errorBox(this.error) : loading()}`;
     const views = [
       ['dsl', 'DSL', 'OpenFGA-style; display only (conditions, gates, grant rules have no DSL form)'],
       ['json', 'JSON', 'the canonical export — what publish stores in the registry'],

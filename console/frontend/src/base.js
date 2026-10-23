@@ -25,6 +25,17 @@ export function errorBox(text) {
   return html`<p class="error" role="alert"><b>${t('Error')}:</b> ${text}</p>`;
 }
 
+// The loading state of a page or card before its data arrived: a skeleton
+// in the shape of what will appear (a heading line and table rows), so the
+// layout does not jump when the content lands. Announced to assistive
+// technology as busy; the shimmer stops under prefers-reduced-motion.
+export function loading(rows = 5) {
+  return html`<div class="skeleton" role="status" aria-busy="true" aria-label=${t('Loading…')}>
+    <div class="sk-line sk-title"></div>
+    ${Array.from({ length: rows }, () => html`<div class="sk-row"><span class="sk-line"></span><span class="sk-line"></span><span class="sk-line"></span></div>`)}
+  </div>`;
+}
+
 // A (?) that explains a column or section on hover and focus. `text` is
 // English, translated like everything else.
 export function help(text) {

@@ -1,5 +1,5 @@
 import { html, nothing } from 'lit';
-import { PgcElement, help, errorBox } from '../base.js';
+import { PgcElement, help, errorBox, loading } from '../base.js';
 import { api } from '../api.js';
 import { t } from '../i18n.js';
 import { run, forbiddenText, fmtTime, fmtRelative, subjectOf } from '../util.js';
@@ -25,6 +25,7 @@ export class PgcOps extends PgcElement {
     redundant: { state: true }, // the last find: { tuples, more }
     confirming: { state: true }, // which destructive action awaits confirmation
     meta: { state: true }, // the store's types and relations (for suggestions)
+    subject: { state: true }, // the data subject export shown (or null)
   };
 
   constructor() {
@@ -42,6 +43,196 @@ export class PgcOps extends PgcElement {
     this.confirming = null;
     /** @type {import('../types.js').Meta|null} */
     this.meta = null;
+    /** @type {import('../types.js').SubjectExport|null} */
+    this.subject = null;
+  }
+
+  // Data subject requests (GDPR): look a subject up (everything the store
+  // holds about it, with the decision log), download it, erase it.
+  async _subjectLookup(e) {
+    e.preventDefault();
+    this.subject = null;
+    this.result = { ...this.result, erase: undefined };
+    const r = await run(this, async () => {
+      try {
+        return await api.opsSubject(this.store, this.form.subject.trim(), this.form.subject_relations ?? '');
+      } catch (err) {
+        throw new Error(forbiddenText(err));
+      }
+    });
+    if (r) this.subject = r;
+  }
+
+  _subjectCard() {
+    const f = this.form;
+    const d = this.subject;
+    const can = this._canAct();
+    const count = (k) => (Array.isArray(d?.[k]) ? d[k].length : 0);
+    const eff = (d?.effective ?? []).reduce((n, e) => n + (e.objects?.length ?? 0), 0);
+    return html`<section class="card" data-testid="ops-subject">
+      <h3>
+        ${t('Data subject')}
+        ${help("A person's request about their data (GDPR): everything this store holds about a subject — their grants and memberships, the tuples about them, what they can effectively do, their recorded actions, every change that named them, and their lines of the decision log — as one document to hand over (export_subject); and its erasure (erase_subject: the tuples on either side, the actions, the decision-log lines; the audit trail only when asked).")}
+      </h3>
+      <form class="form" data-testid="ops-subject-form" @submit=${(e) => this._subjectLookup(e)}>
+        <label class="field wide"
+          ><span>${t('Subject')}</span
+          ><input
+            class="mono"
+            required
+            placeholder="user:alice"
+            list="ops-subject-types"
+            .value=${f.subject ?? ''}
+            @input=${this._set('subject')}
+            data-testid="ops-subject-id"
+          />
+          <datalist id="ops-subject-types">
+            ${(this.meta?.types ?? []).map((ty) => html`<option value="${ty}:"></option>`)}
+          </datalist>
+        </label>
+        <label class="field wide"
+          ><span
+            >${t('Relations')}
+            ${help('Narrow the objects to these relations, comma-separated (owner, can_read, …). Empty: every relation of the model.')}</span
+          ><input
+            class="mono"
+            placeholder="owner, can_read"
+            .value=${f.subject_relations ?? ''}
+            @input=${this._set('subject_relations')}
+            data-testid="ops-subject-relations"
+          />
+        </label>
+        <div class="actions wide">
+          <button class="sm" ?disabled=${this.busy} data-testid="ops-subject-lookup">${t('Look up')}</button>
+        </div>
+      </form>
+      ${
+        d
+          ? html`<div class="stats" data-testid="ops-subject-summary">
+                <span><b>${count('direct')}</b> ${t('grants and memberships')}</span>
+                <span><b>${count('as_object')}</b> ${t('tuples about the subject')}</span>
+                <span><b>${eff}</b> ${t('objects reachable')}</span>
+                <span><b>${count('events')}</b> ${t('recorded actions')}</span>
+                <span><b>${count('audit')}</b> ${t('audit rows')}</span>
+                <span><b>${d.decisions ? count('decisions') : '—'}</b> ${t('decision-log lines')}</span>
+              </div>
+              ${d.events_truncated || d.audit_truncated || d.decisions_truncated || d.effective.some((e) => e.truncated) ? html`<p class="help">${t('Some lists hit the cap; the download carries the same cap (export_subject with a higher p_limit in SQL for everything).')}</p>` : nothing}
+              <div class="actions">
+                <span class="seg">
+                  <a
+                    class="btn sm"
+                    href=${api.opsSubjectExportURL(this.store, `${d.subject.type}:${d.subject.id}`, 'csv', f.subject_relations ?? '')}
+                    download
+                    title=${t("The objects the subject relates to, one row per object and relation — what the application teams take to select the person's records.")}
+                    data-testid="ops-subject-download-csv"
+                    >${t('Objects')} CSV</a
+                  >
+                  <a
+                    class="btn sm"
+                    href=${api.opsSubjectExportURL(this.store, `${d.subject.type}:${d.subject.id}`, 'json', f.subject_relations ?? '')}
+                    download
+                    title=${t('The whole document: tuples, effective access, actions, audit rows, decision-log lines.')}
+                    data-testid="ops-subject-download"
+                    >${t('Everything')} JSON</a
+                  >
+                </span>
+                ${
+                  can
+                    ? this.confirming === 'erase'
+                      ? html`<div class="danger-confirm" data-testid="ops-subject-confirm">
+                          <p>
+                            <b
+                              >${t('Erase {subject} from {store}?', { subject: `${d.subject.type}:${d.subject.id}`, store: this.store })}</b
+                            >
+                            ${t('Removes the tuples naming the subject on either side (including expired ones), its recorded actions and its decision-log lines. Gates counting those actions can only relax. The audit rows stay unless chosen below.')}
+                          </p>
+                          <label class="check"
+                            ><input
+                              type="checkbox"
+                              .checked=${f.purge_audit ?? false}
+                              @change=${this._set('purge_audit')}
+                              data-testid="ops-subject-purge-audit"
+                            />
+                            ${t('also remove the audit rows naming the subject (no history left)')}</label
+                          >
+                          <div class="actions">
+                            <button
+                              class="danger"
+                              ?disabled=${this.busy}
+                              data-testid="ops-subject-erase-confirm"
+                              @click=${() => this._act('erase', () => api.opsSubjectErase(this.store, { subject: `${d.subject.type}:${d.subject.id}`, purge_audit: !!f.purge_audit }))}
+                            >
+                              ${t('Erase the subject')}
+                            </button>
+                            <button class="sm" type="button" @click=${() => (this.confirming = null)}>
+                              ${t('Keep')}
+                            </button>
+                          </div>
+                        </div>`
+                      : html`<button
+                          class="sm danger"
+                          type="button"
+                          ?disabled=${this.busy}
+                          data-testid="ops-subject-erase"
+                          @click=${() => (this.confirming = 'erase')}
+                        >
+                          ${t('Erase…')}
+                        </button>`
+                    : nothing
+                }
+              </div>
+              ${
+                this.result.erase
+                  ? html`<p class="help" data-testid="ops-subject-erased">
+                      ${t(
+                        'Erased: {a} tuples as subject, {b} about the subject, {c} actions, {d} audit rows, {e} decision-log lines.',
+                        {
+                          a: this.result.erase.tuples_as_subject,
+                          b: this.result.erase.tuples_as_object,
+                          c: this.result.erase.events,
+                          d: this.result.erase.audit,
+                          e: this.result.erase.decisions,
+                        },
+                      )}
+                      ${this.result.erase.decisions_error ? html`<span class="error">${this.result.erase.decisions_error}</span>` : nothing}
+                    </p>`
+                  : nothing
+              }
+              ${
+                d.effective.length
+                  ? html`<div class="table-wrap">
+                      <table class="compact" data-testid="ops-subject-objects">
+                        <thead>
+                          <tr>
+                            <th>${t('Type')}</th>
+                            <th>${t('Relation')}</th>
+                            <th>${t('Objects')}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${d.effective.map(
+                            (e) =>
+                              html`<tr>
+                                <td class="mono">${e.object_type}</td>
+                                <td class="mono">${e.relation}</td>
+                                <td class="mono">
+                                  ${(e.objects ?? []).slice(0, 20).join(', ')}${(e.objects?.length ?? 0) > 20 ? html` <span class="muted">… ${t('{n} in total', { n: e.objects.length })}</span>` : nothing}${e.truncated ? html` <span class="badge warn">${t('capped')}</span>` : nothing}
+                                  ${e.direct?.length ? html`<div class="help">${t('direct')}: ${e.direct.join(', ')}</div>` : nothing}
+                                </td>
+                              </tr>`,
+                          )}
+                        </tbody>
+                      </table>
+                    </div>`
+                  : html`<p class="muted">${t('The subject reaches no object with these relations.')}</p>`
+              }
+              <details>
+                <summary>${t('The document')}</summary>
+                <pre class="code" data-testid="ops-subject-json">${JSON.stringify(d, null, 2)}</pre>
+              </details>`
+          : nothing
+      }
+    </section>`;
   }
 
   willUpdate(changed) {
@@ -560,7 +751,7 @@ export class PgcOps extends PgcElement {
 
   render() {
     const d = this.d;
-    if (!d) return html`${this.error ? errorBox(this.error) : html`<p class="muted">${t('Loading…')}</p>`}`;
+    if (!d) return html`${this.error ? errorBox(this.error) : loading()}`;
     return html`
       ${this.error ? errorBox(this.error) : nothing}
       <div class="toolbar">
@@ -570,7 +761,7 @@ export class PgcOps extends PgcElement {
         <button class="sm" data-testid="ops-refresh" @click=${this._load}>${t('Refresh')}</button>
       </div>
       ${d.retired ? html`<p class="help">${t('Retired store: gates, tuples and retention are gone; the changefeed position and the partitions remain.')}</p>` : html`${this._readiness(d)} ${this._recorders(d)} ${this._tuples(d)} ${this._retention(d)}`}
-      ${this._feeds(d)}
+      ${this._subjectCard()} ${this._feeds(d)}
       ${partitionsCard(d.partitions, { help: 'Both logs are partitioned by month, fleet-wide. Creating partitions ahead and dropping old ones is done on Platform → Operations.' })}
     `;
   }

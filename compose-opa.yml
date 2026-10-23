@@ -117,7 +117,7 @@ services:
       TRACING: "${TRACING:-auto}"
       TRACING_IDENTIFIERS: "${TRACING_IDENTIFIERS:-false}"
       LISTEN_ADDR: ":8080"
-      METRICS_LISTEN_ADDR: ":9090"
+      MANAGEMENT_LISTEN_ADDR: ":9090"   # /metrics + the probes (ADR 0010)
       PGAUTHORIZER_PROFILE: "decision-only"
       # Internal listener for the policy-FREE native raw endpoints the OPA
       # sidecar calls back into. Read-only role.

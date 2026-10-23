@@ -356,11 +356,19 @@ func Run(ctx context.Context, opts Options) *Report {
 		add("opentelemetry", StatusOK, "tracing on (TRACING=on), no OTLP exporter: propagation only — a caller's traceparent reaches the decision log, no spans leave")
 	}
 
-	// ── metrics ──────────────────────────────────────────────────────────
+	// ── the management listener: metrics + probes ────────────────────────
 	if cfg.MetricsListenAddr == "" {
-		add("metrics", StatusWarn, "METRICS_LISTEN_ADDR unset: no Prometheus endpoint")
+		add("metrics", StatusWarn, "MANAGEMENT_LISTEN_ADDR unset: no Prometheus endpoint, probes on the public listener only")
 	} else {
-		add("metrics", StatusOK, "listener "+cfg.MetricsListenAddr)
+		add("metrics", StatusOK, "management listener "+cfg.MetricsListenAddr+" (/metrics and the probes)")
+	}
+	switch {
+	case cfg.PublicHealthDisabled:
+		add("public health", StatusOK, "probes off the public listener (PUBLIC_HEALTH_ENABLED=false): served on the management listener")
+	case prod && cfg.MetricsListenAddr != "":
+		add("public health", StatusWarn, "probes on the public listener too (PUBLIC_HEALTH_ENABLED=true): point probes and healthchecks at the management listener and set PUBLIC_HEALTH_ENABLED=false")
+	default:
+		add("public health", StatusOK, "probes on the public listener (PUBLIC_HEALTH_ENABLED=true)")
 	}
 	return r
 }

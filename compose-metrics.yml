@@ -4,7 +4,7 @@
 #
 #   ./start.sh --metrics        (or PGAUTHZ_METRICS=1)
 #
-# The pgauthzd instances always expose /metrics (METRICS_LISTEN_ADDR=:9090 in
+# The pgauthzd instances always expose /metrics (MANAGEMENT_LISTEN_ADDR=:9090 in
 # compose-authzen.yml / compose-opa.yml); this overlay only adds the scraper +
 # dashboards. UIs: Prometheus http://localhost:9095, Grafana http://localhost:9096.
 
