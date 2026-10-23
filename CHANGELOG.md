@@ -9,6 +9,15 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Review #19 (Codex, on a42cae2) fixes.** The postgres decision-log sink
+  counts the accepted lines a failed batch could not keep when the queue
+  was full (`pgauthzd_decision_log_dropped_lines_total`, an ERROR line) —
+  before, they vanished silently; logged searches carry `trace_id` /
+  `span_id` through a search span like decisions do; request spans are
+  named after the matched route pattern (`POST /stores/{store}/pgauthz/v1/check`),
+  never the raw path (bounded names, no identifiers); per-check
+  `contextual_tuples` in `check-batch` are refused with `400` instead of
+  being ignored.
 - **OpenTelemetry in pgauthzd.** Off by default: `TRACING=auto` turns it on
   only when the `OTEL_*` environment configures an OTLP exporter (`on` /
   `off` force it; off is the untraced code path). On, W3C `traceparent` and

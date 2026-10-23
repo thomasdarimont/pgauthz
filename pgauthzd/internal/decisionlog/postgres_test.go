@@ -269,3 +269,26 @@ func TestPostgresSinkIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A failed batch that the full queue cannot take back loses lines: they are
+// counted (Dropped, OnDrop) — never silently gone (review #19).
+func TestPostgresSinkDroppedOnRequeueOverflow(t *testing.T) {
+	f := &fakeStore{}
+	f.fail(errors.New("down"))
+	s := newPostgresSink(PostgresConfig{QueueSize: 1, BatchSize: 1000, FlushInterval: time.Hour}, f)
+	close(s.stop) // the flusher out of the way: this test drives the sink by hand
+	<-s.done
+	var reported int
+	s.OnDrop = func(n int) { reported += n }
+	batch := [][]byte{[]byte(strings.TrimSpace(line("demo", "a"))), []byte(strings.TrimSpace(line("demo", "b"))), []byte(strings.TrimSpace(line("demo", "c")))}
+	if err := s.flushMany(context.Background(), batch); err == nil {
+		t.Fatal("the failed insert must be reported")
+	}
+	if reported != 2 || s.Dropped.Load() != 2 || len(s.q) != 1 {
+		t.Fatalf("dropped %d (total %d), queued %d; want 2 dropped, 1 kept", reported, s.Dropped.Load(), len(s.q))
+	}
+	f.fail(nil)
+	if err := s.flushNow(context.Background()); err != nil || f.rows() != 1 {
+		t.Fatalf("after recovery: %v, %d rows; want the 1 kept line", err, f.rows())
+	}
+}

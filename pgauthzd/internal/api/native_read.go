@@ -20,6 +20,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -169,6 +170,14 @@ func (h *Handler) NativeCheckBatch(w http.ResponseWriter, r *http.Request) {
 	if len(req.Checks) == 0 {
 		writeBadRequest(w, "checks array is required and must not be empty")
 		return
+	}
+	for i, c := range req.Checks {
+		if len(c.ContextualTuples) > 0 {
+			// the batch checker evaluates the stored graph only; a silently
+			// ignored what-if would answer a different question than asked
+			writeBadRequest(w, fmt.Sprintf("checks[%d].contextual_tuples: contextual tuples are not supported in check-batch; use /pgauthz/v1/check per decision", i))
+			return
+		}
 	}
 	semantic := req.Semantic
 	if semantic == "" {

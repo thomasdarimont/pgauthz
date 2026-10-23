@@ -223,6 +223,9 @@ func decisionSpan(ctx context.Context, e decisionlog.Entry, start, end time.Time
 	if e.ContextualTuples > 0 {
 		attrs = append(attrs, attribute.Int("pgauthz.contextual_tuples", e.ContextualTuples))
 	}
+	if e.ResultCount != nil {
+		attrs = append(attrs, attribute.Int("pgauthz.result_count", *e.ResultCount))
+	}
 	_, span := telemetry.Tracer().Start(ctx, "pgauthz."+e.Endpoint,
 		trace.WithTimestamp(start), trace.WithSpanKind(trace.SpanKindInternal), trace.WithAttributes(attrs...))
 	if err != nil {
@@ -333,7 +336,8 @@ func (h *Handler) logSearch(r *http.Request, endpoint, via, store string, subjec
 		Store: store, SubjectType: subject.Type, SubjectID: subject.ID, Action: action,
 		ObjectType: resource.Type, ObjectID: resource.ID, Context: ctx,
 	}, via)
-	e.LatencyMS = float64(time.Since(start).Microseconds()) / 1000
+	end := time.Now()
+	e.LatencyMS = float64(end.Sub(start).Microseconds()) / 1000
 	e.PgauthzdVersion = h.version
 	e.Model = h.modelProvenance(r.Context(), store)
 	e.Policy = h.policyProvenance(via)
@@ -342,6 +346,9 @@ func (h *Handler) logSearch(r *http.Request, endpoint, via, store string, subjec
 	} else {
 		e.ResultCount = &n
 	}
+	// The search span (OpenTelemetry), like the decision span: the search's
+	// dimensions and result count, never the ids; its ids on the line.
+	e.TraceID, e.SpanID = decisionSpan(r.Context(), e, start, end, err)
 	h.decisions.Log(e)
 }
 

@@ -964,8 +964,10 @@ DECISION_LOG_SAMPLE=1          # required by DECISION_LOG_REQUIRED (complete evi
   needs to create the schema; never use the engine's read-only role. A
   failed insert marks the sink down — `DECISION_LOG_REQUIRED` fails closed
   until the next batch succeeds; a crash loses at most the queue
-  (`DECISION_LOG_QUEUE`), so evidence-grade per-line durability still means
-  the file sink.
+  (`DECISION_LOG_QUEUE`), and a failed batch that no longer fits back into
+  a full queue is lost and counted (`pgauthzd_decision_log_dropped_lines_total`
+  — alarm on it), so evidence-grade per-line durability still means the
+  file sink.
 - A file sink is opened append-only and never rotated by the daemon; use
   copy-truncate rotation, or the container log pipeline via `stdout`.
 - Privacy: subject and resource **ids** are logged (the graph's own

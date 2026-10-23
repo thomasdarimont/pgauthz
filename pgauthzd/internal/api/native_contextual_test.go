@@ -141,3 +141,18 @@ func TestDecisionLogCountsContextualTuples(t *testing.T) {
 		t.Fatalf("plain check: %d %v", w.Code, lines(buf)[0])
 	}
 }
+
+// Per-check contextual tuples in check-batch are refused, not ignored
+// (review #19): the batch checker only knows the stored graph.
+func TestNativeCheckBatchRefusesContextualTuples(t *testing.T) {
+	b := &ctxStub{}
+	h := NewHandler(b, b, b, &config.Config{DefaultStore: "demo", AllowSubjectOverride: true, ContextualTuples: config.ContextualTuplesAny})
+	w := httptest.NewRecorder()
+	h.NativeCheckBatch(w, jsonReq("POST", "/pgauthz/v1/check-batch", `{"checks":[
+		{"subject":{"type":"user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"doc","id":"d1"}},
+		{"subject":{"type":"user","id":"bob"},"action":{"name":"can_read"},"resource":{"type":"doc","id":"d1"},
+		 "contextual_tuples":[{"user_type":"user","user_id":"bob","relation":"viewer","object_type":"doc","object_id":"d1"}]}]}`))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "checks[1].contextual_tuples") {
+		t.Fatalf("%d %s, want 400 naming the check", w.Code, w.Body.String())
+	}
+}

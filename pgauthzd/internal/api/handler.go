@@ -243,7 +243,7 @@ func NewCallbackRouter(h *Handler, serviceToken string) http.Handler {
 	mux.HandleFunc("GET /healthz", h.Healthz) // deprecated alias of /readyz
 	mux.HandleFunc("GET /livez", h.Livez)
 	mux.HandleFunc("GET /readyz", h.Readyz)
-	var handler http.Handler = mux
+	var handler http.Handler = spanNamed(mux)
 	handler = MaxBody(h.cfg.HTTPMaxBodyBytes)(handler)
 	handler = ServiceAuthMiddleware(serviceToken)(handler)
 	handler = RequestID(handler)
@@ -253,7 +253,7 @@ func NewCallbackRouter(h *Handler, serviceToken string) http.Handler {
 }
 
 func withMiddleware(mux *http.ServeMux, jwtMW *JWTMiddleware, maxBodyBytes int64, corsOrigins []string) http.Handler {
-	var handler http.Handler = mux
+	var handler http.Handler = spanNamed(mux)
 	handler = MaxBody(maxBodyBytes)(handler)
 	handler = jwtMW.Middleware(handler)
 	// CORS sits OUTSIDE the JWT middleware: a browser's preflight carries no
@@ -1328,4 +1328,31 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// SpanName names a request's span (OpenTelemetry) after the route PATTERN
+// the mux matched — "POST /stores/{store}/pgauthz/v1/check" — and, before
+// the match or for an unmatched route, the bare method. otelhttp evaluates
+// it at the start and again after the handler, when r.Pattern is set, so
+// names stay bounded (one per route) and a path's identifiers never become
+// a span name (review #19).
+func SpanName(_ string, r *http.Request) string {
+	if r.Pattern != "" {
+		return r.Pattern
+	}
+	return r.Method
+}
+
+// spanNamed sits directly around the mux: the ServeMux sets r.Pattern on the
+// request it is handed, and every middleware in between hands it a fresh
+// copy (WithContext), so otelhttp's own post-handler renaming — which looks
+// at ITS copy — never sees the pattern in production. This wrapper does,
+// and names the request's span after it.
+func spanNamed(mux *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r)
+		if r.Pattern != "" {
+			trace.SpanFromContext(r.Context()).SetName(SpanName("", r))
+		}
+	})
 }

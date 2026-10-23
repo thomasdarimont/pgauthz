@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -11,6 +12,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"thomasdarimont.de/authz/pgauthzd/internal/telemetry"
 )
@@ -32,9 +34,9 @@ func TestDecisionTraceIDs(t *testing.T) {
 			exp = tracetest.NewInMemoryExporter()
 			otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp)))
 		} else {
-			otel.SetTracerProvider(trace.NewNoopTracerProvider())
+			otel.SetTracerProvider(noop.NewTracerProvider())
 		}
-		t.Cleanup(func() { otel.SetTracerProvider(trace.NewNoopTracerProvider()) })
+		t.Cleanup(func() { otel.SetTracerProvider(noop.NewTracerProvider()) })
 		buf.Reset()
 		srv := otelhttp.NewHandler(RequestID(http.HandlerFunc(h.NativeCheck)), "test")
 		r := jsonReq("POST", "/pgauthz/v1/check", `{"subject":{"type":"user","id":"alice"},"action":{"name":"can_read"},"resource":{"type":"doc","id":"d1"}}`)
@@ -130,4 +132,62 @@ func names(spans tracetest.SpanStubs) []string {
 		out[i] = s.Name
 	}
 	return out
+}
+
+// A logged search carries the trace too, through a search span with the
+// result count (review #19).
+func TestSearchTraceIDs(t *testing.T) {
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	telemetry.SetEnabled(true)
+	t.Cleanup(func() { telemetry.SetEnabled(false) })
+	exp := tracetest.NewInMemoryExporter()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp)))
+	t.Cleanup(func() { otel.SetTracerProvider(noop.NewTracerProvider()) })
+	h, buf := newLoggedHandler(t, detailStub{}, false)
+	h.cfg.DecisionLogSearches = true
+	const traceID = "4bf92f3577b34da6a3ce929d0e0e4737"
+	srv := otelhttp.NewHandler(http.HandlerFunc(h.NativeListActions), "test")
+	r := jsonReq("POST", "/pgauthz/v1/list-actions", `{"subject":{"type":"user","id":"alice"},"resource":{"type":"doc","id":"d1"}}`)
+	r.Header.Set("traceparent", "00-"+traceID+"-00f067aa0ba902b7-01")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	l := lines(buf)[0]
+	var search *tracetest.SpanStub
+	for i, s := range exp.GetSpans() {
+		if s.Name == "pgauthz.list-actions" || strings.HasPrefix(s.Name, "pgauthz.list") {
+			search = &exp.GetSpans()[i]
+		}
+	}
+	if search == nil {
+		t.Fatalf("no search span: %v", names(exp.GetSpans()))
+	}
+	if l["trace_id"] != traceID || l["span_id"] != search.SpanContext.SpanID().String() {
+		t.Fatalf("search line ids %v %v, want trace %s and the search span", l["trace_id"], l["span_id"], traceID)
+	}
+}
+
+// The request span is named after the matched route pattern, never the raw
+// path (review #19): bounded names, no identifiers.
+func TestSpanNamedByRoutePattern(t *testing.T) {
+	telemetry.SetEnabled(true)
+	t.Cleanup(func() { telemetry.SetEnabled(false) })
+	exp := tracetest.NewInMemoryExporter()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp)))
+	t.Cleanup(func() { otel.SetTracerProvider(noop.NewTracerProvider()) })
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/check", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
+	// RequestID copies the request (WithContext) like every middleware does:
+	// the pattern must still reach the span through spanNamed
+	srv := otelhttp.NewHandler(RequestID(spanNamed(mux)), "x", otelhttp.WithSpanNameFormatter(SpanName))
+	for _, path := range []string{"/stores/tenant-secret-42/pgauthz/v1/check", "/no/such/route"} {
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, httptest.NewRequest("POST", path, nil))
+	}
+	got := names(exp.GetSpans())
+	if len(got) != 2 || got[0] != "POST /stores/{store}/pgauthz/v1/check" || got[1] != "POST" {
+		t.Fatalf("span names %v", got)
+	}
 }

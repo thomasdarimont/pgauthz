@@ -12,6 +12,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 // A query becomes a client span named after the authz function, under the
@@ -21,7 +22,7 @@ import (
 func TestPgxTracer(t *testing.T) {
 	exp := tracetest.NewInMemoryExporter()
 	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp)))
-	t.Cleanup(func() { otel.SetTracerProvider(trace.NewNoopTracerProvider()) })
+	t.Cleanup(func() { otel.SetTracerProvider(noop.NewTracerProvider()) })
 	SetEnabled(true)
 	t.Cleanup(func() { SetEnabled(false) })
 	tr := NewPgxTracer()

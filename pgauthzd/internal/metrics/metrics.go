@@ -107,6 +107,12 @@ var (
 		Name: "pgauthzd_decision_log_inserted_lines_total",
 		Help: "Decision-log lines inserted into the postgres sink.",
 	})
+	// Accepted lines the postgres sink lost: a failed batch could not be put
+	// back because the queue was full while the sink was down. Alarm on it.
+	DecisionLogDropped = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "pgauthzd_decision_log_dropped_lines_total",
+		Help: "Decision-log lines accepted but lost by the postgres sink (failed batch, queue full).",
+	})
 
 	// Search / graph enumeration.
 	SearchRequests = promauto.NewCounterVec(prometheus.CounterOpts{

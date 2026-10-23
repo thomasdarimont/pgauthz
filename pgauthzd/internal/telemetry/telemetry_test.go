@@ -8,6 +8,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 func TestExportingFromEnv(t *testing.T) {
@@ -88,7 +89,7 @@ func TestSetupExporter(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200e6)
 	defer cancel()
 	_ = shutdown(ctx) // nothing to flush; an unreachable collector is not a setup error
-	otel.SetTracerProvider(trace.NewNoopTracerProvider())
+	otel.SetTracerProvider(noop.NewTracerProvider())
 	t.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "carrier-pigeon")
 	if _, _, err := Setup(context.Background(), Config{Enabled: true}); err == nil {
 		t.Fatal("an unknown protocol must be refused")

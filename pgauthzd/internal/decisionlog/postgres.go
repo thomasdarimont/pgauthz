@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -122,6 +123,12 @@ type PostgresSink struct {
 	// OnFlush, when set, is called after every insert attempt with "ok" or
 	// "error" and the number of lines (wired to metrics by the daemon).
 	OnFlush func(result string, lines int)
+	// OnDrop, when set, is called with the number of ACCEPTED lines a failed
+	// batch could not keep (the queue was full when they were put back):
+	// evidence that is gone, to be counted and alarmed on. Dropped is the
+	// running total.
+	OnDrop  func(lines int)
+	Dropped atomic.Int64
 	// Queued reports the current queue length (metrics).
 	Queued func() int
 }
@@ -312,11 +319,22 @@ func (s *PostgresSink) flushMany(ctx context.Context, batch [][]byte) error {
 	if err != nil {
 		s.down.Store(true)
 		s.lastErr.Store(&err)
-		// keep the lines for the next attempt (what the queue can hold)
+		// keep the lines for the next attempt — what the queue can hold; the
+		// rest is lost and said so (counted, logged): a line the Logger
+		// accepted has no recoverable trail once the queue cannot take it back.
+		dropped := 0
 		for _, line := range batch {
 			select {
 			case s.q <- line:
 			default:
+				dropped++
+			}
+		}
+		if dropped > 0 {
+			s.Dropped.Add(int64(dropped))
+			slog.Error("decision log: lines lost — the sink is down and the queue is full", "dropped", dropped, "total_dropped", s.Dropped.Load(), "queue", cap(s.q), "err", err)
+			if s.OnDrop != nil {
+				s.OnDrop(dropped)
 			}
 		}
 		if s.OnFlush != nil {

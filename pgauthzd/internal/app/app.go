@@ -200,6 +200,7 @@ func Run(name, version string) error {
 					metrics.DecisionLogInserted.Add(float64(lines))
 				}
 			}
+			ps.OnDrop = func(lines int) { metrics.DecisionLogDropped.Add(float64(lines)) }
 		}
 	}
 	dlogOpt := api.WithDecisionLog(dlog)
@@ -341,8 +342,10 @@ func newServer(cfg *config.Config, addr string, h http.Handler) *http.Server {
 // the incoming trace context extracted (so the RequestID middleware and the
 // decision span see it); health probes stay out of the traces.
 func tracedHandler(h http.Handler) http.Handler {
+	// Named after the matched route pattern (api.SpanName), never the raw
+	// path: bounded names, no identifiers; an unmatched route is the method.
 	return otelhttp.NewHandler(h, "pgauthzd",
-		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string { return r.Method + " " + r.URL.Path }),
+		otelhttp.WithSpanNameFormatter(api.SpanName),
 		otelhttp.WithFilter(func(r *http.Request) bool {
 			switch r.URL.Path {
 			case "/livez", "/readyz", "/healthz":
