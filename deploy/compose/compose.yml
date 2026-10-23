@@ -183,17 +183,18 @@ services:
     environment:
       <<: *pgauthzd-env
       PGAUTHORIZER_PROFILE: "full"
-      # The writer role; with the admin API (ADMIN_API_ENABLED=true) set
-      # PGAUTHZD_FULL_DB_USER=pgauthzd_admin + PGAUTHZD_ADMIN_PASSWORD — the
-      # management routes need the authz_admin tier, asserted at startup.
-      DATABASE_URL: "postgres://${PGAUTHZD_FULL_DB_USER:-pgauthzd_rw}:${PGAUTHZD_FULL_DB_PASSWORD:-${PGAUTHZD_RW_PASSWORD:?}}@db:5432/authz"
+      DATABASE_URL: "postgres://pgauthzd_rw:${PGAUTHZD_RW_PASSWORD:?}@db:5432/authz"
       # The admin API (/pgauthz/v1/admin/…), off by default. Enabled, serve it
       # on its own listener (ADMIN_LISTEN_ADDR, reachable by management
       # clients only — not published here); the gate is a per-issuer `admin`
-      # binding in JWT_ISSUERS or the ADMIN_ROLE shorthand.
+      # binding in JWT_ISSUERS or the ADMIN_ROLE shorthand; management runs
+      # on its own pool as pgauthzd_admin (ADMIN_DATABASE_URL with
+      # PGAUTHZD_ADMIN_PASSWORD, set by the migrate service) — the main pool
+      # keeps the writer tier.
       ADMIN_API_ENABLED: "${ADMIN_API_ENABLED:-false}"
       ADMIN_LISTEN_ADDR: "${ADMIN_LISTEN_ADDR:-}"
       ADMIN_ROLE: "${ADMIN_ROLE:-}"
+      ADMIN_DATABASE_URL: "${ADMIN_DATABASE_URL:-}"
       DB_POOL_MAX: "${WRITE_POOL_MAX:-10}"
       # Who may write (a JWT role in JWT_ROLES_CLAIM) and who may feed the
       # action log.

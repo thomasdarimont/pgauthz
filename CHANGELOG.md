@@ -84,6 +84,16 @@ pre-1.0, minor versions may include breaking changes.
   endpoints) instead of just the outcome; Reset clears every filter back to
   the window; Refresh reloads it. A test pins that every filter value
   reaches SQL as a bound argument.
+- **`ADMIN_DATABASE_URL`**: management runs on its own small pool as the
+  admin tier while the instance's `DATABASE_URL` keeps the writer tier
+  (`doctor` warns when the main pool serves management). The demo stack,
+  compose and Helm use it; the full instance connects as `pgauthzd_rw`
+  again.
+- **Helm: the admin listener's mTLS.** `admin.tlsSecret` (a
+  `kubernetes.io/tls` secret), `admin.clientCASecret` (+ `clientCASecretKey`)
+  and `admin.clientCerts` render `ADMIN_TLS_*`, `ADMIN_CLIENT_CA` and
+  `ADMIN_CLIENT_CERTS` on the writer with the secrets mounted; the chart
+  README gains "The admin API (configuration as code)".
 - **pgauthzctl's model verbs over the admin API.** `publish`, `plan`,
   `diff`, `apply`, `export`, `status`, `versions` and `rollout` run over
   `--server` (publish sends the parsed OpenFGA model; the new engine

@@ -438,6 +438,12 @@ type Config struct {
 	AdminTLSKey      string
 	AdminClientCA    string
 	AdminClientCerts []AdminClientCert
+	// AdminDatabaseURL (ADMIN_DATABASE_URL) is a second, small pool the
+	// management resources run on, connecting as the admin tier
+	// (pgauthzd_admin) — so the instance's own DATABASE_URL keeps the writer
+	// tier (pgauthzd_rw) and the decision paths never run with admin rights.
+	// Unset: the main pool serves management too and must hold authz_admin.
+	AdminDatabaseURL string
 
 	// Tracing (TRACING): "auto" (default — on only when the OTEL_* environment
 	// configures an OTLP exporter), "on" (propagation + spans, exported when
@@ -554,6 +560,7 @@ func Load() (*Config, error) {
 		AdminTLSCert:                  env("ADMIN_TLS_CERT", ""),
 		AdminTLSKey:                   env("ADMIN_TLS_KEY", ""),
 		AdminClientCA:                 env("ADMIN_CLIENT_CA", ""),
+		AdminDatabaseURL:              env("ADMIN_DATABASE_URL", ""),
 		IssuersSource:                 strings.ToLower(env("ISSUERS_SOURCE", "env")),
 		IssuersPollInterval:           envInt("ISSUERS_POLL_INTERVAL", 30),
 		IssuersRequiredRole:           env("ISSUERS_REQUIRED_ROLE", ""),
@@ -756,6 +763,8 @@ func Load() (*Config, error) {
 		}
 	} else if c.AdminListenAddr != "" {
 		return nil, fmt.Errorf("ADMIN_LISTEN_ADDR is set but ADMIN_API_ENABLED is false; enable the admin API or drop the listener")
+	} else if c.AdminDatabaseURL != "" {
+		return nil, fmt.Errorf("ADMIN_DATABASE_URL is set but ADMIN_API_ENABLED is false; enable the admin API or drop the pool")
 	}
 	switch c.Tracing {
 	case "auto", "on", "off":

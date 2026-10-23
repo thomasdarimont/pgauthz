@@ -158,12 +158,13 @@ export ALLOW_SUBJECT_OVERRIDE="${ALLOW_SUBJECT_OVERRIDE:-true}"
 # Issuers): the instances merge authz.issuer_bindings over JWT_ISSUERS.
 export ISSUERS_SOURCE="${ISSUERS_SOURCE:-env+db}"
 # … and serves the admin API on the full instance (host port 8096, its own
-# listener), gated by the pgauthz_admin role in the demo tokens; the instance
-# connects as pgauthzd_admin (authz_admin tier) for that.
+# listener), gated by the pgauthz_admin role in the demo tokens; management
+# runs on its own pool as pgauthzd_admin (authz_admin tier) while the
+# instance's main pool stays the writer (pgauthzd_rw).
 export ADMIN_API_ENABLED="${ADMIN_API_ENABLED:-true}"
 export ADMIN_LISTEN_ADDR="${ADMIN_LISTEN_ADDR:-:8082}"
 export ADMIN_ROLE="${ADMIN_ROLE:-pgauthz_admin}"
-export PGAUTHZD_FULL_DB_USER="${PGAUTHZD_FULL_DB_USER:-pgauthzd_admin}"
+export ADMIN_DATABASE_URL="${ADMIN_DATABASE_URL:-postgres://pgauthzd_admin:${PGAUTHZD_ADMIN_PASSWORD:-authz}@authz-db:5432/authz}"
 # The conformance suite (conformance/) reaches the daemon through a TLS front
 # and fetches discovery through it; the demo stack trusts the front's
 # X-Forwarded-* headers so the advertised PDP identifier matches (prod: false).

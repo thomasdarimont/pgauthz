@@ -570,6 +570,7 @@ All configuration is via environment variables.
 | `ADMIN_API_ENABLED` | `false` | Serve the [admin API](#admin-api-full-profile-admin_api_enabled) (`/pgauthz/v1/admin/…`). `full` profile only, DB role holding `authz_admin` (`pgauthzd_admin`, asserted at startup), and a gate: an issuer with an `admin` binding or `ADMIN_ROLE` — enabled without one is a startup error |
 | `ADMIN_LISTEN_ADDR` | | Serve the admin API on its own listener (recommended; production warns without it) — the public listener then has no `/admin/` route and its OpenAPI document omits them. Health probes are served there too |
 | `ADMIN_ROLE` | | Single-issuer shorthand for the admin gate: a role (`JWT_ROLES_CLAIM`) the token must hold; platform scope (every issuer) |
+| `ADMIN_DATABASE_URL` | | A second, small pool the management resources run on, connecting as the admin tier (`pgauthzd_admin`), so `DATABASE_URL` keeps the writer tier and the decision paths never run with admin rights. Unset: the main pool serves management and must hold `authz_admin` (`doctor` warns) |
 | `ADMIN_TLS_CERT` / `ADMIN_TLS_KEY` / `ADMIN_CLIENT_CA` | | mTLS on the admin listener (all three; needs `ADMIN_LISTEN_ADDR`): the listener terminates TLS and **requires** a client certificate chained to the CA. A verified certificate is a credential of its own when `ADMIN_CLIENT_CERTS` maps it |
 | `ADMIN_CLIENT_CERTS` | | JSON array mapping verified client certificates to admin scopes: `[{"cn":"terraform","scope":"platform"},{"uri":"spiffe://acme/ci/tenant-a","scope":"issuer","issuer":"https://idp.tenant-a"}]` (`subject` for the full RFC 2253 subject). The certificate's identity (SAN URI, else subject) is the recorded actor (`cert:…`). For machine identities — CI, Terraform runners; people keep using tokens |
 | `TRACING` | `auto` | **OpenTelemetry master switch.** `auto`: tracing is on only when the `OTEL_*` environment configures an OTLP exporter — so it is **off by default**; `on`: propagation and spans even without an exporter (a caller's `traceparent` reaches the decision log); `off`: nothing — no header read, no span, no ids on the log line. Off means the untraced code path: no handler wrapper, no query tracer, no OPA transport wrapper |
@@ -761,8 +762,10 @@ prefix `/pgauthz/v1/admin/…` so a gateway allows or denies them by prefix, and
 with `ADMIN_LISTEN_ADDR` on their own listener, which is what a production
 instance should do (the public listener then serves no `/admin/` route and its
 OpenAPI document omits them — the served document is always instance-accurate).
-Only a `full` instance serves it, and its DB role must hold `authz_admin`
-(`pgauthzd_admin` in `roles.sql`; asserted at startup).
+Only a `full` instance serves it; management runs on its own pool as the
+admin tier (`ADMIN_DATABASE_URL`, `pgauthzd_admin` in `roles.sql`; asserted
+at startup) while the instance's `DATABASE_URL` stays the writer — or, without
+the second pool, on the main pool, which must then hold `authz_admin`.
 
 **The gate.** Every call needs a verified token (the same `JWT_ISSUERS` trust
 as the decision paths) that passes the admin gate:

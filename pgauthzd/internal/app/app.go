@@ -223,22 +223,37 @@ func Run(name, version string) error {
 	}
 
 	var servers []*http.Server
-	servers = append(servers, newServer(cfg, cfg.ListenAddr, api.NewRouter(backend, raw, rawWrite, cfg, jwtMW, dlogOpt, verOpt, issOpt)))
-
-	// The admin API (ADMIN_API_ENABLED): a full instance whose DB role holds
-	// authz_admin — asserted now, so a misconfigured instance refuses to
-	// start rather than 403 every management call. On its own listener when
-	// ADMIN_LISTEN_ADDR is set (newPublicMux mounts it on the public one
-	// otherwise).
+	// The admin API (ADMIN_API_ENABLED): a full instance; management runs on
+	// a backend holding authz_admin — its own pool with ADMIN_DATABASE_URL
+	// (the main pool keeps the writer tier), else the main pool, which must
+	// then hold the tier itself. Asserted now, so a misconfigured instance
+	// refuses to start rather than 403 every management call.
+	var admOpts []api.Option
 	if cfg.AdminAPIEnabled {
 		if rawWrite == nil || pgb == nil {
 			return fmt.Errorf("ADMIN_API_ENABLED=true needs a full instance with the direct PostgreSQL backend")
 		}
-		if err := pgb.AssertAdmin(ctx); err != nil {
+		adminBackend := pgb
+		if cfg.AdminDatabaseURL != "" {
+			apool, err := newPool(ctx, cfg.AdminDatabaseURL, 4)
+			if err != nil {
+				return fmt.Errorf("ADMIN_DATABASE_URL: %w", err)
+			}
+			defer apool.Close()
+			adminBackend = pgbackend.New(apool, nil, time.Duration(cfg.DBRoleCacheTTLSeconds)*time.Second, "", "admin")
+			admOpts = append(admOpts, api.WithAdminBackend(adminBackend))
+		}
+		if err := adminBackend.AssertAdmin(ctx); err != nil {
 			return fmt.Errorf("ADMIN_API_ENABLED=true: %w", err)
 		}
+	}
+	servers = append(servers, newServer(cfg, cfg.ListenAddr, api.NewRouter(backend, raw, rawWrite, cfg, jwtMW, append([]api.Option{dlogOpt, verOpt, issOpt}, admOpts...)...)))
+
+	// On its own listener when ADMIN_LISTEN_ADDR is set (newPublicMux mounts
+	// the routes on the public listener otherwise).
+	if cfg.AdminAPIEnabled {
 		if cfg.AdminListenAddr != "" {
-			hAdm := api.NewHandler(nil, raw, rawWrite, cfg, dlogOpt, verOpt, issOpt)
+			hAdm := api.NewHandler(nil, raw, rawWrite, cfg, append([]api.Option{dlogOpt, verOpt, issOpt}, admOpts...)...)
 			admSrv := newServer(cfg, cfg.AdminListenAddr, api.NewAdminRouter(hAdm, jwtMW))
 			tlsCfg, terr := mtlsConfig(cfg.AdminTLSCert, cfg.AdminTLSKey, cfg.AdminClientCA, "admin")
 			if terr != nil {
@@ -248,7 +263,7 @@ func Run(name, version string) error {
 				admSrv.TLSConfig = tlsCfg
 			}
 			servers = append(servers, admSrv)
-			slog.Info("admin API listener", "addr", cfg.AdminListenAddr, "gate", adminGateLabel(cfg), "mtls", tlsCfg != nil)
+			slog.Info("admin API listener", "addr", cfg.AdminListenAddr, "gate", adminGateLabel(cfg), "mtls", tlsCfg != nil, "own_pool", cfg.AdminDatabaseURL != "")
 		} else {
 			slog.Info("admin API on the public listener", "prefix", "/pgauthz/v1/admin/", "gate", adminGateLabel(cfg))
 		}

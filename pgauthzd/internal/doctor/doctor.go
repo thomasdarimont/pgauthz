@@ -341,6 +341,14 @@ func Run(ctx context.Context, opts Options) *Report {
 		add("admin api", StatusOK, "on the public listener under /pgauthz/v1/admin/")
 	}
 
+	if cfg.AdminAPIEnabled {
+		if cfg.AdminDatabaseURL != "" {
+			add("admin pool", StatusOK, "management runs on its own pool (ADMIN_DATABASE_URL, the admin tier); DATABASE_URL keeps the writer tier")
+		} else {
+			add("admin pool", StatusWarn, "management runs on the instance's main pool, which must hold authz_admin — set ADMIN_DATABASE_URL to keep the decision paths at the writer tier")
+		}
+	}
+
 	// ── issuer bindings source ───────────────────────────────────────────
 	if cfg.IssuersSource == "env+db" {
 		add("issuer bindings source", StatusOK, fmt.Sprintf("ISSUERS_SOURCE=env+db: database bindings (authz.issuer_bindings) merged over the environment's %d issuer(s), polled every %ds; the environment keeps the anchors and a row may only narrow", len(cfg.Issuers), cfg.IssuersPollInterval))

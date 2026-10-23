@@ -363,6 +363,31 @@ One application's namespace only: add a row-filtered publication like
 subscriber across a shape change follows
 `db/replication/upgrade-derived-tables.sql`.
 
+## The admin API (configuration as code)
+
+The writer can serve pgauthzd's management API ([ADR 0016](../../../docs/adr/0016-issuer-bindings-and-admin-api.md)):
+issuer bindings, stores and the model lifecycle for Terraform, pgauthzctl
+and the console, on its own port behind a gate.
+
+```yaml
+admin:
+  enabled: true
+  role: pgauthz_admin                 # or per-issuer admin bindings in opa.jwtIssuers
+  # machines authenticate with client certificates (mTLS), people with tokens
+  tlsSecret: pgauthz-admin-tls        # kubernetes.io/tls — cert-manager issues it
+  clientCASecret: pgauthz-admin-ca    # key ca.crt: the CA that signs the clients
+  clientCerts:
+    - { cn: terraform, scope: platform }
+    - { uri: "spiffe://acme/ci/tenant-a", scope: issuer, issuer: "https://idp.tenant-a" }
+```
+
+With `admin.enabled` the writer keeps its main pool at the writer tier and
+runs management on a second pool as `pgauthzd_admin` (a managed role
+inheriting `authz_admin`, password `secrets.pgauthzdAdminPassword`,
+`ADMIN_DATABASE_URL`), and the Service gains an `admin` port (8082); restrict it with a NetworkPolicy to the
+management clients. `pgauthzctl --server https://<writer>:8082 --cert … --key
+… --ca …` (or `--token`) then operates without database credentials.
+
 ## Management console
 
 [`console/README.md`](../../../console/README.md): the web UI for the people

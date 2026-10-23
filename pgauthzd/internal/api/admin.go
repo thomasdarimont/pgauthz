@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"crypto/x509"
+	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 	"thomasdarimont.de/authz/pgauthzd/internal/config"
 	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
 	"thomasdarimont.de/authz/pgauthzd/pkg/issuers"
@@ -231,8 +232,22 @@ func (h *Handler) adminIssuers(w http.ResponseWriter, r *http.Request) {
 	h.writeIssuers(w, h.visibleIssuers(r, scope.platform))
 }
 
+// WithAdminBackend runs the management resources on their own backend
+// (ADMIN_DATABASE_URL), leaving the instance's main pool at the writer tier.
+func WithAdminBackend(b authz.Backend) Option {
+	return func(h *Handler) { h.admin = b }
+}
+
+// adminBackend is the backend management runs on.
+func (h *Handler) adminBackend() authz.Backend {
+	if h.admin != nil {
+		return h.admin
+	}
+	return h.rawWrite
+}
+
 func (h *Handler) bindingAdmin(w http.ResponseWriter) (IssuerBindingAdmin, bool) {
-	a, ok := h.rawWrite.(IssuerBindingAdmin)
+	a, ok := h.adminBackend().(IssuerBindingAdmin)
 	if !ok {
 		writeError(w, http.StatusNotImplemented, "issuer bindings need the direct PostgreSQL backend of a full instance")
 		return nil, false

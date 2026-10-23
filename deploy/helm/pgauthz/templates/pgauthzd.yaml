@@ -162,21 +162,39 @@ spec:
               valueFrom:
                 secretKeyRef: { name: {{ include "pgauthz.secretName" . }}, key: native-service-token }
             {{- $adm := .Values.admin | default dict }}
-            {{- $dbUser := ternary "pgauthzd_admin" "pgauthzd_rw" (eq (toString $adm.enabled) "true") }}
             - name: RW_PW
               valueFrom:
-                secretKeyRef: { name: {{ include "pgauthz.fullname" . }}-{{ $dbUser | replace "_" "-" }}, key: password }
+                secretKeyRef: { name: {{ include "pgauthz.fullname" . }}-pgauthzd-rw, key: password }
             - name: DATABASE_URL
               # remote_apply: with database.replication.synchronous enabled, a
               # grant/revoke only acks once the synchronous standbys APPLIED it
               # (no stale allow after a revoke ack). No-op without sync standbys.
-              # admin.enabled: the login is pgauthzd_admin (authz_admin tier).
-              value: postgres://{{ $dbUser }}:$(RW_PW)@{{ include "pgauthz.dbRW" . }}:5432/authz?options=-csynchronous_commit%3D{{ .Values.writer.synchronousCommit | default "remote_apply" }}
+              value: postgres://pgauthzd_rw:$(RW_PW)@{{ include "pgauthz.dbRW" . }}:5432/authz?options=-csynchronous_commit%3D{{ .Values.writer.synchronousCommit | default "remote_apply" }}
             {{- if $adm.enabled }}
+            # Management on its own pool as pgauthzd_admin (authz_admin tier);
+            # the main pool above stays the writer.
+            - name: ADM_PW
+              valueFrom:
+                secretKeyRef: { name: {{ include "pgauthz.fullname" . }}-pgauthzd-admin, key: password }
+            - name: ADMIN_DATABASE_URL
+              value: postgres://pgauthzd_admin:$(ADM_PW)@{{ include "pgauthz.dbRW" . }}:5432/authz
             - { name: ADMIN_API_ENABLED, value: "true" }
             - { name: ADMIN_LISTEN_ADDR, value: ":8082" }
             {{- with $adm.role }}
             - { name: ADMIN_ROLE, value: {{ . | quote }} }
+            {{- end }}
+            {{- if or $adm.tlsSecret $adm.clientCASecret }}
+            {{- if not (and $adm.tlsSecret $adm.clientCASecret) }}
+            {{- fail "admin.tlsSecret and admin.clientCASecret go together (the admin listener's mTLS)" }}
+            {{- end }}
+            - { name: ADMIN_TLS_CERT,  value: /etc/pgauthz/admin-tls/tls.crt }
+            - { name: ADMIN_TLS_KEY,   value: /etc/pgauthz/admin-tls/tls.key }
+            - { name: ADMIN_CLIENT_CA, value: /etc/pgauthz/admin-ca/{{ $adm.clientCASecretKey | default "ca.crt" }} }
+            {{- with $adm.clientCerts }}
+            - { name: ADMIN_CLIENT_CERTS, value: {{ . | toJson | quote }} }
+            {{- end }}
+            {{- else if $adm.clientCerts }}
+            {{- fail "admin.clientCerts needs the admin listener's mTLS (admin.tlsSecret + admin.clientCASecret)" }}
             {{- end }}
             {{- end }}
             - { name: DB_POOL_MAX,   value: {{ .Values.writer.dbPoolMax | quote }} }
@@ -209,9 +227,19 @@ spec:
           resources: {{- toYaml .Values.writer.resources | nindent 12 }}
           volumeMounts:
             - { name: jwks, mountPath: /jwks, readOnly: true }
+            {{- if and $adm.enabled $adm.tlsSecret }}
+            - { name: admin-tls, mountPath: /etc/pgauthz/admin-tls, readOnly: true }
+            - { name: admin-ca,  mountPath: /etc/pgauthz/admin-ca,  readOnly: true }
+            {{- end }}
       volumes:
         - name: jwks
           configMap: { name: {{ include "pgauthz.fullname" . }}-opa-data }
+        {{- if and $adm.enabled $adm.tlsSecret }}
+        - name: admin-tls
+          secret: { secretName: {{ $adm.tlsSecret | quote }} }
+        - name: admin-ca
+          secret: { secretName: {{ $adm.clientCASecret | quote }} }
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service

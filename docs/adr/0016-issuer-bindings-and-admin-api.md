@@ -115,9 +115,10 @@ the next revision within its poll interval.
 
 - Onboarding, narrowing and pausing an identity provider no longer need a
   deploy; adding one still does (trust is deliberate).
-- A full instance that serves the admin API connects with the admin tier
-  (`pgauthzd_admin`); instances that do not, keep `pgauthzd_rw`. A separate
-  `ADMIN_DATABASE_URL` pool is a possible refinement.
+- A full instance that serves the admin API runs management on a second
+  pool as the admin tier (`ADMIN_DATABASE_URL`, `pgauthzd_admin`); its main
+  pool stays `pgauthzd_rw`, so the decision and write paths never run with
+  admin rights. Without the second pool the main pool must hold the tier.
 - `ISSUERS_SOURCE=env+db` adds one poll per interval and a `LISTEN`
   connection per instance on the primary; a hot standby relies on the poll.
 - The rejection of a widening row is visible to the writer only through

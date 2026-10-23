@@ -48,6 +48,9 @@ type Handler struct {
 	// direct pgx backend (set only on a full instance). nil = writes unavailable
 	// (decision-only), and the write routes return 501/403.
 	rawWrite authz.Backend
+	// admin, when set, is the backend the management resources run on
+	// (ADMIN_DATABASE_URL: the admin tier on its own pool); else rawWrite.
+	admin authz.Backend
 	// requireWriterRole gates the native write endpoints behind the WRITER_ROLE
 	// claim. Set on the PUBLIC (JWT) router — pgauthzd authorizes writes itself.
 	// Left false on the service-token CALLBACK router, which trusts the upstream

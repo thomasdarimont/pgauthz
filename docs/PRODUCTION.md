@@ -462,8 +462,9 @@ at all — can live in the database instead of `JWT_ISSUERS`
   file in git, reviewable, one transaction), and the admin API below.
 - **The admin API** (`ADMIN_API_ENABLED=true`, default off) is the
   management surface for configuration as code: `/pgauthz/v1/admin/…` on a
-  `full` instance connecting as `pgauthzd_admin` (the `authz_admin` tier,
-  asserted at startup). Serve it on its own listener
+  `full` instance, with management on its own pool as `pgauthzd_admin`
+  (`ADMIN_DATABASE_URL`, the `authz_admin` tier, asserted at startup) so the
+  instance's `DATABASE_URL` stays the writer tier. Serve it on its own listener
   (`ADMIN_LISTEN_ADDR`; the public listener then has no `/admin/` route),
   reachable by management clients only. The gate: an `admin` binding per
   issuer in `JWT_ISSUERS` — `{"admin":{"scopes":["pgauthz:admin"],

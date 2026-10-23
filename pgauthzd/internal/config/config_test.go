@@ -561,6 +561,11 @@ func TestAdminAPIConfig(t *testing.T) {
 		t.Fatalf("a listener without the feature must be refused, got %v", err)
 	}
 	t.Setenv("ADMIN_LISTEN_ADDR", "")
+	t.Setenv("ADMIN_DATABASE_URL", "postgres://a:b@h/db")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "ADMIN_DATABASE_URL") {
+		t.Fatalf("an admin pool without the feature must be refused, got %v", err)
+	}
+	t.Setenv("ADMIN_DATABASE_URL", "")
 	t.Setenv("ADMIN_API_ENABLED", "true")
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "admin gate") {
 		t.Fatalf("enabled without a gate must be refused, got %v", err)

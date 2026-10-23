@@ -94,13 +94,25 @@ issuers:
   requiredRole: ""    # ISSUERS_REQUIRED_ROLE: who may read GET /pgauthz/v1/issuers on the public listener
 # The admin API on the writer (/pgauthz/v1/admin/…: issuer bindings; the
 # configuration-as-code surface for Terraform / pgauthzctl / the console).
-# Off by default. Enabled, the writer connects as pgauthzd_admin (a managed
-# role inheriting authz_admin) and serves the routes on their own listener
+# Off by default. Enabled, the writer serves the routes on their own listener
+# and runs management on a second pool as pgauthzd_admin (a managed role
+# inheriting authz_admin; ADMIN_DATABASE_URL) while its main pool stays the
+# writer,
 # (port 8082, a `admin` Service port — give it a NetworkPolicy); the gate is a
 # per-issuer `admin` binding in opa.jwtIssuers or the ADMIN_ROLE shorthand.
 admin:
   enabled: false
   role: ""            # ADMIN_ROLE: single-issuer shorthand — a role the token must hold (platform scope)
+  # mTLS on the admin listener: the writer terminates TLS with the pair in
+  # tlsSecret (a kubernetes.io/tls secret: tls.crt / tls.key — cert-manager
+  # issues one) and REQUIRES a client certificate chained to the CA in
+  # clientCASecret (key ca.crt). A verified certificate is then a credential
+  # of its own when clientCerts maps it — machine identities (CI, Terraform
+  # runners); people keep using tokens. Both secrets or neither.
+  tlsSecret: ""
+  clientCASecret: ""
+  clientCASecretKey: ca.crt
+  clientCerts: []     # ADMIN_CLIENT_CERTS, e.g. [{cn: terraform, scope: platform}, {uri: "spiffe://acme/ci/tenant-a", scope: issuer, issuer: "https://idp.tenant-a"}]
 # OpenTelemetry on every pgauthzd instance: traces leave over OTLP when an
 # endpoint is set (propagation of traceparent/B3 is always on); the decision
 # log's trace_id/span_id join a line to the application's trace.

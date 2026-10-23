@@ -49,7 +49,7 @@ var storeNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]{0,62}$`)
 var modelNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 func (h *Handler) storeAdmin(w http.ResponseWriter) (StoreAdmin, bool) {
-	a, ok := h.rawWrite.(StoreAdmin)
+	a, ok := h.adminBackend().(StoreAdmin)
 	if !ok {
 		writeError(w, http.StatusNotImplemented, "store and model management needs the direct PostgreSQL backend of a full instance")
 		return nil, false
