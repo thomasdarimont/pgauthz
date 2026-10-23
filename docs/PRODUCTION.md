@@ -437,6 +437,49 @@ anywhere (defense in depth; the playground stack runs this way). The tokenless
 **arbitrary subjects** on behalf of others (there is no token for "can *bob*
 read this?" when *alice's* service asks).
 
+## Issuer bindings and the admin API
+
+What a trusted issuer's tokens may do — the stores they reach, the DB roles
+they may claim, the client roles, the PEP clients, whether they are accepted
+at all — can live in the database instead of `JWT_ISSUERS`
+([ADR 0016](adr/0016-issuer-bindings-and-admin-api.md)); trust itself
+(issuer, audience, keys) always stays in the environment.
+
+- **`ISSUERS_SOURCE=env+db`** on every instance that should follow the rows
+  (`authz.issuer_bindings`): merged at start and on every change (poll
+  `ISSUERS_POLL_INTERVAL`, default 30 s; `NOTIFY` on a primary applies it
+  sooner; a hot standby relies on the poll). A row can only **narrow** the
+  environment: an issuer the environment does not trust is ignored, a row
+  that unbinds or widens `stores` is rejected and logged
+  (`pgauthzd_issuers_reloads_total{result="rejected"}`), the set in force
+  never changes on a bad row. `/readyz` reports the applied revision;
+  `doctor` the mode. `enabled=false` on a row refuses an issuer's tokens
+  fleet-wide without a deploy — the incident-response switch.
+- **Three ways to edit the same rows**, every write audited with its actor
+  (`authz.issuer_bindings_audit`): the console's Platform → Issuers
+  (`can_manage_issuers`: platform admins and the dedicated `issuer_admin`
+  role), `pgauthzctl issuers export | import --prune` (the rows as a JSON
+  file in git, reviewable, one transaction), and the admin API below.
+- **The admin API** (`ADMIN_API_ENABLED=true`, default off) is the
+  management surface for configuration as code: `/pgauthz/v1/admin/…` on a
+  `full` instance connecting as `pgauthzd_admin` (the `authz_admin` tier,
+  asserted at startup). Serve it on its own listener
+  (`ADMIN_LISTEN_ADDR`; the public listener then has no `/admin/` route),
+  reachable by management clients only. The gate: an `admin` binding per
+  issuer in `JWT_ISSUERS` — `{"admin":{"scopes":["pgauthz:admin"],
+  "claims":{"realm_access.roles":["platform-admin"]},"clients":["terraform"],
+  "scope":"platform"}}` — or the single-issuer shorthand `ADMIN_ROLE`.
+  Management is **scoped per tenant**: an admin binding manages its own
+  issuer unless `scope: platform`; `GET /pgauthz/v1/issuers` shows a caller
+  its own issuer only. See
+  [pgauthzd/README.md → Admin API](../pgauthzd/README.md#admin-api-full-profile-admin_api_enabled).
+- **Checklist:** keep `REQUIRE_STORE_BINDING=true` — the environment's
+  binding is the ceiling a row narrows within, so an issuer unbound in the
+  environment stays unbound unless a row binds it; give the admin identity
+  provider an `admin` binding with `scope: platform` and the tenants'
+  identity providers none (or `scope: issuer` where tenants self-manage);
+  alert on `pgauthzd_issuers_reloads_total{result="rejected"}`.
+
 ## Condition (ABAC) policy
 
 Condition expressions are arbitrary SQL run in a sandbox (`_exec_condition` as

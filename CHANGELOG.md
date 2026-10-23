@@ -84,6 +84,14 @@ pre-1.0, minor versions may include breaking changes.
   endpoints) instead of just the outcome; Reset clears every filter back to
   the window; Refresh reloads it. A test pins that every filter value
   reaches SQL as a bound argument.
+- **`pgauthzctl issuers list | export | import [--prune] [--dry-run] |
+  delete`**: the issuer bindings as a JSON file in git, imported as an
+  upsert in one transaction (the engine validates; `--prune` drops rows the
+  file no longer names); `tests/test-pgauthzctl.sh` covers the round trip.
+  [ADR 0016](docs/adr/0016-issuer-bindings-and-admin-api.md) records the
+  design (anchors in the environment, bindings in the database, the
+  tenant-scoped admin API); PRODUCTION.md gains "Issuer bindings and the
+  admin API".
 - **Console: Platform → Issuers** (`platform#can_manage_issuers`, held by
   platform admins and by the new dedicated `issuer_admin` platform role,
   grantable on the Admins tab, which opens nothing else): the

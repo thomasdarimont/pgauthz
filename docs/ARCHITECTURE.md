@@ -1321,6 +1321,12 @@ sequentially; status flows Proposed → Accepted → Superseded. The log:
 | [0008](adr/0008-opa-is-opt-in.md) | OPA is opt-in; the default stack is OPA-free | Accepted |
 | [0009](adr/0009-freshness-tokens.md) | Freshness tokens for read-your-writes (LSN watermark) | Proposed |
 | [0010](adr/0010-metrics-observability.md) | Metrics & observability (Prometheus) | Proposed |
+| [0011](adr/0011-opa-policy-hooks.md) | OPA policy hooks (narrowing veto hooks, enforced isolation) | Accepted |
+| [0012](adr/0012-action-log.md) | The action log and temporal gates | Accepted |
+| [0013](adr/0013-decision-log.md) | The decision log (pgauthzd, one line per decision) | Accepted |
+| [0014](adr/0014-subject-assertion-policy.md) | Subject assertion policy: per-client `pep_clients` | Accepted |
+| [0015](adr/0015-decision-log-postgres-sink.md) | A PostgreSQL sink for the decision log | Accepted |
+| [0016](adr/0016-issuer-bindings-and-admin-api.md) | Issuer bindings in the database; the tenant-scoped admin API | Accepted |
 
 To add one: create `docs/adr/NNNN-*.md` (for decisions on authorization
 semantics, security boundaries, or operational contracts) and a row here.

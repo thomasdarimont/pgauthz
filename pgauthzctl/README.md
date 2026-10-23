@@ -65,6 +65,37 @@ For large fleets, orchestrate `apply` per store (or in bounded batches with
 a pinned `name@version`) and use `rollout` as the progress/retry view — see
 [MODEL_DESIGN §16](../docs/MODEL_DESIGN.md#16-sharing-one-model-across-stores-model-registry).
 
+## Issuer bindings as code
+
+What each trusted identity provider's tokens may do — the stores they
+reach, the DB roles they may claim, which clients may assert subjects,
+whether they are accepted at all — lives in `authz.issuer_bindings` and is
+applied by every pgauthzd running `ISSUERS_SOURCE=env+db` without a restart
+([ADR 0016](../docs/adr/0016-issuer-bindings-and-admin-api.md)). Trust
+itself (issuer, audience, keys) stays in the instances' `JWT_ISSUERS`; a
+row may only narrow it. These verbs keep the rows in git:
+
+```bash
+pgauthzctl issuers list                      # the rows and the revision in force
+pgauthzctl issuers export --out issuers.json # the file to commit (audit columns left out)
+# edit issuers.json …
+pgauthzctl issuers import issuers.json --dry-run   # + create / ~ update / - delete
+pgauthzctl issuers import issuers.json --prune     # one transaction; --prune drops rows the file no longer names
+pgauthzctl issuers delete https://old-idp.example   # the issuer is back to its environment bindings
+```
+
+The file is `{"bindings": [{issuer, stores, db_roles, client_db_roles,
+pep_clients, enabled, description}, …]}` — the shape the admin API
+(`PUT /pgauthz/v1/admin/issuer-bindings`) and the console's Platform →
+Issuers use. Validation is the engine's (anchored patterns, PEP clients
+within stores); a row for an issuer no instance trusts, or one that widens
+the environment's `stores`, is stored but reported and ignored by the
+instances (their logs, `pgauthzd_issuers_reloads_total{result="rejected"}`,
+the console's *not applied* badge). `list` / `export` need a reader DSN,
+`import` / `delete` the admin tier (`authz_admin`); every write is recorded
+in `authz.issuer_bindings_audit` with `--performed-by` (default
+`pgauthzctl`).
+
 ## Test fixtures (`tests.authz.yaml`)
 
 A superset of OpenFGA's store-test format; pgauthz extensions are additive

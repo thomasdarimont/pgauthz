@@ -19,6 +19,7 @@ Usage:
 
 Commands:
   model     Model-as-code lifecycle (the verbs below)
+  issuers   Issuer bindings as code (the verbs below)
   version   Print the pgauthzctl version
 
 Model verbs (pgauthzctl model <verb>):
@@ -33,12 +34,20 @@ Model verbs (pgauthzctl model <verb>):
   rollout   Fleet view for one model name
   test      Run a tests.authz.yaml fixture file against an ephemeral store
 
+Issuer verbs (pgauthzctl issuers <verb>) — what each trusted identity
+provider's tokens may do, kept in authz.issuer_bindings and applied by every
+pgauthzd running ISSUERS_SOURCE=env+db (trust itself stays in JWT_ISSUERS):
+  list      The bindings and the revision in force (--json for the export shape)
+  export    The bindings as a JSON file to keep in git (--out <file>)
+  import    Upsert the bindings of a file (--prune: delete the rest; --dry-run)
+  delete    Drop one binding (the issuer falls back to its environment)
+
 Further command groups (tuple, store, watch, ...) are planned.
 
 Connection:
   --dsn or PGAUTHZ_DSN (e.g. postgres://authz:authz@localhost:55433/authz)
-  Most verbs need admin; plan/diff/export/status/versions/rollout work
-  with a reader DSN.
+  Most verbs need admin; plan/diff/export/status/versions/rollout and
+  issuers list/export work with a reader DSN.
 `
 
 func main() {
@@ -46,13 +55,33 @@ func main() {
 		cmdVersion()
 		return
 	}
-	if len(os.Args) < 3 || os.Args[1] != "model" {
+	if len(os.Args) < 3 || (os.Args[1] != "model" && os.Args[1] != "issuers") {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
-	verb, args := os.Args[2], os.Args[3:]
+	group, verb, args := os.Args[1], os.Args[2], os.Args[3:]
 
 	var err error
+	if group == "issuers" {
+		switch verb {
+		case "list":
+			err = cmdIssuersList(args)
+		case "export":
+			err = cmdIssuersExport(args)
+		case "import":
+			err = cmdIssuersImport(args)
+		case "delete":
+			err = cmdIssuersDelete(args)
+		default:
+			fmt.Fprint(os.Stderr, usage)
+			os.Exit(2)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	switch verb {
 	case "import":
 		err = cmdImport(args)

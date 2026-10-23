@@ -47,6 +47,8 @@ check_fails() {
 cleanup() {
     psqlq "DO \$\$ BEGIN PERFORM authz.delete_store('ctl_it_tenant'); EXCEPTION WHEN OTHERS THEN NULL; END \$\$;" >/dev/null 2>&1 || true
     psqlq "DELETE FROM authz.model_registry WHERE name = 'ctl_it_model';" >/dev/null 2>&1 || true
+    psqlq "DELETE FROM authz.issuer_bindings WHERE issuer LIKE 'https://ctl-it.example/%';" >/dev/null 2>&1 || true
+    rm -f /tmp/ctl-it-issuers.json /tmp/ctl-it-issuers-2.json
 }
 trap cleanup EXIT
 cleanup
@@ -106,6 +108,34 @@ psqlq "SELECT authz.model_register_type('ctl_it_tenant', 'rogue');
        SELECT authz.write_tuple('ctl_it_tenant', 'user', 'x', 'rogue_rel', 'rogue', 'r1');" >/dev/null
 check_fails "plan exits non-zero on blockers" \
     "$CTL" model plan ctl_it_model --store ctl_it_tenant
+
+# Issuer bindings as code: import (create), list, export round trip, import
+# with an update and a prune (one transaction), dry run, delete, the
+# engine's validation surfacing as a non-zero exit.
+echo ""
+echo "==> Running pgauthzctl issuers checks..."
+echo ""
+cat > /tmp/ctl-it-issuers.json <<'JSON'
+{"bindings": [
+  {"issuer": "https://ctl-it.example/a", "stores": ["ctl_a_.*"], "db_roles": [], "client_db_roles": {}, "pep_clients": {"gw": ["ctl_a_docs"]}, "enabled": true, "description": "tenant a"},
+  {"issuer": "https://ctl-it.example/b", "stores": ["ctl_b"], "db_roles": ["app_b"], "client_db_roles": {"svc": "app_b"}, "pep_clients": {}, "enabled": false}
+]}
+JSON
+check "issuers import creates two bindings"     sh -c "'$CTL' issuers import /tmp/ctl-it-issuers.json | grep -q '2 created, 0 updated, 0 deleted'"
+check "issuers list shows them (one disabled)"     sh -c "'$CTL' issuers list | grep -q 'ctl-it.example/b *DISABLED'"
+check "issuers import is idempotent"     sh -c "'$CTL' issuers import /tmp/ctl-it-issuers.json | grep -q '^no changes'"
+check "issuers export round-trips the file"     sh -c "'$CTL' issuers export --out /tmp/ctl-it-issuers-2.json && '$CTL' issuers import /tmp/ctl-it-issuers-2.json | grep -q '^no changes'"
+cat > /tmp/ctl-it-issuers.json <<'JSON'
+{"bindings": [
+  {"issuer": "https://ctl-it.example/a", "stores": ["ctl_a_docs"], "db_roles": [], "client_db_roles": {}, "pep_clients": {"gw": ["ctl_a_docs"]}, "enabled": true, "description": "tenant a, narrowed"}
+]}
+JSON
+check "issuers import --dry-run reports the update and the prune without applying"     sh -c "'$CTL' issuers import /tmp/ctl-it-issuers.json --prune --dry-run | grep -q '^dry run: 0 to create, 1 to update, 1 to delete' && '$CTL' issuers list | grep -q 'ctl-it.example/b'"
+check "issuers import --prune updates a and deletes b"     sh -c "'$CTL' issuers import /tmp/ctl-it-issuers.json --prune --performed-by ci | grep -q '0 created, 1 updated, 1 deleted'"
+check "the audit trail names the actor"     sh -c "docker exec -i '$DB_CONTAINER' psql -Atq -U authz -d authz -c \"SELECT performed_by FROM authz.list_issuer_bindings_audit('https://ctl-it.example/b', 1)\" | grep -q '^ci\$'"
+check_fails "issuers import refuses a bad pattern (the engine's validation)"     sh -c "echo '{\"bindings\":[{\"issuer\":\"https://ctl-it.example/a\",\"stores\":[\"ctl_(\"],\"enabled\":true}]}' > /tmp/ctl-it-issuers-2.json && '$CTL' issuers import /tmp/ctl-it-issuers-2.json"
+check "issuers delete drops the row"     sh -c "'$CTL' issuers delete https://ctl-it.example/a | grep -q '^deleted'"
+check_fails "issuers delete of a missing row exits non-zero"     "$CTL" issuers delete https://ctl-it.example/a
 
 echo ""
 echo "==> $pass_count passed, $fail_count failed (of $total checks)"
