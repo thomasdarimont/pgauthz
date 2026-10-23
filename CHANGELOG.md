@@ -9,6 +9,12 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Browser tests for the Decisions tab** (`console/frontend/tests/ui/decisions.spec.js`):
+  summary and newest-first list, keyset paging through the pager and page
+  size, filters and the summary's click-to-narrow, a trace id finding its
+  line with the detail and the tracing-UI link, and "Replay at that
+  instant" into the Test tab — over a 30-line fixture
+  `tests/test-console-ui.sh` loads into the console's database.
 - **Review #19 (Codex, on a42cae2) fixes.** The postgres decision-log sink
   counts the accepted lines a failed batch could not keep when the queue
   was full (`pgauthzd_decision_log_dropped_lines_total`, an ERROR line) —

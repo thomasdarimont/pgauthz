@@ -8,8 +8,10 @@
 #
 # They cover what the Go handler tests cannot reach: the share dialog's
 # request/response race, Save's binding to the loaded object, the post-save
-# state when the refresh fails, the expiry chip. Loads the fixture store
-# console_uitest (console/frontend/tests/ui/fixture.sql) and drops it after.
+# state when the refresh fails, the expiry chip; the Decisions tab's summary,
+# pager, filters, detail and hand-over into Test. Loads the fixture store
+# console_uitest (console/frontend/tests/ui/fixture.sql) and the decisions
+# fixture (decisions.sql, into the console's database) and drops both after.
 # Without a reachable console the suite is SKIPPED (it needs the stack this
 # script does not start) — unless PGAUTHZ_TEST_REQUIRE_CONSOLE=1, then it
 # waits up to a minute for the console and fails if none appears (CI's
@@ -50,13 +52,31 @@ if ! console_up; then
     console_up || skip "no console at $CONSOLE_URL (./start.sh --console-local)"
 fi
 
+# The decisions fixture lives in the CONSOLE's own database (the decision
+# log's postgres sink, decisionlog.decisions), reached through the
+# console-db service of the console-local stack; a console that is only
+# reachable over CONSOLE_URL has no such access, and the Decisions spec then
+# skips itself (CONSOLE_UI_DECISIONS unset).
+console_psql() {
+    docker compose "${COMPOSE_FILES[@]}" exec -T -e PGPASSWORD="${CONSOLE_DB_PASSWORD:-console}" console-db \
+        psql -v ON_ERROR_STOP=1 -q -U console -d pgauthz_console "$@"
+}
 cleanup() {
     psql_exec "$PG_DB" -q -c "SELECT authz.delete_store('$STORE', p_purge_audit => true);" >/dev/null 2>&1 || true
+    if [ "${CONSOLE_UI_DECISIONS:-0}" = "1" ]; then
+        console_psql -c "DELETE FROM decisionlog.decisions WHERE store = '$STORE';" >/dev/null 2>&1 || true
+    fi
 }
 trap cleanup EXIT
 
 echo "==> Loading the browser fixture as store $STORE..."
 psql_file "$PG_DB" "$FRONTEND/tests/ui/fixture.sql" -v store="$STORE" >/dev/null || exit 1
+if console_psql -v store="$STORE" < "$FRONTEND/tests/ui/decisions.sql" >/dev/null 2>&1; then
+    echo "==> Loaded the decisions fixture into the console database"
+    export CONSOLE_UI_DECISIONS=1
+else
+    echo "    SKIP  no console-db service reachable — the Decisions tab spec will skip"
+fi
 
 cd "$FRONTEND"
 if [ ! -d node_modules/@playwright/test ]; then

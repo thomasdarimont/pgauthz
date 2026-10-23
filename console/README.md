@@ -249,7 +249,10 @@ them as mandatory (`PGAUTHZ_TEST_REQUIRE_DATABASE=1`) and drops the store;
 The **browser tests** (`frontend/tests/ui/`, Playwright on headless
 Chromium) cover what handler tests cannot: the share dialog's
 request/response race, Save's binding to the loaded object, the post-save
-state when the refresh fails, the expiry chip. They need a running console
+state when the refresh fails, the expiry chip; the Decisions tab's summary,
+pager, filters, detail with its trace, and the replay hand-over into Test
+(`decisions.spec.js`, over 30 lines `decisions.sql` loads into the console's
+database through the console-db service — the spec skips without it). They need a running console
 with the local admin — `./start.sh --console-local`, then
 `../tests/test-console-ui.sh`, which loads `frontend/tests/ui/fixture.sql`
 as the store `console_uitest`, runs `npx playwright test` (installing the
