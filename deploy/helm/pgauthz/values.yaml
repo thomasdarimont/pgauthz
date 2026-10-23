@@ -83,6 +83,16 @@ decisionLog:
   dsn: ""
   retentionDays: 30   # DECISION_LOG_RETENTION_DAYS: daily partitions kept; 0 = all
   queue: 10000        # DECISION_LOG_QUEUE: lines held between flushes
+# OpenTelemetry on every pgauthzd instance: traces leave over OTLP when an
+# endpoint is set (propagation of traceparent/B3 is always on); the decision
+# log's trace_id/span_id join a line to the application's trace.
+otel:
+  tracing: ""         # TRACING: auto (default: on when endpoint is set) | on | off
+  identifiers: false  # TRACING_IDENTIFIERS: subject/resource ids on spans (types always)
+  endpoint: ""        # OTEL_EXPORTER_OTLP_ENDPOINT, e.g. http://otel-collector:4318
+  protocol: ""        # OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf (default) | grpc
+  sampler: ""         # OTEL_TRACES_SAMPLER, e.g. parentbased_traceidratio
+  samplerArg: ""      # OTEL_TRACES_SAMPLER_ARG, e.g. "0.1"
 
 # ── Database: CloudNativePG cluster ──────────────────────────────────────────
 database:
@@ -364,6 +374,9 @@ derivedRelations:
 console:
   enabled: false
   replicas: 1
+  # The tracing UI's trace page, {trace_id} placeholder: the Decisions tab
+  # links a logged decision into the application's trace (OpenTelemetry).
+  traceUrl: ""        # e.g. https://jaeger.example.com/trace/{trace_id}
   # Sign-in: an OpenID Provider (issuer + client), the local admin below, or
   # both. One of the two is required.
   issuer: ""                   # OpenID Provider issuer, e.g. https://id.example.com/realms/pgauthz

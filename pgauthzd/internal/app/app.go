@@ -26,6 +26,9 @@ import (
 	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
 	"thomasdarimont.de/authz/pgauthzd/internal/opabackend"
 	"thomasdarimont.de/authz/pgauthzd/internal/pgbackend"
+	"thomasdarimont.de/authz/pgauthzd/internal/telemetry"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // Run loads config, wires the profile's backend, and serves. `name` is used for
@@ -59,6 +62,31 @@ func Run(name, version string) error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// OpenTelemetry — set up BEFORE the backends and listeners are built: the
+	// engine pool's query tracer and the OPA client's transport are chosen at
+	// construction from telemetry.Enabled(). TRACING=auto is on only when the
+	// OTEL_* environment configures an OTLP exporter; on: propagation (W3C +
+	// B3, in and out), a span per request (newServer) and per decision
+	// (api.logDecision), the decision log carrying the trace and span ids.
+	tracing := cfg.Tracing == "on" || (cfg.Tracing == "auto" && telemetry.Exporting())
+	otelShutdown, otelStatus, err := telemetry.Setup(ctx, telemetry.Config{Enabled: tracing, Identifiers: cfg.TracingIdentifiers, ServiceName: "pgauthzd", Version: version})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = otelShutdown(sctx)
+	}()
+	switch {
+	case otelStatus.Exporting:
+		slog.Info("opentelemetry", "tracing", cfg.Tracing, "exporting", true, "protocol", otelStatus.Protocol, "endpoint", otelStatus.Endpoint)
+	case otelStatus.Enabled:
+		slog.Info("opentelemetry", "tracing", cfg.Tracing, "exporting", false, "propagation", "w3c+b3")
+	default:
+		slog.Info("opentelemetry", "tracing", "off")
+	}
 
 	// raw/rawWrite serve the native /pgauthz/v1 surface and are ALWAYS a direct
 	// pgx backend (never OPA), so the native path never re-enters the policy
@@ -297,12 +325,31 @@ func internalTLSConfig(cfg *config.Config) (*tls.Config, error) {
 // exhaustion. Deliberately NO WriteTimeout — long-running search/explain/watch
 // responses must not be killed mid-write.
 func newServer(cfg *config.Config, addr string, h http.Handler) *http.Server {
+	traced := h
+	if telemetry.Enabled() {
+		traced = tracedHandler(h)
+	}
 	return &http.Server{
 		Addr:              addr,
-		Handler:           h,
+		Handler:           traced,
 		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
 		IdleTimeout:       cfg.HTTPIdleTimeout,
 	}
+}
+
+// tracedHandler: one server span per request, named by method and path,
+// the incoming trace context extracted (so the RequestID middleware and the
+// decision span see it); health probes stay out of the traces.
+func tracedHandler(h http.Handler) http.Handler {
+	return otelhttp.NewHandler(h, "pgauthzd",
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string { return r.Method + " " + r.URL.Path }),
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			switch r.URL.Path {
+			case "/livez", "/readyz", "/healthz":
+				return false
+			}
+			return true
+		}))
 }
 
 // newOPABackend builds the OPA-fronted AuthZEN backend and logs a startup
@@ -399,6 +446,12 @@ func newPool(ctx context.Context, dsn string, maxConns int) (*pgxpool.Pool, erro
 		return nil, fmt.Errorf("parsing DSN: %w", err)
 	}
 	poolCfg.MaxConns = int32(maxConns)
+	// OpenTelemetry (when tracing is on): a span per engine query
+	// (authz.<function>, statement text, never the arguments) under the
+	// request's span.
+	if telemetry.Enabled() {
+		poolCfg.ConnConfig.Tracer = telemetry.NewPgxTracer()
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		return nil, fmt.Errorf("creating connection pool: %w", err)

@@ -49,6 +49,10 @@ type Config struct {
 	// tester sees the real PEP path — including OPA and its hooks — for
 	// themselves. Empty = the mode is hidden.
 	DecisionURL string
+	// TraceURL (optional) is the tracing UI's trace page with a {trace_id}
+	// placeholder, e.g. https://jaeger.example.com/trace/{trace_id}: the
+	// Decisions tab links a logged decision into the application's trace.
+	TraceURL string
 	// I18nDir (optional) holds translation overrides: <lang>.json files whose
 	// entries win over the SPA's built-in dictionaries, so an operator can
 	// rename terms or add a language without rebuilding the image.
@@ -154,6 +158,7 @@ func Load() Config {
 
 		PgauthzdURL:           env("PGAUTHZD_URL", ""),
 		DecisionURL:           env("PGAUTHZD_DECISION_URL", ""),
+		TraceURL:              env("CONSOLE_TRACE_URL", ""),
 		I18nDir:               env("CONSOLE_I18N_DIR", ""),
 		OPAURL:                env("CONSOLE_OPA_URL", ""),
 		OPAToken:              env("CONSOLE_OPA_TOKEN", ""),

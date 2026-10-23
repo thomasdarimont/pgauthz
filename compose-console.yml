@@ -82,6 +82,8 @@ services:
       # Translation overrides: <lang>.json files merged over the built-in
       # dictionaries (mount a directory and set this to it; see console/README.md).
       # CONSOLE_I18N_DIR: /i18n
+      # The tracing UI's trace page ({trace_id}): the Decisions tab links into it.
+      CONSOLE_TRACE_URL: "${CONSOLE_TRACE_URL:-}"
     volumes:
       # SPA mounted for live editing; the binary serves it from /web.
       - ./console/frontend:/web:ro

@@ -114,6 +114,18 @@ else
       ;;
   esac
 
+  # Tracing overlay (OpenTelemetry → Jaeger, compose-tracing.yml): the
+  # instances export to the collector and the console links into it. The
+  # compose files pass these two through; with the overlay off they stay
+  # empty and tracing stays off (TRACING=auto).
+  case "${PGAUTHZ_TRACING:-}" in
+    1|true|yes|on)
+      COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-tracing.yml")
+      export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}"
+      export CONSOLE_TRACE_URL="${CONSOLE_TRACE_URL:-http://localhost:16686/trace/{trace_id}}"
+      ;;
+  esac
+
   # Persist the EFFECTIVE overlay state back to the file, so it always mirrors
   # the stack this compose-up enforces. This makes explicit overrides sticky:
   #   PGAUTHZ_KEYCLOAK=0 PGAUTHZ_PLAYGROUND=0 ./init.sh && ./tests/test-all.sh
@@ -130,6 +142,7 @@ else
     echo "export PGAUTHZ_CONSOLE=\"\${PGAUTHZ_CONSOLE:-${PGAUTHZ_CONSOLE:-0}}\""
     echo "export PGAUTHZ_CONSOLE_LOCAL=\"\${PGAUTHZ_CONSOLE_LOCAL:-${PGAUTHZ_CONSOLE_LOCAL:-0}}\""
     echo "export PGAUTHZ_METRICS=\"\${PGAUTHZ_METRICS:-${PGAUTHZ_METRICS:-0}}\""
+    echo "export PGAUTHZ_TRACING=\"\${PGAUTHZ_TRACING:-${PGAUTHZ_TRACING:-0}}\""
   } > "$SCRIPT_DIR/.pgauthz-overlays"
 fi
 

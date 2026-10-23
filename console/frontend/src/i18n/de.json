@@ -1011,7 +1011,6 @@
   "Outcome": "Ergebnis",
   "any": "beliebig",
   "error": "Fehler",
-  "A subject or resource is type:id, or a bare id; the window is the time of the decision.": "Subjekt oder Ressource als typ:id oder nur die id; das Zeitfenster bezieht sich auf den Entscheidungszeitpunkt.",
   "{n} decision(s)": "{n} Entscheidung(en)",
   "Denied: by reason": "Abgelehnt: nach Grund",
   "Denied: by action": "Abgelehnt: nach Aktion",
@@ -1033,5 +1032,9 @@
   "No decision log sink": "Keine Senke für das Entscheidungsprotokoll",
   "pgauthzd writes its decision log to a database only when told to. Point the instances whose decisions you want to see at the console's own database: DECISION_LOG=postgres and DECISION_LOG_DSN=<the console's PG_DSN>. The table decisionlog.decisions appears on their next start; decisions are kept for DECISION_LOG_RETENTION_DAYS (30 by default).": "pgauthzd schreibt sein Entscheidungsprotokoll nur auf Anweisung in eine Datenbank. Richten Sie die Instanzen, deren Entscheidungen Sie sehen möchten, auf die eigene Datenbank der Konsole: DECISION_LOG=postgres und DECISION_LOG_DSN=<PG_DSN der Konsole>. Die Tabelle decisionlog.decisions erscheint beim nächsten Start; Entscheidungen werden DECISION_LOG_RETENTION_DAYS lang aufbewahrt (standardmäßig 30).",
   "Page {p} of {n}": "Seite {p} von {n}",
-  "First": "Erste"
+  "First": "Erste",
+  "Trace": "Trace",
+  "span": "Span",
+  "Denied: by client": "Abgelehnt: nach Client",
+  "A subject or resource is type:id, or a bare id; the client is the application (the token's azp); the trace is an OpenTelemetry trace id; the window is the time of the decision.": "Subjekt oder Ressource als typ:id oder nur die id; der Client ist die Anwendung (azp des Tokens); der Trace ist eine OpenTelemetry-Trace-ID; das Zeitfenster bezieht sich auf den Entscheidungszeitpunkt."
 }

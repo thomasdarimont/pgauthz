@@ -28,6 +28,7 @@ import (
 	"thomasdarimont.de/authz/pgauthzd/internal/config"
 	"thomasdarimont.de/authz/pgauthzd/internal/decisionlog"
 	"thomasdarimont.de/authz/pgauthzd/internal/pgbackend"
+	"thomasdarimont.de/authz/pgauthzd/internal/telemetry"
 )
 
 // Check is one preflight result.
@@ -324,6 +325,16 @@ func Run(ctx context.Context, opts Options) *Report {
 	} else {
 		_ = l.Close()
 		add("decision log", StatusOK, fmt.Sprintf("sink=%s sample=%v detail=%v", cfg.DecisionLog, cfg.DecisionLogSample, cfg.DecisionLogDetail))
+	}
+
+	// ── opentelemetry ────────────────────────────────────────────────────
+	switch {
+	case cfg.Tracing == "off", cfg.Tracing == "auto" && !telemetry.Exporting():
+		add("opentelemetry", StatusSkip, "tracing off (TRACING="+cfg.Tracing+"; set an OTLP endpoint, or TRACING=on for propagation without an exporter)")
+	case telemetry.Exporting():
+		add("opentelemetry", StatusOK, "tracing on: exporting spans over OTLP ("+telemetry.Protocol()+"); W3C + B3 propagation; decision log lines carry trace_id/span_id")
+	default:
+		add("opentelemetry", StatusOK, "tracing on (TRACING=on), no OTLP exporter: propagation only — a caller's traceparent reaches the decision log, no spans leave")
 	}
 
 	// ── metrics ──────────────────────────────────────────────────────────

@@ -60,6 +60,7 @@ that answered it; an OPA-fronted AuthZEN decision is labelled `via: opa`.
 | Field | Content |
 |---|---|
 | `ts`, `request_id`, `latency_ms` | when, which request, how long the decision took |
+| `trace_id`, `span_id` | the OpenTelemetry trace the request belongs to (W3C `traceparent` / B3, always propagated) and the decision's span — added 2026-10-23 with [ADR 0015](0015-decision-log-postgres-sink.md)'s sink, which indexes `trace_id` |
 | `listener`, `endpoint`, `via` | `public`/`callback`; `evaluation`, `evaluations`, `check`, `check-batch`, `explain`, `reserve`; `engine`/`opa` |
 | `store`, `subject`, `action`, `resource` | the PARC request as resolved (subject after the override policy) |
 | `decision`, `state`, `reason` | the boolean; `allow`/`deny`/`conditional`; the engine's reason (`direct_tuple`, `gate_denied`, `intersection_unsatisfied`, …) when known |

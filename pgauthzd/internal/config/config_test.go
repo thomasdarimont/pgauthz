@@ -516,3 +516,24 @@ func TestContextualTuplesMode(t *testing.T) {
 		t.Fatalf("off is fine in production, got %v", err)
 	}
 }
+
+func TestTracingSwitch(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://u:p@h/db")
+	t.Setenv("JWKS_FILE", "")
+	t.Setenv("JWKS_URL", "")
+	t.Setenv("JWT_ISSUERS", `[{"issuer":"https://idp","audience":"api","jwks_file":"/dev/null","stores":["demo"]}]`)
+	t.Setenv("CURSOR_SEAL_KEY", "0123456789abcdef0123456789abcdef")
+	t.Setenv("DEPLOYMENT_ENVIRONMENT", "dev")
+	c, err := Load()
+	if err != nil || c.Tracing != "auto" {
+		t.Fatalf("default must be auto, got %q %v", c.Tracing, err)
+	}
+	t.Setenv("TRACING", "ON")
+	if c, err := Load(); err != nil || c.Tracing != "on" {
+		t.Fatalf("case-insensitive on: %q %v", c.Tracing, err)
+	}
+	t.Setenv("TRACING", "sometimes")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "TRACING") {
+		t.Fatalf("unknown value must be refused: %v", err)
+	}
+}

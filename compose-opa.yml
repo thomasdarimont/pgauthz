@@ -97,6 +97,12 @@ services:
       - "8093:8081"
       - "9092:9090"   # Prometheus /metrics (ADR 0010)
     environment:
+      # OpenTelemetry: an OTLP endpoint exports spans (./start.sh --tracing
+      # sets it to the Jaeger overlay); propagation to OPA is on with it.
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "${OTEL_EXPORTER_OTLP_PROTOCOL:-}"
+      TRACING: "${TRACING:-auto}"
+      TRACING_IDENTIFIERS: "${TRACING_IDENTIFIERS:-false}"
       LISTEN_ADDR: ":8080"
       METRICS_LISTEN_ADDR: ":9090"
       PGAUTHORIZER_PROFILE: "decision-only"

@@ -23,6 +23,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
+	"thomasdarimont.de/authz/pgauthzd/internal/telemetry"
 )
 
 // InternalRoleHeader is the header OPA forwards the caller's per-app DB role in
@@ -707,12 +708,17 @@ func claimString(claims jwt.MapClaims, key string) string {
 	return s
 }
 
-// RequestID middleware adds a request ID to context and response headers.
+// RequestID middleware adds a request ID to context and response headers:
+// the caller's X-Request-ID, else the propagated trace id (OpenTelemetry:
+// traceparent / B3, extracted by the server span), else a counter.
 func RequestID(next http.Handler) http.Handler {
 	var counter uint64
 	var mu sync.Mutex
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-ID")
+		if id == "" {
+			id, _ = telemetry.IDs(r.Context())
+		}
 		if id == "" {
 			mu.Lock()
 			counter++

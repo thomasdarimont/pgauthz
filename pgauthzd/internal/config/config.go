@@ -419,6 +419,17 @@ type Config struct {
 	// into daily partitions, retention DecisionLogRetentionDays, at most
 	// DecisionLogQueue lines waiting between flushes — the console's
 	// Decisions tab reads that table).
+	// Tracing (TRACING): "auto" (default — on only when the OTEL_* environment
+	// configures an OTLP exporter), "on" (propagation + spans, exported when
+	// configured), "off" (nothing: no headers read, no spans, no ids in the
+	// decision log). Off by default in effect.
+	Tracing string
+	// TracingIdentifiers (TRACING_IDENTIFIERS): put subject and resource
+	// IDS on the decision span. Default false: spans name only the types
+	// (pgauthz.subject.type, pgauthz.resource.type); the decision log keeps
+	// the ids and the trace id joins the two.
+	TracingIdentifiers bool
+
 	DecisionLog              string
 	DecisionLogDSN           string
 	DecisionLogRetentionDays int
@@ -516,6 +527,8 @@ func Load() (*Config, error) {
 		OPAEvalMetrics:                envBool("OPA_EVAL_METRICS", true),
 		ForwardTokenToOPA:             envBool("FORWARD_TOKEN_TO_OPA", false),
 		LogLevel:                      env("LOG_LEVEL", "info"),
+		Tracing:                       strings.ToLower(env("TRACING", "auto")),
+		TracingIdentifiers:            envBool("TRACING_IDENTIFIERS", false),
 		DecisionLog:                   env("DECISION_LOG", "off"),
 		DecisionLogDSN:                env("DECISION_LOG_DSN", ""),
 		DecisionLogRetentionDays:      envInt("DECISION_LOG_RETENTION_DAYS", 30),
@@ -656,6 +669,11 @@ func Load() (*Config, error) {
 	}
 	if (c.SwaggerUIOIDCAuthorizationURL == "") != (c.SwaggerUIOIDCTokenURL == "") {
 		return nil, fmt.Errorf("SWAGGER_UI_OIDC_AUTHORIZATION_URL and SWAGGER_UI_OIDC_TOKEN_URL go together")
+	}
+	switch c.Tracing {
+	case "auto", "on", "off":
+	default:
+		return nil, fmt.Errorf("TRACING %q: expected auto | on | off", c.Tracing)
 	}
 	switch {
 	case c.DecisionLog == "" || c.DecisionLog == "off" || c.DecisionLog == "stdout" || c.DecisionLog == "stderr":

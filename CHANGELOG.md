@@ -9,6 +9,27 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **OpenTelemetry in pgauthzd.** Off by default: `TRACING=auto` turns it on
+  only when the `OTEL_*` environment configures an OTLP exporter (`on` /
+  `off` force it; off is the untraced code path). On, W3C `traceparent` and
+  B3 are honoured on every listener and forwarded to OPA, exporter or not; with
+  `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_TRACES_EXPORTER=otlp`) spans leave
+  over OTLP (`http/protobuf` or `grpc`): a server span per request, a
+  `pgauthz.<endpoint>` span per decision carrying store, subject, action,
+  resource and subject **types** (the ids only with `TRACING_IDENTIFIERS=true`;
+  the decision log keeps them), decision, state, reason and client, a client span per engine
+  query (`authz.<function>`, statement text and parameter count, never the
+  arguments), a client span per OPA call, and `pgauthz.store` on the
+  request's span;
+  the standard `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` and
+  `OTEL_TRACES_SAMPLER` apply. Every decision-log line carries `trace_id`
+  and `span_id` (the postgres sink indexes `trace_id`), `X-Request-ID`
+  defaults to the trace id, `pgauthzd doctor` reports the setup. The
+  console's Decisions tab filters by trace id and client, shows the client
+  column and "Denied: by client", and links a line into the tracing UI
+  (`CONSOLE_TRACE_URL`, `{trace_id}` placeholder). `./start.sh --tracing`
+  adds a Jaeger collector (`compose-tracing.yml`) and wires every instance
+  and the console to it for a demo.
 - **Decisions tab + the decision log's PostgreSQL sink (ADR 0015).**
   `DECISION_LOG=postgres` writes pgauthzd's decision lines into a sink
   database (`DECISION_LOG_DSN`): the daemon creates `decisionlog.decisions`

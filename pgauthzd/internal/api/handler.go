@@ -18,6 +18,9 @@ import (
 	"thomasdarimont.de/authz/pgauthzd/internal/config"
 	"thomasdarimont.de/authz/pgauthzd/internal/decisionlog"
 	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -419,13 +422,17 @@ func (h *Handler) storeChecked(w http.ResponseWriter, r *http.Request) (string, 
 }
 
 func (h *Handler) store(r *http.Request) string {
-	if s := r.PathValue("store"); s != "" {
-		return s
+	s := r.PathValue("store")
+	if s == "" {
+		s = r.Header.Get(h.cfg.StoreHeader)
 	}
-	if s := r.Header.Get(h.cfg.StoreHeader); s != "" {
-		return s
+	if s == "" {
+		s = h.cfg.DefaultStore
 	}
-	return h.cfg.DefaultStore
+	// The request's span (OpenTelemetry) names the store as a tag, so a
+	// trace is queried by store without parsing paths or headers.
+	trace.SpanFromContext(r.Context()).SetAttributes(attribute.String("pgauthz.store", s))
+	return s
 }
 
 // resolveSubjectPair applies the subject-assertion policy to a body-supplied

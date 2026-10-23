@@ -63,6 +63,8 @@ services:
       PGAUTHZD_URL: http://pgauthzd-full:8080
       PGAUTHZD_DECISION_URL: http://pgauthzd-decision:8080
       # CONSOLE_I18N_DIR: /i18n
+      # The tracing UI's trace page ({trace_id}): the Decisions tab links into it.
+      CONSOLE_TRACE_URL: "${CONSOLE_TRACE_URL:-}"
     ports:
       - "${CONSOLE_LOCAL_PORT:-8095}:8080"
     volumes:

@@ -125,6 +125,9 @@ spec:
             {{- else if .Values.authzen.direct.enabled }}
             - { name: PGAUTHZD_DECISION_URL, value: http://{{ $full }}-authzen:8080 }
             {{- end }}
+            {{- with .Values.console.traceUrl }}
+            - { name: CONSOLE_TRACE_URL, value: {{ . | quote }} }
+            {{- end }}
           ports:
             - { name: http, containerPort: 8080 }
           readinessProbe: { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 5 }

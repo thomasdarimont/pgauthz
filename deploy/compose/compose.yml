@@ -62,6 +62,12 @@ x-pgauthzd-env: &pgauthzd-env
   # (postgres://console:<pw>@console-db:5432/pgauthz_console) for the Decisions tab.
   DECISION_LOG_DSN: "${DECISION_LOG_DSN:-}"
   DECISION_LOG_RETENTION_DAYS: "${DECISION_LOG_RETENTION_DAYS:-30}"
+  # OpenTelemetry: an OTLP endpoint exports spans (server span per request,
+  # a span per decision, a client span per OPA call); propagation is always on.
+  OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+  OTEL_EXPORTER_OTLP_PROTOCOL: "${OTEL_EXPORTER_OTLP_PROTOCOL:-}"
+  TRACING: "${TRACING:-auto}"                           # auto | on | off
+  TRACING_IDENTIFIERS: "${TRACING_IDENTIFIERS:-false}"  # subject/resource ids on spans (types always)
   DECISION_LOG_SAMPLE: "${DECISION_LOG_SAMPLE:-1}"
   DECISION_LOG_DETAIL: "${DECISION_LOG_DETAIL:-false}"
   DECISION_LOG_REQUIRED: "${DECISION_LOG_REQUIRED:-false}"

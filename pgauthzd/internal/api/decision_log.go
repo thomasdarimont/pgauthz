@@ -15,6 +15,12 @@ import (
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 	"thomasdarimont.de/authz/pgauthzd/internal/decisionlog"
 	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
+	"thomasdarimont.de/authz/pgauthzd/internal/telemetry"
 )
 
 // Option configures a Handler / router at construction.
@@ -140,13 +146,8 @@ func (h *Handler) decisionEntry(r *http.Request, endpoint string, req authz.Eval
 // logDecision finalizes and writes an entry: outcome (decision + optional
 // detail, or the error) and latency since start.
 func (h *Handler) logDecision(ctx context.Context, e decisionlog.Entry, start time.Time, decision bool, detail map[string]any, err error) {
-	if h.decisions == nil {
-		return
-	}
-	e.LatencyMS = float64(time.Since(start).Microseconds()) / 1000
-	e.PgauthzdVersion = h.version
-	e.Model = h.modelProvenance(ctx, e.Store)
-	e.Policy = h.policyProvenance(e.Via)
+	end := time.Now()
+	e.LatencyMS = float64(end.Sub(start).Microseconds()) / 1000
 	if err != nil {
 		e.Error = err.Error()
 	} else {
@@ -160,7 +161,80 @@ func (h *Handler) logDecision(ctx context.Context, e decisionlog.Entry, start ti
 			}
 		}
 	}
+	// The decision span (OpenTelemetry): the decision as a child of the
+	// request's span, created after the fact with its real start and end,
+	// carrying the request and the outcome as attributes. Its ids go on the
+	// log line, so a line and a trace name each other. Without an exporter
+	// the span is not recorded and the ids are the propagated parent's.
+	e.TraceID, e.SpanID = decisionSpan(ctx, e, start, end, err)
+	if h.decisions == nil {
+		return
+	}
+	e.PgauthzdVersion = h.version
+	e.Model = h.modelProvenance(ctx, e.Store)
+	e.Policy = h.policyProvenance(e.Via)
 	h.decisions.Log(e)
+}
+
+// decisionSpan records one decision as a span and returns its trace and
+// span id (empty without any trace context).
+func decisionSpan(ctx context.Context, e decisionlog.Entry, start, end time.Time, err error) (traceID, spanID string) {
+	if !telemetry.Enabled() {
+		return "", ""
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("pgauthz.store", e.Store),
+		attribute.String("pgauthz.endpoint", e.Endpoint),
+		attribute.String("pgauthz.listener", e.Listener),
+	}
+	if e.Via != "" {
+		attrs = append(attrs, attribute.String("pgauthz.via", e.Via))
+	}
+	// Identifiers only on request (TRACING_IDENTIFIERS): a tracing backend
+	// is usually shared more widely than the decision log, which keeps the
+	// ids and is joined by trace_id. The types always.
+	if e.Subject.Type != "" {
+		attrs = append(attrs, attribute.String("pgauthz.subject.type", e.Subject.Type))
+		if telemetry.Identifiers() {
+			attrs = append(attrs, attribute.String("pgauthz.subject", e.Subject.Type+":"+e.Subject.ID))
+		}
+	}
+	if e.Action != "" {
+		attrs = append(attrs, attribute.String("pgauthz.action", e.Action))
+	}
+	if e.Resource.Type != "" {
+		attrs = append(attrs, attribute.String("pgauthz.resource.type", e.Resource.Type))
+		if telemetry.Identifiers() {
+			attrs = append(attrs, attribute.String("pgauthz.resource", e.Resource.Type+":"+e.Resource.ID))
+		}
+	}
+	if e.Decision != nil {
+		attrs = append(attrs, attribute.Bool("pgauthz.decision", *e.Decision))
+	}
+	if e.State != "" {
+		attrs = append(attrs, attribute.String("pgauthz.state", e.State))
+	}
+	if e.Reason != "" {
+		attrs = append(attrs, attribute.String("pgauthz.reason", e.Reason))
+	}
+	if e.Client != "" {
+		attrs = append(attrs, attribute.String("pgauthz.client", e.Client))
+	}
+	if e.ContextualTuples > 0 {
+		attrs = append(attrs, attribute.Int("pgauthz.contextual_tuples", e.ContextualTuples))
+	}
+	_, span := telemetry.Tracer().Start(ctx, "pgauthz."+e.Endpoint,
+		trace.WithTimestamp(start), trace.WithSpanKind(trace.SpanKindInternal), trace.WithAttributes(attrs...))
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	span.End(trace.WithTimestamp(end))
+	sc := span.SpanContext()
+	if !sc.IsValid() {
+		return "", ""
+	}
+	return sc.TraceID().String(), sc.SpanID().String()
 }
 
 // viaLabel names the backend that answered an AuthZEN decision.

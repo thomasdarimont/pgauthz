@@ -138,4 +138,23 @@ startup via ALLOW_OPEN_DIAGNOSTICS, so a hand-edited manifest cannot slip past).
 {{- if $d.allowOpenInProduction }}
 - { name: ALLOW_OPEN_DIAGNOSTICS, value: "true" }
 {{- end }}
+{{- $ot := .root.Values.otel | default dict }}
+{{- with $ot.tracing }}
+- { name: TRACING, value: {{ . | quote }} }
+{{- end }}
+{{- if $ot.identifiers }}
+- { name: TRACING_IDENTIFIERS, value: "true" }
+{{- end }}
+{{- with $ot.endpoint }}
+- { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ . | quote }} }
+{{- with $ot.protocol }}
+- { name: OTEL_EXPORTER_OTLP_PROTOCOL, value: {{ . | quote }} }
+{{- end }}
+{{- with $ot.sampler }}
+- { name: OTEL_TRACES_SAMPLER, value: {{ . | quote }} }
+{{- end }}
+{{- with $ot.samplerArg }}
+- { name: OTEL_TRACES_SAMPLER_ARG, value: {{ . | quote }} }
+{{- end }}
+{{- end }}
 {{- end -}}

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,7 +15,7 @@ import (
 const decisionsDDL = `
 CREATE SCHEMA IF NOT EXISTS decisionlog;
 CREATE TABLE IF NOT EXISTS decisionlog.decisions (
-    id bigint GENERATED ALWAYS AS IDENTITY, ts timestamptz NOT NULL, request_id text, listener text NOT NULL,
+    id bigint GENERATED ALWAYS AS IDENTITY, ts timestamptz NOT NULL, request_id text, trace_id text, span_id text, listener text NOT NULL,
     endpoint text NOT NULL, via text, store text NOT NULL, subject_type text, subject_id text, action text,
     resource_type text, resource_id text, decision boolean, state text, reason text, actor text, client text,
     issuer text, latency_ms real, error text, line jsonb NOT NULL
@@ -82,9 +83,10 @@ func TestDecisionsHTTP(t *testing.T) {
 		st, sid, _ := splitRef(subject)
 		rt, rid, _ := splitRef(resource)
 		line, _ := json.Marshal(map[string]any{"ts": base.Add(time.Duration(i) * time.Minute), "store": store, "endpoint": "check", "subject": map[string]string{"type": st, "id": sid}, "context_keys": []string{"ip"}})
-		if _, err := s.db.Exec(ctx, `INSERT INTO decisionlog.decisions (ts, request_id, listener, endpoint, via, store, subject_type, subject_id, action, resource_type, resource_id, decision, state, reason, actor, client, latency_ms, error, line)
-			VALUES ($1, $2, 'public', 'check', 'engine', $3, $4, $5, $6, $7, $8, $9, nullif($10,''), nullif($11,''), 'service:pep', 'docs-app', 0.7, nullif($12,''), $13)`,
-			base.Add(time.Duration(i)*time.Minute), "req-"+subject, store, st, sid, action, rt, rid, decision, state, reason, errText, line); err != nil {
+		if _, err := s.db.Exec(ctx, `INSERT INTO decisionlog.decisions (ts, request_id, trace_id, span_id, listener, endpoint, via, store, subject_type, subject_id, action, resource_type, resource_id, decision, state, reason, actor, client, latency_ms, error, line)
+			VALUES ($1, $2, $14, 'aaaaaaaaaaaaaaaa', 'public', 'check', 'engine', $3, $4, $5, $6, $7, $8, $9, nullif($10,''), nullif($11,''), 'service:pep', $15, 0.7, nullif($12,''), $13)`,
+			base.Add(time.Duration(i)*time.Minute), "req-"+subject, store, st, sid, action, rt, rid, decision, state, reason, errText, line,
+			fmt.Sprintf("%032x", i), map[bool]string{true: "docs-app", false: "mail-app"}[i%2 == 1]); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -139,6 +141,13 @@ func TestDecisionsHTTP(t *testing.T) {
 	if code, _ := get("?outcome=maybe", owner); code != 400 {
 		t.Errorf("bad outcome: %d", code)
 	}
+	// the trace id joins a line to the application's request; the client says which app asked
+	if _, m := get("?trace="+fmt.Sprintf("%032X", 2), owner); len(rowsOf(m)) != 1 || rowsOf(m)[0]["subject_id"] != "bob" || rowsOf(m)[0]["trace_id"] != fmt.Sprintf("%032x", 2) {
+		t.Errorf("trace filter (case-insensitive): %v", m)
+	}
+	if _, m := get("?client=mail-app", owner); len(rowsOf(m)) != 2 {
+		t.Errorf("client filter: %v", m)
+	}
 	// keyset paging: 2 + 2 + 1
 	_, m = get("?limit=2", owner)
 	if len(rowsOf(m)) != 2 || m["next"] == "" {
@@ -164,6 +173,9 @@ func TestDecisionsHTTP(t *testing.T) {
 	}
 	if r := top("denied_reasons"); len(r) == 0 || r[0].(map[string]any)["key"] != "no_matching_rule" {
 		t.Errorf("denied reasons: %v", sm["denied_reasons"])
+	}
+	if r := top("denied_clients"); len(r) != 2 {
+		t.Errorf("denied clients: %v", sm["denied_clients"])
 	}
 	if code, _ := get("/summary", tester); code != 403 {
 		t.Errorf("tester summary: %d", code)

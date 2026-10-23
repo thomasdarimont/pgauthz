@@ -15,11 +15,14 @@ export class PgcDecisions extends PgcElement {
   static properties = {
     store: { type: String },
     caps: { attribute: false },
+    me: { attribute: false }, // trace_url: the tracing UI's trace page template
     d: { state: true },
     summary: { state: true },
     subject: { state: true },
     resource: { state: true },
     action: { state: true },
+    client: { state: true },
+    trace: { state: true },
     outcome: { state: true },
     range: { state: true },
     open: { state: true },
@@ -47,6 +50,8 @@ export class PgcDecisions extends PgcElement {
     this.subject = '';
     this.resource = '';
     this.action = '';
+    this.client = '';
+    this.trace = '';
     this.outcome = '';
     this.range = '24h';
     this.open = null;
@@ -67,6 +72,8 @@ export class PgcDecisions extends PgcElement {
     if (this.subject.trim()) p.subject = this.subject.trim();
     if (this.resource.trim()) p.resource = this.resource.trim();
     if (this.action.trim()) p.action = this.action.trim();
+    if (this.client.trim()) p.client = this.client.trim();
+    if (this.trace.trim()) p.trace = this.trace.trim();
     if (this.outcome) p.outcome = this.outcome;
     const ms = PgcDecisions.RANGES.find(([k]) => k === this.range)?.[1] ?? 0;
     if (ms) p.from = new Date(Date.now() - ms).toISOString();
@@ -274,6 +281,24 @@ export class PgcDecisions extends PgcElement {
             @input=${(e) => (this.resource = e.target.value)}
         /></label>
         <label
+          >${t('Client')}
+          <input
+            class="mono"
+            placeholder="docs-app"
+            data-testid="decisions-client"
+            .value=${this.client}
+            @input=${(e) => (this.client = e.target.value)}
+        /></label>
+        <label
+          >${t('Trace')}
+          <input
+            class="mono"
+            placeholder="4bf92f35…"
+            data-testid="decisions-trace"
+            .value=${this.trace}
+            @input=${(e) => (this.trace = e.target.value)}
+        /></label>
+        <label
           >${t('Outcome')}
           <select
             data-testid="decisions-outcome"
@@ -290,7 +315,7 @@ export class PgcDecisions extends PgcElement {
         <button class="primary" ?disabled=${this.busy} data-testid="decisions-search">${t('Search')}</button>
       </div>
       <span class="help"
-        >${t('A subject or resource is type:id, or a bare id; the window is the time of the decision.')}</span
+        >${t("A subject or resource is type:id, or a bare id; the client is the application (the token's azp); the trace is an OpenTelemetry trace id; the window is the time of the decision.")}</span
       >
     </form>`;
   }
@@ -335,9 +360,33 @@ export class PgcDecisions extends PgcElement {
         ${list(t('Denied: by action'), s.denied_actions, (k) => ({ outcome: 'deny', action: k }))}
         ${list(t('Denied: by subject'), s.denied_subjects, (k) => ({ outcome: 'deny', subject: k }))}
         ${list(t('Allowed: by reason'), s.allowed_reasons, () => ({ outcome: 'allow' }))}
+        ${list(t('Denied: by client'), s.denied_clients ?? [], (k) => ({ outcome: 'deny', client: k }))}
       </div>
       ${help("The window divided by outcome, and what lies behind the denials: the engine's reason, the action asked for, the subject refused. Click an entry to narrow the list to it.")}
     </section>`;
+  }
+
+  // The trace this decision belongs to: the ids, and a link into the
+  // tracing UI when CONSOLE_TRACE_URL names one ({trace_id} placeholder).
+  _traceRow(row) {
+    if (!row.trace_id) return nothing;
+    const tpl = this.me?.trace_url;
+    const href = tpl ? tpl.replace('{trace_id}', encodeURIComponent(row.trace_id)) : '';
+    return html`<dt>${t('Trace')}</dt>
+      <dd class="mono">
+        ${
+          href
+            ? html`<a
+                href=${href}
+                target="_blank"
+                rel="noopener noreferrer"
+                data-testid="decisions-trace-link"
+                >${row.trace_id}</a
+              >`
+            : row.trace_id
+        }
+        ${row.span_id ? html`<span class="muted">· ${t('span')} ${row.span_id}</span>` : nothing}
+      </dd>`;
   }
 
   _detail(row) {
@@ -348,12 +397,13 @@ export class PgcDecisions extends PgcElement {
             <dd class="mono">${v}</dd>`
         : nothing;
     return html`<tr class="decision-detail" data-testid="decisions-detail">
-      <td colspan="9">
+      <td colspan="10">
         <div class="toolbar">
           <dl class="kv">
             ${kv(t('Request'), row.request_id)}
             ${kv(t('Listener'), `${row.listener} · ${row.endpoint}${row.via ? ' · ' + row.via : ''}`)}
             ${kv(t('Actor'), row.actor)} ${kv(t('Client'), row.client)} ${kv(t('Issuer'), row.issuer)}
+            ${this._traceRow(row)}
             ${kv(t('Model'), l.model ? `${l.model.name ? l.model.name + '@' + l.model.version + ' · ' : ''}${l.model.checksum ?? ''}` : '')}
             ${kv(t('Policy'), l.policy ? `OPA ${l.policy.opa_version ?? ''} ${(l.policy.bundles ?? []).map((b) => `${b.name}@${b.revision}`).join(', ')}` : '')}
             ${kv(t('Context keys'), (l.context_keys ?? []).join(', '))}
@@ -404,6 +454,7 @@ export class PgcDecisions extends PgcElement {
               <th>${t('Reason')}</th>
               <th>${t('Via')}</th>
               <th>${t('Actor')}</th>
+              <th>${t('Client')}</th>
               <th class="num">ms</th>
             </tr>
           </thead>
@@ -427,6 +478,7 @@ export class PgcDecisions extends PgcElement {
                     ${r.via || r.endpoint}${r.listener === 'callback' ? ' · callback' : ''}
                   </td>
                   <td class="mono muted">${r.actor}</td>
+                  <td class="mono muted">${r.client}</td>
                   <td class="num muted">${r.latency_ms.toFixed(1)}</td>
                 </tr>
                 ${this.open === r.id ? this._detail(r) : nothing}`;

@@ -176,5 +176,6 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"platform":      platform[s.cfg.PlatformID],
 		"registry":      registry[s.cfg.RegistryID],
 		"console_store": s.cfg.ConsoleStore,
+		"trace_url":     s.cfg.TraceURL,
 	})
 }

@@ -972,6 +972,19 @@ DECISION_LOG_SAMPLE=1          # required by DECISION_LOG_REQUIRED (complete evi
   identifiers, as in the audit trail); request-context **values**,
   contextual tuples, event payloads and tokens are not — only context key
   names. Treat the log like the audit trail.
+- **Correlation (OpenTelemetry).** Every line carries `request_id` (the
+  caller's `X-Request-ID`, else the trace id) and, with tracing on
+  (`TRACING`: off by default, on when an OTLP endpoint is configured) and the
+  request arriving with W3C `traceparent` or B3 headers, `trace_id` and `span_id` — the
+  decision's own span when spans are exported (`OTEL_EXPORTER_OTLP_ENDPOINT`
+  / `OTEL_TRACES_EXPORTER=otlp`; one server span per request, one
+  `pgauthz.<endpoint>` span per decision with the outcome as attributes,
+  a client span per OPA call), the propagated parent's otherwise. Propagation
+  needs no exporter, so an application that traces its requests finds its
+  decisions in the console's Decisions tab by trace id, and the tab links
+  each line into the tracing UI (`CONSOLE_TRACE_URL`). Spans name subject and
+  resource **types** only unless `TRACING_IDENTIFIERS=true`; the ids stay in
+  the decision log.
 - Searches are counted (`pgauthzd_search_requests_total`), not logged —
   unless `DECISION_LOG_SEARCHES=true`, which adds one line per search with
   the query dimensions and the result **count**, never the ids ("who

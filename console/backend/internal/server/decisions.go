@@ -23,6 +23,8 @@ type decisionRow struct {
 	ID           int64           `json:"id"`
 	TS           time.Time       `json:"ts"`
 	RequestID    string          `json:"request_id,omitempty"`
+	TraceID      string          `json:"trace_id,omitempty"`
+	SpanID       string          `json:"span_id,omitempty"`
 	Listener     string          `json:"listener"`
 	Endpoint     string          `json:"endpoint"`
 	Via          string          `json:"via,omitempty"`
@@ -63,6 +65,7 @@ type decisionFilter struct {
 	subject, resource       string // type:id, or a bare id
 	action, outcome, listen string
 	endpoint, actor, client string
+	trace                   string // OpenTelemetry trace id
 	from, to                time.Time
 }
 
@@ -70,7 +73,8 @@ func parseDecisionFilter(r *http.Request, store string) (decisionFilter, error) 
 	q := r.URL.Query()
 	f := decisionFilter{store: store, subject: strings.TrimSpace(q.Get("subject")), resource: strings.TrimSpace(q.Get("resource")),
 		action: strings.TrimSpace(q.Get("action")), outcome: q.Get("outcome"), listen: q.Get("listener"),
-		endpoint: q.Get("endpoint"), actor: strings.TrimSpace(q.Get("actor")), client: strings.TrimSpace(q.Get("client"))}
+		endpoint: q.Get("endpoint"), actor: strings.TrimSpace(q.Get("actor")), client: strings.TrimSpace(q.Get("client")),
+		trace: strings.ToLower(strings.TrimSpace(q.Get("trace")))}
 	switch f.outcome {
 	case "", "allow", "deny", "conditional", "error":
 	default:
@@ -127,6 +131,9 @@ func (f decisionFilter) where() (string, []any) {
 	if f.client != "" {
 		add("client = ?", f.client)
 	}
+	if f.trace != "" {
+		add("trace_id = ?", f.trace)
+	}
 	switch f.outcome {
 	case "allow":
 		conds = append(conds, "decision = true AND coalesce(state, '') <> 'conditional'")
@@ -146,7 +153,7 @@ func (f decisionFilter) where() (string, []any) {
 	return strings.Join(conds, " AND "), args
 }
 
-const decisionColumns = `id, ts, coalesce(request_id,''), listener, endpoint, coalesce(via,''),
+const decisionColumns = `id, ts, coalesce(request_id,''), coalesce(trace_id,''), coalesce(span_id,''), listener, endpoint, coalesce(via,''),
 	coalesce(subject_type,''), coalesce(subject_id,''), coalesce(action,''), coalesce(resource_type,''), coalesce(resource_id,''),
 	decision, coalesce(state,''), coalesce(reason,''), coalesce(actor,''), coalesce(client,''), coalesce(issuer,''),
 	coalesce(latency_ms, 0), coalesce(error,''), line`
@@ -201,7 +208,7 @@ func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {
 	out := []decisionRow{}
 	for rows.Next() {
 		var d decisionRow
-		if err := rows.Scan(&d.ID, &d.TS, &d.RequestID, &d.Listener, &d.Endpoint, &d.Via,
+		if err := rows.Scan(&d.ID, &d.TS, &d.RequestID, &d.TraceID, &d.SpanID, &d.Listener, &d.Endpoint, &d.Via,
 			&d.SubjectType, &d.SubjectID, &d.Action, &d.ResourceType, &d.ResourceID,
 			&d.Decision, &d.State, &d.Reason, &d.Actor, &d.Client, &d.Issuer, &d.LatencyMS, &d.Error, &d.Line); err != nil {
 			writeEngineError(w, err)
@@ -308,10 +315,15 @@ func (s *Server) handleDecisionsSummary(w http.ResponseWriter, r *http.Request) 
 		writeEngineError(w, err)
 		return
 	}
+	clients, err := top(`coalesce(client, '')`, denied)
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"configured": true, "from": f.from, "to": f.to,
 		"total": total, "allow": allow, "deny": deny, "conditional": conditional, "error": errs,
 		"denied_reasons": reasons, "denied_actions": actions, "denied_subjects": subjects,
-		"allowed_reasons": allowedReasons,
+		"allowed_reasons": allowedReasons, "denied_clients": clients,
 	})
 }

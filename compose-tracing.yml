@@ -1,0 +1,23 @@
+# Opt-in tracing overlay: a Jaeger (all-in-one, OTLP in) that receives the
+# pgauthzd instances' OpenTelemetry spans — one per request, one per decision,
+# one per engine query, one per OPA call — so a demo shows an application's
+# request end to end. Enable with:
+#
+#   ./start.sh --tracing         (or PGAUTHZ_TRACING=1)
+#
+# The instances' tracing is OFF by default (TRACING=auto exports only when an
+# OTLP endpoint is configured); start.sh/env.sh set OTEL_EXPORTER_OTLP_ENDPOINT
+# to this Jaeger for every pgauthzd instance of the stack, and CONSOLE_TRACE_URL
+# so the console's Decisions tab links a decision into its trace.
+# UI: http://localhost:16686 — the pgauthzd service, its traces by store
+# (tag pgauthz.store) and decision (pgauthz.decision, pgauthz.reason).
+# Subject/resource IDS are not on spans unless TRACING_IDENTIFIERS=true.
+
+services:
+
+  jaeger:
+    image: jaegertracing/jaeger:2.11.0
+    ports:
+      - "16686:16686"        # Jaeger UI
+      - "4318:4318"          # OTLP/HTTP, for applications on the host that trace too
+    restart: unless-stopped

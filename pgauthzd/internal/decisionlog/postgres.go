@@ -53,6 +53,8 @@ CREATE TABLE IF NOT EXISTS decisionlog.decisions (
     id            bigint GENERATED ALWAYS AS IDENTITY,
     ts            timestamptz NOT NULL,
     request_id    text,
+    trace_id      text,
+    span_id       text,
     listener      text NOT NULL,
     endpoint      text NOT NULL,
     via           text,
@@ -73,12 +75,15 @@ CREATE TABLE IF NOT EXISTS decisionlog.decisions (
     line          jsonb NOT NULL
 ) PARTITION BY RANGE (ts);
 CREATE TABLE IF NOT EXISTS decisionlog.decisions_default PARTITION OF decisionlog.decisions DEFAULT;
+ALTER TABLE decisionlog.decisions ADD COLUMN IF NOT EXISTS trace_id text;
+ALTER TABLE decisionlog.decisions ADD COLUMN IF NOT EXISTS span_id text;
+CREATE INDEX IF NOT EXISTS decisions_store_trace ON decisionlog.decisions (store, trace_id) WHERE trace_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS decisions_store_ts ON decisionlog.decisions (store, ts DESC, id DESC);
 CREATE INDEX IF NOT EXISTS decisions_store_subject_ts ON decisionlog.decisions (store, subject_type, subject_id, ts DESC);
 CREATE INDEX IF NOT EXISTS decisions_store_resource_ts ON decisionlog.decisions (store, resource_type, resource_id, ts DESC);
 `
 
-var columns = []string{"ts", "request_id", "listener", "endpoint", "via", "store", "subject_type", "subject_id", "action",
+var columns = []string{"ts", "request_id", "trace_id", "span_id", "listener", "endpoint", "via", "store", "subject_type", "subject_id", "action",
 	"resource_type", "resource_id", "decision", "state", "reason", "actor", "client", "issuer", "latency_ms", "error", "line"}
 
 // row is one decision line as table columns.
@@ -366,7 +371,7 @@ func parseRow(line []byte) (row, error) {
 		decision = *e.Decision
 	}
 	return row{ts: e.Time, vals: []any{
-		e.Time, nullable(e.RequestID), e.Listener, e.Endpoint, nullable(e.Via), e.Store,
+		e.Time, nullable(e.RequestID), nullable(e.TraceID), nullable(e.SpanID), e.Listener, e.Endpoint, nullable(e.Via), e.Store,
 		nullable(e.Subject.Type), nullable(e.Subject.ID), nullable(e.Action),
 		nullable(e.Resource.Type), nullable(e.Resource.ID),
 		decision, nullable(e.State), nullable(e.Reason), nullable(e.Actor), nullable(e.Client), nullable(e.Issuer),

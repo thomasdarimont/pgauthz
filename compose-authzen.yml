@@ -54,6 +54,12 @@ services:
       # public listener: off | trusted-peps (default: pep_clients /
       # ALLOW_SUBJECT_OVERRIDE callers) | any (refused in production).
       CONTEXTUAL_TUPLES: "${CONTEXTUAL_TUPLES:-trusted-peps}"
+      # OpenTelemetry: set an OTLP endpoint to export spans (propagation is
+      # always on; the decision log carries trace_id/span_id regardless).
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "${OTEL_EXPORTER_OTLP_PROTOCOL:-}"
+      TRACING: "${TRACING:-auto}"                       # auto (on when an endpoint is set) | on | off
+      TRACING_IDENTIFIERS: "${TRACING_IDENTIFIERS:-false}"   # subject/resource ids on spans
       # Discovery behind a TLS-terminating proxy: build the .well-known base
       # from X-Forwarded-Proto/-Host. Off by default (a client could otherwise
       # pick the advertised PDP identifier); the demo stack opts in via env.sh
@@ -114,6 +120,12 @@ services:
       # public listener: off | trusted-peps (default: pep_clients /
       # ALLOW_SUBJECT_OVERRIDE callers) | any (refused in production).
       CONTEXTUAL_TUPLES: "${CONTEXTUAL_TUPLES:-trusted-peps}"
+      # OpenTelemetry: set an OTLP endpoint to export spans (propagation is
+      # always on; the decision log carries trace_id/span_id regardless).
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "${OTEL_EXPORTER_OTLP_PROTOCOL:-}"
+      TRACING: "${TRACING:-auto}"                       # auto (on when an endpoint is set) | on | off
+      TRACING_IDENTIFIERS: "${TRACING_IDENTIFIERS:-false}"   # subject/resource ids on spans
       # Discovery behind a TLS-terminating proxy: build the .well-known base
       # from X-Forwarded-Proto/-Host. Off by default (a client could otherwise
       # pick the advertised PDP identifier); the demo stack opts in via env.sh

@@ -27,16 +27,21 @@ import (
 type Entry struct {
 	Time      time.Time `json:"ts"`
 	RequestID string    `json:"request_id,omitempty"`
-	Listener  string    `json:"listener"`      // public | callback
-	Endpoint  string    `json:"endpoint"`      // evaluation | evaluations | check | check-batch | explain | reserve
-	Via       string    `json:"via,omitempty"` // engine | opa
-	Store     string    `json:"store"`
-	Subject   Ref       `json:"subject"`
-	Action    string    `json:"action"`
-	Resource  Ref       `json:"resource"`
-	Decision  *bool     `json:"decision,omitempty"` // absent on error
-	State     string    `json:"state,omitempty"`    // allow | deny | conditional
-	Reason    string    `json:"reason,omitempty"`
+	// TraceID / SpanID: the OpenTelemetry trace the request belongs to and
+	// the decision's own span (a propagated parent's, without an exporter) —
+	// the join between a line and the application's trace.
+	TraceID  string `json:"trace_id,omitempty"`
+	SpanID   string `json:"span_id,omitempty"`
+	Listener string `json:"listener"`      // public | callback
+	Endpoint string `json:"endpoint"`      // evaluation | evaluations | check | check-batch | explain | reserve
+	Via      string `json:"via,omitempty"` // engine | opa
+	Store    string `json:"store"`
+	Subject  Ref    `json:"subject"`
+	Action   string `json:"action"`
+	Resource Ref    `json:"resource"`
+	Decision *bool  `json:"decision,omitempty"` // absent on error
+	State    string `json:"state,omitempty"`    // allow | deny | conditional
+	Reason   string `json:"reason,omitempty"`
 	// MissingContext / Conditions: the detailed decision's explanation of a
 	// `conditional` state (request keys a condition or gate needed).
 	MissingContext []string `json:"missing_context,omitempty"`

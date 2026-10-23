@@ -15,6 +15,9 @@ import (
 	"thomasdarimont.de/authz/pgauthzd/internal/api"
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"thomasdarimont.de/authz/pgauthzd/internal/telemetry"
 )
 
 // Backend implements authz.Backend by calling OPA HTTP endpoints.
@@ -67,9 +70,12 @@ func New(baseURL, pkg string, forwardToken bool, timeout time.Duration, deepRead
 		maxResponseBytes = 10 << 20 // fail bounded, never unlimited
 	}
 	return &Backend{
-		baseURL:               strings.TrimRight(baseURL, "/"),
-		pkg:                   pkg,
-		client:                &http.Client{Timeout: timeout},
+		baseURL: strings.TrimRight(baseURL, "/"),
+		pkg:     pkg,
+		// OpenTelemetry (when tracing is on): a client span per OPA call and
+		// the trace context propagated, so OPA's own decision log (when it
+		// traces) joins the trace. Off: the plain transport, nothing added.
+		client:                &http.Client{Timeout: timeout, Transport: opaTransport()},
 		forwardToken:          forwardToken,
 		deepReadinessRequired: deepReadinessRequired,
 		deploymentEnv:         deploymentEnv,
@@ -670,4 +676,12 @@ func buildPage(ids []string, limit int) ([]string, *authz.PageResponse, error) {
 	}
 
 	return ids, pageResp, nil
+}
+
+// opaTransport is the OPA client's transport: instrumented when tracing is on.
+func opaTransport() http.RoundTripper {
+	if telemetry.Enabled() {
+		return otelhttp.NewTransport(http.DefaultTransport)
+	}
+	return http.DefaultTransport
 }

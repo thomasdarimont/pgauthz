@@ -47,6 +47,7 @@
  * @property {Capabilities} registry
  * @property {string} console_store
  * @property {boolean} [decision_url_configured]
+ * @property {string} [trace_url] the tracing UI's trace page, {trace_id} placeholder (CONSOLE_TRACE_URL)
  * @property {{oidc: boolean, local: boolean}} [login]
  */
 
@@ -251,10 +252,10 @@
 
 // ── decisions (the decision log's postgres sink) ───────────────────────────
 
-/** @typedef {{id: number, ts: string, request_id?: string, listener: string, endpoint: string, via?: string, subject_type?: string, subject_id?: string, action?: string, resource_type?: string, resource_id?: string, decision?: boolean, state?: string, reason?: string, actor?: string, client?: string, issuer?: string, latency_ms: number, error?: string, line: Object}} DecisionRow */
+/** @typedef {{id: number, ts: string, request_id?: string, trace_id?: string, span_id?: string, listener: string, endpoint: string, via?: string, subject_type?: string, subject_id?: string, action?: string, resource_type?: string, resource_id?: string, decision?: boolean, state?: string, reason?: string, actor?: string, client?: string, issuer?: string, latency_ms: number, error?: string, line: Object}} DecisionRow */
 /** @typedef {{configured: boolean, rows: DecisionRow[], next?: string, limit?: number}} DecisionsResponse */
 /** @typedef {{key: string, count: number}} DecisionBucket */
-/** @typedef {{configured: boolean, from?: string, to?: string, total?: number, allow?: number, deny?: number, conditional?: number, error?: number, denied_reasons?: DecisionBucket[], denied_actions?: DecisionBucket[], denied_subjects?: DecisionBucket[], allowed_reasons?: DecisionBucket[]}} DecisionsSummary */
+/** @typedef {{configured: boolean, from?: string, to?: string, total?: number, allow?: number, deny?: number, conditional?: number, error?: number, denied_reasons?: DecisionBucket[], denied_actions?: DecisionBucket[], denied_subjects?: DecisionBucket[], denied_clients?: DecisionBucket[], allowed_reasons?: DecisionBucket[]}} DecisionsSummary */
 
 // ── access ─────────────────────────────────────────────────────────────────
 

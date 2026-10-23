@@ -200,8 +200,12 @@ func TestParseRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.vals[5] != "demo" || r.vals[7] != "alice" || r.vals[11] != true || r.vals[1] != nil {
+	if r.vals[7] != "demo" || r.vals[9] != "alice" || r.vals[13] != true || r.vals[1] != nil || r.vals[2] != nil {
 		t.Fatalf("columns: %v", r.vals)
+	}
+	r2, _ := parseRow([]byte(`{"ts":"2026-10-23T10:00:00Z","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","span_id":"00f067aa0ba902b7","listener":"public","endpoint":"check","store":"demo"}`))
+	if r2.vals[2] != "4bf92f3577b34da6a3ce929d0e0e4736" || r2.vals[3] != "00f067aa0ba902b7" {
+		t.Fatalf("trace columns: %v", r2.vals)
 	}
 	if _, err := parseRow([]byte(`{"ts":"2026-10-23T10:00:00Z"}`)); err == nil {
 		t.Fatal("a line without store/endpoint must be refused")
@@ -238,7 +242,7 @@ func TestPostgresSinkIntegration(t *testing.T) {
 	for _, id := range []string{"alice", "bob"} {
 		l.Log(Entry{Listener: "public", Endpoint: "check", Store: "it_demo", Subject: Ref{Type: "user", ID: id},
 			Action: "can_read", Resource: Ref{Type: "doc", ID: "d1"}, Decision: &decided, State: "allow", Reason: "direct_tuple",
-			ContextKeys: []string{"ip"}, LatencyMS: 1.5})
+			ContextKeys: []string{"ip"}, LatencyMS: 1.5, TraceID: "4bf92f3577b34da6a3ce929d0e0e4736", SpanID: "00f067aa0ba902b7"})
 	}
 	// an old line goes to a partition retention will drop
 	old := time.Now().UTC().AddDate(0, 0, -30)
@@ -248,10 +252,10 @@ func TestPostgresSinkIntegration(t *testing.T) {
 		_ = db.pool.QueryRow(ctx, `SELECT count(*) FROM decisionlog.decisions WHERE store = 'it_demo'`).Scan(&n)
 		return n == 3
 	})
-	var reason string
+	var reason, traceID string
 	var keys []string
-	if err := db.pool.QueryRow(ctx, `SELECT reason, ARRAY(SELECT jsonb_array_elements_text(line->'context_keys')) FROM decisionlog.decisions WHERE store='it_demo' AND subject_id='alice'`).Scan(&reason, &keys); err != nil || reason != "direct_tuple" || len(keys) != 1 {
-		t.Fatalf("row: %q %v %v", reason, keys, err)
+	if err := db.pool.QueryRow(ctx, `SELECT reason, coalesce(trace_id,''), ARRAY(SELECT jsonb_array_elements_text(line->'context_keys')) FROM decisionlog.decisions WHERE store='it_demo' AND subject_id='alice'`).Scan(&reason, &traceID, &keys); err != nil || reason != "direct_tuple" || len(keys) != 1 || traceID != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Fatalf("row: %q %q %v %v", reason, traceID, keys, err)
 	}
 	var parts int
 	if err := db.pool.QueryRow(ctx, `SELECT count(*) FROM pg_inherits i JOIN pg_class c ON c.oid=i.inhrelid WHERE c.relname ~ '^decisions_[0-9]{8}$'`).Scan(&parts); err != nil || parts < 3 {

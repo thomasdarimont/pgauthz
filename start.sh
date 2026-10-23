@@ -23,6 +23,9 @@
 #               look at the console itself; not combinable with --console.
 #   --metrics   Also start Prometheus + Grafana scraping the pgauthzd /metrics
 #               (compose-metrics.yml). UIs: :9095 (Prometheus) / :9096 (Grafana).
+#   --tracing   Also start a Jaeger collector (compose-tracing.yml) and point
+#               every pgauthzd instance at it (OpenTelemetry over OTLP); the
+#               console links decisions into their traces. UI: :16686.
 #
 set -euo pipefail
 
@@ -34,6 +37,7 @@ PLAYGROUND=0
 CONSOLE=0
 CONSOLE_LOCAL=0
 METRICS=0
+TRACING=0
 for arg in "$@"; do
   case "$arg" in
     --cel)        export PGAUTHZ_CEL=1 ;;
@@ -43,7 +47,8 @@ for arg in "$@"; do
     --console)    CONSOLE=1 ;;
     --console-local) CONSOLE_LOCAL=1 ;;
     --metrics)    METRICS=1 ;;
-    -h|--help)    sed -n '2,26p' "$0"; exit 0 ;;
+    --tracing)    TRACING=1 ;;
+    -h|--help)    sed -n '2,29p' "$0"; exit 0 ;;
     *) echo "Unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -71,6 +76,7 @@ if [ "$KEYCLOAK" = 1 ]; then OPA=1; fi
   echo "export PGAUTHZ_CONSOLE=\"\${PGAUTHZ_CONSOLE:-$CONSOLE}\""
   echo "export PGAUTHZ_CONSOLE_LOCAL=\"\${PGAUTHZ_CONSOLE_LOCAL:-$CONSOLE_LOCAL}\""
   echo "export PGAUTHZ_METRICS=\"\${PGAUTHZ_METRICS:-$METRICS}\""
+  echo "export PGAUTHZ_TRACING=\"\${PGAUTHZ_TRACING:-$TRACING}\""
 } > "$SCRIPT_DIR/.pgauthz-overlays"
 
 # Compose files — base stack + optional authzen overlay
@@ -130,6 +136,16 @@ if [ "$METRICS" = 1 ]; then
   echo "==> Metrics enabled (compose-metrics.yml: Prometheus + Grafana)"
 fi
 
+# Optional tracing overlay (OpenTelemetry → Jaeger). The overlay adds the
+# collector; the instances are pointed at it through the environment the
+# compose files pass through (OTEL_EXPORTER_OTLP_ENDPOINT, CONSOLE_TRACE_URL).
+if [ "$TRACING" = 1 ]; then
+  COMPOSE_FILES+=(-f "$SCRIPT_DIR/compose-tracing.yml")
+  export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}"
+  export CONSOLE_TRACE_URL="${CONSOLE_TRACE_URL:-http://localhost:16686/trace/{trace_id}}"
+  echo "==> Tracing enabled (compose-tracing.yml: Jaeger; every pgauthzd exports to it)"
+fi
+
 # Git revision for the console footer (compose-console.yml build arg).
 export REVISION="${REVISION:-$(git -C "$SCRIPT_DIR" rev-parse --short=12 HEAD 2>/dev/null || true)}"
 
@@ -171,6 +187,12 @@ fi
 if [ "$METRICS" = 1 ]; then
   echo ""
   echo "==> Prometheus: http://localhost:9095   Grafana: http://localhost:9096 (anonymous admin)"
+fi
+
+if [ "$TRACING" = 1 ]; then
+  echo ""
+  echo "==> Jaeger: http://localhost:16686  (service pgauthzd; tags pgauthz.store, pgauthz.decision, pgauthz.reason)"
+  echo "    Send a traced request: curl -H 'traceparent: 00-<32 hex>-<16 hex>-01' ... — the trace id shows in the console's Decisions tab"
 fi
 
 if [ "$PLAYGROUND" = 1 ]; then
