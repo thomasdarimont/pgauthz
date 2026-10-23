@@ -42,6 +42,7 @@ always uses explicit separate parameters for type, ID, and relation.
   - [write_tuples / delete_tuples — Batch operations](#write_tuples--delete_tuples--batch-operations)
   - [delete_user_tuples — Remove all tuples for a user](#delete_user_tuples--remove-all-tuples-for-a-user)
   - [list_stores — Every store, live and retired](#list_stores--every-store-live-and-retired)
+  - [list_recorder_actions / list_namespaces — The allowlists and namespaces of a store](#list_recorder_actions--list_namespaces--the-allowlists-and-namespaces-of-a-store)
   - [export_subject / erase_subject — Data subject requests](#export_subject--erase_subject--data-subject-requests)
   - [grant / revoke — Share on behalf of an actor](#grant--revoke--share-on-behalf-of-an-actor)
   - [model_register_relation / model_set_relation_metadata — Relations and their kind](#model_register_relation--model_set_relation_metadata--relations-and-their-kind)
@@ -408,6 +409,15 @@ SELECT * FROM authz.list_stores();
 --  name | description | docs_url | created_at | retired_at
 -- the facts of every store (retired ones carry retired_at); reader tier,
 -- for tooling that calls functions but may not read the tables
+```
+
+### list_recorder_actions / list_namespaces — The allowlists and namespaces of a store
+
+```sql
+SELECT * FROM authz.list_recorder_actions('bank');   -- db_role | actions (text[])
+SELECT * FROM authz.list_namespaces('demo');         -- namespace | types (text[]) | access (jsonb: [{db_role, can_read, can_write}])
+-- reader tier: the read-back of grant_recorder_actions / grant_namespace_access
+-- for tooling that calls functions but may not read the tables (the admin API)
 ```
 
 ### export_subject / erase_subject — Data subject requests

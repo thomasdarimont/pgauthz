@@ -1075,6 +1075,192 @@ paths:
                   can_apply: { type: boolean, enum: [false] }
                   plan: { $ref: '#/components/schemas/ModelPlan' }
         '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/admin/stores/{store}/recorders:
+    parameters:
+      - { name: store, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' } }
+    get:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminRecorders
+      summary: The store's recorder allowlists — which DB roles may record which actions
+      responses:
+        '200':
+          description: The allowlists (a role without one may record any declared action).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [store, recorders]
+                properties:
+                  store: { type: string }
+                  recorders:
+                    type: array
+                    items: { $ref: '#/components/schemas/RecorderAllowlist' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/admin/stores/{store}/recorders/{role}:
+    parameters:
+      - { name: store, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' } }
+      - { name: role, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' }, description: The recording DB role. }
+    put:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminSetRecorder
+      summary: Make the role's allowlist exactly these actions
+      description: >
+        grant_recorder_actions after lifting the previous list, in one
+        transaction. Every action must be a declared relation of the store.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [actions]
+              properties:
+                actions: { type: array, items: { type: string }, minItems: 1 }
+      responses:
+        '200':
+          description: The allowlist in force.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  store: { type: string }
+                  db_role: { type: string }
+                  actions: { type: array, items: { type: string } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+    delete:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminDeleteRecorder
+      summary: Lift the role's allowlist (it may then record any declared action)
+      responses:
+        '200':
+          description: Lifted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  store: { type: string }
+                  db_role: { type: string }
+                  deleted: { type: boolean, enum: [true] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/admin/stores/{store}/namespaces:
+    parameters:
+      - { name: store, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' } }
+    get:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminNamespaces
+      summary: The store's namespaces — their types and the DB roles with read / write access
+      responses:
+        '200':
+          description: The namespaces.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [store, namespaces]
+                properties:
+                  store: { type: string }
+                  namespaces:
+                    type: array
+                    items: { $ref: '#/components/schemas/Namespace' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/admin/stores/{store}/namespaces/{ns}/access/{role}:
+    parameters:
+      - { name: store, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' } }
+      - { name: ns, in: path, required: true, schema: { type: string } }
+      - { name: role, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' }, description: The per-application DB role. }
+    put:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminSetNamespaceAccess
+      summary: Make the role's access to the namespace exactly these flags
+      description: >
+        revoke then grant in one transaction; both flags false removes the
+        grant. The namespace need not have types yet (types join it by their
+        namespace).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                can_read: { type: boolean }
+                can_write: { type: boolean }
+      responses:
+        '200':
+          description: The grant in force.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NamespaceGrant' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+    delete:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminDeleteNamespaceAccess
+      summary: Remove the role's access to the namespace
+      responses:
+        '200':
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  store: { type: string }
+                  namespace: { type: string }
+                  db_role: { type: string }
+                  deleted: { type: boolean, enum: [true] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
   /pgauthz/v1/admin/models:
     get:
       tags: [admin]
@@ -2315,6 +2501,29 @@ components:
         gates: { type: array, items: { type: object, additionalProperties: true } }
         grant_rules: { type: array, items: { type: object, additionalProperties: true } }
       additionalProperties: true
+    RecorderAllowlist:
+      type: object
+      required: [db_role, actions]
+      properties:
+        db_role: { type: string }
+        actions: { type: array, items: { type: string } }
+    Namespace:
+      type: object
+      required: [name, types, access]
+      properties:
+        name: { type: string }
+        types: { type: array, items: { type: string } }
+        access:
+          type: array
+          items: { $ref: '#/components/schemas/NamespaceGrant' }
+    NamespaceGrant:
+      type: object
+      properties:
+        store: { type: string }
+        namespace: { type: string }
+        db_role: { type: string }
+        can_read: { type: boolean }
+        can_write: { type: boolean }
     ModelPlan:
       type: object
       description: authz.plan_model_apply — the changes, the blockers, can_apply, no_op.

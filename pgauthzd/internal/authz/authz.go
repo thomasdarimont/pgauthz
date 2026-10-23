@@ -370,3 +370,18 @@ type StoreRow struct {
 	RetiredAt   *time.Time      `json:"retired_at,omitempty"`
 	Model       json.RawMessage `json:"model,omitempty"`
 }
+
+// RecorderRow is one recorder allowlist of a store (ADR 0012): the DB role
+// and the actions it may record.
+type RecorderRow struct {
+	DBRole  string   `json:"db_role"`
+	Actions []string `json:"actions"`
+}
+
+// NamespaceRow is one namespace of a store: its types and the DB roles with
+// read / write access, as authz.list_namespaces renders them.
+type NamespaceRow struct {
+	Name   string          `json:"name"`
+	Types  []string        `json:"types"`
+	Access json.RawMessage `json:"access"`
+}

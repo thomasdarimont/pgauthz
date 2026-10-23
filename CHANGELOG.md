@@ -84,6 +84,14 @@ pre-1.0, minor versions may include breaking changes.
   endpoints) instead of just the outcome; Reset clears every filter back to
   the window; Refresh reloads it. A test pins that every filter value
   reaches SQL as a bound argument.
+- **Admin API: recorder allowlists and namespaces.**
+  `GET|PUT|DELETE /pgauthz/v1/admin/stores/{store}/recorders[/{role}]` (make
+  a role's allowlist exactly the given actions, lift it) and
+  `GET|PUT|DELETE …/namespaces[/{ns}/access/{role}]` (make a role's access
+  exactly the given flags, remove it), store-scoped like the rest; the
+  engine gains the reader-tier read-backs `list_recorder_actions` and
+  `list_namespaces`. With that every console management feature has its
+  endpoint.
 - **`ADMIN_DATABASE_URL`**: management runs on its own small pool as the
   admin tier while the instance's `DATABASE_URL` keeps the writer tier
   (`doctor` warns when the main pool serves management). The demo stack,

@@ -43,7 +43,16 @@ type StoreAdmin interface {
 	RolloutStatus(ctx context.Context, name string) ([]json.RawMessage, error)
 	PublishModel(ctx context.Context, name, fromStore string, definition, openfga json.RawMessage, description, actor string) (int, error)
 	DescribeModel(ctx context.Context, store string) (string, error)
+	RecorderActions(ctx context.Context, store string) ([]authz.RecorderRow, error)
+	SetRecorderActions(ctx context.Context, store, role string, actions []string, actor string) error
+	RevokeRecorderActions(ctx context.Context, store, role, actor string) (bool, error)
+	Namespaces(ctx context.Context, store string) ([]authz.NamespaceRow, error)
+	SetNamespaceAccess(ctx context.Context, store, namespace, role string, canRead, canWrite bool, actor string) error
+	RevokeNamespaceAccess(ctx context.Context, store, namespace, role, actor string) (bool, error)
 }
+
+var roleNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]{0,62}$`)
+var namespaceRe = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,62}$`)
 
 var storeNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]{0,62}$`)
 var modelNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
@@ -383,8 +392,176 @@ func (h *Handler) adminPublishModel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"model": name, "version": version})
 }
 
+// ── recorder allowlists: who may record which actions (ADR 0012) ─────────
+
+func (h *Handler) adminRecorders(w http.ResponseWriter, r *http.Request) {
+	_, store, ok := h.requireStoreScope(w, r)
+	if !ok {
+		return
+	}
+	a, ok := h.storeAdmin(w)
+	if !ok {
+		return
+	}
+	rows, err := a.RecorderActions(r.Context(), store)
+	if err != nil {
+		writeDecisionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"store": store, "recorders": rows})
+}
+
+func (h *Handler) adminSetRecorder(w http.ResponseWriter, r *http.Request) {
+	_, store, ok := h.requireStoreScope(w, r)
+	if !ok {
+		return
+	}
+	a, ok := h.storeAdmin(w)
+	if !ok {
+		return
+	}
+	role := r.PathValue("role")
+	if !roleNameRe.MatchString(role) {
+		writeBadRequest(w, "db roles are [a-zA-Z_][a-zA-Z0-9_]*, at most 63 characters")
+		return
+	}
+	var req struct {
+		Actions []string `json:"actions"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeBadRequest(w, "invalid JSON: "+err.Error())
+		return
+	}
+	if len(req.Actions) == 0 {
+		writeBadRequest(w, "actions must name at least one declared relation (DELETE lifts the allowlist)")
+		return
+	}
+	if err := a.SetRecorderActions(r.Context(), store, role, req.Actions, actorLabel(r)); err != nil {
+		writeDecisionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"store": store, "db_role": role, "actions": req.Actions})
+}
+
+func (h *Handler) adminDeleteRecorder(w http.ResponseWriter, r *http.Request) {
+	_, store, ok := h.requireStoreScope(w, r)
+	if !ok {
+		return
+	}
+	a, ok := h.storeAdmin(w)
+	if !ok {
+		return
+	}
+	role := r.PathValue("role")
+	existed, err := a.RevokeRecorderActions(r.Context(), store, role, actorLabel(r))
+	if err != nil {
+		writeDecisionError(w, err)
+		return
+	}
+	if !existed {
+		writeError(w, http.StatusNotFound, "no allowlist for "+role+" in store "+store)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"store": store, "db_role": role, "deleted": true})
+}
+
+// ── namespaces: per-application slices and their role grants ────────────
+
+func (h *Handler) adminNamespaces(w http.ResponseWriter, r *http.Request) {
+	_, store, ok := h.requireStoreScope(w, r)
+	if !ok {
+		return
+	}
+	a, ok := h.storeAdmin(w)
+	if !ok {
+		return
+	}
+	rows, err := a.Namespaces(r.Context(), store)
+	if err != nil {
+		writeDecisionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"store": store, "namespaces": rows})
+}
+
+func (h *Handler) namespaceAndRole(w http.ResponseWriter, r *http.Request) (string, string, bool) {
+	ns, role := r.PathValue("ns"), r.PathValue("role")
+	if !namespaceRe.MatchString(ns) {
+		writeBadRequest(w, "namespaces are [a-zA-Z0-9_][a-zA-Z0-9_.-]*, at most 63 characters")
+		return "", "", false
+	}
+	if !roleNameRe.MatchString(role) {
+		writeBadRequest(w, "db roles are [a-zA-Z_][a-zA-Z0-9_]*, at most 63 characters")
+		return "", "", false
+	}
+	return ns, role, true
+}
+
+func (h *Handler) adminSetNamespaceAccess(w http.ResponseWriter, r *http.Request) {
+	_, store, ok := h.requireStoreScope(w, r)
+	if !ok {
+		return
+	}
+	a, ok := h.storeAdmin(w)
+	if !ok {
+		return
+	}
+	ns, role, ok := h.namespaceAndRole(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		CanRead  bool `json:"can_read"`
+		CanWrite bool `json:"can_write"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeBadRequest(w, "invalid JSON: "+err.Error())
+		return
+	}
+	if err := a.SetNamespaceAccess(r.Context(), store, ns, role, req.CanRead, req.CanWrite, actorLabel(r)); err != nil {
+		writeDecisionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"store": store, "namespace": ns, "db_role": role, "can_read": req.CanRead, "can_write": req.CanWrite})
+}
+
+func (h *Handler) adminDeleteNamespaceAccess(w http.ResponseWriter, r *http.Request) {
+	_, store, ok := h.requireStoreScope(w, r)
+	if !ok {
+		return
+	}
+	a, ok := h.storeAdmin(w)
+	if !ok {
+		return
+	}
+	ns, role, ok := h.namespaceAndRole(w, r)
+	if !ok {
+		return
+	}
+	existed, err := a.RevokeNamespaceAccess(r.Context(), store, ns, role, actorLabel(r))
+	if err != nil {
+		writeDecisionError(w, err)
+		return
+	}
+	if !existed {
+		writeError(w, http.StatusNotFound, "no grant for "+role+" on namespace "+ns+" in store "+store)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"store": store, "namespace": ns, "db_role": role, "deleted": true})
+}
+
 // registerAdminStores mounts the store and model resources.
 func registerAdminStores(mux *http.ServeMux, h *Handler) {
+	mux.HandleFunc("GET /pgauthz/v1/admin/stores/{store}/recorders", h.adminRecorders)
+	mux.HandleFunc("PUT /pgauthz/v1/admin/stores/{store}/recorders/{role}", h.adminSetRecorder)
+	mux.HandleFunc("DELETE /pgauthz/v1/admin/stores/{store}/recorders/{role}", h.adminDeleteRecorder)
+	mux.HandleFunc("GET /pgauthz/v1/admin/stores/{store}/namespaces", h.adminNamespaces)
+	mux.HandleFunc("PUT /pgauthz/v1/admin/stores/{store}/namespaces/{ns}/access/{role}", h.adminSetNamespaceAccess)
+	mux.HandleFunc("DELETE /pgauthz/v1/admin/stores/{store}/namespaces/{ns}/access/{role}", h.adminDeleteNamespaceAccess)
 	mux.HandleFunc("GET /pgauthz/v1/admin/stores", h.adminStores)
 	mux.HandleFunc("GET /pgauthz/v1/admin/stores/{store}", h.adminStore)
 	mux.HandleFunc("PUT /pgauthz/v1/admin/stores/{store}", h.adminUpsertStore)

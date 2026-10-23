@@ -28,6 +28,40 @@ LANGUAGE sql STABLE AS $$
      ORDER BY s.name;
 $$;
 
+-- list_recorder_actions: the store's recorder allowlists (ADR 0012) —
+-- which DB roles may record which actions; a role without a row may
+-- record any declared action.
+CREATE OR REPLACE FUNCTION authz.list_recorder_actions(p_store text)
+RETURNS TABLE (db_role text, actions text[])
+LANGUAGE sql STABLE AS $$
+    SELECT ra.db_role, array_agg(rl.name ORDER BY rl.name)
+      FROM authz.recorder_actions ra
+      JOIN authz.relations rl ON rl.id = ra.action
+     WHERE ra.store_id = authz._s(p_store, true)
+     GROUP BY ra.db_role
+     ORDER BY ra.db_role;
+$$;
+
+-- list_namespaces: the store's namespaces — the types in each and the DB
+-- roles with read / write access (namespace_access). A namespace with
+-- grants but no type any more, or with types but no grants, is listed too.
+CREATE OR REPLACE FUNCTION authz.list_namespaces(p_store text)
+RETURNS TABLE (namespace text, types text[], access jsonb)
+LANGUAGE sql STABLE AS $$
+    WITH s AS (SELECT authz._s(p_store, true) AS id),
+    names AS (
+        SELECT t.namespace FROM authz.types t, s WHERE t.store_id = s.id AND t.namespace IS NOT NULL
+        UNION
+        SELECT na.namespace FROM authz.namespace_access na, s WHERE na.store_id = s.id
+    )
+    SELECT n.namespace,
+           coalesce((SELECT array_agg(t.name ORDER BY t.name) FROM authz.types t, s WHERE t.store_id = s.id AND t.namespace = n.namespace), '{}'),
+           coalesce((SELECT jsonb_agg(jsonb_build_object('db_role', na.db_role, 'can_read', na.can_read, 'can_write', na.can_write) ORDER BY na.db_role)
+                       FROM authz.namespace_access na, s WHERE na.store_id = s.id AND na.namespace = n.namespace), '[]'::jsonb)
+      FROM names n
+     ORDER BY n.namespace;
+$$;
+
 CREATE OR REPLACE FUNCTION authz.store_stats(p_limit int DEFAULT 100)
 RETURNS TABLE(store text, tuples bigint, stores_total bigint)
 LANGUAGE sql

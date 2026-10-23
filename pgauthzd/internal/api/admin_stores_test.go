@@ -17,10 +17,12 @@ import (
 // stores by name, a registry of versions, a fixed plan verdict per store.
 type storeStub struct {
 	authz.Backend
-	stores   map[string]*authz.StoreRow
-	versions map[string][]int
-	blocked  map[string]bool // store → the plan reports blockers
-	actors   []string
+	stores     map[string]*authz.StoreRow
+	versions   map[string][]int
+	blocked    map[string]bool // store → the plan reports blockers
+	actors     []string
+	recorders  map[string]map[string][]string           // store → role → actions
+	namespaces map[string]map[string]map[string][2]bool // store → namespace → role → (read, write)
 }
 
 func (s *storeStub) ListStores(context.Context) ([]authz.StoreRow, error) {
@@ -105,6 +107,61 @@ func (s *storeStub) RolloutStatus(_ context.Context, name string) ([]json.RawMes
 func (s *storeStub) DescribeModel(context.Context, string) (string, error) {
 	return "model\n  schema 1.1\n", nil
 }
+func (s *storeStub) RecorderActions(_ context.Context, store string) ([]authz.RecorderRow, error) {
+	out := []authz.RecorderRow{}
+	for role, acts := range s.recorders[store] {
+		out = append(out, authz.RecorderRow{DBRole: role, Actions: acts})
+	}
+	return out, nil
+}
+func (s *storeStub) SetRecorderActions(_ context.Context, store, role string, actions []string, actor string) error {
+	s.actors = append(s.actors, actor)
+	for _, a := range actions {
+		if a == "nope" {
+			return fmt.Errorf("%w: relation nope not declared", authz.ErrInvalidRequest)
+		}
+	}
+	if s.recorders[store] == nil {
+		s.recorders[store] = map[string][]string{}
+	}
+	s.recorders[store][role] = actions
+	return nil
+}
+func (s *storeStub) RevokeRecorderActions(_ context.Context, store, role, actor string) (bool, error) {
+	s.actors = append(s.actors, actor)
+	_, ok := s.recorders[store][role]
+	delete(s.recorders[store], role)
+	return ok, nil
+}
+func (s *storeStub) Namespaces(_ context.Context, store string) ([]authz.NamespaceRow, error) {
+	out := []authz.NamespaceRow{}
+	for ns, grants := range s.namespaces[store] {
+		acc, _ := json.Marshal(grants)
+		out = append(out, authz.NamespaceRow{Name: ns, Types: []string{ns + "_doc"}, Access: acc})
+	}
+	return out, nil
+}
+func (s *storeStub) SetNamespaceAccess(_ context.Context, store, ns, role string, canRead, canWrite bool, actor string) error {
+	s.actors = append(s.actors, actor)
+	if s.namespaces[store] == nil {
+		s.namespaces[store] = map[string]map[string][2]bool{}
+	}
+	if s.namespaces[store][ns] == nil {
+		s.namespaces[store][ns] = map[string][2]bool{}
+	}
+	if !canRead && !canWrite {
+		delete(s.namespaces[store][ns], role)
+		return nil
+	}
+	s.namespaces[store][ns][role] = [2]bool{canRead, canWrite}
+	return nil
+}
+func (s *storeStub) RevokeNamespaceAccess(_ context.Context, store, ns, role, actor string) (bool, error) {
+	s.actors = append(s.actors, actor)
+	_, ok := s.namespaces[store][ns][role]
+	delete(s.namespaces[store][ns], role)
+	return ok, nil
+}
 func (s *storeStub) PublishModel(_ context.Context, name, fromStore string, def, openfga json.RawMessage, _ string, actor string) (int, error) {
 	s.actors = append(s.actors, actor)
 	if fromStore != "" {
@@ -120,9 +177,11 @@ func storesFixture(t *testing.T) (*Handler, *storeStub) {
 	t.Helper()
 	h, _ := adminFixture(t)
 	stub := &storeStub{
-		stores:   map[string]*authz.StoreRow{"a_docs": {Name: "a_docs"}, "b_docs": {Name: "b_docs"}, "shared": {Name: "shared"}},
-		versions: map[string][]int{"core": {1, 2}},
-		blocked:  map[string]bool{"b_docs": true},
+		stores:     map[string]*authz.StoreRow{"a_docs": {Name: "a_docs"}, "b_docs": {Name: "b_docs"}, "shared": {Name: "shared"}},
+		versions:   map[string][]int{"core": {1, 2}},
+		blocked:    map[string]bool{"b_docs": true},
+		recorders:  map[string]map[string][]string{},
+		namespaces: map[string]map[string]map[string][2]bool{},
 	}
 	h.rawWrite = stub
 	return h, stub
@@ -265,5 +324,64 @@ func TestAdminModels(t *testing.T) {
 	}
 	if len(stub.actors) < 3 || stub.actors[len(stub.actors)-1] != "user:ops" {
 		t.Fatalf("actors: %v", stub.actors)
+	}
+}
+
+// Recorder allowlists and namespace grants: set exactly, list, lift; the
+// store scope and the name rules apply; the engine's refusals are 400.
+func TestAdminRecordersAndNamespaces(t *testing.T) {
+	h, stub := storesFixture(t)
+	w := serveAdmin(h, tenantAAdmin.request("PUT", "/pgauthz/v1/admin/stores/a_docs/recorders/svc_a", `{"actions":["download","pay"]}`))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"actions":["download","pay"]`) {
+		t.Fatalf("set recorder: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantAAdmin.request("PUT", "/pgauthz/v1/admin/stores/a_docs/recorders/svc_a", `{"actions":[]}`)); w.Code != 400 {
+		t.Fatalf("empty allowlist: %d", w.Code)
+	}
+	if w := serveAdmin(h, tenantAAdmin.request("PUT", "/pgauthz/v1/admin/stores/a_docs/recorders/svc_a", `{"actions":["nope"]}`)); w.Code != 400 {
+		t.Fatalf("undeclared action: %d", w.Code)
+	}
+	if w := serveAdmin(h, tenantAAdmin.request("PUT", "/pgauthz/v1/admin/stores/b_docs/recorders/svc_a", `{"actions":["download"]}`)); w.Code != 403 {
+		t.Fatalf("outside the scope: %d", w.Code)
+	}
+	if w := serveAdmin(h, tenantAAdmin.request("PUT", "/pgauthz/v1/admin/stores/a_docs/recorders/bad-role", `{"actions":["download"]}`)); w.Code != 400 {
+		t.Fatalf("bad role name: %d", w.Code)
+	}
+	w = serveAdmin(h, tenantAAdmin.request("GET", "/pgauthz/v1/admin/stores/a_docs/recorders", ""))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"db_role":"svc_a"`) {
+		t.Fatalf("list recorders: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_docs/recorders/svc_a", "")); w.Code != 200 {
+		t.Fatalf("lift: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_docs/recorders/svc_a", "")); w.Code != 404 {
+		t.Fatalf("lift again: %d", w.Code)
+	}
+
+	w = serveAdmin(h, tenantAAdmin.request("PUT", "/pgauthz/v1/admin/stores/a_docs/namespaces/hr/access/app_hr", `{"can_read":true,"can_write":true}`))
+	if w.Code != 200 || stub.namespaces["a_docs"]["hr"]["app_hr"] != [2]bool{true, true} {
+		t.Fatalf("grant: %d %s", w.Code, w.Body.String())
+	}
+	w = serveAdmin(h, tenantAAdmin.request("PUT", "/pgauthz/v1/admin/stores/a_docs/namespaces/hr/access/app_hr", `{"can_read":true}`))
+	if w.Code != 200 || stub.namespaces["a_docs"]["hr"]["app_hr"] != [2]bool{true, false} {
+		t.Fatalf("narrow to read: %d %+v", w.Code, stub.namespaces["a_docs"]["hr"])
+	}
+	w = serveAdmin(h, tenantAAdmin.request("GET", "/pgauthz/v1/admin/stores/a_docs/namespaces", ""))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"name":"hr"`) || !strings.Contains(w.Body.String(), `"app_hr"`) {
+		t.Fatalf("list namespaces: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantAAdmin.request("PUT", "/pgauthz/v1/admin/stores/a_docs/namespaces/bad%20ns/access/app_hr", `{"can_read":true}`)); w.Code != 400 {
+		t.Fatalf("bad namespace: %d", w.Code)
+	}
+	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_docs/namespaces/hr/access/app_hr", "")); w.Code != 200 {
+		t.Fatalf("revoke: %d", w.Code)
+	}
+	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_docs/namespaces/hr/access/app_hr", "")); w.Code != 404 {
+		t.Fatalf("revoke again: %d", w.Code)
+	}
+	for _, a := range stub.actors {
+		if a != "user:alice via terraform-a" {
+			t.Fatalf("actor: %q", a)
+		}
 	}
 }

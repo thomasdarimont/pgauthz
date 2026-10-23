@@ -247,3 +247,89 @@ func (b *Backend) DescribeModel(ctx context.Context, store string) (string, erro
 	err := b.pool.QueryRow(ctx, `SELECT authz.describe_model($1)`, store).Scan(&text)
 	return text, adminError(err)
 }
+
+// ── recorder allowlists and namespaces ──────────────────────────────────
+
+// RecorderActions: the store's recorder allowlists (authz.list_recorder_actions).
+func (b *Backend) RecorderActions(ctx context.Context, store string) ([]authz.RecorderRow, error) {
+	rows, err := b.pool.Query(ctx, `SELECT db_role, actions FROM authz.list_recorder_actions($1)`, store)
+	if err != nil {
+		return nil, adminError(err)
+	}
+	defer rows.Close()
+	out := []authz.RecorderRow{}
+	for rows.Next() {
+		var r authz.RecorderRow
+		if err := rows.Scan(&r.DBRole, &r.Actions); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SetRecorderActions makes the role's allowlist exactly actions (lift it
+// first, then grant), in one transaction.
+func (b *Backend) SetRecorderActions(ctx context.Context, store, role string, actions []string, actor string) error {
+	return b.asActor(ctx, actor, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT authz.revoke_recorder_actions($1, $2, NULL)`, store, role); err != nil {
+			return err
+		}
+		if len(actions) == 0 {
+			return nil
+		}
+		_, err := tx.Exec(ctx, `SELECT authz.grant_recorder_actions($1, $2, $3::text[])`, store, role, actions)
+		return err
+	})
+}
+
+// RevokeRecorderActions lifts the role's whole allowlist; existed says whether there was one.
+func (b *Backend) RevokeRecorderActions(ctx context.Context, store, role, actor string) (bool, error) {
+	var n int
+	err := b.asActor(ctx, actor, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT authz.revoke_recorder_actions($1, $2, NULL)`, store, role).Scan(&n)
+	})
+	return n > 0, err
+}
+
+// Namespaces: the store's namespaces with their types and role grants.
+func (b *Backend) Namespaces(ctx context.Context, store string) ([]authz.NamespaceRow, error) {
+	rows, err := b.pool.Query(ctx, `SELECT namespace, types, access FROM authz.list_namespaces($1)`, store)
+	if err != nil {
+		return nil, adminError(err)
+	}
+	defer rows.Close()
+	out := []authz.NamespaceRow{}
+	for rows.Next() {
+		var r authz.NamespaceRow
+		if err := rows.Scan(&r.Name, &r.Types, &r.Access); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SetNamespaceAccess makes the role's grant on the namespace exactly
+// (canRead, canWrite): revoke both, grant what is asked (both false = no row).
+func (b *Backend) SetNamespaceAccess(ctx context.Context, store, namespace, role string, canRead, canWrite bool, actor string) error {
+	return b.asActor(ctx, actor, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT authz.revoke_namespace_access($1, $2, $3, true, true)`, store, namespace, role); err != nil {
+			return err
+		}
+		if !canRead && !canWrite {
+			return nil
+		}
+		_, err := tx.Exec(ctx, `SELECT authz.grant_namespace_access($1, $2, $3, $4, $5)`, store, namespace, role, canRead, canWrite)
+		return err
+	})
+}
+
+// RevokeNamespaceAccess removes the role's grant on the namespace; existed says whether there was one.
+func (b *Backend) RevokeNamespaceAccess(ctx context.Context, store, namespace, role, actor string) (bool, error) {
+	var existed bool
+	err := b.asActor(ctx, actor, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT authz.revoke_namespace_access($1, $2, $3, true, true)`, store, namespace, role).Scan(&existed)
+	})
+	return existed, err
+}

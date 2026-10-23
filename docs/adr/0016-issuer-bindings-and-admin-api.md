@@ -98,8 +98,10 @@ blockers), `GET /admin/models`, `POST /admin/models/{name}/versions`
 (publish from a store, from a definition — `publish_model_definition`, the
 model file in git — or from an OpenFGA model converted through an
 ephemeral store — `publish_model_openfga`), `GET /admin/models/{name}/rollout`.
-The tenant scope carries over: a tenant admin reaches the stores its
-issuer is bound to; the registry needs platform scope. With that,
+Recorder allowlists and namespace grants followed the same day as
+sub-resources of a store. The tenant scope carries over: a tenant admin
+reaches the stores its issuer is bound to; the registry needs platform
+scope. With that,
 pgauthzctl's model verbs run over the API too; `--dsn` remains for
 `model import`, `model test`, installation and break-glass.
 

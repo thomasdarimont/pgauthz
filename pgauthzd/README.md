@@ -796,9 +796,8 @@ provider — or `ADMIN_ROLE`. The read-only `GET /pgauthz/v1/issuers` follows th
 same rule (own issuer unless platform admin).
 
 **The resources** (conditions, gates and grant rules travel inside the
-model definition; recorder allowlists and namespaces follow — every console
-management feature gets its endpoint here, so configuration as code never
-needs the console's BFF):
+model definition; every console management feature gets its endpoint here,
+so configuration as code never needs the console's BFF):
 
 | Method | Path | What |
 |--------|------|------|
@@ -811,6 +810,8 @@ needs the console's BFF):
 | DELETE | `/pgauthz/v1/admin/stores/{store}[?purge_audit=true]` | `delete_store`, the erasure path |
 | GET | `/pgauthz/v1/admin/stores/{store}/model` | The live model as the canonical definition, and `model_status` |
 | PUT | `/pgauthz/v1/admin/stores/{store}/model[?plan=true]` | `{"model":"name[@version]"}`: plan, then apply when the plan has no blockers (`409` with the plan otherwise); `plan=true` is the dry run |
+| GET/PUT/DELETE | `/pgauthz/v1/admin/stores/{store}/recorders[/{role}]` | The recorder allowlists (ADR 0012): list; make a role's allowlist exactly `{"actions":[…]}`; lift it |
+| GET/PUT/DELETE | `/pgauthz/v1/admin/stores/{store}/namespaces[/{ns}/access/{role}]` | The namespaces with their types and role grants; make a role's access exactly `{"can_read","can_write"}`; remove it |
 | GET | `/pgauthz/v1/admin/models[?name=]` | The registry's versions (platform scope) |
 | POST | `/pgauthz/v1/admin/models/{name}/versions` | Publish the next version from `from_store` or from a `definition` (the export shape; `publish_model_definition`), idempotent on the checksum (platform scope) |
 | GET | `/pgauthz/v1/admin/models/{name}/rollout` | Every store under the model with version and drift (platform scope) |

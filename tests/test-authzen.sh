@@ -781,6 +781,32 @@ check_http "admin: GET models lists the version (200)" "200" \
     -X GET "$ADMIN_URL/pgauthz/v1/admin/models?name=az_admin_model" -H "$AUTH_ADMIN"
 check_http "admin: GET rollout (200)" "200" \
     -X GET "$ADMIN_URL/pgauthz/v1/admin/models/az_admin_model/rollout" -H "$AUTH_ADMIN"
+check_json "admin: PUT recorders sets a role's allowlist" \
+    "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/recorders/authz_recorder_svc" "$AUTH_ADMIN" '{"actions":["can_read"]}' '.actions[0]' "can_read" PUT
+check_http "admin: an undeclared action is refused (400)" "400" \
+    -X PUT "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/recorders/authz_recorder_svc" -H "$AUTH_ADMIN" -H "Content-Type: application/json" -d '{"actions":["no_such_action"]}'
+total=$((total + 1))
+got=$(curl -sf "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/recorders" -H "$AUTH_ADMIN" | jq -rc '.recorders[0] | [.db_role, .actions]')
+if [ "$got" = '["authz_recorder_svc",["can_read"]]' ]; then
+    pass_count=$((pass_count + 1)); echo "    PASS  admin: GET recorders lists the allowlist"
+else
+    fail_count=$((fail_count + 1)); echo "    FAIL  admin: GET recorders lists the allowlist (got $got)"
+fi
+check_http "admin: DELETE lifts the allowlist (200)" "200" \
+    -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/recorders/authz_recorder_svc" -H "$AUTH_ADMIN"
+check_json "admin: PUT namespace access grants read" \
+    "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/namespaces/hr/access/app_hr" "$AUTH_ADMIN" '{"can_read":true}' '.can_write' "false" PUT
+total=$((total + 1))
+got=$(curl -sf "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/namespaces" -H "$AUTH_ADMIN" | jq -rc '.namespaces[] | select(.name=="hr") | .access[0] | [.db_role, .can_read, .can_write]')
+if [ "$got" = '["app_hr",true,false]' ]; then
+    pass_count=$((pass_count + 1)); echo "    PASS  admin: GET namespaces lists the grant"
+else
+    fail_count=$((fail_count + 1)); echo "    FAIL  admin: GET namespaces lists the grant (got $got)"
+fi
+check_http "admin: DELETE removes the namespace grant (200)" "200" \
+    -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/namespaces/hr/access/app_hr" -H "$AUTH_ADMIN"
+check_http "admin: DELETE of a missing grant is 404" "404" \
+    -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/namespaces/hr/access/app_hr" -H "$AUTH_ADMIN"
 check_http "admin: PUT retires the store (200)" "200" \
     -X PUT "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE" -H "$AUTH_ADMIN" -H "Content-Type: application/json" -d '{"retired":true}'
 check_http "admin: a retired store cannot be reopened (400)" "400" \
