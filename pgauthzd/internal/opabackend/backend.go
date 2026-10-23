@@ -22,9 +22,13 @@ import (
 
 // Backend implements authz.Backend by calling OPA HTTP endpoints.
 type Backend struct {
-	baseURL      string
-	pkg          string // e.g. "authz"
-	client       *http.Client
+	baseURL string
+	pkg     string // e.g. "authz"
+	client  *http.Client
+	// probe is the untraced client for health and readiness checks: a probe
+	// is not part of any request's trace, and OPA would otherwise record a
+	// root span per readiness check.
+	probe        *http.Client
 	forwardToken bool // add the verified bearer token to OPA input as input.token
 	// deepReadinessRequired: fail readiness when the policy set lacks the
 	// callback_healthy rule (OPA_DEEP_READINESS_REQUIRED, review #9).
@@ -76,6 +80,7 @@ func New(baseURL, pkg string, forwardToken bool, timeout time.Duration, deepRead
 		// the trace context propagated, so OPA's own decision log (when it
 		// traces) joins the trace. Off: the plain transport, nothing added.
 		client:                &http.Client{Timeout: timeout, Transport: opaTransport()},
+		probe:                 &http.Client{Timeout: timeout},
 		forwardToken:          forwardToken,
 		deepReadinessRequired: deepReadinessRequired,
 		deploymentEnv:         deploymentEnv,
@@ -432,7 +437,7 @@ func (b *Backend) Healthz(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	resp, err := b.client.Do(req)
+	resp, err := b.probe.Do(req)
 	if err != nil {
 		return err
 	}
@@ -459,7 +464,7 @@ func (b *Backend) callbackHealthy(ctx context.Context) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := b.client.Do(req)
+	resp, err := b.probe.Do(req)
 	if err != nil {
 		return fmt.Errorf("OPA deep-readiness query: %w", err)
 	}

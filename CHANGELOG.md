@@ -41,6 +41,9 @@ pre-1.0, minor versions may include breaking changes.
   the console and — with `--opa` — the OPA sidecar to it (OPA's
   `distributed_tracing` over OTLP/gRPC, `OPA_TRACING_TYPE`/`_ADDRESS`; chart
   `otel.opaAddress`), so one trace shows gateway → OPA → callback → engine.
+  OPA's sampling is parent-based and defaults to 0 %: it records only spans
+  that join a trace pgauthzd started, never root spans of its own for health
+  probes or policy listings; pgauthzd's readiness probes to OPA are untraced.
 - **Decisions tab + the decision log's PostgreSQL sink (ADR 0015).**
   `DECISION_LOG=postgres` writes pgauthzd's decision lines into a sink
   database (`DECISION_LOG_DSN`): the daemon creates `decisionlog.decisions`

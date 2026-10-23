@@ -29,8 +29,11 @@ services:
     # to the pgauthzd callback — carrying the trace context on) over OTLP/gRPC
     # when ./start.sh --tracing sets OPA_TRACING_TYPE=grpc and
     # OPA_TRACING_ADDRESS=jaeger:4317; empty = off. Together with pgauthzd's
-    # spans one trace then shows gateway → OPA → callback → engine.
-    command: run --server --watch --addr :8181 --authentication=token --authorization=basic --set=decision_logs.console=${OPA_DECISION_LOGS_CONSOLE:-false} --set=distributed_tracing.type=${OPA_TRACING_TYPE:-} --set=distributed_tracing.address=${OPA_TRACING_ADDRESS:-} --set=distributed_tracing.service_name=opa --set=distributed_tracing.sample_percentage=100 --set=distributed_tracing.encryption=off /policies /data
+    # spans one trace then shows gateway → OPA → callback → engine. The
+    # sampler is parent-based: with sample_percentage 0 (default) OPA records
+    # only spans that join a trace pgauthzd started — never its own root
+    # spans for health probes or policy listings.
+    command: run --server --watch --addr :8181 --authentication=token --authorization=basic --set=decision_logs.console=${OPA_DECISION_LOGS_CONSOLE:-false} --set=distributed_tracing.type=${OPA_TRACING_TYPE:-} --set=distributed_tracing.address=${OPA_TRACING_ADDRESS:-} --set=distributed_tracing.service_name=opa --set=distributed_tracing.sample_percentage=${OPA_TRACING_SAMPLE_PERCENTAGE:-0} --set=distributed_tracing.encryption=off /policies /data
     environment:
       OPA_ADMIN_TOKEN: "${OPA_ADMIN_TOKEN:-change-me-in-production}"
       JWT_ISSUER: "${JWT_ISSUER:-https://auth.example.com}"

@@ -1876,4 +1876,8 @@ pgauthzd's native callback, with the trace context carried on — when its
 caller's trace context to OPA, so one trace then reads gateway → OPA → native
 callback → engine queries. `./start.sh --tracing` wires it (`OPA_TRACING_TYPE=grpc`,
 `OPA_TRACING_ADDRESS=jaeger:4317` on the `opa` service; empty = off); the chart
-takes `otel.opaAddress`. pgauthzd's side: `pgauthzd/README.md` → `TRACING`.
+takes `otel.opaAddress`. OPA's sampler is parent-based: `sample_percentage`
+(`OPA_TRACING_SAMPLE_PERCENTAGE`, chart `otel.opaSamplePercentage`) defaults to
+0, so OPA records only spans that join a trace pgauthzd started and never root
+spans of its own for health probes or policy listings; 100 traces every
+request. pgauthzd's readiness probes to OPA are untraced on pgauthzd's side too. pgauthzd's side: `pgauthzd/README.md` → `TRACING`.

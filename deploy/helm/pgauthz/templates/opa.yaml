@@ -104,7 +104,7 @@ spec:
             - --set=distributed_tracing.type=grpc
             - --set=distributed_tracing.address={{ . }}
             - --set=distributed_tracing.service_name=opa
-            - --set=distributed_tracing.sample_percentage={{ $.Values.otel.opaSamplePercentage | default 100 }}
+            - --set=distributed_tracing.sample_percentage={{ $.Values.otel.opaSamplePercentage | default 0 }}
             - --set=distributed_tracing.encryption={{ $.Values.otel.opaEncryption | default "off" }}
             {{- end }}
             - /policies

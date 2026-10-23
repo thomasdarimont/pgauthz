@@ -96,7 +96,9 @@ otel:
   # The OPA sidecar (opa.enabled) traces too when given a collector: OTLP over
   # gRPC, host:port (OPA speaks gRPC only), e.g. otel-collector:4317.
   opaAddress: ""
-  opaSamplePercentage: 100
+  # Parent-based sampling: 0 records only OPA spans that join a trace pgauthzd
+  # started (no root spans for health probes / policy listings); 100 = every request.
+  opaSamplePercentage: 0
   opaEncryption: "off"   # off | tls | mtls (OPA's distributed_tracing.encryption)
 
 # ── Database: CloudNativePG cluster ──────────────────────────────────────────
