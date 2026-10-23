@@ -285,6 +285,9 @@ echo "==> Running action log (events) checks (ADR 0012)..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_events.sql"
 
+echo "==> Running issuer binding tests..."
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_issuers.sql"
+
 echo ""
 echo "==> Running temporal gate checks (ADR 0012 phase 2)..."
 echo ""

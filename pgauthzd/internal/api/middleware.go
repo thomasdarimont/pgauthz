@@ -15,7 +15,6 @@ import (
 	"math/big"
 	"net/http"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +23,7 @@ import (
 
 	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
 	"thomasdarimont.de/authz/pgauthzd/internal/telemetry"
+	"thomasdarimont.de/authz/pgauthzd/pkg/issuers"
 )
 
 // InternalRoleHeader is the header OPA forwards the caller's per-app DB role in
@@ -74,6 +74,7 @@ const (
 	ctxDetail
 	ctxOnBehalfOf
 	ctxClient
+	ctxClaims // the verified claims (the admin gate reads scopes and claim values)
 )
 
 // onBehalfOf is the token subject a delegated actor acts for (ACTOR_CLAIM).
@@ -185,6 +186,19 @@ type IssuerConfig struct {
 	// over the global JWTConfig.ClientDBRoles in multi-issuer setups (azp is
 	// only unique within an issuer).
 	ClientDBRoles map[string]string
+	// Stores / PEPClients: the issuer's store binding and subject-assertion
+	// clients (ADR 0014), applied by the handler; kept here so the whole
+	// issuer set is one swappable value (api.Issuers).
+	Stores     []string
+	PEPClients map[string][]string
+	// Disabled refuses every token of the issuer (a database binding's
+	// enabled=false); BindingSource says where the bindings came from;
+	// EnvStores is the environment's stores binding when a row replaced it.
+	Disabled      bool
+	BindingSource string
+	EnvStores     []string
+	// Admin: who of this issuer may call the management API.
+	Admin *issuers.AdminBinding
 }
 
 // JWTConfig holds JWT verification configuration.
@@ -192,6 +206,10 @@ type JWTConfig struct {
 	// Issuers is the set of trusted issuers. If empty, the single JWKSURL/JWKSFile/
 	// Issuer/Audience fields below are used as one issuer (backward compatible).
 	Issuers []IssuerConfig
+	// Set, when given, is the shared issuer holder the daemon reloads
+	// (ISSUERS_SOURCE=env+db); the middleware then reads it instead of
+	// building its own from Issuers.
+	Set *Issuers
 
 	JWKSURL            string
 	JWKSFile           string // Alternative: load JWKS from a local file
@@ -231,49 +249,31 @@ type issuerValidator struct {
 	last time.Time
 }
 
-// JWTMiddleware verifies JWT tokens and injects claims into context.
+// JWTMiddleware verifies JWT tokens and injects claims into context. The
+// trusted issuers — validators, role maps — are one swappable set
+// (api.Issuers), shared with the handler.
 type JWTMiddleware struct {
-	cfg               JWTConfig
-	validators        []*issuerValidator
-	byIssuer          map[string]*issuerValidator  // exact "iss" match -> validator
-	issuerDBRoles     map[string][]*regexp.Regexp  // issuer -> allowed db-role patterns (absent = unrestricted)
-	issuerClientRoles map[string]map[string]string // issuer -> (azp -> db role)
+	cfg JWTConfig
+	set *Issuers
 }
 
 func NewJWTMiddleware(cfg JWTConfig) *JWTMiddleware {
-	issuers := cfg.Issuers
-	if len(issuers) == 0 { // legacy single-issuer form
-		issuers = []IssuerConfig{{
-			Issuer: cfg.Issuer, Audience: cfg.Audience,
-			JWKSURL: cfg.JWKSURL, JWKSFile: cfg.JWKSFile,
-		}}
-	}
-	m := &JWTMiddleware{
-		cfg:               cfg,
-		byIssuer:          make(map[string]*issuerValidator),
-		issuerDBRoles:     make(map[string][]*regexp.Regexp),
-		issuerClientRoles: make(map[string]map[string]string),
-	}
-	for _, ic := range issuers {
-		v := &issuerValidator{cfg: ic}
-		m.validators = append(m.validators, v)
-		if ic.Issuer != "" {
-			m.byIssuer[ic.Issuer] = v
-			if len(ic.DBRoles) > 0 {
-				pats := make([]*regexp.Regexp, len(ic.DBRoles))
-				for i, p := range ic.DBRoles {
-					// validated in config.Load — anchored, plain names match exactly
-					pats[i] = regexp.MustCompile("^(?:" + p + ")$")
-				}
-				m.issuerDBRoles[ic.Issuer] = pats
-			}
-			if len(ic.ClientDBRoles) > 0 {
-				m.issuerClientRoles[ic.Issuer] = ic.ClientDBRoles
-			}
+	m := &JWTMiddleware{cfg: cfg, set: cfg.Set}
+	if m.set == nil {
+		issuers := cfg.Issuers
+		if len(issuers) == 0 { // legacy single-issuer form
+			issuers = []IssuerConfig{{
+				Issuer: cfg.Issuer, Audience: cfg.Audience,
+				JWKSURL: cfg.JWKSURL, JWKSFile: cfg.JWKSFile,
+			}}
 		}
+		m.set = NewIssuers(issuers)
 	}
 	return m
 }
+
+// Issuers is the middleware's issuer holder (shared with the handlers).
+func (m *JWTMiddleware) Issuers() *Issuers { return m.set }
 
 func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -334,6 +334,7 @@ func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 		// Stash the verified token so a backend can re-forward it to the PDP,
 		// and its (verified) issuer for per-issuer authorization (store binding).
 		ctx = context.WithValue(ctx, ctxRawToken, tokenStr)
+		ctx = context.WithValue(ctx, ctxClaims, claims)
 		ctx = context.WithValue(ctx, ctxIssuer, claimString(claims, "iss"))
 		if client := claimString(claims, "azp"); client != "" {
 			ctx = context.WithValue(ctx, ctxClient, client)
@@ -444,12 +445,16 @@ func (m *JWTMiddleware) pickValidator(tokenStr string) (*issuerValidator, error)
 		return nil, fmt.Errorf("parsing token: %w", err)
 	}
 	iss := claimString(claims, "iss")
-	if v, ok := m.byIssuer[iss]; ok {
+	set := m.set.Current()
+	if set.disabled[iss] {
+		return nil, fmt.Errorf("issuer %q is disabled (issuer binding enabled=false)", iss)
+	}
+	if v, ok := set.byIssuer[iss]; ok {
 		return v, nil
 	}
 	// A single validator with no pinned issuer accepts any issuer (legacy mode).
-	if len(m.validators) == 1 && m.validators[0].cfg.Issuer == "" {
-		return m.validators[0], nil
+	if len(set.validators) == 1 && set.validators[0].cfg.Issuer == "" {
+		return set.validators[0], nil
 	}
 	return nil, fmt.Errorf("untrusted issuer %q", iss)
 }
@@ -621,7 +626,7 @@ func (m *JWTMiddleware) deriveDBRole(claims jwt.MapClaims) string {
 			return r
 		}
 	}
-	if cm := m.issuerClientRoles[claimString(claims, "iss")]; cm != nil {
+	if cm := m.set.Current().clientRole[claimString(claims, "iss")]; cm != nil {
 		if r := cm[claimString(claims, "azp")]; r != "" {
 			return r
 		}
@@ -635,7 +640,7 @@ func (m *JWTMiddleware) deriveDBRole(claims jwt.MapClaims) string {
 // dbRoleAllowed reports whether the issuer may yield the given per-app DB role.
 // Issuers without a configured db_roles list are unrestricted.
 func (m *JWTMiddleware) dbRoleAllowed(issuer, role string) bool {
-	pats, restricted := m.issuerDBRoles[issuer]
+	pats, restricted := m.set.Current().dbRoles[issuer]
 	if !restricted {
 		return true
 	}
@@ -780,4 +785,41 @@ func Recovery(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(w, r)
 	})
+}
+
+// ClaimsFromContext returns the verified token's claims (nil without one).
+func ClaimsFromContext(ctx context.Context) jwt.MapClaims {
+	if c, ok := ctx.Value(ctxClaims).(jwt.MapClaims); ok {
+		return c
+	}
+	return nil
+}
+
+// claimValues collects a claim's string values (a string, or an array of
+// strings; a dot-separated path) as a set.
+func claimValues(claims jwt.MapClaims, path string) map[string]bool {
+	out := map[string]bool{}
+	var v any = map[string]any(claims)
+	for _, part := range strings.Split(path, ".") {
+		m, ok := v.(map[string]any)
+		if !ok {
+			return out
+		}
+		v = m[part]
+	}
+	switch t := v.(type) {
+	case string:
+		out[t] = true
+	case []any:
+		for _, e := range t {
+			if s, ok := e.(string); ok {
+				out[s] = true
+			}
+		}
+	case []string:
+		for _, s := range t {
+			out[s] = true
+		}
+	}
+	return out
 }

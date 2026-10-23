@@ -109,6 +109,11 @@ services:
       # sets it to the Jaeger overlay); propagation to OPA is on with it.
       OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
       OTEL_EXPORTER_OTLP_PROTOCOL: "${OTEL_EXPORTER_OTLP_PROTOCOL:-}"
+      # Issuer bindings (console-managed): env = JWT_ISSUERS only; env+db merges
+      # authz.issuer_bindings over it (anchors stay in the environment).
+      ISSUERS_SOURCE: "${ISSUERS_SOURCE:-env}"
+      ISSUERS_POLL_INTERVAL: "${ISSUERS_POLL_INTERVAL:-30}"
+      ISSUERS_REQUIRED_ROLE: "${ISSUERS_REQUIRED_ROLE:-}"
       TRACING: "${TRACING:-auto}"
       TRACING_IDENTIFIERS: "${TRACING_IDENTIFIERS:-false}"
       LISTEN_ADDR: ":8080"

@@ -114,6 +114,17 @@ var (
 		Help: "Decision-log lines accepted but lost by the postgres sink (failed batch, queue full).",
 	})
 
+	// Issuer bindings (ISSUERS_SOURCE=env+db): the revision of
+	// authz.issuer_bindings this instance applies, and reload outcomes.
+	IssuersRevision = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "pgauthzd_issuers_revision",
+		Help: "Revision of the database issuer bindings this instance applies (0 = environment only).",
+	})
+	IssuersReloads = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "pgauthzd_issuers_reloads_total",
+		Help: "Issuer binding reloads by result (applied|unchanged|error|rejected).",
+	}, []string{"result"})
+
 	// Search / graph enumeration.
 	SearchRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "pgauthzd_search_requests_total",

@@ -9,6 +9,45 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Issuer bindings managed in the database (console gaps item 5; design:
+  trust anchors in the environment, bindings in the database).** Migration
+  0023 adds `authz.issuer_bindings` (stores, DB roles, client roles, PEP
+  clients, `enabled`, description, `created_at/by` kept by a replace and
+  `updated_at/by`) with an audit table and a revision row
+  bumped and NOTIFYed by trigger; `authz.set_issuer_binding` /
+  `delete_issuer_binding` (admin tier, validated as pgauthzd validates,
+  recorded with the actor), `list_issuer_bindings` / `issuer_bindings_revision`
+  (reader tier), `list_issuer_bindings_audit` (auditor). pgauthzd gains
+  `ISSUERS_SOURCE=env+db`: the bindings of each `JWT_ISSUERS` issuer may be
+  replaced by its row, merged at start and on every change (poll +
+  NOTIFY), swapped atomically into one issuer set the JWT middleware and
+  the handlers share (`pkg/issuers`, the model and validation the console
+  will reuse); a row can only narrow — the environment keeps the anchors,
+  unknown issuers and widening rows are rejected and logged, the set in
+  force never changes on a bad row; `enabled=false` refuses an issuer's
+  tokens without a deploy. `GET /pgauthz/v1/issuers` reports the effective
+  set (keys redacted; `ISSUERS_REQUIRED_ROLE` on the public listener),
+  `/readyz` the applied revision, metrics and `doctor` the mode. The demo
+  stack runs `env+db`; compose and Helm (`issuers.*`) pass the settings.
+- **The admin API (`ADMIN_API_ENABLED`, off by default): the management
+  surface for configuration as code** — `/pgauthz/v1/admin/…` on a `full`
+  instance whose DB role holds `authz_admin` (new login role
+  `pgauthzd_admin`, asserted at startup), on its own listener with
+  `ADMIN_LISTEN_ADDR` (the public listener then has no `/admin/` route and
+  its OpenAPI document omits them). The gate: a per-issuer `admin` binding
+  in `JWT_ISSUERS` (`scopes`, `claims`, `clients` a token must carry) or the
+  `ADMIN_ROLE` shorthand. **Scoped per tenant**: an admin binding manages
+  the issuer's own binding (`scope: issuer`, default) — a tenant admin
+  narrows, pauses or re-enables its own identity provider and sees only it;
+  `scope: platform` / `ADMIN_ROLE` reach every issuer. First resources:
+  `GET /admin/issuers`, `GET|PUT|DELETE /admin/issuer-bindings` (validated
+  as the daemon validates, narrowing only, untrusted issuers refused,
+  writes recorded with the token's subject and client). The read-only
+  `GET /pgauthz/v1/issuers` now shows a caller its **own** issuer only
+  (every issuer for a platform admin; the callback listener the whole set).
+  `doctor` reports the admin API; compose/Helm (`admin.*`) and the demo
+  stack (`:8096`, `ADMIN_ROLE=pgauthz_admin`) wire it; `tests/test-authzen.sh`
+  covers the gate, the scope, narrowing and the fleet applying a PUT.
 - **Browser tests for the Decisions tab** (`console/frontend/tests/ui/decisions.spec.js`):
   summary and newest-first list, keyset paging through the pager and page
   size, filters and the summary's click-to-narrow, a trace id finding its

@@ -95,6 +95,7 @@ echo "==> Loading engine code (functions + roles) as role authz..."
   if [ -n "${CONDITION_STATEMENT_TIMEOUT:-}" ]; then
     echo "ALTER ROLE authzen_direct SET statement_timeout = '${CONDITION_STATEMENT_TIMEOUT}';"
     echo "ALTER ROLE pgauthzd_rw    SET statement_timeout = '${CONDITION_STATEMENT_TIMEOUT}';"
+    echo "ALTER ROLE pgauthzd_admin SET statement_timeout = '${CONDITION_STATEMENT_TIMEOUT}';"
   fi
   if truthy "${DERIVED_RELATIONS:-}"; then
     cat <<'EOSQL'
@@ -141,6 +142,7 @@ set_password() {  # role password
 }
 set_password authzen_direct         "${AUTHZEN_DIRECT_PASSWORD:-}"
 set_password pgauthzd_rw            "${PGAUTHZD_RW_PASSWORD:-}"
+set_password pgauthzd_admin         "${PGAUTHZD_ADMIN_PASSWORD:-}"
 set_password pgauthz_derived_worker "${DERIVED_WORKER_PASSWORD:-}"
 set_password replicator             "${REPLICATOR_PASSWORD:-}"
 set_password authz_console          "${CONSOLE_ENGINE_PASSWORD:-}"

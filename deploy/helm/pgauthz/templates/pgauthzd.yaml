@@ -157,14 +157,24 @@ spec:
             - name: INTERNAL_SERVICE_TOKEN
               valueFrom:
                 secretKeyRef: { name: {{ include "pgauthz.secretName" . }}, key: native-service-token }
+            {{- $adm := .Values.admin | default dict }}
+            {{- $dbUser := ternary "pgauthzd_admin" "pgauthzd_rw" (eq (toString $adm.enabled) "true") }}
             - name: RW_PW
               valueFrom:
-                secretKeyRef: { name: {{ include "pgauthz.fullname" . }}-pgauthzd-rw, key: password }
+                secretKeyRef: { name: {{ include "pgauthz.fullname" . }}-{{ $dbUser | replace "_" "-" }}, key: password }
             - name: DATABASE_URL
               # remote_apply: with database.replication.synchronous enabled, a
               # grant/revoke only acks once the synchronous standbys APPLIED it
               # (no stale allow after a revoke ack). No-op without sync standbys.
-              value: postgres://pgauthzd_rw:$(RW_PW)@{{ include "pgauthz.dbRW" . }}:5432/authz?options=-csynchronous_commit%3D{{ .Values.writer.synchronousCommit | default "remote_apply" }}
+              # admin.enabled: the login is pgauthzd_admin (authz_admin tier).
+              value: postgres://{{ $dbUser }}:$(RW_PW)@{{ include "pgauthz.dbRW" . }}:5432/authz?options=-csynchronous_commit%3D{{ .Values.writer.synchronousCommit | default "remote_apply" }}
+            {{- if $adm.enabled }}
+            - { name: ADMIN_API_ENABLED, value: "true" }
+            - { name: ADMIN_LISTEN_ADDR, value: ":8082" }
+            {{- with $adm.role }}
+            - { name: ADMIN_ROLE, value: {{ . | quote }} }
+            {{- end }}
+            {{- end }}
             - { name: DB_POOL_MAX,   value: {{ .Values.writer.dbPoolMax | quote }} }
             - { name: JWKS_FILE,     value: /jwks/jwks.json }
             - { name: JWT_ISSUER,    value: {{ .Values.opa.jwtIssuer | quote }} }
@@ -180,6 +190,9 @@ spec:
           ports:
             - { name: jwt,      containerPort: 8080 }
             - { name: callback, containerPort: 8081 }
+            {{- if .Values.admin.enabled }}
+            - { name: admin,    containerPort: 8082 }
+            {{- end }}
             {{- if .Values.metrics.enabled }}
             - { name: metrics,  containerPort: {{ .Values.metrics.port }} }
             {{- end }}
@@ -208,6 +221,10 @@ spec:
     - { name: callback, port: 8081, targetPort: 8081 }
     {{- if .Values.console.enabled }}
     - { name: jwt, port: 8080, targetPort: 8080 }
+    {{- end }}
+    {{- if .Values.admin.enabled }}
+    # The admin API: management clients only (NetworkPolicy / ingress with care).
+    - { name: admin, port: 8082, targetPort: 8082 }
     {{- end }}
     {{- if .Values.metrics.enabled }}
     - { name: metrics, port: {{ .Values.metrics.port }}, targetPort: metrics }

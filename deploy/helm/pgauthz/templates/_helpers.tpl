@@ -138,6 +138,16 @@ startup via ALLOW_OPEN_DIAGNOSTICS, so a hand-edited manifest cannot slip past).
 {{- if $d.allowOpenInProduction }}
 - { name: ALLOW_OPEN_DIAGNOSTICS, value: "true" }
 {{- end }}
+{{- $is := .root.Values.issuers | default dict }}
+{{- with $is.source }}
+- { name: ISSUERS_SOURCE, value: {{ . | quote }} }
+{{- end }}
+{{- with $is.pollInterval }}
+- { name: ISSUERS_POLL_INTERVAL, value: {{ . | toString | quote }} }
+{{- end }}
+{{- with $is.requiredRole }}
+- { name: ISSUERS_REQUIRED_ROLE, value: {{ . | quote }} }
+{{- end }}
 {{- $ot := .root.Values.otel | default dict }}
 {{- with $ot.tracing }}
 - { name: TRACING, value: {{ . | quote }} }

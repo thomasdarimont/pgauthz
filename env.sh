@@ -154,6 +154,16 @@ fi
 # so a copied-to-production compose isn't permissive by accident — the demo
 # opts in here, explicitly.
 export ALLOW_SUBJECT_OVERRIDE="${ALLOW_SUBJECT_OVERRIDE:-true}"
+# The demo stack manages issuer bindings from the console (Platform →
+# Issuers): the instances merge authz.issuer_bindings over JWT_ISSUERS.
+export ISSUERS_SOURCE="${ISSUERS_SOURCE:-env+db}"
+# … and serves the admin API on the full instance (host port 8096, its own
+# listener), gated by the pgauthz_admin role in the demo tokens; the instance
+# connects as pgauthzd_admin (authz_admin tier) for that.
+export ADMIN_API_ENABLED="${ADMIN_API_ENABLED:-true}"
+export ADMIN_LISTEN_ADDR="${ADMIN_LISTEN_ADDR:-:8082}"
+export ADMIN_ROLE="${ADMIN_ROLE:-pgauthz_admin}"
+export PGAUTHZD_FULL_DB_USER="${PGAUTHZD_FULL_DB_USER:-pgauthzd_admin}"
 # The conformance suite (conformance/) reaches the daemon through a TLS front
 # and fetches discovery through it; the demo stack trusts the front's
 # X-Forwarded-* headers so the advertised PDP identifier matches (prod: false).

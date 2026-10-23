@@ -103,6 +103,16 @@ spec:
         inRoles: [authz_writer, authz_auditor]  # see note above — CNPG maintains these
         passwordSecret:
           name: {{ include "pgauthz.fullname" . }}-pgauthzd-rw
+      {{- if .Values.admin.enabled }}
+      - name: pgauthzd_admin
+        ensure: present
+        comment: "admin role: pgauthzd writer serving the admin API (authz_admin tier)"
+        login: true
+        inherit: true
+        inRoles: [authz_admin]    # see note above — CNPG maintains these
+        passwordSecret:
+          name: {{ include "pgauthz.fullname" . }}-pgauthzd-admin
+      {{- end }}
       {{- if .Values.derivedRelations.enabled }}
       - name: pgauthz_derived_worker
         ensure: present

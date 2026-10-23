@@ -161,6 +161,22 @@ $$;
 GRANT authz_writer  TO pgauthzd_rw;
 GRANT authz_auditor TO pgauthzd_rw;
 
+-- pgauthzd admin login: the full instance that serves the admin API
+-- (ADMIN_API_ENABLED — issuer bindings, later stores/models for configuration
+-- as code) connects as this role, which INHERITs authz_admin (and through it
+-- writer + auditor). pgauthzd asserts the membership at startup. An instance
+-- without the admin API keeps pgauthzd_rw: the admin tier is granted only
+-- where management is served.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'pgauthzd_admin') THEN
+        -- Dev password — override in production deployments.
+        CREATE ROLE pgauthzd_admin LOGIN PASSWORD 'authz';
+    END IF;
+END
+$$;
+GRANT authz_admin TO pgauthzd_admin;
+
 -- Playground BFF metadata/explore role: a dedicated read-only LOGIN role for the
 -- web playground's ENGINE_DSN. It INHERITs authz_reader (check/explain/describe_model)
 -- AND gets direct SELECT on the metadata tables, because the playground browses
@@ -274,6 +290,7 @@ GRANT authz_recorder TO authz_recorder_svc;
 --    listings prefer pagination (p_limit) and object/user wildcards (O(1)).
 ALTER ROLE authzen_direct      SET statement_timeout = '60s';
 ALTER ROLE pgauthzd_rw         SET statement_timeout = '60s';
+ALTER ROLE pgauthzd_admin      SET statement_timeout = '60s';
 ALTER ROLE authz_metadata      SET statement_timeout = '60s';
 ALTER ROLE authz_watcher       SET statement_timeout = '60s';
 ALTER ROLE authz_console       SET statement_timeout = '60s';
@@ -408,6 +425,13 @@ GRANT EXECUTE ON FUNCTION authz.revoke_namespace_access(text, text, text, boolea
 -- Per-recorder action allowlists (ADR 0012, migration 0013).
 GRANT EXECUTE ON FUNCTION authz.grant_recorder_actions(text, text, text[]) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.revoke_recorder_actions(text, text, text[]) TO authz_admin;
+-- Issuer bindings (migration 0023): reading is reader tier (policy, not
+-- secrets — pgauthzd instances poll it); writing is admin tier.
+GRANT EXECUTE ON FUNCTION authz.issuer_bindings_revision() TO authz_reader;
+GRANT EXECUTE ON FUNCTION authz.list_issuer_bindings() TO authz_reader;
+GRANT EXECUTE ON FUNCTION authz.list_issuer_bindings_audit(text, int) TO authz_auditor;
+GRANT EXECUTE ON FUNCTION authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.delete_issuer_binding(text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.find_redundant_tuples(text, text, text, jsonb) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.cleanup_redundant_tuples(text, text, text, jsonb, boolean) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.cleanup_expired_tuples(text, interval, text) TO authz_admin;
@@ -507,6 +531,11 @@ ALTER FUNCTION authz.grant_namespace_access(text, text, text, boolean, boolean) 
 ALTER FUNCTION authz.revoke_namespace_access(text, text, text, boolean, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.grant_recorder_actions(text, text, text[]) SECURITY DEFINER;
 ALTER FUNCTION authz.revoke_recorder_actions(text, text, text[]) SECURITY DEFINER;
+ALTER FUNCTION authz.issuer_bindings_revision() SECURITY DEFINER;
+ALTER FUNCTION authz.list_issuer_bindings() SECURITY DEFINER;
+ALTER FUNCTION authz.list_issuer_bindings_audit(text, int) SECURITY DEFINER;
+ALTER FUNCTION authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text) SECURITY DEFINER;
+ALTER FUNCTION authz.delete_issuer_binding(text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.find_redundant_tuples(text, text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.cleanup_redundant_tuples(text, text, text, jsonb, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.cleanup_expired_tuples(text, interval, text) SECURITY DEFINER;

@@ -44,19 +44,20 @@ type openapiDoc struct {
 	err  error
 }
 
-var (
-	// openapiFull is the complete contract (instances serving the native
-	// surface on their public listener).
-	openapiFull openapiDoc
-	// openapiOPAFronted is the INSTANCE-ACCURATE variant for an OPA-fronted
-	// instance (review #6): its public listener does not register the native
-	// /pgauthz/v1 routes, so its served document omits them too — a generated
-	// client cannot be misled into calling operations this instance rejects.
-	// The openapi meta endpoints themselves stay (they ARE registered).
-	openapiOPAFronted openapiDoc
-)
+// The INSTANCE-ACCURATE variants (review #6): an OPA-fronted instance's
+// public listener registers no native /pgauthz/v1 routes, and an instance
+// without the admin API on its public listener registers no
+// /pgauthz/v1/admin/ routes — each served document omits what the instance
+// rejects, so a generated client cannot be misled. The openapi meta
+// endpoints themselves stay (they ARE registered).
+var openapiVariants sync.Map // [2]bool{dropNative, dropAdmin} -> *openapiDoc
 
-func (d *openapiDoc) render(dropNativePaths bool) error {
+func openapiVariantFor(dropNative, dropAdmin bool) *openapiDoc {
+	v, _ := openapiVariants.LoadOrStore([2]bool{dropNative, dropAdmin}, &openapiDoc{})
+	return v.(*openapiDoc)
+}
+
+func (d *openapiDoc) render(dropNativePaths, dropAdminPaths bool) error {
 	d.once.Do(func() {
 		src := bytes.Replace(openapiYAML,
 			[]byte("version: "+openapiVersionPlaceholder),
@@ -65,13 +66,14 @@ func (d *openapiDoc) render(dropNativePaths bool) error {
 		if d.err = yaml.Unmarshal(src, &doc); d.err != nil {
 			return
 		}
-		if dropNativePaths {
+		if dropNativePaths || dropAdminPaths {
 			if paths, ok := doc["paths"].(map[string]any); ok {
 				for p := range paths {
 					if strings.HasPrefix(p, "/pgauthz/v1/openapi.") {
 						continue
 					}
-					if strings.HasPrefix(p, "/pgauthz/v1/") || strings.HasPrefix(p, "/stores/{store}/pgauthz/v1/") {
+					admin := strings.HasPrefix(p, "/pgauthz/v1/admin/")
+					if (dropAdminPaths && admin) || (dropNativePaths && !admin && (strings.HasPrefix(p, "/pgauthz/v1/") || strings.HasPrefix(p, "/stores/{store}/pgauthz/v1/"))) {
 						delete(paths, p)
 					}
 				}
@@ -93,10 +95,13 @@ func (d *openapiDoc) render(dropNativePaths bool) error {
 // openapiVariant picks the rendered document matching THIS instance's public
 // surface.
 func (h *Handler) openapiVariant() *openapiDoc {
-	if h.cfg.UsesOPA() {
-		return &openapiOPAFronted
-	}
-	return &openapiFull
+	return openapiVariantFor(h.cfg.UsesOPA(), !h.adminOnPublic())
+}
+
+// adminOnPublic: the admin routes are mounted on this instance's public
+// listener (ADMIN_API_ENABLED without ADMIN_LISTEN_ADDR, a full instance).
+func (h *Handler) adminOnPublic() bool {
+	return h.cfg != nil && h.cfg.AdminAPIEnabled && h.cfg.AdminListenAddr == "" && h.rawWrite != nil
 }
 
 // OpenAPIJSON — GET /pgauthz/v1/openapi.json: this server's API description.
@@ -104,7 +109,7 @@ func (h *Handler) openapiVariant() *openapiDoc {
 // describes the FULL surface, with per-mode availability noted in the text.
 func (h *Handler) OpenAPIJSON(w http.ResponseWriter, r *http.Request) {
 	d := h.openapiVariant()
-	if err := d.render(h.cfg.UsesOPA()); err != nil {
+	if err := d.render(h.cfg.UsesOPA(), !h.adminOnPublic()); err != nil {
 		writeInternalError(w, err)
 		return
 	}
@@ -249,7 +254,7 @@ func stampServersYAML(doc []byte, base string) []byte {
 // document (most OpenAPI tooling accepts either).
 func (h *Handler) OpenAPIYAML(w http.ResponseWriter, r *http.Request) {
 	d := h.openapiVariant()
-	if err := d.render(h.cfg.UsesOPA()); err != nil {
+	if err := d.render(h.cfg.UsesOPA(), !h.adminOnPublic()); err != nil {
 		writeInternalError(w, err)
 		return
 	}

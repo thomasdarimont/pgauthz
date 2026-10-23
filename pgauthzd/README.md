@@ -521,7 +521,7 @@ All configuration is via environment variables.
 | `JWKS_FILE` | | Path to local JWKS file (required if `JWKS_URL` not set) |
 | `JWT_ISSUER` | | Expected `iss` claim (optional) |
 | `JWT_AUDIENCE` | | Expected `aud` claim — **required** for the legacy single issuer (every issuer must pin an audience; see `ALLOW_MISSING_AUDIENCE`) |
-| `JWT_ISSUERS` | | Additional trusted issuers: JSON array of `{issuer, audience, jwks_url, jwks_file, stores, db_roles, client_db_roles, pep_clients}`; `iss` selects the validator; `stores` / `db_roles` (anchored regex lists) bind the issuer to specific stores / per-app DB roles; `client_db_roles` maps this issuer's client ids to roles; `pep_clients` (client id → store patterns) names the clients that may assert a request-body subject, and where — see [Two ways to call pgauthzd](#two-ways-to-call-pgauthzd) |
+| `JWT_ISSUERS` | | Additional trusted issuers: JSON array of `{issuer, audience, jwks_url, jwks_file, stores, db_roles, client_db_roles, pep_clients, admin}`; `iss` selects the validator; `stores` / `db_roles` (anchored regex lists) bind the issuer to specific stores / per-app DB roles; `client_db_roles` maps this issuer's client ids to roles; `pep_clients` (client id → store patterns) names the clients that may assert a request-body subject, and where — see [Two ways to call pgauthzd](#two-ways-to-call-pgauthzd); `admin` `{scopes, claims, clients, scope}` names the tokens of this issuer that may call the [admin API](#admin-api-full-profile-admin_api_enabled) and whether they manage the issuer's own binding (`scope: issuer`, default) or every issuer (`platform`) |
 | `JWT_ROLES_CLAIM` | | Comma-separated dotted claim paths aggregated into the caller's roles (e.g. `realm_access.roles,resource_access.authz-api.roles`) |
 | `SEARCH_REQUIRED_ROLE` | | If set, the `search/*` endpoints require this role (`403` otherwise); empty = search open to any authenticated caller |
 | `WATCH_REQUIRED_ROLE` | *unset = watch disabled* | Gates the native changefeed on the public listener (review #10) — the feed exposes authorization topology. Unset: 403. A role name: JWT-role gate. `"*"`: explicitly open (discouraged). Callback listener unaffected |
@@ -563,6 +563,12 @@ All configuration is via environment variables.
 | `DECISION_LOG_DSN` | | The `postgres` sink's database (a writable role allowed to create the schema `decisionlog`; in the console deployments the console's own database, `PG_DSN`). Never the engine's read-only role |
 | `DECISION_LOG_RETENTION_DAYS` | `30` | `postgres` sink: daily partitions older than this are dropped once an hour; `0` keeps everything |
 | `DECISION_LOG_QUEUE` | `10000` | `postgres` sink: lines held between flushes (a batch every second or every 500 lines); a full queue drops the line and counts it as a failed write; a failed insert marks the sink down (`DECISION_LOG_REQUIRED` then fails closed) until the next flush succeeds, and its lines go back into the queue — what no longer fits is lost and said so: `pgauthzd_decision_log_dropped_lines_total` plus an ERROR log line (alarm on it; the sink offers no durable spool) |
+| `ISSUERS_SOURCE` | `env` | Where an issuer's **bindings** come from. `env`: `JWT_ISSUERS` is the whole truth. `env+db`: the bindings of each environment issuer — `stores`, `db_roles`, `client_db_roles`, `pep_clients`, and whether its tokens are accepted — may be replaced by a row of `authz.issuer_bindings` (managed from the console's Platform → Issuers, `authz.set_issuer_binding`), merged at start and on every change (polled every `ISSUERS_POLL_INTERVAL` seconds, notified on a primary). The environment keeps the **anchors** (issuer, audience, keys) and a row may only narrow: an issuer the environment does not trust is ignored, a row that widens or unbinds `stores` is rejected and logged, the set in force never changes on a bad row. `pgauthzd_issuers_revision`, `pgauthzd_issuers_reloads_total{result}`, the revision in `/readyz` |
+| `ISSUERS_POLL_INTERVAL` | `30` | Seconds between revision polls of `authz.issuer_bindings` (`env+db`); a NOTIFY from the primary applies a change sooner |
+| `ISSUERS_REQUIRED_ROLE` | | Who may read `GET /pgauthz/v1/issuers` (the effective set, keys redacted to their source) on the public listener; unset = not served there. A caller sees its **own** issuer only (a tenant never learns another tenant's identity provider); a platform admin every issuer. The internal callback listener always serves the whole set |
+| `ADMIN_API_ENABLED` | `false` | Serve the [admin API](#admin-api-full-profile-admin_api_enabled) (`/pgauthz/v1/admin/…`). `full` profile only, DB role holding `authz_admin` (`pgauthzd_admin`, asserted at startup), and a gate: an issuer with an `admin` binding or `ADMIN_ROLE` — enabled without one is a startup error |
+| `ADMIN_LISTEN_ADDR` | | Serve the admin API on its own listener (recommended; production warns without it) — the public listener then has no `/admin/` route and its OpenAPI document omits them. Health probes are served there too |
+| `ADMIN_ROLE` | | Single-issuer shorthand for the admin gate: a role (`JWT_ROLES_CLAIM`) the token must hold; platform scope (every issuer) |
 | `TRACING` | `auto` | **OpenTelemetry master switch.** `auto`: tracing is on only when the `OTEL_*` environment configures an OTLP exporter — so it is **off by default**; `on`: propagation and spans even without an exporter (a caller's `traceparent` reaches the decision log); `off`: nothing — no header read, no span, no ids on the log line. Off means the untraced code path: no handler wrapper, no query tracer, no OPA transport wrapper |
 | `TRACING_IDENTIFIERS` | `false` | Put subject and resource **ids** on the decision span (`pgauthz.subject`, `pgauthz.resource`). Default: the **types** only (`pgauthz.subject.type`, `pgauthz.resource.type`) — a tracing backend is usually shared more widely than the decision log, which keeps the ids and is joined by `trace_id` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | | Set it (or `OTEL_TRACES_EXPORTER=otlp`) and pgauthzd exports spans over OTLP: one server span per request (health probes excluded), one `pgauthz.<endpoint>` span per decision with `pgauthz.store`, `.subject`, `.action`, `.resource`, `.decision`, `.state`, `.reason`, `.client`, a client span per engine query named after the `authz.*` function it calls (statement text and parameter count, never the arguments), and a client span per OPA call; the request's own span carries `pgauthz.store`, so traces are queried by store without parsing paths. The other standard variables apply as the SDK defines them: `OTEL_EXPORTER_OTLP_PROTOCOL` (`http/protobuf`, default, or `grpc`), `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME` (default `pgauthzd`), `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER` / `_ARG`; `OTEL_TRACES_EXPORTER=none` disables export. With tracing on, W3C `traceparent` and B3 are honoured and forwarded, exporter or not: the decision log's `trace_id` / `span_id` join a line to the application's trace, and `X-Request-ID` defaults to the trace id. Demo: `./start.sh --tracing` adds a Jaeger (`compose-tracing.yml`) and points every instance at it |
@@ -698,7 +704,10 @@ Without a configured native backend the routes return `501 Not Implemented`.
 | Method | Path | Profile | Description |
 |--------|------|---------|-------------|
 | POST | `/pgauthz/v1/check` | direct | Raw, **policy-free** access decision (`{"allowed":bool}`); `context` for conditions, `detail:true` for the rich result, `contextual_tuples` for an ephemeral-tuple check (needs `authz_contextual_reader` on the DB role, and a caller `CONTEXTUAL_TUPLES` admits — trusted PEPs by default). |
-| POST | `/pgauthz/v1/check-batch` | direct | Many raw decisions in one round-trip (`{"results":[bool,…]}`); optional `semantic`. |
+| POST | `/pgauthz/v1/check-batch` | direct | Many raw decisions in one round-trip (`{"results":[bool,…]}`); optional `semantic`. Per-check `contextual_tuples` are refused (`400`): the batch evaluates the stored graph only. |
+| GET | `/pgauthz/v1/issuers` | direct | The effective trusted-issuer set: anchors (key source redacted), bindings, `binding_source` env/db per issuer, `enabled`, the applied revision. Public listener: `ISSUERS_REQUIRED_ROLE`, the caller's own issuer only (every issuer for a platform admin); callback listener: always, the whole set. |
+| GET | `/pgauthz/v1/admin/issuers` | full + admin | The effective set within the caller's admin scope — see [Admin API](#admin-api-full-profile-admin_api_enabled). |
+| GET/PUT/DELETE | `/pgauthz/v1/admin/issuer-bindings` | full + admin | The database-managed issuer bindings (`authz.issuer_bindings`) within the caller's scope: list / one (`?issuer=`), create-or-replace (the whole row; validated, narrowing only, the issuer must be trusted), delete (`?issuer=`). |
 | POST | `/pgauthz/v1/list-objects` | direct | Objects of a type the subject can act on (`list_objects`); keyset-paginated. |
 | POST | `/pgauthz/v1/list-subjects` | direct | Subjects of a type that can act on the object (`list_subjects`); keyset-paginated. |
 | POST | `/pgauthz/v1/list-actions` | direct | Relations the subject holds on the object (`list_actions`). |
@@ -737,6 +746,64 @@ The watch/audit surface needs an **auditor-capable** connection role
 (`authz_auditor`, which inherits `authz_reader` and adds only audit *reads* —
 still write-incapable, so a `decision-only` instance keeps its can't-write
 guarantee). The bundled `authzen_direct` login role is granted it.
+
+### Admin API (`full` profile, `ADMIN_API_ENABLED`)
+
+The **management** surface — what a Terraform provider, `pgauthzctl` and the
+console use to configure a deployment rather than to ask it for decisions.
+Off by default (`ADMIN_API_ENABLED=false`); its routes live under their own
+prefix `/pgauthz/v1/admin/…` so a gateway allows or denies them by prefix, and
+with `ADMIN_LISTEN_ADDR` on their own listener, which is what a production
+instance should do (the public listener then serves no `/admin/` route and its
+OpenAPI document omits them — the served document is always instance-accurate).
+Only a `full` instance serves it, and its DB role must hold `authz_admin`
+(`pgauthzd_admin` in `roles.sql`; asserted at startup).
+
+**The gate.** Every call needs a verified token (the same `JWT_ISSUERS` trust
+as the decision paths) that passes the admin gate:
+
+- the token's issuer carries an **`admin` binding** in `JWT_ISSUERS` —
+  `{"admin":{"scopes":["pgauthz:admin"],"claims":{"realm_access.roles":["platform-admin"]},"clients":["terraform"],"scope":"platform"}}`:
+  every listed scope must be in the token's `scope`, every listed claim value
+  present (string or array claims, dotted paths), and the client (`azp` /
+  `client_id`) listed when clients are. An empty admin binding is refused
+  (it would admit every token of the issuer). The database never grants
+  management: admin bindings are the environment's;
+- or — the single-issuer shorthand — the token holds **`ADMIN_ROLE`**.
+
+**Multi-tenancy: scoped management.** A fleet trusts one identity provider per
+tenant, each bound to its stores; a tenant must never see or touch another's.
+An admin binding therefore manages, by default, the issuer's **own** binding
+only (`scope: issuer`): a tenant admin narrows, pauses (`enabled: false`) or
+re-enables their own identity provider and sees only it. The whole fleet is
+reachable only with `scope: platform` — the operator's admin identity
+provider — or `ADMIN_ROLE`. The read-only `GET /pgauthz/v1/issuers` follows the
+same rule (own issuer unless platform admin).
+
+**The resources** (today; stores, models, conditions follow — every console
+management feature gets its endpoint here, so configuration as code never
+needs the console's BFF):
+
+| Method | Path | What |
+|--------|------|------|
+| GET | `/pgauthz/v1/admin/issuers` | The effective issuer set within the caller's scope (as `/pgauthz/v1/issuers`, entries carry their `admin` binding) |
+| GET | `/pgauthz/v1/admin/issuer-bindings[?issuer=…]` | The database rows within scope, or one (`404` outside it) |
+| PUT | `/pgauthz/v1/admin/issuer-bindings` | Create or replace one binding — the whole row `{issuer, stores, db_roles, client_db_roles, pep_clients, enabled, description}`; validated as the daemon validates, a row may only **narrow** the environment's `stores` (never unbind or widen), an issuer the environment does not trust is refused (`400` — the database cannot add trust); `{issuer, revision}`, applied by every `ISSUERS_SOURCE=env+db` instance |
+| DELETE | `/pgauthz/v1/admin/issuer-bindings?issuer=…` | Drop the row; the issuer falls back to its environment bindings |
+
+Writes are recorded in `authz.issuer_bindings_audit` with the token's subject
+and client (`user:alice via terraform-a`). `403` carries why the gate refused
+(`management refused: …`); a scope violation counts in
+`pgauthzd_authz_denied_total{reason="admin_scope"}`.
+
+```bash
+# the demo stack: env.sh serves the admin API on :8096 with ADMIN_ROLE=pgauthz_admin
+TOKEN=$(make_token alice internal_user '["pgauthz_admin"]')   # tests/test-authzen.sh's helper
+curl -s -X PUT localhost:8096/pgauthz/v1/admin/issuer-bindings -H "Authorization: Bearer $TOKEN" \
+  -d '{"issuer":"https://auth.example.com","stores":["demo"],"enabled":true,"description":"demo only"}'
+# → {"issuer":"https://auth.example.com","revision":3}; todo-store calls answer 403 within a poll
+curl -s -X DELETE "localhost:8096/pgauthz/v1/admin/issuer-bindings?issuer=https://auth.example.com" -H "Authorization: Bearer $TOKEN"
+```
 
 ### Native write path (`full` profile)
 

@@ -327,6 +327,25 @@ func Run(ctx context.Context, opts Options) *Report {
 		add("decision log", StatusOK, fmt.Sprintf("sink=%s sample=%v detail=%v", cfg.DecisionLog, cfg.DecisionLogSample, cfg.DecisionLogDetail))
 	}
 
+	// ── admin API ────────────────────────────────────────────────────────
+	switch {
+	case !cfg.AdminAPIEnabled:
+		add("admin api", StatusSkip, "off (ADMIN_API_ENABLED=false): this instance cannot be managed over HTTP")
+	case cfg.AdminListenAddr != "":
+		add("admin api", StatusOK, "on, own listener "+cfg.AdminListenAddr+" under /pgauthz/v1/admin/ (keep it reachable by management clients only)")
+	case prod:
+		add("admin api", StatusWarn, "on the PUBLIC listener of a production instance under /pgauthz/v1/admin/ — set ADMIN_LISTEN_ADDR")
+	default:
+		add("admin api", StatusOK, "on the public listener under /pgauthz/v1/admin/")
+	}
+
+	// ── issuer bindings source ───────────────────────────────────────────
+	if cfg.IssuersSource == "env+db" {
+		add("issuer bindings source", StatusOK, fmt.Sprintf("ISSUERS_SOURCE=env+db: database bindings (authz.issuer_bindings) merged over the environment's %d issuer(s), polled every %ds; the environment keeps the anchors and a row may only narrow", len(cfg.Issuers), cfg.IssuersPollInterval))
+	} else {
+		add("issuer bindings source", StatusSkip, "ISSUERS_SOURCE=env: bindings from JWT_ISSUERS only (set env+db to manage them from the console)")
+	}
+
 	// ── opentelemetry ────────────────────────────────────────────────────
 	switch {
 	case cfg.Tracing == "off", cfg.Tracing == "auto" && !telemetry.Exporting():

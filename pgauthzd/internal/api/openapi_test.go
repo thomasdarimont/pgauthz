@@ -52,7 +52,8 @@ func TestOpenAPISpecValidates(t *testing.T) {
 // fronting OPA, openapi endpoints on) — the configuration the document
 // describes.
 func fullMux() *http.ServeMux {
-	h := &Handler{cfg: &config.Config{Profile: config.ProfileFull, OpenAPIEnabled: true, SwaggerUIEnabled: true}}
+	// the admin API on the public listener too, so its routes are checked
+	h := &Handler{cfg: &config.Config{Profile: config.ProfileFull, OpenAPIEnabled: true, SwaggerUIEnabled: true, AdminAPIEnabled: true, AdminRole: "pgauthz_admin"}, rawWrite: freshStub{}}
 	return newPublicMux(h, false)
 }
 
@@ -237,7 +238,8 @@ func TestResponsesMatchOpenAPISpec(t *testing.T) {
 // source's path count (same document, two encodings).
 func TestOpenAPIEndpointsServeTheDocument(t *testing.T) {
 	doc := loadSpec(t)
-	h := &Handler{cfg: &config.Config{}}
+	// the admin API on the public listener: the complete document
+	h := &Handler{cfg: &config.Config{AdminAPIEnabled: true, AdminRole: "pgauthz_admin"}, rawWrite: freshStub{}}
 
 	w := httptest.NewRecorder()
 	h.OpenAPIJSON(w, httptest.NewRequest("GET", "/pgauthz/v1/openapi.json", nil))
@@ -253,6 +255,30 @@ func TestOpenAPIEndpointsServeTheDocument(t *testing.T) {
 	}
 	if len(got.Paths) != doc.Paths.Len() {
 		t.Fatalf("served document has %d paths, source has %d", len(got.Paths), doc.Paths.Len())
+	}
+
+	// an instance without the admin API on its public listener serves a
+	// document without the /pgauthz/v1/admin/ paths (instance-accurate)
+	hNoAdmin := &Handler{cfg: &config.Config{}}
+	wn := httptest.NewRecorder()
+	hNoAdmin.OpenAPIJSON(wn, httptest.NewRequest("GET", "/pgauthz/v1/openapi.json", nil))
+	var noAdmin struct {
+		Paths map[string]any `json:"paths"`
+	}
+	if err := json.Unmarshal(wn.Body.Bytes(), &noAdmin); err != nil {
+		t.Fatal(err)
+	}
+	adminPaths := 0
+	for p := range got.Paths {
+		if strings.HasPrefix(p, "/pgauthz/v1/admin/") {
+			adminPaths++
+			if _, there := noAdmin.Paths[p]; there {
+				t.Errorf("instance without the admin API still documents %s", p)
+			}
+		}
+	}
+	if adminPaths == 0 || len(noAdmin.Paths) != len(got.Paths)-adminPaths {
+		t.Fatalf("admin paths: %d documented, no-admin document has %d paths (want %d)", adminPaths, len(noAdmin.Paths), len(got.Paths)-adminPaths)
 	}
 
 	wy := httptest.NewRecorder()

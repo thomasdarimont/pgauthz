@@ -83,6 +83,24 @@ decisionLog:
   dsn: ""
   retentionDays: 30   # DECISION_LOG_RETENTION_DAYS: daily partitions kept; 0 = all
   queue: 10000        # DECISION_LOG_QUEUE: lines held between flushes
+# Issuer bindings on every pgauthzd instance: "env" (JWT_ISSUERS is the whole
+# truth) or "env+db" (the bindings — stores, DB roles, PEP clients, enabled —
+# of each environment issuer may be replaced by a console-managed row of
+# authz.issuer_bindings; the environment keeps the anchors, a row may only
+# narrow; polled every pollInterval seconds, notified on the primary).
+issuers:
+  source: env
+  pollInterval: 30
+  requiredRole: ""    # ISSUERS_REQUIRED_ROLE: who may read GET /pgauthz/v1/issuers on the public listener
+# The admin API on the writer (/pgauthz/v1/admin/…: issuer bindings; the
+# configuration-as-code surface for Terraform / pgauthzctl / the console).
+# Off by default. Enabled, the writer connects as pgauthzd_admin (a managed
+# role inheriting authz_admin) and serves the routes on their own listener
+# (port 8082, a `admin` Service port — give it a NetworkPolicy); the gate is a
+# per-issuer `admin` binding in opa.jwtIssuers or the ADMIN_ROLE shorthand.
+admin:
+  enabled: false
+  role: ""            # ADMIN_ROLE: single-issuer shorthand — a role the token must hold (platform scope)
 # OpenTelemetry on every pgauthzd instance: traces leave over OTLP when an
 # endpoint is set (propagation of traceparent/B3 is always on); the decision
 # log's trace_id/span_id join a line to the application's trace.
@@ -215,6 +233,7 @@ secrets:
   existingSecret: ""           # if set, the chart creates no Secret and reads keys from it
   authzenDirectPassword: "authz"    # authzen_direct login (read-only: reader + AuthZEN direct)
   pgauthzdRwPassword: "authz"       # pgauthzd_rw login (writer, full profile)
+  pgauthzdAdminPassword: "authz"    # pgauthzd_admin login (writer with admin.enabled)
   opaAdminToken: "change-me-in-production"
   # Shared SERVICE credential OPA presents to the pgauthzd reader/writer callback
   # listeners (Authorization: Bearer). MUST be overridden for real deployments.

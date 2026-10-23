@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"thomasdarimont.de/authz/pgauthzd/pkg/issuers"
 )
 
 // setIssuers configures a minimal two-issuer environment via JWT_ISSUERS.
@@ -451,7 +453,7 @@ func TestPEPClientsValidation(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := validatePEPClients(c.iss)
+			err := issuers.ValidateBindings(c.iss)
 			if c.wantErr == "" && err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -535,5 +537,56 @@ func TestTracingSwitch(t *testing.T) {
 	t.Setenv("TRACING", "sometimes")
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "TRACING") {
 		t.Fatalf("unknown value must be refused: %v", err)
+	}
+}
+
+// ADMIN_API_ENABLED: off by default; on, it needs the full profile and a
+// gate (an issuer admin binding or ADMIN_ROLE); the listener without the
+// feature is a mistake; production warns about the public listener.
+func TestAdminAPIConfig(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://u:p@h/db")
+	t.Setenv("JWKS_FILE", "")
+	t.Setenv("JWKS_URL", "")
+	t.Setenv("JWT_ISSUERS", `[{"issuer":"https://idp","audience":"api","jwks_file":"/dev/null","stores":["demo"]}]`)
+	t.Setenv("CURSOR_SEAL_KEY", "0123456789abcdef0123456789abcdef")
+	t.Setenv("DEPLOYMENT_ENVIRONMENT", "dev")
+	t.Setenv("PGAUTHORIZER_PROFILE", "full")
+
+	c, err := Load()
+	if err != nil || c.AdminAPIEnabled || c.HasAdminGate() {
+		t.Fatalf("off by default, got %+v %v", c.AdminAPIEnabled, err)
+	}
+	t.Setenv("ADMIN_LISTEN_ADDR", ":9093")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "ADMIN_LISTEN_ADDR") {
+		t.Fatalf("a listener without the feature must be refused, got %v", err)
+	}
+	t.Setenv("ADMIN_LISTEN_ADDR", "")
+	t.Setenv("ADMIN_API_ENABLED", "true")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "admin gate") {
+		t.Fatalf("enabled without a gate must be refused, got %v", err)
+	}
+	t.Setenv("ADMIN_ROLE", "pgauthz_admin")
+	c, err = Load()
+	if err != nil || !c.AdminAPIEnabled || c.AdminRole != "pgauthz_admin" || !c.HasAdminGate() {
+		t.Fatalf("ADMIN_ROLE is a gate, got %+v %v", c, err)
+	}
+	t.Setenv("PGAUTHORIZER_PROFILE", "decision-only")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "full profile") {
+		t.Fatalf("a decision-only instance never serves management, got %v", err)
+	}
+	t.Setenv("PGAUTHORIZER_PROFILE", "full")
+	t.Setenv("ADMIN_ROLE", "")
+	t.Setenv("JWT_ISSUERS", `[{"issuer":"https://idp","audience":"api","jwks_file":"/dev/null","stores":["demo"],"admin":{"scopes":["pgauthz:admin"],"scope":"platform"}}]`)
+	c, err = Load()
+	if err != nil || !c.HasAdminGate() || c.Issuers[0].Admin == nil || c.Issuers[0].Admin.Scope != "platform" {
+		t.Fatalf("an issuer admin binding is a gate, got %v", err)
+	}
+	t.Setenv("JWT_ISSUERS", `[{"issuer":"https://idp","audience":"api","jwks_file":"/dev/null","stores":["demo"],"admin":{}}]`)
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "admit every token") {
+		t.Fatalf("an empty admin binding must be refused, got %v", err)
+	}
+	t.Setenv("JWT_ISSUERS", `[{"issuer":"https://idp","audience":"api","jwks_file":"/dev/null","stores":["demo"],"admin":{"clients":["tf"],"scope":"galaxy"}}]`)
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "admin.scope") {
+		t.Fatalf("an unknown admin scope must be refused, got %v", err)
 	}
 }

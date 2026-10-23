@@ -654,6 +654,112 @@ check_http "write is not on the OPA-fronted public listener (404)" \
     -H "Content-Type: application/json" -H "$AUTH_WP" -d "$WP_BODY"
 fi
 
+# --- The admin API (/pgauthz/v1/admin/…) — FULL profile, ADMIN_API_ENABLED ---
+# The demo stack (env.sh) serves it on its own listener (:8096) gated by
+# ADMIN_ROLE=pgauthz_admin, and the instances merge authz.issuer_bindings
+# (ISSUERS_SOURCE=env+db): a PUT narrowing the demo issuer to the demo store
+# is applied by the fleet (todo-store checks 403 until the row is deleted).
+ADMIN_URL="${PGAUTHZD_ADMIN_URL:-http://localhost:8096}"
+if curl -sf "$ADMIN_URL/livez" >/dev/null 2>&1; then
+echo ""
+echo "==> Admin API (/pgauthz/v1/admin) — full profile, own listener..."
+echo ""
+AUTH_ADMIN="Authorization: Bearer $(make_token ops internal_user '["pgauthz_admin"]')"
+ISS_URL="https://auth.example.com"
+BINDING='{"issuer":"'"$ISS_URL"'","stores":["demo"],"enabled":true,"description":"test-authzen: demo only"}'
+TODO_CHECK='{"subject":{"type":"user","id":"alice"},"action":{"name":"viewer"},"resource":{"type":"todo","id":"t1"}}'
+
+# clean slate
+curl -s -o /dev/null -X DELETE "$ADMIN_URL/pgauthz/v1/admin/issuer-bindings?issuer=$ISS_URL" -H "$AUTH_ADMIN"
+
+check_http "admin: the gate refuses a token without the admin role (403)" "403" \
+    -X GET "$ADMIN_URL/pgauthz/v1/admin/issuers" -H "$AUTH_ALICE"
+check_http "admin: no token is 401" "401" \
+    -X GET "$ADMIN_URL/pgauthz/v1/admin/issuers"
+check_http "admin: the admin routes are not on the public listener (404)" "404" \
+    -X GET "$FULL_URL/pgauthz/v1/admin/issuers" -H "$AUTH_ADMIN"
+check_http "admin: the decision paths are not on the admin listener (404)" "404" \
+    -X POST "$ADMIN_URL/access/v1/evaluation" -H "$AUTH_ADMIN" -d '{}'
+check_http "admin: a platform admin reads the effective set (200)" "200" \
+    -X GET "$ADMIN_URL/pgauthz/v1/admin/issuers" -H "$AUTH_ADMIN"
+check_http "admin: an untrusted issuer cannot be bound (400)" "400" \
+    -X PUT "$ADMIN_URL/pgauthz/v1/admin/issuer-bindings" -H "$AUTH_ADMIN" -H "Content-Type: application/json" \
+    -d '{"issuer":"https://nobody.example","stores":["demo"],"enabled":true}'
+check_http "admin: a malformed pattern is refused (400)" "400" \
+    -X PUT "$ADMIN_URL/pgauthz/v1/admin/issuer-bindings" -H "$AUTH_ADMIN" -H "Content-Type: application/json" \
+    -d '{"issuer":"'"$ISS_URL"'","stores":["demo("],"enabled":true}'
+
+total=$((total + 1))
+if curl -s -o /dev/null -w "%{http_code}" -X POST "$FULL_URL/stores/todo/access/v1/evaluation" \
+        -H "Content-Type: application/json" -H "$AUTH_ALICE" -d "$TODO_CHECK" | grep -q '^200$'; then
+    pass_count=$((pass_count + 1)); echo "    PASS  admin: before the binding the todo store answers (200)"
+else
+    fail_count=$((fail_count + 1)); echo "    FAIL  admin: before the binding the todo store answers (200)"
+fi
+
+total=$((total + 1))
+rev=$(curl -sf -X PUT "$ADMIN_URL/pgauthz/v1/admin/issuer-bindings" -H "$AUTH_ADMIN" \
+    -H "Content-Type: application/json" -d "$BINDING" | jq -r '.revision // empty')
+if [ -n "$rev" ]; then
+    pass_count=$((pass_count + 1)); echo "    PASS  admin: PUT binding narrows the issuer to demo (revision $rev)"
+else
+    fail_count=$((fail_count + 1)); echo "    FAIL  admin: PUT binding narrows the issuer to demo"
+fi
+
+total=$((total + 1))
+got=$(curl -sf "$ADMIN_URL/pgauthz/v1/admin/issuer-bindings?issuer=$ISS_URL" -H "$AUTH_ADMIN" | jq -rc '[.stores, .enabled, .updated_by]')
+if [ "$got" = '[["demo"],true,"internal_user:ops"]' ]; then
+    pass_count=$((pass_count + 1)); echo "    PASS  admin: GET returns the row, recorded with the token's subject"
+else
+    fail_count=$((fail_count + 1)); echo "    FAIL  admin: GET returns the row (got $got)"
+fi
+
+# the fleet applies the revision (NOTIFY, else the poll)
+total=$((total + 1)); applied=0
+for _ in $(seq 1 40); do
+    if curl -s -o /dev/null -w "%{http_code}" -X POST "$FULL_URL/stores/todo/access/v1/evaluation" \
+            -H "Content-Type: application/json" -H "$AUTH_ALICE" -d "$TODO_CHECK" | grep -q '^403$'; then
+        applied=1; break
+    fi
+    sleep 0.5
+done
+if [ "$applied" = 1 ]; then
+    pass_count=$((pass_count + 1)); echo "    PASS  admin: the fleet applies the row — the todo store is refused (403)"
+else
+    fail_count=$((fail_count + 1)); echo "    FAIL  admin: the fleet applies the row — the todo store is refused (403)"
+fi
+
+total=$((total + 1))
+got=$(curl -sf "$FULL_URL/readyz" | jq -r '.issuers_revision // empty')
+if [ -n "$got" ] && [ "$got" -ge "$rev" ] 2>/dev/null; then
+    pass_count=$((pass_count + 1)); echo "    PASS  admin: /readyz reports the applied revision ($got)"
+else
+    fail_count=$((fail_count + 1)); echo "    FAIL  admin: /readyz reports the applied revision (got '$got', want >= $rev)"
+fi
+
+check_http "admin: DELETE drops the row (200)" "200" \
+    -X DELETE "$ADMIN_URL/pgauthz/v1/admin/issuer-bindings?issuer=$ISS_URL" -H "$AUTH_ADMIN"
+check_http "admin: DELETE of a missing row is 404" "404" \
+    -X DELETE "$ADMIN_URL/pgauthz/v1/admin/issuer-bindings?issuer=$ISS_URL" -H "$AUTH_ADMIN"
+
+total=$((total + 1)); restored=0
+for _ in $(seq 1 40); do
+    if curl -s -o /dev/null -w "%{http_code}" -X POST "$FULL_URL/stores/todo/access/v1/evaluation" \
+            -H "Content-Type: application/json" -H "$AUTH_ALICE" -d "$TODO_CHECK" | grep -q '^200$'; then
+        restored=1; break
+    fi
+    sleep 0.5
+done
+if [ "$restored" = 1 ]; then
+    pass_count=$((pass_count + 1)); echo "    PASS  admin: after the delete the environment binding is back (200)"
+else
+    fail_count=$((fail_count + 1)); echo "    FAIL  admin: after the delete the environment binding is back (200)"
+fi
+else
+    echo ""
+    echo "==> Admin API: not served at $ADMIN_URL — skipped (ADMIN_API_ENABLED / ADMIN_LISTEN_ADDR)"
+fi
+
 # --- Action log (/pgauthz/v1/events, ADR 0012) — FULL profile only ---
 # The PEP reports what principals actually did; pgauthzd gates the endpoint by
 # the RECORDER_ROLE claim (authz_recorder; a writer passes too), attributes

@@ -64,6 +64,19 @@ tags:
     description: >
       Native pgauthz writes (full profile). Successful writes mint a freshness
       token (X-PGAuthz-Revision) when FRESHNESS_TOKEN_KEYS is configured.
+  - name: admin
+    description: >
+      The management API (`ADMIN_API_ENABLED=true`, a full instance): the
+      privileged surface configuration-as-code tooling (Terraform, pgauthzctl)
+      and the console use, under its own path prefix `/pgauthz/v1/admin/` and,
+      with `ADMIN_LISTEN_ADDR`, on its own listener (the public listener then
+      serves none of these routes, and this document omits them). Every call
+      passes the admin gate: the token's issuer carries an `admin` binding in
+      `JWT_ISSUERS` whose scopes / claims / clients the token satisfies, or the
+      token holds `ADMIN_ROLE`. Management is scoped per tenant: an issuer's
+      admin binding manages that issuer's own binding (`scope: issuer`, the
+      default); only `scope: platform` (and `ADMIN_ROLE`) reaches every
+      issuer. Writes are recorded with the token's subject and client.
   - name: meta
     description: >
       Health, AuthZEN PDP discovery (`/.well-known/authzen-configuration`, §9 —
@@ -675,6 +688,171 @@ paths:
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
 
+  /pgauthz/v1/issuers:
+    get:
+      tags: [native-read]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+      operationId: issuers
+      summary: The effective trusted-issuer set
+      description: >
+        The issuers this instance trusts — anchors with the signing-key source
+        redacted to `url` / `file`, the bindings (stores, DB roles, client
+        roles, PEP clients), whether each issuer's bindings come from the
+        environment or the database (`ISSUERS_SOURCE=env+db`,
+        authz.issuer_bindings), whether its tokens are accepted (`enabled`),
+        and the applied database revision. On the public listener only for
+        callers holding ISSUERS_REQUIRED_ROLE (403 otherwise, or when the
+        role is unset); the internal callback listener always serves it.
+        Multi-tenancy: a caller sees its OWN issuer only (the one that signed
+        its token); the whole set is served only to a platform admin (the
+        admin gate with `scope: platform`, or `ADMIN_ROLE`).
+      responses:
+        '200':
+          description: The effective issuer set
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IssuerSet' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  # ── management (admin API) ─────────────────────────────────────────────────
+  /pgauthz/v1/admin/issuers:
+    get:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminIssuers
+      summary: The effective trusted-issuer set within the caller's scope
+      description: >
+        The same document as `/pgauthz/v1/issuers`, behind the admin gate
+        instead of ISSUERS_REQUIRED_ROLE: a tenant admin (`scope: issuer`)
+        sees its own issuer, a platform admin every issuer. Entries carry
+        the issuer's `admin` binding when it has one.
+      responses:
+        '200':
+          description: The effective issuer set within the caller's scope
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IssuerSet' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /pgauthz/v1/admin/issuer-bindings:
+    get:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminIssuerBindings
+      summary: The database-managed issuer bindings within the caller's scope
+      description: >
+        The rows of `authz.issuer_bindings` (ISSUERS_SOURCE=env+db) the caller
+        may manage — all of them for a platform admin, the own issuer's for a
+        tenant admin. With `issuer`, that one row (404 when absent or out of
+        scope).
+      parameters:
+        - name: issuer
+          in: query
+          required: false
+          schema: { type: string }
+          description: Return the binding of this issuer only.
+      responses:
+        '200':
+          description: The bindings (an object with `bindings`), or the one binding with `issuer`.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [bindings]
+                    properties:
+                      bindings:
+                        type: array
+                        items: { $ref: '#/components/schemas/IssuerBinding' }
+                  - $ref: '#/components/schemas/IssuerBinding'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+    put:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminSetIssuerBinding
+      summary: Create or replace an issuer's binding
+      description: >
+        The whole row, as the console edits it — validated as the daemon
+        validates (anchored patterns, PEP clients covered by stores) and
+        against the environment's binding (a row may only NARROW the stores
+        the environment grants, never unbind or widen; an issuer the
+        environment does not trust is refused — the database never adds
+        trust). The issuer must be within the caller's scope. Every
+        instance with ISSUERS_SOURCE=env+db applies the returned revision
+        (NOTIFY, else the poll).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IssuerBinding' }
+      responses:
+        '200':
+          description: The binding is stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [issuer, revision]
+                properties:
+                  issuer: { type: string }
+                  revision: { type: integer, description: The revision the fleet will apply. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+    delete:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminDeleteIssuerBinding
+      summary: Delete an issuer's binding
+      description: >
+        The issuer falls back to its environment bindings (JWT_ISSUERS).
+        The issuer must be within the caller's scope.
+      parameters:
+        - name: issuer
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: The binding is deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [issuer, deleted]
+                properties:
+                  issuer: { type: string }
+                  deleted: { type: boolean, enum: [true] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
   /pgauthz/v1/watch:
     post:
       tags: [native-read]
@@ -1676,7 +1854,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/ReserveEventResponse' }
     NotFound:
-      description: No such resource (an unknown Swagger UI asset name).
+      description: No such resource (an unknown Swagger UI asset name, no binding for the issuer).
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
@@ -1710,8 +1888,9 @@ components:
       description: >
         Authorization failure — issuer store/db-role binding violation,
         missing WRITER_ROLE claim on a public write, SEARCH_REQUIRED_ROLE not
-        held, a forbidden per-app DB role, or a write to a read-only
-        (decision-only) instance.
+        held, a forbidden per-app DB role, a write to a read-only
+        (decision-only) instance, or a management call refused by the admin
+        gate or outside the caller's admin scope.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
@@ -1759,6 +1938,64 @@ components:
           schema: { $ref: '#/components/schemas/Error' }
 
   schemas:
+    # ── issuers ──────────────────────────────────────────────────────────────
+    IssuerSet:
+      type: object
+      required: [source, revision, issuers]
+      properties:
+        source:
+          type: string
+          enum: [env, env+db]
+        revision:
+          type: integer
+          description: Applied revision of the database bindings (0 = environment only).
+        issuers:
+          type: array
+          items:
+            type: object
+            required: [issuer, audience, enabled, binding_source, stores, db_roles]
+            properties:
+              issuer: { type: string }
+              audience: { type: string }
+              enabled: { type: boolean }
+              binding_source: { type: string, enum: [env, db] }
+              jwks: { type: string, enum: [url, file] }
+              jwks_url: { type: string }
+              jwks_file: { type: string, description: Base name only. }
+              stores: { type: array, items: { type: string } }
+              db_roles: { type: array, items: { type: string } }
+              client_db_roles: { type: object, additionalProperties: { type: string } }
+              pep_clients:
+                type: object
+                additionalProperties: { type: array, items: { type: string } }
+              admin:
+                type: object
+                description: The issuer's management grant (environment only).
+                properties:
+                  scopes: { type: array, items: { type: string } }
+                  claims: { type: object, additionalProperties: { type: array, items: { type: string } } }
+                  clients: { type: array, items: { type: string } }
+                  scope: { type: string, enum: [issuer, platform] }
+    IssuerBinding:
+      type: object
+      description: >
+        One row of authz.issuer_bindings — what an issuer's tokens may do
+        here. Patterns are anchored regular expressions, as in JWT_ISSUERS.
+      required: [issuer]
+      properties:
+        issuer: { type: string, description: The token `iss` — must be trusted by JWT_ISSUERS. }
+        stores: { type: array, items: { type: string }, description: "Store patterns (empty = unbound; allowed only when the environment leaves the issuer unbound)." }
+        db_roles: { type: array, items: { type: string } }
+        client_db_roles: { type: object, additionalProperties: { type: string } }
+        pep_clients:
+          type: object
+          additionalProperties: { type: array, items: { type: string } }
+        enabled: { type: boolean, description: false pauses the issuer — every token refused (401). }
+        description: { type: string }
+        created_at: { type: string, format: date-time, readOnly: true, description: The row's first write (kept by a replace). }
+        created_by: { type: string, readOnly: true }
+        updated_at: { type: string, format: date-time, readOnly: true, description: The row's last write. }
+        updated_by: { type: string, readOnly: true }
     # ── shared vocabulary ────────────────────────────────────────────────────
     Subject:
       type: object

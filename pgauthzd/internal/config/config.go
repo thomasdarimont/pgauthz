@@ -11,42 +11,15 @@ import (
 	"time"
 
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
+
+	"thomasdarimont.de/authz/pgauthzd/pkg/issuers"
 )
 
 // Issuer describes one trusted token issuer and where to find its signing keys.
 // The service can trust several at once; the token's "iss" claim selects one.
-type Issuer struct {
-	Issuer   string `json:"issuer"`
-	Audience string `json:"audience"`
-	JWKSURL  string `json:"jwks_url"`
-	JWKSFile string `json:"jwks_file"`
-	// Stores restricts which pgauthz stores this issuer's tokens may access
-	// (store binding for multi-tenant setups: tenant A's IdP → tenant A's
-	// stores). Each entry is an ANCHORED regular expression (^(?:entry)$), so
-	// plain store names match exactly and patterns like "tenant_a_.*" cover
-	// store families. Empty = no restriction (all stores).
-	Stores []string `json:"stores"`
-	// DBRoles restricts which per-app DB roles tokens from this issuer may
-	// yield (via DB_ROLE_CLAIM or CLIENT_DB_ROLES) — without it, any trusted
-	// issuer could claim another tenant's role. Anchored regexes like Stores.
-	// Empty = no restriction. A violation is rejected (403), never silently
-	// downgraded to the fixed connection role.
-	DBRoles []string `json:"db_roles"`
-	// ClientDBRoles maps client ids (`azp`) to per-app DB roles, scoped to
-	// THIS issuer — azp values are only meaningful within an issuer, so the
-	// per-issuer map avoids cross-tenant azp collisions that the global
-	// CLIENT_DB_ROLES map (kept for single-issuer setups) cannot.
-	ClientDBRoles map[string]string `json:"client_db_roles"`
-	// PEPClients (ADR 0014) names the clients of this issuer — token `azp`,
-	// else `client_id` — that may ASSERT a request-body subject (and a
-	// differing performed_by / recorded_by), and in which stores: client id →
-	// anchored store patterns, the Stores syntax. A pattern may not reach
-	// beyond the issuer's Stores binding. Everything not listed is
-	// self-subject: the token's subject is authoritative. ALLOW_SUBJECT_OVERRIDE
-	// =true makes the map irrelevant (and is refused alongside it in
-	// production).
-	PEPClients map[string][]string `json:"pep_clients"`
-}
+// Issuer is a trusted identity provider with its bindings: the shared model
+// (pkg/issuers), so the console and pgauthzctl validate as the daemon does.
+type Issuer = issuers.Issuer
 
 // Profile selects an instance's DB CAPABILITY (PGAUTHORIZER_PROFILE): read-only
 // vs read+write. The security guarantee comes from the DB connection ROLE, not
@@ -419,6 +392,33 @@ type Config struct {
 	// into daily partitions, retention DecisionLogRetentionDays, at most
 	// DecisionLogQueue lines waiting between flushes — the console's
 	// Decisions tab reads that table).
+	// IssuersSource (ISSUERS_SOURCE): "env" (default — JWT_ISSUERS is the
+	// whole truth, as always) or "env+db": the bindings of each
+	// environment issuer may be replaced by a row of authz.issuer_bindings
+	// (managed from the console), merged at start and on every change
+	// (polled every IssuersPollInterval seconds, notified when the primary
+	// is reachable). The environment keeps the anchors; a row can only
+	// narrow. IssuersRequiredRole gates GET /pgauthz/v1/issuers (the
+	// effective set, keys redacted) on the public listener; empty = not
+	// served there (the callback listener always serves it).
+	IssuersSource       string
+	IssuersPollInterval int
+	IssuersRequiredRole string
+
+	// The admin API (ADMIN_API_ENABLED, default false): the privileged
+	// management surface under /pgauthz/v1/admin/ (issuer bindings first;
+	// stores, models, … to follow for configuration as code). Only on a full
+	// instance whose DB role holds authz_admin. AdminListenAddr moves it to
+	// its own listener (recommended in production; the public listener then
+	// serves no /admin/ route). The gate: a per-issuer `admin` binding in
+	// JWT_ISSUERS (scopes / claims / clients a token must carry; scope
+	// issuer|platform), or the single-issuer shorthand AdminRole
+	// (ADMIN_ROLE, a role the token must hold; platform scope). Enabled
+	// without any gate is a startup error.
+	AdminAPIEnabled bool
+	AdminListenAddr string
+	AdminRole       string
+
 	// Tracing (TRACING): "auto" (default — on only when the OTEL_* environment
 	// configures an OTLP exporter), "on" (propagation + spans, exported when
 	// configured), "off" (nothing: no headers read, no spans, no ids in the
@@ -527,6 +527,12 @@ func Load() (*Config, error) {
 		OPAEvalMetrics:                envBool("OPA_EVAL_METRICS", true),
 		ForwardTokenToOPA:             envBool("FORWARD_TOKEN_TO_OPA", false),
 		LogLevel:                      env("LOG_LEVEL", "info"),
+		AdminAPIEnabled:               envBool("ADMIN_API_ENABLED", false),
+		AdminListenAddr:               env("ADMIN_LISTEN_ADDR", ""),
+		AdminRole:                     env("ADMIN_ROLE", ""),
+		IssuersSource:                 strings.ToLower(env("ISSUERS_SOURCE", "env")),
+		IssuersPollInterval:           envInt("ISSUERS_POLL_INTERVAL", 30),
+		IssuersRequiredRole:           env("ISSUERS_REQUIRED_ROLE", ""),
 		Tracing:                       strings.ToLower(env("TRACING", "auto")),
 		TracingIdentifiers:            envBool("TRACING_IDENTIFIERS", false),
 		DecisionLog:                   env("DECISION_LOG", "off"),
@@ -620,7 +626,7 @@ func Load() (*Config, error) {
 		if iss.JWKSURL == "" && iss.JWKSFile == "" {
 			return nil, fmt.Errorf("issuer %d (%q) has no jwks_url or jwks_file", i, iss.Issuer)
 		}
-		if err := validatePEPClients(iss); err != nil {
+		if err := issuers.ValidateBindings(iss); err != nil {
 			return nil, fmt.Errorf("issuer %d (%q): %w", i, iss.Issuer, err)
 		}
 		// Audience is required (F21): an issuer without one accepts every token
@@ -637,16 +643,6 @@ func Load() (*Config, error) {
 				return nil, fmt.Errorf("issuer %d (%q) has no audience — tokens this IdP mints for ANY other API would be accepted here; set JWT_AUDIENCE (legacy form) or \"audience\" in JWT_ISSUERS to this API's identifier, or override deliberately with ALLOW_MISSING_AUDIENCE=true", i, iss.Issuer)
 			}
 			log.Printf("WARNING (ALLOW_MISSING_AUDIENCE): issuer %q has no audience — tokens minted for any other API are accepted", iss.Issuer)
-		}
-		for _, p := range iss.Stores {
-			if _, err := regexp.Compile("^(?:" + p + ")$"); err != nil {
-				return nil, fmt.Errorf("issuer %q: invalid store pattern %q: %w", iss.Issuer, p, err)
-			}
-		}
-		for _, p := range iss.DBRoles {
-			if _, err := regexp.Compile("^(?:" + p + ")$"); err != nil {
-				return nil, fmt.Errorf("issuer %q: invalid db_roles pattern %q: %w", iss.Issuer, p, err)
-			}
 		}
 	}
 	if len(c.Issuers) == 0 {
@@ -669,6 +665,29 @@ func Load() (*Config, error) {
 	}
 	if (c.SwaggerUIOIDCAuthorizationURL == "") != (c.SwaggerUIOIDCTokenURL == "") {
 		return nil, fmt.Errorf("SWAGGER_UI_OIDC_AUTHORIZATION_URL and SWAGGER_UI_OIDC_TOKEN_URL go together")
+	}
+	switch c.IssuersSource {
+	case "env", "env+db":
+	case "db":
+		return nil, fmt.Errorf("ISSUERS_SOURCE=db is not supported: trust anchors stay in JWT_ISSUERS; use env+db to manage the bindings in the database")
+	default:
+		return nil, fmt.Errorf("ISSUERS_SOURCE %q: expected env | env+db", c.IssuersSource)
+	}
+	if c.IssuersPollInterval <= 0 {
+		return nil, fmt.Errorf("ISSUERS_POLL_INTERVAL %d: expected a positive number of seconds", c.IssuersPollInterval)
+	}
+	if c.AdminAPIEnabled {
+		if c.Profile != ProfileFull && c.Profile != "" {
+			return nil, fmt.Errorf("ADMIN_API_ENABLED=true needs the full profile (a decision-only instance never serves management)")
+		}
+		if !c.HasAdminGate() {
+			return nil, fmt.Errorf("ADMIN_API_ENABLED=true needs an admin gate: an issuer with an \"admin\" binding in JWT_ISSUERS (scopes / claims / clients) or ADMIN_ROLE")
+		}
+		if c.IsProduction() && c.AdminListenAddr == "" {
+			log.Printf("WARNING: ADMIN_API_ENABLED=true on the PUBLIC listener of a production instance — set ADMIN_LISTEN_ADDR and keep that listener reachable by management clients only")
+		}
+	} else if c.AdminListenAddr != "" {
+		return nil, fmt.Errorf("ADMIN_LISTEN_ADDR is set but ADMIN_API_ENABLED is false; enable the admin API or drop the listener")
 	}
 	switch c.Tracing {
 	case "auto", "on", "off":
@@ -915,45 +934,6 @@ func (c *Config) HasPEPClients() bool {
 // than a plain name.
 const regexMeta = `.*+?()[]{}|^$\`
 
-// validatePEPClients checks an issuer's pep_clients (ADR 0014): every pattern
-// compiles anchored, and none reaches beyond the issuer's stores binding — a
-// pattern is accepted when the issuer is unbound, when it is literally one of
-// the issuer's stores patterns, or when it is a plain store name that one of
-// them matches. Assertion must never widen where a token may ask.
-func validatePEPClients(iss Issuer) error {
-	for client, patterns := range iss.PEPClients {
-		if strings.TrimSpace(client) == "" {
-			return fmt.Errorf("pep_clients has an empty client id")
-		}
-		if len(patterns) == 0 {
-			return fmt.Errorf("pep_clients[%q] lists no stores (use [\".*\"] for every store of the binding)", client)
-		}
-		for _, p := range patterns {
-			if _, err := regexp.Compile("^(?:" + p + ")$"); err != nil {
-				return fmt.Errorf("pep_clients[%q]: invalid store pattern %q: %w", client, p, err)
-			}
-			if len(iss.Stores) == 0 {
-				continue
-			}
-			covered := false
-			for _, sp := range iss.Stores {
-				if sp == p {
-					covered = true
-					break
-				}
-				if !strings.ContainsAny(p, regexMeta) && regexp.MustCompile("^(?:"+sp+")$").MatchString(p) {
-					covered = true
-					break
-				}
-			}
-			if !covered {
-				return fmt.Errorf("pep_clients[%q]: store pattern %q is not covered by the issuer's stores binding %v — assertion cannot widen where tokens may ask", client, p, iss.Stores)
-			}
-		}
-	}
-	return nil
-}
-
 // SwaggerUIOIDC reports whether the embedded Swagger UI logs in via OIDC.
 func (c *Config) SwaggerUIOIDC() bool {
 	return c.SwaggerUIOIDCIssuer != "" && c.SwaggerUIOIDCClientID != ""
@@ -999,4 +979,18 @@ func (c *Config) Writable() bool {
 // reject an at_least_as_fresh request (fail closed).
 func (c *Config) FreshnessEnabled() bool {
 	return len(c.FreshnessKeys) > 0
+}
+
+// HasAdminGate reports whether any token could pass the admin gate: an
+// issuer with an admin binding, or ADMIN_ROLE.
+func (c *Config) HasAdminGate() bool {
+	if c.AdminRole != "" {
+		return true
+	}
+	for _, iss := range c.Issuers {
+		if iss.Admin != nil && !iss.Admin.Empty() {
+			return true
+		}
+	}
+	return false
 }

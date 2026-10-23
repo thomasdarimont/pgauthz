@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -32,14 +31,11 @@ const defaultPageSize = 100
 
 // Handler wires all AuthZEN endpoints to a backend.
 type Handler struct {
-	// issuerStores maps a verified issuer to the store patterns (anchored
-	// regexes) its tokens may access. Only issuers with a non-empty `stores`
-	// list appear here; absent = unrestricted.
-	issuerStores map[string][]*regexp.Regexp
-	// issuerPEPClients (ADR 0014): verified issuer → client id (azp) → the
-	// store patterns in which that client may assert a body subject. Absent =
-	// may not; ALLOW_SUBJECT_OVERRIDE=true bypasses the map.
-	issuerPEPClients map[string]map[string][]*regexp.Regexp
+	// issuers is the trusted-issuer set in force — store bindings and PEP
+	// clients (ADR 0014) read per request, swapped as one value when the
+	// database bindings change (ISSUERS_SOURCE=env+db). Shared with the JWT
+	// middleware (WithIssuers); built from cfg.Issuers otherwise.
+	issuers *Issuers
 	// backend serves the AuthZEN surface (/access/v1): the OPA backend when
 	// OPA_URL is set (policy enrichment), else the direct pgx backend.
 	backend authz.Backend
@@ -78,37 +74,13 @@ type Handler struct {
 }
 
 func NewHandler(backend, raw, rawWrite authz.Backend, cfg *config.Config, opts ...Option) *Handler {
-	h := &Handler{backend: backend, raw: raw, rawWrite: rawWrite, cfg: cfg, issuerStores: map[string][]*regexp.Regexp{},
+	h := &Handler{backend: backend, raw: raw, rawWrite: rawWrite, cfg: cfg,
 		freshKeys: authz.NewKeyring(cfg.FreshnessKeys), listener: "public"}
 	for _, o := range opts {
 		o(h)
 	}
-	for _, iss := range cfg.Issuers {
-		if iss.Issuer == "" {
-			continue
-		}
-		if len(iss.Stores) > 0 {
-			pats := make([]*regexp.Regexp, len(iss.Stores))
-			for i, p := range iss.Stores {
-				// validated in config.Load — anchored so plain names match exactly
-				pats[i] = regexp.MustCompile("^(?:" + p + ")$")
-			}
-			h.issuerStores[iss.Issuer] = pats
-		}
-		if len(iss.PEPClients) > 0 {
-			clients := make(map[string][]*regexp.Regexp, len(iss.PEPClients))
-			for client, patterns := range iss.PEPClients {
-				pats := make([]*regexp.Regexp, len(patterns))
-				for i, p := range patterns {
-					pats[i] = regexp.MustCompile("^(?:" + p + ")$")
-				}
-				clients[client] = pats
-			}
-			if h.issuerPEPClients == nil {
-				h.issuerPEPClients = map[string]map[string][]*regexp.Regexp{}
-			}
-			h.issuerPEPClients[iss.Issuer] = clients
-		}
+	if h.issuers == nil {
+		h.issuers = NewIssuers(IssuerConfigsFrom(cfg.Issuers))
 	}
 	return h
 }
@@ -122,7 +94,7 @@ func (h *Handler) mayAssertSubject(r *http.Request, store string) bool {
 	if h.cfg.AllowSubjectOverride {
 		return true
 	}
-	clients := h.issuerPEPClients[IssuerFromContext(r.Context())]
+	clients := h.issuers.Current().pepClients[IssuerFromContext(r.Context())]
 	if clients == nil {
 		return false
 	}
@@ -203,6 +175,11 @@ func newPublicMux(h *Handler, usesOPA bool) *http.ServeMux {
 	if !usesOPA {
 		registerNativeRead(mux, h)
 		registerNativeWrite(mux, h)
+	}
+	// The admin API on the public listener (ADMIN_API_ENABLED without
+	// ADMIN_LISTEN_ADDR): a full instance only; the routes carry the gate.
+	if h.cfg != nil && h.cfg.AdminAPIEnabled && h.cfg.AdminListenAddr == "" && h.rawWrite != nil {
+		registerAdmin(mux, h)
 	}
 	mux.HandleFunc("GET /healthz", h.Healthz) // deprecated alias of /readyz
 	mux.HandleFunc("GET /livez", h.Livez)
@@ -344,6 +321,8 @@ func registerNativeRead(mux *http.ServeMux, h *Handler) {
 	// Freshness guard (ADR 0009) on the point-read routes; not on watch (a
 	// cursor-based changefeed, not a read-your-writes point query).
 	explain := h.readGuard(h.Explain)
+	// The effective issuer set (ISSUERS_REQUIRED_ROLE on the public listener).
+	mux.HandleFunc("GET /pgauthz/v1/issuers", h.Issuers)
 	check := h.readGuard(h.NativeCheck)
 	checkBatch := h.readGuard(h.NativeCheckBatch)
 	listObjects := h.readGuard(h.NativeListObjects)
@@ -407,7 +386,7 @@ func registerNativeWrite(mux *http.ServeMux, h *Handler) {
 // and returns ok=false on a violation.
 func (h *Handler) storeChecked(w http.ResponseWriter, r *http.Request) (string, bool) {
 	store := h.store(r)
-	allowed, restricted := h.issuerStores[IssuerFromContext(r.Context())]
+	allowed, restricted := h.issuers.Current().stores[IssuerFromContext(r.Context())]
 	if !restricted {
 		return store, true
 	}
@@ -1236,7 +1215,12 @@ func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	out := map[string]any{"status": "ok"}
+	if h.issuers != nil && h.cfg != nil && h.cfg.IssuersSource == "env+db" {
+		// the applied revision of the database issuer bindings (fleet view)
+		out["issuers_revision"] = h.issuers.Revision()
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // Healthz — GET /healthz: DEPRECATED alias of /readyz, kept for existing

@@ -66,6 +66,12 @@ x-pgauthzd-env: &pgauthzd-env
   # a span per decision, a client span per OPA call); propagation is always on.
   OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
   OTEL_EXPORTER_OTLP_PROTOCOL: "${OTEL_EXPORTER_OTLP_PROTOCOL:-}"
+  # Issuer bindings managed from the console (scratch design, option C):
+  # env = JWT_ISSUERS is the whole truth; env+db merges authz.issuer_bindings
+  # over it — anchors stay here, a row may only narrow.
+  ISSUERS_SOURCE: "${ISSUERS_SOURCE:-env}"
+  ISSUERS_POLL_INTERVAL: "${ISSUERS_POLL_INTERVAL:-30}"
+  ISSUERS_REQUIRED_ROLE: "${ISSUERS_REQUIRED_ROLE:-}"
   TRACING: "${TRACING:-auto}"                           # auto | on | off
   TRACING_IDENTIFIERS: "${TRACING_IDENTIFIERS:-false}"  # subject/resource ids on spans (types always)
   DECISION_LOG_SAMPLE: "${DECISION_LOG_SAMPLE:-1}"
@@ -128,6 +134,7 @@ services:
       # .env and `up` again. They must match the DATABASE_URLs below.
       AUTHZEN_DIRECT_PASSWORD: "${AUTHZEN_DIRECT_PASSWORD:?set AUTHZEN_DIRECT_PASSWORD in .env}"
       PGAUTHZD_RW_PASSWORD: "${PGAUTHZD_RW_PASSWORD:?set PGAUTHZD_RW_PASSWORD in .env}"
+      PGAUTHZD_ADMIN_PASSWORD: "${PGAUTHZD_ADMIN_PASSWORD:-}"
       DERIVED_WORKER_PASSWORD: "${DERIVED_WORKER_PASSWORD:-}"
       REPLICATOR_PASSWORD: "${REPLICATOR_PASSWORD:-}"
       CONDITION_STATEMENT_TIMEOUT: "${CONDITION_STATEMENT_TIMEOUT:-60s}"
@@ -175,7 +182,17 @@ services:
     environment:
       <<: *pgauthzd-env
       PGAUTHORIZER_PROFILE: "full"
-      DATABASE_URL: "postgres://pgauthzd_rw:${PGAUTHZD_RW_PASSWORD:?}@db:5432/authz"
+      # The writer role; with the admin API (ADMIN_API_ENABLED=true) set
+      # PGAUTHZD_FULL_DB_USER=pgauthzd_admin + PGAUTHZD_ADMIN_PASSWORD — the
+      # management routes need the authz_admin tier, asserted at startup.
+      DATABASE_URL: "postgres://${PGAUTHZD_FULL_DB_USER:-pgauthzd_rw}:${PGAUTHZD_FULL_DB_PASSWORD:-${PGAUTHZD_RW_PASSWORD:?}}@db:5432/authz"
+      # The admin API (/pgauthz/v1/admin/…), off by default. Enabled, serve it
+      # on its own listener (ADMIN_LISTEN_ADDR, reachable by management
+      # clients only — not published here); the gate is a per-issuer `admin`
+      # binding in JWT_ISSUERS or the ADMIN_ROLE shorthand.
+      ADMIN_API_ENABLED: "${ADMIN_API_ENABLED:-false}"
+      ADMIN_LISTEN_ADDR: "${ADMIN_LISTEN_ADDR:-}"
+      ADMIN_ROLE: "${ADMIN_ROLE:-}"
       DB_POOL_MAX: "${WRITE_POOL_MAX:-10}"
       # Who may write (a JWT role in JWT_ROLES_CLAIM) and who may feed the
       # action log.

@@ -58,6 +58,11 @@ services:
       # always on; the decision log carries trace_id/span_id regardless).
       OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
       OTEL_EXPORTER_OTLP_PROTOCOL: "${OTEL_EXPORTER_OTLP_PROTOCOL:-}"
+      # Issuer bindings (console-managed): env = JWT_ISSUERS only; env+db merges
+      # authz.issuer_bindings over it (anchors stay in the environment).
+      ISSUERS_SOURCE: "${ISSUERS_SOURCE:-env}"
+      ISSUERS_POLL_INTERVAL: "${ISSUERS_POLL_INTERVAL:-30}"
+      ISSUERS_REQUIRED_ROLE: "${ISSUERS_REQUIRED_ROLE:-}"
       TRACING: "${TRACING:-auto}"                       # auto (on when an endpoint is set) | on | off
       TRACING_IDENTIFIERS: "${TRACING_IDENTIFIERS:-false}"   # subject/resource ids on spans
       # Discovery behind a TLS-terminating proxy: build the .well-known base
@@ -98,14 +103,23 @@ services:
       # OPA forwards authorized writes here. Published for the tests only — in
       # production bind to the OPA sidecar network.
       - "8094:8081"
+      - "8096:8082"   # admin API listener (ADMIN_LISTEN_ADDR; the demo serves it)
       - "9091:9090"   # Prometheus /metrics (ADR 0010)
     environment:
       LISTEN_ADDR: ":8080"
       METRICS_LISTEN_ADDR: ":9090"
       PGAUTHORIZER_PROFILE: "full"
       # Writer-capable non-superuser role (inherits authz_writer), created by
-      # db/security/roles.sql. This is the ONLY instance that can write.
-      DATABASE_URL: "postgres://pgauthzd_rw:${PGAUTHZD_RW_PASSWORD:-authz}@authz-db:5432/authz"
+      # db/security/roles.sql. This is the ONLY instance that can write. With
+      # the admin API the demo connects as pgauthzd_admin (inherits authz_admin;
+      # env.sh sets PGAUTHZD_FULL_DB_USER) — management needs the admin tier.
+      DATABASE_URL: "postgres://${PGAUTHZD_FULL_DB_USER:-pgauthzd_rw}:${PGAUTHZD_FULL_DB_PASSWORD:-authz}@authz-db:5432/authz"
+      # The admin API (/pgauthz/v1/admin/…): off unless ADMIN_API_ENABLED=true;
+      # its own listener with ADMIN_LISTEN_ADDR; the gate is a per-issuer
+      # `admin` binding in JWT_ISSUERS or the ADMIN_ROLE shorthand.
+      ADMIN_API_ENABLED: "${ADMIN_API_ENABLED:-false}"
+      ADMIN_LISTEN_ADDR: "${ADMIN_LISTEN_ADDR:-}"
+      ADMIN_ROLE: "${ADMIN_ROLE:-}"
       DB_POOL_MAX: "10"
       # Enable the OPA callback listener: because this is the full profile the
       # callback serves native reads AND writes (capability follows the role).
@@ -124,6 +138,11 @@ services:
       # always on; the decision log carries trace_id/span_id regardless).
       OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
       OTEL_EXPORTER_OTLP_PROTOCOL: "${OTEL_EXPORTER_OTLP_PROTOCOL:-}"
+      # Issuer bindings (console-managed): env = JWT_ISSUERS only; env+db merges
+      # authz.issuer_bindings over it (anchors stay in the environment).
+      ISSUERS_SOURCE: "${ISSUERS_SOURCE:-env}"
+      ISSUERS_POLL_INTERVAL: "${ISSUERS_POLL_INTERVAL:-30}"
+      ISSUERS_REQUIRED_ROLE: "${ISSUERS_REQUIRED_ROLE:-}"
       TRACING: "${TRACING:-auto}"                       # auto (on when an endpoint is set) | on | off
       TRACING_IDENTIFIERS: "${TRACING_IDENTIFIERS:-false}"   # subject/resource ids on spans
       # Discovery behind a TLS-terminating proxy: build the .well-known base

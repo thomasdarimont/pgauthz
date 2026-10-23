@@ -96,6 +96,7 @@ func Run(name, version string) error {
 	// otherwise the same direct pgx backend. Fronting OPA is orthogonal to the
 	// profile; the profile only decides read-only vs read+write.
 	var backend, raw, rawWrite authz.Backend
+	var pgb *pgbackend.Backend // the direct backend, when there is a local DB (issuer bindings read it)
 
 	if cfg.DatabaseURL == "" {
 		// No local DB — valid only as a pure OPA-AuthZEN gateway: OPA fronts
@@ -108,7 +109,9 @@ func Run(name, version string) error {
 		backend = newOPABackend(ctx, cfg)
 		slog.Info("DB-less OPA-AuthZEN gateway (native surface disabled)", "opa", cfg.OPAURL)
 	} else {
-		pgb, cleanup, perr := newPGBackend(ctx, cfg)
+		var cleanup func()
+		var perr error
+		pgb, cleanup, perr = newPGBackend(ctx, cfg)
 		if perr != nil {
 			return perr
 		}
@@ -152,15 +155,19 @@ func Run(name, version string) error {
 		}
 	}
 
-	var issuers []api.IssuerConfig
-	for _, i := range cfg.Issuers {
-		issuers = append(issuers, api.IssuerConfig{
-			Issuer: i.Issuer, Audience: i.Audience, JWKSURL: i.JWKSURL, JWKSFile: i.JWKSFile,
-			DBRoles: i.DBRoles, ClientDBRoles: i.ClientDBRoles,
-		})
+	// The trusted-issuer set, one swappable value shared by the JWT
+	// middleware and every handler; with ISSUERS_SOURCE=env+db the reloader
+	// merges the database's bindings over it and swaps a new revision in.
+	issuerSet := api.NewIssuers(api.IssuerConfigsFrom(cfg.Issuers))
+	if cfg.IssuersSource == "env+db" {
+		if pgb == nil {
+			return fmt.Errorf("ISSUERS_SOURCE=env+db needs the direct PostgreSQL backend (DATABASE_URL)")
+		}
+		startIssuerReloader(ctx, pgb, cfg.Issuers, issuerSet, time.Duration(cfg.IssuersPollInterval)*time.Second)
 	}
 	jwtMW := api.NewJWTMiddleware(api.JWTConfig{
-		Issuers:            issuers,
+		Issuers:            api.IssuerConfigsFrom(cfg.Issuers),
+		Set:                issuerSet,
 		RequiredScope:      cfg.RequiredScope,
 		RolesClaims:        cfg.RolesClaims,
 		DBRoleClaim:        cfg.DBRoleClaim,
@@ -205,6 +212,7 @@ func Run(name, version string) error {
 	}
 	dlogOpt := api.WithDecisionLog(dlog)
 	verOpt := api.WithVersion(version)
+	issOpt := api.WithIssuers(issuerSet)
 	if dlog.Enabled() {
 		// OPA-fronted decisions carry the policy/bundle revisions: ask OPA for
 		// provenance on every query only when there is a log to put it in.
@@ -214,7 +222,28 @@ func Run(name, version string) error {
 	}
 
 	var servers []*http.Server
-	servers = append(servers, newServer(cfg, cfg.ListenAddr, api.NewRouter(backend, raw, rawWrite, cfg, jwtMW, dlogOpt, verOpt)))
+	servers = append(servers, newServer(cfg, cfg.ListenAddr, api.NewRouter(backend, raw, rawWrite, cfg, jwtMW, dlogOpt, verOpt, issOpt)))
+
+	// The admin API (ADMIN_API_ENABLED): a full instance whose DB role holds
+	// authz_admin — asserted now, so a misconfigured instance refuses to
+	// start rather than 403 every management call. On its own listener when
+	// ADMIN_LISTEN_ADDR is set (newPublicMux mounts it on the public one
+	// otherwise).
+	if cfg.AdminAPIEnabled {
+		if rawWrite == nil || pgb == nil {
+			return fmt.Errorf("ADMIN_API_ENABLED=true needs a full instance with the direct PostgreSQL backend")
+		}
+		if err := pgb.AssertAdmin(ctx); err != nil {
+			return fmt.Errorf("ADMIN_API_ENABLED=true: %w", err)
+		}
+		if cfg.AdminListenAddr != "" {
+			hAdm := api.NewHandler(nil, raw, rawWrite, cfg, dlogOpt, verOpt, issOpt)
+			servers = append(servers, newServer(cfg, cfg.AdminListenAddr, api.NewAdminRouter(hAdm, jwtMW)))
+			slog.Info("admin API listener", "addr", cfg.AdminListenAddr, "gate", adminGateLabel(cfg))
+		} else {
+			slog.Info("admin API on the public listener", "prefix", "/pgauthz/v1/admin/", "gate", adminGateLabel(cfg))
+		}
+	}
 
 	// Prometheus metrics on a SEPARATE, non-public listener (ADR 0010).
 	if cfg.MetricsListenAddr != "" {
@@ -237,7 +266,7 @@ func Run(name, version string) error {
 		if terr != nil {
 			return terr
 		}
-		hCb := api.NewHandler(nil, raw, rawWrite, cfg, dlogOpt, verOpt)
+		hCb := api.NewHandler(nil, raw, rawWrite, cfg, dlogOpt, verOpt, issOpt)
 		cbSrv := newServer(cfg, cfg.InternalListenAddr, api.NewCallbackRouter(hCb, cfg.InternalServiceToken))
 		if tlsCfg != nil {
 			cbSrv.TLSConfig = tlsCfg
@@ -260,7 +289,7 @@ func Run(name, version string) error {
 	}()
 
 	slog.Info(name+" listening", "addr", cfg.ListenAddr, "profile", cfg.Profile,
-		"issuers", len(issuers), "writable", cfg.Writable())
+		"issuers", len(cfg.Issuers), "issuers_source", cfg.IssuersSource, "writable", cfg.Writable())
 
 	// Run all listeners; the first hard error (not the clean shutdown) wins.
 	errCh := make(chan error, len(servers))
@@ -572,4 +601,22 @@ func setupLogging(level string) {
 		lvl = slog.LevelInfo
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl})))
+}
+
+// adminGateLabel names the admin gate for the logs.
+func adminGateLabel(cfg *config.Config) string {
+	n := 0
+	for _, iss := range cfg.Issuers {
+		if iss.Admin != nil && !iss.Admin.Empty() {
+			n++
+		}
+	}
+	switch {
+	case n > 0 && cfg.AdminRole != "":
+		return fmt.Sprintf("%d issuer admin binding(s) + ADMIN_ROLE", n)
+	case n > 0:
+		return fmt.Sprintf("%d issuer admin binding(s)", n)
+	default:
+		return "ADMIN_ROLE"
+	}
 }
