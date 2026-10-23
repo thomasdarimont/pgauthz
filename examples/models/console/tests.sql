@@ -16,6 +16,7 @@ DO $$
 DECLARE
     -- what the console derives from carol's token when she holds console_admin
     carol_admin jsonb := '[{"user_type":"user","user_id":"carol","relation":"member","object_type":"team","object_id":"role_console_admin"}]';
+    dan_issuer_admin jsonb := '[{"user_type":"user","user_id":"dan","relation":"issuer_admin","object_type":"platform","object_id":"default"}]';
     -- bob's token carries the authz_writer realm role (keycloak/terraform/users.tf)
     bob_writer  jsonb := '[{"user_type":"user","user_id":"bob","relation":"member","object_type":"team","object_id":"role_authz_writer"}]';
 BEGIN
@@ -55,6 +56,16 @@ BEGIN
         authz.check_access_with_contextual_tuples_jsonb(current_setting('test.cs'),'user','bob','can_grant','store','gdrive', NULL, bob_writer)::text, 'true');
     PERFORM _test_assert('cs_20_team_sharer_needs_token',
         authz.check_access(current_setting('test.cs'),'user','bob','can_grant','store','gdrive')::text, 'false');
+
+    -- ── issuer admin: the issuers' bindings, nothing else of the platform ──
+    PERFORM _test_assert('cs_50_issuer_admin_manage_issuers',
+        authz.check_access_with_contextual_tuples_jsonb(current_setting('test.cs'),'user','dan','can_manage_issuers','platform','default', NULL, dan_issuer_admin)::text, 'true');
+    PERFORM _test_assert('cs_51_issuer_admin_no_health',
+        authz.check_access_with_contextual_tuples_jsonb(current_setting('test.cs'),'user','dan','can_view_health','platform','default', NULL, dan_issuer_admin)::text, 'false');
+    PERFORM _test_assert('cs_52_issuer_admin_no_manage_access',
+        authz.check_access_with_contextual_tuples_jsonb(current_setting('test.cs'),'user','dan','can_manage_access','platform','default', NULL, dan_issuer_admin)::text, 'false');
+    PERFORM _test_assert('cs_53_issuer_admin_no_store_view',
+        authz.check_access_with_contextual_tuples_jsonb(current_setting('test.cs'),'user','dan','can_view','store','gdrive', NULL, dan_issuer_admin)::text, 'false');
 
     -- ── platform admin: sees every store and reassigns owners, nothing more ──
     PERFORM _test_assert('cs_21_platform_admin_manage_issuers',

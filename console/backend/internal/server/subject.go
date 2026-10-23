@@ -1,6 +1,6 @@
 package server
 
-// Data subject requests (GDPR) on Store → Operations: everything the store
+// Data subject requests (GDPR) on Store → Data subject: everything the store
 // holds about one subject as one document (authz.export_subject, plus the
 // subject's lines of the decision log from the console's own database),
 // and its erasure (authz.erase_subject as the person, plus the decision-log
@@ -27,13 +27,13 @@ func parseSubject(s string) (typ, id string, ok bool) {
 	return typ, id, ok && typ != "" && id != ""
 }
 
-// handleOpsSubject — GET /api/stores/{store}/ops/subject?subject=type:id
+// handleSubject — GET /api/stores/{store}/subject?subject=type:id
 // [&relations=a,b&limit=N&download=1&format=json|csv]: the export
 // document (json), or — the takeout hand-over for the application teams —
 // the objects the subject relates to as rows (csv: store, subject, object
 // type, relation, object id, wildcard, direct; one row per reachable object
 // and relation, list_subject_objects). With download as an attachment.
-func (s *Server) handleOpsSubject(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSubject(w http.ResponseWriter, r *http.Request) {
 	p, store := s.requireStore(w, r, "can_view_audit")
 	if p == nil {
 		return
@@ -168,8 +168,8 @@ type eraseSubjectReq struct {
 	PurgeDecisions *bool  `json:"purge_decisions"` // default true
 }
 
-// handleOpsSubjectErase — POST /api/stores/{store}/ops/subject/erase.
-func (s *Server) handleOpsSubjectErase(w http.ResponseWriter, r *http.Request) {
+// handleSubjectErase — POST /api/stores/{store}/subject/erase.
+func (s *Server) handleSubjectErase(w http.ResponseWriter, r *http.Request) {
 	p, store := s.requireStore(w, r, "can_manage_access")
 	if p == nil {
 		return

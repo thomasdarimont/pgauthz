@@ -18,7 +18,7 @@ import (
 // storeRoles are the assignable console roles on a store, in display order.
 var storeRoles = []string{"owner", "author", "publisher", "sharer", "tester", "supporter", "auditor", "exporter", "viewer"}
 
-var platformRoles = []string{"admin"}
+var platformRoles = []string{"admin", "issuer_admin"}
 
 type accessRow struct {
 	SubjectType     string `json:"subject_type"`

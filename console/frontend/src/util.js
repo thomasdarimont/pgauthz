@@ -31,6 +31,7 @@ const ROLE_HELP = {
   exporter: "export the store's tuples (JSON, CSV, OpenFGA); every export is recorded",
   viewer: 'read-only: model, data, rollout state',
   admin: 'platform admin: sees every store, adopts unclaimed stores, reassigns owners',
+  issuer_admin: "manages the trusted identity providers' bindings (Platform → Issuers), nothing else",
 };
 
 export function roleHelp(role) {

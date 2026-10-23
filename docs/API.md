@@ -153,7 +153,7 @@ A wildcard grant is one row with `object_id = '*'` and `is_wildcard`;
 (default 10000) caps the objects per (type, relation) pair and the pair's
 last row says `truncated`. Reader tier, like `list_objects`, which it calls
 per pair — its cost is what the subject can reach, not the store's size.
-The console's Store → Operations → *Data subject* shows the same rows and
+The console's Store → *Data subject* shows the same rows and
 downloads them as CSV. See
 [export_subject](#export_subject--erase_subject--data-subject-requests) for
 the whole document.

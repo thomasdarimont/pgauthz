@@ -1050,7 +1050,7 @@ fleet-wide *partition drop* is shared by design).
   as `owner` and to object types. This is the hand-over to the application
   teams: pgauthz knows the *references* (the record ids under each type),
   the applications hold the records. As CSV from the console (Store →
-  Operations → *Data subject* → *Objects CSV*) or `\copy … CSV HEADER` in
+  *Data subject* → *Objects CSV*) or `\copy … CSV HEADER` in
   psql; or as a JOIN against the application's tables where they share the
   database.
 - **Access / portability:** `SELECT authz.export_subject(store, type, id)`
@@ -1058,7 +1058,7 @@ fleet-wide *partition drop* is shared by design).
   marked), the tuples about the subject, what it can *effectively* do per
   type and relation (through teams, computed relations, wildcards), its
   recorded actions, and every tuple change that named it. Auditor tier;
-  Store → Operations → *Data subject* in the console (`can_view_audit`)
+  Store → *Data subject* in the console (`can_view_audit`)
   shows and downloads it together with the subject's lines of the decision
   log. See [API.md](API.md#export_subject--erase_subject--data-subject-requests).
 - **Erasure:** `SELECT authz.erase_subject(store, type, id, p_performed_by

@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// Store → Operations → Data subject through the router: the gate, the
+// Store → Data subject through the router: the gate, the
 // export document (engine parts and the decision-log part), the erasure
 // as the person with its counts, and that another subject is untouched.
 func TestSubjectHTTP(t *testing.T) {
@@ -62,7 +62,7 @@ func TestSubjectHTTP(t *testing.T) {
 		_ = json.Unmarshal(rec.Body.Bytes(), &m)
 		return rec.Code, m, rec.Header()
 	}
-	base := "/api/stores/" + store + "/ops/subject"
+	base := "/api/stores/" + store + "/subject"
 
 	if code, _, _ := do("GET", base+"?subject=user:alice", "", viewer); code != 403 {
 		t.Fatalf("a viewer may not export: %d", code)

@@ -312,7 +312,7 @@
  * @property {string|null} oldest_open_txn_age
  */
 /**
- * @typedef {Object} SubjectExport api/stores/{store}/ops/subject — authz.export_subject plus the decision log
+ * @typedef {Object} SubjectExport api/stores/{store}/subject — authz.export_subject plus the decision log
  * @property {string} store
  * @property {{type: string, id: string}} subject
  * @property {string} exported_at

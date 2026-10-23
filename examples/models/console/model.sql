@@ -27,7 +27,8 @@
 --   type platform                          # one object: platform:default
 --     relations
 --       define admin: [user, team#member]
---       define can_manage_issuers: admin
+--       define issuer_admin: [user, team#member]   # manages the trusted issuers' bindings, nothing else
+--       define can_manage_issuers: admin or issuer_admin
 --       define can_view_health: admin
 --       define can_create_store: admin
 --       define can_view_all_stores: admin
@@ -115,7 +116,7 @@ SELECT authz.model_register_type(:'cs', 'namespace', p_description => 'a namespa
 -- Relations
 ----------------------------------------------------------------------
 SELECT authz.model_register_relation(:'cs', r) FROM unnest(ARRAY[
-    'member', 'admin', 'platform',
+    'member', 'admin', 'issuer_admin', 'platform',
     'owner', 'author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'exporter', 'viewer',
     'can_manage_issuers', 'can_view_health', 'can_create_store', 'can_view_all_stores',
     'can_view', 'can_run_tests', 'can_edit_model', 'can_publish', 'can_rollout',
@@ -138,6 +139,12 @@ SELECT authz.model_add_type_restriction(:'cs', 'platform', 'admin', 'user');
 SELECT authz.model_add_type_restriction(:'cs', 'platform', 'admin', 'team', 'member');
 SELECT authz.model_add_rule(:'cs', 'platform', r, 'computed', 'admin')
   FROM unnest(ARRAY['can_manage_issuers', 'can_view_health', 'can_create_store', 'can_view_all_stores', 'can_manage_access']) AS r;
+-- issuer_admin: the identity providers' bindings only (Platform → Issuers),
+-- delegable without the rest of platform administration.
+SELECT authz.model_add_rule(:'cs', 'platform', 'issuer_admin', 'direct');
+SELECT authz.model_add_type_restriction(:'cs', 'platform', 'issuer_admin', 'user');
+SELECT authz.model_add_type_restriction(:'cs', 'platform', 'issuer_admin', 'team', 'member');
+SELECT authz.model_add_rule(:'cs', 'platform', 'can_manage_issuers', 'computed', 'issuer_admin');
 
 ----------------------------------------------------------------------
 -- registry

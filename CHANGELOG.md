@@ -62,8 +62,9 @@ pre-1.0, minor versions may include breaking changes.
   the tuples on either side incl. expired ones and the events, optionally
   the audit rows; audited with the actor. Engine files `subject.sql` /
   `subject_admin.sql`, `tests/sql/tests_subject.sql`, PRODUCTION.md section.
-  Console: Store → Operations → *Data subject* exports (with the subject's
-  decision-log lines) and erases (with confirmation).
+  Console: a Store → *Data subject* tab looks a subject up, hands the
+  objects to the application teams as CSV, exports everything (with the
+  subject's decision-log lines) and erases (with confirmation).
 - **The management listener.** `MANAGEMENT_LISTEN_ADDR` (the former
   `METRICS_LISTEN_ADDR`, still accepted) serves the probes `/livez`,
   `/readyz`, `/healthz` next to `/metrics`; `PUBLIC_HEALTH_ENABLED=false`
@@ -83,7 +84,9 @@ pre-1.0, minor versions may include breaking changes.
   endpoints) instead of just the outcome; Reset clears every filter back to
   the window; Refresh reloads it. A test pins that every filter value
   reaches SQL as a bound argument.
-- **Console: Platform → Issuers** (`platform#can_manage_issuers`): the
+- **Console: Platform → Issuers** (`platform#can_manage_issuers`, held by
+  platform admins and by the new dedicated `issuer_admin` platform role,
+  grantable on the Admins tab, which opens nothing else): the
   fleet's issuer bindings — create, edit (the engine validates; a replace
   keeps `created_by`), pause (`enabled`), remove with confirmation, the
   history (keyset-paged by `seq`: `list_issuer_bindings_audit` gained
