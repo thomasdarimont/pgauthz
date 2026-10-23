@@ -45,14 +45,17 @@ pgauthzctl issuers list --server https://pgauthz-admin.example:8082 \
     --cert ci.crt --key ci.key --ca admin-ca.crt
 ```
 
-Today the `issuers` verbs run over it; the `model` verbs follow as their
-admin endpoints land. **The direct database connection** (`--dsn` or
-`PGAUTHZ_DSN`, e.g. `postgres://authz:authz@localhost:55433/authz`) stays
-for installation-time work, `model test` (ephemeral stores), break-glass,
-and the verbs without an endpoint yet — the same trust tier as psql. It is
-on its way out for routine operations. `plan`, `diff`, `export`, `status`,
-`versions`, `rollout`, `issuers list` and `issuers export` work with a
-reader-grade DSN; the rest needs admin.
+Every verb runs over it except `model import` (a direct import into a
+store) and `model test` (ephemeral stores): `publish` sends the parsed
+OpenFGA model and the daemon converts it (`publish_model_openfga`); `apply`
+is plan-first on the daemon and a blocked plan is the error; `--stores`
+applies one store at a time. **The direct database connection** (`--dsn`
+or `PGAUTHZ_DSN`, e.g. `postgres://authz:authz@localhost:55433/authz`)
+stays for those two verbs, installation and break-glass — the same trust
+tier as psql. Routine verbs over it print a note: it is on its way out for
+them. Over `--dsn`, `plan`, `diff`, `export`, `status`, `versions`,
+`rollout`, `issuers list` and `issuers export` work with a reader-grade
+DSN; the rest needs admin.
 
 ## Lifecycle
 

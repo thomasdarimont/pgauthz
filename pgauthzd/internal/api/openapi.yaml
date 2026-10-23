@@ -78,7 +78,9 @@ tags:
       call carries no token at all. Management is scoped per tenant: an issuer's
       admin binding manages that issuer's own binding (`scope: issuer`, the
       default); only `scope: platform` (and `ADMIN_ROLE`) reaches every
-      issuer. Writes are recorded with the token's subject and client.
+      issuer; stores follow the issuer's stores binding and the model
+      registry needs platform scope. Writes are recorded with the token's
+      subject and client, or the certificate's identity.
   - name: meta
     description: >
       Health, AuthZEN PDP discovery (`/.well-known/authzen-configuration`, §9 —
@@ -854,6 +856,334 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/admin/stores:
+    get:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminStores
+      summary: The stores within the caller's scope, with their model state
+      description: >
+        Every store a platform admin may manage; for a tenant admin the stores
+        its issuer is bound to (an unbound issuer manages none). Live and
+        retired stores; a live store carries its managed-model state
+        (authz.model_status).
+      responses:
+        '200':
+          description: The stores.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [stores]
+                properties:
+                  stores:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminStore' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/admin/stores/{store}:
+    parameters:
+      - { name: store, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' } }
+    get:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminStore
+      summary: One store with its model state
+      responses:
+        '200':
+          description: The store.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminStore' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+    put:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminUpsertStore
+      summary: Create a store, or set its description, documentation link, or retire it
+      description: >
+        The upsert a configuration-as-code tool uses: an unknown store is
+        created (201), a known one updated (200). Absent fields are left
+        alone; an empty string clears a field; `retired: true` retires the
+        store (authz.retire_store — its tuples go, its history stays; a
+        retired store cannot be reopened, so `retired: false` on one is a
+        400). Recorded with the credential's identity.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                description: { type: string }
+                docs_url: { type: string, description: An http(s) link the console renders. }
+                retired: { type: boolean }
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminStoreResult' }
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminStoreResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+    delete:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminDeleteStore
+      summary: Remove a store physically
+      description: >
+        authz.delete_store — the erasure path: the store's tuples, model,
+        conditions, gates, grant rules and action log go; `purge_audit=true`
+        removes its audit rows too (otherwise they stay, name-unresolvable).
+        Prefer `retired: true` for a store that may still be asked about
+        historically.
+      parameters:
+        - { name: purge_audit, in: query, required: false, schema: { type: boolean } }
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [store, deleted]
+                properties:
+                  store: { type: string }
+                  deleted: { type: boolean, enum: [true] }
+                  purged_audit: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/admin/stores/{store}/model:
+    parameters:
+      - { name: store, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' } }
+    get:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminStoreModel
+      summary: The store's live model (the canonical definition) and its managed-model state
+      parameters:
+        - { name: dsl, in: query, required: false, schema: { type: boolean }, description: Also render the model as OpenFGA-style DSL text (display only). }
+      responses:
+        '200':
+          description: The model.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [store, definition, status]
+                properties:
+                  store: { type: string }
+                  definition: { $ref: '#/components/schemas/ModelDefinition' }
+                  status: { $ref: '#/components/schemas/ModelStatus' }
+                  dsl: { type: string, description: With dsl=true. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+    put:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminApplyModel
+      summary: Make the store run a registry version (apply), or plan it
+      description: >
+        Plans first (authz.plan_model_apply) and applies only a plan without
+        blockers (authz.apply_model: the store's model becomes the version's,
+        the store is then managed by that model). With `?plan=true` the plan
+        is returned and nothing is applied. Blockers — a type still
+        referenced by tuples, a relation with tuples that would go — answer
+        409 with the plan.
+      parameters:
+        - { name: plan, in: query, required: false, schema: { type: boolean }, description: Dry run. }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model]
+              properties:
+                model: { type: string, description: '"name" (latest) or "name@version".', example: saas_core@3 }
+      responses:
+        '200':
+          description: Applied, or (plan=true) the plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [store, model, plan]
+                properties:
+                  store: { type: string }
+                  model: { type: string }
+                  applied: { type: integer, description: The version applied (absent for a plan). }
+                  can_apply: { type: boolean }
+                  plan: { $ref: '#/components/schemas/ModelPlan' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: The plan reports blockers; nothing was applied.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, message, plan]
+                properties:
+                  status: { type: integer, enum: [409] }
+                  message: { type: string }
+                  store: { type: string }
+                  model: { type: string }
+                  can_apply: { type: boolean, enum: [false] }
+                  plan: { $ref: '#/components/schemas/ModelPlan' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/admin/models:
+    get:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminModels
+      summary: The registry's versions (platform scope)
+      parameters:
+        - { name: name, in: query, required: false, schema: { type: string }, description: One model's versions. }
+      responses:
+        '200':
+          description: The versions, oldest first per model.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [versions]
+                properties:
+                  versions:
+                    type: array
+                    items: { $ref: '#/components/schemas/ModelVersion' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/admin/models/{name}/versions:
+    parameters:
+      - { name: name, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]*$' } }
+    post:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminPublishModel
+      summary: Publish the next version of a model (platform scope)
+      description: >
+        From a store's live model (`from_store`, authz.publish_model), from
+        a definition in the canonical export shape (`definition`,
+        authz.publish_model_definition — the model file in git, no staging
+        store), or from an OpenFGA model (`openfga`, what a .fga file parses
+        to; authz.publish_model_openfga converts it through an ephemeral
+        store on the server). Idempotent on the checksum: an unchanged model
+        answers the existing latest version.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                from_store: { type: string }
+                definition: { $ref: '#/components/schemas/ModelDefinition' }
+                openfga: { type: object, additionalProperties: true, description: "An OpenFGA authorization model (schema_version and type_definitions)." }
+                description: { type: string, description: What changed. }
+      responses:
+        '200':
+          description: The version (new or existing).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [model, version]
+                properties:
+                  model: { type: string }
+                  version: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/admin/models/{name}/rollout:
+    parameters:
+      - { name: name, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]*$' } }
+    get:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminModelRollout
+      summary: Every store under a model, with its version and drift (platform scope)
+      responses:
+        '200':
+          description: The fleet view (authz.model_rollout_status).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [model, stores]
+                properties:
+                  model: { type: string }
+                  stores:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        store: { type: string }
+                        model_version: { type: integer }
+                        latest_version: { type: integer }
+                        in_sync: { type: boolean }
+                        applied_at: { type: string, format: date-time }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /pgauthz/v1/watch:
     post:
@@ -1940,6 +2270,65 @@ components:
           schema: { $ref: '#/components/schemas/Error' }
 
   schemas:
+    # ── admin: stores and models ─────────────────────────────────────────────
+    AdminStore:
+      type: object
+      required: [name, description, created_at]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        docs_url: { type: string }
+        created_at: { type: string, format: date-time }
+        retired_at: { type: string, format: date-time, description: Present for a retired store. }
+        model: { $ref: '#/components/schemas/ModelStatus' }
+    AdminStoreResult:
+      type: object
+      required: [store, created]
+      properties:
+        store: { $ref: '#/components/schemas/AdminStore' }
+        created: { type: boolean }
+    ModelStatus:
+      type: object
+      description: authz.model_status — null fields for an unmanaged store.
+      properties:
+        model_name: { type: string, nullable: true }
+        model_version: { type: integer, nullable: true }
+        applied_at: { type: string, format: date-time, nullable: true }
+        applied_by: { type: string, nullable: true }
+        in_sync: { type: boolean, nullable: true }
+        live_checksum: { type: string }
+        expected_checksum: { type: string, nullable: true }
+    ModelDefinition:
+      type: object
+      description: >
+        The canonical model (authz.export_model, format 1): types, relations,
+        rules, type restrictions, conditions, gates, grant rules — what
+        pgauthzctl model export prints and the registry stores.
+      required: [format, types, relations, rules, type_restrictions, conditions]
+      properties:
+        format: { type: integer, enum: [1] }
+        types: { type: array, items: { type: object, additionalProperties: true } }
+        relations: { type: array, items: { type: object, additionalProperties: true } }
+        rules: { type: array, items: { type: object, additionalProperties: true } }
+        type_restrictions: { type: array, items: { type: object, additionalProperties: true } }
+        conditions: { type: array, items: { type: object, additionalProperties: true } }
+        gates: { type: array, items: { type: object, additionalProperties: true } }
+        grant_rules: { type: array, items: { type: object, additionalProperties: true } }
+      additionalProperties: true
+    ModelPlan:
+      type: object
+      description: authz.plan_model_apply — the changes, the blockers, can_apply, no_op.
+      additionalProperties: true
+    ModelVersion:
+      type: object
+      required: [name, version, checksum, created_at]
+      properties:
+        name: { type: string }
+        version: { type: integer }
+        checksum: { type: string }
+        description: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        created_by: { type: string }
     # ── issuers ──────────────────────────────────────────────────────────────
     IssuerSet:
       type: object

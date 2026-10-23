@@ -98,10 +98,11 @@ check_json() {
     local payload="$4"
     local jq_expr="$5"
     local expected="$6"
+    local method="${7:-POST}"
 
     total=$((total + 1))
 
-    result=$(curl -sf -X POST "$url" \
+    result=$(curl -sf -X "$method" "$url" \
         -H "Content-Type: application/json" \
         -H "$auth_header" \
         -d "$payload" 2>/dev/null) || {
@@ -736,6 +737,59 @@ if [ -n "$got" ] && [ "$got" -ge "$rev" ] 2>/dev/null; then
 else
     fail_count=$((fail_count + 1)); echo "    FAIL  admin: /readyz reports the applied revision (got '$got', want >= $rev)"
 fi
+
+# stores and models over the admin API: a store is created, described,
+# given the demo model as a registry version (published from demo, applied
+# plan-first), read back, retired, deleted; the registry is platform scope.
+AZ_STORE="az_admin_store"
+curl -s -o /dev/null -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE?purge_audit=true" -H "$AUTH_ADMIN"
+check_http "admin: PUT creates a store (201)" "201" \
+    -X PUT "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE" -H "$AUTH_ADMIN" -H "Content-Type: application/json" -d '{"description":"created over the admin API"}'
+check_http "admin: PUT updates a store (200)" "200" \
+    -X PUT "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE" -H "$AUTH_ADMIN" -H "Content-Type: application/json" -d '{"docs_url":"https://example.com/docs"}'
+total=$((total + 1))
+got=$(curl -sf "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE" -H "$AUTH_ADMIN" | jq -rc '[.description, .docs_url, .model.model_name]')
+if [ "$got" = '["created over the admin API","https://example.com/docs",null]' ]; then
+    pass_count=$((pass_count + 1)); echo "    PASS  admin: GET returns the store with its (unmanaged) model state"
+else
+    fail_count=$((fail_count + 1)); echo "    FAIL  admin: GET returns the store (got $got)"
+fi
+total=$((total + 1))
+ver=$(curl -sf -X POST "$ADMIN_URL/pgauthz/v1/admin/models/az_admin_model/versions" -H "$AUTH_ADMIN" -H "Content-Type: application/json" -d '{"from_store":"demo","description":"test-authzen"}' | jq -r '.version // empty')
+if [ -n "$ver" ]; then
+    pass_count=$((pass_count + 1)); echo "    PASS  admin: POST publishes the demo model as a registry version ($ver)"
+else
+    fail_count=$((fail_count + 1)); echo "    FAIL  admin: POST publishes the demo model as a registry version"
+fi
+total=$((total + 1))
+def=$(curl -sf "$ADMIN_URL/pgauthz/v1/admin/stores/demo/model" -H "$AUTH_ADMIN" | jq -c '.definition')
+ver2=$(curl -sf -X POST "$ADMIN_URL/pgauthz/v1/admin/models/az_admin_model/versions" -H "$AUTH_ADMIN" -H "Content-Type: application/json" -d "{\"definition\": $def}" | jq -r '.version // empty')
+if [ "$ver2" = "$ver" ]; then
+    pass_count=$((pass_count + 1)); echo "    PASS  admin: publishing the same definition is idempotent (version $ver2)"
+else
+    fail_count=$((fail_count + 1)); echo "    FAIL  admin: publishing the same definition is idempotent (got $ver2, want $ver)"
+fi
+check_json "admin: PUT model with plan=true is a dry run (can_apply)" \
+    "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/model?plan=true" "$AUTH_ADMIN" '{"model":"az_admin_model"}' '.can_apply' "true" PUT
+check_json "admin: PUT model applies the version" \
+    "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/model" "$AUTH_ADMIN" '{"model":"az_admin_model"}' '.applied' "$ver" PUT
+check_json "admin: the store is managed and in sync" \
+    "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/model?plan=true" "$AUTH_ADMIN" '{"model":"az_admin_model"}' '.plan.no_op' "true" PUT
+check_http "admin: a tenant-less token cannot read the registry (403)" "403" \
+    -X GET "$ADMIN_URL/pgauthz/v1/admin/models" -H "$AUTH_ALICE"
+check_http "admin: GET models lists the version (200)" "200" \
+    -X GET "$ADMIN_URL/pgauthz/v1/admin/models?name=az_admin_model" -H "$AUTH_ADMIN"
+check_http "admin: GET rollout (200)" "200" \
+    -X GET "$ADMIN_URL/pgauthz/v1/admin/models/az_admin_model/rollout" -H "$AUTH_ADMIN"
+check_http "admin: PUT retires the store (200)" "200" \
+    -X PUT "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE" -H "$AUTH_ADMIN" -H "Content-Type: application/json" -d '{"retired":true}'
+check_http "admin: a retired store cannot be reopened (400)" "400" \
+    -X PUT "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE" -H "$AUTH_ADMIN" -H "Content-Type: application/json" -d '{"retired":false}'
+check_http "admin: DELETE removes the store (200)" "200" \
+    -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE?purge_audit=true" -H "$AUTH_ADMIN"
+check_http "admin: DELETE of a missing store is 404" "404" \
+    -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE" -H "$AUTH_ADMIN"
+docker compose "${COMPOSE_FILES[@]}" exec -T authz-db psql -q -U authz -d authz -c "DELETE FROM authz.model_registry WHERE name = 'az_admin_model';" >/dev/null 2>&1 || true
 
 check_http "admin: DELETE drops the row (200)" "200" \
     -X DELETE "$ADMIN_URL/pgauthz/v1/admin/issuer-bindings?issuer=$ISS_URL" -H "$AUTH_ADMIN"

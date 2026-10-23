@@ -10,6 +10,24 @@
 -- true store count, so the operator sees when there are more tenants than
 -- series). A LEFT JOIN + count over the partitioned tuples table is a real scan;
 -- keep the sample interval modest on large deployments.
+-- list_stores: every store with its facts — live and retired (retired_at
+-- set) — for tooling that may call the API but not read the tables (the
+-- admin API, pgauthzctl with a reader DSN). Reader tier: a store's name and
+-- description are what every reader already learns from the functions.
+CREATE OR REPLACE FUNCTION authz.list_stores()
+RETURNS TABLE (
+    name        text,
+    description text,
+    docs_url    text,
+    created_at  timestamptz,
+    retired_at  timestamptz
+)
+LANGUAGE sql STABLE AS $$
+    SELECT s.name, s.description, s.docs_url, s.created_at, s.deleted_at
+      FROM authz.stores s
+     ORDER BY s.name;
+$$;
+
 CREATE OR REPLACE FUNCTION authz.store_stats(p_limit int DEFAULT 100)
 RETURNS TABLE(store text, tuples bigint, stores_total bigint)
 LANGUAGE sql

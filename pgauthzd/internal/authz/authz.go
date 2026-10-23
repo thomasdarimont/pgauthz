@@ -359,3 +359,14 @@ type GateReadiness struct {
 type GateReadinessReporter interface {
 	GateReadiness(ctx context.Context) ([]GateReadiness, error)
 }
+
+// StoreRow is one store as the admin API shows it (ADR 0016): the store's
+// facts and, for a live store, its managed-model state (authz.model_status).
+type StoreRow struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	DocsURL     string          `json:"docs_url,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	RetiredAt   *time.Time      `json:"retired_at,omitempty"`
+	Model       json.RawMessage `json:"model,omitempty"`
+}

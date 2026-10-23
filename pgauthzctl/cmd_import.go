@@ -44,9 +44,10 @@ func cmdImport(args []string) error {
 // the next immutable registry version (the git-file → registry pipeline).
 func cmdPublish(args []string) error {
 	fs, dsn := newFlags("model publish")
+	sf := newServerFlags(fs)
 	name := fs.String("name", "", "registry model name (required)")
 	message := fs.String("message", "", "version description (e.g. the git SHA)")
-	viaStore := fs.String("via-store", "", "existing store to publish through (default: ephemeral scratch store)")
+	viaStore := fs.String("via-store", "", "existing store to publish through (--dsn; default: ephemeral scratch store)")
 	pos := parseAll(fs, args)
 	if *name == "" || len(pos) != 1 {
 		return fmt.Errorf("usage: pgauthzctl model publish <model.fga|model.json> --name <model> [--message m]")
@@ -61,6 +62,18 @@ func cmdPublish(args []string) error {
 	}
 
 	ctx := context.Background()
+	if m, err := apiModelFor(sf); err != nil || m != nil {
+		if err != nil {
+			return err
+		}
+		v, err := m.publish(ctx, *name, modelJSON, *message)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("published %s@%d\n", *name, v)
+		return nil
+	}
+	noteDSN("model publish")
 	conn, err := connect(ctx, *dsn)
 	if err != nil {
 		return err

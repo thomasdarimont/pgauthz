@@ -49,13 +49,12 @@ Connection:
     ADMIN_API_ENABLED on a full instance), with --token / PGAUTHZ_TOKEN (a
     bearer token of the admin identity provider) or --cert/--key /
     PGAUTHZ_CLIENT_CERT/_KEY (a client certificate the admin listener's mTLS
-    maps) and --ca / PGAUTHZ_CA; the audit names the credential. Today the
-    issuers verbs run over it; the model verbs follow as their endpoints land.
+    maps) and --ca / PGAUTHZ_CA; the audit names the credential. Every verb
+    but model import and model test runs over it.
   --dsn or PGAUTHZ_DSN (e.g. postgres://authz:authz@localhost:55433/authz):
-    the direct database connection — installation-time work, model test,
-    break-glass, and the verbs without an admin endpoint yet. Most need
-    admin; plan/diff/export/status/versions/rollout and issuers list/export
-    work with a reader DSN.
+    the direct database connection — model import, model test, installation
+    and break-glass. Routine verbs over it print a note: --dsn is on its
+    way out for them.
 `
 
 func main() {

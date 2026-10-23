@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -15,9 +16,10 @@ import (
 
 func cmdApply(args []string) error {
 	fs, dsn := newFlags("model apply")
+	sf := newServerFlags(fs)
 	store := fs.String("store", "", "target store")
-	stores := fs.String("stores", "", "comma-separated store list (fleet variant, one transaction)")
-	planFirst := fs.Bool("plan-first", false, "refuse when the plan reports blockers")
+	stores := fs.String("stores", "", "comma-separated store list (fleet variant: one transaction over --dsn, one apply per store over --server)")
+	planFirst := fs.Bool("plan-first", false, "refuse when the plan reports blockers (always on over --server: the daemon plans first)")
 	pos := parseAll(fs, args)
 	if (*store == "") == (*stores == "") || len(pos) != 1 {
 		return fmt.Errorf("usage: pgauthzctl model apply <name[@version]> --store <s> | --stores a,b,c [--plan-first]")
@@ -28,6 +30,24 @@ func cmdApply(args []string) error {
 	}
 
 	ctx := context.Background()
+	if m, err := apiModelFor(sf); err != nil || m != nil {
+		if err != nil {
+			return err
+		}
+		targets := []string{*store}
+		if *stores != "" {
+			targets = strings.Split(*stores, ",")
+		}
+		for _, s := range targets {
+			applied, err := m.apply(ctx, strings.TrimSpace(s), name, version)
+			if err != nil {
+				return explain409(err)
+			}
+			fmt.Printf("applied %s@%d to %s\n", name, applied, strings.TrimSpace(s))
+		}
+		return nil
+	}
+	noteDSN("model apply")
 	conn, err := connect(ctx, *dsn)
 	if err != nil {
 		return err
@@ -65,6 +85,7 @@ func cmdApply(args []string) error {
 
 func cmdExport(args []string) error {
 	fs, dsn := newFlags("model export")
+	sf := newServerFlags(fs)
 	store := fs.String("store", "", "source store (required)")
 	dsl := fs.Bool("dsl", false, "human-readable DSL-flavored text (display only, not round-trippable)")
 	sql := fs.Bool("sql", false, "the engine calls that rebuild the model (complete, runnable in psql)")
@@ -74,6 +95,33 @@ func cmdExport(args []string) error {
 	}
 
 	ctx := context.Background()
+	if m, err := apiModelFor(sf); err != nil || m != nil {
+		if err != nil {
+			return err
+		}
+		def, text, err := m.export(ctx, *store, *dsl)
+		if err != nil {
+			return err
+		}
+		switch {
+		case *dsl:
+			fmt.Print(text)
+		case *sql:
+			var model pgauthzadm.Model
+			if err := json.Unmarshal(def, &model); err != nil {
+				return err
+			}
+			fmt.Print(pgauthzadm.RenderSQL(*store, &model))
+		default:
+			var v map[string]any
+			if err := json.Unmarshal(def, &v); err != nil {
+				return err
+			}
+			fmt.Println(prettyJSON(v))
+		}
+		return nil
+	}
+	noteDSN("model export")
 	conn, err := connect(ctx, *dsn)
 	if err != nil {
 		return err
@@ -105,6 +153,7 @@ func cmdExport(args []string) error {
 
 func cmdStatus(args []string) error {
 	fs, dsn := newFlags("model status")
+	sf := newServerFlags(fs)
 	store := fs.String("store", "", "store (required)")
 	_ = parseAll(fs, args)
 	if *store == "" {
@@ -112,15 +161,24 @@ func cmdStatus(args []string) error {
 	}
 
 	ctx := context.Background()
-	conn, err := connect(ctx, *dsn)
-	if err != nil {
-		return err
-	}
-	defer conn.Close(ctx)
-
-	st, err := pgauthzadm.ModelStatus(ctx, conn, *store)
-	if err != nil {
-		return err
+	var st *pgauthzadm.Status
+	if m, err := apiModelFor(sf); err != nil || m != nil {
+		if err != nil {
+			return err
+		}
+		if st, err = m.status(ctx, *store); err != nil {
+			return err
+		}
+	} else {
+		noteDSN("model status")
+		conn, err := connect(ctx, *dsn)
+		if err != nil {
+			return err
+		}
+		defer conn.Close(ctx)
+		if st, err = pgauthzadm.ModelStatus(ctx, conn, *store); err != nil {
+			return err
+		}
 	}
 	if !st.Managed() {
 		fmt.Printf("store %s: unmanaged (live checksum %s)\n", *store, st.LiveChecksum)
@@ -133,6 +191,7 @@ func cmdStatus(args []string) error {
 
 func cmdVersions(args []string) error {
 	fs, dsn := newFlags("model versions")
+	sf := newServerFlags(fs)
 	pos := parseAll(fs, args)
 	name := ""
 	if len(pos) == 1 {
@@ -140,15 +199,24 @@ func cmdVersions(args []string) error {
 	}
 
 	ctx := context.Background()
-	conn, err := connect(ctx, *dsn)
-	if err != nil {
-		return err
-	}
-	defer conn.Close(ctx)
-
-	versions, err := pgauthzadm.ListVersions(ctx, conn, name)
-	if err != nil {
-		return err
+	var versions []pgauthzadm.Version
+	if m, err := apiModelFor(sf); err != nil || m != nil {
+		if err != nil {
+			return err
+		}
+		if versions, err = m.versions(ctx, name); err != nil {
+			return err
+		}
+	} else {
+		noteDSN("model versions")
+		conn, err := connect(ctx, *dsn)
+		if err != nil {
+			return err
+		}
+		defer conn.Close(ctx)
+		if versions, err = pgauthzadm.ListVersions(ctx, conn, name); err != nil {
+			return err
+		}
 	}
 	for _, v := range versions {
 		fmt.Printf("%s@%d  %s  %s  %s  %s\n", v.Name, v.Version, v.Checksum[:12], v.CreatedAt.Format("2006-01-02 15:04:05-07"), v.CreatedBy, v.Description)
@@ -158,21 +226,31 @@ func cmdVersions(args []string) error {
 
 func cmdRollout(args []string) error {
 	fs, dsn := newFlags("model rollout")
+	sf := newServerFlags(fs)
 	pos := parseAll(fs, args)
 	if len(pos) != 1 {
 		return fmt.Errorf("usage: pgauthzctl model rollout <name>")
 	}
 
 	ctx := context.Background()
-	conn, err := connect(ctx, *dsn)
-	if err != nil {
-		return err
-	}
-	defer conn.Close(ctx)
-
-	rows, err := pgauthzadm.RolloutStatus(ctx, conn, pos[0])
-	if err != nil {
-		return err
+	var rows []pgauthzadm.RolloutRow
+	if m, err := apiModelFor(sf); err != nil || m != nil {
+		if err != nil {
+			return err
+		}
+		if rows, err = m.rollout(ctx, pos[0]); err != nil {
+			return err
+		}
+	} else {
+		noteDSN("model rollout")
+		conn, err := connect(ctx, *dsn)
+		if err != nil {
+			return err
+		}
+		defer conn.Close(ctx)
+		if rows, err = pgauthzadm.RolloutStatus(ctx, conn, pos[0]); err != nil {
+			return err
+		}
 	}
 	for _, r := range rows {
 		marker := ""

@@ -90,6 +90,19 @@ certificate as a credential. `pgauthzctl --server` uses either; the direct
 database connection is kept for installation-time work and break-glass and
 is on its way out for routine operations.
 
+**Stores and models followed (2026-10-24).** `GET|PUT|DELETE
+/admin/stores/{store}` (create or update as an upsert, retire, delete),
+`GET|PUT …/stores/{store}/model` (the canonical definition and the managed
+state; apply a registry version plan-first, 409 with the plan on
+blockers), `GET /admin/models`, `POST /admin/models/{name}/versions`
+(publish from a store, from a definition — `publish_model_definition`, the
+model file in git — or from an OpenFGA model converted through an
+ephemeral store — `publish_model_openfga`), `GET /admin/models/{name}/rollout`.
+The tenant scope carries over: a tenant admin reaches the stores its
+issuer is bound to; the registry needs platform scope. With that,
+pgauthzctl's model verbs run over the API too; `--dsn` remains for
+`model import`, `model test`, installation and break-glass.
+
 **Three ways to manage, one truth.** The console's Platform → Issuers tab
 (writes through SQL as the person; reads the set in force over the
 callback), the admin API (tokens of a trusted admin identity provider),

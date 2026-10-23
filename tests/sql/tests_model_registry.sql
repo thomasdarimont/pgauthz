@@ -29,6 +29,29 @@ BEGIN
     PERFORM authz.create_condition_sql('test_reg_src', 'always', 'true');
 
     v := authz.publish_model('test_reg_model', 'test_reg_src', 'registry test model');
+    -- publish_model_definition: the export shape published without a store;
+    -- idempotent on the checksum; shape errors are the caller's
+    PERFORM _test_assert('reg_def_01_same_definition_same_version',
+        authz.publish_model_definition('test_reg_model', authz.export_model('test_reg_src'))::text, v::text);
+    PERFORM _test_assert('reg_def_02_new_definition_new_version',
+        authz.publish_model_definition('test_reg_model', jsonb_set(authz.export_model('test_reg_src'), '{types,0,description}', '"changed by definition"'))::text, (v + 1)::text);
+    PERFORM _test_assert('reg_def_03_applies_like_any_version',
+        (SELECT (d->'types'->0->>'description') FROM authz.model_registry r CROSS JOIN LATERAL (SELECT r.definition d) x WHERE r.name = 'test_reg_model' AND r.version = v + 1), 'changed by definition');
+    BEGIN
+        PERFORM authz.publish_model_definition('test_reg_model', '{"format": 2, "types": []}'::jsonb);
+        PERFORM _test_assert('reg_def_04_bad_format_refused', 'no error', 'error');
+    EXCEPTION WHEN invalid_parameter_value THEN
+        PERFORM _test_assert('reg_def_04_bad_format_refused', 'error', 'error');
+    END;
+    -- publish_model_openfga: an OpenFGA model becomes a version through an ephemeral store, no store left behind
+    PERFORM _test_assert('reg_def_05_openfga_publishes',
+        (authz.publish_model_openfga('test_reg_openfga', '{"schema_version":"1.1","type_definitions":[{"type":"user"},{"type":"doc","relations":{"viewer":{"this":{}}},"metadata":{"relations":{"viewer":{"directly_related_user_types":[{"type":"user"}]}}}}]}'::jsonb) = 1
+         AND NOT EXISTS (SELECT 1 FROM authz.stores WHERE name LIKE 'pgauthz_pub_%'))::text, 'true');
+    PERFORM _test_assert('reg_def_06_openfga_definition_has_the_types',
+        (SELECT string_agg(t->>'name', ',' ORDER BY t->>'name') FROM authz.model_registry r CROSS JOIN LATERAL jsonb_array_elements(r.definition->'types') t WHERE r.name = 'test_reg_openfga'), 'doc,user');
+    DELETE FROM authz.model_registry WHERE name = 'test_reg_openfga';
+    -- back to the published-from-store version for the checks below
+    DELETE FROM authz.model_registry WHERE name = 'test_reg_model' AND version = v + 1;
     PERFORM _test_assert('reg_1_publish_v1', v::text, '1');
 
     v := authz.publish_model('test_reg_model', 'test_reg_src');

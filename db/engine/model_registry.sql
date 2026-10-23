@@ -261,6 +261,95 @@ END;
 $$;
 
 ------------------------------------------------------------------------
+-- publish_model_definition: publish a DEFINITION (the export_model shape,
+-- format 1) as the next version of p_name — the configuration-as-code
+-- path: a model file in git becomes a registry version without a staging
+-- store (the admin API's POST /admin/models/{name}/versions, pgauthzctl).
+-- Same idempotency as publish_model: an unchanged definition returns the
+-- existing latest version. The definition is checked for its shape here;
+-- its content is validated when it is planned or applied to a store (the
+-- same rules every registry version meets).
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.publish_model_definition(
+    p_name        text,
+    p_definition  jsonb,
+    p_description text DEFAULT NULL
+) RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_sum        text;
+    v_latest     integer;
+    v_latest_sum text;
+    v_key        text;
+BEGIN
+    IF p_name IS NULL OR btrim(p_name) = '' THEN
+        RAISE EXCEPTION 'p_name is required' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    IF p_definition IS NULL OR jsonb_typeof(p_definition) <> 'object' THEN
+        RAISE EXCEPTION 'the definition must be a JSON object (the export_model shape)' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    IF (p_definition->>'format')::int IS DISTINCT FROM 1 THEN
+        RAISE EXCEPTION 'unsupported definition format % (expected 1)', p_definition->>'format' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    FOREACH v_key IN ARRAY ARRAY['types', 'relations', 'rules', 'type_restrictions', 'conditions'] LOOP
+        IF jsonb_typeof(p_definition->v_key) IS DISTINCT FROM 'array' THEN
+            RAISE EXCEPTION 'the definition needs a "%" array', v_key USING ERRCODE = 'invalid_parameter_value';
+        END IF;
+    END LOOP;
+    IF jsonb_array_length(p_definition->'types') = 0 THEN
+        RAISE EXCEPTION 'the definition declares no types' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+
+    PERFORM pg_advisory_xact_lock(hashtextextended('authz.model_registry:' || p_name, 0));
+    v_sum := authz._model_checksum(p_definition);
+    SELECT r.version, r.checksum INTO v_latest, v_latest_sum
+      FROM authz.model_registry r
+     WHERE r.name = p_name
+     ORDER BY r.version DESC
+     LIMIT 1;
+    IF v_latest_sum = v_sum THEN
+        RETURN v_latest;
+    END IF;
+    INSERT INTO authz.model_registry (name, version, definition, checksum, description, created_by)
+    VALUES (p_name, COALESCE(v_latest, 0) + 1, p_definition, v_sum, p_description, authz._actor());
+    RETURN COALESCE(v_latest, 0) + 1;
+END;
+$$;
+
+------------------------------------------------------------------------
+-- publish_model_openfga: publish an OpenFGA-JSON model (what a .fga file
+-- parses to) as the next version of p_name — the server-side conversion a
+-- client without a staging store needs (the admin API's publish with
+-- `openfga`, pgauthzctl model publish --server). The model is imported into
+-- an EPHEMERAL store (no partitions, no DDL lock — see model_register_type),
+-- exported in the canonical shape, the store removed, and the definition
+-- published; everything in the caller's transaction. Same idempotency as
+-- publish_model. The import report's warnings are not returned — the
+-- resulting definition is what counts; plan/apply validate it on use.
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.publish_model_openfga(
+    p_name        text,
+    p_model       jsonb,
+    p_description text DEFAULT NULL
+) RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_tmp text := 'pgauthz_pub_' || replace(gen_random_uuid()::text, '-', '');
+    v_def jsonb;
+BEGIN
+    IF p_model IS NULL OR jsonb_typeof(p_model) <> 'object' THEN
+        RAISE EXCEPTION 'the OpenFGA model must be a JSON object' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    PERFORM set_config('authz.ephemeral_store', 'on', true);
+    PERFORM authz.create_store(v_tmp, 'publish_model_openfga scratch');
+    PERFORM authz.import_openfga_model(v_tmp, p_model);
+    v_def := authz.export_model(v_tmp);
+    PERFORM authz.delete_store(v_tmp, p_purge_audit => true);
+    RETURN authz.publish_model_definition(p_name, v_def, p_description);
+END;
+$$;
+
+------------------------------------------------------------------------
 -- apply_model: make p_store's live model match registry version
 -- p_name/p_version (NULL = latest). Returns the applied version number.
 --

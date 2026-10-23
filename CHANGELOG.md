@@ -84,6 +84,26 @@ pre-1.0, minor versions may include breaking changes.
   endpoints) instead of just the outcome; Reset clears every filter back to
   the window; Refresh reloads it. A test pins that every filter value
   reaches SQL as a bound argument.
+- **pgauthzctl's model verbs over the admin API.** `publish`, `plan`,
+  `diff`, `apply`, `export`, `status`, `versions` and `rollout` run over
+  `--server` (publish sends the parsed OpenFGA model; the new engine
+  function `authz.publish_model_openfga` converts it through an ephemeral
+  store); only `model import` and `model test` still need `--dsn`, and
+  routine verbs over `--dsn` print a note that it is on its way out.
+  `GET …/stores/{store}/model?dsl=true` adds the DSL rendering; publish
+  accepts `openfga` as a third source.
+- **Admin API: stores and models.** `GET|PUT|DELETE /pgauthz/v1/admin/stores/{store}`
+  (create or update as an upsert — description, docs link, retire — and
+  the erasure path), `GET|PUT …/stores/{store}/model` (the canonical
+  definition with `model_status`; apply a registry version plan-first,
+  `409` with the plan on blockers, `?plan=true` as the dry run),
+  `GET /admin/models`, `POST /admin/models/{name}/versions` (publish from a
+  store or from a definition — new engine function
+  `authz.publish_model_definition`, the model file in git without a staging
+  store), `GET /admin/models/{name}/rollout`. Tenant-scoped like the
+  issuer bindings: a tenant admin reaches the stores its issuer is bound
+  to; the registry needs platform scope. Every write runs as the
+  credential's identity (`authz.performed_by`).
 - **Client certificates as an admin credential, and pgauthzctl over the
   admin API.** `ADMIN_TLS_CERT` / `ADMIN_TLS_KEY` / `ADMIN_CLIENT_CA` put
   mTLS on the admin listener; `ADMIN_CLIENT_CERTS` maps a verified

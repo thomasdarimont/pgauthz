@@ -1,0 +1,249 @@
+package pgbackend
+
+// The admin API's store and model resources (ADR 0016): thin calls to the
+// engine's store lifecycle and model registry functions on the full
+// instance's writer pool, each write inside a transaction that names the
+// actor (authz.performed_by → authz._actor() → audit, registry created_by).
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"thomasdarimont.de/authz/pgauthzd/internal/authz"
+)
+
+// adminError surfaces the engine's refusals — its RAISEs (P0001), invalid
+// parameters (22023), a duplicate (23505), a check (23514) — as the caller's
+// 400 with the engine's message; anything else stays a fault.
+func adminError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "P0001", "22023", "23505", "23514", "22P02":
+			msg := pgErr.Message
+			if pgErr.Hint != "" {
+				msg += " — " + pgErr.Hint
+			}
+			return fmt.Errorf("%w: %s", authz.ErrInvalidRequest, msg)
+		}
+	}
+	return err
+}
+
+// asActor runs fn in a transaction whose authz.performed_by is the actor.
+func (b *Backend) asActor(ctx context.Context, actor string, fn func(tx pgx.Tx) error) error {
+	tx, err := b.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT set_config('authz.performed_by', $1, true)`, actor); err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		return adminError(err)
+	}
+	return tx.Commit(ctx)
+}
+
+const storeRowSQL = `
+	SELECT s.name, coalesce(s.description, ''), coalesce(s.docs_url, ''), s.created_at, s.retired_at,
+	       CASE WHEN s.retired_at IS NULL THEN (SELECT to_jsonb(ms) FROM authz.model_status(s.name) ms) END
+	  FROM authz.list_stores() s`
+
+func scanStore(row pgx.Row) (authz.StoreRow, error) {
+	var s authz.StoreRow
+	var model *json.RawMessage
+	if err := row.Scan(&s.Name, &s.Description, &s.DocsURL, &s.CreatedAt, &s.RetiredAt, &model); err != nil {
+		return s, err
+	}
+	if model != nil {
+		s.Model = *model
+	}
+	return s, nil
+}
+
+// ListStores: every store, live and retired, by name.
+func (b *Backend) ListStores(ctx context.Context) ([]authz.StoreRow, error) {
+	rows, err := b.pool.Query(ctx, storeRowSQL+` ORDER BY s.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []authz.StoreRow{}
+	for rows.Next() {
+		s, err := scanStore(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// GetStore: one store; found is false for an unknown name.
+func (b *Backend) GetStore(ctx context.Context, name string) (authz.StoreRow, bool, error) {
+	s, err := scanStore(b.pool.QueryRow(ctx, storeRowSQL+` WHERE s.name = $1`, name))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return s, false, nil
+	}
+	return s, err == nil, err
+}
+
+// UpsertStore creates the store when it does not exist (create_store), sets
+// what is given (update_store: nil = unchanged, "" = cleared) and retires
+// it when asked (retire_store; a retired store cannot be reopened — the
+// engine has no un-retire). Returns the row and whether it was created.
+func (b *Backend) UpsertStore(ctx context.Context, name string, description, docsURL *string, retired *bool, actor string) (authz.StoreRow, bool, error) {
+	cur, found, err := b.GetStore(ctx, name)
+	if err != nil {
+		return cur, false, err
+	}
+	if found && cur.RetiredAt != nil && retired != nil && !*retired {
+		return cur, false, fmt.Errorf("%w: store %s is retired; the engine cannot reopen a retired store (create it anew under another name)", authz.ErrInvalidRequest, name)
+	}
+	err = b.asActor(ctx, actor, func(tx pgx.Tx) error {
+		if !found {
+			var desc any
+			if description != nil && *description != "" {
+				desc = *description
+			}
+			if _, err := tx.Exec(ctx, `SELECT authz.create_store($1, $2)`, name, desc); err != nil {
+				return err
+			}
+		}
+		if (description != nil || docsURL != nil) && (cur.RetiredAt == nil) {
+			var d, u any
+			if description != nil && found {
+				d = *description
+			}
+			if docsURL != nil {
+				u = *docsURL
+			}
+			if d != nil || u != nil {
+				if _, err := tx.Exec(ctx, `SELECT authz.update_store($1, $2, $3)`, name, d, u); err != nil {
+					return err
+				}
+			}
+		}
+		if retired != nil && *retired && cur.RetiredAt == nil {
+			if _, err := tx.Exec(ctx, `SELECT authz.retire_store($1)`, name); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return cur, false, err
+	}
+	row, _, err := b.GetStore(ctx, name)
+	return row, !found, err
+}
+
+// DeleteStore removes a store physically (delete_store); existed is false
+// for an unknown name.
+func (b *Backend) DeleteStore(ctx context.Context, name string, purgeAudit bool, actor string) (bool, error) {
+	_, found, err := b.GetStore(ctx, name)
+	if err != nil || !found {
+		return false, err
+	}
+	return true, b.asActor(ctx, actor, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `SELECT authz.delete_store($1, $2)`, name, purgeAudit)
+		return err
+	})
+}
+
+// ExportModel: the store's live model in the canonical definition shape.
+func (b *Backend) ExportModel(ctx context.Context, store string) (json.RawMessage, error) {
+	var def json.RawMessage
+	err := b.pool.QueryRow(ctx, `SELECT authz.export_model($1)`, store).Scan(&def)
+	return def, adminError(err)
+}
+
+// ModelStatus: the store's managed-model state (authz.model_status row).
+func (b *Backend) ModelStatus(ctx context.Context, store string) (json.RawMessage, error) {
+	var st json.RawMessage
+	err := b.pool.QueryRow(ctx, `SELECT to_jsonb(ms) FROM authz.model_status($1) ms`, store).Scan(&st)
+	return st, adminError(err)
+}
+
+// PlanApply: the dry run of applying a registry version (NULL = latest).
+func (b *Backend) PlanApply(ctx context.Context, store, name string, version *int) (json.RawMessage, error) {
+	var plan json.RawMessage
+	err := b.pool.QueryRow(ctx, `SELECT authz.plan_model_apply($1, $2, $3)`, store, name, version).Scan(&plan)
+	return plan, adminError(err)
+}
+
+// ApplyModel makes the store match a registry version; returns the version applied.
+func (b *Backend) ApplyModel(ctx context.Context, store, name string, version *int, actor string) (int, error) {
+	var applied int
+	err := b.asActor(ctx, actor, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT authz.apply_model($1, $2, $3)`, store, name, version).Scan(&applied)
+	})
+	return applied, err
+}
+
+// ListModelVersions: the registry, every model or one (authz.list_model_versions rows).
+func (b *Backend) ListModelVersions(ctx context.Context, name string) ([]json.RawMessage, error) {
+	var n any
+	if name != "" {
+		n = name
+	}
+	return b.jsonRows(ctx, `SELECT to_jsonb(v) FROM authz.list_model_versions($1) v`, n)
+}
+
+// RolloutStatus: every store under a model name (authz.model_rollout_status rows).
+func (b *Backend) RolloutStatus(ctx context.Context, name string) ([]json.RawMessage, error) {
+	return b.jsonRows(ctx, `SELECT to_jsonb(r) FROM authz.model_rollout_status($1) r`, name)
+}
+
+func (b *Backend) jsonRows(ctx context.Context, sql string, args ...any) ([]json.RawMessage, error) {
+	rows, err := b.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, adminError(err)
+	}
+	defer rows.Close()
+	out := []json.RawMessage{}
+	for rows.Next() {
+		var j json.RawMessage
+		if err := rows.Scan(&j); err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+// PublishModel publishes the next version of name from a store's live model
+// (fromStore), from a definition (the export shape) or from an OpenFGA
+// model (converted through an ephemeral store); idempotent on the checksum.
+func (b *Backend) PublishModel(ctx context.Context, name, fromStore string, definition, openfga json.RawMessage, description, actor string) (int, error) {
+	var version int
+	var desc any
+	if description != "" {
+		desc = description
+	}
+	err := b.asActor(ctx, actor, func(tx pgx.Tx) error {
+		switch {
+		case fromStore != "":
+			return tx.QueryRow(ctx, `SELECT authz.publish_model($1, $2, $3)`, name, fromStore, desc).Scan(&version)
+		case len(openfga) > 0:
+			return tx.QueryRow(ctx, `SELECT authz.publish_model_openfga($1, $2::jsonb, $3)`, name, string(openfga), desc).Scan(&version)
+		default:
+			return tx.QueryRow(ctx, `SELECT authz.publish_model_definition($1, $2::jsonb, $3)`, name, string(definition), desc).Scan(&version)
+		}
+	})
+	return version, err
+}
+
+// DescribeModel: the store's live model as OpenFGA-style DSL text (display).
+func (b *Backend) DescribeModel(ctx context.Context, store string) (string, error) {
+	var text string
+	err := b.pool.QueryRow(ctx, `SELECT authz.describe_model($1)`, store).Scan(&text)
+	return text, adminError(err)
+}

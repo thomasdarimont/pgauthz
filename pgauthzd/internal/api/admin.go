@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"crypto/x509"
@@ -40,13 +41,34 @@ type IssuerBindingAdmin interface {
 	DeleteIssuerBinding(ctx context.Context, issuer, performedBy string) (bool, error)
 }
 
-// adminScope is what a passing token may manage.
+// adminScope is what a passing credential may manage: every issuer and
+// store (platform), or one issuer and the stores that issuer is bound to.
 type adminScope struct {
-	platform bool   // every issuer
-	issuer   string // else: this one (the token's own)
+	platform bool             // every issuer, every store, the registry
+	issuer   string           // else: this issuer (the credential's own, or the certificate's mapped one)
+	stores   []*regexp.Regexp // the issuer's stores binding; nil = unbound (no store is managed)
 }
 
 func (s adminScope) covers(issuer string) bool { return s.platform || issuer == s.issuer }
+
+// coversStore: a platform admin manages every store; a tenant admin the
+// stores its issuer is bound to (an unbound issuer manages none — bind it).
+func (s adminScope) coversStore(store string) bool {
+	if s.platform {
+		return true
+	}
+	for _, p := range s.stores {
+		if p.MatchString(store) {
+			return true
+		}
+	}
+	return false
+}
+
+// issuerScope: the scope of a tenant admin of issuer iss.
+func (h *Handler) issuerScope(iss string) adminScope {
+	return adminScope{issuer: iss, stores: h.issuers.Current().stores[iss]}
+}
 
 // adminGate decides whether the request's credential may manage, and what:
 // a token passing its issuer's admin binding or ADMIN_ROLE, or — on the
@@ -57,7 +79,7 @@ func (h *Handler) adminGate(r *http.Request) (adminScope, error) {
 			for _, e := range h.cfg.AdminClientCerts {
 				if certMatches(cert, e) {
 					if e.Scope == issuers.AdminScopeIssuer {
-						return adminScope{issuer: e.Issuer}, nil
+						return h.issuerScope(e.Issuer), nil
 					}
 					return adminScope{platform: true, issuer: ""}, nil
 				}
@@ -72,7 +94,10 @@ func (h *Handler) adminGate(r *http.Request) (adminScope, error) {
 	var reasons []string
 	if ab := h.issuers.Current().admin[iss]; ab != nil {
 		if err := ab.satisfiedBy(r.Context()); err == nil {
-			return adminScope{platform: ab.platform, issuer: iss}, nil
+			if ab.platform {
+				return adminScope{platform: true, issuer: iss}, nil
+			}
+			return h.issuerScope(iss), nil
 		} else {
 			reasons = append(reasons, err.Error())
 		}
@@ -381,6 +406,7 @@ func registerAdmin(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("GET /pgauthz/v1/admin/issuer-bindings", h.adminIssuerBindings)
 	mux.HandleFunc("PUT /pgauthz/v1/admin/issuer-bindings", h.adminSetIssuerBinding)
 	mux.HandleFunc("DELETE /pgauthz/v1/admin/issuer-bindings", h.adminDeleteIssuerBinding)
+	registerAdminStores(mux, h)
 }
 
 // NewAdminRouter is the dedicated admin listener (ADMIN_LISTEN_ADDR): the

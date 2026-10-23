@@ -396,6 +396,7 @@ GRANT EXECUTE ON FUNCTION authz.plan_model_apply(text, text, integer) TO authz_r
 GRANT EXECUTE ON FUNCTION authz.assert_fresh(int, pg_lsn) TO authz_reader;
 -- Engine/tenant stats (ADR 0010): pgauthzd samples this for per-store gauges.
 GRANT EXECUTE ON FUNCTION authz.store_stats(int) TO authz_reader;
+GRANT EXECUTE ON FUNCTION authz.list_stores() TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.tuple_stats(text) TO authz_reader;
 -- Temporal gate retention requirement (ADR 0012): readiness runbooks compare it with the retention schedule.
 GRANT EXECUTE ON FUNCTION authz.gate_windows(text) TO authz_reader;
@@ -477,6 +478,8 @@ GRANT EXECUTE ON FUNCTION authz.delete_condition(text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.add_gate(text, text, text, text, jsonb) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.drop_gate(text, text, text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.publish_model(text, text, text) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.publish_model_definition(text, jsonb, text) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.publish_model_openfga(text, jsonb, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.apply_model(text, text, integer) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.apply_model(text[], text, integer) TO authz_admin;
 
@@ -520,6 +523,7 @@ ALTER FUNCTION authz.check_access_detailed(text, text, text, text, text, text, j
 ALTER FUNCTION authz.freshness_token() SECURITY DEFINER;
 ALTER FUNCTION authz.assert_fresh(int, pg_lsn) SECURITY DEFINER;
 ALTER FUNCTION authz.store_stats(int) SECURITY DEFINER;
+ALTER FUNCTION authz.list_stores() SECURITY DEFINER;
 ALTER FUNCTION authz.tuple_stats(text) SECURITY DEFINER;
 ALTER FUNCTION authz.gate_windows(text) SECURITY DEFINER;
 ALTER FUNCTION authz.max_gate_window(text) SECURITY DEFINER;
@@ -603,6 +607,8 @@ ALTER FUNCTION authz.model_status(text) SECURITY DEFINER;
 ALTER FUNCTION authz.model_rollout_status(text) SECURITY DEFINER;
 ALTER FUNCTION authz.list_model_versions(text) SECURITY DEFINER;
 ALTER FUNCTION authz.publish_model(text, text, text) SECURITY DEFINER;
+ALTER FUNCTION authz.publish_model_definition(text, jsonb, text) SECURITY DEFINER;
+ALTER FUNCTION authz.publish_model_openfga(text, jsonb, text) SECURITY DEFINER;
 ALTER FUNCTION authz.apply_model(text, text, integer) SECURITY DEFINER;
 ALTER FUNCTION authz.apply_model(text[], text, integer) SECURITY DEFINER;
 ALTER FUNCTION authz.plan_model_apply(text, text, integer) SECURITY DEFINER;

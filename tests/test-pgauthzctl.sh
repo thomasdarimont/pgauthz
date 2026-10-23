@@ -48,6 +48,8 @@ cleanup() {
     psqlq "DO \$\$ BEGIN PERFORM authz.delete_store('ctl_it_tenant'); EXCEPTION WHEN OTHERS THEN NULL; END \$\$;" >/dev/null 2>&1 || true
     psqlq "DELETE FROM authz.model_registry WHERE name = 'ctl_it_model';" >/dev/null 2>&1 || true
     psqlq "DELETE FROM authz.issuer_bindings WHERE issuer LIKE 'https://ctl-it.example/%' OR description = 'ctl-it over the admin API';" >/dev/null 2>&1 || true
+    psqlq "DO \$\$ BEGIN PERFORM authz.delete_store('ctl_it_api', p_purge_audit => true); EXCEPTION WHEN OTHERS THEN NULL; END \$\$;" >/dev/null 2>&1 || true
+    psqlq "DELETE FROM authz.model_registry WHERE name = 'ctl_it_api_model';" >/dev/null 2>&1 || true
     rm -f /tmp/ctl-it-issuers.json /tmp/ctl-it-issuers-2.json
 }
 trap cleanup EXIT
@@ -170,6 +172,38 @@ JSON
         sh -c "'$CTL' issuers delete https://auth.example.com | grep -q '^deleted'"
     check_fails "api: a token without the admin role is refused (403)" \
         sh -c "PGAUTHZ_TOKEN=\$(make_token ctl-nobody internal_user '[]') '$CTL' issuers list"
+    # the model verbs over the admin API: publish a .fga (converted on the
+    # server), plan-gated apply into a store created over the API, status,
+    # versions, rollout, export (JSON, DSL, SQL), a blocked apply as the error
+    check "api: stores — PUT creates the target store (201)" \
+        sh -c "curl -sf -o /dev/null -w '%{http_code}' -X PUT '$ADMIN_URL/pgauthz/v1/admin/stores/ctl_it_api' -H \"Authorization: Bearer \$PGAUTHZ_TOKEN\" -H 'Content-Type: application/json' -d '{\"description\":\"ctl-it over the API\"}' | grep -q '^201\$'"
+    check "api: model publish v1 from .fga (server-side conversion)" \
+        sh -c "'$CTL' model publish '$ROOT/pgauthzctl/testdata/model.fga' --name ctl_it_api_model --message api-v1 | grep -q '^published ctl_it_api_model@1'"
+    check "api: model publish is idempotent" \
+        sh -c "'$CTL' model publish '$ROOT/pgauthzctl/testdata/model.fga' --name ctl_it_api_model | grep -q '@1\$'"
+    check "api: model plan says CAN APPLY" \
+        "$CTL" model plan ctl_it_api_model --store ctl_it_api
+    check "api: model apply (plan-first on the daemon)" \
+        sh -c "'$CTL' model apply ctl_it_api_model --store ctl_it_api | grep -q '^applied ctl_it_api_model@1 to ctl_it_api'"
+    check "api: model status shows in_sync" \
+        sh -c "'$CTL' model status --store ctl_it_api | grep -q 'ctl_it_api_model@1.*in_sync: true'"
+    check "api: model versions lists v1" \
+        sh -c "'$CTL' model versions ctl_it_api_model | grep -q '^ctl_it_api_model@1 '"
+    check "api: model rollout shows the store at latest" \
+        sh -c "'$CTL' model rollout ctl_it_api_model | grep -q '^ctl_it_api  @1/latest 1'"
+    check "api: model export JSON, --dsl and --sql" \
+        sh -c "'$CTL' model export --store ctl_it_api | grep -q '\"format\": 1' && '$CTL' model export --store ctl_it_api --dsl | grep -q 'type ' && '$CTL' model export --store ctl_it_api --sql | grep -q 'model_register_type'"
+    check "api: model diff after a v2 shows the new relation" \
+        sh -c "'$CTL' model publish /tmp/ctl-it-v2.fga --name ctl_it_api_model --message api-v2 | grep -q '@2\$' && '$CTL' model diff ctl_it_api_model --store ctl_it_api | grep -q '+ relations can_share'"
+    psqlq "SELECT authz.model_register_type('ctl_it_api', 'rogue');
+           SELECT authz.model_register_relation('ctl_it_api', 'rogue_rel');
+           SELECT authz.model_add_rule('ctl_it_api', 'rogue', 'rogue_rel', 'direct');
+           SELECT authz.model_add_type_restriction('ctl_it_api', 'rogue', 'rogue_rel', 'user');
+           SELECT authz.write_tuple('ctl_it_api', 'user', 'x', 'rogue_rel', 'rogue', 'r1');" >/dev/null
+    check_fails "api: a blocked apply is the error (409 with the plan)" \
+        "$CTL" model apply ctl_it_api_model --store ctl_it_api
+    check_fails "api: model plan exits non-zero on blockers" \
+        "$CTL" model plan ctl_it_api_model --store ctl_it_api
     unset PGAUTHZ_SERVER PGAUTHZ_TOKEN
 else
     echo ""

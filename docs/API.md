@@ -41,6 +41,7 @@ always uses explicit separate parameters for type, ID, and relation.
   - [delete_tuple — Remove a relationship tuple](#delete_tuple--remove-a-relationship-tuple)
   - [write_tuples / delete_tuples — Batch operations](#write_tuples--delete_tuples--batch-operations)
   - [delete_user_tuples — Remove all tuples for a user](#delete_user_tuples--remove-all-tuples-for-a-user)
+  - [list_stores — Every store, live and retired](#list_stores--every-store-live-and-retired)
   - [export_subject / erase_subject — Data subject requests](#export_subject--erase_subject--data-subject-requests)
   - [grant / revoke — Share on behalf of an actor](#grant--revoke--share-on-behalf-of-an-actor)
   - [model_register_relation / model_set_relation_metadata — Relations and their kind](#model_register_relation--model_set_relation_metadata--relations-and-their-kind)
@@ -398,6 +399,15 @@ SELECT authz.delete_user_tuples('demo', 'internal_user', 'grace');
 -- Same with audit tracking to record which service triggered the offboarding
 SELECT authz.delete_user_tuples('demo', 'internal_user', 'grace',
     p_performed_by => 'offboarding_service');
+```
+
+### list_stores — Every store, live and retired
+
+```sql
+SELECT * FROM authz.list_stores();
+--  name | description | docs_url | created_at | retired_at
+-- the facts of every store (retired ones carry retired_at); reader tier,
+-- for tooling that calls functions but may not read the tables
 ```
 
 ### export_subject / erase_subject — Data subject requests

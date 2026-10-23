@@ -711,6 +711,8 @@ Without a configured native backend the routes return `501 Not Implemented`.
 | GET | `/pgauthz/v1/issuers` | direct | The effective trusted-issuer set: anchors (key source redacted), bindings, `binding_source` env/db per issuer, `enabled`, the applied revision. Public listener: `ISSUERS_REQUIRED_ROLE`, the caller's own issuer only (every issuer for a platform admin); callback listener: always, the whole set. |
 | GET | `/pgauthz/v1/admin/issuers` | full + admin | The effective set within the caller's admin scope — see [Admin API](#admin-api-full-profile-admin_api_enabled). |
 | GET/PUT/DELETE | `/pgauthz/v1/admin/issuer-bindings` | full + admin | The database-managed issuer bindings (`authz.issuer_bindings`) within the caller's scope: list / one (`?issuer=`), create-or-replace (the whole row; validated, narrowing only, the issuer must be trusted), delete (`?issuer=`). |
+| GET/PUT/DELETE | `/pgauthz/v1/admin/stores/{store}`, `…/model` | full + admin | Stores and their models as upserts (create, describe, retire, delete; plan and apply a registry version) within the caller's scope — see [Admin API](#admin-api-full-profile-admin_api_enabled). |
+| GET/POST | `/pgauthz/v1/admin/models[/{name}/versions\|/rollout]` | full + admin (platform) | The model registry: versions, publish from a store or a definition, the fleet view. |
 | POST | `/pgauthz/v1/list-objects` | direct | Objects of a type the subject can act on (`list_objects`); keyset-paginated. |
 | POST | `/pgauthz/v1/list-subjects` | direct | Subjects of a type that can act on the object (`list_subjects`); keyset-paginated. |
 | POST | `/pgauthz/v1/list-actions` | direct | Relations the subject holds on the object (`list_actions`). |
@@ -790,7 +792,8 @@ reachable only with `scope: platform` — the operator's admin identity
 provider — or `ADMIN_ROLE`. The read-only `GET /pgauthz/v1/issuers` follows the
 same rule (own issuer unless platform admin).
 
-**The resources** (today; stores, models, conditions follow — every console
+**The resources** (conditions, gates and grant rules travel inside the
+model definition; recorder allowlists and namespaces follow — every console
 management feature gets its endpoint here, so configuration as code never
 needs the console's BFF):
 
@@ -800,6 +803,14 @@ needs the console's BFF):
 | GET | `/pgauthz/v1/admin/issuer-bindings[?issuer=…]` | The database rows within scope, or one (`404` outside it) |
 | PUT | `/pgauthz/v1/admin/issuer-bindings` | Create or replace one binding — the whole row `{issuer, stores, db_roles, client_db_roles, pep_clients, enabled, description}`; validated as the daemon validates, a row may only **narrow** the environment's `stores` (never unbind or widen), an issuer the environment does not trust is refused (`400` — the database cannot add trust); `{issuer, revision}`, applied by every `ISSUERS_SOURCE=env+db` instance |
 | DELETE | `/pgauthz/v1/admin/issuer-bindings?issuer=…` | Drop the row; the issuer falls back to its environment bindings |
+| GET | `/pgauthz/v1/admin/stores[/{store}]` | The stores in scope (a tenant admin: the stores its issuer is bound to), each with its managed-model state |
+| PUT | `/pgauthz/v1/admin/stores/{store}` | Create (`201`) or update (`200`): `{description, docs_url, retired}` — absent fields stay, `retired: true` retires (no reopening) |
+| DELETE | `/pgauthz/v1/admin/stores/{store}[?purge_audit=true]` | `delete_store`, the erasure path |
+| GET | `/pgauthz/v1/admin/stores/{store}/model` | The live model as the canonical definition, and `model_status` |
+| PUT | `/pgauthz/v1/admin/stores/{store}/model[?plan=true]` | `{"model":"name[@version]"}`: plan, then apply when the plan has no blockers (`409` with the plan otherwise); `plan=true` is the dry run |
+| GET | `/pgauthz/v1/admin/models[?name=]` | The registry's versions (platform scope) |
+| POST | `/pgauthz/v1/admin/models/{name}/versions` | Publish the next version from `from_store` or from a `definition` (the export shape; `publish_model_definition`), idempotent on the checksum (platform scope) |
+| GET | `/pgauthz/v1/admin/models/{name}/rollout` | Every store under the model with version and drift (platform scope) |
 
 Writes are recorded in `authz.issuer_bindings_audit` with the token's subject
 and client (`user:alice via terraform-a`). `403` carries why the gate refused

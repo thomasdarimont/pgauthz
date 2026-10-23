@@ -482,8 +482,10 @@ at all — can live in the database instead of `JWT_ISSUERS`
   [pgauthzd/README.md → Admin API](../pgauthzd/README.md#admin-api-full-profile-admin_api_enabled).
 - **`pgauthzctl` over the admin API** (`--server` with `--token` or
   `--cert/--key`) is the long-run way to operate: no database credentials
-  outside the cluster, the actor is the credential's. `--dsn` stays for
-  installation-time work and break-glass.
+  outside the cluster, the actor is the credential's; issuers, stores and
+  the model lifecycle (publish, plan, apply, rollout) all run over it.
+  `--dsn` stays for `model import`, `model test`, installation and
+  break-glass.
 - **Checklist:** keep `REQUIRE_STORE_BINDING=true` — the environment's
   binding is the ceiling a row narrows within, so an issuer unbound in the
   environment stays unbound unless a row binds it; give the admin identity
