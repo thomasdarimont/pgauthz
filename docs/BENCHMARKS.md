@@ -641,3 +641,51 @@ replication test's random-mutation differential and by a deterministic case
 the expansion first got wrong: a member's membership and the team's
 reference deleted in one batch (the closure now also walks the batch's own
 deleted edges).
+
+## Addendum: 2026-10-25 (v0.18.0, store incarnations in the decision log)
+
+All five suites at `v0.18.0-7` (the admin API, data-subject functions, the
+console's issuer management and the decision-log erasure protocol in place;
+the engine's read path changed only in how the memo's temp table is created).
+Same machine and stack as the 2026-10-18 run, 237 k-row audit log.
+
+| `drive` (60,031 tuples) | ms/op | | `github` (39,092 tuples) | ms/op |
+|---|--:|---|---|--:|
+| check shallow | 0.204 | | check org-admin `can_read` | 1.23 |
+| check deep (15-folder TTU) | 3.53 | | check org-member `can_read` (TTU) | 1.37 |
+| check userset | 0.348 | | check nested-team reader (10-deep) | 1.60 |
+| check DENY (full traversal) | 3.74 | | check DENY (full traversal) | 3.02 |
+| check wildcard | 0.199 | | check `can_write` DENY, plain reader | 0.892 |
+| list_objects grant-sparse | 2.70 | | list_objects org-admin repos | 127 |
+| list_subjects shared doc (3) | 14.6 | | list_subjects repo readers (526) | 690 |
+| list_subjects wildcard doc | 14.5 | | list_actions | 3.86 |
+| list_subjects group doc (50) | 32.6 | | | |
+| list_actions | 5.53 | | | |
+| contextual tuples (inject 1) | 0.369 | | | |
+| audit_check_access (replay 237 k audit rows) | 114 | | | |
+
+| `rules` (53,596 tuples) | ms/op | | `gates` (220,100 events) | ms/op |
+|---|--:|---|---|--:|
+| intersection ALLOW / DENY | 0.195 / 0.353 | | ungated baseline | 0.211 |
+| exclusion ALLOW / DENY | 0.325 / 0.194 | | gated, 0 / 100 / 10k events | 0.297 / 0.418 / 11.6 |
+| condition ALLOW / DENY | 0.203 / 0.333 | | `formerly_within` + match, 10k | 3.98 |
+| list_objects intersection | 4.20 | | gated DENY, missing `$request` key | 0.293 |
+| list_subjects intersection, hot (500) | 111 | | explain gated / detailed conditional | 1.13 / 1.10 |
+| list_subjects exclusion, hot (450) | 198 | | list_subjects ungated / gated (2k) | 336 / 603 |
+| | | | list_objects gated | 13.0 |
+| `adversarial` (1,054 tuples) | | | list_actions (3 relations, 2 gated) | 0.789 |
+| diamond DENY depth 6 / 9 / 12 | 1.32 / 1.91 / 2.44 | | audit_check_access gated | 11.1 |
+| wide fan-out (500 → 1) | 61.8 | | record_event / batch of 100 | 0.061 / 5.84 |
+| | | | reserve_event / list_events page | 1.01 / 0.262 |
+
+Everything is within the 10–20 % band of the 2026-10-18 table; bulk loads were
+faster (drive 1.95 → 1.75 s, rules 1.75 → 1.61 s). The cheapest lines read
+~0.03 ms higher (gates baseline 0.181 → 0.211, diamonds +10–20 %), so the one
+read-path change was A/B'd: the memo's temp table is now created behind a
+`to_regclass` guard instead of `CREATE TEMP TABLE IF NOT EXISTS`. Two
+alternating rounds of a shallow check (pgbench, one client) timed the current
+engine at 0.46–0.50 ms and the v0.18.0 files at 0.51–0.54 ms — the guard is
+slightly faster, having no NOTICE to send per check; the uplift above is
+machine state. pgauthzd now reads `authz.store_id($1)` in the same statement
+as every decision; the same A/B on that statement was within noise
+(0.48–0.54 ms either way).
