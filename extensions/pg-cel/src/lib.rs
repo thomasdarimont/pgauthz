@@ -19,7 +19,7 @@
 //! standard `strings`, `lists`, `math` and `encoders` extensions (as in
 //! cel-go), and the IP/CIDR functions of the Kubernetes CEL library with its
 //! input rules (`ip`, `cidr`, `isIP`, `isCIDR`, `containsIP`, `containsCIDR`,
-//! `ip()`, `masked`, `prefixLength`, `family`, `isCanonical`, `isLoopback`,
+//! `ip()`, `masked`, `prefixLength`, `family`, `ip.isCanonical`, `isLoopback`,
 //! `isUnspecified`, `isGlobalUnicast`, `isLinkLocalUnicast`,
 //! `isLinkLocalMulticast`), so an expression here means what it means elsewhere.
 
@@ -47,9 +47,10 @@ fn build_env() -> Result<Env, DeclarationError> {
 /// IP and CIDR functions, named and specified as the Kubernetes CEL library
 /// has them, so a condition reads — and decides — the same as a Kubernetes
 /// admission rule. Addresses and networks are strings (cel-rust has no IP
-/// type): `ip()` and `cidr()` validate and return the value as written — as
-/// Kubernetes keeps the original, so `isCanonical()` can tell — and the
-/// member functions parse their receiver. Input rules follow Go's netip, which Kubernetes
+/// type): `ip()` and `cidr()` validate and return the canonical form (host
+/// bits of a CIDR kept), so two spellings of one address compare equal as
+/// they do in Kubernetes; `ip.isCanonical(s)` judges the string as written,
+/// as there; the member functions parse their receiver. Input rules follow Go's netip, which Kubernetes
 /// uses: no surrounding whitespace, no zone, no leading zeros in an IPv4
 /// octet, and no IPv4-mapped IPv6 address (`::ffff:192.0.2.1`).
 mod net {
@@ -101,13 +102,11 @@ mod net {
     }
 
     fn ip(s: &CelString<'_>) -> Result<CelString<'static>, ExecutionError> {
-        parse_ip(s.inner(), "ip")?;
-        Ok(CelString::from(s.inner().to_owned()))
+        Ok(CelString::from(parse_ip(s.inner(), "ip")?.to_string()))
     }
 
     fn cidr(s: &CelString<'_>) -> Result<CelString<'static>, ExecutionError> {
-        parse_cidr(s.inner(), "cidr")?;
-        Ok(CelString::from(s.inner().to_owned()))
+        Ok(CelString::from(parse_cidr(s.inner(), "cidr")?.to_string()))
     }
 
     fn contains_ip(this: &CelString<'_>, addr: &CelString<'_>) -> Result<CelBool, ExecutionError> {
@@ -150,10 +149,10 @@ mod net {
         Ok(CelString::from(parse_cidr(this.inner(), "ip")?.addr().to_string()))
     }
 
-    /// `ip(s).isCanonical()`: the string is the address's canonical form.
-    fn is_canonical(this: &CelString<'_>) -> Result<CelBool, ExecutionError> {
-        let addr = parse_ip(this.inner(), "isCanonical")?;
-        Ok(CelBool::from(addr.to_string() == this.inner()))
+    /// `ip.isCanonical(s)`: the string, as written, is the address's canonical form.
+    fn is_canonical(s: &CelString<'_>) -> Result<CelBool, ExecutionError> {
+        let addr = parse_ip(s.inner(), "ip.isCanonical")?;
+        Ok(CelBool::from(addr.to_string() == s.inner()))
     }
 
     fn link_local_unicast(addr: IpAddr) -> bool {
@@ -202,7 +201,7 @@ mod net {
         cel::add_member_overload!(env, fn is_loopback: (CelString) -> Result<CelBool>, name = "isLoopback")?;
         cel::add_member_overload!(env, fn is_unspecified: (CelString) -> Result<CelBool>, name = "isUnspecified")?;
         cel::add_member_overload!(env, fn cidr_ip: (CelString) -> Result<CelString>, name = "ip")?;
-        cel::add_member_overload!(env, fn is_canonical: (CelString) -> Result<CelBool>, name = "isCanonical")?;
+        cel::add_overload!(env, fn is_canonical: (CelString) -> Result<CelBool>, name = "ip.isCanonical")?;
         cel::add_member_overload!(env, fn is_global_unicast: (CelString) -> Result<CelBool>, name = "isGlobalUnicast")?;
         cel::add_member_overload!(env, fn is_link_local_unicast: (CelString) -> Result<CelBool>, name = "isLinkLocalUnicast")?;
         cel::add_member_overload!(env, fn is_link_local_multicast: (CelString) -> Result<CelBool>, name = "isLinkLocalMulticast")?;
@@ -346,7 +345,7 @@ mod tests {
         assert_eq!(ok("cidr('10.0.0.0/8').containsCIDR('10.1.0.0/16') && !cidr('10.1.0.0/16').containsCIDR('10.0.0.0/8')"), Some(true));
         assert_eq!(ok("cidr('10.1.2.3/8').masked() == '10.0.0.0/8' && cidr(stored.allowed).prefixLength() == 8"), Some(true));
         assert_eq!(ok("ip(request.ip).family() == 4 && ip('::1').family() == 6 && ip('127.0.0.1').isLoopback() && ip('0.0.0.0').isUnspecified()"), Some(true));
-        assert_eq!(ok("ip('2001:DB8:0:0:0:0:0:1') == '2001:DB8:0:0:0:0:0:1' && !ip('2001:DB8:0:0:0:0:0:1').isCanonical()"), Some(true));
+        assert_eq!(ok("ip('2001:DB8:0:0:0:0:0:1') == '2001:db8::1' && !ip.isCanonical('2001:DB8:0:0:0:0:0:1')"), Some(true));
         assert!(eval_bool("ip('nope') == 'x'", "{}").is_err());
         assert!(eval_bool("cidr('10.0.0.0/8').containsIP('nope')", "{}").is_err());
     }
@@ -362,8 +361,10 @@ mod tests {
         yes("!isCIDR(' 10.0.0.0/8') && !isCIDR('::ffff:10.0.0.0/104') && !isCIDR('10.0.0.0') && !isCIDR('10.0.0.0/33')");
         assert!(eval_bool("ip('::ffff:192.0.2.1') == 'x'", "{}").is_err());
         assert!(eval_bool("cidr('::ffff:10.0.0.0/104') == 'x'", "{}").is_err());
-        // canonical forms and isCanonical
-        yes("ip('2001:db8::1').isCanonical() && !ip('2001:DB8:0:0:0:0:0:1').isCanonical() && ip('192.168.0.1').isCanonical()");
+        // ip.isCanonical judges the string as written; ip()/cidr() canonicalize, so
+        // two spellings of one address compare equal (Kubernetes compares values)
+        yes("ip.isCanonical('2001:db8::1') && !ip.isCanonical('2001:DB8::1') && ip.isCanonical('192.168.0.1')");
+        yes("ip('2001:DB8::1') == ip('2001:db8::1') && cidr('2001:DB8::/32') == cidr('2001:db8::/32') && ip('2001:DB8::1') == '2001:db8::1'");
         // host bits: cidr() keeps them, ip() returns the address, masked() the network
         yes("cidr('192.168.0.1/24') == '192.168.0.1/24' && cidr('192.168.0.1/24').ip() == '192.168.0.1' && cidr('192.168.0.1/24').masked() == '192.168.0.0/24' && cidr('192.168.0.1/24').ip().family() == 4");
         // containment across families is false, never an error; equal and overlapping prefixes

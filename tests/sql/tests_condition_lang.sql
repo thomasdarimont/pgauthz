@@ -190,7 +190,7 @@ BEGIN
             NOT authz.evaluate_condition('test_condlang', 'cel_from_network',
                 '{"ip": "not an address"}'::jsonb, '{"allowed": "10.0.0.0/8"}'::jsonb));
         PERFORM _test_assert_true('cl_22_cel_ipv6_canonical_and_family',
-            authz.cel_eval_bool('!ip(request.ip).isCanonical() && ip(request.ip).family() == 6 && cidr(''2001:db8::/32'').containsIP(request.ip)',
+            authz.cel_eval_bool('ip(request.ip) == ''2001:db8::1'' && !ip.isCanonical(request.ip) && ip(request.ip).family() == 6 && cidr(''2001:db8::/32'').containsIP(request.ip)',
                 '{"request": {"ip": "2001:DB8:0:0:0:0:0:1"}}'));
         -- cl_23: Kubernetes input rules — IPv4-mapped IPv6 and whitespace are not IPs
         PERFORM _test_assert_true('cl_23_cel_kubernetes_input_rules',

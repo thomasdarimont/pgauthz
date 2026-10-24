@@ -106,11 +106,12 @@ Kubernetes admission rule:
 
 | Function | Meaning |
 |---|---|
-| `ip(s)`, `cidr(s)` | validate, returning the value as written (error on a bad value) |
+| `ip(s)`, `cidr(s)` | validate and canonicalize (error on a bad value; a CIDR keeps its host bits) |
 | `isIP(s)`, `isCIDR(s)` | true / false, never an error |
 | `cidr(s).containsIP(ip)`, `cidr(s).containsCIDR(c)` | membership (false across families) |
 | `cidr(s).ip()`, `cidr(s).masked()`, `cidr(s).prefixLength()` | the address (host bits kept), the network, the prefix |
-| `ip(s).family()`, `ip(s).isCanonical()` | 4 or 6; the string is the canonical form |
+| `ip(s).family()` | 4 or 6 |
+| `ip.isCanonical(s)` | the string, as written, is the canonical form |
 | `ip(s).isLoopback()`, `isUnspecified()`, `isGlobalUnicast()`, `isLinkLocalUnicast()`, `isLinkLocalMulticast()` | the address classes, as Go's `net/netip` decides them |
 
 Input rules are Kubernetes' (Go `netip`): no surrounding whitespace, no zone,
@@ -136,10 +137,11 @@ references for what each function does:
 - **Types still need converting.** JSON delivers strings/numbers; use CEL's
   `timestamp(...)` / `duration(...)` for temporal comparisons. Cleaner than SQL
   casts, but not zero.
-- **IP/CIDR as strings.** cel-rust has no IP type; the net functions below
-  take and return strings, so `ip(x) == '10.1.2.3'` compares text where
-  Kubernetes would compare types. Mixed stores are fine — `lang` is per
-  condition.
+- **IP/CIDR as strings.** cel-rust has no IP type; the net functions take and
+  return strings. `ip()` and `cidr()` canonicalize, so two spellings of one
+  address compare equal as in Kubernetes — but `ip(x) == '10.1.2.3'` is true
+  here where Kubernetes compares an IP with a string and errors. Mixed stores
+  are fine — `lang` is per condition.
 - **Version pinning.** Keep `pgrx` in `Cargo.toml`, `PGRX_VERSION` in the
   Dockerfile, and `PG_MAJOR`/`POSTGRES_TAG` (compose) consistent with the server
   version. The CEL crate API (`cel-interpreter`, `json` feature) should be

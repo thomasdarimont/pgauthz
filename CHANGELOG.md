@@ -98,7 +98,7 @@ pre-1.0, minor versions may include breaking changes.
   `strings`, `lists`, `math` and `encoders` extensions and the IP/CIDR
   functions of the Kubernetes CEL library, with its input rules (`ip`, `cidr`,
   `isIP`, `isCIDR`, `containsIP`, `containsCIDR`, `ip()`, `masked`,
-  `prefixLength`, `family`, `isCanonical`, `isLoopback`, `isUnspecified`,
+  `prefixLength`, `family`, `ip.isCanonical`, `isLoopback`, `isUnspecified`,
   `isGlobalUnicast`, `isLinkLocalUnicast`, `isLinkLocalMulticast`; addresses
   as strings; no whitespace, zone or IPv4-mapped IPv6) — the README's
   "no IP/CIDR" caveat is gone.
