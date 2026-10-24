@@ -30,6 +30,8 @@ pgrx = "0.19.3"
 # feature is needed for context variables.
 cel = "0.15.0"
 serde_json = "1"
+# IP/CIDR parsing for the net functions (Kubernetes CEL library names).
+ipnet = "2"
 
 [dev-dependencies]
 pgrx-tests = "0.19.3"

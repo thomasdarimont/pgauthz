@@ -95,13 +95,40 @@ cargo check                                 # fast compile check (no Postgres)
 Per the cargo-pgrx conventions, pure CEL logic is covered by plain `#[test]`
 and the SQL-surface checks by `#[pg_test]` (which boots a real backend).
 
+## Functions
+
+Expressions compile against one environment: the CEL standard library, the
+standard `strings`, `lists`, `math` and `encoders` extensions (the same
+libraries cel-go ships — `lowerAscii`, `split`, `join`, `indexOf`, `sort`,
+`math.greatest`, `base64.encode`, …), and the IP/CIDR functions under the
+names the Kubernetes CEL library uses, so a condition reads the same as a
+Kubernetes admission rule:
+
+| Function | Meaning |
+|---|---|
+| `ip(s)`, `cidr(s)` | validate and canonicalize (error on a bad value) |
+| `isIP(s)`, `isCIDR(s)` | true / false, never an error |
+| `cidr(s).containsIP(ip)`, `cidr(s).containsCIDR(c)` | membership |
+| `cidr(s).prefixLength()`, `cidr(s).masked()` | the prefix, the network address |
+| `ip(s).family()`, `ip(s).isLoopback()`, `ip(s).isUnspecified()` | 4 or 6, loopback, unspecified |
+
+```sql
+SELECT authz.create_condition_cel('demo', 'from_office',
+    'cidr(stored.allowed).containsIP(request.ip)',
+    '{"request": ["ip"], "stored": ["allowed"]}');
+```
+
+Nothing pgauthz-specific is added: every function exists in a mainstream
+CEL implementation, so an expression stays evaluable outside pgauthz.
+
 ## Caveats / scope
 
 - **Types still need converting.** JSON delivers strings/numbers; use CEL's
   `timestamp(...)` / `duration(...)` for temporal comparisons. Cleaner than SQL
   casts, but not zero.
-- **No IP/CIDR.** cel-rust has no native IP type, so IP-range conditions stay
-  `lang='sql'`. Mixed stores are fine — `lang` is per condition.
+- **IP/CIDR as strings.** cel-rust has no IP type; the net functions below
+  take and return strings, so `ip(x) == '10.1.2.3'` is true where Kubernetes
+  would compare types. Mixed stores are fine — `lang` is per condition.
 - **Version pinning.** Keep `pgrx` in `Cargo.toml`, `PGRX_VERSION` in the
   Dockerfile, and `PG_MAJOR`/`POSTGRES_TAG` (compose) consistent with the server
   version. The CEL crate API (`cel-interpreter`, `json` feature) should be

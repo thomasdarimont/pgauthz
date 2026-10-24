@@ -167,8 +167,33 @@ BEGIN
             'user', 'carol', 'can_read', 'doc', 'd3',
             '{"now": "2026-01-01T00:30:00Z"}'::jsonb);
         PERFORM _test_assert_true('cl_17_cel_bad_duration_denies_fail_closed', NOT v_ok);
+
+        -- cl_18..cl_22: the standard extensions (strings, math) and the
+        -- Kubernetes-named IP/CIDR functions compile and evaluate
+        PERFORM authz.create_condition_cel('test_condlang', 'cel_domain',
+            'request.email.lowerAscii().endsWith(stored.domain) && math.greatest(1, 5, 3) == 5',
+            '{"request": ["email"], "stored": ["domain"]}'::jsonb);
+        PERFORM _test_assert_true('cl_18_cel_strings_and_math_extensions',
+            authz.validate_condition('test_condlang', 'cel_domain',
+                '{"domain": "@example.com"}'::jsonb, '{"email": "Alice@Example.COM"}'::jsonb));
+        PERFORM authz.create_condition_cel('test_condlang', 'cel_from_network',
+            'isIP(request.ip) && cidr(stored.allowed).containsIP(request.ip)',
+            '{"request": ["ip"], "stored": ["allowed"]}'::jsonb);
+        -- evaluate_condition gives the verdict (validate_condition only says "well-formed")
+        PERFORM _test_assert_true('cl_19_cel_cidr_contains_ip',
+            authz.evaluate_condition('test_condlang', 'cel_from_network',
+                '{"ip": "10.1.2.3"}'::jsonb, '{"allowed": "10.0.0.0/8"}'::jsonb));
+        PERFORM _test_assert_true('cl_20_cel_cidr_excludes_ip',
+            NOT authz.evaluate_condition('test_condlang', 'cel_from_network',
+                '{"ip": "192.168.1.1"}'::jsonb, '{"allowed": "10.0.0.0/8"}'::jsonb));
+        PERFORM _test_assert_true('cl_21_cel_is_ip_guards_garbage',
+            NOT authz.evaluate_condition('test_condlang', 'cel_from_network',
+                '{"ip": "not an address"}'::jsonb, '{"allowed": "10.0.0.0/8"}'::jsonb));
+        PERFORM _test_assert_true('cl_22_cel_ipv6_canonical_and_family',
+            authz.cel_eval_bool('ip(request.ip) == ''2001:db8::1'' && ip(request.ip).family() == 6 && cidr(''2001:db8::/32'').containsIP(request.ip)',
+                '{"request": {"ip": "2001:DB8:0:0:0:0:0:1"}}'));
     ELSE
-        RAISE NOTICE '    SKIP  cl_09/cl_10/cl_15-17 CEL e2e (no cel_eval_bool evaluator installed)';
+        RAISE NOTICE '    SKIP  cl_09/cl_10/cl_15-22 CEL e2e (no cel_eval_bool evaluator installed)';
     END IF;
 
     -- cl_11: create_condition / create_condition_sql create a sql condition

@@ -92,7 +92,12 @@ pre-1.0, minor versions may include breaking changes.
   (duplicate map-literal keys are errors, string `size()` counts code points,
   timestamps and durations follow the spec's ranges and formatting). The
   CEL-gated suite passes unchanged; the extension version stays 0.2.0 (its
-  SQL surface did not change).
+  SQL surface did not change). Expressions now compile against the standard
+  `strings`, `lists`, `math` and `encoders` extensions and the IP/CIDR
+  functions of the Kubernetes CEL library (`ip`, `cidr`, `isIP`, `isCIDR`,
+  `containsIP`, `containsCIDR`, `prefixLength`, `masked`, `family`,
+  `isLoopback`, `isUnspecified`; addresses as strings) — the README's
+  "no IP/CIDR" caveat is gone.
 - **The engine's per-session temp tables no longer raise a NOTICE on
   reuse.** `_check_memo_v2`, `ctx_tuples`, `_access_trace`, the
   `_snapshot_*` tables and `_check_memo_snap` were created with

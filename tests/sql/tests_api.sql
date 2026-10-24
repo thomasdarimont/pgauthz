@@ -1810,6 +1810,7 @@ DECLARE
     v_id integer; v_rid integer; v_at timestamptz; v_id2 integer; v_n integer;
 BEGIN
     BEGIN PERFORM authz.delete_store('test_api_receipt', p_purge_audit => true); EXCEPTION WHEN OTHERS THEN NULL; END;
+    DELETE FROM authz.store_deletions WHERE name = 'test_api_receipt';   -- receipts are kept: start this run from none
     PERFORM authz.create_store('test_api_receipt');
     v_id := authz.store_id('test_api_receipt');
     SELECT r.store_id, r.deleted_at INTO v_rid, v_at FROM authz.delete_store_receipt('test_api_receipt') r;

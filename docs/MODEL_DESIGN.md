@@ -1190,6 +1190,13 @@ PGAUTHZ_CEL=1 ./init.sh     # runs CREATE EXTENSION pg_cel SCHEMA authz
 stack is never left with conditions it can't run. For a runnable walk-through see
 [`examples/models/demo/demo_cel.sql`](../examples/models/demo/demo_cel.sql).
 
+Beyond the CEL standard library, expressions may use the standard `strings`,
+`lists`, `math` and `encoders` extensions and the IP/CIDR functions of the
+Kubernetes CEL library (`cidr(stored.allowed).containsIP(request.ip)`,
+`isIP`, `ip(x).family()`, …) — see the
+[function list](../extensions/pg-cel/README.md#functions). Nothing pgauthz-
+specific: every function exists in a mainstream CEL implementation.
+
 **Validation is parse-only.** Both languages are syntax-checked at write time
 (SQL test-compile / CEL compile), but undeclared variables, type mismatches, and
 value formats are not — those deny at check time. A common CEL gotcha: `duration()`

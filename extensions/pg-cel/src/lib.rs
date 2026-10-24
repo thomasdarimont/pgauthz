@@ -14,9 +14,124 @@
 //! The contract intentionally matches SPANDigital/pg-cel (cgo + cel-go), so the
 //! two are interchangeable from pgauthz's point of view; this crate is the
 //! Rust/pgrx implementation pgauthz ships for the safer failure mode.
+//!
+//! Expressions compile against one environment: the CEL standard library, the
+//! standard `strings`, `lists`, `math` and `encoders` extensions (as in
+//! cel-go), and the IP/CIDR functions of the Kubernetes CEL library
+//! (`ip`, `cidr`, `isIP`, `isCIDR`, `containsIP`, `containsCIDR`, `family`,
+//! `isLoopback`, `isUnspecified`, `prefixLength`, `masked`), so an expression
+//! here means what it means elsewhere.
 
-use cel::{Context, Program, Value};
+use std::sync::{Arc, OnceLock};
+
+use cel::{extensions, Context, DeclarationError, Env, Value};
 use pgrx::prelude::*;
+
+/// The environment every expression compiles and runs against; built once.
+fn env() -> &'static Arc<Env> {
+    static ENV: OnceLock<Arc<Env>> = OnceLock::new();
+    ENV.get_or_init(|| Arc::new(build_env().expect("pg_cel: building the CEL environment")))
+}
+
+fn build_env() -> Result<Env, DeclarationError> {
+    let mut env = Env::stdlib();
+    env.add_extension(extensions::strings)?;
+    env.add_extension(extensions::lists)?;
+    env.add_extension(extensions::math)?;
+    env.add_extension(extensions::encoders)?;
+    env.add_extension(net::extension)?;
+    Ok(env)
+}
+
+/// IP and CIDR functions, named as the Kubernetes CEL library names them so
+/// a condition reads the same as a Kubernetes admission rule. Addresses and
+/// networks are strings (cel-rust has no IP type): `ip()` and `cidr()`
+/// validate and canonicalize, the member functions parse their receiver.
+mod net {
+    use std::net::IpAddr;
+
+    use cel::common::types::{CelBool, CelInt, CelString};
+    use cel::{DeclarationError, Env, ExecutionError};
+    use ipnet::IpNet;
+
+    fn parse_ip(s: &str, fn_name: &str) -> Result<IpAddr, ExecutionError> {
+        s.trim()
+            .parse::<IpAddr>()
+            .map_err(|e| ExecutionError::function_error(fn_name, format!("{s:?} is not an IP address: {e}")))
+    }
+
+    fn parse_cidr(s: &str, fn_name: &str) -> Result<IpNet, ExecutionError> {
+        s.trim()
+            .parse::<IpNet>()
+            .map_err(|e| ExecutionError::function_error(fn_name, format!("{s:?} is not a CIDR: {e}")))
+    }
+
+    fn is_ip(s: &CelString<'_>) -> CelBool {
+        CelBool::from(s.inner().trim().parse::<IpAddr>().is_ok())
+    }
+
+    fn is_cidr(s: &CelString<'_>) -> CelBool {
+        CelBool::from(s.inner().trim().parse::<IpNet>().is_ok())
+    }
+
+    fn ip(s: &CelString<'_>) -> Result<CelString<'static>, ExecutionError> {
+        Ok(CelString::from(parse_ip(s.inner(), "ip")?.to_string()))
+    }
+
+    fn cidr(s: &CelString<'_>) -> Result<CelString<'static>, ExecutionError> {
+        Ok(CelString::from(parse_cidr(s.inner(), "cidr")?.to_string()))
+    }
+
+    fn contains_ip(this: &CelString<'_>, addr: &CelString<'_>) -> Result<CelBool, ExecutionError> {
+        let net = parse_cidr(this.inner(), "containsIP")?;
+        let addr = parse_ip(addr.inner(), "containsIP")?;
+        Ok(CelBool::from(net.contains(&addr)))
+    }
+
+    fn contains_cidr(this: &CelString<'_>, other: &CelString<'_>) -> Result<CelBool, ExecutionError> {
+        let net = parse_cidr(this.inner(), "containsCIDR")?;
+        let other = parse_cidr(other.inner(), "containsCIDR")?;
+        Ok(CelBool::from(net.contains(&other)))
+    }
+
+    fn prefix_length(this: &CelString<'_>) -> Result<CelInt, ExecutionError> {
+        Ok(CelInt::from(i64::from(parse_cidr(this.inner(), "prefixLength")?.prefix_len())))
+    }
+
+    fn masked(this: &CelString<'_>) -> Result<CelString<'static>, ExecutionError> {
+        Ok(CelString::from(parse_cidr(this.inner(), "masked")?.trunc().to_string()))
+    }
+
+    fn family(this: &CelString<'_>) -> Result<CelInt, ExecutionError> {
+        Ok(CelInt::from(match parse_ip(this.inner(), "family")? {
+            IpAddr::V4(_) => 4,
+            IpAddr::V6(_) => 6,
+        }))
+    }
+
+    fn is_loopback(this: &CelString<'_>) -> Result<CelBool, ExecutionError> {
+        Ok(CelBool::from(parse_ip(this.inner(), "isLoopback")?.is_loopback()))
+    }
+
+    fn is_unspecified(this: &CelString<'_>) -> Result<CelBool, ExecutionError> {
+        Ok(CelBool::from(parse_ip(this.inner(), "isUnspecified")?.is_unspecified()))
+    }
+
+    pub fn extension(env: &mut Env) -> Result<(), DeclarationError> {
+        cel::add_overload!(env, fn is_ip: (CelString) -> CelBool, name = "isIP")?;
+        cel::add_overload!(env, fn is_cidr: (CelString) -> CelBool, name = "isCIDR")?;
+        cel::add_overload!(env, fn ip: (CelString) -> Result<CelString>)?;
+        cel::add_overload!(env, fn cidr: (CelString) -> Result<CelString>)?;
+        cel::add_member_overload!(env, fn contains_ip: (CelString, CelString) -> Result<CelBool>, name = "containsIP")?;
+        cel::add_member_overload!(env, fn contains_cidr: (CelString, CelString) -> Result<CelBool>, name = "containsCIDR")?;
+        cel::add_member_overload!(env, fn prefix_length: (CelString) -> Result<CelInt>, name = "prefixLength")?;
+        cel::add_member_overload!(env, fn masked: (CelString) -> Result<CelString>)?;
+        cel::add_member_overload!(env, fn family: (CelString) -> Result<CelInt>)?;
+        cel::add_member_overload!(env, fn is_loopback: (CelString) -> Result<CelBool>, name = "isLoopback")?;
+        cel::add_member_overload!(env, fn is_unspecified: (CelString) -> Result<CelBool>, name = "isUnspecified")?;
+        Ok(())
+    }
+}
 
 ::pgrx::pg_module_magic!();
 
@@ -47,7 +162,7 @@ fn cel_eval_bool(expression: &str, json_data: &str) -> Option<bool> {
 /// stored context to exercise those before relying on the condition.
 #[pg_extern(immutable, strict, parallel_safe)]
 fn cel_compile_check(expression: &str) -> bool {
-    match Program::compile(expression) {
+    match env().compile(expression) {
         Ok(_) => true,
         Err(e) => error!("pg_cel: compile error: {e}"),
     }
@@ -67,7 +182,7 @@ fn eval_bool(expression: &str, json_data: &str) -> Result<Option<bool>, String> 
 }
 
 fn evaluate(expression: &str, json_data: &str) -> Result<Value, String> {
-    let program = Program::compile(expression).map_err(|e| format!("compile error: {e}"))?;
+    let program = env().compile(expression).map_err(|e| format!("compile error: {e}"))?;
 
     let parsed: serde_json::Value =
         serde_json::from_str(json_data).map_err(|e| format!("invalid json_data: {e}"))?;
@@ -76,7 +191,7 @@ fn evaluate(expression: &str, json_data: &str) -> Result<Value, String> {
         _ => return Err("json_data must be a JSON object".to_string()),
     };
 
-    let mut ctx = Context::default();
+    let mut ctx = Context::with_env(env().clone());
     for (key, value) in map {
         // serde_json::Value binds via the blanket Serialize -> TryIntoValue impl.
         ctx.add_variable(key.as_str(), value)
@@ -131,6 +246,32 @@ mod tests {
     #[test]
     fn bad_expression_errors() {
         assert!(eval_bool("1 +", "{}").is_err());
+    }
+
+    #[test]
+    fn standard_extensions_are_in() {
+        assert_eq!(
+            eval_bool(
+                "request.email.lowerAscii().endsWith(stored.domain) && math.greatest(1, 5, 3) == 5 && [3, 1, 2].sort() == [1, 2, 3]",
+                r#"{"request":{"email":"Alice@Example.COM"},"stored":{"domain":"@example.com"}}"#
+            )
+            .unwrap(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn net_functions() {
+        let ok = |expr: &str| eval_bool(expr, r#"{"request":{"ip":"10.1.2.3"},"stored":{"allowed":"10.0.0.0/8"}}"#).unwrap();
+        assert_eq!(ok("cidr(stored.allowed).containsIP(ip(request.ip))"), Some(true));
+        assert_eq!(ok("cidr('192.168.0.0/16').containsIP(request.ip)"), Some(false));
+        assert_eq!(ok("isIP(request.ip) && !isIP('nope') && isCIDR(stored.allowed) && !isCIDR(request.ip)"), Some(true));
+        assert_eq!(ok("cidr('10.0.0.0/8').containsCIDR('10.1.0.0/16') && !cidr('10.1.0.0/16').containsCIDR('10.0.0.0/8')"), Some(true));
+        assert_eq!(ok("cidr('10.1.2.3/8').masked() == '10.0.0.0/8' && cidr(stored.allowed).prefixLength() == 8"), Some(true));
+        assert_eq!(ok("ip(request.ip).family() == 4 && ip('::1').family() == 6 && ip('127.0.0.1').isLoopback() && ip('0.0.0.0').isUnspecified()"), Some(true));
+        assert_eq!(ok("ip('2001:DB8:0:0:0:0:0:1') == '2001:db8::1'"), Some(true));
+        assert!(eval_bool("ip('nope') == 'x'", "{}").is_err());
+        assert!(eval_bool("cidr('10.0.0.0/8').containsIP('nope')", "{}").is_err());
     }
 
     // Postgres-level checks through SPI — need a live backend, so #[pg_test].
