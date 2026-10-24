@@ -1127,14 +1127,17 @@ paths:
         listeners: [public, admin]
         public_listener: only-when-admin-api-enabled-without-admin-listener
       operationId: adminPurgeStoreDecisions
-      summary: Purge a store's decision-log lines (the store may already be gone)
+      summary: Purge a store's decision-log lines decided up to a point (the store may be gone)
       description: >
-        The lines and erasure tombstones of the store in the postgres
-        decision-log sink this instance writes, behind the store fence
-        (`decisionlog.store_purges`): a buffered line about the store decided
-        at or before the purge is dropped by every sink on insert. Idempotent;
-        the retry of a store deletion whose purge failed, or a purge decided
-        later. Needs the postgres sink on this instance (501 otherwise).
+        The lines and erasure tombstones of the store decided at or before
+        `before`, behind the store fence (`decisionlog.store_purges`), in the
+        postgres decision-log sink this instance writes. The retry of a store
+        deletion whose purge failed: pass its `deleted_at` as `before`. Without
+        `before` the store must be gone from the engine (409 while a store of
+        that name exists), so a recreated store is never purged by accident.
+        Idempotent; needs the postgres sink (501 otherwise).
+      parameters:
+        - { name: before, in: query, required: false, schema: { type: string, format: date-time }, description: "Purge lines decided at or before this instant (RFC 3339); required while a store of that name exists." }
       responses:
         '200':
           description: Purged.
@@ -1146,9 +1149,16 @@ paths:
                 properties:
                   store: { type: string }
                   purged_decisions: { type: boolean }
+                  before: { type: string, format: date-time }
                   decisions: { type: integer, description: Persisted lines deleted now. }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: A store of that name exists and no `before` was given.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '501': { $ref: '#/components/responses/NotImplemented' }
         '502':
           description: The sink could not be reached or the purge failed; retry.

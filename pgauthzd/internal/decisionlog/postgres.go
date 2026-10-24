@@ -179,7 +179,7 @@ type store interface {
 	ensurePartitions(ctx context.Context, days []time.Time) error
 	insert(ctx context.Context, rows []row, retentionDays int) (expired int, err error)
 	retain(ctx context.Context, retentionDays int) (dropped int, err error)
-	purgeStore(ctx context.Context, store, by string) (int64, error)
+	purgeStore(ctx context.Context, store, by string, before time.Time) (int64, error)
 	close()
 }
 
@@ -505,13 +505,12 @@ func (s *PostgresSink) retention(ctx context.Context) {
 	s.ensured.Range(func(k, _ any) bool { s.ensured.Delete(k); return true })
 }
 
-// PurgeStore removes every persisted line and tombstone of a store (the
-// store is gone from the engine) behind a store-level fence (see
-// applyStorePurgesSQL): the fence row, the barrier, then the deletes in one
-// transaction. Idempotent — a repeat moves the fence and finds nothing to
-// delete — so a failed purge is retried after the store itself is gone.
-func (s *PostgresSink) PurgeStore(ctx context.Context, store, by string) (int64, error) {
-	return s.db.purgeStore(ctx, store, by)
+// PurgeStore removes a store's lines and tombstones decided at or before
+// `before` — the store's deletion time, so a store recreated under the same
+// name keeps everything decided after it — behind the store fence (see
+// applyStorePurgesSQL). Idempotent; the fence only ever moves forward.
+func (s *PostgresSink) PurgeStore(ctx context.Context, store, by string, before time.Time) (int64, error) {
+	return s.db.purgeStore(ctx, store, by, before)
 }
 
 // Close stops the flusher, inserts what is queued and closes the pool.
@@ -689,20 +688,22 @@ func (p *pgStore) retain(ctx context.Context, retentionDays int) (int, error) {
 // in one small transaction — committed, so a batch that filtered without
 // the fence has committed and a later one applies it — then the store's
 // lines and tombstones in one transaction with no lock held.
-func (p *pgStore) purgeStore(ctx context.Context, store, by string) (int64, error) {
+func (p *pgStore) purgeStore(ctx context.Context, store, by string, before time.Time) (int64, error) {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `INSERT INTO decisionlog.store_purges (store, purged_at, purged_by) VALUES ($1, now(), $2)
-	                            ON CONFLICT (store) DO UPDATE SET purged_at = EXCLUDED.purged_at, purged_by = EXCLUDED.purged_by`, store, by); err != nil {
-		return 0, err
-	}
+	// the lock before the fence row: retention deletes expired fences under
+	// the same lock, so the other order could deadlock on the row
 	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '10s'`); err != nil {
 		return 0, err
 	}
 	if _, err := tx.Exec(ctx, erasureBarrierSQL); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO decisionlog.store_purges (store, purged_at, purged_by) VALUES ($1, $2, $3)
+	                            ON CONFLICT (store) DO UPDATE SET purged_at = GREATEST(store_purges.purged_at, EXCLUDED.purged_at), purged_by = EXCLUDED.purged_by`, store, before, by); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -713,11 +714,11 @@ func (p *pgStore) purgeStore(ctx context.Context, store, by string) (int64, erro
 		return 0, err
 	}
 	defer func() { _ = tx2.Rollback(ctx) }()
-	tag, err := tx2.Exec(ctx, `DELETE FROM decisionlog.decisions WHERE store = $1`, store)
+	tag, err := tx2.Exec(ctx, `DELETE FROM decisionlog.decisions WHERE store = $1 AND ts <= $2`, store, before)
 	if err != nil {
 		return 0, err
 	}
-	if _, err := tx2.Exec(ctx, `DELETE FROM decisionlog.erasures WHERE store = $1`, store); err != nil {
+	if _, err := tx2.Exec(ctx, `DELETE FROM decisionlog.erasures WHERE store = $1 AND erased_at <= $2`, store, before); err != nil {
 		return 0, err
 	}
 	return tag.RowsAffected(), tx2.Commit(ctx)

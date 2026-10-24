@@ -439,7 +439,8 @@ func (s *Server) handleDeleteStore(w http.ResponseWriter, r *http.Request) {
 		writeEngineError(w, err)
 		return
 	}
-	out := map[string]any{"ok": true, "deleted": store, "purged_decisions": false}
+	deletedAt := time.Now().UTC() // nothing about this store is decided after this
+	out := map[string]any{"ok": true, "deleted": store, "deleted_at": deletedAt, "purged_decisions": false}
 	// the decision log's lines about the store go only when asked (like the
 	// audit history: a record of what was decided may have to outlive the
 	// store), behind the store fence; the store is deleted and on record
@@ -447,10 +448,10 @@ func (s *Server) handleDeleteStore(w http.ResponseWriter, r *http.Request) {
 	// retried over pgauthzd's admin API (DELETE …/stores/{store}/decisions)
 	// or waits for the sink's retention
 	if req.PurgeDecisions {
-		n, err := s.purgeStoreDecisions(ctx, store, p.typ+":"+p.id)
+		n, err := s.purgeStoreDecisions(ctx, store, p.typ+":"+p.id, deletedAt)
 		if err != nil {
 			out["partial"] = true
-			out["error"] = "the store is deleted but its decision-log lines could not be: " + err.Error()
+			out["error"] = "the store is deleted but its decision-log lines could not be: retry over pgauthzd's admin API, DELETE …/stores/" + store + "/decisions?before=" + deletedAt.Format(time.RFC3339Nano) + ": " + err.Error()
 			writeJSON(w, http.StatusBadGateway, out)
 			return
 		}

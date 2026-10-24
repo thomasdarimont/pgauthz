@@ -50,8 +50,10 @@ func (f *fakeStore) retain(_ context.Context, days int) (int, error) {
 	return 1, nil
 }
 
-func (f *fakeStore) close()                                                    { f.mu.Lock(); f.closed = true; f.mu.Unlock() }
-func (f *fakeStore) purgeStore(context.Context, string, string) (int64, error) { return 0, nil }
+func (f *fakeStore) close() { f.mu.Lock(); f.closed = true; f.mu.Unlock() }
+func (f *fakeStore) purgeStore(context.Context, string, string, time.Time) (int64, error) {
+	return 0, nil
+}
 
 func (f *fakeStore) rows() int {
 	f.mu.Lock()
@@ -369,11 +371,11 @@ func TestPostgresSinkErasureInterleavings(t *testing.T) {
 		return n
 	}
 	// the console's erasure, step by step (the SQL mirrors eraseDecisions)
-	eraseBarrier := func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO decisionlog.erasures (store, subject_type, subject_id, erased_at, erased_by) VALUES ('it_race', 'user', 'alice', now(), 'test')`); err != nil {
+	eraseBarrier := func(tx pgx.Tx) error { // the console's protocol: the lock, then the tombstone stamped after it
+		if _, err := tx.Exec(ctx, erasureBarrierSQL); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, erasureBarrierSQL)
+		_, err := tx.Exec(ctx, `INSERT INTO decisionlog.erasures (store, subject_type, subject_id, erased_at, erased_by) VALUES ('it_race', 'user', 'alice', clock_timestamp(), 'test')`)
 		return err
 	}
 	eraseDelete := func() error {
@@ -423,6 +425,10 @@ func TestPostgresSinkErasureInterleavings(t *testing.T) {
 		t.Fatalf("the erasure did not wait for the batch in flight: %v", err)
 	case <-time.After(200 * time.Millisecond):
 	}
+	var afterWait time.Time // the database clock while the erasure is still waiting
+	if err := aux.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&afterWait); err != nil {
+		t.Fatal(err)
+	}
 	if err := txW.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -431,6 +437,12 @@ func TestPostgresSinkErasureInterleavings(t *testing.T) {
 	}
 	if n := count("race-a"); n != 0 {
 		t.Fatalf("(a) alice's line committed after the erasure survived: %d rows", n)
+	}
+	// the tombstone is stamped after the lock was acquired, not at the
+	// erasure's transaction start: a line decided during the wait is covered
+	var erasedAt time.Time
+	if err := aux.QueryRow(ctx, `SELECT max(erased_at) FROM decisionlog.erasures WHERE store = 'it_race'`).Scan(&erasedAt); err != nil || !erasedAt.After(afterWait) {
+		t.Fatalf("erased_at %v must be after the wait (%v): %v", erasedAt, afterWait, err)
 	}
 
 	// (b) the erasure holds the barrier when a batch arrives: the batch
@@ -549,9 +561,10 @@ func TestPostgresSinkStorePurgeFence(t *testing.T) {
 	if _, err := insertTx(ctx, txW, []row{line("bob", "parked", before)}, 0); err != nil {
 		t.Fatal(err)
 	}
+	deletedAt := time.Now().UTC() // the store's deletion time: the purge's bound
 	purged := make(chan error, 1)
 	go func() {
-		_, err := (&pgStore{pool: aux}).purgeStore(ctx, "it_purge", "test")
+		_, err := (&pgStore{pool: aux}).purgeStore(ctx, "it_purge", "test", deletedAt)
 		purged <- err
 	}()
 	waitFor(t, "the purge to wait for the batch in flight", waitingOnLock)
@@ -582,12 +595,46 @@ func TestPostgresSinkStorePurgeFence(t *testing.T) {
 	if n := count("late"); n != 0 {
 		t.Fatalf("(c) lines about the purged store decided before the purge came back: %d", n)
 	}
-	// and a line decided after the purge is new data (a recreated store)
-	if _, err := db.insert(ctx, []row{line("alice", "fresh", time.Now().UTC().Add(time.Minute))}, 0); err != nil {
+	// (d) a store recreated under the name: its lines are decided after the
+	// deletion time and survive both the fence and a retried purge with the
+	// same bound
+	fresh := deletedAt.Add(time.Second)
+	if _, err := db.insert(ctx, []row{line("alice", "fresh", fresh)}, 0); err != nil {
 		t.Fatal(err)
 	}
 	if n := count("fresh"); n != 1 {
-		t.Fatalf("a line decided after the purge must stay: %d", n)
+		t.Fatalf("a line decided after the deletion must stay: %d", n)
+	}
+	if _, err := (&pgStore{pool: aux}).purgeStore(ctx, "it_purge", "retry", deletedAt); err != nil {
+		t.Fatal(err)
+	}
+	if n := count("fresh"); n != 1 {
+		t.Fatalf("a retried purge with the old bound took the new store's line: %d", n)
+	}
+	// (e) retention holding the lock while the expired fence is deleted, a
+	// purge arriving: it waits for the lock and then writes its fence — no
+	// deadlock (the fence row is only touched under the lock)
+	txR, err := aux.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := txR.Exec(ctx, erasureBarrierSQL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := txR.Exec(ctx, `DELETE FROM decisionlog.store_purges WHERE store = 'it_purge'`); err != nil {
+		t.Fatal(err)
+	}
+	purged2 := make(chan error, 1)
+	go func() {
+		_, err := (&pgStore{pool: aux}).purgeStore(ctx, "it_purge", "test", time.Now().UTC())
+		purged2 <- err
+	}()
+	waitFor(t, "the purge to wait for retention's lock", waitingOnLock)
+	if err := txR.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-purged2; err != nil {
+		t.Fatalf("purge after retention: %v (a deadlock would abort one of them)", err)
 	}
 
 	// (b) the purge holds the barrier when a batch arrives: the batch waits,

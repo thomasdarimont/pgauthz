@@ -53,17 +53,26 @@ func (e *upstreamError) Error() string { return e.msg }
 // adminAPI: the tab runs over pgauthzd's admin API.
 func (s *Server) adminAPI() bool { return s.cfg.PgauthzdAdminURL != "" }
 
-// adminCredential: what this request presents to the admin API — the
-// person's own token when the session holds one, else the console's
-// certificate; "" when neither.
+// adminCredential: what this request presents to the admin API — an OIDC
+// session's own token; the console's certificate for the LOCAL admin only
+// (an OIDC session without a usable token fails closed: the certificate
+// may carry more scope than the person's own credential would); "" when
+// there is nothing to present.
 func (s *Server) adminCredential(r *http.Request) (kind, token string) {
-	if se := s.sessionFromReq(r); se != nil && !se.local && se.accessToken != "" {
+	se := s.sessionFromReq(r)
+	switch {
+	case se == nil:
+		return "", ""
+	case se.local:
+		if s.adminHTTP != nil {
+			return "certificate", ""
+		}
+		return "", ""
+	case se.accessToken != "":
 		return "token", se.accessToken
+	default:
+		return "", ""
 	}
-	if s.adminHTTP != nil {
-		return "certificate", ""
-	}
-	return "", ""
 }
 
 // adminCall is one request to pgauthzd's admin API as the person (or the

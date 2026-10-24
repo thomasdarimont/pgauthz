@@ -123,12 +123,14 @@ subject, `erased_at`), and every batch deletes, in its own transaction, the
 rows it just inserted that a tombstone covers — decided at or before
 `erased_at`, naming the person as subject or resource. A store purge works the
 same way with a store-level fence (`decisionlog.store_purges`: store,
-`purged_at`): lines about the store decided at or before the purge are
-dropped, so the store's tombstones can go with its lines.
+`purged_at` = the store's deletion time): lines about the store decided at or
+before it are dropped, so the store's tombstones can go with its lines, and a
+store recreated under the name keeps everything decided after it.
 
 Batches, erasures, purges and retention are ordered by one transaction-level
 advisory lock: batches hold it shared, the others take it exclusive for an
-instant after writing their tombstone or fence and release it on commit; the
+instant, write their tombstone or fence (stamped after the lock) and release
+it on commit; the
 deletes of persisted lines run afterwards unlocked, so sinks never wait for
 each other or for a large delete. The binding age check runs inside the batch
 transaction on the database clock, with a local pre-check one day wider; a

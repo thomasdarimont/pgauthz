@@ -266,11 +266,37 @@ func TestIssuersOverAdminAPI(t *testing.T) {
 	if code, m = do("POST", "/api/platform/issuers/delete", `{"issuer":"https://tenant-a"}`, admin); code != 200 || m["deleted"] != true {
 		t.Fatalf("delete over the api: %d %v", code, m)
 	}
-	// no token on the request (the local admin's session has none) and no
-	// certificate configured: the call has no credential (503)
+	// no session on the request and no certificate: no credential (503)
 	err := s.adminCall(ctx, httptest.NewRequest("GET", "/api/platform/issuers", nil), "GET", "/pgauthz/v1/admin/issuers", nil, nil)
 	var ue *upstreamError
 	if !errors.As(err, &ue) || ue.status != http.StatusServiceUnavailable || !strings.Contains(ue.msg, "no credential") {
 		t.Fatalf("no credential: %v", err)
+	}
+	// the credential by session kind, with a certificate configured: an OIDC
+	// session presents its token, the LOCAL admin the certificate, and an
+	// OIDC session without a usable token nothing — never the certificate
+	s.adminHTTP = &http.Client{}
+	defer func() { s.adminHTTP = nil }()
+	withCookie := func(c *http.Cookie) *http.Request {
+		req := httptest.NewRequest("GET", "/api/platform/issuers", nil)
+		req.AddCookie(c)
+		return req
+	}
+	if kind, _ := s.adminCredential(withCookie(admin)); kind != "token" {
+		t.Fatalf("oidc session with a token: %q", kind)
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE sessions SET access_token = '' WHERE id = $1`, admin.Value); err != nil {
+		t.Fatal(err)
+	}
+	if kind, _ := s.adminCredential(withCookie(admin)); kind != "" {
+		t.Fatalf("oidc session without a token must fail closed, got %q", kind)
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE sessions SET local = true WHERE id = $1`, admin.Value); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.LocalAdminUser, s.cfg.LocalAdminPassword = "iss_api_admin", "x" // a local session is valid only while the local admin is configured
+	defer func() { s.cfg.LocalAdminUser, s.cfg.LocalAdminPassword = "", "" }()
+	if kind, _ := s.adminCredential(withCookie(admin)); kind != "certificate" {
+		t.Fatalf("the local admin presents the certificate, got %q", kind)
 	}
 }

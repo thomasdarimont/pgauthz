@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
@@ -211,16 +212,16 @@ func (h *Handler) adminDeleteStore(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no store "+store)
 		return
 	}
-	out := map[string]any{"store": store, "deleted": true, "purged_audit": purge, "purged_decisions": false}
+	deletedAt := time.Now().UTC() // nothing about this store is decided after this
+	out := map[string]any{"store": store, "deleted": true, "deleted_at": deletedAt, "purged_audit": purge, "purged_decisions": false}
 	if purgeDecisions {
-		// behind the store fence (PurgeStore). The engine part is done
-		// either way: a sink failure answers 502 `partial`, and
-		// DELETE …/stores/{store}/decisions retries the purge alone — the
-		// store itself is gone by then.
-		n, err := sink.PurgeStore(r.Context(), store, actorLabel(r))
+		// bounded by the deletion time, so a store recreated under the name
+		// keeps its lines; a failure answers 502 `partial`, and
+		// DELETE …/stores/{store}/decisions?before=<deleted_at> retries it
+		n, err := sink.PurgeStore(r.Context(), store, actorLabel(r), deletedAt)
 		if err != nil {
 			out["partial"] = true
-			out["error"] = "the store is deleted but its decision-log lines could not be: retry with DELETE /pgauthz/v1/admin/stores/" + store + "/decisions: " + err.Error()
+			out["error"] = "the store is deleted but its decision-log lines could not be: retry with DELETE /pgauthz/v1/admin/stores/" + store + "/decisions?before=" + deletedAt.Format(time.RFC3339Nano) + ": " + err.Error()
 			writeJSON(w, http.StatusBadGateway, out)
 			return
 		}
@@ -230,11 +231,13 @@ func (h *Handler) adminDeleteStore(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// adminPurgeStoreDecisions — DELETE /pgauthz/v1/admin/stores/{store}/decisions:
-// the decision log's lines and tombstones of a store, behind the store
-// fence, whether or not the store still exists in the engine — the retry
-// of a store deletion whose purge failed, or a purge decided later. Needs
-// the postgres sink on this instance; idempotent.
+// adminPurgeStoreDecisions — DELETE /pgauthz/v1/admin/stores/{store}/decisions
+// [?before=<RFC 3339>]: the decision log's lines and tombstones of a store
+// decided at or before `before`, behind the store fence — the retry of a
+// deletion whose purge failed (`before` = its `deleted_at`). Without
+// `before` the store must be gone from the engine (then: now); while a
+// store of that name exists the bound is required, so a recreated store
+// is never purged by accident. Needs the postgres sink; idempotent.
 func (h *Handler) adminPurgeStoreDecisions(w http.ResponseWriter, r *http.Request) {
 	_, store, ok := h.requireStoreScope(w, r)
 	if !ok {
@@ -245,12 +248,33 @@ func (h *Handler) adminPurgeStoreDecisions(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusNotImplemented, "this instance writes no postgres decision-log sink (DECISION_LOG=postgres)")
 		return
 	}
-	n, err := sink.PurgeStore(r.Context(), store, actorLabel(r))
+	before := time.Now().UTC()
+	if raw := r.URL.Query().Get("before"); raw != "" {
+		t, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			writeBadRequest(w, "before must be an RFC 3339 timestamp (the deletion's deleted_at)")
+			return
+		}
+		before = t
+	} else {
+		a, ok := h.storeAdmin(w)
+		if !ok {
+			return
+		}
+		if _, found, err := a.GetStore(r.Context(), store); err != nil {
+			writeDecisionError(w, err)
+			return
+		} else if found {
+			writeError(w, http.StatusConflict, "a store named "+store+" exists: pass before=<the deleted store's deleted_at> to purge only the lines decided up to then, or delete the store with purge_decisions=true")
+			return
+		}
+	}
+	n, err := sink.PurgeStore(r.Context(), store, actorLabel(r), before)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "decision log: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"store": store, "purged_decisions": true, "decisions": n})
+	writeJSON(w, http.StatusOK, map[string]any{"store": store, "purged_decisions": true, "before": before, "decisions": n})
 }
 
 func (h *Handler) adminStoreModel(w http.ResponseWriter, r *http.Request) {

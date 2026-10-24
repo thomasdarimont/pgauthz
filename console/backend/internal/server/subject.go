@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -264,21 +265,24 @@ func (s *Server) handleSubjectErase(w http.ResponseWriter, r *http.Request) {
 // then the lines and tombstones in one transaction, no lock held. Without
 // the fence, deleting the tombstones would let a buffered line about an
 // erased subject come back (review #27). Idempotent.
-func (s *Server) purgeStoreDecisions(ctx context.Context, store, by string) (int64, error) {
+func (s *Server) purgeStoreDecisions(ctx context.Context, store, by string, before time.Time) (int64, error) {
 	db := s.decisionsDB()
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `INSERT INTO decisionlog.store_purges (store, purged_at, purged_by) VALUES ($1, now(), $2)
-	                            ON CONFLICT (store) DO UPDATE SET purged_at = EXCLUDED.purged_at, purged_by = EXCLUDED.purged_by`, store, by); err != nil {
-		return 0, err
-	}
+	// the lock before the fence row (retention deletes expired fences under
+	// the same lock); the bound is the store's deletion time, so a store
+	// recreated under the name keeps its lines
 	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '10s'`); err != nil {
 		return 0, err
 	}
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('decisionlog.erasures'))`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO decisionlog.store_purges (store, purged_at, purged_by) VALUES ($1, $2, $3)
+	                            ON CONFLICT (store) DO UPDATE SET purged_at = GREATEST(store_purges.purged_at, EXCLUDED.purged_at), purged_by = EXCLUDED.purged_by`, store, before, by); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -289,11 +293,11 @@ func (s *Server) purgeStoreDecisions(ctx context.Context, store, by string) (int
 		return 0, err
 	}
 	defer func() { _ = tx2.Rollback(ctx) }()
-	tag, err := tx2.Exec(ctx, `DELETE FROM decisionlog.decisions WHERE store = $1`, store)
+	tag, err := tx2.Exec(ctx, `DELETE FROM decisionlog.decisions WHERE store = $1 AND ts <= $2`, store, before)
 	if err != nil {
 		return 0, err
 	}
-	if _, err := tx2.Exec(ctx, `DELETE FROM decisionlog.erasures WHERE store = $1`, store); err != nil {
+	if _, err := tx2.Exec(ctx, `DELETE FROM decisionlog.erasures WHERE store = $1 AND erased_at <= $2`, store, before); err != nil {
 		return 0, err
 	}
 	return tag.RowsAffected(), tx2.Commit(ctx)
@@ -325,13 +329,14 @@ func (s *Server) eraseDecisions(ctx context.Context, store, typ, id, by string) 
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `INSERT INTO decisionlog.erasures (store, subject_type, subject_id, erased_at, erased_by) VALUES ($1, $2, $3, now(), $4)`, store, typ, id, by); err != nil {
-		return 0, err
-	}
 	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '10s'`); err != nil {
 		return 0, err
 	}
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('decisionlog.erasures'))`); err != nil {
+		return 0, err
+	}
+	// stamped after the lock: a line decided while the erasure waited is history too
+	if _, err := tx.Exec(ctx, `INSERT INTO decisionlog.erasures (store, subject_type, subject_id, erased_at, erased_by) VALUES ($1, $2, $3, clock_timestamp(), $4)`, store, typ, id, by); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
