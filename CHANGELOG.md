@@ -9,6 +9,34 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [0.18.0] - 2026-10-24
 
+The management release. pgauthz grows an administration plane next to the
+decision plane: a **management console** (`console/`, Go BFF + Lit SPA,
+gated by a pgauthz store of its own) covering stores, models as DSL, data,
+sharing, rollout, tests, operations, decisions and issuers; an **admin API**
+on pgauthzd (`ADMIN_API_ENABLED`, its own listener, mTLS client certificates
+as an admin credential, tenant-scoped by issuer) with **pgauthzctl** moved
+onto it; **issuer bindings in the database** with hot reload; a
+**management listener** that owns the probes and `/metrics`; and the
+**`pgauthzadm`** library the console and the CLI share. Around the engine:
+**sharing as an API** (`authz.grant` / `revoke`, grant rules, the
+`authz_sharer` tier), **data subject requests** (`list_subject_objects` as
+CSV for the application teams, `export_subject`, `erase_subject`), **derived
+permissions** as a documented feature with changefeed-driven incremental
+refresh, condition-bound type restrictions, delegated actors, relation kinds,
+and a **decision log with a PostgreSQL sink** (ADR 0015) that now honours
+erasures under concurrency (tombstones, advisory-lock ordering, a
+retention-bound delivery age — reviews #21–#26). pgauthzd gains
+**OpenTelemetry** tracing, AuthZEN `properties` reaching the engine's
+conditions, a conformance harness for the OpenID suite, `TRUST_FORWARDED_HEADERS`,
+and an embedded Swagger UI. **Security:** a verified token without a subject
+claim could assert any subject (ADR 0014 closes it), `model_remove_type` with
+`p_force => NULL` skipped the tuple check, and type/relation removal is now
+serialized against writes. **Breaking:** AuthZEN search responses carry the
+entity under `results`, the console retires the playground, and the base
+images move to PostgreSQL 18.6, OPA 1.21.2, Keycloak 26.8.1 and Go 1.27.3.
+Documentation is split one owner per topic, with `docs/USE-CASES.md` as the
+entry point. Details, by batch, below.
+
 ### Added
 
 - **Issuer bindings managed in the database (console gaps item 5; design:
