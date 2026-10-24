@@ -968,6 +968,7 @@ paths:
         historically.
       parameters:
         - { name: purge_audit, in: query, required: false, schema: { type: boolean } }
+        - { name: purge_decisions, in: query, required: false, schema: { type: boolean }, description: "Also delete the store's lines and tombstones from the postgres decision-log sink this instance writes (default: keep; they wait for the sink's retention)." }
       responses:
         '200':
           description: Deleted.
@@ -1074,6 +1075,86 @@ paths:
                   model: { type: string }
                   can_apply: { type: boolean, enum: [false] }
                   plan: { $ref: '#/components/schemas/ModelPlan' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/admin/stores/{store}/subjects/{type}/{id}/objects:
+    parameters:
+      - { name: store, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' } }
+      - { name: type, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' }, description: The subject's type. }
+      - { name: id, in: path, required: true, schema: { type: string }, description: "The subject's id (one concrete id, no wildcard)." }
+    get:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminSubjectObjects
+      summary: Data subject takeout — every object the subject reaches, as rows or CSV
+      description: |
+        One row per (object type, relation, object id) the subject reaches
+        (`authz.list_subject_objects`): `direct` says a tuple names it
+        outright, `is_wildcard` marks the "every object" row, `truncated`
+        that a pair hit the limit. `format=csv` answers `text/csv` with the
+        store and subject in every row, the file handed to the application
+        teams (PRODUCTION.md → Data subject requests).
+      parameters:
+        - { name: relations, in: query, schema: { type: string }, description: "Comma-separated relations to restrict to (default: every relation of the model)." }
+        - { name: object_types, in: query, schema: { type: string }, description: "Comma-separated object types to restrict to (default: every type)." }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 1000000, default: 10000 }, description: "Objects per (type, relation) pair; `truncated` marks a pair that hit it." }
+        - { name: format, in: query, schema: { type: string, enum: [json, csv] }, description: "`csv` streams the rows as text/csv." }
+      responses:
+        '200':
+          description: The rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [store, subject, objects, truncated]
+                properties:
+                  store: { type: string }
+                  subject: { $ref: '#/components/schemas/SubjectRef' }
+                  objects:
+                    type: array
+                    items: { $ref: '#/components/schemas/SubjectObject' }
+                  truncated: { type: boolean, description: Some pair hit the limit. }
+            text/csv:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/admin/stores/{store}/subjects/{type}/{id}:
+    parameters:
+      - { name: store, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' } }
+      - { name: type, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' }, description: The subject's type. }
+      - { name: id, in: path, required: true, schema: { type: string }, description: "The subject's id (one concrete id, no wildcard)." }
+    get:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminSubjectExport
+      summary: Data subject export — one JSON document about the person
+      description: |
+        `authz.export_subject`: the direct tuples on either side (expired
+        ones marked), the effective objects, the events by and about the
+        person, the audit rows, each with its `*_truncated` flag. The
+        decision log is not part of it — this instance's sink is
+        write-only; the console's export adds the lines.
+      parameters:
+        - { name: relations, in: query, schema: { type: string }, description: "Comma-separated relations to restrict `effective` to." }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 1000000, default: 10000 }, description: Cap per list. }
+      responses:
+        '200':
+          description: The export document.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /pgauthz/v1/admin/stores/{store}/recorders:
     parameters:
@@ -2501,6 +2582,22 @@ components:
         gates: { type: array, items: { type: object, additionalProperties: true } }
         grant_rules: { type: array, items: { type: object, additionalProperties: true } }
       additionalProperties: true
+    SubjectRef:
+      type: object
+      required: [type, id]
+      properties:
+        type: { type: string }
+        id: { type: string }
+    SubjectObject:
+      type: object
+      required: [object_type, relation, object_id, is_wildcard, direct, truncated]
+      properties:
+        object_type: { type: string }
+        relation: { type: string }
+        object_id: { type: string, description: "`*` on the wildcard row." }
+        is_wildcard: { type: boolean }
+        direct: { type: boolean, description: A stored tuple names the object outright. }
+        truncated: { type: boolean, description: "This (type, relation) pair hit the limit." }
     RecorderAllowlist:
       type: object
       required: [db_role, actions]

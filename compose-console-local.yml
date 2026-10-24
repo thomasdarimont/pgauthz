@@ -69,6 +69,9 @@ services:
       # CONSOLE_I18N_DIR: /i18n
       # The tracing UI's trace page ({trace_id}): the Decisions tab links into it.
       CONSOLE_TRACE_URL: "${CONSOLE_TRACE_URL:-}"
+      # The Data subject tab's erasure (platform admins): on in the dev
+      # stack so the browser tests exercise it; off by default elsewhere.
+      SUBJECT_ERASURE_ENABLED: "${SUBJECT_ERASURE_ENABLED:-true}"
     ports:
       - "${CONSOLE_LOCAL_PORT:-8095}:8080"
     volumes:

@@ -1107,9 +1107,11 @@ fleet-wide *partition drop* is shared by design).
   as `owner` and to object types. This is the hand-over to the application
   teams: pgauthz knows the *references* (the record ids under each type),
   the applications hold the records. As CSV from the console (Store →
-  *Data subject* → *Objects CSV*) or `\copy … CSV HEADER` in
-  psql; or as a JOIN against the application's tables where they share the
-  database.
+  *Data subject* → *Objects CSV*), over the admin API
+  (`GET …/admin/stores/{store}/subjects/{type}/{id}/objects?format=csv`),
+  with `pgauthzctl subject objects <store> <type:id> --csv --out file`, or
+  `\copy … CSV HEADER` in psql; or as a JOIN against the application's
+  tables where they share the database.
 - **Access / portability:** `SELECT authz.export_subject(store, type, id)`
   — one JSON document: the subject's grants and memberships (expired rows
   marked), the tuples about the subject, what it can *effectively* do per
@@ -1117,18 +1119,38 @@ fleet-wide *partition drop* is shared by design).
   recorded actions, and every tuple change that named it. Auditor tier;
   Store → *Data subject* in the console (`can_view_audit`)
   shows and downloads it together with the subject's lines of the decision
-  log. See [API.md](API.md#export_subject--erase_subject--data-subject-requests).
+  log; the admin API (`GET …/subjects/{type}/{id}`) and `pgauthzctl subject
+  export` return the engine's document. See [API.md](API.md#export_subject--erase_subject--data-subject-requests).
 - **Erasure:** `SELECT authz.erase_subject(store, type, id, p_performed_by
   => 'dpo')` removes the tuples naming the subject on either side (incl.
   expired) and its events; `p_purge_audit => true` removes the audit rows
   that name it as well (otherwise the trail keeps that the rows existed and
   went — the usual choice; time travel over the subject's grants is exact
-  only while it is kept). Admin tier; the console's *Erase* needs
-  `can_manage_access` and also deletes the subject's decision-log lines.
-  Purging events can only *relax* a gate that counts them.
+  only while it is kept). Admin tier in SQL; in the console only with
+  `SUBJECT_ERASURE_ENABLED=true` and for **platform admins**
+  (`platform#can_manage_access`, not store owners), with a typed
+  confirmation — it also deletes the subject's decision-log lines. Purging
+  events can only *relax* a gate that counts them.
+- **Erasure comes last, and not over the API.** The takeout is the index
+  of what the applications still have to delete: erase in pgauthz only
+  after they are done, or the references are gone while the records remain.
+  That ordering is why the admin API and `pgauthzctl` offer the takeout and
+  the export but **no erasure** — a machine-callable erasure invites a
+  script that runs it first — and why the console's erasure is off unless
+  the deployment turns it on. The paths are the console's *Data subject*
+  tab (`SUBJECT_ERASURE_ENABLED=true`; a platform admin, a typed
+  confirmation, the audit record) and `erase_subject` in SQL for a DPO with
+  database access.
 - **A whole tenant:** `retire_store` then `delete_store(p_purge_audit =>
-  true)` (above) plus `purge_events`; the decision log is deleted by store in
-  its sink.
+  true)` (above) plus `purge_events`; the store's decision-log lines stay —
+  a record of what was decided may have to outlive the store — unless the
+  deletion asks for them: the console's Delete dialog, the admin API's
+  `purge_decisions=true`, `pgauthzctl store delete --purge-decisions`
+  (`502 partial` if the sink failed). Kept lines age out with everyone
+  else's: the sink's retention drops whole days
+  (`DECISION_LOG_RETENTION_DAYS`, default 30) and is not store-aware. With
+  retention `0` nothing is ever dropped, so a deleted store's lines then
+  stay for good, reachable only in SQL — purge on delete in that setup.
 - **Both sides, always:** export and erasure match the person as the
   *subject* (what they did, what they may do) and as the *object* — the
   tuples about them, the actions others recorded on them (`events_about`),

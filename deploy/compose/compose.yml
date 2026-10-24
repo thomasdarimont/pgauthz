@@ -268,6 +268,9 @@ services:
       CONSOLE_LOCAL_ADMIN_PASSWORD: "${CONSOLE_LOCAL_ADMIN_PASSWORD:-}"
       CONSOLE_LOCAL_ADMIN_TEAMS: "${CONSOLE_LOCAL_ADMIN_TEAMS:-role_console_admin}"
       CONSOLE_LOCAL_ADMIN_STORE_ROLE: "${CONSOLE_LOCAL_ADMIN_STORE_ROLE:-owner}"
+      # The Data subject tab's erasure (platform admins only; the takeout and
+      # the export need no switch). Off: erase_subject in SQL remains the path.
+      SUBJECT_ERASURE_ENABLED: "${SUBJECT_ERASURE_ENABLED:-false}"
       CONSOLE_LOCAL_ADMIN_ALLOW_IN_PRODUCTION: "${CONSOLE_LOCAL_ADMIN_ALLOW_IN_PRODUCTION:-}"
       SCOPES: "${CONSOLE_SCOPES:-openid profile}"
       # The public base: your proxy's https://host; the client's redirect URI

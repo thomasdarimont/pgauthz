@@ -58,6 +58,20 @@ func (f *fakeAdmin) handler(_ *testing.T) http.Handler {
 		writeJSON(w, status, map[string]any{"status": status, "message": msg})
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /pgauthz/v1/admin/stores/{store}/subjects/{type}/{id}/objects", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("format") == "csv" {
+			w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+			_, _ = w.Write([]byte("store,subject_type,subject_id,object_type,relation,object_id,is_wildcard,direct,truncated\n" +
+				r.PathValue("store") + "," + r.PathValue("type") + "," + r.PathValue("id") + ",doc,can_read,d1,false,true,false\n"))
+			return
+		}
+		writeJSON(w, 200, map[string]any{"store": r.PathValue("store"), "subject": map[string]string{"type": r.PathValue("type"), "id": r.PathValue("id")},
+			"objects": []map[string]any{{"object_type": "doc", "relation": "can_read", "object_id": "d1", "is_wildcard": false, "direct": true, "truncated": false},
+				{"object_type": "doc", "relation": "can_read", "object_id": "*", "is_wildcard": true, "direct": false, "truncated": true}}, "truncated": true})
+	})
+	mux.HandleFunc("GET /pgauthz/v1/admin/stores/{store}/subjects/{type}/{id}", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]any{"subject": r.PathValue("type") + ":" + r.PathValue("id"), "direct": []any{}, "events_about": []any{}})
+	})
 	mux.HandleFunc("GET /pgauthz/v1/admin/issuers", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"source": "env+db", "revision": 7, "issuers": []any{}})
 	})
@@ -463,7 +477,7 @@ func TestStoreVerbsOverAPI(t *testing.T) {
 	if err != nil || !strings.Contains(out, "access=app_hr:r-") {
 		t.Fatalf("namespaces: %v %q", err, out)
 	}
-	out, err = capture(t, func() error { return cmdStore("delete", []string{"tenant_a", "--purge-audit"}) })
+	out, err = capture(t, func() error { return cmdStore("delete", []string{"tenant_a", "--purge-audit", "--purge-decisions"}) })
 	if err != nil || !strings.HasPrefix(out, "deleted store tenant_a") || !f.called("DELETE /pgauthz/v1/admin/stores/tenant_a?purge_audit=true") {
 		t.Fatalf("delete: %v %q", err, out)
 	}
@@ -526,5 +540,46 @@ func TestClientCertificate(t *testing.T) {
 	}
 	if _, err := capture(t, func() error { return cmdIssuersList([]string{"--cert", certFile, "--key", keyFile}) }); err == nil {
 		t.Fatal("without --ca the server certificate is not trusted")
+	}
+}
+
+// The subject verbs: the table, the CSV to a file, the export, flags as
+// query parameters; erase is no verb.
+func TestSubjectVerbsOverAPI(t *testing.T) {
+	f := newFakeAdmin()
+	srv := httptest.NewServer(f.handler(t))
+	defer srv.Close()
+	serverEnv(t, "", "")
+	if err := cmdSubject("objects", []string{"demo", "user:alice"}); err == nil || !strings.Contains(err.Error(), "admin API only") {
+		t.Fatalf("without --server: %v", err)
+	}
+	serverEnv(t, srv.URL, "tok")
+	if err := cmdSubject("objects", []string{"demo", "alice"}); err == nil || !strings.Contains(err.Error(), "type:id") {
+		t.Fatalf("bad subject: %v", err)
+	}
+	out, err := capture(t, func() error {
+		return cmdSubject("objects", []string{"demo", "user:alice", "--relations", "can_read,owner", "--object-types", "doc", "--limit", "7"})
+	})
+	if err != nil || !strings.Contains(out, "doc                      can_read                 d1  (direct)") || !strings.Contains(out, "(wildcard: every object)  (truncated)") || !strings.Contains(out, "some pair hit the limit") {
+		t.Fatalf("objects table: %v %q", err, out)
+	}
+	last := f.calls[len(f.calls)-1]
+	if !strings.Contains(last, "/subjects/user/alice/objects?") || !strings.Contains(last, "limit=7") || !strings.Contains(last, "object_types=doc") || !strings.Contains(last, "relations=can_read%2Cowner") {
+		t.Fatalf("objects query: %s", last)
+	}
+	csvFile := t.TempDir() + "/alice.csv"
+	if _, err := capture(t, func() error { return cmdSubject("objects", []string{"demo", "user:alice", "--csv", "--out", csvFile}) }); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(csvFile)
+	if !strings.HasPrefix(string(b), "store,subject_type,subject_id,") || !strings.Contains(string(b), "demo,user,alice,doc,can_read,d1,") {
+		t.Fatalf("csv file: %q", b)
+	}
+	out, err = capture(t, func() error { return cmdSubject("export", []string{"demo", "user:alice"}) })
+	if err != nil || !strings.Contains(out, `"events_about"`) {
+		t.Fatalf("export: %v %q", err, out)
+	}
+	if err := cmdSubject("erase", []string{"demo", "user:alice"}); err == nil || !strings.Contains(err.Error(), "unknown subject verb") {
+		t.Fatalf("erase is not a verb: %v", err)
 	}
 }

@@ -130,3 +130,30 @@ func (c *adminClient) do(ctx context.Context, method, path string, body, out any
 	}
 	return json.Unmarshal(raw, out)
 }
+
+// doStream is do for a non-JSON answer (the CSV takeout): the body is
+// copied to w as it arrives; a non-2xx answer is the API's error.
+func (c *adminClient) doStream(ctx context.Context, method, path string, w io.Writer) error {
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, nil)
+	if err != nil {
+		return err
+	}
+	if c.tok != "" {
+		req.Header.Set("Authorization", "Bearer "+c.tok)
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		e := &apiError{Status: resp.StatusCode}
+		if json.Unmarshal(raw, e) != nil || e.Message == "" {
+			e.Message = strings.TrimSpace(string(raw))
+		}
+		return e
+	}
+	_, err = io.Copy(w, resp.Body)
+	return err
+}

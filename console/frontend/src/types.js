@@ -48,6 +48,7 @@
  * @property {string} console_store
  * @property {boolean} [decision_url_configured]
  * @property {string} [trace_url] the tracing UI's trace page, {trace_id} placeholder (CONSOLE_TRACE_URL)
+ * @property {boolean} [subject_erasure] SUBJECT_ERASURE_ENABLED: the Data subject tab's erasure is on (platform admins)
  * @property {{oidc: boolean, local: boolean}} [login]
  */
 

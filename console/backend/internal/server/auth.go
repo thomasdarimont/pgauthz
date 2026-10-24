@@ -177,5 +177,8 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"registry":      registry[s.cfg.RegistryID],
 		"console_store": s.cfg.ConsoleStore,
 		"trace_url":     s.cfg.TraceURL,
+		// the erasure is a deployment decision (SUBJECT_ERASURE_ENABLED) on
+		// top of platform#can_manage_access; the SPA shows it only when both hold
+		"subject_erasure": s.cfg.SubjectErasureEnabled,
 	})
 }

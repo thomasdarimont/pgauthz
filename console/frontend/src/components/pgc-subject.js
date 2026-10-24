@@ -14,6 +14,7 @@ export class PgcSubject extends PgcElement {
   static properties = {
     store: { type: String },
     caps: { attribute: false },
+    me: { attribute: false }, // platform capabilities + the console's feature switches
     busy: { state: true },
     error: { state: true },
     form: { state: true },
@@ -90,7 +91,10 @@ export class PgcSubject extends PgcElement {
   _card() {
     const f = this.form;
     const d = this.subject;
-    const can = !!this.caps?.can_manage_access;
+    // erasure: a deployment decision (SUBJECT_ERASURE_ENABLED) and platform
+    // admins only — it comes last in a data-subject request, after the
+    // applications deleted their records by this takeout
+    const can = !!this.me?.subject_erasure && !!this.me?.platform?.can_manage_access;
     const count = (k) => (Array.isArray(d?.[k]) ? d[k].length : 0);
     const eff = (d?.effective ?? []).reduce((n, e) => n + (e.objects?.length ?? 0), 0);
     return html`<section class="card" data-testid="subject">

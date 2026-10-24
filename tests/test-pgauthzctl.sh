@@ -222,6 +222,15 @@ JSON
         sh -c "'$CTL' store recorders ctl_it_store | grep -q '^no allowlists' && ! '$CTL' store recorder-set ctl_it_store svc nope 2>/dev/null"
     check "api: store set --retired, then delete --purge-audit" \
         sh -c "'$CTL' store set ctl_it_store --retired | grep -q '^updated' && '$CTL' store list | grep -q '^ctl_it_store *RETIRED' && '$CTL' store delete ctl_it_store --purge-audit | grep -q '^deleted'"
+    # the subject group: data subject requests over the admin API
+    check "api: subject objects prints alice's team membership" \
+        sh -c "'$CTL' subject objects demo internal_user:alice --object-types team | grep -Eq '^team +member +payroll_team +\(direct\)'"
+    check "api: subject objects --csv --out writes the hand-over file" \
+        sh -c "'$CTL' subject objects demo internal_user:alice --object-types team --csv --out /tmp/ctl-it-alice.csv && head -1 /tmp/ctl-it-alice.csv | grep -q '^store,subject_type,subject_id,object_type' && grep -q '^demo,internal_user,alice,team,member,payroll_team,' /tmp/ctl-it-alice.csv"
+    check "api: subject export prints the export document" \
+        sh -c "'$CTL' subject export demo internal_user:alice | grep -q '\"events_about\"'"
+    check_fails "api: there is no subject erase verb" \
+        "$CTL" subject erase demo internal_user:nobody_ctl
     unset PGAUTHZ_SERVER PGAUTHZ_TOKEN
 else
     echo ""

@@ -88,6 +88,8 @@ services:
       # CONSOLE_I18N_DIR: /i18n
       # The tracing UI's trace page ({trace_id}): the Decisions tab links into it.
       CONSOLE_TRACE_URL: "${CONSOLE_TRACE_URL:-}"
+      # The Data subject tab's erasure (platform admins only); off by default
+      SUBJECT_ERASURE_ENABLED: "${SUBJECT_ERASURE_ENABLED:-false}"
     volumes:
       # SPA mounted for live editing; the binary serves it from /web.
       - ./console/frontend:/web:ro

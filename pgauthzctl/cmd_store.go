@@ -20,7 +20,9 @@ const storeUsage = `pgauthzctl store <verb> [flags] — the admin API only (--se
   get <store>                                 one store (JSON)
   set <store> [--description d] [--docs-url u] [--retired]
                                               create or update (an upsert); --retired retires
-  delete <store> [--purge-audit]              remove the store (the erasure path)
+  delete <store> [--purge-audit] [--purge-decisions]
+                                              remove the store (the erasure path); the audit
+                                              history and the decision log stay unless asked
   recorders <store>                           the recorder allowlists
   recorder-set <store> <db_role> <action,...> make a role's allowlist exactly these actions
   recorder-lift <store> <db_role>             lift a role's allowlist
@@ -37,6 +39,7 @@ func cmdStore(verb string, args []string) error {
 	docs := fs.String("docs-url", "", "set: the documentation link (http(s))")
 	retired := fs.Bool("retired", false, "set: retire the store")
 	purge := fs.Bool("purge-audit", false, "delete: remove the audit rows too")
+	purgeDecisions := fs.Bool("purge-decisions", false, "delete: remove the store's decision-log lines too")
 	read := fs.Bool("read", false, "namespace-grant: read access")
 	write := fs.Bool("write", false, "namespace-grant: write access")
 	asJSON := fs.Bool("json", false, "print the API's answer as JSON")
@@ -130,12 +133,19 @@ func cmdStore(verb string, args []string) error {
 		report(res, fmt.Sprintf("%s store %s", what, pos[0]))
 		return nil
 	case "delete":
-		if err := need(1, "delete <store> [--purge-audit]"); err != nil {
+		if err := need(1, "delete <store> [--purge-audit] [--purge-decisions]"); err != nil {
 			return err
 		}
-		q := ""
+		qs := url.Values{}
 		if *purge {
-			q = "?purge_audit=true"
+			qs.Set("purge_audit", "true")
+		}
+		if *purgeDecisions {
+			qs.Set("purge_decisions", "true")
+		}
+		q := ""
+		if len(qs) > 0 {
+			q = "?" + qs.Encode()
 		}
 		var res map[string]any
 		if err := c.do(ctx, "DELETE", storePath(pos[0])+q, nil, &res); err != nil {

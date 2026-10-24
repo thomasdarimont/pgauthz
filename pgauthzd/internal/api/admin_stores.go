@@ -49,6 +49,10 @@ type StoreAdmin interface {
 	Namespaces(ctx context.Context, store string) ([]authz.NamespaceRow, error)
 	SetNamespaceAccess(ctx context.Context, store, namespace, role string, canRead, canWrite bool, actor string) error
 	RevokeNamespaceAccess(ctx context.Context, store, namespace, role, actor string) (bool, error)
+	// Data subject requests (PRODUCTION.md → Data subject requests): the
+	// takeout and the export. No erasure over the API (see admin_subjects.go).
+	SubjectObjects(ctx context.Context, store, subjectType, subjectID string, relations, objectTypes []string, limit int) ([]authz.SubjectObjectRow, error)
+	ExportSubject(ctx context.Context, store, subjectType, subjectID string, relations []string, limit int) (json.RawMessage, error)
 }
 
 var roleNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]{0,62}$`)
@@ -196,7 +200,24 @@ func (h *Handler) adminDeleteStore(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no store "+store)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"store": store, "deleted": true, "purged_audit": purge})
+	purgeDecisions := r.URL.Query().Get("purge_decisions") == "true"
+	out := map[string]any{"store": store, "deleted": true, "purged_audit": purge, "purged_decisions": purgeDecisions}
+	// The decision log's lines about the store go only when asked (like the
+	// audit history, a record of what was decided may have to outlive the
+	// store), and only from the postgres sink this instance writes. The
+	// engine part is done either way: a sink failure answers 502 `partial`;
+	// the lines then wait for the sink's retention.
+	if sink := h.decisionSink(); purgeDecisions && sink != nil {
+		n, err := sink.DeleteStore(r.Context(), store)
+		if err != nil {
+			out["partial"] = true
+			out["error"] = "the store is deleted but its decision-log lines could not be: " + err.Error()
+			writeJSON(w, http.StatusBadGateway, out)
+			return
+		}
+		out["decisions"] = n
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (h *Handler) adminStoreModel(w http.ResponseWriter, r *http.Request) {
@@ -556,6 +577,7 @@ func (h *Handler) adminDeleteNamespaceAccess(w http.ResponseWriter, r *http.Requ
 
 // registerAdminStores mounts the store and model resources.
 func registerAdminStores(mux *http.ServeMux, h *Handler) {
+	registerAdminSubjects(mux, h)
 	mux.HandleFunc("GET /pgauthz/v1/admin/stores/{store}/recorders", h.adminRecorders)
 	mux.HandleFunc("PUT /pgauthz/v1/admin/stores/{store}/recorders/{role}", h.adminSetRecorder)
 	mux.HandleFunc("DELETE /pgauthz/v1/admin/stores/{store}/recorders/{role}", h.adminDeleteRecorder)

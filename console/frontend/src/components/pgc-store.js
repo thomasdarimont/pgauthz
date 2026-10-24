@@ -128,7 +128,7 @@ export class PgcStore extends PgcElement {
       case 'decisions':
         return html`<pgc-decisions .store=${this.store} .caps=${caps} .me=${this.me}></pgc-decisions>`;
       case 'subject':
-        return html`<pgc-subject .store=${this.store} .caps=${caps}></pgc-subject>`;
+        return html`<pgc-subject .store=${this.store} .caps=${caps} .me=${this.me}></pgc-subject>`;
       case 'access':
         return html`<pgc-access
           .store=${this.store}

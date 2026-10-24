@@ -805,6 +805,34 @@ else
 fi
 check_http "admin: DELETE removes the namespace grant (200)" "200" \
     -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/namespaces/hr/access/app_hr" -H "$AUTH_ADMIN"
+# data subject requests over the admin API (demo fixture: alice is a member of payroll_team)
+total=$((total + 1))
+got=$(curl -sf "$ADMIN_URL/pgauthz/v1/admin/stores/demo/subjects/internal_user/alice/objects?object_types=team" -H "$AUTH_ADMIN" | jq -rc '[.subject.id, (.objects | map(select(.relation == "member")) | .[0].object_id), .truncated]' || true)
+if [ "$got" = '["alice","payroll_team",false]' ]; then
+    pass_count=$((pass_count + 1)); echo "    PASS  admin: GET subject objects lists what alice reaches"
+else
+    fail_count=$((fail_count + 1)); echo "    FAIL  admin: GET subject objects lists what alice reaches (got $got)"
+fi
+total=$((total + 1))
+got=$(curl -sf -D - "$ADMIN_URL/pgauthz/v1/admin/stores/demo/subjects/internal_user/alice/objects?object_types=team&format=csv" -H "$AUTH_ADMIN" | tr -d '\r' | grep -E '^(Content-Type: text/csv|store,subject_type,subject_id,|demo,internal_user,alice,team,member,payroll_team,)' | wc -l | tr -d ' ' || true)
+if [ "$got" = "3" ]; then
+    pass_count=$((pass_count + 1)); echo "    PASS  admin: GET subject objects as CSV (content type, header, alice's row)"
+else
+    fail_count=$((fail_count + 1)); echo "    FAIL  admin: GET subject objects as CSV (matched $got of 3 lines)"
+fi
+total=$((total + 1))
+got=$(curl -sf "$ADMIN_URL/pgauthz/v1/admin/stores/demo/subjects/internal_user/alice" -H "$AUTH_ADMIN" | jq -rc '[has("direct"), has("effective"), has("events_about"), (.direct | map(select(.relation == "member" and .object_id == "payroll_team")) | length)]' || true)
+if [ "$got" = '[true,true,true,1]' ]; then
+    pass_count=$((pass_count + 1)); echo "    PASS  admin: GET subject export is the export document"
+else
+    fail_count=$((fail_count + 1)); echo "    FAIL  admin: GET subject export is the export document (got $got)"
+fi
+check_http "admin: a wildcard is not a data subject (400)" "400" \
+    -X GET "$ADMIN_URL/pgauthz/v1/admin/stores/demo/subjects/internal_user/%2A/objects" -H "$AUTH_ADMIN"
+check_http "admin: a tenant-less token cannot read a takeout (403)" "403" \
+    -X GET "$ADMIN_URL/pgauthz/v1/admin/stores/demo/subjects/internal_user/alice/objects" -H "$AUTH_ALICE"
+check_http "admin: there is no erasure over the API (405)" "405" \
+    -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/demo/subjects/internal_user/alice" -H "$AUTH_ADMIN"
 check_http "admin: DELETE of a missing grant is 404" "404" \
     -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/namespaces/hr/access/app_hr" -H "$AUTH_ADMIN"
 check_http "admin: PUT retires the store (200)" "200" \
@@ -812,7 +840,7 @@ check_http "admin: PUT retires the store (200)" "200" \
 check_http "admin: a retired store cannot be reopened (400)" "400" \
     -X PUT "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE" -H "$AUTH_ADMIN" -H "Content-Type: application/json" -d '{"retired":false}'
 check_http "admin: DELETE removes the store (200)" "200" \
-    -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE?purge_audit=true" -H "$AUTH_ADMIN"
+    -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE?purge_audit=true&purge_decisions=true" -H "$AUTH_ADMIN"
 check_http "admin: DELETE of a missing store is 404" "404" \
     -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE" -H "$AUTH_ADMIN"
 docker compose "${COMPOSE_FILES[@]}" exec -T authz-db psql -q -U authz -d authz -c "DELETE FROM authz.model_registry WHERE name = 'az_admin_model';" >/dev/null 2>&1 || true

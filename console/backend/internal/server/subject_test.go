@@ -47,7 +47,14 @@ func TestSubjectHTTP(t *testing.T) {
 			_, _ = pool.Exec(context.Background(), `SELECT authz.delete_tuple($1, 'user', $2, $3, 'store', $4)`, cs, tu[0], tu[1], store)
 		}(tu)
 	}
-	owner, viewer := httpSession(t, s, "subj_owner"), httpSession(t, s, "subj_viewer")
+	// the erasure needs a PLATFORM admin (and the flag): subj_dpo
+	if _, err := pool.Exec(ctx, `SELECT authz.write_tuple($1, 'user', 'subj_dpo', 'admin', 'platform', $2)`, cs, s.cfg.PlatformID); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = pool.Exec(context.Background(), `SELECT authz.delete_tuple($1, 'user', 'subj_dpo', 'admin', 'platform', $2)`, cs, s.cfg.PlatformID)
+	}()
+	owner, viewer, dpo := httpSession(t, s, "subj_owner"), httpSession(t, s, "subj_viewer"), httpSession(t, s, "subj_dpo")
 	h := s.Routes()
 	do := func(method, target, body string, c *http.Cookie) (int, map[string]any, http.Header) {
 		t.Helper()
@@ -137,17 +144,26 @@ func TestSubjectHTTP(t *testing.T) {
 		t.Fatalf("events about the subject: %d (%v)", n, m["events_about"])
 	}
 
-	// erase: viewers may not; the owner may, and the counts come back
+	// erase: off by default (404 for everyone); on, a platform admin only —
+	// not the store's owner, not a viewer — and the counts come back
+	if code, _, _ := do("POST", base+"/erase", `{"subject":"user:alice"}`, dpo); code != 404 {
+		t.Fatalf("erasure must be off without SUBJECT_ERASURE_ENABLED: %d", code)
+	}
+	s.cfg.SubjectErasureEnabled = true
+	defer func() { s.cfg.SubjectErasureEnabled = false }()
 	if code, _, _ := do("POST", base+"/erase", `{"subject":"user:alice"}`, viewer); code != 403 {
 		t.Fatalf("a viewer may not erase: %d", code)
 	}
-	code, m, _ = do("POST", base+"/erase", `{"subject":"user:alice","purge_audit":true}`, owner)
+	if code, _, _ := do("POST", base+"/erase", `{"subject":"user:alice"}`, owner); code != 403 {
+		t.Fatalf("a store owner may not erase (platform admins only): %d", code)
+	}
+	code, m, _ = do("POST", base+"/erase", `{"subject":"user:alice","purge_audit":true}`, dpo)
 	if code != 200 || m["tuples_as_subject"].(float64) != 2 || m["events"].(float64) != 2 || m["decisions"].(float64) != 3 || m["audit"].(float64) < 2 {
 		t.Fatalf("erase (own + about): %d %v", code, m)
 	}
 	// the tombstone the sink honours for late flushes (review #21)
 	var tomb int
-	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM decisionlog.erasures WHERE store = $1 AND subject_type = 'user' AND subject_id = 'alice' AND erased_by = 'user:subj_owner'`, store).Scan(&tomb); err != nil || tomb != 1 {
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM decisionlog.erasures WHERE store = $1 AND subject_type = 'user' AND subject_id = 'alice' AND erased_by = 'user:subj_dpo'`, store).Scan(&tomb); err != nil || tomb != 1 {
 		t.Fatalf("tombstone: %d %v", tomb, err)
 	}
 	defer func() {
@@ -161,9 +177,9 @@ func TestSubjectHTTP(t *testing.T) {
 	if len(m["direct"].([]any)) != 1 {
 		t.Fatalf("bob untouched: %v", m["direct"])
 	}
-	// recorded in the console's action log as the person
+	// recorded in the console's action log as the platform admin, on the platform
 	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM authz.list_events($1, p_subject_type => 'user', p_subject_id => 'subj_owner', p_action => 'can_manage_access', p_object_id => $2, p_limit => 10)`, cs, store).Scan(&n); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM authz.list_events($1, p_subject_type => 'user', p_subject_id => 'subj_dpo', p_action => 'can_manage_access', p_object_type => 'platform', p_object_id => $2, p_limit => 10)`, cs, s.cfg.PlatformID).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n < 1 {

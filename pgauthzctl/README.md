@@ -94,10 +94,31 @@ pgauthzctl store recorder-set tenant_a svc_approvals approve_sale,pay
 pgauthzctl store recorder-lift tenant_a svc_approvals
 pgauthzctl store namespace-grant tenant_a hr app_hr --read --write
 pgauthzctl store namespace-revoke tenant_a hr app_hr
-pgauthzctl store delete tenant_a --purge-audit          # the erasure path
+pgauthzctl store delete tenant_a --purge-audit --purge-decisions  # the erasure path; audit history and decision log only when asked
 ```
 
 Every verb takes `--json` for the API's answer verbatim.
+
+## Data subject requests (admin API only)
+
+The GDPR path for the application teams and the DPO's scripts (the console's
+*Data subject* tab offers the same three; the engine functions are in
+`docs/API.md`). The takeout names the *references* — the object ids under
+each type and relation — the applications hold the records:
+
+```bash
+pgauthzctl subject objects tenant_a user:alice                       # a table: type, relation, id (+ direct / wildcard / truncated)
+pgauthzctl subject objects tenant_a user:alice --csv --out alice.csv # the hand-over file (store + subject in every row)
+pgauthzctl subject objects tenant_a user:alice --relations owner,editor --object-types doc,folder
+pgauthzctl subject export  tenant_a user:alice --out alice.json      # tuples both sides, effective objects, events, audit rows
+```
+
+There is no `subject erase`, on purpose: erasure comes **last** in a data
+subject request — after the applications deleted their records by the
+takeout's references — and belongs to the console's *Data subject* tab (a
+person, a confirmation, the audit record) or `authz.erase_subject` in SQL,
+not to a script that may run it first. `--json` prints the API's answer
+verbatim here too.
 
 ## Tests
 

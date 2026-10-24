@@ -19,6 +19,7 @@ export class PgcAdmin extends PgcElement {
     retiring: { state: true },
     confirmName: { state: true },
     purgeAudit: { state: true },
+    purgeDecisions: { state: true },
   };
 
   constructor() {
@@ -30,6 +31,7 @@ export class PgcAdmin extends PgcElement {
     this.retiring = false; // the retire confirmation is open
     this.confirmName = '';
     this.purgeAudit = false;
+    this.purgeDecisions = false;
   }
 
   _open(which) {
@@ -42,7 +44,12 @@ export class PgcAdmin extends PgcElement {
     e.preventDefault();
     const ok = await run(this, async () => {
       try {
-        return await api.deleteStore(this.store, this.confirmName.trim(), this.purgeAudit);
+        return await api.deleteStore(
+          this.store,
+          this.confirmName.trim(),
+          this.purgeAudit,
+          this.purgeDecisions,
+        );
       } catch (err) {
         throw new Error(forbiddenText(err));
       }
@@ -128,7 +135,7 @@ export class PgcAdmin extends PgcElement {
       <section class="card danger-zone" data-testid="admin-delete">
         <h3>
           ${t('Danger zone')}
-          ${help('Deleting a store removes its model, tuples, events and the console roles on it. The audit history stays queryable unless you purge it too. This cannot be undone.')}
+          ${help('Deleting a store removes its model, tuples, events and the console roles on it. The audit history and the decision log stay queryable unless you purge them too. This cannot be undone.')}
         </h3>
         ${
           this.deleting
@@ -142,6 +149,15 @@ export class PgcAdmin extends PgcElement {
                     @change=${(e) => (this.purgeAudit = e.target.checked)}
                   />
                   ${t('also purge the audit history (otherwise it stays queryable)')}</label
+                >
+                <label class="check wide"
+                  ><input
+                    type="checkbox"
+                    data-testid="admin-delete-purge-decisions"
+                    .checked=${this.purgeDecisions}
+                    @change=${(e) => (this.purgeDecisions = e.target.checked)}
+                  />
+                  ${t("also delete the store's decision-log lines (otherwise they stay until the sink's retention)")}</label
                 >
                 <div class="actions wide">
                   <button

@@ -7,6 +7,28 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Data subject requests over the admin API and pgauthzctl — the takeout
+  and the export, deliberately not the erasure.** Store-scoped routes
+  `GET …/admin/stores/{store}/subjects/{type}/{id}/objects`
+  (`list_subject_objects` as rows, `format=csv` the hand-over file with the
+  store and subject in every row) and `GET …/subjects/{type}/{id}`
+  (`export_subject`); `pgauthzctl subject objects | export` (admin API only;
+  `--csv --out file`, `--relations`, `--object-types`, `--limit`). Erasure
+  stays with the console and SQL: it comes last in a data-subject request,
+  after the applications deleted their records by the takeout's references,
+  and a machine-callable erasure invites a script that runs it first
+  (PRODUCTION.md → Data subject requests). The console's erasure is now
+  behind **`SUBJECT_ERASURE_ENABLED`** (default off; Helm
+  `console.subjectErasure`) and for **platform admins** only
+  (`platform#can_manage_access`), no longer store owners. Deleting a store
+  can take the store's decision-log lines and tombstones along, **opt-in**
+  like the audit history: the console's Delete dialog, the admin API's
+  `purge_decisions=true`, `pgauthzctl store delete --purge-decisions`
+  (`decisions` in the answer). OpenAPI, handler tests, end-to-end checks in
+  `tests/test-authzen.sh` and `tests/test-pgauthzctl.sh`.
+
 ### Changed
 
 - **The engine's per-session temp tables no longer raise a NOTICE on

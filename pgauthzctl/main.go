@@ -57,6 +57,10 @@ Connection:
     PGAUTHZ_CLIENT_CERT/_KEY (a client certificate the admin listener's mTLS
     maps) and --ca / PGAUTHZ_CA; the audit names the credential. Every verb
     but model import and model test runs over it.
+Subject verbs (pgauthzctl subject <verb> <store> <type:id>, over the admin API only):
+  objects   every object the subject reaches, as a table or --csv (the GDPR takeout)
+  export    the export document (JSON); erasure stays with the console and SQL
+
   --dsn or PGAUTHZ_DSN (e.g. postgres://authz:authz@localhost:55433/authz):
     the direct database connection — model import, model test, installation
     and break-glass. Routine verbs over it print a note: --dsn is on its
@@ -68,7 +72,7 @@ func main() {
 		cmdVersion()
 		return
 	}
-	if len(os.Args) < 3 || (os.Args[1] != "model" && os.Args[1] != "issuers" && os.Args[1] != "store") {
+	if len(os.Args) < 3 || (os.Args[1] != "model" && os.Args[1] != "issuers" && os.Args[1] != "store" && os.Args[1] != "subject") {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
@@ -77,6 +81,13 @@ func main() {
 	var err error
 	if group == "store" {
 		if err := cmdStore(verb, args); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if group == "subject" {
+		if err := cmdSubject(verb, args); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}

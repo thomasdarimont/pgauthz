@@ -48,8 +48,12 @@ export const api = {
   stores: () => call('api/stores'),
   createStore: (name, description) => call('api/stores', { name, description }),
   adoptStore: (store) => call(`api/stores/${enc(store)}/adopt`, {}),
-  deleteStore: (store, confirm, purgeAudit) =>
-    call(`api/stores/${enc(store)}/delete`, { confirm, purge_audit: purgeAudit }),
+  deleteStore: (store, confirm, purgeAudit, purgeDecisions) =>
+    call(`api/stores/${enc(store)}/delete`, {
+      confirm,
+      purge_audit: purgeAudit,
+      purge_decisions: purgeDecisions,
+    }),
   retireStore: (store, confirm) => call(`api/stores/${enc(store)}/retire`, { confirm }),
   /** @returns {Promise<import('./types.js').StoreRow>} */
   store: (store) => call(`api/stores/${enc(store)}`),

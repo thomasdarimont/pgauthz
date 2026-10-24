@@ -184,8 +184,24 @@ type eraseSubjectReq struct {
 }
 
 // handleSubjectErase — POST /api/stores/{store}/subject/erase.
+//
+// Behind SUBJECT_ERASURE_ENABLED (default off) and for PLATFORM admins
+// (platform#can_manage_access), not store owners: erasure comes last in a
+// data-subject request, after the applications deleted their records by
+// the takeout's references, and it is the one operation here that destroys
+// the index of what remains to be deleted. The takeout and the export stay
+// open to the store's auditors regardless.
 func (s *Server) handleSubjectErase(w http.ResponseWriter, r *http.Request) {
-	p, store := s.requireStore(w, r, "can_manage_access")
+	if !s.cfg.SubjectErasureEnabled {
+		writeError(w, http.StatusNotFound, "subject erasure is off on this console (SUBJECT_ERASURE_ENABLED=false); the takeout and the export are available, erase_subject in SQL for the DPO")
+		return
+	}
+	store := r.PathValue("store")
+	if !validName.MatchString(store) {
+		writeError(w, http.StatusBadRequest, "invalid store name")
+		return
+	}
+	p := s.require(w, r, "can_manage_access", "platform", s.cfg.PlatformID)
 	if p == nil {
 		return
 	}
@@ -214,8 +230,8 @@ func (s *Server) handleSubjectErase(w http.ResponseWriter, r *http.Request) {
 	// decision-log step fails the answer is 502 `partial`; the engine part
 	// is done and on record, and a retry completes the rest (idempotent).
 	var res json.RawMessage
-	payload := map[string]any{"op": "erase_subject", "subject": typ + ":" + id, "purge_events": purgeEvents, "purge_audit": req.PurgeAudit, "purge_decisions": purgeDecisions}
-	err := s.asPerson(ctx, p, "can_manage_access", "store", store, payload, func(tx pgx.Tx) error {
+	payload := map[string]any{"op": "erase_subject", "store": store, "subject": typ + ":" + id, "purge_events": purgeEvents, "purge_audit": req.PurgeAudit, "purge_decisions": purgeDecisions}
+	err := s.asPerson(ctx, p, "can_manage_access", "platform", s.cfg.PlatformID, payload, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `SELECT authz.erase_subject($1, $2, $3, $4, $5, $6)`,
 			store, typ, id, purgeEvents, req.PurgeAudit, p.typ+":"+p.id).Scan(&res)
 	})
@@ -237,6 +253,18 @@ func (s *Server) handleSubjectErase(w http.ResponseWriter, r *http.Request) {
 		out["decisions"] = n
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// deleteStoreDecisions removes a deleted store's lines and tombstones from
+// the decision log. No barrier: a line about a deleted store logged
+// afterwards is a new fact about a request, not history.
+func (s *Server) deleteStoreDecisions(ctx context.Context, store string) (int64, error) {
+	tag, err := s.decisionsDB().Exec(ctx, `DELETE FROM decisionlog.decisions WHERE store = $1`, store)
+	if err != nil {
+		return 0, err
+	}
+	_, err = s.decisionsDB().Exec(ctx, `DELETE FROM decisionlog.erasures WHERE store = $1`, store)
+	return tag.RowsAffected(), err
 }
 
 // eraseDecisions writes the erasure tombstone and removes the subject's

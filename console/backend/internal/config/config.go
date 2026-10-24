@@ -64,6 +64,12 @@ type Config struct {
 	// entries win over the SPA's built-in dictionaries, so an operator can
 	// rename terms or add a language without rebuilding the image.
 	I18nDir string
+	// SubjectErasureEnabled (SUBJECT_ERASURE_ENABLED, default false) opens
+	// the Data subject tab's erasure — for platform admins only. Off, the
+	// console offers the takeout and the export and refuses the erasure:
+	// it comes last in a data-subject request, after the applications
+	// deleted their records (PRODUCTION.md → Data subject requests).
+	SubjectErasureEnabled bool
 	// OPAURL / OPAToken (optional): the OPA sidecar fronting pgauthzd, read
 	// for the Policies tab (GET /v1/policies is admin-only in OPA's system
 	// authorization policy, so this is the admin token). Unset = the tab
@@ -169,6 +175,7 @@ func Load() Config {
 		PgauthzdServiceToken:  env("PGAUTHZD_SERVICE_TOKEN", ""),
 		TraceURL:              env("CONSOLE_TRACE_URL", ""),
 		I18nDir:               env("CONSOLE_I18N_DIR", ""),
+		SubjectErasureEnabled: env("SUBJECT_ERASURE_ENABLED", "false") == "true",
 		OPAURL:                env("CONSOLE_OPA_URL", ""),
 		OPAToken:              env("CONSOLE_OPA_TOKEN", ""),
 		SelfSubjectTypes:      splitList(env("CONSOLE_SELF_SUBJECT_TYPES", "")),

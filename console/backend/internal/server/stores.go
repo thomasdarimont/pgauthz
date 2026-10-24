@@ -299,8 +299,9 @@ func (s *Server) handleStoreSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 type deleteStoreReq struct {
-	Confirm    string `json:"confirm"`     // must equal the store name
-	PurgeAudit bool   `json:"purge_audit"` // also drop the audit history (default: keep)
+	Confirm        string `json:"confirm"`         // must equal the store name
+	PurgeAudit     bool   `json:"purge_audit"`     // also drop the audit history (default: keep)
+	PurgeDecisions bool   `json:"purge_decisions"` // also drop the store's decision-log lines (default: keep)
 }
 
 // requireLifecycle is the common front of the store lifecycle handlers
@@ -384,7 +385,7 @@ func (s *Server) handleDeleteStore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	err := s.asPersonAuthorized(ctx, p, deleteGate, "can_manage_access", "store", store, map[string]any{"op": "delete_store", "purge_audit": req.PurgeAudit}, func(tx pgx.Tx) error {
+	err := s.asPersonAuthorized(ctx, p, deleteGate, "can_manage_access", "store", store, map[string]any{"op": "delete_store", "purge_audit": req.PurgeAudit, "purge_decisions": req.PurgeDecisions}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SELECT authz.delete_store($1, $2)`, store, req.PurgeAudit); err != nil {
 			return err
 		}
@@ -424,7 +425,23 @@ func (s *Server) handleDeleteStore(w http.ResponseWriter, r *http.Request) {
 		writeEngineError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": store})
+	out := map[string]any{"ok": true, "deleted": store}
+	// the decision log's lines about the store go only when asked (like the
+	// audit history: a record of what was decided may have to outlive the
+	// store); the store is deleted and on record either way — a sink
+	// failure answers 502 `partial`, and the lines then wait for the sink's
+	// retention
+	if configured, err := s.decisionsConfigured(ctx); req.PurgeDecisions && err == nil && configured {
+		n, err := s.deleteStoreDecisions(ctx, store)
+		if err != nil {
+			out["partial"] = true
+			out["error"] = "the store is deleted but its decision-log lines could not be: " + err.Error()
+			writeJSON(w, http.StatusBadGateway, out)
+			return
+		}
+		out["decisions"] = n
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 type retireStoreReq struct {

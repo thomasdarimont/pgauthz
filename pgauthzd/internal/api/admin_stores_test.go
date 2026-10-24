@@ -25,6 +25,33 @@ type storeStub struct {
 	namespaces map[string]map[string]map[string][2]bool // store → namespace → role → (read, write)
 }
 
+// the data-subject methods: canned rows, the arguments remembered
+type subjectCall struct {
+	store, typ, id          string
+	relations, objectTypes  []string
+	limit                   int
+	purgeEvents, purgeAudit bool
+	actor                   string
+}
+
+func (s *storeStub) SubjectObjects(_ context.Context, store, typ, id string, relations, objectTypes []string, limit int) ([]authz.SubjectObjectRow, error) {
+	if _, ok := s.stores[store]; !ok {
+		return nil, fmt.Errorf("%w: Unknown store: %s", authz.ErrInvalidRequest, store)
+	}
+	subjectCalls = append(subjectCalls, subjectCall{store: store, typ: typ, id: id, relations: relations, objectTypes: objectTypes, limit: limit})
+	return []authz.SubjectObjectRow{
+		{ObjectType: "doc", Relation: "can_read", ObjectID: "d1", Direct: true},
+		{ObjectType: "doc", Relation: "can_read", ObjectID: "d,2\"q", Truncated: true},
+	}, nil
+}
+
+func (s *storeStub) ExportSubject(_ context.Context, store, typ, id string, relations []string, limit int) (json.RawMessage, error) {
+	subjectCalls = append(subjectCalls, subjectCall{store: store, typ: typ, id: id, relations: relations, limit: limit})
+	return json.RawMessage(`{"subject":"` + typ + ":" + id + `","direct":[]}`), nil
+}
+
+var subjectCalls []subjectCall
+
 func (s *storeStub) ListStores(context.Context) ([]authz.StoreRow, error) {
 	out := []authz.StoreRow{}
 	for _, r := range s.stores {
@@ -242,7 +269,7 @@ func TestAdminStores(t *testing.T) {
 	if w.Code != 200 || stub.stores["a_mail"].RetiredAt == nil {
 		t.Fatalf("retire: %d %s", w.Code, w.Body.String())
 	}
-	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_mail?purge_audit=true", "")); w.Code != 200 || !strings.Contains(w.Body.String(), `"purged_audit":true`) {
+	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_mail?purge_audit=true&purge_decisions=true", "")); w.Code != 200 || !strings.Contains(w.Body.String(), `"purged_audit":true`) || !strings.Contains(w.Body.String(), `"purged_decisions":true`) {
 		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
 	}
 	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_mail", "")); w.Code != 404 {
@@ -382,6 +409,58 @@ func TestAdminRecordersAndNamespaces(t *testing.T) {
 	for _, a := range stub.actors {
 		if a != "user:alice via terraform-a" {
 			t.Fatalf("actor: %q", a)
+		}
+	}
+}
+
+// The data-subject routes: rows as JSON and CSV (quoting kept), the export
+// passed through, no erasure route; store scope and input validation like
+// every other store route.
+func TestAdminSubjects(t *testing.T) {
+	h, _ := storesFixture(t)
+	subjectCalls = nil
+	w := serveAdmin(h, tenantAAdmin.request("GET", "/pgauthz/v1/admin/stores/a_docs/subjects/user/alice/objects?relations=can_read,can_write&object_types=doc&limit=50", ""))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"object_id":"d1"`) || !strings.Contains(w.Body.String(), `"truncated":true}`) {
+		t.Fatalf("objects: %d %s", w.Code, w.Body.String())
+	}
+	if c := subjectCalls[len(subjectCalls)-1]; c.store != "a_docs" || c.typ != "user" || c.id != "alice" || len(c.relations) != 2 || c.relations[1] != "can_write" || len(c.objectTypes) != 1 || c.limit != 50 {
+		t.Fatalf("objects arguments: %+v", c)
+	}
+	w = serveAdmin(h, tenantAAdmin.request("GET", "/pgauthz/v1/admin/stores/a_docs/subjects/user/alice/objects?format=csv", ""))
+	if w.Code != 200 || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/csv") || !strings.Contains(w.Header().Get("Content-Disposition"), "a_docs-user-alice.csv") {
+		t.Fatalf("csv headers: %d %v", w.Code, w.Header())
+	}
+	lines := strings.Split(strings.TrimSpace(w.Body.String()), "\n")
+	if len(lines) != 3 || lines[0] != "store,subject_type,subject_id,object_type,relation,object_id,is_wildcard,direct,truncated" ||
+		lines[1] != "a_docs,user,alice,doc,can_read,d1,false,true,false" || lines[2] != `a_docs,user,alice,doc,can_read,"d,2""q",false,false,true` {
+		t.Fatalf("csv body: %q", lines)
+	}
+	if c := subjectCalls[len(subjectCalls)-1]; c.relations != nil || c.objectTypes != nil || c.limit != 10000 {
+		t.Fatalf("defaults: %+v", c)
+	}
+	w = serveAdmin(h, tenantAAdmin.request("GET", "/pgauthz/v1/admin/stores/a_docs/subjects/user/alice", ""))
+	if w.Code != 200 || w.Body.String() != `{"subject":"user:alice","direct":[]}` {
+		t.Fatalf("export: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_docs/subjects/user/alice", "")); w.Code != 404 && w.Code != 405 {
+		t.Fatalf("erasure must not be reachable over the API: %d", w.Code)
+	}
+	for _, bad := range []string{
+		"/pgauthz/v1/admin/stores/b_docs/subjects/user/alice/objects", // outside the scope → 403
+	} {
+		if w := serveAdmin(h, tenantAAdmin.request("GET", bad, "")); w.Code != 403 {
+			t.Fatalf("%s: %d", bad, w.Code)
+		}
+	}
+	for _, bad := range []string{
+		"/pgauthz/v1/admin/stores/a_docs/subjects/user/*/objects",
+		"/pgauthz/v1/admin/stores/a_docs/subjects/bad-type/alice/objects",
+		"/pgauthz/v1/admin/stores/a_docs/subjects/user/alice/objects?limit=0",
+		"/pgauthz/v1/admin/stores/a_docs/subjects/user/alice/objects?limit=x",
+		"/pgauthz/v1/admin/stores/a_missing/subjects/user/alice/objects", // in scope, unknown to the engine → its refusal
+	} {
+		if w := serveAdmin(h, tenantAAdmin.request("GET", bad, "")); w.Code != 400 {
+			t.Fatalf("%s: %d %s", bad, w.Code, w.Body.String())
 		}
 	}
 }

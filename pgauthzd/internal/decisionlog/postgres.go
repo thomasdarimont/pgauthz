@@ -158,6 +158,7 @@ type store interface {
 	ensurePartitions(ctx context.Context, days []time.Time) error
 	insert(ctx context.Context, rows []row, retentionDays int) (expired int, err error)
 	retain(ctx context.Context, retentionDays int) (dropped int, err error)
+	deleteStore(ctx context.Context, store string) (int64, error)
 	close()
 }
 
@@ -483,6 +484,13 @@ func (s *PostgresSink) retention(ctx context.Context) {
 	s.ensured.Range(func(k, _ any) bool { s.ensured.Delete(k); return true })
 }
 
+// DeleteStore removes every persisted line and tombstone of a store (the
+// store is gone from the engine). No barrier: a line about a deleted store
+// logged afterwards is a new fact about a request, not history to erase.
+func (s *PostgresSink) DeleteStore(ctx context.Context, store string) (int64, error) {
+	return s.db.deleteStore(ctx, store)
+}
+
 // Close stops the flusher, inserts what is queued and closes the pool.
 func (s *PostgresSink) Close() error {
 	close(s.stop)
@@ -646,6 +654,16 @@ func (p *pgStore) retain(ctx context.Context, retentionDays int) (int, error) {
 		return dropped, err
 	}
 	return dropped, tx.Commit(ctx)
+}
+
+// deleteStore removes a store's lines and tombstones.
+func (p *pgStore) deleteStore(ctx context.Context, store string) (int64, error) {
+	tag, err := p.pool.Exec(ctx, `DELETE FROM decisionlog.decisions WHERE store = $1`, store)
+	if err != nil {
+		return 0, err
+	}
+	_, err = p.pool.Exec(ctx, `DELETE FROM decisionlog.erasures WHERE store = $1`, store)
+	return tag.RowsAffected(), err
 }
 
 // pruneErasures drops tombstones older than the retention cutoff.

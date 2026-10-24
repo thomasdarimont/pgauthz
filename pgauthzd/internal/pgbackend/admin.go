@@ -333,3 +333,33 @@ func (b *Backend) RevokeNamespaceAccess(ctx context.Context, store, namespace, r
 	})
 	return existed, err
 }
+
+// ── data subject requests ───────────────────────────────────────────────
+
+// SubjectObjects: the takeout as rows (authz.list_subject_objects).
+func (b *Backend) SubjectObjects(ctx context.Context, store, subjectType, subjectID string, relations, objectTypes []string, limit int) ([]authz.SubjectObjectRow, error) {
+	rows, err := b.pool.Query(ctx, `SELECT object_type, relation, object_id, is_wildcard, direct, truncated
+	                                  FROM authz.list_subject_objects($1, $2, $3, $4::text[], $5::text[], $6)`,
+		store, subjectType, subjectID, relations, objectTypes, limit)
+	if err != nil {
+		return nil, adminError(err)
+	}
+	defer rows.Close()
+	out := []authz.SubjectObjectRow{}
+	for rows.Next() {
+		var r authz.SubjectObjectRow
+		if err := rows.Scan(&r.ObjectType, &r.Relation, &r.ObjectID, &r.IsWildcard, &r.Direct, &r.Truncated); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, adminError(rows.Err())
+}
+
+// ExportSubject: the export document (authz.export_subject, every part).
+func (b *Backend) ExportSubject(ctx context.Context, store, subjectType, subjectID string, relations []string, limit int) (json.RawMessage, error) {
+	var doc json.RawMessage
+	err := b.pool.QueryRow(ctx, `SELECT authz.export_subject($1, $2, $3, $4::text[], true, true, true, $5)`,
+		store, subjectType, subjectID, relations, limit).Scan(&doc)
+	return doc, adminError(err)
+}

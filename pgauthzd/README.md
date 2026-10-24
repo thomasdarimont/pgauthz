@@ -807,11 +807,13 @@ so configuration as code never needs the console's BFF):
 | DELETE | `/pgauthz/v1/admin/issuer-bindings?issuer=…` | Drop the row; the issuer falls back to its environment bindings |
 | GET | `/pgauthz/v1/admin/stores[/{store}]` | The stores in scope (a tenant admin: the stores its issuer is bound to), each with its managed-model state |
 | PUT | `/pgauthz/v1/admin/stores/{store}` | Create (`201`) or update (`200`): `{description, docs_url, retired}` — absent fields stay, `retired: true` retires (no reopening) |
-| DELETE | `/pgauthz/v1/admin/stores/{store}[?purge_audit=true]` | `delete_store`, the erasure path |
+| DELETE | `/pgauthz/v1/admin/stores/{store}[?purge_audit=true&purge_decisions=true]` | `delete_store`, the erasure path; the audit history and the store's decision-log lines stay unless asked (`purge_decisions=true` removes them from the postgres sink this instance writes: `decisions` in the answer, `502 partial` if that failed) |
 | GET | `/pgauthz/v1/admin/stores/{store}/model` | The live model as the canonical definition, and `model_status` |
 | PUT | `/pgauthz/v1/admin/stores/{store}/model[?plan=true]` | `{"model":"name[@version]"}`: plan, then apply when the plan has no blockers (`409` with the plan otherwise); `plan=true` is the dry run |
 | GET/PUT/DELETE | `/pgauthz/v1/admin/stores/{store}/recorders[/{role}]` | The recorder allowlists (ADR 0012): list; make a role's allowlist exactly `{"actions":[…]}`; lift it |
 | GET/PUT/DELETE | `/pgauthz/v1/admin/stores/{store}/namespaces[/{ns}/access/{role}]` | The namespaces with their types and role grants; make a role's access exactly `{"can_read","can_write"}`; remove it |
+| GET | `/pgauthz/v1/admin/stores/{store}/subjects/{type}/{id}/objects[?relations=&object_types=&limit=&format=csv]` | Data subject takeout (`list_subject_objects`): every object the subject reaches, one row per object and relation; `format=csv` is the hand-over file for the application teams |
+| GET | `/pgauthz/v1/admin/stores/{store}/subjects/{type}/{id}[?relations=&limit=]` | Data subject export (`export_subject`): one JSON document — tuples both sides, effective objects, events by and about, audit rows (the decision log is the console's addition). There is no erasure over the API, on purpose: it comes last, after the applications, from the console or SQL |
 | GET | `/pgauthz/v1/admin/models[?name=]` | The registry's versions (platform scope) |
 | POST | `/pgauthz/v1/admin/models/{name}/versions` | Publish the next version from `from_store` or from a `definition` (the export shape; `publish_model_definition`), idempotent on the checksum (platform scope) |
 | GET | `/pgauthz/v1/admin/models/{name}/rollout` | Every store under the model with version and drift (platform scope) |

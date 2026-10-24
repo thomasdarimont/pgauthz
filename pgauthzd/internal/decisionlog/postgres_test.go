@@ -50,7 +50,8 @@ func (f *fakeStore) retain(_ context.Context, days int) (int, error) {
 	return 1, nil
 }
 
-func (f *fakeStore) close() { f.mu.Lock(); f.closed = true; f.mu.Unlock() }
+func (f *fakeStore) close()                                             { f.mu.Lock(); f.closed = true; f.mu.Unlock() }
+func (f *fakeStore) deleteStore(context.Context, string) (int64, error) { return 0, nil }
 
 func (f *fakeStore) rows() int {
 	f.mu.Lock()

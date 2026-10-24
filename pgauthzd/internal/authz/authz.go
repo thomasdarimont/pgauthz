@@ -378,6 +378,18 @@ type RecorderRow struct {
 	Actions []string `json:"actions"`
 }
 
+// SubjectObjectRow is one row of authz.list_subject_objects: an object the
+// subject reaches through a relation — the data-subject takeout, as rows
+// the application teams can join with their own tables.
+type SubjectObjectRow struct {
+	ObjectType string `json:"object_type"`
+	Relation   string `json:"relation"`
+	ObjectID   string `json:"object_id"`
+	IsWildcard bool   `json:"is_wildcard"`
+	Direct     bool   `json:"direct"`
+	Truncated  bool   `json:"truncated"`
+}
+
 // NamespaceRow is one namespace of a store: its types and the DB roles with
 // read / write access, as authz.list_namespaces renders them.
 type NamespaceRow struct {
