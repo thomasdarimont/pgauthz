@@ -269,7 +269,18 @@ func TestAdminStores(t *testing.T) {
 	if w.Code != 200 || stub.stores["a_mail"].RetiredAt == nil {
 		t.Fatalf("retire: %d %s", w.Code, w.Body.String())
 	}
-	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_mail?purge_audit=true&purge_decisions=true", "")); w.Code != 200 || !strings.Contains(w.Body.String(), `"purged_audit":true`) || !strings.Contains(w.Body.String(), `"purged_decisions":true`) {
+	// a requested decision purge on an instance without the postgres sink is
+	// refused before anything is deleted (review #27); the retry route too
+	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_mail?purge_decisions=true", "")); w.Code != 501 || stub.stores["a_mail"] == nil {
+		t.Fatalf("purge_decisions without a sink must refuse and keep the store: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_mail/decisions", "")); w.Code != 501 {
+		t.Fatalf("purge route without a sink: %d", w.Code)
+	}
+	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/b_mail/decisions", "")); w.Code != 403 {
+		t.Fatalf("purge route outside the scope: %d", w.Code)
+	}
+	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_mail?purge_audit=true", "")); w.Code != 200 || !strings.Contains(w.Body.String(), `"purged_audit":true`) || !strings.Contains(w.Body.String(), `"purged_decisions":false`) {
 		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
 	}
 	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_mail", "")); w.Code != 404 {

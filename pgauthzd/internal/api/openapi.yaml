@@ -969,7 +969,7 @@ paths:
         historically.
       parameters:
         - { name: purge_audit, in: query, required: false, schema: { type: boolean } }
-        - { name: purge_decisions, in: query, required: false, schema: { type: boolean }, description: "Also delete the store's lines and tombstones from the postgres decision-log sink this instance writes (default: keep; they wait for the sink's retention)." }
+        - { name: purge_decisions, in: query, required: false, schema: { type: boolean }, description: "Also purge the store's lines and tombstones from the postgres decision-log sink this instance writes, behind a store-level fence (default: keep; they wait for the sink's retention). Refused with 501 before anything is deleted when this instance writes no such sink; a sink failure after the engine's delete answers 502 `partial` — retry with DELETE …/stores/{store}/decisions." }
       responses:
         '200':
           description: Deleted.
@@ -1116,6 +1116,45 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/admin/stores/{store}/decisions:
+    parameters:
+      - { name: store, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' } }
+    delete:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminPurgeStoreDecisions
+      summary: Purge a store's decision-log lines (the store may already be gone)
+      description: >
+        The lines and erasure tombstones of the store in the postgres
+        decision-log sink this instance writes, behind the store fence
+        (`decisionlog.store_purges`): a buffered line about the store decided
+        at or before the purge is dropped by every sink on insert. Idempotent;
+        the retry of a store deletion whose purge failed, or a purge decided
+        later. Needs the postgres sink on this instance (501 otherwise).
+      responses:
+        '200':
+          description: Purged.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [store, purged_decisions, decisions]
+                properties:
+                  store: { type: string }
+                  purged_decisions: { type: boolean }
+                  decisions: { type: integer, description: Persisted lines deleted now. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+        '502':
+          description: The sink could not be reached or the purge failed; retry.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
   /pgauthz/v1/admin/stores/{store}/subjects/{type}/{id}/objects:
     parameters:
       - { name: store, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' } }

@@ -50,8 +50,8 @@ func (f *fakeStore) retain(_ context.Context, days int) (int, error) {
 	return 1, nil
 }
 
-func (f *fakeStore) close()                                             { f.mu.Lock(); f.closed = true; f.mu.Unlock() }
-func (f *fakeStore) deleteStore(context.Context, string) (int64, error) { return 0, nil }
+func (f *fakeStore) close()                                                    { f.mu.Lock(); f.closed = true; f.mu.Unlock() }
+func (f *fakeStore) purgeStore(context.Context, string, string) (int64, error) { return 0, nil }
 
 func (f *fakeStore) rows() int {
 	f.mu.Lock()
@@ -481,6 +481,159 @@ func TestPostgresSinkErasureInterleavings(t *testing.T) {
 	rows.Close()
 	if strings.Join(kept, ",") != "bob" {
 		t.Fatalf("(b) after the barrier: %v (want bob's line only)", kept)
+	}
+	if err := ps.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Review #27 P1: a store purge is a fence under the erasure lock. A batch
+// parked with a line about the store commits before the purge's delete
+// runs (a); once the purge removed the subject's tombstone, a late line
+// about the erased subject is still dropped — by the fence (c); and a batch
+// arriving while a purge holds the barrier applies the fence itself (b).
+func TestPostgresSinkStorePurgeFence(t *testing.T) {
+	dsn := os.Getenv("PGAUTHZD_TEST_DECISION_LOG_DSN")
+	if dsn == "" {
+		t.Skip("PGAUTHZD_TEST_DECISION_LOG_DSN not set")
+	}
+	ctx := context.Background()
+	ps, err := OpenPostgres(ctx, PostgresConfig{DSN: dsn, FlushInterval: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := ps.db.(*pgStore)
+	aux, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := aux.Exec(ctx, `DROP SCHEMA IF EXISTS decisionlog CASCADE`); err != nil {
+			t.Errorf("cleanup: %v", err)
+		}
+		aux.Close()
+		db.pool.Close()
+	}()
+	line := func(subject, resource string, at time.Time) row {
+		b, _ := json.Marshal(Entry{Time: at, Listener: "public", Endpoint: "check", Store: "it_purge", Subject: Ref{Type: "user", ID: subject}, Action: "can_read", Resource: Ref{Type: "doc", ID: resource}})
+		r, err := parseRow(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	count := func(resource string) int {
+		var n int
+		_ = aux.QueryRow(ctx, `SELECT count(*) FROM decisionlog.decisions WHERE store = 'it_purge' AND resource_id = $1`, resource).Scan(&n)
+		return n
+	}
+	waitingOnLock := func() bool {
+		var n int
+		_ = aux.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`).Scan(&n)
+		return n == 1
+	}
+	before := time.Now().UTC().Add(-time.Minute)
+	if err := db.ensurePartitions(ctx, []time.Time{before}); err != nil {
+		t.Fatal(err)
+	}
+	// alice was erased earlier: her tombstone exists, the purge will remove it
+	if _, err := aux.Exec(ctx, `INSERT INTO decisionlog.erasures (store, subject_type, subject_id, erased_at, erased_by) VALUES ('it_purge', 'user', 'alice', now(), 'test')`); err != nil {
+		t.Fatal(err)
+	}
+
+	// (a) a batch in flight when the purge arrives: the purge waits, then deletes it
+	txW, err := db.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := insertTx(ctx, txW, []row{line("bob", "parked", before)}, 0); err != nil {
+		t.Fatal(err)
+	}
+	purged := make(chan error, 1)
+	go func() {
+		_, err := (&pgStore{pool: aux}).purgeStore(ctx, "it_purge", "test")
+		purged <- err
+	}()
+	waitFor(t, "the purge to wait for the batch in flight", waitingOnLock)
+	select {
+	case err := <-purged:
+		t.Fatalf("the purge did not wait: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := txW.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-purged; err != nil {
+		t.Fatal(err)
+	}
+	if n := count("parked"); n != 0 {
+		t.Fatalf("(a) the parked line survived the purge: %d", n)
+	}
+	var tombs int
+	_ = aux.QueryRow(ctx, `SELECT count(*) FROM decisionlog.erasures WHERE store = 'it_purge'`).Scan(&tombs)
+	if tombs != 0 {
+		t.Fatalf("the purge must take the tombstones along: %d left", tombs)
+	}
+
+	// (c) alice's tombstone is gone, yet her buffered pre-purge line is dropped by the fence
+	if _, err := db.insert(ctx, []row{line("alice", "late", before), line("carol", "late", before)}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if n := count("late"); n != 0 {
+		t.Fatalf("(c) lines about the purged store decided before the purge came back: %d", n)
+	}
+	// and a line decided after the purge is new data (a recreated store)
+	if _, err := db.insert(ctx, []row{line("alice", "fresh", time.Now().UTC().Add(time.Minute))}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if n := count("fresh"); n != 1 {
+		t.Fatalf("a line decided after the purge must stay: %d", n)
+	}
+
+	// (b) the purge holds the barrier when a batch arrives: the batch waits,
+	// then applies the moved fence to its own lines
+	txP, err := aux.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := txP.Exec(ctx, `INSERT INTO decisionlog.store_purges (store, purged_at, purged_by) VALUES ('it_purge', now(), 'test') ON CONFLICT (store) DO UPDATE SET purged_at = EXCLUDED.purged_at`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := txP.Exec(ctx, erasureBarrierSQL); err != nil {
+		t.Fatal(err)
+	}
+	inserted := make(chan error, 1)
+	go func() {
+		txW, err := db.pool.Begin(ctx)
+		if err != nil {
+			inserted <- err
+			return
+		}
+		defer func() { _ = txW.Rollback(ctx) }()
+		if _, err := insertTx(ctx, txW, []row{line("dave", "while", before)}, 0); err != nil {
+			inserted <- err
+			return
+		}
+		inserted <- txW.Commit(ctx)
+	}()
+	waitFor(t, "the batch to wait for the purge's barrier", waitingOnLock)
+	if err := txP.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-inserted; err != nil {
+		t.Fatal(err)
+	}
+	if n := count("while"); n != 0 {
+		t.Fatalf("(b) the batch did not apply the fence it waited for: %d", n)
+	}
+	// retention prunes the fence with the tombstones (cutoff tomorrow: all go)
+	if _, err := (&pgStore{pool: aux}).retain(ctx, -1); err != nil {
+		t.Fatal(err)
+	}
+	var fences int
+	_ = aux.QueryRow(ctx, `SELECT count(*) FROM decisionlog.store_purges`).Scan(&fences)
+	if fences != 0 {
+		t.Fatalf("fences left after retention: %d", fences)
 	}
 	if err := ps.Close(); err != nil {
 		t.Fatal(err)

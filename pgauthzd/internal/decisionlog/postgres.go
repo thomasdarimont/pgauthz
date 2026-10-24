@@ -91,6 +91,11 @@ CREATE TABLE IF NOT EXISTS decisionlog.erasures (
     erased_by    text,
     PRIMARY KEY (store, subject_type, subject_id, erased_at)
 );
+CREATE TABLE IF NOT EXISTS decisionlog.store_purges (
+    store      text PRIMARY KEY,
+    purged_at  timestamptz NOT NULL DEFAULT now(),
+    purged_by  text
+);
 `
 
 // Erasure tombstones (review #21): a data-subject erasure deletes the
@@ -143,6 +148,22 @@ DELETE FROM decisionlog.decisions d
    AND ((d.subject_type = e.subject_type AND d.subject_id = e.subject_id)
      OR (d.resource_type = e.subject_type AND d.resource_id = e.subject_id))`
 
+// Store purges (review #27) are the store-level fence: a store deleted with
+// its decision log purged leaves a row in decisionlog.store_purges
+// (store, purged_at), written under the same exclusive barrier as a
+// tombstone, and every batch drops its lines about that store decided at
+// or before purged_at — so a buffered line about an erased subject cannot
+// come back once the purge removed the subject's tombstone, and a buffered
+// line about the store cannot outlive the purge. A line decided after
+// purged_at belongs to whatever uses the name next (a recreated store).
+// Fences are pruned with the retention window, like tombstones.
+const applyStorePurgesSQL = `
+DELETE FROM decisionlog.decisions d
+ USING decisionlog.store_purges p
+ WHERE d.id > $1
+   AND d.store = p.store
+   AND d.ts <= p.purged_at`
+
 var columns = []string{"ts", "request_id", "trace_id", "span_id", "listener", "endpoint", "via", "store", "subject_type", "subject_id", "action",
 	"resource_type", "resource_id", "decision", "state", "reason", "actor", "client", "issuer", "latency_ms", "error", "line"}
 
@@ -158,7 +179,7 @@ type store interface {
 	ensurePartitions(ctx context.Context, days []time.Time) error
 	insert(ctx context.Context, rows []row, retentionDays int) (expired int, err error)
 	retain(ctx context.Context, retentionDays int) (dropped int, err error)
-	deleteStore(ctx context.Context, store string) (int64, error)
+	purgeStore(ctx context.Context, store, by string) (int64, error)
 	close()
 }
 
@@ -484,11 +505,13 @@ func (s *PostgresSink) retention(ctx context.Context) {
 	s.ensured.Range(func(k, _ any) bool { s.ensured.Delete(k); return true })
 }
 
-// DeleteStore removes every persisted line and tombstone of a store (the
-// store is gone from the engine). No barrier: a line about a deleted store
-// logged afterwards is a new fact about a request, not history to erase.
-func (s *PostgresSink) DeleteStore(ctx context.Context, store string) (int64, error) {
-	return s.db.deleteStore(ctx, store)
+// PurgeStore removes every persisted line and tombstone of a store (the
+// store is gone from the engine) behind a store-level fence (see
+// applyStorePurgesSQL): the fence row, the barrier, then the deletes in one
+// transaction. Idempotent — a repeat moves the fence and finds nothing to
+// delete — so a failed purge is retried after the store itself is gone.
+func (s *PostgresSink) PurgeStore(ctx context.Context, store, by string) (int64, error) {
+	return s.db.purgeStore(ctx, store, by)
 }
 
 // Close stops the flusher, inserts what is queued and closes the pool.
@@ -610,7 +633,10 @@ func insertTx(ctx context.Context, tx pgx.Tx, rows []row, retentionDays int) (in
 	if _, err := tx.CopyFrom(ctx, pgx.Identifier{Schema, Table}, columns, pgx.CopyFromRows(src)); err != nil {
 		return 0, err
 	}
-	_, err := tx.Exec(ctx, applyErasuresSQL, minID)
+	if _, err := tx.Exec(ctx, applyErasuresSQL, minID); err != nil {
+		return 0, err
+	}
+	_, err := tx.Exec(ctx, applyStorePurgesSQL, minID)
 	return expired, err
 }
 
@@ -653,17 +679,48 @@ func (p *pgStore) retain(ctx context.Context, retentionDays int) (int, error) {
 	if err := pruneErasures(ctx, tx, cutoff); err != nil {
 		return dropped, err
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM decisionlog.store_purges WHERE purged_at < $1`, cutoff); err != nil {
+		return dropped, err
+	}
 	return dropped, tx.Commit(ctx)
 }
 
-// deleteStore removes a store's lines and tombstones.
-func (p *pgStore) deleteStore(ctx context.Context, store string) (int64, error) {
-	tag, err := p.pool.Exec(ctx, `DELETE FROM decisionlog.decisions WHERE store = $1`, store)
+// purgeStore: the fence (upsert, purged_at = now) and the exclusive barrier
+// in one small transaction — committed, so a batch that filtered without
+// the fence has committed and a later one applies it — then the store's
+// lines and tombstones in one transaction with no lock held.
+func (p *pgStore) purgeStore(ctx context.Context, store, by string) (int64, error) {
+	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
-	_, err = p.pool.Exec(ctx, `DELETE FROM decisionlog.erasures WHERE store = $1`, store)
-	return tag.RowsAffected(), err
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `INSERT INTO decisionlog.store_purges (store, purged_at, purged_by) VALUES ($1, now(), $2)
+	                            ON CONFLICT (store) DO UPDATE SET purged_at = EXCLUDED.purged_at, purged_by = EXCLUDED.purged_by`, store, by); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '10s'`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, erasureBarrierSQL); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	tx2, err := p.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx2.Rollback(ctx) }()
+	tag, err := tx2.Exec(ctx, `DELETE FROM decisionlog.decisions WHERE store = $1`, store)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx2.Exec(ctx, `DELETE FROM decisionlog.erasures WHERE store = $1`, store); err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), tx2.Commit(ctx)
 }
 
 // pruneErasures drops tombstones older than the retention cutoff.

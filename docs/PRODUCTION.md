@@ -1149,8 +1149,14 @@ fleet-wide *partition drop* is shared by design).
   true)` (above) plus `purge_events`; the store's decision-log lines stay —
   a record of what was decided may have to outlive the store — unless the
   deletion asks for them: the console's Delete dialog, the admin API's
-  `purge_decisions=true`, `pgauthzctl store delete --purge-decisions`
-  (`502 partial` if the sink failed). Kept lines age out with everyone
+  `purge_decisions=true`, `pgauthzctl store delete --purge-decisions`. The
+  purge runs behind a store-level fence (ADR 0015 addendum), so a
+  buffered line about the store — an erased subject's included — cannot
+  come back after it; it is refused before anything is deleted where the
+  instance writes no postgres sink, and a sink failure after the engine's
+  delete answers `502 partial` — `DELETE …/admin/stores/{store}/decisions`
+  (`pgauthzctl store purge-decisions`) retries the purge alone, the store
+  being gone. Kept lines age out with everyone
   else's: the sink's retention drops whole days
   (`DECISION_LOG_RETENTION_DAYS`, default 30) and is not store-aware. With
   retention `0` nothing is ever dropped, so a deleted store's lines then
@@ -1173,7 +1179,7 @@ fleet-wide *partition drop* is shared by design).
   hold shared and the erasure takes exclusive for an instant (the delete of
   persisted lines runs afterwards, unlocked), so a batch in flight at the
   moment of the erasure cannot resurrect a line, and the sinks never wait
-  for each other or for the delete (ADR 0015 → Ordering). The sink refuses
+  for each other or for the delete (ADR 0015 addendum). The sink refuses
   lines older than `DECISION_LOG_RETENTION_DAYS` (metric
   `pgauthzd_decision_log_expired_lines_total`), so a delivery delayed past
   retention cannot outlive the tombstone that covered it; the check is made

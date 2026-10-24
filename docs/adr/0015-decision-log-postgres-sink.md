@@ -114,62 +114,29 @@ takes `decisionLog.dsn`.
 - **The engine's database.** Rejected, as in ADR 0013: a different write
   load on the primary and a table replicas would carry for nothing.
 
-## Addendum (2026-10-24): erasure tombstones
+## Addendum (2026-10-24): erasures, store purges and ordering
 
-A data-subject erasure (PRODUCTION.md → Data subject requests) deletes the
-persisted lines about a person, but the sink is asynchronous: a line the
-Logger accepted before the erasure may flush afterwards and resurrect the
-history. `decisionlog.erasures` (store, subject type, subject id,
-`erased_at`, `erased_by`) is written by the erasing side; after every batch
-the sink inserts, the same transaction deletes the batch's rows a tombstone
-covers — decided at or before `erased_at`, naming the person as subject or
-resource. Tombstones are pruned with the retention window. The console's
-erasure runs the engine first (authoritative, audited) and the decision log
-second; a failure there answers 502 `partial`, and a retry completes it.
+A data-subject erasure deletes the persisted lines about a person, but the
+sink is asynchronous: a line accepted before the erasure may flush after it.
+The erasing side therefore writes a tombstone (`decisionlog.erasures`: store,
+subject, `erased_at`), and every batch deletes, in its own transaction, the
+rows it just inserted that a tombstone covers — decided at or before
+`erased_at`, naming the person as subject or resource. A store purge works the
+same way with a store-level fence (`decisionlog.store_purges`: store,
+`purged_at`): lines about the store decided at or before the purge are
+dropped, so the store's tombstones can go with its lines.
 
-**Ordering (review #22).** A batch and an erasure run in separate
-transactions; under READ COMMITTED a batch that filtered before the
-tombstone was committed could still commit after the erasure's delete and
-resurrect the line. A transaction-level advisory lock on one key
-(`hashtext('decisionlog.erasures')`) orders them without serialising the
-sinks: every batch holds it **shared** for its transaction — batches never
-wait for each other — and the erasure takes it **exclusive** for an
-instant: it writes the tombstone, acquires the lock (waiting for the batches
-in flight, under a `lock_timeout`), and commits that small transaction. The
-delete over the persisted lines runs afterwards with no lock held, so a
-large log never stalls a sink. A batch that filtered without the tombstone
-has therefore committed before the delete runs; a batch that started after
-the erasure's lock request filters after the tombstone is committed. A
-two-session test pins both interleavings.
-
-**Delivery-age boundary.** Tombstones live as long as the retention window,
-but a line can arrive arbitrarily late (an instance that was down keeps its
-queue) and recreate a dropped partition. The sink therefore **refuses lines
-older than the retention window** (`DECISION_LOG_RETENTION_DAYS`; counted in
-`pgauthzd_decision_log_expired_lines_total`, logged) — one cutoff for
-dropping partitions, pruning tombstones and accepting lines, so a pruned
-tombstone never had a line left to cover. With retention off (0) nothing is
-pruned and nothing is refused.
-
-**Retention under the same lock (review #23).** The age check that binds
-is made *inside* the batch transaction, after the shared lock, on the
-database clock (`date_trunc('day', clock_timestamp(), 'UTC')`), and a
-retention run is one transaction under the exclusive lock: cutoff on the
-same clock, dated partitions before it dropped, rows before it swept from
-the default partition (a late line that found no dated partition), and
-tombstones before it pruned. Retention therefore cannot slip between a
-batch's check and its commit, instances do not depend on their local
-clocks agreeing, and a tombstone is pruned only after every line it could
-cover is gone and refused. The sink's local first pass (which spares it
-from recreating a dropped partition) keeps one day of grace, so an
-application clock up to a day ahead of the database's never discards a
-line the database would still keep (review #24). That is the bound: a
-local clock more than 24 hours ahead would still discard the window's
-oldest day locally — an operational assumption (NTP), stated rather than
-defended further. An integration test skews the sink's clock 23 hours
-either way against the database's. Dropping a partition already took an ACCESS
-EXCLUSIVE lock on the table, so batches waited for retention before this;
-the advisory lock adds no new wait. Every sink sharing one decision-log
-database must run the same `DECISION_LOG_RETENTION_DAYS`: the boundary is
-one per database. A two-session test parks a batch and shows the retention
-run waiting for it.
+Batches, erasures, purges and retention are ordered by one transaction-level
+advisory lock: batches hold it shared, the others take it exclusive for an
+instant after writing their tombstone or fence and release it on commit; the
+deletes of persisted lines run afterwards unlocked, so sinks never wait for
+each other or for a large delete. The binding age check runs inside the batch
+transaction on the database clock, with a local pre-check one day wider; a
+retention run (partitions, default partition, tombstones, fences) is one
+transaction under the same lock. Consequences: tombstones and fences live as
+long as the retention window, lines older than it are refused, every sink on
+one database must share `DECISION_LOG_RETENTION_DAYS`, and an application
+clock more than a day ahead of the database's discards valid lines. A
+requested purge is refused before anything is deleted when no sink is
+present; `DELETE …/admin/stores/{store}/decisions` retries it after the
+store is gone.

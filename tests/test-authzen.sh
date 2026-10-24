@@ -838,6 +838,12 @@ check_http "admin: a tenant-less token cannot read a takeout (403)" "403" \
     -X GET "$ADMIN_URL/pgauthz/v1/admin/stores/demo/subjects/internal_user/alice/objects" -H "$AUTH_ALICE"
 check_http "admin: there is no erasure over the API (405)" "405" \
     -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/demo/subjects/internal_user/alice" -H "$AUTH_ADMIN"
+check_http "admin: purge_decisions without a postgres sink on this instance is refused up front (501)" "501" \
+    -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE?purge_decisions=true" -H "$AUTH_ADMIN"
+check_http "admin: the store survived the refused purge (200)" "200" \
+    -X GET "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE" -H "$AUTH_ADMIN"
+check_http "admin: the purge-decisions route needs the sink too (501)" "501" \
+    -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/decisions" -H "$AUTH_ADMIN"
 check_http "admin: DELETE of a missing grant is 404" "404" \
     -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/namespaces/hr/access/app_hr" -H "$AUTH_ADMIN"
 check_http "admin: PUT retires the store (200)" "200" \
@@ -845,7 +851,7 @@ check_http "admin: PUT retires the store (200)" "200" \
 check_http "admin: a retired store cannot be reopened (400)" "400" \
     -X PUT "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE" -H "$AUTH_ADMIN" -H "Content-Type: application/json" -d '{"retired":false}'
 check_http "admin: DELETE removes the store (200)" "200" \
-    -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE?purge_audit=true&purge_decisions=true" -H "$AUTH_ADMIN"
+    -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE?purge_audit=true" -H "$AUTH_ADMIN"
 check_http "admin: DELETE of a missing store is 404" "404" \
     -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE" -H "$AUTH_ADMIN"
 docker compose "${COMPOSE_FILES[@]}" exec -T authz-db psql -q -U authz -d authz -c "DELETE FROM authz.model_registry WHERE name = 'az_admin_model';" >/dev/null 2>&1 || true

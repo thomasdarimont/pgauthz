@@ -9,6 +9,20 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Review #27 (Codex, on c5fa4fc) fixes — the store's decision-log purge.**
+  The purge removed a store's subject tombstones without the lock protocol,
+  so a buffered line about an erased subject could flush back (P1). It now
+  writes a **store-level fence** (`decisionlog.store_purges`) under the
+  erasure barrier before deleting; every sink batch drops its lines about a
+  purged store decided at or before the purge, and fences are pruned with
+  retention (ADR 0015 addendum; a three-way two-session test). A requested
+  purge is never reported done without running: the admin API refuses
+  `purge_decisions` with `501` and the console with `400` *before* deleting
+  anything when no postgres sink is there (P2). The lines and tombstones go
+  in one transaction, and **`DELETE /pgauthz/v1/admin/stores/{store}/decisions`**
+  (`pgauthzctl store purge-decisions`) retries the purge alone after the
+  store is gone (P2). The console's store deletion mirrors the fence.
+
 - **Console: Platform → Issuers over pgauthzd's admin API, as the signed-in
   person.** With `PGAUTHZD_ADMIN_URL` the tab reads the rows, the history
   and the set in force, and writes bindings, through the admin API with the

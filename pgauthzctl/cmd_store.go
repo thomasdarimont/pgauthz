@@ -23,6 +23,9 @@ const storeUsage = `pgauthzctl store <verb> [flags] — the admin API only (--se
   delete <store> [--purge-audit] [--purge-decisions]
                                               remove the store (the erasure path); the audit
                                               history and the decision log stay unless asked
+  purge-decisions <store>                     purge the store's decision-log lines alone (the
+                                              retry after a failed delete --purge-decisions; the
+                                              store may already be gone)
   recorders <store>                           the recorder allowlists
   recorder-set <store> <db_role> <action,...> make a role's allowlist exactly these actions
   recorder-lift <store> <db_role>             lift a role's allowlist
@@ -152,6 +155,16 @@ func cmdStore(verb string, args []string) error {
 			return err
 		}
 		report(res, fmt.Sprintf("deleted store %s", pos[0]))
+		return nil
+	case "purge-decisions":
+		if err := need(1, "purge-decisions <store>"); err != nil {
+			return err
+		}
+		var res map[string]any
+		if err := c.do(ctx, "DELETE", storePath(pos[0])+"/decisions", nil, &res); err != nil {
+			return err
+		}
+		report(res, fmt.Sprintf("purged the decision-log lines of %s (%v deleted now)", pos[0], res["decisions"]))
 		return nil
 	case "recorders":
 		if err := need(1, "recorders <store>"); err != nil {

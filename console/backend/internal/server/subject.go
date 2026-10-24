@@ -255,16 +255,48 @@ func (s *Server) handleSubjectErase(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// deleteStoreDecisions removes a deleted store's lines and tombstones from
-// the decision log. No barrier: a line about a deleted store logged
-// afterwards is a new fact about a request, not history.
-func (s *Server) deleteStoreDecisions(ctx context.Context, store string) (int64, error) {
-	tag, err := s.decisionsDB().Exec(ctx, `DELETE FROM decisionlog.decisions WHERE store = $1`, store)
+// purgeStoreDecisions removes a deleted store's lines and tombstones from
+// the decision log behind the store fence (pgauthzd's decisionlog package,
+// PurgeStore — the same protocol, mirrored here): the fence row
+// (decisionlog.store_purges, purged_at = now) and the exclusive erasure
+// lock in one small transaction, committed, so a batch in flight has
+// committed first and a later batch drops its lines about the store itself;
+// then the lines and tombstones in one transaction, no lock held. Without
+// the fence, deleting the tombstones would let a buffered line about an
+// erased subject come back (review #27). Idempotent.
+func (s *Server) purgeStoreDecisions(ctx context.Context, store, by string) (int64, error) {
+	db := s.decisionsDB()
+	tx, err := db.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
-	_, err = s.decisionsDB().Exec(ctx, `DELETE FROM decisionlog.erasures WHERE store = $1`, store)
-	return tag.RowsAffected(), err
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `INSERT INTO decisionlog.store_purges (store, purged_at, purged_by) VALUES ($1, now(), $2)
+	                            ON CONFLICT (store) DO UPDATE SET purged_at = EXCLUDED.purged_at, purged_by = EXCLUDED.purged_by`, store, by); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '10s'`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('decisionlog.erasures'))`); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	tx2, err := db.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx2.Rollback(ctx) }()
+	tag, err := tx2.Exec(ctx, `DELETE FROM decisionlog.decisions WHERE store = $1`, store)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx2.Exec(ctx, `DELETE FROM decisionlog.erasures WHERE store = $1`, store); err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), tx2.Commit(ctx)
 }
 
 // eraseDecisions writes the erasure tombstone and removes the subject's

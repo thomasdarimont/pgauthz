@@ -385,6 +385,20 @@ func (s *Server) handleDeleteStore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	// a requested decision-log purge needs the sink's table in the console's
+	// database — asked for without it, refuse BEFORE anything is deleted
+	// (review #27: never report a purge done that did not run)
+	if req.PurgeDecisions {
+		configured, err := s.decisionsConfigured(ctx)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "decision log: "+err.Error())
+			return
+		}
+		if !configured {
+			writeError(w, http.StatusBadRequest, "purge_decisions: no decision log in the console's database (DECISION_LOG=postgres with the console's PG_DSN); delete without it")
+			return
+		}
+	}
 	err := s.asPersonAuthorized(ctx, p, deleteGate, "can_manage_access", "store", store, map[string]any{"op": "delete_store", "purge_audit": req.PurgeAudit, "purge_decisions": req.PurgeDecisions}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SELECT authz.delete_store($1, $2)`, store, req.PurgeAudit); err != nil {
 			return err
@@ -425,20 +439,22 @@ func (s *Server) handleDeleteStore(w http.ResponseWriter, r *http.Request) {
 		writeEngineError(w, err)
 		return
 	}
-	out := map[string]any{"ok": true, "deleted": store}
+	out := map[string]any{"ok": true, "deleted": store, "purged_decisions": false}
 	// the decision log's lines about the store go only when asked (like the
 	// audit history: a record of what was decided may have to outlive the
-	// store); the store is deleted and on record either way — a sink
-	// failure answers 502 `partial`, and the lines then wait for the sink's
-	// retention
-	if configured, err := s.decisionsConfigured(ctx); req.PurgeDecisions && err == nil && configured {
-		n, err := s.deleteStoreDecisions(ctx, store)
+	// store), behind the store fence; the store is deleted and on record
+	// either way — a failure here answers 502 `partial`, and the purge is
+	// retried over pgauthzd's admin API (DELETE …/stores/{store}/decisions)
+	// or waits for the sink's retention
+	if req.PurgeDecisions {
+		n, err := s.purgeStoreDecisions(ctx, store, p.typ+":"+p.id)
 		if err != nil {
 			out["partial"] = true
 			out["error"] = "the store is deleted but its decision-log lines could not be: " + err.Error()
 			writeJSON(w, http.StatusBadGateway, out)
 			return
 		}
+		out["purged_decisions"] = true
 		out["decisions"] = n
 	}
 	writeJSON(w, http.StatusOK, out)

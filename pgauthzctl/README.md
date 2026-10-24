@@ -95,6 +95,7 @@ pgauthzctl store recorder-lift tenant_a svc_approvals
 pgauthzctl store namespace-grant tenant_a hr app_hr --read --write
 pgauthzctl store namespace-revoke tenant_a hr app_hr
 pgauthzctl store delete tenant_a --purge-audit --purge-decisions  # the erasure path; audit history and decision log only when asked
+pgauthzctl store purge-decisions tenant_a                 # the decision-log lines alone (retry after a failed --purge-decisions; store may be gone)
 ```
 
 Every verb takes `--json` for the API's answer verbatim.

@@ -191,6 +191,17 @@ func (h *Handler) adminDeleteStore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	purge := r.URL.Query().Get("purge_audit") == "true"
+	purgeDecisions := r.URL.Query().Get("purge_decisions") == "true"
+	// The decision log's lines go only when asked (like the audit history, a
+	// record of what was decided may have to outlive the store), and only
+	// from the postgres sink this instance writes — asked for without one,
+	// the whole request is refused BEFORE anything is deleted (review #27:
+	// a requested purge is never reported done without running).
+	sink := h.decisionSink()
+	if purgeDecisions && sink == nil {
+		writeError(w, http.StatusNotImplemented, "purge_decisions: this instance writes no postgres decision-log sink (DECISION_LOG=postgres); delete without it, or purge from the console or an instance that does")
+		return
+	}
 	existed, err := a.DeleteStore(r.Context(), store, purge, actorLabel(r))
 	if err != nil {
 		writeDecisionError(w, err)
@@ -200,24 +211,46 @@ func (h *Handler) adminDeleteStore(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no store "+store)
 		return
 	}
-	purgeDecisions := r.URL.Query().Get("purge_decisions") == "true"
-	out := map[string]any{"store": store, "deleted": true, "purged_audit": purge, "purged_decisions": purgeDecisions}
-	// The decision log's lines about the store go only when asked (like the
-	// audit history, a record of what was decided may have to outlive the
-	// store), and only from the postgres sink this instance writes. The
-	// engine part is done either way: a sink failure answers 502 `partial`;
-	// the lines then wait for the sink's retention.
-	if sink := h.decisionSink(); purgeDecisions && sink != nil {
-		n, err := sink.DeleteStore(r.Context(), store)
+	out := map[string]any{"store": store, "deleted": true, "purged_audit": purge, "purged_decisions": false}
+	if purgeDecisions {
+		// behind the store fence (PurgeStore). The engine part is done
+		// either way: a sink failure answers 502 `partial`, and
+		// DELETE …/stores/{store}/decisions retries the purge alone — the
+		// store itself is gone by then.
+		n, err := sink.PurgeStore(r.Context(), store, actorLabel(r))
 		if err != nil {
 			out["partial"] = true
-			out["error"] = "the store is deleted but its decision-log lines could not be: " + err.Error()
+			out["error"] = "the store is deleted but its decision-log lines could not be: retry with DELETE /pgauthz/v1/admin/stores/" + store + "/decisions: " + err.Error()
 			writeJSON(w, http.StatusBadGateway, out)
 			return
 		}
+		out["purged_decisions"] = true
 		out["decisions"] = n
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// adminPurgeStoreDecisions — DELETE /pgauthz/v1/admin/stores/{store}/decisions:
+// the decision log's lines and tombstones of a store, behind the store
+// fence, whether or not the store still exists in the engine — the retry
+// of a store deletion whose purge failed, or a purge decided later. Needs
+// the postgres sink on this instance; idempotent.
+func (h *Handler) adminPurgeStoreDecisions(w http.ResponseWriter, r *http.Request) {
+	_, store, ok := h.requireStoreScope(w, r)
+	if !ok {
+		return
+	}
+	sink := h.decisionSink()
+	if sink == nil {
+		writeError(w, http.StatusNotImplemented, "this instance writes no postgres decision-log sink (DECISION_LOG=postgres)")
+		return
+	}
+	n, err := sink.PurgeStore(r.Context(), store, actorLabel(r))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "decision log: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"store": store, "purged_decisions": true, "decisions": n})
 }
 
 func (h *Handler) adminStoreModel(w http.ResponseWriter, r *http.Request) {
@@ -588,6 +621,7 @@ func registerAdminStores(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("GET /pgauthz/v1/admin/stores/{store}", h.adminStore)
 	mux.HandleFunc("PUT /pgauthz/v1/admin/stores/{store}", h.adminUpsertStore)
 	mux.HandleFunc("DELETE /pgauthz/v1/admin/stores/{store}", h.adminDeleteStore)
+	mux.HandleFunc("DELETE /pgauthz/v1/admin/stores/{store}/decisions", h.adminPurgeStoreDecisions)
 	mux.HandleFunc("GET /pgauthz/v1/admin/stores/{store}/model", h.adminStoreModel)
 	mux.HandleFunc("PUT /pgauthz/v1/admin/stores/{store}/model", h.adminApplyModel)
 	mux.HandleFunc("GET /pgauthz/v1/admin/models", h.adminModels)
