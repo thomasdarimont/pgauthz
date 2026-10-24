@@ -196,13 +196,13 @@ func (h *Handler) Issuers(w http.ResponseWriter, r *http.Request) {
 	// tenant's identity provider; every issuer only as a platform admin
 	// (the admin gate with platform scope). The callback listener is the
 	// trusted internal path (OPA, the console) and serves the whole set.
-	platform := !h.gateDiagnostics
-	if !platform {
-		if scope, err := h.adminGate(r); err == nil && scope.platform {
-			platform = true
+	scope := adminScope{platform: !h.gateDiagnostics, issuer: IssuerFromContext(r.Context())}
+	if !scope.platform {
+		if s, err := h.adminGate(r); err == nil {
+			scope = s
 		}
 	}
-	h.writeIssuers(w, h.visibleIssuers(r, platform))
+	h.writeIssuers(w, h.visibleIssuers(scope))
 }
 
 // writeIssuers renders issuers as the endpoint's JSON (keys redacted).

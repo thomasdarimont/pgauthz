@@ -137,8 +137,13 @@ export class PgcSubject extends PgcElement {
                 <span><b>${count('as_object')}</b> ${t('tuples about the subject')}</span>
                 <span><b>${eff}</b> ${t('objects reachable')}</span>
                 <span><b>${count('events')}</b> ${t('recorded actions')}</span>
+                <span><b>${count('events_about')}</b> ${t('actions on the subject')}</span>
                 <span><b>${count('audit')}</b> ${t('audit rows')}</span>
                 <span><b>${d.decisions ? count('decisions') : '—'}</b> ${t('decision-log lines')}</span>
+                <span
+                  ><b>${d.decisions_about ? count('decisions_about') : '—'}</b>
+                  ${t('decision-log lines about the subject')}</span
+                >
               </div>
               ${d.events_truncated || d.audit_truncated || d.decisions_truncated || d.effective.some((e) => e.truncated) ? html`<p class="help">${t('Some lists hit the cap; the download carries the same cap (export_subject with a higher p_limit in SQL for everything).')}</p>` : nothing}
               <div class="actions">

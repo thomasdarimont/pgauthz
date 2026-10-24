@@ -17,6 +17,8 @@
 --              the person relates to — list_subject_objects answers it as
 --              rows, for a JOIN against the application's own tables
 --   events     the subject's recorded actions (action log, ADR 0012)
+--   events_about  actions OTHER principals recorded ON the subject (the
+--              subject as the event's object — review #20)
 --   audit      every tuple change that named the subject, either side
 --
 -- Auditor tier (it reveals everything about a person). The WRITE half —
@@ -111,7 +113,9 @@ BEGIN
            AND (p_object_types IS NULL OR ot.name = ANY (p_object_types))
          ORDER BY 2, 4
     LOOP
-        BEGIN
+        -- a pair the subject's type cannot hold yields no rows; any other
+        -- failure propagates (review #20: an export claiming completeness
+        -- must not swallow errors)
             RETURN QUERY
                 SELECT r.object_type, r.relation,
                        CASE WHEN o.is_wildcard THEN '*' ELSE o.object_id END,
@@ -125,10 +129,6 @@ BEGIN
                           FROM authz.list_objects(p_store, p_user_type, p_user_id, r.relation, r.object_type, NULL, p_limit + 1) x) o
                  WHERE o.rn <= p_limit + 1
                  ORDER BY o.rn;
-        EXCEPTION WHEN OTHERS THEN
-            -- a relation the subject's type may not hold, …: this pair yields nothing
-            NULL;
-        END;
     END LOOP;
 END;
 $$;
@@ -151,8 +151,10 @@ DECLARE
     v_as_object jsonb;
     v_effective jsonb := '[]'::jsonb;
     v_events    jsonb := NULL;
+    v_about     jsonb := NULL;
     v_audit     jsonb := NULL;
     v_events_n  bigint := 0;
+    v_about_n   bigint := 0;
     v_audit_n   bigint := 0;
 BEGIN
     IF p_user_id IS NULL OR btrim(p_user_id) = '' THEN
@@ -218,6 +220,14 @@ BEGIN
         IF v_events_n > p_limit THEN
             v_events := (SELECT coalesce(jsonb_agg(e), '[]'::jsonb) FROM (SELECT e FROM jsonb_array_elements(v_events) e LIMIT p_limit) s);
         END IF;
+        -- what others did TO the subject (the subject as the event's object)
+        SELECT coalesce(jsonb_agg(to_jsonb(e) ORDER BY e.occurred_at, e.seq), '[]'::jsonb), count(*)
+          INTO v_about, v_about_n
+          FROM authz.list_events(p_store, p_object_type => p_user_type, p_object_id => p_user_id, p_limit => p_limit + 1) e
+         WHERE NOT (e.subject_type = p_user_type AND e.subject_id = p_user_id);
+        IF v_about_n > p_limit THEN
+            v_about := (SELECT coalesce(jsonb_agg(e), '[]'::jsonb) FROM (SELECT e FROM jsonb_array_elements(v_about) e LIMIT p_limit) s);
+        END IF;
     END IF;
 
     -- every tuple change that named the subject, either side
@@ -253,6 +263,8 @@ BEGIN
         'effective',   v_effective,
         'events',      v_events,
         'events_truncated', v_events_n > p_limit,
+        'events_about', v_about,
+        'events_about_truncated', v_about_n > p_limit,
         'audit',       v_audit,
         'audit_truncated',  v_audit_n > p_limit);
 END;

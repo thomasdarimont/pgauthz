@@ -1,7 +1,7 @@
 -- Data subject requests, the WRITE half (GDPR Art. 17, erasure): remove
 -- everything a store holds about one subject — the tuples naming it on
--- either side (incl. expired rows), its recorded actions, and optionally
--- the audit rows that name it. Admin tier: it crosses every namespace and
+-- either side (incl. expired rows), its recorded actions and the actions
+-- others recorded on it, and optionally the audit rows that name it. Admin tier: it crosses every namespace and
 -- it removes history. Returns the counts.
 --
 -- Consequences to know (why this is not delete_user_tuples):
@@ -66,8 +66,12 @@ BEGIN
 
     IF p_purge_events THEN
         PERFORM set_config('authz.audit_maintenance', 'on', true);
+        -- the subject's own actions AND the actions others recorded on it
+        -- (the subject as the event's object — review #20)
         DELETE FROM authz.events e
-         WHERE e.store_id = v_store_id AND e.subject_type = v_type_id AND e.subject_id = p_user_id;
+         WHERE e.store_id = v_store_id
+           AND ((e.subject_type = v_type_id AND e.subject_id = p_user_id)
+             OR (e.object_type = v_type_id AND e.object_id = p_user_id));
         GET DIAGNOSTICS v_events = ROW_COUNT;
         PERFORM set_config('authz.audit_maintenance', '', true);
     END IF;

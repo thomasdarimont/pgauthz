@@ -108,9 +108,28 @@ func TestSubjectHTTP(t *testing.T) {
 		VALUES (now(), 'public', 'check', $1, 'user', 'alice', 'can_view', true, '{"subject_id":"alice"}')`, store); err != nil {
 		t.Fatal(err)
 	}
+	// bob asked about alice as the RESOURCE: part of her data too (review #20)
+	if _, err := s.db.Exec(ctx, `INSERT INTO decisionlog.decisions (ts, listener, endpoint, store, subject_type, subject_id, action, resource_type, resource_id, decision, line)
+		VALUES (now(), 'public', 'check', $1, 'user', 'bob', 'can_read_user', 'user', 'alice', true, '{"subject_id":"bob","resource_id":"alice"}')`, store); err != nil {
+		t.Fatal(err)
+	}
 	_, m, _ = do("GET", base+"?subject=user:alice", "", owner)
 	if n := len(m["decisions"].([]any)); n != 1 {
 		t.Fatalf("decision-log lines: %d (%v)", n, m["decisions"])
+	}
+	if n := len(m["decisions_about"].([]any)); n != 1 {
+		t.Fatalf("decision-log lines about the subject: %d (%v)", n, m["decisions_about"])
+	}
+	// and an action bob recorded ON alice is in events_about
+	if _, err := pool.Exec(ctx, `SELECT authz.model_register_relation($1, 'can_read_user')`, store); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `SELECT authz.record_event($1, 'user', 'bob', 'can_read_user', 'user', 'alice')`, store); err != nil {
+		t.Fatal(err)
+	}
+	_, m, _ = do("GET", base+"?subject=user:alice", "", owner)
+	if n := len(m["events_about"].([]any)); n != 1 {
+		t.Fatalf("events about the subject: %d (%v)", n, m["events_about"])
 	}
 
 	// erase: viewers may not; the owner may, and the counts come back
@@ -118,11 +137,11 @@ func TestSubjectHTTP(t *testing.T) {
 		t.Fatalf("a viewer may not erase: %d", code)
 	}
 	code, m, _ = do("POST", base+"/erase", `{"subject":"user:alice","purge_audit":true}`, owner)
-	if code != 200 || m["tuples_as_subject"].(float64) != 2 || m["events"].(float64) != 1 || m["decisions"].(float64) != 1 || m["audit"].(float64) < 2 {
-		t.Fatalf("erase: %d %v", code, m)
+	if code != 200 || m["tuples_as_subject"].(float64) != 2 || m["events"].(float64) != 2 || m["decisions"].(float64) != 2 || m["audit"].(float64) < 2 {
+		t.Fatalf("erase (own + about): %d %v", code, m)
 	}
 	_, m, _ = do("GET", base+"?subject=user:alice", "", owner)
-	if len(m["direct"].([]any)) != 0 || len(m["events"].([]any)) != 0 || len(m["decisions"].([]any)) != 0 || len(m["audit"].([]any)) != 0 {
+	if len(m["direct"].([]any)) != 0 || len(m["events"].([]any)) != 0 || len(m["events_about"].([]any)) != 0 || len(m["decisions"].([]any)) != 0 || len(m["decisions_about"].([]any)) != 0 || len(m["audit"].([]any)) != 0 {
 		t.Fatalf("after the erasure: %v", m)
 	}
 	_, m, _ = do("GET", base+"?subject=user:bob", "", owner)

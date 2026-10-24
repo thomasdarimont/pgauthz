@@ -379,8 +379,18 @@ func TestAdminGateClientCertificate(t *testing.T) {
 		t.Fatalf("unmapped: %v", err)
 	}
 
+	// a tenant certificate sees its issuer — it carries no iss, the mapping names it (review #20)
+	w := do(h, h.adminIssuers, withCert(cert("ci", nil, "spiffe://acme/ci/tenant-a"), "GET", "/pgauthz/v1/admin/issuers", ""))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "https://tenant-a") || strings.Contains(w.Body.String(), "tenant-b") || strings.Contains(w.Body.String(), "platform-idp") {
+		t.Fatalf("tenant cert's issuer listing: %d %s", w.Code, w.Body.String())
+	}
+	w = do(h, h.adminIssuers, withCert(cert("terraform", nil), "GET", "/pgauthz/v1/admin/issuers", ""))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "tenant-b") {
+		t.Fatalf("platform cert's issuer listing: %d %s", w.Code, w.Body.String())
+	}
+
 	// a tenant certificate manages its own issuer only; the actor is the certificate
-	w := do(h, h.adminSetIssuerBinding, withCert(cert("ci", nil, "spiffe://acme/ci/tenant-a"), "PUT", "/pgauthz/v1/admin/issuer-bindings",
+	w = do(h, h.adminSetIssuerBinding, withCert(cert("ci", nil, "spiffe://acme/ci/tenant-a"), "PUT", "/pgauthz/v1/admin/issuer-bindings",
 		`{"issuer":"https://tenant-a","stores":["a_docs"],"enabled":true}`))
 	if w.Code != 200 || stub.by[len(stub.by)-1] != "cert:spiffe://acme/ci/tenant-a" {
 		t.Fatalf("tenant cert write: %d %s (by %v)", w.Code, w.Body.String(), stub.by)

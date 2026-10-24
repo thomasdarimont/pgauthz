@@ -1129,9 +1129,22 @@ fleet-wide *partition drop* is shared by design).
 - **A whole tenant:** `retire_store` then `delete_store(p_purge_audit =>
   true)` (above) plus `purge_events`; the decision log is deleted by store in
   its sink.
-- Not covered: data a PEP put into `condition_context` or event payloads
-  under its own keys is exported as stored; what an application logged
-  elsewhere is the application's.
+- **Both sides, always:** export and erasure match the person as the
+  *subject* (what they did, what they may do) and as the *object* — the
+  tuples about them, the actions others recorded on them (`events_about`),
+  the decisions others asked for on them (`decisions_about`).
+- **Partial failure of the console's erasure:** the engine and the decision
+  log are two databases with no shared transaction. The console removes
+  the decision-log lines first and only then runs `erase_subject`; a failure
+  at either step answers an error (never 200), and a retry completes the
+  erasure — it is idempotent.
+- Not covered by typed matching: free text. `condition_context`, event
+  payloads and `recorded_by` / `performed_by` / `actor` strings are
+  exported as stored; an application that wrote a person's name into a
+  payload has to find it itself. Audit rows name the actor who performed
+  a change, not the subject — `erase_subject(p_purge_audit => true)`
+  removes the rows that name the person on either side of a tuple, not
+  rows where the person was the actor of someone else's change.
 
 ## Upgrades & migrations
 

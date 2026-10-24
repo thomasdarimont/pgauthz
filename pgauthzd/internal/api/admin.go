@@ -203,14 +203,15 @@ func (c *compiledAdmin) satisfiedBy(ctx context.Context) error {
 	return nil
 }
 
-// visibleIssuers: the effective issuers the caller may see — its own, or
-// every one for a platform admin.
-func (h *Handler) visibleIssuers(r *http.Request, platform bool) []IssuerConfig {
+// visibleIssuers: the effective issuers a scope may see — every one for a
+// platform admin, else the scope's issuer (a token's own, or the issuer a
+// certificate mapping names — review #20: a certificate carries no iss).
+func (h *Handler) visibleIssuers(scope adminScope) []IssuerConfig {
 	all := h.issuers.Current().configs
-	if platform {
+	if scope.platform {
 		return all
 	}
-	own := IssuerFromContext(r.Context())
+	own := scope.issuer
 	var out []IssuerConfig
 	for _, ic := range all {
 		if ic.Issuer == own {
@@ -229,7 +230,7 @@ func (h *Handler) adminIssuers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	h.writeIssuers(w, h.visibleIssuers(r, scope.platform))
+	h.writeIssuers(w, h.visibleIssuers(scope))
 }
 
 // WithAdminBackend runs the management resources on their own backend

@@ -84,6 +84,16 @@ pre-1.0, minor versions may include breaking changes.
   endpoints) instead of just the outcome; Reset clears every filter back to
   the window; Refresh reloads it. A test pins that every filter value
   reaches SQL as a bound argument.
+- **Review #20 (Codex, on 8782230) fixes.** Issuer-scoped client
+  certificates now see their issuer on `GET /admin/issuers` (the listing
+  took the issuer from the token context, which a certificate has none of);
+  `export_subject` / `erase_subject` and the console's decision-log part
+  cover the person as the *object* too — `events_about`,
+  `decisions_about`, and erasure of both sides; the console's erasure
+  removes the decision-log lines first and answers an error on any
+  failure instead of a 200 with a note; `list_subject_objects` no longer
+  swallows every error (a non-applicable pair yields no rows, anything
+  else propagates). PRODUCTION.md says what typed matching cannot cover.
 - **pgauthzctl unit tests for the admin-API mode** (`api_test.go`): a fake
   admin API checks the bearer token, the error mapping, the issuers, model
   and store verbs' requests and output, and an mTLS handshake with a

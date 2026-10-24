@@ -70,13 +70,21 @@ func (s *Server) handleSubject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "export did not decode: "+err.Error())
 		return
 	}
-	decisions, truncated, err := s.subjectDecisions(ctx, store, typ, id, limit)
+	decisions, truncated, err := s.subjectDecisions(ctx, store, typ, id, limit, false)
 	if err != nil {
 		writeEngineError(w, err)
 		return
 	}
 	out["decisions"] = decisions
 	out["decisions_truncated"] = truncated
+	// decisions OTHER subjects asked for ON the person (the resource side — review #20)
+	about, aboutTruncated, err := s.subjectDecisions(ctx, store, typ, id, limit, true)
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	out["decisions_about"] = about
+	out["decisions_about_truncated"] = aboutTruncated
 	out["exported_by"] = p.typ + ":" + p.id
 	if q.Get("download") != "" {
 		name := fmt.Sprintf("subject-%s-%s-%s.json", store, typ, id)
@@ -132,15 +140,21 @@ func (s *Server) subjectObjectsCSV(w http.ResponseWriter, r *http.Request, store
 }
 
 // subjectDecisions: the subject's lines of the decision log, newest first,
-// when the sink lives in the console's database. Nil when not configured.
-func (s *Server) subjectDecisions(ctx context.Context, store, typ, id string, limit int) ([]json.RawMessage, bool, error) {
+// when the sink lives in the console's database — the decisions it asked
+// for, or (asResource) the decisions others asked for on it. Nil when not
+// configured.
+func (s *Server) subjectDecisions(ctx context.Context, store, typ, id string, limit int, asResource bool) ([]json.RawMessage, bool, error) {
 	ok, err := s.decisionsConfigured(ctx)
 	if err != nil || !ok {
 		return nil, false, err
 	}
+	where := `subject_type = $2 AND subject_id = $3`
+	if asResource {
+		where = `resource_type = $2 AND resource_id = $3 AND NOT (subject_type = $2 AND subject_id = $3)`
+	}
 	rows, err := s.decisionsDB().Query(ctx, `
 		SELECT line FROM decisionlog.decisions
-		 WHERE store = $1 AND subject_type = $2 AND subject_id = $3
+		 WHERE store = $1 AND `+where+`
 		 ORDER BY ts DESC, id DESC LIMIT $4`, store, typ, id, limit+1)
 	if err != nil {
 		return nil, false, err
@@ -186,6 +200,30 @@ func (s *Server) handleSubjectErase(w http.ResponseWriter, r *http.Request) {
 	purgeEvents := req.PurgeEvents == nil || *req.PurgeEvents
 	purgeDecisions := req.PurgeDecisions == nil || *req.PurgeDecisions
 	ctx := r.Context()
+
+	// Two databases, no shared transaction (review #20). The decision-log
+	// lines go FIRST: if the sink is down nothing has happened yet and the
+	// answer is a plain error; if the engine then fails, the lines are gone
+	// but the tuples stay, the answer is an error, and a retry completes —
+	// the erasure is idempotent. A 200 means every part is done.
+	var decisions int64
+	if purgeDecisions {
+		ok, err := s.decisionsConfigured(ctx)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "the decision log could not be reached; nothing was erased: "+err.Error())
+			return
+		}
+		if ok {
+			// the subject's own decisions AND the decisions others asked for on it
+			tag, err := s.decisionsDB().Exec(ctx, `DELETE FROM decisionlog.decisions
+				 WHERE store = $1 AND ((subject_type = $2 AND subject_id = $3) OR (resource_type = $2 AND resource_id = $3))`, store, typ, id)
+			if err != nil {
+				writeError(w, http.StatusBadGateway, "the decision log could not be erased; nothing was erased: "+err.Error())
+				return
+			}
+			decisions = tag.RowsAffected()
+		}
+	}
 	var res json.RawMessage
 	payload := map[string]any{"op": "erase_subject", "subject": typ + ":" + id, "purge_events": purgeEvents, "purge_audit": req.PurgeAudit, "purge_decisions": purgeDecisions}
 	err := s.asPerson(ctx, p, "can_manage_access", "store", store, payload, func(tx pgx.Tx) error {
@@ -193,21 +231,15 @@ func (s *Server) handleSubjectErase(w http.ResponseWriter, r *http.Request) {
 			store, typ, id, purgeEvents, req.PurgeAudit, p.typ+":"+p.id).Scan(&res)
 	})
 	if err != nil {
+		if decisions > 0 {
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": "the engine refused the erasure after " + strconv.FormatInt(decisions, 10) + " decision-log line(s) were removed; retry to complete it: " + err.Error(), "partial": true, "decisions": decisions})
+			return
+		}
 		writeEngineError(w, err)
 		return
 	}
 	out := map[string]any{}
 	_ = json.Unmarshal(res, &out)
-	out["decisions"] = 0
-	if purgeDecisions {
-		if ok, err := s.decisionsConfigured(ctx); err == nil && ok {
-			tag, err := s.decisionsDB().Exec(ctx, `DELETE FROM decisionlog.decisions WHERE store = $1 AND subject_type = $2 AND subject_id = $3`, store, typ, id)
-			if err != nil {
-				out["decisions_error"] = err.Error()
-			} else {
-				out["decisions"] = tag.RowsAffected()
-			}
-		}
-	}
+	out["decisions"] = decisions
 	writeJSON(w, http.StatusOK, out)
 }

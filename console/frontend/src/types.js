@@ -322,10 +322,14 @@
  * @property {{object_type: string, relation: string, objects: string[], direct?: string[]|null, truncated: boolean}[]} effective
  * @property {Object[]} events
  * @property {boolean} events_truncated
+ * @property {Object[]} events_about what others recorded on the subject
+ * @property {boolean} events_about_truncated
  * @property {Object[]} audit
  * @property {boolean} audit_truncated
  * @property {Object[]|null} decisions null when the console has no decision log
  * @property {boolean} decisions_truncated
+ * @property {Object[]|null} decisions_about decisions others asked for on the subject
+ * @property {boolean} decisions_about_truncated
  */
 /** @typedef {{tuples_as_subject: number, tuples_as_object: number, events: number, audit: number, decisions: number, decisions_error?: string}} SubjectErased */
 /**

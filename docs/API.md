@@ -440,6 +440,7 @@ SELECT authz.export_subject('demo', 'internal_user', 'alice');
 --                -- (list_subject_objects: through teams, computed relations and
 --                -- wildcards, '*' = every object; `direct` = granted by a tuple outright)
 --   "events":    [ … list_events rows … ], "events_truncated": false,   -- her recorded actions
+--   "events_about": [ … ], "events_about_truncated": false,   -- what others recorded ON her
 --   "audit":     [ … every tuple change that named her, either side … ], "audit_truncated": false
 -- }
 -- Narrow the effective listing, skip parts, raise the per-list cap:
@@ -447,7 +448,8 @@ SELECT authz.export_subject('demo', 'internal_user', 'alice',
     p_relations => ARRAY['owner', 'can_view'], p_include_audit => false, p_limit => 50000);
 
 -- Art. 17: erase (admin tier). Removes the tuples naming the subject on
--- EITHER side (incl. expired ones) and the subject's recorded actions; the
+-- EITHER side (incl. expired ones), the subject's recorded actions and the
+-- actions others recorded on the subject; the
 -- audit trail of those deletes is kept unless p_purge_audit, which also
 -- removes every historical row naming the subject. Returns the counts.
 SELECT authz.erase_subject('demo', 'internal_user', 'alice', p_performed_by => 'dpo');
