@@ -190,10 +190,13 @@ BEGIN
             NOT authz.evaluate_condition('test_condlang', 'cel_from_network',
                 '{"ip": "not an address"}'::jsonb, '{"allowed": "10.0.0.0/8"}'::jsonb));
         PERFORM _test_assert_true('cl_22_cel_ipv6_canonical_and_family',
-            authz.cel_eval_bool('ip(request.ip) == ''2001:db8::1'' && ip(request.ip).family() == 6 && cidr(''2001:db8::/32'').containsIP(request.ip)',
+            authz.cel_eval_bool('!ip(request.ip).isCanonical() && ip(request.ip).family() == 6 && cidr(''2001:db8::/32'').containsIP(request.ip)',
                 '{"request": {"ip": "2001:DB8:0:0:0:0:0:1"}}'));
+        -- cl_23: Kubernetes input rules — IPv4-mapped IPv6 and whitespace are not IPs
+        PERFORM _test_assert_true('cl_23_cel_kubernetes_input_rules',
+            authz.cel_eval_bool('!isIP(''::ffff:192.0.2.1'') && !isIP('' 10.0.0.1'') && cidr(''192.168.0.1/24'').ip().isGlobalUnicast()', '{}'));
     ELSE
-        RAISE NOTICE '    SKIP  cl_09/cl_10/cl_15-22 CEL e2e (no cel_eval_bool evaluator installed)';
+        RAISE NOTICE '    SKIP  cl_09/cl_10/cl_15-23 CEL e2e (no cel_eval_bool evaluator installed)';
     END IF;
 
     -- cl_11: create_condition / create_condition_sql create a sql condition

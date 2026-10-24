@@ -106,11 +106,16 @@ Kubernetes admission rule:
 
 | Function | Meaning |
 |---|---|
-| `ip(s)`, `cidr(s)` | validate and canonicalize (error on a bad value) |
+| `ip(s)`, `cidr(s)` | validate, returning the value as written (error on a bad value) |
 | `isIP(s)`, `isCIDR(s)` | true / false, never an error |
-| `cidr(s).containsIP(ip)`, `cidr(s).containsCIDR(c)` | membership |
-| `cidr(s).prefixLength()`, `cidr(s).masked()` | the prefix, the network address |
-| `ip(s).family()`, `ip(s).isLoopback()`, `ip(s).isUnspecified()` | 4 or 6, loopback, unspecified |
+| `cidr(s).containsIP(ip)`, `cidr(s).containsCIDR(c)` | membership (false across families) |
+| `cidr(s).ip()`, `cidr(s).masked()`, `cidr(s).prefixLength()` | the address (host bits kept), the network, the prefix |
+| `ip(s).family()`, `ip(s).isCanonical()` | 4 or 6; the string is the canonical form |
+| `ip(s).isLoopback()`, `isUnspecified()`, `isGlobalUnicast()`, `isLinkLocalUnicast()`, `isLinkLocalMulticast()` | the address classes, as Go's `net/netip` decides them |
+
+Input rules are Kubernetes' (Go `netip`): no surrounding whitespace, no zone,
+no leading zeros in an IPv4 octet, and no IPv4-mapped IPv6 address
+(`::ffff:192.0.2.1` is not an IP). A unit test holds the vectors.
 
 ```sql
 SELECT authz.create_condition_cel('demo', 'from_office',
@@ -119,7 +124,12 @@ SELECT authz.create_condition_cel('demo', 'from_office',
 ```
 
 Nothing pgauthz-specific is added: every function exists in a mainstream
-CEL implementation, so an expression stays evaluable outside pgauthz.
+CEL implementation, so an expression stays evaluable outside pgauthz. The
+references for what each function does:
+
+- the CEL standard library: the [language definition](https://github.com/google/cel-spec/blob/master/doc/langdef.md#list-of-standard-definitions);
+- the `strings`, `lists`, `math` and `encoders` extensions: the [cel-go extension docs](https://pkg.go.dev/github.com/google/cel-go/ext), the same libraries cel-rust implements;
+- the IP/CIDR functions: the [Kubernetes CEL library reference](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-ip-and-cidr-library), whose names and input rules apply here.
 
 ## Caveats / scope
 
@@ -127,8 +137,9 @@ CEL implementation, so an expression stays evaluable outside pgauthz.
   `timestamp(...)` / `duration(...)` for temporal comparisons. Cleaner than SQL
   casts, but not zero.
 - **IP/CIDR as strings.** cel-rust has no IP type; the net functions below
-  take and return strings, so `ip(x) == '10.1.2.3'` is true where Kubernetes
-  would compare types. Mixed stores are fine — `lang` is per condition.
+  take and return strings, so `ip(x) == '10.1.2.3'` compares text where
+  Kubernetes would compare types. Mixed stores are fine — `lang` is per
+  condition.
 - **Version pinning.** Keep `pgrx` in `Cargo.toml`, `PGRX_VERSION` in the
   Dockerfile, and `PG_MAJOR`/`POSTGRES_TAG` (compose) consistent with the server
   version. The CEL crate API (`cel-interpreter`, `json` feature) should be

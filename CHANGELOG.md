@@ -96,9 +96,11 @@ pre-1.0, minor versions may include breaking changes.
   CEL-gated suite passes unchanged; the extension version stays 0.2.0 (its
   SQL surface did not change). Expressions now compile against the standard
   `strings`, `lists`, `math` and `encoders` extensions and the IP/CIDR
-  functions of the Kubernetes CEL library (`ip`, `cidr`, `isIP`, `isCIDR`,
-  `containsIP`, `containsCIDR`, `prefixLength`, `masked`, `family`,
-  `isLoopback`, `isUnspecified`; addresses as strings) — the README's
+  functions of the Kubernetes CEL library, with its input rules (`ip`, `cidr`,
+  `isIP`, `isCIDR`, `containsIP`, `containsCIDR`, `ip()`, `masked`,
+  `prefixLength`, `family`, `isCanonical`, `isLoopback`, `isUnspecified`,
+  `isGlobalUnicast`, `isLinkLocalUnicast`, `isLinkLocalMulticast`; addresses
+  as strings; no whitespace, zone or IPv4-mapped IPv6) — the README's
   "no IP/CIDR" caveat is gone.
 - **The engine's per-session temp tables no longer raise a NOTICE on
   reuse.** `_check_memo_v2`, `ctx_tuples`, `_access_trace`, the
