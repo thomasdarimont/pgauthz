@@ -111,6 +111,10 @@ pre-1.0, minor versions may include breaking changes.
   transaction under the exclusive erasure lock that also sweeps the
   default partition; a test parks a batch and shows retention waiting for
   it. Sinks sharing a database must use one `DECISION_LOG_RETENTION_DAYS`.
+  Review #24: the sink's local first pass keeps a day of grace so a clock
+  ahead of the database's cannot discard a line the database would keep;
+  the retention test pins the default-partition sweep together with its
+  tombstone.
 - **Review #20 (Codex, on 8782230) fixes.** Issuer-scoped client
   certificates now see their issuer on `GET /admin/issuers` (the listing
   took the issuer from the token context, which a certificate has none of);

@@ -352,7 +352,11 @@ func (s *PostgresSink) flushMany(ctx context.Context, batch [][]byte) error {
 	days := map[string]time.Time{}
 	var oldest time.Time
 	if s.cfg.RetentionDays > 0 {
-		oldest = retentionCutoff(s.cfg.RetentionDays)
+		// one day of grace: this pass runs on the local clock, and a clock
+		// ahead of the database's must not discard a line the database
+		// would still keep (review #24) — only the transaction's check
+		// refuses for good
+		oldest = retentionCutoff(s.cfg.RetentionDays + 1)
 	}
 	expired := 0
 	kept := make([][]byte, 0, len(batch)) // the lines behind rows, for re-queueing
@@ -362,10 +366,12 @@ func (s *PostgresSink) flushMany(ctx context.Context, batch [][]byte) error {
 			continue // not a decision line; skip, never block the stream
 		}
 		if !oldest.IsZero() && r.ts.Before(oldest) {
-			// older than retention: never accepted (see OnExpired). This
-			// first pass, on the local clock, spares ensurePartitions from
-			// recreating a dropped day; the binding check is insert's, in
-			// the transaction, on the database clock.
+			// older than retention by more than a day: never accepted (see
+			// OnExpired). This first pass, on the local clock, spares
+			// ensurePartitions from recreating a dropped day; the binding
+			// check is insert's, in the transaction, on the database clock
+			// (a line in the grace day may recreate an empty partition that
+			// the next retention run drops again — harmless).
 			expired++
 			continue
 		}
@@ -446,8 +452,8 @@ func (s *PostgresSink) flushMany(ctx context.Context, batch [][]byte) error {
 }
 
 // retentionCutoff is the local-clock twin of retentionCutoffSQL: the first
-// day the sink keeps. flushMany uses it for the cheap first pass; the
-// database's own answer decides inside the transactions.
+// day the sink keeps. flushMany uses it, one day wider, for the cheap first
+// pass; the database's own answer decides inside the transactions.
 func retentionCutoff(days int) time.Time {
 	return time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -days)
 }

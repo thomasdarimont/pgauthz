@@ -160,7 +160,10 @@ the default partition (a late line that found no dated partition), and
 tombstones before it pruned. Retention therefore cannot slip between a
 batch's check and its commit, instances do not depend on their local
 clocks agreeing, and a tombstone is pruned only after every line it could
-cover is gone and refused. Dropping a partition already took an ACCESS
+cover is gone and refused. The sink's local first pass (which spares it
+from recreating a dropped partition) keeps one day of grace, so an
+application clock ahead of the database's never discards a line the
+database would still keep (review #24). Dropping a partition already took an ACCESS
 EXCLUSIVE lock on the table, so batches waited for retention before this;
 the advisory lock adds no new wait. Every sink sharing one decision-log
 database must run the same `DECISION_LOG_RETENTION_DAYS`: the boundary is

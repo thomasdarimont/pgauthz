@@ -263,18 +263,28 @@ func TestPostgresSinkIntegration(t *testing.T) {
 		t.Fatalf("partitions: %d %v, want today, tomorrow and the old day", parts, err)
 	}
 	// a row for a day without a partition lands in the default partition;
-	// retention sweeps it with the dated partitions (review #23)
-	if _, err := db.pool.Exec(ctx, `INSERT INTO decisionlog.decisions (ts, listener, endpoint, store, line) VALUES (now() - interval '60 days', 'public', 'check', 'it_demo', '{}')`); err != nil {
+	// retention sweeps it with the dated partitions, in the same transaction
+	// that prunes the tombstone covering it (review #23/#24)
+	if _, err := db.pool.Exec(ctx, `INSERT INTO decisionlog.decisions (ts, listener, endpoint, store, subject_type, subject_id, line) VALUES (now() - interval '60 days', 'public', 'check', 'it_demo', 'user', 'ghost', '{}')`); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := db.pool.Exec(ctx, `INSERT INTO decisionlog.erasures (store, subject_type, subject_id, erased_at, erased_by) VALUES ('it_demo', 'user', 'ghost', now() - interval '50 days', 'test')`); err != nil {
+		t.Fatal(err)
+	}
+	var inDefault int
+	_ = db.pool.QueryRow(ctx, `SELECT count(*) FROM decisionlog.decisions_default WHERE subject_id = 'ghost'`).Scan(&inDefault)
+	if inDefault != 1 {
+		t.Fatalf("the 60-day row should sit in the default partition, found %d", inDefault)
 	}
 	n, err := db.retain(ctx, 7)
 	if err != nil || n != 1 {
 		t.Fatalf("retention dropped %d (%v), want 1", n, err)
 	}
-	var inDefault int
+	var ghostTomb int
 	_ = db.pool.QueryRow(ctx, `SELECT count(*) FROM decisionlog.decisions_default`).Scan(&inDefault)
-	if inDefault != 0 {
-		t.Fatalf("%d rows left in the default partition after retention", inDefault)
+	_ = db.pool.QueryRow(ctx, `SELECT count(*) FROM decisionlog.erasures WHERE subject_id = 'ghost'`).Scan(&ghostTomb)
+	if inDefault != 0 || ghostTomb != 0 {
+		t.Fatalf("after retention: %d rows left in the default partition, %d ghost tombstones (want 0 and 0, swept together)", inDefault, ghostTomb)
 	}
 
 	// Erasure tombstones (review #21): alice is erased now; a line about her
@@ -591,16 +601,19 @@ func TestPostgresSinkRefusesLinesOlderThanRetention(t *testing.T) {
 	var expired atomic.Int64
 	s.OnExpired = func(n int) { expired.Add(int64(n)) }
 	fresh, _ := json.Marshal(Entry{Time: time.Now().UTC(), Listener: "public", Endpoint: "check", Store: "s", Subject: Ref{Type: "user", ID: "a"}})
-	stale, _ := json.Marshal(Entry{Time: time.Now().UTC().AddDate(0, 0, -8), Listener: "public", Endpoint: "check", Store: "s", Subject: Ref{Type: "user", ID: "a"}})
+	stale, _ := json.Marshal(Entry{Time: time.Now().UTC().AddDate(0, 0, -10), Listener: "public", Endpoint: "check", Store: "s", Subject: Ref{Type: "user", ID: "a"}})
 	edge, _ := json.Marshal(Entry{Time: time.Now().UTC().AddDate(0, 0, -7).Add(time.Hour), Listener: "public", Endpoint: "check", Store: "s", Subject: Ref{Type: "user", ID: "a"}}) // inside the window's first day
-	for _, l := range [][]byte{fresh, stale, edge} {
+	// a line just outside the window on the local clock reaches the store:
+	// the first pass keeps a day of grace (review #24), the database decides
+	grace, _ := json.Marshal(Entry{Time: time.Now().UTC().AddDate(0, 0, -8).Add(time.Hour), Listener: "public", Endpoint: "check", Store: "s", Subject: Ref{Type: "user", ID: "a"}})
+	for _, l := range [][]byte{fresh, stale, edge, grace} {
 		if _, err := s.Write(append(l, '\n')); err != nil {
 			t.Fatal(err)
 		}
 	}
-	waitFor(t, "the fresh and the edge line inserted", func() bool { return f.rows() == 2 })
+	waitFor(t, "the fresh, edge and grace lines handed to the store", func() bool { return f.rows() == 3 })
 	if expired.Load() != 1 || s.Expired.Load() != 1 {
-		t.Fatalf("expired %d/%d, want the stale line refused once", expired.Load(), s.Expired.Load())
+		t.Fatalf("expired %d/%d, want only the 10-day line refused locally", expired.Load(), s.Expired.Load())
 	}
 	_ = s.Close()
 
