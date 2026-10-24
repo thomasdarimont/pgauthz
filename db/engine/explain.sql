@@ -93,41 +93,45 @@ CREATE OR REPLACE FUNCTION authz._trace_begin() RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
     -- Reuse trace table within the session; ON COMMIT DROP cleans up.
-    CREATE TEMP TABLE IF NOT EXISTS _access_trace (
-        step          serial,
-        depth         int,
-        rule_type     text,
-        subject       text,
-        relation      text,
-        object        text,
-        result        boolean,
-        detail        text,
-        duration_ms   double precision,
-        -- model rule references (NULL for cycle/group-verdict steps)
-        model_rule_id integer,
-        group_id      integer,
-        group_op      integer,
-        negated       boolean,
-        -- condition explain (set only on condition_denied steps)
-        condition_name        text,
-        condition_missing_keys text[],
-        -- the exact stored tuple that granted this step, in `subject → relation →
-        -- object` form with * wildcards (NULL for non-tuple / denied steps).
-        matched_tuple text,
-        -- when the stored tuple that granted this step expires (NULL = never
-        -- or not a tuple step): what makes an allow time-bound
-        matched_expires_at timestamptz,
-        -- temporal gate steps (ADR 0012; rule_type = 'temporal_gate', depth 0):
-        -- counts and thresholds only — never matched payloads or object ids.
-        gate_name      text,
-        gate_clause    text,      -- "<index>:<primitive>"
-        gate_window    text,      -- normalized interval, or "calendar/tz"
-        gate_observed  numeric,
-        gate_threshold numeric,
-        gate_reason    text,      -- gate_passed | gate_denied | gate_missing_context | ...
-        gate_scope     text,      -- subject | object
-        gate_shadow    boolean    -- true: reported only, did not affect the decision
-    ) ON COMMIT DROP;
+    -- no IF NOT EXISTS: that form raises a NOTICE on every reuse within a
+    -- session (hundreds of thousands of lines in a long-lived connection's log)
+    IF to_regclass('pg_temp._access_trace') IS NULL THEN
+        CREATE TEMP TABLE _access_trace (
+            step          serial,
+            depth         int,
+            rule_type     text,
+            subject       text,
+            relation      text,
+            object        text,
+            result        boolean,
+            detail        text,
+            duration_ms   double precision,
+            -- model rule references (NULL for cycle/group-verdict steps)
+            model_rule_id integer,
+            group_id      integer,
+            group_op      integer,
+            negated       boolean,
+            -- condition explain (set only on condition_denied steps)
+            condition_name        text,
+            condition_missing_keys text[],
+            -- the exact stored tuple that granted this step, in `subject → relation →
+            -- object` form with * wildcards (NULL for non-tuple / denied steps).
+            matched_tuple text,
+            -- when the stored tuple that granted this step expires (NULL = never
+            -- or not a tuple step): what makes an allow time-bound
+            matched_expires_at timestamptz,
+            -- temporal gate steps (ADR 0012; rule_type = 'temporal_gate', depth 0):
+            -- counts and thresholds only — never matched payloads or object ids.
+            gate_name      text,
+            gate_clause    text,      -- "<index>:<primitive>"
+            gate_window    text,      -- normalized interval, or "calendar/tz"
+            gate_observed  numeric,
+            gate_threshold numeric,
+            gate_reason    text,      -- gate_passed | gate_denied | gate_missing_context | ...
+            gate_scope     text,      -- subject | object
+            gate_shadow    boolean    -- true: reported only, did not affect the decision
+        ) ON COMMIT DROP;
+    END IF;
     TRUNCATE _access_trace RESTART IDENTITY;
     PERFORM set_config('authz.trace', 'on', true);
 END;

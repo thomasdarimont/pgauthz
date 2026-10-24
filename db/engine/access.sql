@@ -104,14 +104,18 @@ BEGIN
 
     -- Load contextual tuples into a temp table (if provided)
     IF contextual_tuples IS NOT NULL AND array_length(contextual_tuples, 1) > 0 THEN
-        CREATE TEMP TABLE IF NOT EXISTS ctx_tuples (
-            user_type     integer,
-            user_id       text,
-            user_relation integer,
-            relation      integer,
-            object_type   integer,
-            object_id     text
-        ) ON COMMIT DROP;
+        -- no IF NOT EXISTS: that form raises a NOTICE on every reuse within a
+        -- session (hundreds of thousands of lines in a long-lived connection's log)
+        IF to_regclass('pg_temp.ctx_tuples') IS NULL THEN
+            CREATE TEMP TABLE ctx_tuples (
+                user_type     integer,
+                user_id       text,
+                user_relation integer,
+                relation      integer,
+                object_type   integer,
+                object_id     text
+            ) ON COMMIT DROP;
+        END IF;
 
         TRUNCATE pg_temp.ctx_tuples;
 
@@ -233,14 +237,18 @@ BEGIN
     END IF;
     PERFORM authz._check_namespace_access(p_store_id, authz._t(p_store_id, x.object_type), 'can_read')
        FROM (SELECT DISTINCT t->>'object_type' AS object_type FROM jsonb_array_elements(p_contextual_tuples) t) x;
-    CREATE TEMP TABLE IF NOT EXISTS ctx_tuples (
-        user_type     integer,
-        user_id       text,
-        user_relation integer,
-        relation      integer,
-        object_type   integer,
-        object_id     text
-    ) ON COMMIT DROP;
+    -- no IF NOT EXISTS: that form raises a NOTICE on every reuse within a
+    -- session (hundreds of thousands of lines in a long-lived connection's log)
+    IF to_regclass('pg_temp.ctx_tuples') IS NULL THEN
+        CREATE TEMP TABLE ctx_tuples (
+            user_type     integer,
+            user_id       text,
+            user_relation integer,
+            relation      integer,
+            object_type   integer,
+            object_id     text
+        ) ON COMMIT DROP;
+    END IF;
     TRUNCATE pg_temp.ctx_tuples;
     INSERT INTO pg_temp.ctx_tuples (user_type, user_id, user_relation, relation, object_type, object_id)
     SELECT authz._t(p_store_id, t->>'user_type'),

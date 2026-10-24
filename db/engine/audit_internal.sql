@@ -18,17 +18,21 @@ CREATE OR REPLACE FUNCTION authz._build_audit_snapshot(
 ) RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
-    CREATE TEMP TABLE IF NOT EXISTS _snapshot_tuples (
-        store_id          integer,
-        user_type         integer,
-        user_id           text,
-        user_relation     integer,
-        relation          integer,
-        object_type       integer,
-        object_id         text,
-        condition_id      integer,
-        condition_context jsonb
-    ) ON COMMIT DROP;
+    -- no IF NOT EXISTS: that form raises a NOTICE on every reuse within a
+    -- session (hundreds of thousands of lines in a long-lived connection's log)
+    IF to_regclass('pg_temp._snapshot_tuples') IS NULL THEN
+        CREATE TEMP TABLE _snapshot_tuples (
+            store_id          integer,
+            user_type         integer,
+            user_id           text,
+            user_relation     integer,
+            relation          integer,
+            object_type       integer,
+            object_id         text,
+            condition_id      integer,
+            condition_context jsonb
+        ) ON COMMIT DROP;
+    END IF;
 
     TRUNCATE _snapshot_tuples;
 
@@ -86,20 +90,24 @@ CREATE OR REPLACE FUNCTION authz._build_model_snapshot(
 ) RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
-    CREATE TEMP TABLE IF NOT EXISTS _snapshot_models (
-        store_id          integer,
-        object_type       integer,
-        relation          integer,
-        rule_type         integer,
-        computed_relation integer,
-        tupleset_relation integer,
-        tupleset_computed integer,
-        group_id          integer,
-        group_op          integer,
-        negated           boolean,
-        allow_object_wildcard boolean,
-        model_id          integer
-    ) ON COMMIT DROP;
+    -- no IF NOT EXISTS: that form raises a NOTICE on every reuse within a
+    -- session (hundreds of thousands of lines in a long-lived connection's log)
+    IF to_regclass('pg_temp._snapshot_models') IS NULL THEN
+        CREATE TEMP TABLE _snapshot_models (
+            store_id          integer,
+            object_type       integer,
+            relation          integer,
+            rule_type         integer,
+            computed_relation integer,
+            tupleset_relation integer,
+            tupleset_computed integer,
+            group_id          integer,
+            group_op          integer,
+            negated           boolean,
+            allow_object_wildcard boolean,
+            model_id          integer
+        ) ON COMMIT DROP;
+    END IF;
 
     TRUNCATE _snapshot_models;
 
@@ -144,14 +152,18 @@ CREATE OR REPLACE FUNCTION authz._build_condition_snapshot(
 ) RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
-    CREATE TEMP TABLE IF NOT EXISTS _snapshot_conditions (
-        id               integer,
-        expression       text,
-        lang             text,
-        name             text,
-        required_context jsonb,   -- as of p_at: drives the missing-context assumption
-        time_source      text     -- as of p_at: caller | server (migration 0016)
-    ) ON COMMIT DROP;
+    -- no IF NOT EXISTS: that form raises a NOTICE on every reuse within a
+    -- session (hundreds of thousands of lines in a long-lived connection's log)
+    IF to_regclass('pg_temp._snapshot_conditions') IS NULL THEN
+        CREATE TEMP TABLE _snapshot_conditions (
+            id               integer,
+            expression       text,
+            lang             text,
+            name             text,
+            required_context jsonb,   -- as of p_at: drives the missing-context assumption
+            time_source      text     -- as of p_at: caller | server (migration 0016)
+        ) ON COMMIT DROP;
+    END IF;
 
     TRUNCATE _snapshot_conditions;
 
@@ -649,10 +661,14 @@ BEGIN
     -- so the whole evaluator already requires a writable transaction. It is
     -- therefore primary-only (never runs on a hot standby) and always memoizes.
     IF p_depth = 0 THEN
-        CREATE TEMP TABLE IF NOT EXISTS _check_memo_snap
-            (relation integer, object_type integer, object_id text, assume boolean,
-             result boolean,
-             PRIMARY KEY (relation, object_type, object_id, assume)) ON COMMIT DROP;
+        -- no IF NOT EXISTS: that form raises a NOTICE on every reuse within a
+        -- session (hundreds of thousands of lines in a long-lived connection's log)
+        IF to_regclass('pg_temp._check_memo_snap') IS NULL THEN
+            CREATE TEMP TABLE _check_memo_snap
+                (relation integer, object_type integer, object_id text, assume boolean,
+                 result boolean,
+                 PRIMARY KEY (relation, object_type, object_id, assume)) ON COMMIT DROP;
+        END IF;
         TRUNCATE _check_memo_snap;
         PERFORM set_config('authz._memo_prunes_snap', '0', false);
     END IF;
@@ -698,13 +714,17 @@ CREATE OR REPLACE FUNCTION authz._build_gate_snapshot(
 ) RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
-    CREATE TEMP TABLE IF NOT EXISTS _snapshot_gates (
-        id          integer,
-        object_type integer,
-        relation    integer,
-        name        text,
-        spec        jsonb
-    ) ON COMMIT DROP;
+    -- no IF NOT EXISTS: that form raises a NOTICE on every reuse within a
+    -- session (hundreds of thousands of lines in a long-lived connection's log)
+    IF to_regclass('pg_temp._snapshot_gates') IS NULL THEN
+        CREATE TEMP TABLE _snapshot_gates (
+            id          integer,
+            object_type integer,
+            relation    integer,
+            name        text,
+            spec        jsonb
+        ) ON COMMIT DROP;
+    END IF;
 
     TRUNCATE _snapshot_gates;
 

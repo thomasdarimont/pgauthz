@@ -7,6 +7,18 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **The engine's per-session temp tables no longer raise a NOTICE on
+  reuse.** `_check_memo_v2`, `ctx_tuples`, `_access_trace`, the
+  `_snapshot_*` tables and `_check_memo_snap` were created with
+  `CREATE TEMP TABLE IF NOT EXISTS`, which emits `relation … already
+  exists, skipping` on every top-level check after the first in a session —
+  a quarter of a million log lines in one CI job, and the same noise in any
+  long-lived connection with `client_min_messages` at its default. They are
+  now created only when `to_regclass('pg_temp.…')` finds nothing. No
+  behaviour change.
+
 ## [0.18.0] - 2026-10-24
 
 The management release. pgauthz grows an administration plane next to the

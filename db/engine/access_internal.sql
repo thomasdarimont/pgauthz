@@ -1115,10 +1115,14 @@ BEGIN
             -- computed inside a negated term is not reusable outside it. New
             -- name so sessions holding the old-shape temp table keep working
             -- across an engine reload.)
-            CREATE TEMP TABLE IF NOT EXISTS _check_memo_v2
-                (relation integer, object_type integer, object_id text, assume boolean,
-                 result boolean,
-                 PRIMARY KEY (relation, object_type, object_id, assume));
+            -- no IF NOT EXISTS: that form raises a NOTICE on every reuse within a
+            -- session (hundreds of thousands of lines in a long-lived connection's log)
+            IF to_regclass('pg_temp._check_memo_v2') IS NULL THEN
+                CREATE TEMP TABLE _check_memo_v2
+                    (relation integer, object_type integer, object_id text, assume boolean,
+                     result boolean,
+                     PRIMARY KEY (relation, object_type, object_id, assume));
+            END IF;
             TRUNCATE _check_memo_v2;
             v_mode := 'temp';
         ELSE
