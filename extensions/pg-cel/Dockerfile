@@ -16,7 +16,7 @@
 
 ARG PG_MAJOR=18
 ARG POSTGRES_TAG=18.6
-ARG PGRX_VERSION=0.19.2
+ARG PGRX_VERSION=0.19.3
 
 # ---- build stage -----------------------------------------------------------
 FROM rust:1-bookworm AS build

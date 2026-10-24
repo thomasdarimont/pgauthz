@@ -125,7 +125,7 @@ rest are the components of the reference deployment.
 | OPA | 1.21.2                    | optional | Internal policy-as-code sidecar (Rego) that only pgauthzd calls (when `OPA_URL` is set); not a client-facing entry point. |
 | Go (pgauthzd) | 1.27.1                    | optional | One `pgauthzd` binary; demo services `pgauthzd-decision` / `pgauthzd-opa` / `pgauthzd-full`. |
 | `sqlx-cli` | 0.9.0                     | install/upgrade | Applies the structural migrations in [`db/migrations/`](db/migrations) (tracked in `public._sqlx_migrations`). Slim Postgres-only build — `cargo install sqlx-cli --no-default-features --features rustls,postgres`. Baked into the [migration image](deploy/migrations/Dockerfile); `init*.sh` use a local install. Not needed at query time. |
-| `pg_cel` extension | pgrx 0.19.2, `cel` 0.14.5 | optional | Only for `lang='cel'` conditions; built per PostgreSQL major (see [`extensions/pg-cel`](extensions/pg-cel)). |
+| `pg_cel` extension | pgrx 0.19.3, `cel` 0.15.0 | optional | Only for `lang='cel'` conditions; built per PostgreSQL major (see [`extensions/pg-cel`](extensions/pg-cel)). |
 
 Pre-1.0 — pin to a tag (latest in the [CHANGELOG](CHANGELOG.md) / Releases) or a
 specific commit for reproducible deployments; per semver, 0.x releases may carry
