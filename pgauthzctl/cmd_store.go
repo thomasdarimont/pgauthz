@@ -23,11 +23,11 @@ const storeUsage = `pgauthzctl store <verb> [flags] — the admin API only (--se
   delete <store> [--purge-audit] [--purge-decisions]
                                               remove the store (the erasure path); the audit
                                               history and the decision log stay unless asked
-  purge-decisions <store> [--before <RFC3339>]
-                                              purge the store's decision-log lines decided up to
-                                              a point (the retry after a failed delete
-                                              --purge-decisions: its deleted_at); without --before
-                                              the store must be gone
+  purge-decisions <store> [--store-id N] [--before <RFC3339>]
+                                              purge a deleted store's decision-log lines (the retry
+                                              after a failed delete --purge-decisions: its store_id
+                                              and deleted_at); without --store-id the store must
+                                              be gone and every line of the name goes
   recorders <store>                           the recorder allowlists
   recorder-set <store> <db_role> <action,...> make a role's allowlist exactly these actions
   recorder-lift <store> <db_role>             lift a role's allowlist
@@ -45,7 +45,8 @@ func cmdStore(verb string, args []string) error {
 	retired := fs.Bool("retired", false, "set: retire the store")
 	purge := fs.Bool("purge-audit", false, "delete: remove the audit rows too")
 	purgeDecisions := fs.Bool("purge-decisions", false, "delete: remove the store's decision-log lines too")
-	before := fs.String("before", "", "purge-decisions: purge lines decided at or before this RFC 3339 instant (a deletion's deleted_at)")
+	before := fs.String("before", "", "purge-decisions: lines without an id decided at or before this RFC 3339 instant (a deletion's deleted_at)")
+	storeID := fs.Int("store-id", 0, "purge-decisions: the deleted incarnation (a deletion's store_id); required while a store of that name exists")
 	read := fs.Bool("read", false, "namespace-grant: read access")
 	write := fs.Bool("write", false, "namespace-grant: write access")
 	asJSON := fs.Bool("json", false, "print the API's answer as JSON")
@@ -163,15 +164,22 @@ func cmdStore(verb string, args []string) error {
 		if err := need(1, "purge-decisions <store>"); err != nil {
 			return err
 		}
-		q := ""
+		qs := url.Values{}
 		if *before != "" {
-			q = "?before=" + url.QueryEscape(*before)
+			qs.Set("before", *before)
+		}
+		if *storeID > 0 {
+			qs.Set("store_id", fmt.Sprint(*storeID))
+		}
+		q := ""
+		if len(qs) > 0 {
+			q = "?" + qs.Encode()
 		}
 		var res map[string]any
 		if err := c.do(ctx, "DELETE", storePath(pos[0])+"/decisions"+q, nil, &res); err != nil {
 			return err
 		}
-		report(res, fmt.Sprintf("purged the decision-log lines of %s up to %v (%v deleted now)", pos[0], res["before"], res["decisions"]))
+		report(res, fmt.Sprintf("purged the decision-log lines of %s (incarnation %v, lines without an id up to %v): %v deleted now", pos[0], res["store_id"], res["before"], res["decisions"]))
 		return nil
 	case "recorders":
 		if err := need(1, "recorders <store>"); err != nil {

@@ -51,9 +51,10 @@ func (f *fakeStore) retain(_ context.Context, days int) (int, error) {
 }
 
 func (f *fakeStore) close() { f.mu.Lock(); f.closed = true; f.mu.Unlock() }
-func (f *fakeStore) purgeStore(context.Context, string, string, time.Time) (int64, error) {
+func (f *fakeStore) purgeStore(context.Context, string, int32, string, time.Time) (int64, error) {
 	return 0, nil
 }
+func (f *fakeStore) incarnationSeen(context.Context, string, int32) (bool, error) { return true, nil }
 
 func (f *fakeStore) rows() int {
 	f.mu.Lock()
@@ -204,7 +205,7 @@ func TestParseRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.vals[7] != "demo" || r.vals[9] != "alice" || r.vals[13] != true || r.vals[1] != nil || r.vals[2] != nil {
+	if r.vals[7] != "demo" || r.vals[8] != nil || r.vals[10] != "alice" || r.vals[14] != true || r.vals[1] != nil || r.vals[2] != nil {
 		t.Fatalf("columns: %v", r.vals)
 	}
 	r2, _ := parseRow([]byte(`{"ts":"2026-10-23T10:00:00Z","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","span_id":"00f067aa0ba902b7","listener":"public","endpoint":"check","store":"demo"}`))
@@ -499,11 +500,15 @@ func TestPostgresSinkErasureInterleavings(t *testing.T) {
 	}
 }
 
-// Review #27 P1: a store purge is a fence under the erasure lock. A batch
-// parked with a line about the store commits before the purge's delete
-// runs (a); once the purge removed the subject's tombstone, a late line
-// about the erased subject is still dropped — by the fence (c); and a batch
-// arriving while a purge holds the barrier applies the fence itself (b).
+// A store purge is a fence per incarnation under the erasure lock: (a) a
+// batch parked with the deleted incarnation's line commits before the
+// purge's delete; (b) a namesake created later keeps its lines even when
+// they were decided BEFORE the purge ran, and a retried purge does not touch
+// them; (c) once the tombstones went with the store, a late line of the
+// erased subject is still dropped — by the fence; (d) a line without an id
+// falls back to the deletion time; (e) a batch arriving while a purge holds
+// the barrier applies the fence itself; (f) retention holding the lock does
+// not deadlock a purge.
 func TestPostgresSinkStorePurgeFence(t *testing.T) {
 	dsn := os.Getenv("PGAUTHZD_TEST_DECISION_LOG_DSN")
 	if dsn == "" {
@@ -526,8 +531,9 @@ func TestPostgresSinkStorePurgeFence(t *testing.T) {
 		aux.Close()
 		db.pool.Close()
 	}()
-	line := func(subject, resource string, at time.Time) row {
-		b, _ := json.Marshal(Entry{Time: at, Listener: "public", Endpoint: "check", Store: "it_purge", Subject: Ref{Type: "user", ID: subject}, Action: "can_read", Resource: Ref{Type: "doc", ID: resource}})
+	const oldInc, newInc = int32(41), int32(42)
+	line := func(inc int32, subject, resource string, at time.Time) row {
+		b, _ := json.Marshal(Entry{Time: at, Listener: "public", Endpoint: "check", Store: "it_purge", StoreID: inc, Subject: Ref{Type: "user", ID: subject}, Action: "can_read", Resource: Ref{Type: "doc", ID: resource}})
 		r, err := parseRow(b)
 		if err != nil {
 			t.Fatal(err)
@@ -552,19 +558,23 @@ func TestPostgresSinkStorePurgeFence(t *testing.T) {
 	if _, err := aux.Exec(ctx, `INSERT INTO decisionlog.erasures (store, subject_type, subject_id, erased_at, erased_by) VALUES ('it_purge', 'user', 'alice', now(), 'test')`); err != nil {
 		t.Fatal(err)
 	}
+	// the namesake: created and deciding BEFORE the old incarnation's purge runs
+	if _, err := db.insert(ctx, []row{line(newInc, "erin", "successor", before.Add(30*time.Second))}, 0); err != nil {
+		t.Fatal(err)
+	}
 
-	// (a) a batch in flight when the purge arrives: the purge waits, then deletes it
+	// (a) a batch of the old incarnation in flight when the purge arrives
 	txW, err := db.pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := insertTx(ctx, txW, []row{line("bob", "parked", before)}, 0); err != nil {
+	if _, err := insertTx(ctx, txW, []row{line(oldInc, "bob", "parked", before)}, 0); err != nil {
 		t.Fatal(err)
 	}
-	deletedAt := time.Now().UTC() // the store's deletion time: the purge's bound
+	deletedAt := time.Now().UTC()
 	purged := make(chan error, 1)
 	go func() {
-		_, err := (&pgStore{pool: aux}).purgeStore(ctx, "it_purge", "test", deletedAt)
+		_, err := (&pgStore{pool: aux}).purgeStore(ctx, "it_purge", oldInc, "test", deletedAt)
 		purged <- err
 	}()
 	waitFor(t, "the purge to wait for the batch in flight", waitingOnLock)
@@ -587,66 +597,44 @@ func TestPostgresSinkStorePurgeFence(t *testing.T) {
 	if tombs != 0 {
 		t.Fatalf("the purge must take the tombstones along: %d left", tombs)
 	}
-
-	// (c) alice's tombstone is gone, yet her buffered pre-purge line is dropped by the fence
-	if _, err := db.insert(ctx, []row{line("alice", "late", before), line("carol", "late", before)}, 0); err != nil {
+	// (b) the namesake's earlier line survived, and survives a retry
+	if n := count("successor"); n != 1 {
+		t.Fatalf("(b) the namesake's line decided before the purge was taken: %d", n)
+	}
+	if _, err := (&pgStore{pool: aux}).purgeStore(ctx, "it_purge", oldInc, "retry", deletedAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.insert(ctx, []row{line(newInc, "erin", "successor-late", before)}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if count("successor") != 1 || count("successor-late") != 1 {
+		t.Fatalf("(b) the namesake's lines: %d %d (want 1 1)", count("successor"), count("successor-late"))
+	}
+	// (c) alice's tombstone is gone, yet her buffered old-incarnation line is fenced
+	if _, err := db.insert(ctx, []row{line(oldInc, "alice", "late", before), line(oldInc, "carol", "late", before)}, 0); err != nil {
 		t.Fatal(err)
 	}
 	if n := count("late"); n != 0 {
-		t.Fatalf("(c) lines about the purged store decided before the purge came back: %d", n)
+		t.Fatalf("(c) old-incarnation lines came back after the purge: %d", n)
 	}
-	// (d) a store recreated under the name: its lines are decided after the
-	// deletion time and survive both the fence and a retried purge with the
-	// same bound
-	fresh := deletedAt.Add(time.Second)
-	if _, err := db.insert(ctx, []row{line("alice", "fresh", fresh)}, 0); err != nil {
+	// (d) lines without an id: the deletion time decides
+	if _, err := db.insert(ctx, []row{line(0, "dave", "noid-old", before), line(0, "dave", "noid-new", deletedAt.Add(time.Second))}, 0); err != nil {
 		t.Fatal(err)
 	}
-	if n := count("fresh"); n != 1 {
-		t.Fatalf("a line decided after the deletion must stay: %d", n)
-	}
-	if _, err := (&pgStore{pool: aux}).purgeStore(ctx, "it_purge", "retry", deletedAt); err != nil {
-		t.Fatal(err)
-	}
-	if n := count("fresh"); n != 1 {
-		t.Fatalf("a retried purge with the old bound took the new store's line: %d", n)
-	}
-	// (e) retention holding the lock while the expired fence is deleted, a
-	// purge arriving: it waits for the lock and then writes its fence — no
-	// deadlock (the fence row is only touched under the lock)
-	txR, err := aux.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := txR.Exec(ctx, erasureBarrierSQL); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := txR.Exec(ctx, `DELETE FROM decisionlog.store_purges WHERE store = 'it_purge'`); err != nil {
-		t.Fatal(err)
-	}
-	purged2 := make(chan error, 1)
-	go func() {
-		_, err := (&pgStore{pool: aux}).purgeStore(ctx, "it_purge", "test", time.Now().UTC())
-		purged2 <- err
-	}()
-	waitFor(t, "the purge to wait for retention's lock", waitingOnLock)
-	if err := txR.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-purged2; err != nil {
-		t.Fatalf("purge after retention: %v (a deadlock would abort one of them)", err)
+	if count("noid-old") != 0 || count("noid-new") != 1 {
+		t.Fatalf("(d) lines without an id: old %d new %d (want 0 1)", count("noid-old"), count("noid-new"))
 	}
 
-	// (b) the purge holds the barrier when a batch arrives: the batch waits,
-	// then applies the moved fence to its own lines
+	// (e) a purge holds the barrier when a batch arrives: the batch waits,
+	// then applies the fence to its own lines
 	txP, err := aux.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := txP.Exec(ctx, `INSERT INTO decisionlog.store_purges (store, purged_at, purged_by) VALUES ('it_purge', now(), 'test') ON CONFLICT (store) DO UPDATE SET purged_at = EXCLUDED.purged_at`); err != nil {
+	if _, err := txP.Exec(ctx, erasureBarrierSQL); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := txP.Exec(ctx, erasureBarrierSQL); err != nil {
+	if _, err := txP.Exec(ctx, `INSERT INTO decisionlog.store_fences (store, store_id, purged_at, purged_by) VALUES ('it_purge', 43, clock_timestamp(), 'test')`); err != nil {
 		t.Fatal(err)
 	}
 	inserted := make(chan error, 1)
@@ -657,7 +645,7 @@ func TestPostgresSinkStorePurgeFence(t *testing.T) {
 			return
 		}
 		defer func() { _ = txW.Rollback(ctx) }()
-		if _, err := insertTx(ctx, txW, []row{line("dave", "while", before)}, 0); err != nil {
+		if _, err := insertTx(ctx, txW, []row{line(43, "frank", "while", before), line(newInc, "erin", "while", before)}, 0); err != nil {
 			inserted <- err
 			return
 		}
@@ -670,15 +658,55 @@ func TestPostgresSinkStorePurgeFence(t *testing.T) {
 	if err := <-inserted; err != nil {
 		t.Fatal(err)
 	}
-	if n := count("while"); n != 0 {
-		t.Fatalf("(b) the batch did not apply the fence it waited for: %d", n)
+	if n := count("while"); n != 1 {
+		t.Fatalf("(e) the batch must drop the fenced incarnation's line and keep the other: %d", n)
 	}
-	// retention prunes the fence with the tombstones (cutoff tomorrow: all go)
+
+	// (f) retention holding the lock while it deletes expired fences, a purge
+	// arriving: it waits for the lock, then writes its fences — no deadlock
+	txR, err := aux.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := txR.Exec(ctx, erasureBarrierSQL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := txR.Exec(ctx, `DELETE FROM decisionlog.store_fences WHERE store = 'it_purge'`); err != nil {
+		t.Fatal(err)
+	}
+	purged2 := make(chan error, 1)
+	go func() {
+		_, err := (&pgStore{pool: aux}).purgeStore(ctx, "it_purge", oldInc, "test", time.Now().UTC())
+		purged2 <- err
+	}()
+	waitFor(t, "the purge to wait for retention's lock", waitingOnLock)
+	if err := txR.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-purged2; err != nil {
+		t.Fatalf("purge after retention: %v (a deadlock would abort one of them)", err)
+	}
+	// a caller-supplied id must be one the log has seen (no pre-fencing a future namesake)
+	if seen, err := (&pgStore{pool: aux}).incarnationSeen(ctx, "it_purge", oldInc); err != nil || !seen {
+		t.Fatalf("the purged incarnation must count as seen: %v %v", seen, err)
+	}
+	if seen, err := (&pgStore{pool: aux}).incarnationSeen(ctx, "it_purge", 999); err != nil || seen {
+		t.Fatalf("a never-seen incarnation must not: %v %v", seen, err)
+	}
+	// the store gone and its id unknown: every line of the name goes, fenced
+	if _, err := (&pgStore{pool: aux}).purgeStore(ctx, "it_purge", 0, "test", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	var left int // the id-less line stamped after the purge is the one legitimate survivor
+	_ = aux.QueryRow(ctx, `SELECT count(*) FROM decisionlog.decisions WHERE store = 'it_purge' AND resource_id <> 'noid-new'`).Scan(&left)
+	if left != 0 {
+		t.Fatalf("an id-less purge of a gone store must take every line decided up to it: %d left", left)
+	}
 	if _, err := (&pgStore{pool: aux}).retain(ctx, -1); err != nil {
 		t.Fatal(err)
 	}
 	var fences int
-	_ = aux.QueryRow(ctx, `SELECT count(*) FROM decisionlog.store_purges`).Scan(&fences)
+	_ = aux.QueryRow(ctx, `SELECT count(*) FROM decisionlog.store_fences`).Scan(&fences)
 	if fences != 0 {
 		t.Fatalf("fences left after retention: %d", fences)
 	}

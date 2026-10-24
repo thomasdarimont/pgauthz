@@ -685,6 +685,7 @@ func jsonbOrDefault(b json.RawMessage) []byte {
 
 func (b *Backend) CheckAccess(ctx context.Context, req authz.EvalRequest) (bool, error) {
 	var decision bool
+	var sid int32 // the store's incarnation, for the decision log
 	err := b.withRole(ctx, func(q querier) error {
 		if req.Context != nil {
 			ctxJSON, jerr := json.Marshal(req.Context)
@@ -692,17 +693,18 @@ func (b *Backend) CheckAccess(ctx context.Context, req authz.EvalRequest) (bool,
 				return fmt.Errorf("marshaling context: %w", jerr)
 			}
 			return q.QueryRow(ctx,
-				"SELECT authz.check_access_with_context($1, $2, $3, $4, $5, $6, $7)",
+				"SELECT authz.store_id($1), authz.check_access_with_context($1, $2, $3, $4, $5, $6, $7)",
 				req.Store, req.SubjectType, req.SubjectID, req.Action,
 				req.ObjectType, req.ObjectID, ctxJSON,
-			).Scan(&decision)
+			).Scan(&sid, &decision)
 		}
 		return q.QueryRow(ctx,
-			"SELECT authz.check_access($1, $2, $3, $4, $5, $6)",
+			"SELECT authz.store_id($1), authz.check_access($1, $2, $3, $4, $5, $6)",
 			req.Store, req.SubjectType, req.SubjectID, req.Action,
 			req.ObjectType, req.ObjectID,
-		).Scan(&decision)
+		).Scan(&sid, &decision)
 	})
+	authz.SetStoreID(ctx, sid)
 	if err != nil {
 		return false, decisionError("check_access", err)
 	}
@@ -722,13 +724,15 @@ func (b *Backend) CheckAccessDetailed(ctx context.Context, req authz.EvalRequest
 		}
 	}
 	var raw []byte
+	var sid int32
 	err := b.withRole(ctx, func(q querier) error {
 		return q.QueryRow(ctx,
-			"SELECT authz.check_access_detailed($1, $2, $3, $4, $5, $6, $7)",
+			"SELECT authz.store_id($1), authz.check_access_detailed($1, $2, $3, $4, $5, $6, $7)",
 			req.Store, req.SubjectType, req.SubjectID, req.Action,
 			req.ObjectType, req.ObjectID, ctxJSON,
-		).Scan(&raw)
+		).Scan(&sid, &raw)
 	})
+	authz.SetStoreID(ctx, sid)
 	if err != nil {
 		return false, nil, decisionError("check_access_detailed", err)
 	}
@@ -754,13 +758,15 @@ func (b *Backend) CheckWithContextualTuples(ctx context.Context, req authz.EvalR
 		}
 	}
 	var decision bool
+	var sid int32
 	err := b.withRole(ctx, func(q querier) error {
 		return q.QueryRow(ctx,
-			"SELECT authz.check_access_with_contextual_tuples_jsonb($1,$2,$3,$4,$5,$6,$7,$8)",
+			"SELECT authz.store_id($1), authz.check_access_with_contextual_tuples_jsonb($1,$2,$3,$4,$5,$6,$7,$8)",
 			req.Store, req.SubjectType, req.SubjectID, req.Action,
 			req.ObjectType, req.ObjectID, ctxJSON, []byte(contextualTuples),
-		).Scan(&decision)
+		).Scan(&sid, &decision)
 	})
+	authz.SetStoreID(ctx, sid)
 	if err != nil {
 		return false, decisionError("check_access_with_contextual_tuples_jsonb", err)
 	}
@@ -807,12 +813,14 @@ func (b *Backend) CheckAccessBatch(ctx context.Context, store string, reqs []aut
 	}
 
 	var resultJSON []byte
+	var sid int32
 	err = b.withRole(ctx, func(q querier) error {
 		return q.QueryRow(ctx,
-			"SELECT authz.check_access_batch($1, $2, $3, $4)",
+			"SELECT authz.store_id($1), authz.check_access_batch($1, $2, $3, $4)",
 			store, checksJSON, ctxJSON, semantic,
-		).Scan(&resultJSON)
+		).Scan(&sid, &resultJSON)
 	})
+	authz.SetStoreID(ctx, sid)
 	if err != nil {
 		return nil, decisionError("check_access_batch", err)
 	}
@@ -968,13 +976,15 @@ func (b *Backend) Explain(ctx context.Context, req authz.EvalRequest) (json.RawM
 		}
 	}
 	var raw []byte
+	var sid int32
 	err := b.withRole(ctx, func(q querier) error {
 		return q.QueryRow(ctx,
-			"SELECT authz.explain_access($1,$2,$3,$4,$5,$6,$7)",
+			"SELECT authz.store_id($1), authz.explain_access($1,$2,$3,$4,$5,$6,$7)",
 			req.Store, req.SubjectType, req.SubjectID, req.Action,
 			req.ObjectType, req.ObjectID, ctxJSON,
-		).Scan(&raw)
+		).Scan(&sid, &raw)
 	})
+	authz.SetStoreID(ctx, sid)
 	if err != nil {
 		return nil, decisionError("explain_access", err)
 	}

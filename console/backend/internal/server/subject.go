@@ -265,7 +265,7 @@ func (s *Server) handleSubjectErase(w http.ResponseWriter, r *http.Request) {
 // then the lines and tombstones in one transaction, no lock held. Without
 // the fence, deleting the tombstones would let a buffered line about an
 // erased subject come back (review #27). Idempotent.
-func (s *Server) purgeStoreDecisions(ctx context.Context, store, by string, before time.Time) (int64, error) {
+func (s *Server) purgeStoreDecisions(ctx context.Context, store string, storeID int32, by string, before time.Time) (int64, error) {
 	db := s.decisionsDB()
 	tx, err := db.Begin(ctx)
 	if err != nil {
@@ -281,9 +281,13 @@ func (s *Server) purgeStoreDecisions(ctx context.Context, store, by string, befo
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('decisionlog.erasures'))`); err != nil {
 		return 0, err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO decisionlog.store_purges (store, purged_at, purged_by) VALUES ($1, $2, $3)
-	                            ON CONFLICT (store) DO UPDATE SET purged_at = GREATEST(store_purges.purged_at, EXCLUDED.purged_at), purged_by = EXCLUDED.purged_by`, store, before, by); err != nil {
-		return 0, err
+	// one fence per incarnation (and one for lines without an id), as the sink writes them
+	const upsert = `INSERT INTO decisionlog.store_fences (store, store_id, purged_at, purged_by) VALUES ($1, $2, $3, $4)
+	                ON CONFLICT (store, store_id) DO UPDATE SET purged_at = GREATEST(store_fences.purged_at, EXCLUDED.purged_at), purged_by = EXCLUDED.purged_by`
+	for _, id := range []int32{storeID, 0} {
+		if _, err := tx.Exec(ctx, upsert, store, id, before, by); err != nil {
+			return 0, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
@@ -293,7 +297,7 @@ func (s *Server) purgeStoreDecisions(ctx context.Context, store, by string, befo
 		return 0, err
 	}
 	defer func() { _ = tx2.Rollback(ctx) }()
-	tag, err := tx2.Exec(ctx, `DELETE FROM decisionlog.decisions WHERE store = $1 AND ts <= $2`, store, before)
+	tag, err := tx2.Exec(ctx, `DELETE FROM decisionlog.decisions WHERE store = $1 AND (store_id = $2 OR (store_id IS NULL AND ts <= $3))`, store, storeID, before)
 	if err != nil {
 		return 0, err
 	}

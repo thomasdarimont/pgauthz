@@ -36,6 +36,9 @@ type Entry struct {
 	Endpoint string `json:"endpoint"`      // evaluation | evaluations | check | check-batch | explain | reserve
 	Via      string `json:"via,omitempty"` // engine | opa
 	Store    string `json:"store"`
+	// StoreID is the store's incarnation (the engine's id) when the engine
+	// decided directly; 0 otherwise (OPA-fronted, or a line from before).
+	StoreID  int32  `json:"store_id,omitempty"`
 	Subject  Ref    `json:"subject"`
 	Action   string `json:"action"`
 	Resource Ref    `json:"resource"`

@@ -28,6 +28,15 @@ LANGUAGE sql STABLE AS $$
      ORDER BY s.name;
 $$;
 
+-- store_id: the store's incarnation — a deleted and recreated store has a
+-- new one. Retired stores included; an unknown name raises. The decision
+-- log stamps it on every line the engine decides, so a purge of a deleted
+-- store never touches a namesake created later.
+CREATE OR REPLACE FUNCTION authz.store_id(p_store text) RETURNS integer
+LANGUAGE sql STABLE AS $$
+    SELECT authz._s(p_store, true);
+$$;
+
 -- list_recorder_actions: the store's recorder allowlists (ADR 0012) —
 -- which DB roles may record which actions; a role without a row may
 -- record any declared action.

@@ -1150,13 +1150,14 @@ fleet-wide *partition drop* is shared by design).
   a record of what was decided may have to outlive the store — unless the
   deletion asks for them: the console's Delete dialog, the admin API's
   `purge_decisions=true`, `pgauthzctl store delete --purge-decisions`. The
-  purge runs behind a store-level fence (ADR 0015 addendum), so a
-  buffered line about the store — an erased subject's included — cannot
-  come back after it; it is refused before anything is deleted where the
-  instance writes no postgres sink, and a sink failure after the engine's
-  delete answers `502 partial` — `DELETE …/admin/stores/{store}/decisions?before=<deleted_at>`
-  (`pgauthzctl store purge-decisions --before`) retries the purge up to the
-  deletion time, so a store recreated under the name is not touched. Kept lines age out with everyone
+  purge is keyed by the store's incarnation (`store_id`, ADR 0015
+  addendum): a buffered line about the deleted store cannot come back, and a
+  store recreated under the name is not touched. It is refused before
+  anything is deleted where the instance writes no postgres sink; a sink
+  failure after the engine's delete answers `502 partial`, and
+  `DELETE …/admin/stores/{store}/decisions?store_id=&before=`
+  (`pgauthzctl store purge-decisions`) retries it with the deletion's
+  `store_id` and `deleted_at`. Kept lines age out with everyone
   else's: the sink's retention drops whole days
   (`DECISION_LOG_RETENTION_DAYS`, default 30) and is not store-aware. With
   retention `0` nothing is ever dropped, so a deleted store's lines then

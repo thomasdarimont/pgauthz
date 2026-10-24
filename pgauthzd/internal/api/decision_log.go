@@ -147,6 +147,7 @@ func (h *Handler) decisionEntry(r *http.Request, endpoint string, req authz.Eval
 // detail, or the error) and latency since start.
 func (h *Handler) logDecision(ctx context.Context, e decisionlog.Entry, start time.Time, decision bool, detail map[string]any, err error) {
 	end := time.Now()
+	e.StoreID = authz.StoreIDFromContext(ctx) // the incarnation the pgx backend read with the decision
 	e.LatencyMS = float64(end.Sub(start).Microseconds()) / 1000
 	if err != nil {
 		e.Error = err.Error()

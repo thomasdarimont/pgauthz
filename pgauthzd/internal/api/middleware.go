@@ -18,6 +18,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -760,6 +761,7 @@ func RequestID(next http.Handler) http.Handler {
 		}
 		w.Header().Set("X-Request-ID", id)
 		ctx := context.WithValue(r.Context(), ctxRequestID, id)
+		ctx = authz.WithStoreIDSink(ctx) // the decision log's store incarnation (filled by the pgx backend)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

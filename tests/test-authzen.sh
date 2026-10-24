@@ -844,6 +844,15 @@ check_http "admin: the store survived the refused purge (200)" "200" \
     -X GET "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE" -H "$AUTH_ADMIN"
 check_http "admin: the purge-decisions route needs the sink too (501)" "501" \
     -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/decisions" -H "$AUTH_ADMIN"
+total=$((total + 1))
+got=$(curl -sf -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE?purge_audit=true" -H "$AUTH_ADMIN" | jq -rc '[(.store_id > 0), (.deleted_at | type), .purged_decisions]' || true)
+if [ "$got" = '[true,"string",false]' ]; then
+    pass_count=$((pass_count + 1)); echo "    PASS  admin: DELETE answers with the store's incarnation and deletion time"
+else
+    fail_count=$((fail_count + 1)); echo "    FAIL  admin: DELETE answers with the store's incarnation and deletion time (got $got)"
+fi
+check_http "admin: PUT recreates the store (201)" "201" \
+    -X PUT "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE" -H "$AUTH_ADMIN" -H "Content-Type: application/json" -d '{"description":"recreated"}'
 check_http "admin: DELETE of a missing grant is 404" "404" \
     -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/namespaces/hr/access/app_hr" -H "$AUTH_ADMIN"
 check_http "admin: PUT retires the store (200)" "200" \

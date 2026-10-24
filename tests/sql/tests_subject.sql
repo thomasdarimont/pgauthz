@@ -94,6 +94,8 @@ BEGIN
     -- ds_07b: the takeout question as rows — every reachable object with its relation,
     -- direct grants marked, narrowed by relation and type, a wildcard as '*'
     PERFORM authz.write_tuple('test_subject', 'user', '*', 'viewer', 'doc', 'public');
+    PERFORM _test_assert_true('ds_07a_store_id_is_the_incarnation',
+        authz.store_id('test_subject') = (SELECT id FROM authz.stores WHERE name = 'test_subject'));
     PERFORM _test_assert('ds_07b_list_subject_objects',
         (SELECT string_agg(o.object_type || ':' || o.object_id || '#' || o.relation || CASE WHEN o.direct THEN '!' ELSE '' END, ',' ORDER BY o.object_type, o.relation, o.object_id)
            FROM authz.list_subject_objects('test_subject', 'user', 'alice', ARRAY['can_view', 'owner'], ARRAY['doc']) o),

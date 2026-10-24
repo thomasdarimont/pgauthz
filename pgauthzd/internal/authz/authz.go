@@ -397,3 +397,30 @@ type NamespaceRow struct {
 	Types  []string        `json:"types"`
 	Access json.RawMessage `json:"access"`
 }
+
+// The store's incarnation on a decision-log line: the engine's store id,
+// read by the pgx backend in the same statement as the decision and handed
+// back through a sink the middleware attaches to every request. A decision
+// another backend made (OPA) leaves it 0 — the line then carries no id.
+type storeIDSink struct{ id int32 }
+type storeIDKey struct{}
+
+// WithStoreIDSink attaches an empty sink to ctx.
+func WithStoreIDSink(ctx context.Context) context.Context {
+	return context.WithValue(ctx, storeIDKey{}, &storeIDSink{})
+}
+
+// SetStoreID records the store's id for the request, when a sink is attached.
+func SetStoreID(ctx context.Context, id int32) {
+	if s, ok := ctx.Value(storeIDKey{}).(*storeIDSink); ok {
+		s.id = id
+	}
+}
+
+// StoreIDFromContext is the id a backend recorded for the request; 0 = none.
+func StoreIDFromContext(ctx context.Context) int32 {
+	if s, ok := ctx.Value(storeIDKey{}).(*storeIDSink); ok {
+		return s.id
+	}
+	return 0
+}

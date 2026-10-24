@@ -153,7 +153,7 @@ func (f *fakeAdmin) handler(_ *testing.T) http.Handler {
 		writeJSON(w, status, map[string]any{"store": s, "created": !found})
 	})
 	mux.HandleFunc("DELETE /pgauthz/v1/admin/stores/{store}/decisions", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]any{"store": r.PathValue("store"), "purged_decisions": true, "before": r.URL.Query().Get("before"), "decisions": 12})
+		writeJSON(w, 200, map[string]any{"store": r.PathValue("store"), "store_id": r.URL.Query().Get("store_id"), "purged_decisions": true, "before": r.URL.Query().Get("before"), "decisions": 12})
 	})
 	mux.HandleFunc("DELETE /pgauthz/v1/admin/stores/{store}", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -481,9 +481,9 @@ func TestStoreVerbsOverAPI(t *testing.T) {
 		t.Fatalf("namespaces: %v %q", err, out)
 	}
 	out, err = capture(t, func() error {
-		return cmdStore("purge-decisions", []string{"tenant_a", "--before", "2026-10-24T10:00:00Z"})
+		return cmdStore("purge-decisions", []string{"tenant_a", "--store-id", "7", "--before", "2026-10-24T10:00:00Z"})
 	})
-	if err != nil || !strings.HasPrefix(out, "purged the decision-log lines of tenant_a up to 2026-10-24T10:00:00Z (12 deleted now)") || !strings.HasSuffix(f.calls[len(f.calls)-1], "DELETE /pgauthz/v1/admin/stores/tenant_a/decisions?before=2026-10-24T10%3A00%3A00Z") {
+	if err != nil || !strings.HasPrefix(out, "purged the decision-log lines of tenant_a (incarnation 7, lines without an id up to 2026-10-24T10:00:00Z): 12 deleted now") || !strings.HasSuffix(f.calls[len(f.calls)-1], "DELETE /pgauthz/v1/admin/stores/tenant_a/decisions?before=2026-10-24T10%3A00%3A00Z&store_id=7") {
 		t.Fatalf("purge-decisions: %v %q %s", err, out, f.calls[len(f.calls)-1])
 	}
 	out, err = capture(t, func() error { return cmdStore("delete", []string{"tenant_a", "--purge-audit", "--purge-decisions"}) })

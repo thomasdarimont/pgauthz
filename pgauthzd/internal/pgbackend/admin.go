@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -147,15 +148,23 @@ func (b *Backend) UpsertStore(ctx context.Context, name string, description, doc
 
 // DeleteStore removes a store physically (delete_store); existed is false
 // for an unknown name.
-func (b *Backend) DeleteStore(ctx context.Context, name string, purgeAudit bool, actor string) (bool, error) {
+func (b *Backend) DeleteStore(ctx context.Context, name string, purgeAudit bool, actor string) (int32, time.Time, bool, error) {
 	_, found, err := b.GetStore(ctx, name)
 	if err != nil || !found {
-		return false, err
+		return 0, time.Time{}, false, err
 	}
-	return true, b.asActor(ctx, actor, func(tx pgx.Tx) error {
+	var id int32
+	var at time.Time
+	err = b.asActor(ctx, actor, func(tx pgx.Tx) error {
+		// the incarnation and the deletion time from inside the deleting
+		// transaction: nothing of this incarnation is decided after it
+		if err := tx.QueryRow(ctx, `SELECT authz.store_id($1), clock_timestamp()`, name).Scan(&id, &at); err != nil {
+			return err
+		}
 		_, err := tx.Exec(ctx, `SELECT authz.delete_store($1, $2)`, name, purgeAudit)
 		return err
 	})
+	return id, at.UTC(), true, err
 }
 
 // ExportModel: the store's live model in the canonical definition shape.

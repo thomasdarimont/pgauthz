@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -399,7 +400,14 @@ func (s *Server) handleDeleteStore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var storeID int32
+	var deletedAt time.Time
 	err := s.asPersonAuthorized(ctx, p, deleteGate, "can_manage_access", "store", store, map[string]any{"op": "delete_store", "purge_audit": req.PurgeAudit, "purge_decisions": req.PurgeDecisions}, func(tx pgx.Tx) error {
+		// the incarnation and the deletion time from inside the deleting
+		// transaction: the purge touches this incarnation's lines only
+		if err := tx.QueryRow(ctx, `SELECT authz.store_id($1), clock_timestamp()`, store).Scan(&storeID, &deletedAt); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `SELECT authz.delete_store($1, $2)`, store, req.PurgeAudit); err != nil {
 			return err
 		}
@@ -439,8 +447,8 @@ func (s *Server) handleDeleteStore(w http.ResponseWriter, r *http.Request) {
 		writeEngineError(w, err)
 		return
 	}
-	deletedAt := time.Now().UTC() // nothing about this store is decided after this
-	out := map[string]any{"ok": true, "deleted": store, "deleted_at": deletedAt, "purged_decisions": false}
+	deletedAt = deletedAt.UTC()
+	out := map[string]any{"ok": true, "deleted": store, "store_id": storeID, "deleted_at": deletedAt, "purged_decisions": false}
 	// the decision log's lines about the store go only when asked (like the
 	// audit history: a record of what was decided may have to outlive the
 	// store), behind the store fence; the store is deleted and on record
@@ -448,10 +456,10 @@ func (s *Server) handleDeleteStore(w http.ResponseWriter, r *http.Request) {
 	// retried over pgauthzd's admin API (DELETE …/stores/{store}/decisions)
 	// or waits for the sink's retention
 	if req.PurgeDecisions {
-		n, err := s.purgeStoreDecisions(ctx, store, p.typ+":"+p.id, deletedAt)
+		n, err := s.purgeStoreDecisions(ctx, store, storeID, p.typ+":"+p.id, deletedAt)
 		if err != nil {
 			out["partial"] = true
-			out["error"] = "the store is deleted but its decision-log lines could not be: retry over pgauthzd's admin API, DELETE …/stores/" + store + "/decisions?before=" + deletedAt.Format(time.RFC3339Nano) + ": " + err.Error()
+			out["error"] = fmt.Sprintf("the store is deleted but its decision-log lines could not be: retry over pgauthzd's admin API, DELETE …/stores/%s/decisions?store_id=%d&before=%s: %v", store, storeID, deletedAt.Format(time.RFC3339Nano), err)
 			writeJSON(w, http.StatusBadGateway, out)
 			return
 		}

@@ -84,11 +84,11 @@ func (s *storeStub) UpsertStore(_ context.Context, name string, desc, docs *stri
 	}
 	return *r, !found, nil
 }
-func (s *storeStub) DeleteStore(_ context.Context, name string, _ bool, actor string) (bool, error) {
+func (s *storeStub) DeleteStore(_ context.Context, name string, _ bool, actor string) (int32, time.Time, bool, error) {
 	s.actors = append(s.actors, actor)
 	_, ok := s.stores[name]
 	delete(s.stores, name)
-	return ok, nil
+	return 7, time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC), ok, nil
 }
 func (s *storeStub) ExportModel(_ context.Context, store string) (json.RawMessage, error) {
 	if _, ok := s.stores[store]; !ok {
@@ -280,7 +280,7 @@ func TestAdminStores(t *testing.T) {
 	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/b_mail/decisions", "")); w.Code != 403 {
 		t.Fatalf("purge route outside the scope: %d", w.Code)
 	}
-	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_mail?purge_audit=true", "")); w.Code != 200 || !strings.Contains(w.Body.String(), `"purged_audit":true`) || !strings.Contains(w.Body.String(), `"purged_decisions":false`) {
+	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_mail?purge_audit=true", "")); w.Code != 200 || !strings.Contains(w.Body.String(), `"purged_audit":true`) || !strings.Contains(w.Body.String(), `"purged_decisions":false`) || !strings.Contains(w.Body.String(), `"store_id":7`) || !strings.Contains(w.Body.String(), `"deleted_at":"2026-10-25T09:00:00Z"`) {
 		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
 	}
 	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_mail", "")); w.Code != 404 {

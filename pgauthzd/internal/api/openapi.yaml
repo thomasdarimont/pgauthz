@@ -969,7 +969,7 @@ paths:
         historically.
       parameters:
         - { name: purge_audit, in: query, required: false, schema: { type: boolean } }
-        - { name: purge_decisions, in: query, required: false, schema: { type: boolean }, description: "Also purge the store's lines and tombstones from the postgres decision-log sink this instance writes, behind a store-level fence (default: keep; they wait for the sink's retention). Refused with 501 before anything is deleted when this instance writes no such sink; a sink failure after the engine's delete answers 502 `partial` — retry with DELETE …/stores/{store}/decisions." }
+        - { name: purge_decisions, in: query, required: false, schema: { type: boolean }, description: "Also purge this incarnation's lines and the store's tombstones from the postgres decision-log sink this instance writes, behind a store fence (default: keep). Refused with 501 before anything is deleted when this instance writes no such sink; a sink failure after the engine's delete answers 502 `partial` — retry with DELETE …/stores/{store}/decisions?store_id=&before=." }
       responses:
         '200':
           description: Deleted.
@@ -980,8 +980,12 @@ paths:
                 required: [store, deleted]
                 properties:
                   store: { type: string }
+                  store_id: { type: integer, description: The deleted incarnation (for the purge's retry). }
                   deleted: { type: boolean, enum: [true] }
+                  deleted_at: { type: string, format: date-time }
                   purged_audit: { type: boolean }
+                  purged_decisions: { type: boolean }
+                  decisions: { type: integer }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -1127,17 +1131,18 @@ paths:
         listeners: [public, admin]
         public_listener: only-when-admin-api-enabled-without-admin-listener
       operationId: adminPurgeStoreDecisions
-      summary: Purge a store's decision-log lines decided up to a point (the store may be gone)
+      summary: Purge a deleted store's decision-log lines (the store may be gone)
       description: >
-        The lines and erasure tombstones of the store decided at or before
-        `before`, behind the store fence (`decisionlog.store_purges`), in the
-        postgres decision-log sink this instance writes. The retry of a store
-        deletion whose purge failed: pass its `deleted_at` as `before`. Without
-        `before` the store must be gone from the engine (409 while a store of
-        that name exists), so a recreated store is never purged by accident.
-        Idempotent; needs the postgres sink (501 otherwise).
+        The lines of one incarnation of the store (`store_id`, from the
+        deletion's answer), the lines without an id decided at or before
+        `before` (its `deleted_at`), and the tombstones up to then, behind the
+        store fence (`decisionlog.store_fences`). The retry of a deletion whose
+        purge failed. Without `store_id` the store must be gone from the engine
+        (409 while a namesake exists): every line of the name goes. Idempotent;
+        needs the postgres sink (501 otherwise).
       parameters:
-        - { name: before, in: query, required: false, schema: { type: string, format: date-time }, description: "Purge lines decided at or before this instant (RFC 3339); required while a store of that name exists." }
+        - { name: store_id, in: query, required: false, schema: { type: integer }, description: "The deleted incarnation; required while a store of that name exists." }
+        - { name: before, in: query, required: false, schema: { type: string, format: date-time }, description: "Lines without an id decided at or before this instant (RFC 3339, not in the future); default now." }
       responses:
         '200':
           description: Purged.
@@ -1148,14 +1153,20 @@ paths:
                 required: [store, purged_decisions, decisions]
                 properties:
                   store: { type: string }
+                  store_id: { type: integer, description: "The purged incarnation; 0 = every line of the name." }
                   purged_decisions: { type: boolean }
                   before: { type: string, format: date-time }
                   decisions: { type: integer, description: Persisted lines deleted now. }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: The log holds nothing of that incarnation (a guessed id gets no fence; buffered lines may still be arriving).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '409':
-          description: A store of that name exists and no `before` was given.
+          description: A store of that name exists and no `store_id` was given.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

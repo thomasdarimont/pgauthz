@@ -397,6 +397,7 @@ GRANT EXECUTE ON FUNCTION authz.assert_fresh(int, pg_lsn) TO authz_reader;
 -- Engine/tenant stats (ADR 0010): pgauthzd samples this for per-store gauges.
 GRANT EXECUTE ON FUNCTION authz.store_stats(int) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.list_stores() TO authz_reader;
+GRANT EXECUTE ON FUNCTION authz.store_id(text) TO authz_reader;   -- the store's incarnation, stamped on decision-log lines
 GRANT EXECUTE ON FUNCTION authz.list_recorder_actions(text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.list_namespaces(text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.tuple_stats(text) TO authz_reader;
@@ -526,6 +527,7 @@ ALTER FUNCTION authz.freshness_token() SECURITY DEFINER;
 ALTER FUNCTION authz.assert_fresh(int, pg_lsn) SECURITY DEFINER;
 ALTER FUNCTION authz.store_stats(int) SECURITY DEFINER;
 ALTER FUNCTION authz.list_stores() SECURITY DEFINER;
+ALTER FUNCTION authz.store_id(text) SECURITY DEFINER;
 ALTER FUNCTION authz.list_recorder_actions(text) SECURITY DEFINER;
 ALTER FUNCTION authz.list_namespaces(text) SECURITY DEFINER;
 ALTER FUNCTION authz.tuple_stats(text) SECURITY DEFINER;

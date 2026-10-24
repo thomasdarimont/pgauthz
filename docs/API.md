@@ -402,6 +402,15 @@ SELECT authz.delete_user_tuples('demo', 'internal_user', 'grace',
     p_performed_by => 'offboarding_service');
 ```
 
+### store_id — The store's incarnation
+
+```sql
+SELECT authz.store_id('demo');   -- the engine's id; a deleted and recreated store has a new one
+```
+
+Reader tier. The decision log stamps it on every line the engine decides, so
+purging a deleted store's lines never touches a namesake created later.
+
 ### list_stores — Every store, live and retired
 
 ```sql
