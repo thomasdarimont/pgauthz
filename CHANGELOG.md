@@ -69,6 +69,18 @@ pre-1.0, minor versions may include breaking changes.
   (`decisions` in the answer). OpenAPI, handler tests, end-to-end checks in
   `tests/test-authzen.sh` and `tests/test-pgauthzctl.sh`.
 
+### Fixed
+
+- **`grant_options` grantee types are ordered deterministically** (a plain type
+  before its wildcard form); the gdrive check compared against one order and
+  failed on another database.
+- **`pgauthzd_admin` holds `authz_namespace_bypass`:** the data-subject takeout
+  and export walk every type, and the management plane is not an application
+  bound to a namespace.
+- **The derived-permissions worker no longer logs `table "_mp_…" does not
+  exist, skipping` on every refresh** — it drops only the work tables that
+  exist.
+
 ### Changed
 
 - **The engine's per-session temp tables no longer raise a NOTICE on

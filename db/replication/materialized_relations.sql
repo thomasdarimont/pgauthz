@@ -366,9 +366,18 @@ BEGIN
     -- long-lived worker session would otherwise keep a work table in the
     -- shape of the code it was created by, and a reload that adds a column
     -- would fail with "INSERT has more expressions than target columns".
-    DROP TABLE IF EXISTS _mp_pairs, _mp_claimed, _mp_written, _mp_objects, _mp_subjects, _mp_want,
-                         _mp_known, _mp_known_built, _mp_principal, _mp_subject_types, _mp_expanded,
-                         _mp_ref_subjects, _mp_closure, _mp_frontier, _mp_next, _mp_feed, _mp_page;
+    -- (no DROP … IF EXISTS: it raises a NOTICE per missing table on every
+    -- run of a fresh session — the worker's log would be nothing else)
+    DECLARE t text;
+    BEGIN
+        FOREACH t IN ARRAY ARRAY['_mp_pairs', '_mp_claimed', '_mp_written', '_mp_objects', '_mp_subjects', '_mp_want',
+                                 '_mp_known', '_mp_known_built', '_mp_principal', '_mp_subject_types', '_mp_expanded',
+                                 '_mp_ref_subjects', '_mp_closure', '_mp_frontier', '_mp_next', '_mp_feed', '_mp_page'] LOOP
+            IF to_regclass('pg_temp.' || t) IS NOT NULL THEN
+                EXECUTE 'DROP TABLE pg_temp.' || t;
+            END IF;
+        END LOOP;
+    END;
     CREATE TEMP TABLE _mp_pairs (
         store_id    integer NOT NULL,
         object_type integer NOT NULL,

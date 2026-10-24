@@ -1170,7 +1170,7 @@ BEGIN
         SELECT COALESCE(array_agg(
                    ut.name || CASE WHEN ur.name IS NOT NULL THEN '#' || ur.name ELSE '' END
                            || CASE WHEN x.allow_wildcard THEN ':*' ELSE '' END
-                   ORDER BY ut.name, ur.name NULLS FIRST), '{}')
+                   ORDER BY ut.name, ur.name NULLS FIRST, x.allow_wildcard), '{}')
           INTO grantee_types
           FROM authz.type_restrictions x
           JOIN authz.types ut ON ut.id = x.allowed_user_type

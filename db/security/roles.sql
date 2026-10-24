@@ -176,6 +176,7 @@ BEGIN
 END
 $$;
 GRANT authz_admin TO pgauthzd_admin;
+GRANT authz_namespace_bypass TO pgauthzd_admin;   -- management crosses the per-application namespaces (the takeout walks every type)
 
 -- Playground BFF metadata/explore role: a dedicated read-only LOGIN role for the
 -- web playground's ENGINE_DSN. It INHERITs authz_reader (check/explain/describe_model)
