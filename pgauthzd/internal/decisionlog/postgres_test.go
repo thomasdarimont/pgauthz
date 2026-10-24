@@ -234,10 +234,7 @@ func TestPostgresSinkIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	db := ps.db.(*pgStore)
-	defer func() {
-		_, _ = db.pool.Exec(ctx, `DROP SCHEMA IF EXISTS decisionlog CASCADE`)
-		db.pool.Close()
-	}()
+	defer dropSchema(t, dsn) // on its own connection: the sink's pool is closed by then
 	l := New(ps, 1, nil)
 	decided := true
 	for _, id := range []string{"alice", "bob"} {
@@ -351,7 +348,9 @@ func TestPostgresSinkErasureInterleavings(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		_, _ = aux.Exec(ctx, `DROP SCHEMA IF EXISTS decisionlog CASCADE`)
+		if _, err := aux.Exec(ctx, `DROP SCHEMA IF EXISTS decisionlog CASCADE`); err != nil {
+			t.Errorf("cleanup: %v", err)
+		}
 		aux.Close()
 		db.pool.Close()
 	}()
@@ -507,7 +506,9 @@ func TestPostgresSinkRetentionBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		_, _ = aux.Exec(ctx, `DROP SCHEMA IF EXISTS decisionlog CASCADE`)
+		if _, err := aux.Exec(ctx, `DROP SCHEMA IF EXISTS decisionlog CASCADE`); err != nil {
+			t.Errorf("cleanup: %v", err)
+		}
 		aux.Close()
 		db.pool.Close()
 	}()
@@ -595,32 +596,40 @@ func TestPostgresSinkRetentionBoundary(t *testing.T) {
 // Review #25: the local first pass against the real database clock. An
 // application clock up to a day ahead keeps the window's oldest day (the
 // grace day), and a clock behind cannot smuggle an expired line past the
-// transaction's check.
+// transaction's check. One sink per skew, its clock set before its first
+// Write: the line's trip through the queue orders the assignment before
+// the flusher reads it (no unsynchronised write to a running sink).
 func TestPostgresSinkClockSkew(t *testing.T) {
 	dsn := os.Getenv("PGAUTHZD_TEST_DECISION_LOG_DSN")
 	if dsn == "" {
 		t.Skip("PGAUTHZD_TEST_DECISION_LOG_DSN not set")
 	}
 	ctx := context.Background()
-	ps, err := OpenPostgres(ctx, PostgresConfig{DSN: dsn, RetentionDays: 7, FlushInterval: 20 * time.Millisecond})
+	aux, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	db := ps.db.(*pgStore)
-	defer func() {
-		_, _ = db.pool.Exec(ctx, `DROP SCHEMA IF EXISTS decisionlog CASCADE`)
-		db.pool.Close()
-	}()
+	defer aux.Close()
+	defer dropSchema(t, dsn)
 	var dbNow, dbCutoff time.Time
-	if err := db.pool.QueryRow(ctx, `SELECT clock_timestamp(), `+strings.TrimPrefix(retentionCutoffSQL, "SELECT "), 7).Scan(&dbNow, &dbCutoff); err != nil {
-		t.Fatal(err)
+	skewed := func(skew time.Duration) *PostgresSink {
+		ps, err := OpenPostgres(ctx, PostgresConfig{DSN: dsn, RetentionDays: 7, FlushInterval: 20 * time.Millisecond})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := aux.QueryRow(ctx, `SELECT clock_timestamp(), `+strings.TrimPrefix(retentionCutoffSQL, "SELECT "), 7).Scan(&dbNow, &dbCutoff); err != nil {
+			t.Fatal(err)
+		}
+		at := dbNow.Add(skew)
+		ps.now = func() time.Time { return at }
+		return ps
 	}
 	count := func(resource string) int {
 		var n int
-		_ = db.pool.QueryRow(ctx, `SELECT count(*) FROM decisionlog.decisions WHERE store = 'it_skew' AND resource_id = $1`, resource).Scan(&n)
+		_ = aux.QueryRow(ctx, `SELECT count(*) FROM decisionlog.decisions WHERE store = 'it_skew' AND resource_id = $1`, resource).Scan(&n)
 		return n
 	}
-	log := func(at time.Time, resource string) {
+	write := func(ps *PostgresSink, at time.Time, resource string) {
 		b, _ := json.Marshal(Entry{Time: at, Listener: "public", Endpoint: "check", Store: "it_skew", Subject: Ref{Type: "user", ID: "alice"}, Action: "can_read", Resource: Ref{Type: "doc", ID: resource}})
 		if _, err := ps.Write(append(b, '\n')); err != nil {
 			t.Fatal(err)
@@ -629,23 +638,42 @@ func TestPostgresSinkClockSkew(t *testing.T) {
 
 	// the application clock 23 h ahead of the database's: a line on the
 	// database's oldest kept day must still be stored
-	ps.now = func() time.Time { return dbNow.Add(23 * time.Hour) }
-	log(dbCutoff.Add(time.Minute), "ahead")
+	ahead := skewed(23 * time.Hour)
+	write(ahead, dbCutoff.Add(time.Minute), "ahead")
 	waitFor(t, "the oldest kept day's line to be stored despite the clock ahead", func() bool { return count("ahead") == 1 })
-	if ps.Expired.Load() != 0 {
-		t.Fatalf("a clock less than a day ahead must not refuse anything: expired %d", ps.Expired.Load())
+	if ahead.Expired.Load() != 0 {
+		t.Fatalf("a clock less than a day ahead must not refuse anything: expired %d", ahead.Expired.Load())
+	}
+	if err := ahead.Close(); err != nil {
+		t.Fatal(err)
 	}
 
 	// the application clock 23 h behind: a line just before the database's
 	// cutoff passes the local pass and is refused in the transaction
-	ps.now = func() time.Time { return dbNow.Add(-23 * time.Hour) }
-	log(dbCutoff.Add(-time.Minute), "behind")
-	waitFor(t, "the expired line to be refused by the database", func() bool { return ps.Expired.Load() == 1 })
+	behind := skewed(-23 * time.Hour)
+	write(behind, dbCutoff.Add(-time.Minute), "behind")
+	waitFor(t, "the expired line to be refused by the database", func() bool { return behind.Expired.Load() == 1 })
 	if count("behind") != 0 {
 		t.Fatal("a clock behind let an expired line into the log")
 	}
-	if err := ps.Close(); err != nil {
+	if err := behind.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// dropSchema removes the sink schema on a connection of its own and fails
+// the test if it cannot — cleanup must not be silent (review #26).
+func dropSchema(t *testing.T, dsn string) {
+	t.Helper()
+	ctx := context.Background()
+	c, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Errorf("cleanup: %v", err)
+		return
+	}
+	defer c.Close(ctx)
+	if _, err := c.Exec(ctx, `DROP SCHEMA IF EXISTS decisionlog CASCADE`); err != nil {
+		t.Errorf("cleanup: %v", err)
 	}
 }
 
@@ -668,10 +696,10 @@ func TestPostgresSinkRefusesLinesOlderThanRetention(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	waitFor(t, "the fresh, edge and grace lines handed to the store", func() bool { return f.rows() == 3 })
-	if expired.Load() != 1 || s.Expired.Load() != 1 {
-		t.Fatalf("expired %d/%d, want only the 10-day line refused locally", expired.Load(), s.Expired.Load())
-	}
+	// the counters move right after the insert: wait for both
+	waitFor(t, "the fresh, edge and grace lines handed to the store and the 10-day line counted", func() bool {
+		return f.rows() == 3 && expired.Load() == 1 && s.Expired.Load() == 1
+	})
 	_ = s.Close()
 
 	f2 := &fakeStore{}
