@@ -99,9 +99,10 @@ CREATE TABLE IF NOT EXISTS decisionlog.store_fences (
     purged_by  text,
     PRIMARY KEY (store, store_id)
 );
--- the predecessor table (store_purges, name-keyed): its fences carry over as
--- fences for lines without an id; the table itself stays until the fleet
--- has moved (an instance still writing it must not lose it)
+-- the predecessor table (store_purges, name-keyed) never shipped in a
+-- release: its fences carry over once, for development databases built
+-- from the intermediate commits; a fleet on such a build upgrades stopped,
+-- not rolling (an old instance's later purge would not be seen here)
 DO $m$
 BEGIN
     IF to_regclass('decisionlog.store_purges') IS NOT NULL THEN

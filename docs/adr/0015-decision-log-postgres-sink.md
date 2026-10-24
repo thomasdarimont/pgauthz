@@ -129,7 +129,9 @@ incarnation of the engine's deletion receipt (`authz.store_deletions`,
 written inside the lifecycle lock), so it drops exactly that incarnation's
 lines, a namesake created later is untouched and a live store cannot be
 fenced; lines without an id (OPA-fronted decisions, lines from before) fall
-back to the receipt's deletion time.
+back to the receipt's deletion time, which is best effort: a line stamped
+during the deleting transaction can survive. Only the engine's own decisions
+carry the id.
 
 Batches, erasures, purges and retention are ordered by one transaction-level
 advisory lock: batches hold it shared, the others take it exclusive for an

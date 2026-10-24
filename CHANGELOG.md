@@ -33,7 +33,9 @@ pre-1.0, minor versions may include breaking changes.
   `deleted_at`, `GET …/stores/{store}/deletions` (`pgauthzctl store deletions`)
   lists the receipts, and the retry `DELETE …/decisions?store_id=` refuses an
   incarnation without one — a live store cannot be fenced. Lines without an id
-  (OPA-fronted, pre-upgrade) fall back to the receipt's deletion time. Purges
+  (OPA-fronted, pre-upgrade) fall back to the receipt's deletion time, best
+  effort. The name-keyed fence table of the intermediate commits never
+  shipped; a development fleet on one of them upgrades stopped. Purges
   and erasures take the lock before writing their fence or tombstone and
   stamp it after the lock. The console presents its client certificate for
   the local admin only.
