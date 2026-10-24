@@ -39,7 +39,7 @@ func InitCursorSeal(secrets string) {
 	cursorSealMu.Lock()
 	defer cursorSealMu.Unlock()
 	cursorSealKeys = nil
-	for _, sec := range strings.Split(secrets, ",") {
+	for sec := range strings.SplitSeq(secrets, ",") {
 		sec = strings.TrimSpace(sec)
 		if sec == "" {
 			continue

@@ -172,7 +172,7 @@ func cmdStore(verb string, args []string) error {
 			return err
 		}
 		var actions []string
-		for _, a := range strings.Split(pos[2], ",") {
+		for a := range strings.SplitSeq(pos[2], ",") {
 			if a = strings.TrimSpace(a); a != "" {
 				actions = append(actions, a)
 			}

@@ -587,7 +587,7 @@ func Load() (*Config, error) {
 		keysRaw = keyRaw
 	}
 	seen := map[string]bool{}
-	for _, k := range strings.Split(keysRaw, ",") {
+	for k := range strings.SplitSeq(keysRaw, ",") {
 		k = strings.TrimSpace(k)
 		if k == "" {
 			continue
@@ -616,7 +616,7 @@ func Load() (*Config, error) {
 	// skipping entries or falling back to the random per-process key would
 	// break cursor continuity invisibly.
 	if c.CursorSealKey != "" {
-		for _, seg := range strings.Split(c.CursorSealKey, ",") {
+		for seg := range strings.SplitSeq(c.CursorSealKey, ",") {
 			if strings.TrimSpace(seg) == "" {
 				return nil, fmt.Errorf("CURSOR_SEAL_KEY contains an empty key segment (stray comma?)")
 			}
@@ -1019,7 +1019,7 @@ func (c *Config) SwaggerUIOIDC() bool {
 // envList reads a comma-separated list, trimmed, empty entries dropped.
 func envList(key string) []string {
 	var out []string
-	for _, v := range strings.Split(os.Getenv(key), ",") {
+	for v := range strings.SplitSeq(os.Getenv(key), ",") {
 		if v = strings.TrimSpace(v); v != "" {
 			out = append(out, v)
 		}

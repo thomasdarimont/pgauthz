@@ -19,7 +19,7 @@ import (
 // vocabulary is not pgauthz's; create them natively (create_condition).
 func ParseDSL(text string) (modelJSON []byte, warnings []string, err error) {
 	var lines []string
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "store:") || strings.HasPrefix(trimmed, "#") {
 			continue

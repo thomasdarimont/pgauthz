@@ -91,7 +91,7 @@ func claimString(jwt, key string) string {
 // claimPath walks a dotted path ("realm_access.roles") into the payload.
 func claimPath(m map[string]any, path string) any {
 	var cur any = m
-	for _, seg := range strings.Split(path, ".") {
+	for seg := range strings.SplitSeq(path, ".") {
 		obj, ok := cur.(map[string]any)
 		if !ok {
 			return nil

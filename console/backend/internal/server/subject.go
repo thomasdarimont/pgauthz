@@ -49,7 +49,7 @@ func (s *Server) handleSubject(w http.ResponseWriter, r *http.Request) {
 		limit = 10000
 	}
 	var relations []string
-	for _, rel := range strings.Split(q.Get("relations"), ",") {
+	for rel := range strings.SplitSeq(q.Get("relations"), ",") {
 		if rel = strings.TrimSpace(rel); rel != "" {
 			relations = append(relations, rel)
 		}

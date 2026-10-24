@@ -126,7 +126,7 @@ func env(k, def string) string {
 
 func parseTeamClaims(spec string) []TeamClaim {
 	var out []TeamClaim
-	for _, part := range strings.Split(spec, ",") {
+	for part := range strings.SplitSeq(spec, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
@@ -185,7 +185,7 @@ func Load() Config {
 // splitList splits a comma-separated env value, trimming blanks.
 func splitList(v string) []string {
 	var out []string
-	for _, x := range strings.Split(v, ",") {
+	for x := range strings.SplitSeq(v, ",") {
 		if x = strings.TrimSpace(x); x != "" {
 			out = append(out, x)
 		}

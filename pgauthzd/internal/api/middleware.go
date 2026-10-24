@@ -622,7 +622,7 @@ func parseRSAPublicKey(k jwkKey) (*rsa.PublicKey, error) {
 // RFC 6749) contains the required scope value.
 func hasScope(claims jwt.MapClaims, required string) bool {
 	scopeStr := claimString(claims, "scope")
-	for _, s := range strings.Split(scopeStr, " ") {
+	for s := range strings.SplitSeq(scopeStr, " ") {
 		if s == required {
 			return true
 		}
@@ -673,13 +673,13 @@ func (m *JWTMiddleware) dbRoleAllowed(issuer, role string) bool {
 func extractRoles(claims jwt.MapClaims, paths string) []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, p := range strings.Split(paths, ",") {
+	for p := range strings.SplitSeq(paths, ",") {
 		p = strings.TrimSpace(p)
 		if p == "" {
 			continue
 		}
 		var node any = map[string]any(claims)
-		for _, seg := range strings.Split(p, ".") {
+		for seg := range strings.SplitSeq(p, ".") {
 			m, ok := node.(map[string]any)
 			if !ok {
 				node = nil
@@ -705,7 +705,7 @@ func extractRoles(claims jwt.MapClaims, paths string) []string {
 // (e.g. "resource_access.app.db_role"). Missing/ill-typed segments yield "".
 func claimStringPath(claims jwt.MapClaims, path string) string {
 	var node any = map[string]any(claims)
-	for _, seg := range strings.Split(path, ".") {
+	for seg := range strings.SplitSeq(path, ".") {
 		m, ok := node.(map[string]any)
 		if !ok {
 			return ""
@@ -815,7 +815,7 @@ func ClaimsFromContext(ctx context.Context) jwt.MapClaims {
 func claimValues(claims jwt.MapClaims, path string) map[string]bool {
 	out := map[string]bool{}
 	var v any = map[string]any(claims)
-	for _, part := range strings.Split(path, ".") {
+	for part := range strings.SplitSeq(path, ".") {
 		m, ok := v.(map[string]any)
 		if !ok {
 			return out
