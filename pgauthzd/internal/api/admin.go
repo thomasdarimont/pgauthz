@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"crypto/x509"
@@ -38,6 +39,10 @@ import (
 // direct pgx backend of a full instance).
 type IssuerBindingAdmin interface {
 	IssuerBindings(ctx context.Context) ([]issuers.Binding, error)
+	IssuerBindingsRevision(ctx context.Context) (int64, error)
+	// IssuerBindingsAudit is one page of the history, newest first, keyset
+	// by seq (before = the previous page's last seq), and the total.
+	IssuerBindingsAudit(ctx context.Context, issuer string, limit int, before *int64) ([]issuers.AuditRow, int64, error)
 	SetIssuerBinding(ctx context.Context, b issuers.Binding, performedBy string) (int64, error)
 	DeleteIssuerBinding(ctx context.Context, issuer, performedBy string) (bool, error)
 }
@@ -288,7 +293,64 @@ func (h *Handler) adminIssuerBindings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no binding for issuer "+want)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"bindings": visible})
+	rev, err := a.IssuerBindingsRevision(r.Context())
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"bindings": visible, "revision": rev})
+}
+
+// adminIssuerBindingsAudit — GET /pgauthz/v1/admin/issuer-bindings/audit
+// ?issuer=&limit=&before=<seq>: one page of the rows' history within the
+// caller's scope — a tenant admin reads its own issuer's history only (the
+// filter is set for it; asking for another is refused).
+func (h *Handler) adminIssuerBindingsAudit(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	a, ok := h.bindingAdmin(w)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	issuer := strings.TrimSpace(q.Get("issuer"))
+	if !scope.platform {
+		if issuer == "" {
+			issuer = scope.issuer
+		} else if issuer != scope.issuer {
+			metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
+			writeForbidden(w, "management refused: this credential reads the history of the issuer "+scope.issuer+" only")
+			return
+		}
+	}
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	if limit <= 0 || limit > 500 {
+		limit = 25
+	}
+	var before *int64
+	if b := q.Get("before"); b != "" {
+		n, err := strconv.ParseInt(b, 10, 64)
+		if err != nil || n <= 0 {
+			writeBadRequest(w, "before must be the previous page's next (a sequence number)")
+			return
+		}
+		before = &n
+	}
+	rows, total, err := a.IssuerBindingsAudit(r.Context(), issuer, limit, before)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if rows == nil {
+		rows = []issuers.AuditRow{}
+	}
+	next := ""
+	if len(rows) == limit {
+		next = strconv.FormatInt(rows[len(rows)-1].Seq, 10)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rows": rows, "next": next, "total": total, "limit": limit, "issuer": issuer})
 }
 
 // adminSetIssuerBinding — PUT /pgauthz/v1/admin/issuer-bindings: create or
@@ -420,6 +482,7 @@ func newAdminMux(h *Handler) *http.ServeMux {
 func registerAdmin(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("GET /pgauthz/v1/admin/issuers", h.adminIssuers)
 	mux.HandleFunc("GET /pgauthz/v1/admin/issuer-bindings", h.adminIssuerBindings)
+	mux.HandleFunc("GET /pgauthz/v1/admin/issuer-bindings/audit", h.adminIssuerBindingsAudit)
 	mux.HandleFunc("PUT /pgauthz/v1/admin/issuer-bindings", h.adminSetIssuerBinding)
 	mux.HandleFunc("DELETE /pgauthz/v1/admin/issuer-bindings", h.adminDeleteIssuerBinding)
 	registerAdminStores(mux, h)

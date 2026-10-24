@@ -80,6 +80,31 @@ func main() {
 	}
 
 	httpClient := &http.Client{Timeout: 15 * time.Second}
+	var adminClient *http.Client
+	if cfg.PgauthzdAdminCert != "" || cfg.PgauthzdAdminKey != "" {
+		if cfg.PgauthzdAdminCert == "" || cfg.PgauthzdAdminKey == "" {
+			log.Fatalf("PGAUTHZD_ADMIN_CERT and PGAUTHZD_ADMIN_KEY go together")
+		}
+		pair, err := tls.LoadX509KeyPair(cfg.PgauthzdAdminCert, cfg.PgauthzdAdminKey)
+		if err != nil {
+			log.Fatalf("PGAUTHZD_ADMIN_CERT/_KEY: %v", err)
+		}
+		roots, _ := x509.SystemCertPool()
+		if roots == nil {
+			roots = x509.NewCertPool()
+		}
+		for _, f := range []string{cfg.TLSCAFile, cfg.PgauthzdAdminCA} {
+			if f == "" {
+				continue
+			}
+			pem, err := os.ReadFile(f)
+			if err != nil || !roots.AppendCertsFromPEM(pem) {
+				log.Fatalf("CA file %s: %v", f, err)
+			}
+		}
+		adminClient = &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{Certificates: []tls.Certificate{pair}, RootCAs: roots, MinVersion: tls.VersionTLS12}}}
+		log.Printf("admin API client certificate from %s", cfg.PgauthzdAdminCert)
+	}
 	if cfg.TLSCAFile != "" {
 		certPool, _ := x509.SystemCertPool()
 		if certPool == nil {
@@ -118,7 +143,7 @@ func main() {
 	} else {
 		log.Printf("no ISSUER: the local admin sign-in is the only way in")
 	}
-	srv := server.New(cfg, pool, engine, httpClient, oidcClient, disco)
+	srv := server.New(cfg, pool, engine, httpClient, oidcClient, disco).WithAdminHTTPClient(adminClient)
 	srv.SetVersion(buildVersion())
 
 	httpSrv := &http.Server{

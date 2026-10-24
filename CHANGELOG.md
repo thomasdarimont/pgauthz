@@ -9,6 +9,21 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Console: Platform → Issuers over pgauthzd's admin API, as the signed-in
+  person.** With `PGAUTHZD_ADMIN_URL` the tab reads the rows, the history
+  and the set in force, and writes bindings, through the admin API with the
+  person's own token — pgauthzd's gate and tenant scoping decide (a tenant
+  admin: its issuer only), the console still gates on `can_manage_issuers`
+  and records every write in its action log; a session without a token (the
+  local admin) uses the console's client certificate (`PGAUTHZD_ADMIN_CERT`
+  / `_KEY` / `_CA`; Helm `console.adminApi`). The in-force card says which
+  transport and credential answered. Without the URL the tab works as before.
+  The admin API gained **`GET /pgauthz/v1/admin/issuer-bindings/audit`**
+  (paged history within the caller's scope) and the `revision` on the
+  bindings list. The Keycloak demo's console admins now hold `pgauthz_admin`
+  (ADMIN_ROLE). Go test against a fake admin API; end-to-end check of the
+  audit route.
+
 - **Data subject requests over the admin API and pgauthzctl — the takeout
   and the export, deliberately not the erasure.** Store-scoped routes
   `GET …/admin/stores/{store}/subjects/{type}/{id}/objects`

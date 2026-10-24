@@ -33,6 +33,15 @@ resource "keycloak_role" "authz_recorder_realm" {
   name     = "authz_recorder"
 }
 
+# pgauthzd's ADMIN_ROLE (env.sh: pgauthz_admin): the management plane's
+# shorthand gate — the admin API with platform scope. The console's platform
+# admins hold it, so Platform → Issuers can call the admin API with THEIR
+# token (PGAUTHZD_ADMIN_URL) and pgauthzd's scoping decides.
+resource "keycloak_role" "pgauthz_admin_realm" {
+  realm_id = keycloak_realm.pgauthz.id
+  name     = "pgauthz_admin"
+}
+
 # Playground admin: may reset (purge) an allowlisted demo store's action log
 # through the BFF (PLAYGROUND_RESET_ROLE) so a gate demo can be repeated.
 resource "keycloak_role" "playground_admin_realm" {

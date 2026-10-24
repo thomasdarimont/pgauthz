@@ -415,6 +415,18 @@ console:
   # The tracing UI's trace page, {trace_id} placeholder: the Decisions tab
   # links a logged decision into the application's trace (OpenTelemetry).
   traceUrl: ""        # e.g. https://jaeger.example.com/trace/{trace_id}
+  # Platform → Issuers over pgauthzd's admin API (needs admin.enabled): the
+  # console presents the signed-in person's own token — pgauthzd's gate and
+  # tenant scoping decide — or, for the local admin, the client certificate
+  # in clientCertSecret (a kubernetes.io/tls secret; the admin listener's
+  # mTLS, admin.clientCASecret must sign it; caSecret/caSecretKey hold the
+  # CA that signs the LISTENER's certificate). Off: the engine functions.
+  adminApi:
+    enabled: false
+    url: ""                    # default http://<release>-writer:8082
+    clientCertSecret: ""
+    caSecret: ""
+    caSecretKey: ca.crt
   # The Data subject tab's erasure (SUBJECT_ERASURE_ENABLED): platform admins
   # may erase a subject from a store. Off by default — erasure comes last in
   # a data-subject request, after the applications; the takeout and the

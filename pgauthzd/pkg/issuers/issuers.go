@@ -89,6 +89,19 @@ func (a *AdminBinding) Empty() bool {
 
 // Binding is a database row of authz.issuer_bindings: what an issuer's
 // tokens may do, managed from the console.
+// AuditRow is one entry of authz.issuer_bindings_audit: a write to a
+// binding, as list_issuer_bindings_audit returns it (newest first).
+type AuditRow struct {
+	Seq         int64     `json:"seq"`
+	Action      string    `json:"action"`
+	PerformedAt time.Time `json:"performed_at"`
+	PerformedBy string    `json:"performed_by"`
+	Issuer      string    `json:"issuer"`
+	Stores      []string  `json:"stores"`
+	Enabled     *bool     `json:"enabled"`
+	Description string    `json:"description,omitempty"`
+}
+
 type Binding struct {
 	Issuer        string              `json:"issuer"`
 	Stores        []string            `json:"stores"`

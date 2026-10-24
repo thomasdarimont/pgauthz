@@ -802,7 +802,8 @@ so configuration as code never needs the console's BFF):
 | Method | Path | What |
 |--------|------|------|
 | GET | `/pgauthz/v1/admin/issuers` | The effective issuer set within the caller's scope (as `/pgauthz/v1/issuers`, entries carry their `admin` binding) |
-| GET | `/pgauthz/v1/admin/issuer-bindings[?issuer=…]` | The database rows within scope, or one (`404` outside it) |
+| GET | `/pgauthz/v1/admin/issuer-bindings[?issuer=…]` | The database rows within scope (with their `revision`), or one (`404` outside it) |
+| GET | `/pgauthz/v1/admin/issuer-bindings/audit[?issuer=&limit=&before=]` | The rows' history within scope, one page newest first (keyset by `seq`); a tenant admin reads its own issuer's only |
 | PUT | `/pgauthz/v1/admin/issuer-bindings` | Create or replace one binding — the whole row `{issuer, stores, db_roles, client_db_roles, pep_clients, enabled, description}`; validated as the daemon validates, a row may only **narrow** the environment's `stores` (never unbind or widen), an issuer the environment does not trust is refused (`400` — the database cannot add trust); `{issuer, revision}`, applied by every `ISSUERS_SOURCE=env+db` instance |
 | DELETE | `/pgauthz/v1/admin/issuer-bindings?issuer=…` | Drop the row; the issuer falls back to its environment bindings |
 | GET | `/pgauthz/v1/admin/stores[/{store}]` | The stores in scope (a tenant admin: the stores its issuer is bound to), each with its managed-model state |

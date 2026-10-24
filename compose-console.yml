@@ -74,6 +74,10 @@ services:
       # internal callback listener with the service token OPA uses.
       PGAUTHZD_INTERNAL_URL: http://pgauthzd-full:8081
       PGAUTHZD_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-dev-native-service-token}"
+      # Platform → Issuers over pgauthzd's admin API as the signed-in person
+      # (the Keycloak console admins hold pgauthz_admin = ADMIN_ROLE); empty:
+      # the engine functions directly + the callback above for the set in force.
+      PGAUTHZD_ADMIN_URL: "${PGAUTHZD_ADMIN_URL:-http://pgauthzd-full:8082}"
       # The Test tab's "as me through pgauthzd" mode: the person's own token
       # goes to the OPA-fronted instance with X-PGAuthz-Detail, so the result
       # shows whether OPA and which hooks took part. Self-subject only — OPA

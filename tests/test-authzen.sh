@@ -711,6 +711,11 @@ total=$((total + 1))
 got=$(curl -sf "$ADMIN_URL/pgauthz/v1/admin/issuer-bindings?issuer=$ISS_URL" -H "$AUTH_ADMIN" | jq -rc '[.stores, .enabled, .updated_by]')
 if [ "$got" = '[["demo"],true,"internal_user:ops"]' ]; then
     pass_count=$((pass_count + 1)); echo "    PASS  admin: GET returns the row, recorded with the token's subject"
+fi
+total=$((total + 1))
+got=$(curl -sf "$ADMIN_URL/pgauthz/v1/admin/issuer-bindings/audit?issuer=$ISS_URL&limit=1" -H "$AUTH_ADMIN" | jq -rc '[.rows[0].issuer, .rows[0].performed_by, (.total >= 1), .limit]' || true)
+if [ "$got" = "[\"$ISS_URL\",\"internal_user:ops\",true,1]" ]; then
+    pass_count=$((pass_count + 1)); echo "    PASS  admin: GET issuer-bindings/audit pages the history"
 else
     fail_count=$((fail_count + 1)); echo "    FAIL  admin: GET returns the row (got $got)"
 fi

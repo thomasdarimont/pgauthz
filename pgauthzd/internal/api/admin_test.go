@@ -35,6 +35,23 @@ func (s *adminStub) IssuerBindings(context.Context) ([]issuers.Binding, error) {
 	return out, nil
 }
 
+func (s *adminStub) IssuerBindingsRevision(context.Context) (int64, error) { return s.rev, nil }
+
+func (s *adminStub) IssuerBindingsAudit(_ context.Context, issuer string, limit int, _ *int64) ([]issuers.AuditRow, int64, error) {
+	out := []issuers.AuditRow{}
+	seq := int64(100)
+	for _, iss := range []string{"https://tenant-a", "https://tenant-b"} {
+		if issuer == "" || issuer == iss {
+			out = append(out, issuers.AuditRow{Seq: seq, Action: "set", PerformedBy: "test", Issuer: iss, Stores: []string{}})
+		}
+		seq--
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, int64(len(out)), nil
+}
+
 func (s *adminStub) SetIssuerBinding(_ context.Context, b issuers.Binding, by string) (int64, error) {
 	s.rows[b.Issuer] = b
 	s.rev++
@@ -185,6 +202,26 @@ func TestAdminIssuerBindings(t *testing.T) {
 	w = do(h, h.adminIssuers, tenantAAdmin.request("GET", "/pgauthz/v1/admin/issuers", ""))
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "tenant-a") || strings.Contains(w.Body.String(), "platform-idp") {
 		t.Fatalf("tenant admin's issuers: %d %s", w.Code, w.Body.String())
+	}
+	// the history: a tenant admin reads its own issuer's, the filter is set
+	// for it, another issuer's is refused; a platform admin reads every one
+	w = do(h, h.adminIssuerBindingsAudit, tenantAAdmin.request("GET", "/pgauthz/v1/admin/issuer-bindings/audit", ""))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"issuer":"https://tenant-a"`) || strings.Contains(w.Body.String(), "tenant-b") || !strings.Contains(w.Body.String(), `"total":1`) {
+		t.Fatalf("tenant admin's history: %d %s", w.Code, w.Body.String())
+	}
+	if w := do(h, h.adminIssuerBindingsAudit, tenantAAdmin.request("GET", "/pgauthz/v1/admin/issuer-bindings/audit?issuer=https://tenant-b", "")); w.Code != http.StatusForbidden {
+		t.Fatalf("another tenant's history: %d", w.Code)
+	}
+	w = do(h, h.adminIssuerBindingsAudit, platformAdmin.request("GET", "/pgauthz/v1/admin/issuer-bindings/audit?limit=1", ""))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"next":"100"`) || !strings.Contains(w.Body.String(), `"limit":1`) {
+		t.Fatalf("platform admin's history page: %d %s", w.Code, w.Body.String())
+	}
+	if w := do(h, h.adminIssuerBindingsAudit, platformAdmin.request("GET", "/pgauthz/v1/admin/issuer-bindings/audit?before=x", "")); w.Code != 400 {
+		t.Fatalf("bad cursor: %d", w.Code)
+	}
+	w = do(h, h.adminIssuerBindings, platformAdmin.request("GET", "/pgauthz/v1/admin/issuer-bindings", ""))
+	if !strings.Contains(w.Body.String(), `"revision":`) {
+		t.Fatalf("the list carries the database revision: %s", w.Body.String())
 	}
 	w = do(h, h.adminIssuers, platformAdmin.request("GET", "/pgauthz/v1/admin/issuers", ""))
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"admin":{"scopes":["pgauthz:admin"]`) || !strings.Contains(w.Body.String(), "tenant-b") {

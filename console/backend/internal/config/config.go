@@ -56,6 +56,17 @@ type Config struct {
 	// tab shows the database rows only.
 	PgauthzdInternalURL  string
 	PgauthzdServiceToken string
+	// PgauthzdAdminURL (PGAUTHZD_ADMIN_URL, optional) is a pgauthzd admin
+	// listener. Set, Platform → Issuers reads and writes the bindings over
+	// the admin API instead of the engine functions — as the signed-in
+	// person (their own token, so pgauthzd's tenant scoping applies) or,
+	// for a session without a token (the local admin), with the console's
+	// client certificate (PgauthzdAdminCert/Key, the admin listener's mTLS;
+	// PgauthzdAdminCA the CA that signs the listener's certificate).
+	PgauthzdAdminURL  string
+	PgauthzdAdminCert string
+	PgauthzdAdminKey  string
+	PgauthzdAdminCA   string
 	// TraceURL (optional) is the tracing UI's trace page with a {trace_id}
 	// placeholder, e.g. https://jaeger.example.com/trace/{trace_id}: the
 	// Decisions tab links a logged decision into the application's trace.
@@ -173,6 +184,10 @@ func Load() Config {
 		DecisionURL:           env("PGAUTHZD_DECISION_URL", ""),
 		PgauthzdInternalURL:   env("PGAUTHZD_INTERNAL_URL", ""),
 		PgauthzdServiceToken:  env("PGAUTHZD_SERVICE_TOKEN", ""),
+		PgauthzdAdminURL:      env("PGAUTHZD_ADMIN_URL", ""),
+		PgauthzdAdminCert:     env("PGAUTHZD_ADMIN_CERT", ""),
+		PgauthzdAdminKey:      env("PGAUTHZD_ADMIN_KEY", ""),
+		PgauthzdAdminCA:       env("PGAUTHZD_ADMIN_CA", ""),
 		TraceURL:              env("CONSOLE_TRACE_URL", ""),
 		I18nDir:               env("CONSOLE_I18N_DIR", ""),
 		SubjectErasureEnabled: env("SUBJECT_ERASURE_ENABLED", "false") == "true",

@@ -339,6 +339,12 @@ export class PgcIssuers extends PgcElement {
                 <span class="mono">${eff.source}</span> · ${t('revision')}
                 <span class="mono" data-testid="issuers-revision">${eff.revision}</span>
                 ${
+                  eff.via === 'admin-api'
+                    ? html` ·
+                      ${t('over the admin API as {who}', { who: eff.credential === 'token' ? t('you (your own token: its scope decides)') : t('the console (its client certificate)') })}`
+                    : nothing
+                }
+                ${
                   eff.revision === db
                     ? html`<span class="badge ok">${t('applied')}</span>`
                     : html`<span class="badge warn">${t('database is at {n}', { n: db })}</span>`

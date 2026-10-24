@@ -288,6 +288,15 @@ services:
       CONSOLE_SELF_SUBJECT_TYPES: "${CONSOLE_SELF_SUBJECT_TYPES:-user}"
       CONSOLE_TEAM_CLAIMS: "${CONSOLE_TEAM_CLAIMS:-role=realm_access.roles,group=groups,org=organization}"
       PGAUTHZD_URL: "http://pgauthzd-full:8080"                         # Settings: writer readiness
+      # Platform → Issuers over the admin API (ADMIN_LISTEN_ADDR on
+      # pgauthzd-full) as the signed-in person — their token must pass the
+      # admin gate (ADMIN_ROLE or an `admin` binding); the local admin needs
+      # the console's client certificate instead (the listener's mTLS).
+      # Empty: the engine functions directly.
+      PGAUTHZD_ADMIN_URL: "${CONSOLE_ADMIN_URL:-}"
+      PGAUTHZD_ADMIN_CERT: "${CONSOLE_ADMIN_CERT:-}"
+      PGAUTHZD_ADMIN_KEY: "${CONSOLE_ADMIN_KEY:-}"
+      PGAUTHZD_ADMIN_CA: "${CONSOLE_ADMIN_CA:-}"
       PGAUTHZD_INTERNAL_URL: "http://pgauthzd-full:8081"                # Platform → Issuers: the effective issuer set (callback listener)
       PGAUTHZD_SERVICE_TOKEN: "${NATIVE_SERVICE_TOKEN:-}"
       PGAUTHZD_DECISION_URL: "${CONSOLE_DECISION_URL:-http://pgauthzd-decision:8080}"   # Test tab "as me"; http://pgauthzd-opa:8080 with the opa profile

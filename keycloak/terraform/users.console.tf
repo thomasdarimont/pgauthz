@@ -49,7 +49,9 @@ resource "keycloak_user_roles" "console_persona" {
   for_each = local.console_personas
   realm_id = keycloak_realm.pgauthz.id
   user_id  = keycloak_user.console_persona[each.key].id
-  role_ids = [
-    each.value.role == "console_admin" ? keycloak_role.console_admin_realm.id : keycloak_role.console_persona[each.value.role].id,
-  ]
+  # a console admin is a pgauthzd admin too (ADMIN_ROLE), see roles.tf
+  role_ids = concat(
+    [each.value.role == "console_admin" ? keycloak_role.console_admin_realm.id : keycloak_role.console_persona[each.value.role].id],
+    each.value.role == "console_admin" ? [keycloak_role.pgauthz_admin_realm.id] : [],
+  )
 }

@@ -443,7 +443,11 @@ What a trusted issuer's tokens may do — the stores they reach, the DB roles
 they may claim, the client roles, the PEP clients, whether they are accepted
 at all — can live in the database instead of `JWT_ISSUERS`
 ([ADR 0016](adr/0016-issuer-bindings-and-admin-api.md)); trust itself
-(issuer, audience, keys) always stays in the environment.
+(issuer, audience, keys) always stays in the environment. The console's
+Platform → Issuers tab manages the rows over the admin API as the signed-in
+person when `PGAUTHZD_ADMIN_URL` is set (their token must pass the admin
+gate; a tenant admin then sees and edits its issuer only), through the
+engine functions otherwise.
 
 - **`ISSUERS_SOURCE=env+db`** on every instance that should follow the rows
   (`authz.issuer_bindings`): merged at start and on every change (poll

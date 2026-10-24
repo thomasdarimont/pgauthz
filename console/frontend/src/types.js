@@ -49,6 +49,16 @@
  * @property {boolean} [decision_url_configured]
  * @property {string} [trace_url] the tracing UI's trace page, {trace_id} placeholder (CONSOLE_TRACE_URL)
  * @property {boolean} [subject_erasure] SUBJECT_ERASURE_ENABLED: the Data subject tab's erasure is on (platform admins)
+ *
+ * @typedef {Object} EffectiveIssuers
+ * @property {boolean} available
+ * @property {string} [url]
+ * @property {string} [error]
+ * @property {string} [source]
+ * @property {number} revision
+ * @property {Array<Object>} [issuers]
+ * @property {'admin-api'|'callback'} [via] how the console asked: pgauthzd's admin API (PGAUTHZD_ADMIN_URL) or the internal callback
+ * @property {'token'|'certificate'|'service-token'} [credential] what it presented: the person's own token, the console's certificate, OPA's service token
  * @property {{oidc: boolean, local: boolean}} [login]
  */
 

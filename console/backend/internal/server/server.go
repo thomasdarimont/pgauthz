@@ -26,13 +26,23 @@ type Version struct {
 
 // Server holds the BFF dependencies shared by all handlers.
 type Server struct {
-	version   Version
-	cfg       config.Config
-	db        *pgxpool.Pool // sessions
-	engine    *pgxpool.Pool // pgauthz, as authz_console
-	http      *http.Client
+	version Version
+	cfg     config.Config
+	db      *pgxpool.Pool // sessions
+	engine  *pgxpool.Pool // pgauthz, as authz_console
+	http    *http.Client
+	// adminHTTP presents the console's client certificate to pgauthzd's
+	// admin listener (PGAUTHZD_ADMIN_CERT/_KEY); nil = no certificate.
+	adminHTTP *http.Client
 	oidc      *oidc.Client
 	endpoints oidc.Metadata
+}
+
+// WithAdminHTTPClient sets the client that carries the console's own
+// certificate to the admin API (main.go builds it from the config).
+func (s *Server) WithAdminHTTPClient(c *http.Client) *Server {
+	s.adminHTTP = c
+	return s
 }
 
 // New wires up a Server.

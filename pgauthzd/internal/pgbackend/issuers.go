@@ -41,6 +41,39 @@ func (b *Backend) IssuerBindings(ctx context.Context) ([]issuers.Binding, error)
 	return out, rows.Err()
 }
 
+// IssuerBindingsAudit: one page of authz.issuer_bindings_audit (newest
+// first, keyset by seq) and the total, for one issuer or every one.
+func (b *Backend) IssuerBindingsAudit(ctx context.Context, issuer string, limit int, before *int64) ([]issuers.AuditRow, int64, error) {
+	var iss any
+	if issuer != "" {
+		iss = issuer
+	}
+	rows, err := b.readPool(ctx).Query(ctx, `
+		SELECT seq, action, performed_at, coalesce(performed_by, ''), issuer, stores, enabled, coalesce(description, '')
+		  FROM authz.list_issuer_bindings_audit($1, $2, $3)`, iss, limit, before)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []issuers.AuditRow{}
+	for rows.Next() {
+		var a issuers.AuditRow
+		if err := rows.Scan(&a.Seq, &a.Action, &a.PerformedAt, &a.PerformedBy, &a.Issuer, &a.Stores, &a.Enabled, &a.Description); err != nil {
+			return nil, 0, err
+		}
+		if a.Stores == nil {
+			a.Stores = []string{}
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	var total int64
+	err = b.readPool(ctx).QueryRow(ctx, `SELECT authz.count_issuer_bindings_audit($1)`, iss).Scan(&total)
+	return out, total, err
+}
+
 // ListenIssuerBindings wakes onChange on every NOTIFY authz_issuer_bindings
 // (sent by the binding trigger) until ctx ends. A dedicated connection from
 // the primary pool; a lost connection is retried every few seconds. Polling

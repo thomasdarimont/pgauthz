@@ -770,17 +770,18 @@ paths:
           description: Return the binding of this issuer only.
       responses:
         '200':
-          description: The bindings (an object with `bindings`), or the one binding with `issuer`.
+          description: The bindings (an object with `bindings` and the database `revision`), or the one binding with `issuer`.
           content:
             application/json:
               schema:
                 oneOf:
                   - type: object
-                    required: [bindings]
+                    required: [bindings, revision]
                     properties:
                       bindings:
                         type: array
                         items: { $ref: '#/components/schemas/IssuerBinding' }
+                      revision: { type: integer, format: int64, description: The rows' revision (authz.issuer_bindings_revision). }
                   - $ref: '#/components/schemas/IssuerBinding'
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -1075,6 +1076,45 @@ paths:
                   model: { type: string }
                   can_apply: { type: boolean, enum: [false] }
                   plan: { $ref: '#/components/schemas/ModelPlan' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/admin/issuer-bindings/audit:
+    get:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminIssuerBindingsAudit
+      summary: The issuer bindings' history within the caller's scope, one page
+      description: >
+        One page of `authz.issuer_bindings_audit`, newest first, keyset by
+        `seq` (`before` is the previous page's `next`), with the total for a
+        pager. A tenant admin reads its own issuer's history only — the
+        filter is set for it, another issuer is refused (403).
+      parameters:
+        - { name: issuer, in: query, required: false, schema: { type: string }, description: One issuer's history (a tenant admin's own). }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 500, default: 25 } }
+        - { name: before, in: query, required: false, schema: { type: integer, format: int64 }, description: The previous page's `next`. }
+      responses:
+        '200':
+          description: The page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rows, next, total, limit]
+                properties:
+                  rows:
+                    type: array
+                    items: { $ref: '#/components/schemas/IssuerBindingAudit' }
+                  next: { type: string, description: "Pass as `before` for the next page; empty on the last." }
+                  total: { type: integer, format: int64 }
+                  limit: { type: integer }
+                  issuer: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /pgauthz/v1/admin/stores/{store}/subjects/{type}/{id}/objects:
     parameters:
@@ -2582,6 +2622,18 @@ components:
         gates: { type: array, items: { type: object, additionalProperties: true } }
         grant_rules: { type: array, items: { type: object, additionalProperties: true } }
       additionalProperties: true
+    IssuerBindingAudit:
+      type: object
+      required: [seq, action, performed_at, performed_by, issuer, stores]
+      properties:
+        seq: { type: integer, format: int64 }
+        action: { type: string }
+        performed_at: { type: string, format: date-time }
+        performed_by: { type: string }
+        issuer: { type: string }
+        stores: { type: array, items: { type: string } }
+        enabled: { type: boolean, nullable: true }
+        description: { type: string }
     SubjectRef:
       type: object
       required: [type, id]

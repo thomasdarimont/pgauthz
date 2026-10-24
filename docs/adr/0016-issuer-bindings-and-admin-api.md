@@ -113,6 +113,23 @@ in git) all edit the same rows; every write lands in
 `authz.issuer_bindings_audit` with its actor, and every instance applies
 the next revision within its poll interval.
 
+## Addendum (2026-10-24): the console over the admin API
+
+With `PGAUTHZD_ADMIN_URL` the console's Platform → Issuers tab reads and
+writes the bindings through the admin API instead of the engine functions,
+presenting **the signed-in person's own token** — the console's OIDC client
+already issues tokens pgauthzd accepts (the API audience, `subject_type`) for
+the Test tab's "as me" mode — so pgauthzd's gate and tenant scoping decide
+what the person sees and may change, exactly as for `pgauthzctl`; the local
+admin, having no token, uses the console's client certificate (the admin
+listener's mTLS). The console still gates on `platform#can_manage_issuers`
+first and records every write in its action log; pgauthzd records the row's
+`performed_by` from the credential. The admin API gained the history
+(`GET /pgauthz/v1/admin/issuer-bindings/audit`, scoped) and the list's
+`revision` for it. Without the URL the tab works as before (engine functions
++ the callback's effective set), which is what the console-local dev stack
+uses — the local admin has no token and the dev stack no certificates.
+
 ## Consequences
 
 - Onboarding, narrowing and pausing an identity provider no longer need a

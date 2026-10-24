@@ -9,24 +9,134 @@ package server
 // platform's can_manage_issuers; writes are recorded in the console's action
 // log AND in authz.issuer_bindings_audit with the person as performed_by.
 //
-// When the console can reach a pgauthzd's internal callback listener
-// (PGAUTHZD_INTERNAL_URL + PGAUTHZD_SERVICE_TOKEN), the tab also shows the
-// EFFECTIVE set that instance applies — every trusted issuer, whether its
-// bindings come from the environment or a row, and the applied revision —
-// so an admin sees which issuers exist before binding one, and whether a
-// row is in force (binding_source=db) or was rejected by the narrowing rule.
+// Two transports. With PGAUTHZD_ADMIN_URL the tab goes through pgauthzd's
+// ADMIN API — the rows, the history, the writes and the effective set —
+// presenting the signed-in person's own token (so pgauthzd's tenant scoping
+// decides what they see and may change: a tenant admin its issuer only), or
+// the console's client certificate for a session without a token (the
+// local admin); the console still gates on platform#can_manage_issuers
+// first and records every write in its action log. Without it, the engine
+// functions directly (the full set, as the console's engine login), plus the
+// EFFECTIVE set that a pgauthzd's internal callback listener serves
+// (PGAUTHZD_INTERNAL_URL + PGAUTHZD_SERVICE_TOKEN) — every trusted issuer,
+// whether its bindings come from the environment or a row, the applied
+// revision — so an admin sees which issuers exist before binding one, and
+// whether a row is in force (binding_source=db) or was rejected by the
+// narrowing rule.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 )
+
+// upstreamError is pgauthzd's answer to an admin-API call, carried to the
+// browser with a status of its own: the person is signed in to the console,
+// so a refusal by pgauthzd is their scope there (403), an unknown row 404,
+// a rejected row 400, anything else the upstream's fault (502).
+type upstreamError struct {
+	status int
+	msg    string
+}
+
+func (e *upstreamError) Error() string { return e.msg }
+
+// adminAPI: the tab runs over pgauthzd's admin API.
+func (s *Server) adminAPI() bool { return s.cfg.PgauthzdAdminURL != "" }
+
+// adminCredential: what this request presents to the admin API — the
+// person's own token when the session holds one, else the console's
+// certificate; "" when neither.
+func (s *Server) adminCredential(r *http.Request) (kind, token string) {
+	if se := s.sessionFromReq(r); se != nil && !se.local && se.accessToken != "" {
+		return "token", se.accessToken
+	}
+	if s.adminHTTP != nil {
+		return "certificate", ""
+	}
+	return "", ""
+}
+
+// adminCall is one request to pgauthzd's admin API as the person (or the
+// console); out receives a 2xx body.
+func (s *Server) adminCall(ctx context.Context, r *http.Request, method, path string, body, out any) error {
+	kind, token := s.adminCredential(r)
+	if kind == "" {
+		return &upstreamError{http.StatusServiceUnavailable, "no credential for pgauthzd's admin API: sign in through the identity provider (your token is presented), or give the console a client certificate (PGAUTHZD_ADMIN_CERT/_KEY)"}
+	}
+	var rd io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		rd = bytes.NewReader(b)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(s.cfg.PgauthzdAdminURL, "/")+path, rd)
+	if err != nil {
+		return err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	client := s.http
+	if client == nil {
+		client = http.DefaultClient
+	}
+	if kind == "token" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else {
+		client = s.adminHTTP
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return &upstreamError{http.StatusBadGateway, "pgauthzd's admin API: " + err.Error()}
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode/100 != 2 {
+		var e struct {
+			Message string `json:"message"`
+		}
+		msg := strings.TrimSpace(string(raw))
+		if json.Unmarshal(raw, &e) == nil && e.Message != "" {
+			msg = e.Message
+		}
+		status := http.StatusBadGateway
+		switch resp.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden:
+			status = http.StatusForbidden
+		case http.StatusBadRequest, http.StatusNotFound, http.StatusConflict:
+			status = resp.StatusCode
+		}
+		return &upstreamError{status, "pgauthzd: " + msg}
+	}
+	if out == nil {
+		return nil
+	}
+	return json.Unmarshal(raw, out)
+}
+
+// writeUpstreamError answers an upstreamError; false when err is not one.
+func writeUpstreamError(w http.ResponseWriter, err error) bool {
+	var ue *upstreamError
+	if errors.As(err, &ue) {
+		writeError(w, ue.status, ue.msg)
+		return true
+	}
+	return false
+}
 
 type issuerBinding struct {
 	Issuer        string              `json:"issuer"`
@@ -62,6 +172,10 @@ type effectiveIssuers struct {
 	Source    string          `json:"source,omitempty"`
 	Revision  int64           `json:"revision"`
 	Issuers   json.RawMessage `json:"issuers,omitempty"`
+	// Via/Credential: "admin-api" as "token" (the person's own) or
+	// "certificate" (the console's), or "callback" (the service token).
+	Via        string `json:"via,omitempty"`
+	Credential string `json:"credential,omitempty"`
 }
 
 // handleIssuers — GET /api/platform/issuers: the rows, the revision they
@@ -73,6 +187,28 @@ func (s *Server) handleIssuers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	if s.adminAPI() {
+		var list struct {
+			Bindings []issuerBinding `json:"bindings"`
+			Revision int64           `json:"revision"`
+		}
+		if err := s.adminCall(ctx, r, "GET", "/pgauthz/v1/admin/issuer-bindings", nil, &list); err != nil {
+			if !writeUpstreamError(w, err) {
+				writeError(w, http.StatusBadGateway, err.Error())
+			}
+			return
+		}
+		if list.Bindings == nil {
+			list.Bindings = []issuerBinding{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"bindings":  list.Bindings,
+			"revision":  list.Revision,
+			"effective": s.effectiveIssuersAdmin(ctx, r),
+			"via":       "admin-api",
+		})
+		return
+	}
 	bindings, err := s.issuerBindings(ctx)
 	if err != nil {
 		writeEngineError(w, err)
@@ -87,7 +223,26 @@ func (s *Server) handleIssuers(w http.ResponseWriter, r *http.Request) {
 		"bindings":  bindings,
 		"revision":  revision,
 		"effective": s.effectiveIssuers(ctx),
+		"via":       "db",
 	})
+}
+
+// effectiveIssuersAdmin is the set in force as the admin API answers it
+// within the caller's scope (GET /pgauthz/v1/admin/issuers).
+func (s *Server) effectiveIssuersAdmin(ctx context.Context, r *http.Request) effectiveIssuers {
+	kind, _ := s.adminCredential(r)
+	e := effectiveIssuers{URL: s.cfg.PgauthzdAdminURL, Via: "admin-api", Credential: kind}
+	var body struct {
+		Source   string          `json:"source"`
+		Revision int64           `json:"revision"`
+		Issuers  json.RawMessage `json:"issuers"`
+	}
+	if err := s.adminCall(ctx, r, "GET", "/pgauthz/v1/admin/issuers", nil, &body); err != nil {
+		e.Error = err.Error()
+		return e
+	}
+	e.Available, e.Source, e.Revision, e.Issuers = true, body.Source, body.Revision, body.Issuers
+	return e
 }
 
 // handleIssuersAudit — GET /api/platform/issuers/audit?issuer=&limit=&before=<seq>:
@@ -113,6 +268,26 @@ func (s *Server) handleIssuersAudit(w http.ResponseWriter, r *http.Request) {
 		before = &n
 	}
 	issuer := strings.TrimSpace(q.Get("issuer"))
+	if s.adminAPI() {
+		qs := url.Values{"limit": {strconv.Itoa(limit)}}
+		if issuer != "" {
+			qs.Set("issuer", issuer)
+		}
+		if before != nil {
+			qs.Set("before", strconv.FormatInt(*before, 10))
+		}
+		var page json.RawMessage
+		if err := s.adminCall(r.Context(), r, "GET", "/pgauthz/v1/admin/issuer-bindings/audit?"+qs.Encode(), nil, &page); err != nil {
+			if !writeUpstreamError(w, err) {
+				writeError(w, http.StatusBadGateway, err.Error())
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(page)
+		return
+	}
 	rows, err := s.issuerAudit(r.Context(), issuer, limit, before)
 	if err != nil {
 		writeEngineError(w, err)
@@ -191,7 +366,7 @@ func (s *Server) effectiveIssuers(ctx context.Context) effectiveIssuers {
 	if s.cfg.PgauthzdInternalURL == "" {
 		return effectiveIssuers{}
 	}
-	e := effectiveIssuers{URL: s.cfg.PgauthzdInternalURL}
+	e := effectiveIssuers{URL: s.cfg.PgauthzdInternalURL, Via: "callback", Credential: "service-token"}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(s.cfg.PgauthzdInternalURL, "/")+"/pgauthz/v1/issuers", nil)
@@ -246,13 +421,33 @@ func (s *Server) handleIssuerSave(w http.ResponseWriter, r *http.Request) {
 	cdr, _ := json.Marshal(orMap(b.ClientDBRoles))
 	pep, _ := json.Marshal(orMapList(b.PEPClients))
 	var revision int64
-	err := s.asPerson(r.Context(), p, "can_manage_issuers", "platform", s.cfg.PlatformID,
-		map[string]any{"op": "set", "issuer": b.Issuer, "stores": orList(b.Stores), "enabled": b.Enabled}, func(tx pgx.Tx) error {
+	payload := map[string]any{"op": "set", "issuer": b.Issuer, "stores": orList(b.Stores), "enabled": b.Enabled}
+	var err error
+	if s.adminAPI() {
+		// the console's action log records the attempt as the person; the
+		// row itself is written by pgauthzd as whoever the credential names
+		payload["via"] = "admin-api"
+		b.Stores, b.DBRoles, b.ClientDBRoles, b.PEPClients = orList(b.Stores), orList(b.DBRoles), orMap(b.ClientDBRoles), orMapList(b.PEPClients)
+		err = s.asPerson(r.Context(), p, "can_manage_issuers", "platform", s.cfg.PlatformID, payload, func(pgx.Tx) error {
+			var res struct {
+				Revision int64 `json:"revision"`
+			}
+			if err := s.adminCall(r.Context(), r, "PUT", "/pgauthz/v1/admin/issuer-bindings", b, &res); err != nil {
+				return err
+			}
+			revision = res.Revision
+			return nil
+		})
+	} else {
+		err = s.asPerson(r.Context(), p, "can_manage_issuers", "platform", s.cfg.PlatformID, payload, func(tx pgx.Tx) error {
 			return tx.QueryRow(r.Context(), `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8)`,
 				b.Issuer, orList(b.Stores), orList(b.DBRoles), string(cdr), string(pep), b.Enabled, nullable(b.Description), p.typ+":"+p.id).Scan(&revision)
 		})
+	}
 	if err != nil {
-		writeEngineError(w, err)
+		if !writeUpstreamError(w, err) {
+			writeEngineError(w, err)
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"issuer": b.Issuer, "revision": revision})
@@ -277,22 +472,32 @@ func (s *Server) handleIssuerDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var existed bool
-	err := s.asPerson(r.Context(), p, "can_manage_issuers", "platform", s.cfg.PlatformID,
-		map[string]any{"op": "delete", "issuer": req.Issuer}, func(tx pgx.Tx) error {
-			if err := tx.QueryRow(r.Context(), `SELECT authz.delete_issuer_binding($1, $2)`, req.Issuer, p.typ+":"+p.id).Scan(&existed); err != nil {
-				return err
-			}
-			if !existed {
-				return errNoSuchBinding
-			}
-			return nil
-		})
+	var err error
+	if s.adminAPI() {
+		err = s.asPerson(r.Context(), p, "can_manage_issuers", "platform", s.cfg.PlatformID,
+			map[string]any{"op": "delete", "issuer": req.Issuer, "via": "admin-api"}, func(pgx.Tx) error {
+				return s.adminCall(r.Context(), r, "DELETE", "/pgauthz/v1/admin/issuer-bindings?issuer="+url.QueryEscape(req.Issuer), nil, nil)
+			})
+	} else {
+		err = s.asPerson(r.Context(), p, "can_manage_issuers", "platform", s.cfg.PlatformID,
+			map[string]any{"op": "delete", "issuer": req.Issuer}, func(tx pgx.Tx) error {
+				if err := tx.QueryRow(r.Context(), `SELECT authz.delete_issuer_binding($1, $2)`, req.Issuer, p.typ+":"+p.id).Scan(&existed); err != nil {
+					return err
+				}
+				if !existed {
+					return errNoSuchBinding
+				}
+				return nil
+			})
+	}
 	if errors.Is(err, errNoSuchBinding) {
 		writeError(w, http.StatusNotFound, "no binding for issuer "+req.Issuer)
 		return
 	}
 	if err != nil {
-		writeEngineError(w, err)
+		if !writeUpstreamError(w, err) {
+			writeEngineError(w, err)
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"issuer": req.Issuer, "deleted": true})
