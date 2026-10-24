@@ -150,3 +150,19 @@ older than the retention window** (`DECISION_LOG_RETENTION_DAYS`; counted in
 dropping partitions, pruning tombstones and accepting lines, so a pruned
 tombstone never had a line left to cover. With retention off (0) nothing is
 pruned and nothing is refused.
+
+**Retention under the same lock (review #23).** The age check that binds
+is made *inside* the batch transaction, after the shared lock, on the
+database clock (`date_trunc('day', clock_timestamp(), 'UTC')`), and a
+retention run is one transaction under the exclusive lock: cutoff on the
+same clock, dated partitions before it dropped, rows before it swept from
+the default partition (a late line that found no dated partition), and
+tombstones before it pruned. Retention therefore cannot slip between a
+batch's check and its commit, instances do not depend on their local
+clocks agreeing, and a tombstone is pruned only after every line it could
+cover is gone and refused. Dropping a partition already took an ACCESS
+EXCLUSIVE lock on the table, so batches waited for retention before this;
+the advisory lock adds no new wait. Every sink sharing one decision-log
+database must run the same `DECISION_LOG_RETENTION_DAYS`: the boundary is
+one per database. A two-session test parks a batch and shows the retention
+run waiting for it.

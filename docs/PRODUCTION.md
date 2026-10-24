@@ -1150,7 +1150,10 @@ fleet-wide *partition drop* is shared by design).
   for each other or for the delete (ADR 0015 → Ordering). The sink refuses
   lines older than `DECISION_LOG_RETENTION_DAYS` (metric
   `pgauthzd_decision_log_expired_lines_total`), so a delivery delayed past
-  retention cannot outlive the tombstone that covered it. A decision-log
+  retention cannot outlive the tombstone that covered it; the check is made
+  in the batch's transaction on the database clock, and retention runs
+  under the same lock, so the two cannot interleave. Every sink sharing a
+  decision-log database must use the same retention. A decision-log
   failure answers 502 `partial` with the engine part done and on record;
   a retry completes the rest — the erasure is idempotent.
 - Not covered by typed matching: free text. `condition_context`, event

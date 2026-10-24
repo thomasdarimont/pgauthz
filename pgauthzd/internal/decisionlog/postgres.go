@@ -116,9 +116,22 @@ CREATE TABLE IF NOT EXISTS decisionlog.erasures (
 // lock request filters after the tombstone is committed. The console's
 // eraseDecisions mirrors erasureBarrierSQL; the key is hashtext of the
 // tombstone table's name, the same on both sides of one database.
+//
+// Retention (dropping partitions, pruning tombstones) runs under the same
+// lock, exclusive, in one transaction — so it cannot slip between a batch's
+// age check and its commit (review #23) — and the age check is made inside
+// the batch transaction, after the lock, on the database clock: one clock
+// for every instance, read after any retention that ran before has
+// committed. Dropping a partition takes an ACCESS EXCLUSIVE lock on the
+// table anyway, so batches waited for retention before this; the advisory
+// lock adds no new wait.
 const (
 	batchLockSQL      = `SELECT pg_advisory_xact_lock_shared(hashtext('decisionlog.erasures'))`
 	erasureBarrierSQL = `SELECT pg_advisory_xact_lock(hashtext('decisionlog.erasures'))`
+	// retentionCutoffSQL is the first day kept, on the database clock (UTC
+	// midnight, retention days back) — the one boundary for dropping,
+	// pruning and accepting.
+	retentionCutoffSQL = `SELECT date_trunc('day', clock_timestamp(), 'UTC') - make_interval(days => $1)`
 )
 
 const applyErasuresSQL = `
@@ -143,9 +156,8 @@ type row struct {
 // a fake in tests).
 type store interface {
 	ensurePartitions(ctx context.Context, days []time.Time) error
-	insert(ctx context.Context, rows []row) error
-	dropPartitionsBefore(ctx context.Context, cutoff time.Time) (int, error)
-	pruneErasures(ctx context.Context, cutoff time.Time) error
+	insert(ctx context.Context, rows []row, retentionDays int) (expired int, err error)
+	retain(ctx context.Context, retentionDays int) (dropped int, err error)
 	close()
 }
 
@@ -343,22 +355,31 @@ func (s *PostgresSink) flushMany(ctx context.Context, batch [][]byte) error {
 		oldest = retentionCutoff(s.cfg.RetentionDays)
 	}
 	expired := 0
+	kept := make([][]byte, 0, len(batch)) // the lines behind rows, for re-queueing
 	for _, line := range batch {
 		r, err := parseRow(line)
 		if err != nil {
 			continue // not a decision line; skip, never block the stream
 		}
 		if !oldest.IsZero() && r.ts.Before(oldest) {
-			expired++ // older than retention: never accepted (see OnExpired)
+			// older than retention: never accepted (see OnExpired). This
+			// first pass, on the local clock, spares ensurePartitions from
+			// recreating a dropped day; the binding check is insert's, in
+			// the transaction, on the database clock.
+			expired++
 			continue
 		}
 		rows = append(rows, r)
+		kept = append(kept, line)
 		day := r.ts.UTC().Truncate(24 * time.Hour)
 		if _, ok := s.ensured.Load(day.Format("20060102")); !ok {
 			days[day.Format("20060102")] = day
 		}
 	}
-	if expired > 0 {
+	countExpired := func() {
+		if expired == 0 {
+			return
+		}
 		s.Expired.Add(int64(expired))
 		slog.Warn("decision log: lines older than the retention window refused", "expired", expired, "total_expired", s.Expired.Load(), "retention_days", s.cfg.RetentionDays)
 		if s.OnExpired != nil {
@@ -366,6 +387,7 @@ func (s *PostgresSink) flushMany(ctx context.Context, batch [][]byte) error {
 		}
 	}
 	if len(rows) == 0 {
+		countExpired()
 		return nil
 	}
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -383,8 +405,13 @@ func (s *PostgresSink) flushMany(ctx context.Context, batch [][]byte) error {
 		}
 	}
 	if err == nil {
-		err = s.db.insert(cctx, rows)
+		var late int
+		late, err = s.db.insert(cctx, rows, s.cfg.RetentionDays)
+		if err == nil {
+			expired += late
+		}
 	}
+	countExpired()
 	if err != nil {
 		s.down.Store(true)
 		s.lastErr.Store(&err)
@@ -392,7 +419,7 @@ func (s *PostgresSink) flushMany(ctx context.Context, batch [][]byte) error {
 		// rest is lost and said so (counted, logged): a line the Logger
 		// accepted has no recoverable trail once the queue cannot take it back.
 		dropped := 0
-		for _, line := range batch {
+		for _, line := range kept {
 			select {
 			case s.q <- line:
 			default:
@@ -418,9 +445,9 @@ func (s *PostgresSink) flushMany(ctx context.Context, batch [][]byte) error {
 	return nil
 }
 
-// retentionCutoff is the first day the sink keeps: partitions before it
-// are dropped, tombstones before it pruned and lines before it refused —
-// one boundary, so a pruned tombstone never had a line left to cover.
+// retentionCutoff is the local-clock twin of retentionCutoffSQL: the first
+// day the sink keeps. flushMany uses it for the cheap first pass; the
+// database's own answer decides inside the transactions.
 func retentionCutoff(days int) time.Time {
 	return time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -days)
 }
@@ -436,9 +463,9 @@ func (s *PostgresSink) retention(ctx context.Context) {
 	s.lastRetention = time.Now()
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	cutoff := retentionCutoff(s.cfg.RetentionDays)
-	_, _ = s.db.dropPartitionsBefore(cctx, cutoff)
-	_ = s.db.pruneErasures(cctx, cutoff) // their lines are gone with the partitions
+	if _, err := s.db.retain(cctx, s.cfg.RetentionDays); err != nil {
+		slog.Warn("decision log: retention failed; retried in an hour", "err", err)
+	}
 	// a dropped day must be re-ensured should a late line still name it
 	s.ensured.Range(func(k, _ any) bool { s.ensured.Delete(k); return true })
 }
@@ -508,51 +535,115 @@ func (p *pgStore) ensurePartitions(ctx context.Context, days []time.Time) error 
 }
 
 // insert copies a batch in and, in the same transaction, removes the rows
-// of that batch an erasure tombstone covers (see applyErasuresSQL).
-func (p *pgStore) insert(ctx context.Context, rows []row) error {
+// of that batch an erasure tombstone covers (see applyErasuresSQL); rows
+// older than the retention window are refused (returned as expired).
+func (p *pgStore) insert(ctx context.Context, rows []row, retentionDays int) (int, error) {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := insertTx(ctx, tx, rows); err != nil {
-		return err
+	expired, err := insertTx(ctx, tx, rows, retentionDays)
+	if err != nil {
+		return 0, err
 	}
-	return tx.Commit(ctx)
+	return expired, tx.Commit(ctx)
 }
 
 // insertTx is insert's body in a caller-owned transaction: the shared
-// erasure lock first (held until the caller commits), then COPY, then the
-// tombstone filter. Separate so the two-session test can hold the
-// transaction open at the point an erasure may interleave.
-func insertTx(ctx context.Context, tx pgx.Tx, rows []row) error {
+// erasure lock first (held until the caller commits), then the age check
+// on the database clock, then COPY, then the tombstone filter. Separate so
+// the two-session tests can hold the transaction open at the point an
+// erasure or a retention run may interleave.
+func insertTx(ctx context.Context, tx pgx.Tx, rows []row, retentionDays int) (int, error) {
+	if _, err := tx.Exec(ctx, batchLockSQL); err != nil {
+		return 0, err
+	}
+	expired := 0
+	if retentionDays > 0 {
+		var cutoff time.Time
+		if err := tx.QueryRow(ctx, retentionCutoffSQL, retentionDays).Scan(&cutoff); err != nil {
+			return 0, err
+		}
+		live := rows[:0:0]
+		for _, r := range rows {
+			if r.ts.Before(cutoff) {
+				expired++
+				continue
+			}
+			live = append(live, r)
+		}
+		rows = live
+	}
+	if len(rows) == 0 {
+		return expired, nil
+	}
 	src := make([][]any, len(rows))
 	for i, r := range rows {
 		src[i] = r.vals
 	}
-	if _, err := tx.Exec(ctx, batchLockSQL); err != nil {
-		return err
-	}
 	var minID int64
 	if err := tx.QueryRow(ctx, `SELECT coalesce(pg_sequence_last_value(pg_get_serial_sequence($1, 'id')::regclass), 0)`, Schema+"."+Table).Scan(&minID); err != nil {
-		return err
+		return 0, err
 	}
 	if _, err := tx.CopyFrom(ctx, pgx.Identifier{Schema, Table}, columns, pgx.CopyFromRows(src)); err != nil {
-		return err
+		return 0, err
 	}
 	_, err := tx.Exec(ctx, applyErasuresSQL, minID)
-	return err
+	return expired, err
+}
+
+// querier is what the retention helpers need: a pool or a transaction.
+type querier interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// retain is one retention run in one transaction under the exclusive
+// erasure lock: the cutoff on the database clock, then the daily
+// partitions before it dropped, the rows before it swept from the default
+// partition (a late line that found no dated partition), and the
+// tombstones before it pruned — their lines are gone with the partitions,
+// and no batch can accept one again (insertTx checks the same cutoff under
+// the shared lock).
+func (p *pgStore) retain(ctx context.Context, retentionDays int) (int, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '30s'`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, erasureBarrierSQL); err != nil {
+		return 0, err
+	}
+	var cutoff time.Time
+	if err := tx.QueryRow(ctx, retentionCutoffSQL, retentionDays).Scan(&cutoff); err != nil {
+		return 0, err
+	}
+	dropped, err := dropPartitionsBefore(ctx, tx, cutoff)
+	if err != nil {
+		return dropped, err
+	}
+	if _, err := tx.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.%s_default WHERE ts < $1`, Schema, Table), cutoff); err != nil {
+		return dropped, err
+	}
+	if err := pruneErasures(ctx, tx, cutoff); err != nil {
+		return dropped, err
+	}
+	return dropped, tx.Commit(ctx)
 }
 
 // pruneErasures drops tombstones older than the retention cutoff.
-func (p *pgStore) pruneErasures(ctx context.Context, cutoff time.Time) error {
-	_, err := p.pool.Exec(ctx, `DELETE FROM decisionlog.erasures WHERE erased_at < $1`, cutoff)
+func pruneErasures(ctx context.Context, q querier, cutoff time.Time) error {
+	_, err := q.Exec(ctx, `DELETE FROM decisionlog.erasures WHERE erased_at < $1`, cutoff)
 	return err
 }
 
 // dropPartitionsBefore drops the daily partitions whose day is before cutoff.
-func (p *pgStore) dropPartitionsBefore(ctx context.Context, cutoff time.Time) (int, error) {
-	rows, err := p.pool.Query(ctx, `
+func dropPartitionsBefore(ctx context.Context, q querier, cutoff time.Time) (int, error) {
+	rows, err := q.Query(ctx, `
 		SELECT c.relname FROM pg_inherits i
 		  JOIN pg_class c ON c.oid = i.inhrelid
 		  JOIN pg_class parent ON parent.oid = i.inhparent
@@ -575,7 +666,7 @@ func (p *pgStore) dropPartitionsBefore(ctx context.Context, cutoff time.Time) (i
 		if err != nil || !day.Before(cutoff) {
 			continue
 		}
-		if _, err := p.pool.Exec(ctx, fmt.Sprintf(`DROP TABLE IF EXISTS %s.%s`, Schema, n)); err != nil {
+		if _, err := q.Exec(ctx, fmt.Sprintf(`DROP TABLE IF EXISTS %s.%s`, Schema, n)); err != nil {
 			return dropped, err
 		}
 		dropped++

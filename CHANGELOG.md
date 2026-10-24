@@ -105,6 +105,12 @@ pre-1.0, minor versions may include breaking changes.
   `pgauthzd_decision_log_expired_lines_total`), so a delivery delayed past
   retention cannot outlive the tombstone that covered it (P2). ADR 0015
   addendum, PRODUCTION.md.
+- **Review #23 (Codex, on 4aeb62e) fix.** Retention could slip between a
+  batch's age check and its commit. The check that binds is now made inside
+  the batch transaction, on the database clock, and a retention run is one
+  transaction under the exclusive erasure lock that also sweeps the
+  default partition; a test parks a batch and shows retention waiting for
+  it. Sinks sharing a database must use one `DECISION_LOG_RETENTION_DAYS`.
 - **Review #20 (Codex, on 8782230) fixes.** Issuer-scoped client
   certificates now see their issuer on `GET /admin/issuers` (the listing
   took the issuer from the token context, which a certificate has none of);

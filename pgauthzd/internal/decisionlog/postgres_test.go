@@ -20,7 +20,7 @@ type fakeStore struct {
 	mu       sync.Mutex
 	inserts  [][]row
 	ensured  []time.Time
-	dropped  []time.Time
+	retained []int // retention runs, by their RetentionDays
 	failWith error
 	closed   bool
 }
@@ -32,26 +32,25 @@ func (f *fakeStore) ensurePartitions(_ context.Context, days []time.Time) error 
 	return nil
 }
 
-func (f *fakeStore) insert(_ context.Context, rows []row) error {
+func (f *fakeStore) insert(_ context.Context, rows []row, _ int) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failWith != nil {
-		return f.failWith
+		return 0, f.failWith
 	}
 	cp := append([]row(nil), rows...)
 	f.inserts = append(f.inserts, cp)
-	return nil
+	return 0, nil
 }
 
-func (f *fakeStore) dropPartitionsBefore(_ context.Context, cutoff time.Time) (int, error) {
+func (f *fakeStore) retain(_ context.Context, days int) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.dropped = append(f.dropped, cutoff)
+	f.retained = append(f.retained, days)
 	return 1, nil
 }
 
-func (f *fakeStore) close()                                         { f.mu.Lock(); f.closed = true; f.mu.Unlock() }
-func (f *fakeStore) pruneErasures(context.Context, time.Time) error { return nil }
+func (f *fakeStore) close() { f.mu.Lock(); f.closed = true; f.mu.Unlock() }
 
 func (f *fakeStore) rows() int {
 	f.mu.Lock()
@@ -180,15 +179,11 @@ func TestPostgresSinkRetention(t *testing.T) {
 	f := &fakeStore{}
 	s := newPostgresSink(PostgresConfig{RetentionDays: 7, FlushInterval: time.Hour}, f)
 	s.retention(context.Background())
-	if len(f.dropped) != 1 {
-		t.Fatalf("retention did not run: %v", f.dropped)
-	}
-	want := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -7)
-	if !f.dropped[0].Equal(want) {
-		t.Fatalf("cutoff %v, want %v", f.dropped[0], want)
+	if len(f.retained) != 1 || f.retained[0] != 7 {
+		t.Fatalf("retention did not run with the configured window: %v", f.retained)
 	}
 	s.retention(context.Background()) // once an hour
-	if len(f.dropped) != 1 {
+	if len(f.retained) != 1 {
 		t.Fatal("retention ran twice within the hour")
 	}
 	_ = s.Close()
@@ -196,7 +191,7 @@ func TestPostgresSinkRetention(t *testing.T) {
 	s2 := newPostgresSink(PostgresConfig{RetentionDays: 0, FlushInterval: time.Hour}, f2)
 	s2.retention(context.Background())
 	_ = s2.Close()
-	if len(f2.dropped) != 0 {
+	if len(f2.retained) != 0 {
 		t.Fatal("retention 0 must keep everything")
 	}
 }
@@ -267,9 +262,19 @@ func TestPostgresSinkIntegration(t *testing.T) {
 	if err := db.pool.QueryRow(ctx, `SELECT count(*) FROM pg_inherits i JOIN pg_class c ON c.oid=i.inhrelid WHERE c.relname ~ '^decisions_[0-9]{8}$'`).Scan(&parts); err != nil || parts < 3 {
 		t.Fatalf("partitions: %d %v, want today, tomorrow and the old day", parts, err)
 	}
-	n, err := db.dropPartitionsBefore(ctx, time.Now().UTC().AddDate(0, 0, -7))
+	// a row for a day without a partition lands in the default partition;
+	// retention sweeps it with the dated partitions (review #23)
+	if _, err := db.pool.Exec(ctx, `INSERT INTO decisionlog.decisions (ts, listener, endpoint, store, line) VALUES (now() - interval '60 days', 'public', 'check', 'it_demo', '{}')`); err != nil {
+		t.Fatal(err)
+	}
+	n, err := db.retain(ctx, 7)
 	if err != nil || n != 1 {
 		t.Fatalf("retention dropped %d (%v), want 1", n, err)
+	}
+	var inDefault int
+	_ = db.pool.QueryRow(ctx, `SELECT count(*) FROM decisionlog.decisions_default`).Scan(&inDefault)
+	if inDefault != 0 {
+		t.Fatalf("%d rows left in the default partition after retention", inDefault)
 	}
 
 	// Erasure tombstones (review #21): alice is erased now; a line about her
@@ -301,7 +306,7 @@ func TestPostgresSinkIntegration(t *testing.T) {
 	if strings.Join(kept, ",") != "alice>new,bob>late" {
 		t.Fatalf("after the tombstone: %v (want alice's post-erasure line and bob's unrelated line only)", kept)
 	}
-	if err := db.pruneErasures(ctx, time.Now().Add(time.Hour)); err != nil {
+	if err := pruneErasures(ctx, db.pool, time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	var left int
@@ -381,7 +386,7 @@ func TestPostgresSinkErasureInterleavings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := insertTx(ctx, txW, []row{lineAbout("alice", "race-a", before)}); err != nil {
+	if _, err := insertTx(ctx, txW, []row{lineAbout("alice", "race-a", before)}, 0); err != nil {
 		t.Fatal(err)
 	}
 	erased := make(chan error, 1)
@@ -435,7 +440,7 @@ func TestPostgresSinkErasureInterleavings(t *testing.T) {
 			return
 		}
 		defer func() { _ = txW.Rollback(ctx) }()
-		if err := insertTx(ctx, txW, []row{lineAbout("alice", "race-b", before), lineAbout("bob", "race-b", before)}); err != nil {
+		if _, err := insertTx(ctx, txW, []row{lineAbout("alice", "race-b", before), lineAbout("bob", "race-b", before)}, 0); err != nil {
 			inserted <- err
 			return
 		}
@@ -466,6 +471,111 @@ func TestPostgresSinkErasureInterleavings(t *testing.T) {
 	rows.Close()
 	if strings.Join(kept, ",") != "bob" {
 		t.Fatalf("(b) after the barrier: %v (want bob's line only)", kept)
+	}
+	if err := ps.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Review #23 P2: retention cannot slip between a batch's age check and its
+// commit — it runs under the exclusive lock the batch holds shared — and the
+// age check that binds is the one inside the batch transaction, on the
+// database clock, not the local first pass.
+func TestPostgresSinkRetentionBoundary(t *testing.T) {
+	dsn := os.Getenv("PGAUTHZD_TEST_DECISION_LOG_DSN")
+	if dsn == "" {
+		t.Skip("PGAUTHZD_TEST_DECISION_LOG_DSN not set")
+	}
+	ctx := context.Background()
+	ps, err := OpenPostgres(ctx, PostgresConfig{DSN: dsn, FlushInterval: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := ps.db.(*pgStore)
+	aux, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = aux.Exec(ctx, `DROP SCHEMA IF EXISTS decisionlog CASCADE`)
+		aux.Close()
+		db.pool.Close()
+	}()
+	lineAt := func(at time.Time, resource string) row {
+		b, _ := json.Marshal(Entry{Time: at, Listener: "public", Endpoint: "check", Store: "it_bound", Subject: Ref{Type: "user", ID: "alice"}, Action: "can_read", Resource: Ref{Type: "doc", ID: resource}})
+		r, err := parseRow(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	count := func(resource string) int {
+		var n int
+		_ = aux.QueryRow(ctx, `SELECT count(*) FROM decisionlog.decisions WHERE store = 'it_bound' AND resource_id = $1`, resource).Scan(&n)
+		return n
+	}
+	sixDaysAgo := time.Now().UTC().AddDate(0, 0, -6)
+	if err := db.ensurePartitions(ctx, []time.Time{sixDaysAgo}); err != nil {
+		t.Fatal(err)
+	}
+
+	// (a) the binding check is in the transaction: a line the local first
+	// pass would have let through (it is called directly here) is refused
+	// against a 7-day window and accepted without one.
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired, err := insertTx(ctx, tx, []row{lineAt(time.Now().UTC().AddDate(0, 0, -30), "stale"), lineAt(sixDaysAgo, "kept")}, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if expired != 1 || count("stale") != 0 || count("kept") != 1 {
+		t.Fatalf("in-transaction age check: expired %d, stale %d, kept %d", expired, count("stale"), count("kept"))
+	}
+
+	// (b) a batch parked between its age check and its commit: a retention
+	// run that would advance the cutoff past the line's day (3 days here,
+	// standing in for midnight passing) waits for the batch, then takes the
+	// line with its partition — it never finds a tombstone-less survivor.
+	txW, err := db.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := insertTx(ctx, txW, []row{lineAt(sixDaysAgo, "parked")}, 7); err != nil {
+		t.Fatal(err)
+	}
+	retained := make(chan error, 1)
+	go func() {
+		_, err := (&pgStore{pool: aux}).retain(ctx, 3)
+		retained <- err
+	}()
+	waitFor(t, "retention to wait for the parked batch", func() bool {
+		var n int
+		_ = aux.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`).Scan(&n)
+		return n == 1
+	})
+	select {
+	case err := <-retained:
+		t.Fatalf("retention did not wait for the batch in flight: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := txW.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-retained; err != nil {
+		t.Fatal(err)
+	}
+	if n := count("parked"); n != 0 {
+		t.Fatalf("the parked line outlived the retention run that passed its day: %d rows", n)
+	}
+	var parts int
+	_ = aux.QueryRow(ctx, `SELECT count(*) FROM pg_inherits i JOIN pg_class c ON c.oid=i.inhrelid WHERE c.relname = $1`, partitionName(sixDaysAgo)).Scan(&parts)
+	if parts != 0 {
+		t.Fatal("the partition six days back survived a 3-day retention run")
 	}
 	if err := ps.Close(); err != nil {
 		t.Fatal(err)
