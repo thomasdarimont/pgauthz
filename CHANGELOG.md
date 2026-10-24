@@ -18,6 +18,14 @@ pre-1.0, minor versions may include breaking changes.
   long-lived connection with `client_min_messages` at its default. They are
   now created only when `to_regclass('pg_temp.…')` finds nothing. No
   behaviour change.
+- **`release.sh --release` (part of `--auto`) publishes the GitHub release.**
+  After the tag push it runs `gh release create --verify-tag` with the
+  `## [X.Y.Z]` CHANGELOG section as the notes; the section, GitHub's
+  125,000-character body limit and "no release yet" are checked before the
+  tag is created, so a refusal leaves nothing to undo. The extraction lives
+  in `scripts/changelog-section.sh` (also used by the empty-notes check and
+  the manual recipe). A CI run cancelled by the workflow's concurrency group
+  is now reported as superseded, not failed.
 
 ## [0.18.0] - 2026-10-24
 

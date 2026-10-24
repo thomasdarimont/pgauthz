@@ -30,24 +30,27 @@ git push origin v0.1.4                  # publish the tag  (or use release.sh --
 
 ### Unattended: `release.sh --auto`
 
-`--auto` collapses steps 3–4: it **waits for the GitHub CI run on HEAD to pass,
-then tags and pushes** — and treats an empty CHANGELOG section as a hard error
-(not a warning). Use it after you've pushed the bump commit:
+`--auto` collapses steps 3–4 and the GitHub release: it **waits for the GitHub
+CI run on HEAD to pass, tags, pushes, and publishes the GitHub release** with
+the `## [X.Y.Z]` CHANGELOG section as its notes — and treats an empty
+CHANGELOG section as a hard error (not a warning). Use it after you've pushed
+the bump commit:
 
 ```bash
 ./scripts/bump-version.sh 0.1.4 && $EDITOR CHANGELOG.md
 git commit -am "Bump version to 0.1.4" && git push
-./scripts/release.sh 0.1.4 --auto      # blocks on CI, then tags + pushes v0.1.4
+./scripts/release.sh 0.1.4 --auto      # blocks on CI, then tags + pushes v0.1.4 + publishes the release
 ```
 
-`--auto` = `--wait-ci` + `--push` + `--strict-changelog`, which are also usable
-on their own:
+`--auto` = `--wait-ci` + `--push` + `--strict-changelog` + `--release`, which
+are also usable on their own:
 
 | Flag | Effect |
 |---|---|
 | `--wait-ci` | Block until the CI run for HEAD passes before tagging; refuse to tag a red commit. HEAD must be pushed. Needs the [`gh`](https://cli.github.com/) CLI. |
 | `--strict-changelog` | Fail (instead of warn) when the `## [X.Y.Z]` notes are empty. |
 | `--push` | `git push origin vX.Y.Z` after tagging. |
+| `--release` | After the push, `gh release create vX.Y.Z` with the `## [X.Y.Z]` section as notes (`scripts/changelog-section.sh`). Implies `--push`. Its preflight — section present, notes within GitHub's 125,000-character limit, no release yet — runs *before* the tag is created. |
 
 It still runs every preflight check first (on `main`, clean tree, tag absent,
 Chart version matches), so a misconfigured release fails *before* the CI wait.
@@ -101,8 +104,9 @@ Sweeps every pinned version reference — confirm each:
 - [ ] Tag is on origin: `git ls-remote --tags origin vX.Y.Z`.
 - [ ] Tag points at the bump commit: `git show -s vX.Y.Z`.
 - [ ] `main` is pushed and not ahead of origin (tag push ≠ branch push).
-- [ ] (Optional) GitHub release: `gh release create vX.Y.Z --notes-file -`
-      with the CHANGELOG section.
+- [ ] GitHub release exists: `gh release view vX.Y.Z` (`--auto`/`--release`
+      publish it; by hand:
+      `gh release create vX.Y.Z --verify-tag --notes-file <(./scripts/changelog-section.sh X.Y.Z)`).
 - [ ] (Optional) Built + smoke-tested the release images
       (`IMAGE_TAG=X.Y.Z ./deploy/helm/pgauthz/start.sh`; check
       `pgauthzd -version` reports X.Y.Z).
@@ -115,6 +119,11 @@ Sweeps every pinned version reference — confirm each:
   `main` separately, or `main` will lag behind the tag.
 - **Tagging a red commit.** CI runs per-push; tag only after the bump commit is
   green, so `vX.Y.Z` always names a passing commit.
+- **"CI did not run" after a late push.** A CHANGELOG touch-up pushed after
+  the bump gets its own run, and the workflow's concurrency group *cancels*
+  the superseded commit's run — cancelled, not failed. `release.sh` says so
+  when it meets one; the new commit's run is the one to wait for (it can take
+  a moment to appear in `gh run list`).
 - **`0001_baseline.sql` is frozen** as of v0.1.0 — structural changes are new
   `db/migrations/NNNN_*.sql` files, never edits to the baseline (ADR 0001).
 - **Undo a local tag** (pre-push): `git tag -d vX.Y.Z`. After push, retagging is

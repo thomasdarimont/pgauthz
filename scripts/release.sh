@@ -9,19 +9,30 @@
 #   ./scripts/release.sh 0.1.0          # check + create the local tag
 #   ./scripts/release.sh v0.1.0 --push  # ...and push it to origin
 #   ./scripts/release.sh 0.1.4 --auto   # wait for CI green on HEAD, then tag + push
+#                                       # + publish the GitHub release
 #
 # Flags:
 #   --push              also `git push origin vX.Y.Z` (the irreversible step)
 #   --wait-ci           wait for the GitHub CI run on HEAD to pass before tagging
 #                       (HEAD must be pushed; needs the `gh` CLI)
 #   --strict-changelog  fail (instead of warn) if the '## [X.Y.Z]' notes are empty
+#   --release           after the push, publish the GitHub release vX.Y.Z with the
+#                       '## [X.Y.Z]' CHANGELOG section as its notes (implies --push;
+#                       needs `gh`; checked BEFORE the tag is created, so a missing
+#                       section, an existing release or notes over GitHub's size
+#                       limit fail with nothing to undo)
 #   --auto              unattended release = --wait-ci + --push + --strict-changelog
+#                       + --release
 #   --allow-branch      skip the "must be on main" guard
 #   --allow-dirty       skip the clean-working-tree guard (NOT recommended)
 #   -m <message>        tag message (default: "pgauthz vX.Y.Z")
 #
 # This script does NOT bump versions or commit: bump Chart.yaml + values.yaml,
 # add the CHANGELOG section, and commit those FIRST, then run this to tag.
+# The CI wait is for HEAD: every push to main after the bump (a late CHANGELOG
+# edit, say) gets its own run, and the one for the superseded commit is
+# CANCELLED by the workflow's concurrency group — that is not a failure, the
+# newer commit's run is the one that counts. Run this script on that commit.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,13 +41,14 @@ cd "$ROOT"
 die() { echo "!! $*" >&2; exit 1; }
 
 # ── Parse args ───────────────────────────────────────────────────────────────
-VERSION="" PUSH=0 ALLOW_BRANCH=0 ALLOW_DIRTY=0 MSG="" WAIT_CI=0 STRICT_CHANGELOG=0
+VERSION="" PUSH=0 ALLOW_BRANCH=0 ALLOW_DIRTY=0 MSG="" WAIT_CI=0 STRICT_CHANGELOG=0 RELEASE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --push)             PUSH=1 ;;
     --wait-ci)          WAIT_CI=1 ;;
     --strict-changelog) STRICT_CHANGELOG=1 ;;
-    --auto)             WAIT_CI=1; PUSH=1; STRICT_CHANGELOG=1 ;;
+    --release)          RELEASE=1; PUSH=1 ;;
+    --auto)             WAIT_CI=1; PUSH=1; STRICT_CHANGELOG=1; RELEASE=1 ;;
     --allow-branch)     ALLOW_BRANCH=1 ;;
     --allow-dirty)      ALLOW_DIRTY=1 ;;
     -m)                 shift; MSG="${1:-}" ;;
@@ -91,13 +103,10 @@ grep -qE "^## \[$VER\]" CHANGELOG.md \
 
 # Warn (don't block) if that section has no notes. bump-version.sh creates the
 # heading but not the body, and tagging an empty section is almost always an
-# oversight — extract the lines between this heading and the next '## [' one,
-# ignoring blanks and the link-reference lines, and flag if nothing remains.
-changelog_body="$(awk -v ver="$VER" '
-  $0 ~ "^## \\[" ver "\\]" { insec = 1; next }
-  insec && /^## \[/        { exit }
-  insec                    { print }
-' CHANGELOG.md | grep -vE '^[[:space:]]*$|^\[[^]]+\]:' || true)"
+# oversight. changelog-section.sh prints the section body and fails when only
+# blanks and link-reference lines remain — the same extraction the GitHub
+# release uses for its notes.
+changelog_body="$("$ROOT/scripts/changelog-section.sh" "$VER" 2>/dev/null || true)"
 if [ -z "$changelog_body" ]; then
   if [ "$STRICT_CHANGELOG" -eq 1 ]; then
     die "CHANGELOG.md '## [$VER]' section has no notes (required by --auto/--strict-changelog)"
@@ -112,6 +121,28 @@ echo "    branch:    $BRANCH (clean)"
 echo "    commit:    $(git rev-parse --short HEAD)  $(git log -1 --pretty=%s)"
 echo "    chart:     version=$chart_version appVersion=$chart_appver"
 echo "    changelog: $changelog_status"
+
+# ── GitHub release preflight (--release / --auto) ────────────────────────────
+# Everything the release step needs is checked here, before the tag exists:
+# the notes (the CHANGELOG section, via changelog-section.sh), their size
+# against GitHub's limit, and that no release of this version exists yet.
+GH_BODY_MAX=125000   # characters, GitHub's release-body limit
+notes_file=""
+if [ "$RELEASE" -eq 1 ]; then
+  command -v gh >/dev/null 2>&1 || die "--release/--auto needs the GitHub CLI (gh)"
+  gh auth status >/dev/null 2>&1 || die "gh is not authenticated (gh auth login)"
+  notes_file="$(mktemp -t pgauthz-release-notes.XXXXXX)"
+  trap 'rm -f "$notes_file"' EXIT
+  "$ROOT/scripts/changelog-section.sh" "$VER" > "$notes_file" \
+    || die "CHANGELOG.md '## [$VER]' section has no notes — the GitHub release would be empty"
+  notes_chars="$(wc -m < "$notes_file" | tr -d ' ')"
+  [ "$notes_chars" -le "$GH_BODY_MAX" ] \
+    || die "release notes are $notes_chars characters, over GitHub's $GH_BODY_MAX limit — shorten the '## [$VER]' section"
+  if gh release view "$TAG" >/dev/null 2>&1; then
+    die "GitHub release $TAG already exists (gh release view $TAG)"
+  fi
+  echo "    release:   notes $(wc -l < "$notes_file" | tr -d ' ') lines / $notes_chars chars, no release $TAG yet"
+fi
 
 # ── Wait for CI (--wait-ci / --auto) ─────────────────────────────────────────
 # Block until the GitHub Actions run for HEAD passes, so we never tag a red
@@ -134,8 +165,16 @@ if [ "$WAIT_CI" -eq 1 ]; then
   [ -n "$run_id" ] || die "no CI run found for $sha (is it pushed, and is CI enabled?)"
 
   echo "    watching run $run_id..."
-  gh run watch "$run_id" --exit-status --interval 20 >/dev/null \
-    || die "CI run $run_id did not succeed — refusing to tag a red commit"
+  if ! gh run watch "$run_id" --exit-status --interval 20 >/dev/null; then
+    conclusion="$(gh run view "$run_id" --json conclusion -q .conclusion 2>/dev/null || echo unknown)"
+    if [ "$conclusion" = "cancelled" ]; then
+      echo "!! CI run $run_id was CANCELLED — usually superseded by a newer push to $BRANCH" >&2
+      echo "   (the workflow cancels in-progress runs of the same branch). The newer commit" >&2
+      echo "   has its own run: pull it and run this script again on that commit." >&2
+      die "no green CI run for $(git rev-parse --short HEAD)"
+    fi
+    die "CI run $run_id did not succeed ($conclusion) — refusing to tag a red commit"
+  fi
   echo "    CI is green (run $run_id)"
 fi
 
@@ -157,6 +196,18 @@ echo "==> Created SIGNED tag $TAG ($(git config user.signingkey))"
 if [ "$PUSH" -eq 1 ]; then
   git push origin "$TAG"
   echo "==> Pushed $TAG to origin"
+  if [ "$RELEASE" -eq 1 ]; then
+    # --verify-tag: the release is created only for the tag that is on origin.
+    if url="$(gh release create "$TAG" --title "$TAG" --verify-tag --notes-file "$notes_file")"; then
+      echo "==> Published GitHub release $TAG: $url"
+    else
+      # the tag is out; the release is the one step left, and it can be redone
+      echo "!! The tag is pushed but the GitHub release failed. Create it by hand:" >&2
+      echo "     gh release create $TAG --title $TAG --verify-tag \\" >&2
+      echo "       --notes-file <(./scripts/changelog-section.sh $VER)" >&2
+      exit 1
+    fi
+  fi
 else
   echo "==> Local tag only. Push it with:"
   echo "      git push origin $TAG"

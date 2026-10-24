@@ -9,9 +9,17 @@ record and is **signed** (SSH signing) from v0.8.0 onward.
                                   # freshness, full stack test run, CHANGELOG
 ./scripts/bump-version.sh X.Y.Z   # version refs + CHANGELOG roll
 git commit -am "Bump version to X.Y.Z" && git push
-./scripts/release.sh X.Y.Z --push # waits for CI green, creates + pushes the
-                                  # SIGNED tag
+./scripts/release.sh X.Y.Z --auto # waits for CI green on HEAD, creates + pushes
+                                  # the SIGNED tag, publishes the GitHub release
+                                  # with the CHANGELOG section as its notes
 ```
+
+`--auto` checks everything the release needs — chart version, CHANGELOG
+section present and non-empty, no tag and no GitHub release yet, notes under
+GitHub's size limit — *before* it creates the tag, so a refusal leaves
+nothing to undo. Every push to `main` after the bump (a late CHANGELOG edit)
+gets its own CI run and cancels the superseded one; run `release.sh` on the
+commit you want tagged and it waits for that commit's run.
 
 ## Tag signing (SSH)
 
