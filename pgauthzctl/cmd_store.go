@@ -23,11 +23,10 @@ const storeUsage = `pgauthzctl store <verb> [flags] — the admin API only (--se
   delete <store> [--purge-audit] [--purge-decisions]
                                               remove the store (the erasure path); the audit
                                               history and the decision log stay unless asked
-  purge-decisions <store> [--store-id N] [--before <RFC3339>]
-                                              purge a deleted store's decision-log lines (the retry
-                                              after a failed delete --purge-decisions: its store_id
-                                              and deleted_at); without --store-id the store must
-                                              be gone and every line of the name goes
+  deletions <store>                           the engine's deletion receipts for the name
+  purge-decisions <store> --store-id N        purge a deleted incarnation's decision-log lines (the
+                                              retry after a failed delete --purge-decisions; the
+                                              id from its answer or from deletions)
   recorders <store>                           the recorder allowlists
   recorder-set <store> <db_role> <action,...> make a role's allowlist exactly these actions
   recorder-lift <store> <db_role>             lift a role's allowlist
@@ -45,8 +44,7 @@ func cmdStore(verb string, args []string) error {
 	retired := fs.Bool("retired", false, "set: retire the store")
 	purge := fs.Bool("purge-audit", false, "delete: remove the audit rows too")
 	purgeDecisions := fs.Bool("purge-decisions", false, "delete: remove the store's decision-log lines too")
-	before := fs.String("before", "", "purge-decisions: lines without an id decided at or before this RFC 3339 instant (a deletion's deleted_at)")
-	storeID := fs.Int("store-id", 0, "purge-decisions: the deleted incarnation (a deletion's store_id); required while a store of that name exists")
+	storeID := fs.Int("store-id", 0, "purge-decisions: the deleted incarnation (a deletion's store_id)")
 	read := fs.Bool("read", false, "namespace-grant: read access")
 	write := fs.Bool("write", false, "namespace-grant: write access")
 	asJSON := fs.Bool("json", false, "print the API's answer as JSON")
@@ -164,22 +162,37 @@ func cmdStore(verb string, args []string) error {
 		if err := need(1, "purge-decisions <store>"); err != nil {
 			return err
 		}
-		qs := url.Values{}
-		if *before != "" {
-			qs.Set("before", *before)
-		}
-		if *storeID > 0 {
-			qs.Set("store_id", fmt.Sprint(*storeID))
-		}
-		q := ""
-		if len(qs) > 0 {
-			q = "?" + qs.Encode()
+		if *storeID <= 0 {
+			return fmt.Errorf("purge-decisions needs --store-id (the deleted incarnation: the deletion's answer carries it, `store deletions %s` lists them)", pos[0])
 		}
 		var res map[string]any
-		if err := c.do(ctx, "DELETE", storePath(pos[0])+"/decisions"+q, nil, &res); err != nil {
+		if err := c.do(ctx, "DELETE", storePath(pos[0])+"/decisions?store_id="+fmt.Sprint(*storeID), nil, &res); err != nil {
 			return err
 		}
-		report(res, fmt.Sprintf("purged the decision-log lines of %s (incarnation %v, lines without an id up to %v): %v deleted now", pos[0], res["store_id"], res["before"], res["decisions"]))
+		report(res, fmt.Sprintf("purged the decision-log lines of %s, incarnation %v (deleted %v): %v deleted now", pos[0], res["store_id"], res["deleted_at"], res["decisions"]))
+		return nil
+	case "deletions":
+		if err := need(1, "deletions <store>"); err != nil {
+			return err
+		}
+		var res struct {
+			Deletions []map[string]any `json:"deletions"`
+		}
+		if err := c.do(ctx, "GET", storePath(pos[0])+"/deletions", nil, &res); err != nil {
+			return err
+		}
+		if *asJSON {
+			fmt.Println(prettyJSON(res))
+			return nil
+		}
+		if len(res.Deletions) == 0 {
+			fmt.Printf("no deletions of a store named %s\n", pos[0])
+			return nil
+		}
+		fmt.Printf("%-10s %-28s %s\n", "STORE_ID", "DELETED_AT", "DELETED_BY")
+		for _, d := range res.Deletions {
+			fmt.Printf("%-10v %-28v %v\n", d["store_id"], d["deleted_at"], d["deleted_by"])
+		}
 		return nil
 	case "recorders":
 		if err := need(1, "recorders <store>"); err != nil {

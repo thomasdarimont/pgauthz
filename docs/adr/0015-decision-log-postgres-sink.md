@@ -124,10 +124,12 @@ rows it just inserted that a tombstone covers — decided at or before
 `erased_at`, naming the person as subject or resource. A store purge works the
 same way with a fence per store incarnation (`decisionlog.store_fences`:
 store, `store_id`): every line the engine decides carries the store's id
-(`authz.store_id`, read in the same statement), so the purge of a deleted
-store drops exactly that incarnation's lines and a namesake created later is
-untouched; lines without an id (OPA-fronted decisions, lines from before)
-fall back to the deletion time.
+(`authz.store_id`, read in the same statement), and a purge names the
+incarnation of the engine's deletion receipt (`authz.store_deletions`,
+written inside the lifecycle lock), so it drops exactly that incarnation's
+lines, a namesake created later is untouched and a live store cannot be
+fenced; lines without an id (OPA-fronted decisions, lines from before) fall
+back to the receipt's deletion time.
 
 Batches, erasures, purges and retention are ordered by one transaction-level
 advisory lock: batches hold it shared, the others take it exclusive for an

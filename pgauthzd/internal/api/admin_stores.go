@@ -36,9 +36,11 @@ type StoreAdmin interface {
 	ListStores(ctx context.Context) ([]authz.StoreRow, error)
 	GetStore(ctx context.Context, name string) (authz.StoreRow, bool, error)
 	UpsertStore(ctx context.Context, name string, description, docsURL *string, retired *bool, actor string) (authz.StoreRow, bool, error)
-	// DeleteStore returns the deleted store's incarnation and the deletion
-	// time (the database clock, inside the deleting transaction).
+	// DeleteStore returns the engine's deletion receipt: the incarnation
+	// that went and when, read inside the store's lifecycle lock.
 	DeleteStore(ctx context.Context, name string, purgeAudit bool, actor string) (storeID int32, deletedAt time.Time, existed bool, err error)
+	// StoreDeletions lists the receipts for a name, newest first.
+	StoreDeletions(ctx context.Context, name string) ([]authz.StoreDeletion, error)
 	ExportModel(ctx context.Context, store string) (json.RawMessage, error)
 	ModelStatus(ctx context.Context, store string) (json.RawMessage, error)
 	PlanApply(ctx context.Context, store, name string, version *int) (json.RawMessage, error)
@@ -219,11 +221,11 @@ func (h *Handler) adminDeleteStore(w http.ResponseWriter, r *http.Request) {
 	if purgeDecisions {
 		// the deleted incarnation's lines (a namesake created later is
 		// untouched); a failure answers 502 `partial`, and
-		// DELETE …/stores/{store}/decisions?store_id=&before= retries it
+		// DELETE …/stores/{store}/decisions?store_id= retries it from the receipt
 		n, err := sink.PurgeStore(r.Context(), store, storeID, actorLabel(r), deletedAt)
 		if err != nil {
 			out["partial"] = true
-			out["error"] = fmt.Sprintf("the store is deleted but its decision-log lines could not be: retry with DELETE /pgauthz/v1/admin/stores/%s/decisions?store_id=%d&before=%s: %v", store, storeID, deletedAt.Format(time.RFC3339Nano), err)
+			out["error"] = fmt.Sprintf("the store is deleted but its decision-log lines could not be: retry with DELETE /pgauthz/v1/admin/stores/%s/decisions?store_id=%d: %v", store, storeID, err)
 			writeJSON(w, http.StatusBadGateway, out)
 			return
 		}
@@ -233,77 +235,76 @@ func (h *Handler) adminDeleteStore(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// adminPurgeStoreDecisions — DELETE /pgauthz/v1/admin/stores/{store}/decisions
-// [?store_id=&before=]: the decision log's lines of one incarnation of a
-// store (store_id — the deletion's answer carries it) and the lines without
-// an id decided at or before `before` (its deleted_at; not in the future),
-// behind the store fence. Without store_id the store must be gone from the
-// engine (409 while a namesake exists): then every line of the name goes.
-// Needs the postgres sink; idempotent.
+// adminPurgeStoreDecisions — DELETE /pgauthz/v1/admin/stores/{store}/decisions?store_id=:
+// the decision log's lines of one DELETED incarnation of a store, behind the
+// store fence — the retry of a deletion whose purge failed. The incarnation
+// must have the engine's deletion receipt (the deletion's answer and
+// GET …/deletions carry it): a live store cannot be fenced by mistake, and
+// the receipt's deletion time bounds the lines without an id. Needs the
+// postgres sink; idempotent.
 func (h *Handler) adminPurgeStoreDecisions(w http.ResponseWriter, r *http.Request) {
 	_, store, ok := h.requireStoreScope(w, r)
 	if !ok {
 		return
 	}
+	n64, err := strconv.ParseInt(r.URL.Query().Get("store_id"), 10, 32)
+	if err != nil || n64 <= 0 {
+		writeBadRequest(w, "store_id is required: the deleted incarnation, from the deletion's answer or GET …/stores/{store}/deletions")
+		return
+	}
+	storeID := int32(n64)
 	sink := h.decisionSink()
 	if sink == nil {
 		writeError(w, http.StatusNotImplemented, "this instance writes no postgres decision-log sink (DECISION_LOG=postgres)")
 		return
 	}
-	q := r.URL.Query()
-	var storeID int32
-	if raw := q.Get("store_id"); raw != "" {
-		n, err := strconv.ParseInt(raw, 10, 32)
-		if err != nil || n <= 0 {
-			writeBadRequest(w, "store_id must be the deleted store's id (the deletion's answer carries it)")
-			return
-		}
-		storeID = int32(n)
+	a, ok := h.storeAdmin(w)
+	if !ok {
+		return
 	}
-	before := time.Now().UTC()
-	if raw := q.Get("before"); raw != "" {
-		t, err := time.Parse(time.RFC3339Nano, raw)
-		if err != nil {
-			writeBadRequest(w, "before must be an RFC 3339 timestamp (the deletion's deleted_at)")
-			return
-		}
-		if t.After(before) {
-			writeBadRequest(w, "before must not be in the future")
-			return
-		}
-		before = t
+	receipts, err := a.StoreDeletions(r.Context(), store)
+	if err != nil {
+		writeDecisionError(w, err)
+		return
 	}
-	if storeID == 0 {
-		a, ok := h.storeAdmin(w)
-		if !ok {
-			return
-		}
-		if _, found, err := a.GetStore(r.Context(), store); err != nil {
-			writeDecisionError(w, err)
-			return
-		} else if found {
-			writeError(w, http.StatusConflict, "a store named "+store+" exists: pass store_id=<the deleted store's id> to purge that incarnation only, or delete the store with purge_decisions=true")
-			return
-		}
-	} else {
-		// only an incarnation the log has seen: a guessed id of a future
-		// namesake must not get a fence that would drop its lines
-		seen, err := sink.IncarnationSeen(r.Context(), store, storeID)
-		if err != nil {
-			writeError(w, http.StatusBadGateway, "decision log: "+err.Error())
-			return
-		}
-		if !seen {
-			writeError(w, http.StatusNotFound, fmt.Sprintf("the decision log holds nothing of store %s incarnation %d (its lines may still be buffered: retry shortly)", store, storeID))
-			return
+	var receipt *authz.StoreDeletion
+	for i := range receipts {
+		if receipts[i].StoreID == storeID {
+			receipt = &receipts[i]
 		}
 	}
-	n, err := sink.PurgeStore(r.Context(), store, storeID, actorLabel(r), before)
+	if receipt == nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("no deletion receipt for incarnation %d of store %s (GET …/stores/%s/deletions lists them)", storeID, store, store))
+		return
+	}
+	n, err := sink.PurgeStore(r.Context(), store, storeID, actorLabel(r), receipt.DeletedAt)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "decision log: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"store": store, "store_id": storeID, "purged_decisions": true, "before": before, "decisions": n})
+	writeJSON(w, http.StatusOK, map[string]any{"store": store, "store_id": storeID, "purged_decisions": true, "deleted_at": receipt.DeletedAt, "decisions": n})
+}
+
+// adminStoreDeletions — GET /pgauthz/v1/admin/stores/{store}/deletions: the
+// engine's deletion receipts for the name, newest first.
+func (h *Handler) adminStoreDeletions(w http.ResponseWriter, r *http.Request) {
+	_, store, ok := h.requireStoreScope(w, r)
+	if !ok {
+		return
+	}
+	a, ok := h.storeAdmin(w)
+	if !ok {
+		return
+	}
+	rows, err := a.StoreDeletions(r.Context(), store)
+	if err != nil {
+		writeDecisionError(w, err)
+		return
+	}
+	if rows == nil {
+		rows = []authz.StoreDeletion{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"store": store, "deletions": rows})
 }
 
 func (h *Handler) adminStoreModel(w http.ResponseWriter, r *http.Request) {
@@ -675,6 +676,7 @@ func registerAdminStores(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("PUT /pgauthz/v1/admin/stores/{store}", h.adminUpsertStore)
 	mux.HandleFunc("DELETE /pgauthz/v1/admin/stores/{store}", h.adminDeleteStore)
 	mux.HandleFunc("DELETE /pgauthz/v1/admin/stores/{store}/decisions", h.adminPurgeStoreDecisions)
+	mux.HandleFunc("GET /pgauthz/v1/admin/stores/{store}/deletions", h.adminStoreDeletions)
 	mux.HandleFunc("GET /pgauthz/v1/admin/stores/{store}/model", h.adminStoreModel)
 	mux.HandleFunc("PUT /pgauthz/v1/admin/stores/{store}/model", h.adminApplyModel)
 	mux.HandleFunc("GET /pgauthz/v1/admin/models", h.adminModels)

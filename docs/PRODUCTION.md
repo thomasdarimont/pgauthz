@@ -1155,9 +1155,10 @@ fleet-wide *partition drop* is shared by design).
   store recreated under the name is not touched. It is refused before
   anything is deleted where the instance writes no postgres sink; a sink
   failure after the engine's delete answers `502 partial`, and
-  `DELETE …/admin/stores/{store}/decisions?store_id=&before=`
-  (`pgauthzctl store purge-decisions`) retries it with the deletion's
-  `store_id` and `deleted_at`. Kept lines age out with everyone
+  `DELETE …/admin/stores/{store}/decisions?store_id=` (`pgauthzctl store
+  purge-decisions --store-id`) retries it for the deleted incarnation — one
+  the engine's deletion receipt names (`GET …/deletions`,
+  `pgauthzctl store deletions`), never a live store. Kept lines age out with everyone
   else's: the sink's retention drops whole days
   (`DECISION_LOG_RETENTION_DAYS`, default 30) and is not store-aware. With
   retention `0` nothing is ever dropped, so a deleted store's lines then

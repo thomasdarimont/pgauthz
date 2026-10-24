@@ -403,12 +403,9 @@ func (s *Server) handleDeleteStore(w http.ResponseWriter, r *http.Request) {
 	var storeID int32
 	var deletedAt time.Time
 	err := s.asPersonAuthorized(ctx, p, deleteGate, "can_manage_access", "store", store, map[string]any{"op": "delete_store", "purge_audit": req.PurgeAudit, "purge_decisions": req.PurgeDecisions}, func(tx pgx.Tx) error {
-		// the incarnation and the deletion time from inside the deleting
-		// transaction: the purge touches this incarnation's lines only
-		if err := tx.QueryRow(ctx, `SELECT authz.store_id($1), clock_timestamp()`, store).Scan(&storeID, &deletedAt); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `SELECT authz.delete_store($1, $2)`, store, req.PurgeAudit); err != nil {
+		// the engine's receipt: the incarnation that went and when, read
+		// inside its lifecycle lock — the purge touches exactly those lines
+		if err := tx.QueryRow(ctx, `SELECT store_id, deleted_at FROM authz.delete_store_receipt($1, $2)`, store, req.PurgeAudit).Scan(&storeID, &deletedAt); err != nil {
 			return err
 		}
 		// the console's own tuples about this store (platform, owner, roles)
@@ -459,7 +456,7 @@ func (s *Server) handleDeleteStore(w http.ResponseWriter, r *http.Request) {
 		n, err := s.purgeStoreDecisions(ctx, store, storeID, p.typ+":"+p.id, deletedAt)
 		if err != nil {
 			out["partial"] = true
-			out["error"] = fmt.Sprintf("the store is deleted but its decision-log lines could not be: retry over pgauthzd's admin API, DELETE …/stores/%s/decisions?store_id=%d&before=%s: %v", store, storeID, deletedAt.Format(time.RFC3339Nano), err)
+			out["error"] = fmt.Sprintf("the store is deleted but its decision-log lines could not be: retry over pgauthzd's admin API, DELETE …/stores/%s/decisions?store_id=%d: %v", store, storeID, err)
 			writeJSON(w, http.StatusBadGateway, out)
 			return
 		}

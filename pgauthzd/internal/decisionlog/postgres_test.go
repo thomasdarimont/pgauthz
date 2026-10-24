@@ -54,7 +54,6 @@ func (f *fakeStore) close() { f.mu.Lock(); f.closed = true; f.mu.Unlock() }
 func (f *fakeStore) purgeStore(context.Context, string, int32, string, time.Time) (int64, error) {
 	return 0, nil
 }
-func (f *fakeStore) incarnationSeen(context.Context, string, int32) (bool, error) { return true, nil }
 
 func (f *fakeStore) rows() int {
 	f.mu.Lock()
@@ -686,21 +685,22 @@ func TestPostgresSinkStorePurgeFence(t *testing.T) {
 	if err := <-purged2; err != nil {
 		t.Fatalf("purge after retention: %v (a deadlock would abort one of them)", err)
 	}
-	// a caller-supplied id must be one the log has seen (no pre-fencing a future namesake)
-	if seen, err := (&pgStore{pool: aux}).incarnationSeen(ctx, "it_purge", oldInc); err != nil || !seen {
-		t.Fatalf("the purged incarnation must count as seen: %v %v", seen, err)
+	// a purge names an incarnation: 0 is refused
+	if _, err := ps.PurgeStore(ctx, "it_purge", 0, "test", time.Now().UTC()); err == nil {
+		t.Fatal("a purge without an incarnation must be refused")
 	}
-	if seen, err := (&pgStore{pool: aux}).incarnationSeen(ctx, "it_purge", 999); err != nil || seen {
-		t.Fatalf("a never-seen incarnation must not: %v %v", seen, err)
-	}
-	// the store gone and its id unknown: every line of the name goes, fenced
-	if _, err := (&pgStore{pool: aux}).purgeStore(ctx, "it_purge", 0, "test", time.Now().UTC()); err != nil {
+	// the predecessor table's fences carry over as fences for lines without an id
+	if _, err := aux.Exec(ctx, `CREATE TABLE decisionlog.store_purges (store text PRIMARY KEY, purged_at timestamptz NOT NULL, purged_by text);
+	                             INSERT INTO decisionlog.store_purges VALUES ('it_legacy', now(), 'old')`); err != nil {
 		t.Fatal(err)
 	}
-	var left int // the id-less line stamped after the purge is the one legitimate survivor
-	_ = aux.QueryRow(ctx, `SELECT count(*) FROM decisionlog.decisions WHERE store = 'it_purge' AND resource_id <> 'noid-new'`).Scan(&left)
-	if left != 0 {
-		t.Fatalf("an id-less purge of a gone store must take every line decided up to it: %d left", left)
+	if _, err := aux.Exec(ctx, DDL); err != nil {
+		t.Fatal(err)
+	}
+	var carried int
+	_ = aux.QueryRow(ctx, `SELECT count(*) FROM decisionlog.store_fences WHERE store = 'it_legacy' AND store_id = 0`).Scan(&carried)
+	if carried != 1 {
+		t.Fatalf("the old fence must carry over: %d", carried)
 	}
 	if _, err := (&pgStore{pool: aux}).retain(ctx, -1); err != nil {
 		t.Fatal(err)

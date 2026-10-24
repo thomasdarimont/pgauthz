@@ -411,6 +411,19 @@ SELECT authz.store_id('demo');   -- the engine's id; a deleted and recreated sto
 Reader tier. The decision log stamps it on every line the engine decides, so
 purging a deleted store's lines never touches a namesake created later.
 
+### delete_store_receipt / store_deletions — Deletion receipts
+
+```sql
+SELECT * FROM authz.delete_store_receipt('tenant_a', p_purge_audit => true);  -- store_id, deleted_at
+SELECT * FROM authz.store_deletions('tenant_a');                              -- every deletion of the name, newest first
+```
+
+`delete_store` records a receipt (migration 0024: the incarnation, the time
+on the database clock inside the lifecycle lock, `authz.performed_by`);
+`delete_store_receipt` returns it. A decision-log purge names the receipt's
+incarnation, so a store recreated under the name is never touched and a live
+store cannot be fenced. Admin tier.
+
 ### list_stores — Every store, live and retired
 
 ```sql

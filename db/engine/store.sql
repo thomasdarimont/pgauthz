@@ -206,6 +206,11 @@ DECLARE
 BEGIN
     PERFORM authz._lock_store_lifecycle(p_store);        -- FIRST: see _lock_store_lifecycle
     v_store_id := authz._s(p_store, true);
+    -- the receipt (migration 0024): which incarnation went, when — for the
+    -- decision log's purge; delete_store_receipt returns it to the caller
+    INSERT INTO authz.store_deletions (store_id, name, deleted_at, deleted_by)
+    VALUES (v_store_id, p_store, clock_timestamp(), NULLIF(current_setting('authz.performed_by', true), ''))
+    ON CONFLICT (store_id) DO NOTHING;
     PERFORM authz._rls_delete_store_tuples(v_store_id);  -- purge incl. expired (F11 fix)
     IF p_purge_audit THEN
         PERFORM set_config('authz.audit_maintenance', 'on', true);
@@ -259,4 +264,32 @@ BEGIN
     DELETE FROM authz.relations  WHERE store_id = v_store_id;
     DELETE FROM authz.stores     WHERE id       = v_store_id;
 END;
+$$;
+
+-- delete_store_receipt: delete_store, and the receipt back to the caller —
+-- the deleted incarnation and the deletion time, both read inside the
+-- lifecycle lock, so a purge of the decision log names exactly what went.
+CREATE OR REPLACE FUNCTION authz.delete_store_receipt(
+    p_store       text,
+    p_purge_audit boolean DEFAULT false
+) RETURNS TABLE (store_id integer, deleted_at timestamptz)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_id integer;
+BEGIN
+    PERFORM authz._lock_store_lifecycle(p_store);
+    v_id := authz._s(p_store, true);
+    PERFORM authz.delete_store(p_store, p_purge_audit);
+    RETURN QUERY SELECT d.store_id, d.deleted_at FROM authz.store_deletions d WHERE d.store_id = v_id;
+END;
+$$;
+
+-- store_deletions: the receipts for a store name, newest first.
+CREATE OR REPLACE FUNCTION authz.store_deletions(p_store text)
+RETURNS TABLE (store_id integer, deleted_at timestamptz, deleted_by text)
+LANGUAGE sql STABLE AS $$
+    SELECT d.store_id, d.deleted_at, d.deleted_by
+      FROM authz.store_deletions d
+     WHERE d.name = p_store
+     ORDER BY d.deleted_at DESC;
 $$;

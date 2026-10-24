@@ -26,13 +26,17 @@ pre-1.0, minor versions may include breaking changes.
   tier) is the store's incarnation; every line the engine decides carries it
   (`store_id`, read in the same statement), and a store purge is keyed by it
   (`decisionlog.store_fences`), so a store recreated under the name keeps its
-  lines whatever the clocks say. Deletions answer with `store_id` and
-  `deleted_at`; the retry `DELETE …/stores/{store}/decisions?store_id=&before=`
-  (`pgauthzctl store purge-decisions --store-id`) needs them while a namesake
-  exists, and refuses a future `before`. Lines without an id (OPA-fronted,
-  pre-upgrade) fall back to the deletion time. Purges and erasures take the
-  lock before writing their fence or tombstone and stamp it after the lock.
-  The console presents its client certificate for the local admin only.
+  lines whatever the clocks say. `delete_store` records a **deletion
+  receipt** (migration 0024, `authz.store_deletions`: incarnation, time, actor,
+  inside the lifecycle lock; `delete_store_receipt` returns it), and a purge
+  names a receipt's incarnation: deletions answer with `store_id` and
+  `deleted_at`, `GET …/stores/{store}/deletions` (`pgauthzctl store deletions`)
+  lists the receipts, and the retry `DELETE …/decisions?store_id=` refuses an
+  incarnation without one — a live store cannot be fenced. Lines without an id
+  (OPA-fronted, pre-upgrade) fall back to the receipt's deletion time. Purges
+  and erasures take the lock before writing their fence or tombstone and
+  stamp it after the lock. The console presents its client certificate for
+  the local admin only.
 
 - **Console: Platform → Issuers over pgauthzd's admin API, as the signed-in
   person.** With `PGAUTHZD_ADMIN_URL` the tab reads the rows, the history

@@ -969,7 +969,7 @@ paths:
         historically.
       parameters:
         - { name: purge_audit, in: query, required: false, schema: { type: boolean } }
-        - { name: purge_decisions, in: query, required: false, schema: { type: boolean }, description: "Also purge this incarnation's lines and the store's tombstones from the postgres decision-log sink this instance writes, behind a store fence (default: keep). Refused with 501 before anything is deleted when this instance writes no such sink; a sink failure after the engine's delete answers 502 `partial` — retry with DELETE …/stores/{store}/decisions?store_id=&before=." }
+        - { name: purge_decisions, in: query, required: false, schema: { type: boolean }, description: "Also purge this incarnation's lines and the store's tombstones from the postgres decision-log sink this instance writes, behind a store fence (default: keep). Refused with 501 before anything is deleted when this instance writes no such sink; a sink failure after the engine's delete answers 502 `partial` — retry with DELETE …/stores/{store}/decisions?store_id=." }
       responses:
         '200':
           description: Deleted.
@@ -1131,18 +1131,17 @@ paths:
         listeners: [public, admin]
         public_listener: only-when-admin-api-enabled-without-admin-listener
       operationId: adminPurgeStoreDecisions
-      summary: Purge a deleted store's decision-log lines (the store may be gone)
+      summary: Purge a deleted incarnation's decision-log lines
       description: >
-        The lines of one incarnation of the store (`store_id`, from the
-        deletion's answer), the lines without an id decided at or before
-        `before` (its `deleted_at`), and the tombstones up to then, behind the
-        store fence (`decisionlog.store_fences`). The retry of a deletion whose
-        purge failed. Without `store_id` the store must be gone from the engine
-        (409 while a namesake exists): every line of the name goes. Idempotent;
-        needs the postgres sink (501 otherwise).
+        The lines of one DELETED incarnation of the store (`store_id`, from
+        the deletion's answer or `GET …/deletions`), the lines without an id
+        decided up to its deletion time, and the tombstones up to then,
+        behind the store fence (`decisionlog.store_fences`). The incarnation
+        must have the engine's deletion receipt (404 otherwise), so a live
+        store cannot be fenced by mistake. The retry of a deletion whose
+        purge failed. Idempotent; needs the postgres sink (501 otherwise).
       parameters:
-        - { name: store_id, in: query, required: false, schema: { type: integer }, description: "The deleted incarnation; required while a store of that name exists." }
-        - { name: before, in: query, required: false, schema: { type: string, format: date-time }, description: "Lines without an id decided at or before this instant (RFC 3339, not in the future); default now." }
+        - { name: store_id, in: query, required: true, schema: { type: integer }, description: The deleted incarnation. }
       responses:
         '200':
           description: Purged.
@@ -1150,23 +1149,18 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [store, purged_decisions, decisions]
+                required: [store, store_id, purged_decisions, deleted_at, decisions]
                 properties:
                   store: { type: string }
-                  store_id: { type: integer, description: "The purged incarnation; 0 = every line of the name." }
+                  store_id: { type: integer }
                   purged_decisions: { type: boolean }
-                  before: { type: string, format: date-time }
+                  deleted_at: { type: string, format: date-time, description: The receipt's deletion time. }
                   decisions: { type: integer, description: Persisted lines deleted now. }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404':
-          description: The log holds nothing of that incarnation (a guessed id gets no fence; buffered lines may still be arriving).
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
-        '409':
-          description: A store of that name exists and no `store_id` was given.
+          description: No deletion receipt for that incarnation of the store.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -1176,6 +1170,35 @@ paths:
           content:
             application/json:
               schema: { type: object, additionalProperties: true }
+  /pgauthz/v1/admin/stores/{store}/deletions:
+    parameters:
+      - { name: store, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' } }
+    get:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminStoreDeletions
+      summary: The engine's deletion receipts for a store name
+      description: Every physical deletion of a store of this name (`authz.store_deletions`), newest first — the incarnations a decision-log purge may name.
+      responses:
+        '200':
+          description: The receipts.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [store, deletions]
+                properties:
+                  store: { type: string }
+                  deletions:
+                    type: array
+                    items: { $ref: '#/components/schemas/StoreDeletion' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
   /pgauthz/v1/admin/stores/{store}/subjects/{type}/{id}/objects:
     parameters:
       - { name: store, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' } }
@@ -2694,6 +2717,13 @@ components:
         stores: { type: array, items: { type: string } }
         enabled: { type: boolean, nullable: true }
         description: { type: string }
+    StoreDeletion:
+      type: object
+      required: [store_id, deleted_at]
+      properties:
+        store_id: { type: integer }
+        deleted_at: { type: string, format: date-time }
+        deleted_by: { type: string }
     SubjectRef:
       type: object
       required: [type, id]

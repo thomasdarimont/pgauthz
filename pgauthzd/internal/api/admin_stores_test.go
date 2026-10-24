@@ -22,6 +22,7 @@ type storeStub struct {
 	blocked    map[string]bool // store → the plan reports blockers
 	actors     []string
 	recorders  map[string]map[string][]string           // store → role → actions
+	deletions  map[string][]authz.StoreDeletion         // store → receipts
 	namespaces map[string]map[string]map[string][2]bool // store → namespace → role → (read, write)
 }
 
@@ -88,7 +89,17 @@ func (s *storeStub) DeleteStore(_ context.Context, name string, _ bool, actor st
 	s.actors = append(s.actors, actor)
 	_, ok := s.stores[name]
 	delete(s.stores, name)
+	if ok {
+		if s.deletions == nil {
+			s.deletions = map[string][]authz.StoreDeletion{}
+		}
+		s.deletions[name] = append(s.deletions[name], authz.StoreDeletion{StoreID: 7, DeletedAt: time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC), DeletedBy: actor})
+	}
 	return 7, time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC), ok, nil
+}
+
+func (s *storeStub) StoreDeletions(_ context.Context, name string) ([]authz.StoreDeletion, error) {
+	return s.deletions[name], nil
 }
 func (s *storeStub) ExportModel(_ context.Context, store string) (json.RawMessage, error) {
 	if _, ok := s.stores[store]; !ok {
@@ -274,14 +285,23 @@ func TestAdminStores(t *testing.T) {
 	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_mail?purge_decisions=true", "")); w.Code != 501 || stub.stores["a_mail"] == nil {
 		t.Fatalf("purge_decisions without a sink must refuse and keep the store: %d %s", w.Code, w.Body.String())
 	}
-	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_mail/decisions", "")); w.Code != 501 {
+	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_mail/decisions?store_id=7", "")); w.Code != 501 {
 		t.Fatalf("purge route without a sink: %d", w.Code)
 	}
 	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/b_mail/decisions", "")); w.Code != 403 {
 		t.Fatalf("purge route outside the scope: %d", w.Code)
 	}
+	if w := serveAdmin(h, tenantAAdmin.request("GET", "/pgauthz/v1/admin/stores/a_mail/deletions", "")); w.Code != 200 || !strings.Contains(w.Body.String(), `"deletions":[]`) {
+		t.Fatalf("no receipts before the deletion: %d %s", w.Code, w.Body.String())
+	}
 	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_mail?purge_audit=true", "")); w.Code != 200 || !strings.Contains(w.Body.String(), `"purged_audit":true`) || !strings.Contains(w.Body.String(), `"purged_decisions":false`) || !strings.Contains(w.Body.String(), `"store_id":7`) || !strings.Contains(w.Body.String(), `"deleted_at":"2026-10-25T09:00:00Z"`) {
 		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantAAdmin.request("GET", "/pgauthz/v1/admin/stores/a_mail/deletions", "")); w.Code != 200 || !strings.Contains(w.Body.String(), `"store_id":7`) || !strings.Contains(w.Body.String(), `"deleted_by":`) {
+		t.Fatalf("the receipt after the deletion: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantAAdmin.request("GET", "/pgauthz/v1/admin/stores/b_mail/deletions", "")); w.Code != 403 {
+		t.Fatalf("receipts outside the scope: %d", w.Code)
 	}
 	if w := serveAdmin(h, tenantAAdmin.request("DELETE", "/pgauthz/v1/admin/stores/a_mail", "")); w.Code != 404 {
 		t.Fatalf("delete again: %d", w.Code)

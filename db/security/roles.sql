@@ -454,6 +454,8 @@ GRANT EXECUTE ON FUNCTION authz.create_store(text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.update_store(text, text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.retire_store(text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.delete_store(text, boolean) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.delete_store_receipt(text, boolean) TO authz_admin;   -- delete_store + the receipt (incarnation, time)
+GRANT EXECUTE ON FUNCTION authz.store_deletions(text) TO authz_admin;                  -- the receipts of a name
 GRANT EXECUTE ON FUNCTION authz.model_register_type(text, text, int, text, text, text[]) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_remove_type(text, text, boolean, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_add_grant_rule(text, text, text, text, text) TO authz_admin;
@@ -572,6 +574,8 @@ ALTER FUNCTION authz.create_store(text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.update_store(text, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.retire_store(text) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_store(text, boolean) SECURITY DEFINER;
+ALTER FUNCTION authz.delete_store_receipt(text, boolean) SECURITY DEFINER;
+ALTER FUNCTION authz.store_deletions(text) SECURITY DEFINER;
 ALTER FUNCTION authz.model_register_type(text, text, int, text, text, text[]) SECURITY DEFINER;
 ALTER FUNCTION authz.model_remove_type(text, text, boolean, text) SECURITY DEFINER;
 ALTER FUNCTION authz.model_add_grant_rule(text, text, text, text, text) SECURITY DEFINER;

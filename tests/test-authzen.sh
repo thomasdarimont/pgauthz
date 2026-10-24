@@ -843,7 +843,7 @@ check_http "admin: purge_decisions without a postgres sink on this instance is r
 check_http "admin: the store survived the refused purge (200)" "200" \
     -X GET "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE" -H "$AUTH_ADMIN"
 check_http "admin: the purge-decisions route needs the sink too (501)" "501" \
-    -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/decisions" -H "$AUTH_ADMIN"
+    -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/decisions?store_id=1" -H "$AUTH_ADMIN"
 total=$((total + 1))
 got=$(curl -sf -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE?purge_audit=true" -H "$AUTH_ADMIN" | jq -rc '[(.store_id > 0), (.deleted_at | type), .purged_decisions]' || true)
 if [ "$got" = '[true,"string",false]' ]; then
@@ -851,6 +851,15 @@ if [ "$got" = '[true,"string",false]' ]; then
 else
     fail_count=$((fail_count + 1)); echo "    FAIL  admin: DELETE answers with the store's incarnation and deletion time (got $got)"
 fi
+total=$((total + 1))
+got=$(curl -sf "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/deletions" -H "$AUTH_ADMIN" | jq -rc '[(.deletions | length >= 1), (.deletions[0].store_id > 0), .deletions[0].deleted_by]' || true)
+if [ "$got" = '[true,true,"internal_user:ops"]' ]; then
+    pass_count=$((pass_count + 1)); echo "    PASS  admin: GET deletions lists the receipt with the actor"
+else
+    fail_count=$((fail_count + 1)); echo "    FAIL  admin: GET deletions lists the receipt with the actor (got $got)"
+fi
+check_http "admin: a purge retry needs the incarnation (400)" "400" \
+    -X DELETE "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE/decisions" -H "$AUTH_ADMIN"
 check_http "admin: PUT recreates the store (201)" "201" \
     -X PUT "$ADMIN_URL/pgauthz/v1/admin/stores/$AZ_STORE" -H "$AUTH_ADMIN" -H "Content-Type: application/json" -d '{"description":"recreated"}'
 check_http "admin: DELETE of a missing grant is 404" "404" \

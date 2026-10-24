@@ -95,7 +95,8 @@ pgauthzctl store recorder-lift tenant_a svc_approvals
 pgauthzctl store namespace-grant tenant_a hr app_hr --read --write
 pgauthzctl store namespace-revoke tenant_a hr app_hr
 pgauthzctl store delete tenant_a --purge-audit --purge-decisions  # the erasure path; audit history and decision log only when asked
-pgauthzctl store purge-decisions tenant_a --store-id 7 --before 2026-10-24T10:00:00Z  # a failed --purge-decisions' store_id + deleted_at; without --store-id the store must be gone
+pgauthzctl store deletions tenant_a                       # the engine's deletion receipts: incarnation, time, by whom
+pgauthzctl store purge-decisions tenant_a --store-id 7    # retry a failed --purge-decisions for that deleted incarnation
 ```
 
 Every verb takes `--json` for the API's answer verbatim.

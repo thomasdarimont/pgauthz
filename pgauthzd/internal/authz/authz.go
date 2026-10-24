@@ -378,6 +378,14 @@ type RecorderRow struct {
 	Actions []string `json:"actions"`
 }
 
+// StoreDeletion is a deletion receipt (authz.store_deletions): the
+// incarnation that went, when, by whom.
+type StoreDeletion struct {
+	StoreID   int32     `json:"store_id"`
+	DeletedAt time.Time `json:"deleted_at"`
+	DeletedBy string    `json:"deleted_by,omitempty"`
+}
+
 // SubjectObjectRow is one row of authz.list_subject_objects: an object the
 // subject reaches through a relation — the data-subject takeout, as rows
 // the application teams can join with their own tables.

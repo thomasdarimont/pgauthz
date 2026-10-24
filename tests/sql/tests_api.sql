@@ -1802,6 +1802,29 @@ BEGIN
 END;
 $store_name$;
 
+-- Deletion receipts (migration 0024): delete_store_receipt returns the
+-- incarnation that went and when; store_deletions lists them; a recreated
+-- store is a new incarnation.
+DO $receipt$
+DECLARE
+    v_id integer; v_rid integer; v_at timestamptz; v_id2 integer; v_n integer;
+BEGIN
+    BEGIN PERFORM authz.delete_store('test_api_receipt', p_purge_audit => true); EXCEPTION WHEN OTHERS THEN NULL; END;
+    PERFORM authz.create_store('test_api_receipt');
+    v_id := authz.store_id('test_api_receipt');
+    SELECT r.store_id, r.deleted_at INTO v_rid, v_at FROM authz.delete_store_receipt('test_api_receipt') r;
+    PERFORM _test_assert_true('api_125_receipt_names_the_incarnation', v_rid = v_id AND v_at IS NOT NULL, format('%s/%s', v_rid, v_id));
+    SELECT count(*) INTO v_n FROM authz.store_deletions('test_api_receipt') d WHERE d.store_id = v_id;
+    PERFORM _test_assert_true('api_126_receipt_is_listed', v_n = 1, v_n::text);
+    PERFORM authz.create_store('test_api_receipt');
+    v_id2 := authz.store_id('test_api_receipt');
+    PERFORM _test_assert_true('api_127_recreated_store_is_a_new_incarnation', v_id2 <> v_id, format('%s/%s', v_id, v_id2));
+    PERFORM authz.delete_store('test_api_receipt', p_purge_audit => true);
+    SELECT count(*) INTO v_n FROM authz.store_deletions('test_api_receipt');
+    PERFORM _test_assert_true('api_128_every_deletion_leaves_a_receipt', v_n = 2, v_n::text);
+END;
+$receipt$;
+
 -- Cleanup file-level functions
 DROP FUNCTION IF EXISTS _test_teardown_api();
 DROP FUNCTION IF EXISTS _test_setup_api();

@@ -156,15 +156,29 @@ func (b *Backend) DeleteStore(ctx context.Context, name string, purgeAudit bool,
 	var id int32
 	var at time.Time
 	err = b.asActor(ctx, actor, func(tx pgx.Tx) error {
-		// the incarnation and the deletion time from inside the deleting
-		// transaction: nothing of this incarnation is decided after it
-		if err := tx.QueryRow(ctx, `SELECT authz.store_id($1), clock_timestamp()`, name).Scan(&id, &at); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx, `SELECT authz.delete_store($1, $2)`, name, purgeAudit)
-		return err
+		// the receipt: incarnation and deletion time read inside the engine's lifecycle lock
+		return tx.QueryRow(ctx, `SELECT store_id, deleted_at FROM authz.delete_store_receipt($1, $2)`, name, purgeAudit).Scan(&id, &at)
 	})
 	return id, at.UTC(), true, err
+}
+
+// StoreDeletions: the engine's deletion receipts for a name, newest first.
+func (b *Backend) StoreDeletions(ctx context.Context, name string) ([]authz.StoreDeletion, error) {
+	rows, err := b.pool.Query(ctx, `SELECT store_id, deleted_at, coalesce(deleted_by, '') FROM authz.store_deletions($1)`, name)
+	if err != nil {
+		return nil, adminError(err)
+	}
+	defer rows.Close()
+	out := []authz.StoreDeletion{}
+	for rows.Next() {
+		var d authz.StoreDeletion
+		if err := rows.Scan(&d.StoreID, &d.DeletedAt, &d.DeletedBy); err != nil {
+			return nil, err
+		}
+		d.DeletedAt = d.DeletedAt.UTC()
+		out = append(out, d)
+	}
+	return out, rows.Err()
 }
 
 // ExportModel: the store's live model in the canonical definition shape.
