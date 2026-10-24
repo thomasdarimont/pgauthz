@@ -72,7 +72,7 @@ func (s *storeStub) ExportModel(_ context.Context, store string) (json.RawMessag
 func (s *storeStub) ModelStatus(context.Context, string) (json.RawMessage, error) {
 	return json.RawMessage(`{"model_name":null,"live_checksum":"abc"}`), nil
 }
-func (s *storeStub) PlanApply(_ context.Context, store, name string, version *int) (json.RawMessage, error) {
+func (s *storeStub) PlanApply(_ context.Context, store, name string, _ *int) (json.RawMessage, error) {
 	if _, ok := s.versions[name]; !ok {
 		return nil, fmt.Errorf("%w: no registry entry for model %s", authz.ErrInvalidRequest, name)
 	}
@@ -81,7 +81,7 @@ func (s *storeStub) PlanApply(_ context.Context, store, name string, version *in
 	}
 	return json.RawMessage(`{"can_apply":true,"changes":[]}`), nil
 }
-func (s *storeStub) ApplyModel(_ context.Context, store, name string, version *int, actor string) (int, error) {
+func (s *storeStub) ApplyModel(_ context.Context, _, name string, version *int, actor string) (int, error) {
 	s.actors = append(s.actors, actor)
 	vs := s.versions[name]
 	if version != nil {
@@ -162,7 +162,7 @@ func (s *storeStub) RevokeNamespaceAccess(_ context.Context, store, ns, role, ac
 	delete(s.namespaces[store][ns], role)
 	return ok, nil
 }
-func (s *storeStub) PublishModel(_ context.Context, name, fromStore string, def, openfga json.RawMessage, _ string, actor string) (int, error) {
+func (s *storeStub) PublishModel(_ context.Context, name, fromStore string, _, _ json.RawMessage, _ string, actor string) (int, error) {
 	s.actors = append(s.actors, actor)
 	if fromStore != "" {
 		if _, ok := s.stores[fromStore]; !ok {

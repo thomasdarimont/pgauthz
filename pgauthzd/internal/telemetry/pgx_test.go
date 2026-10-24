@@ -51,7 +51,7 @@ func TestPgxTracer(t *testing.T) {
 		t.Fatalf("attributes: %v", attrs)
 	}
 	for _, a := range q.Attributes {
-		if a.Value.Emit() == "alice-secret" {
+		if a.Value.String() == "alice-secret" {
 			t.Fatal("argument values must never be recorded")
 		}
 	}

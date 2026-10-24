@@ -97,7 +97,7 @@ func (h *Handler) mayAssertSubject(r *http.Request, store string) bool {
 	if h.cfg.AllowSubjectOverride {
 		return true
 	}
-	clients := h.issuers.Current().pepClients[IssuerFromContext(r.Context())]
+	clients := h.issuers.current().pepClients[IssuerFromContext(r.Context())]
 	if clients == nil {
 		return false
 	}
@@ -394,7 +394,7 @@ func registerNativeWrite(mux *http.ServeMux, h *Handler) {
 // and returns ok=false on a violation.
 func (h *Handler) storeChecked(w http.ResponseWriter, r *http.Request) (string, bool) {
 	store := h.store(r)
-	allowed, restricted := h.issuers.Current().stores[IssuerFromContext(r.Context())]
+	allowed, restricted := h.issuers.current().stores[IssuerFromContext(r.Context())]
 	if !restricted {
 		return store, true
 	}
@@ -1183,7 +1183,7 @@ func (h *Handler) publicBaseURL(r *http.Request) string {
 // A PostgreSQL/OPA outage must NOT make Kubernetes restart healthy pgauthzd
 // processes in a loop — dependency health is readiness's job (/readyz), which
 // takes the instance out of rotation without killing it.
-func (h *Handler) Livez(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) Livez(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

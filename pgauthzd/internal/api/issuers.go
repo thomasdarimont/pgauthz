@@ -48,8 +48,8 @@ func NewIssuers(cfgs []IssuerConfig) *Issuers {
 // emptySet: what a nil holder reads (handlers built as bare literals in tests).
 var emptySet = newIssuerSet(nil, 0, nil)
 
-// Current returns the set in force. Nil-safe: no holder means no issuers.
-func (s *Issuers) Current() *issuerSet {
+// current returns the set in force. Nil-safe: no holder means no issuers.
+func (s *Issuers) current() *issuerSet {
 	if s == nil {
 		return emptySet
 	}
@@ -67,10 +67,10 @@ func (s *Issuers) Replace(cfgs []IssuerConfig, revision int64) {
 }
 
 // Revision is the applied database revision (0 = environment only).
-func (s *Issuers) Revision() int64 { return s.Current().revision }
+func (s *Issuers) Revision() int64 { return s.current().revision }
 
 // Configs returns the issuers of the set in force.
-func (s *Issuers) Configs() []IssuerConfig { return s.Current().configs }
+func (s *Issuers) Configs() []IssuerConfig { return s.current().configs }
 
 func anchorsEqual(a, b IssuerConfig) bool {
 	return a.Issuer == b.Issuer && a.Audience == b.Audience && a.JWKSURL == b.JWKSURL && a.JWKSFile == b.JWKSFile
@@ -207,7 +207,7 @@ func (h *Handler) Issuers(w http.ResponseWriter, r *http.Request) {
 
 // writeIssuers renders issuers as the endpoint's JSON (keys redacted).
 func (h *Handler) writeIssuers(w http.ResponseWriter, configs []IssuerConfig) {
-	set := h.issuers.Current()
+	set := h.issuers.current()
 	out := make([]map[string]any, 0, len(configs))
 	for _, ic := range configs {
 		e := map[string]any{

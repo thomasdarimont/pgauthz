@@ -68,7 +68,7 @@ func (s adminScope) coversStore(store string) bool {
 
 // issuerScope: the scope of a tenant admin of issuer iss.
 func (h *Handler) issuerScope(iss string) adminScope {
-	return adminScope{issuer: iss, stores: h.issuers.Current().stores[iss]}
+	return adminScope{issuer: iss, stores: h.issuers.current().stores[iss]}
 }
 
 // adminGate decides whether the request's credential may manage, and what:
@@ -93,7 +93,7 @@ func (h *Handler) adminGate(r *http.Request) (adminScope, error) {
 		return adminScope{}, errors.New("management needs a verified token of an issuer with an admin binding, or a mapped client certificate")
 	}
 	var reasons []string
-	if ab := h.issuers.Current().admin[iss]; ab != nil {
+	if ab := h.issuers.current().admin[iss]; ab != nil {
 		if err := ab.satisfiedBy(r.Context()); err == nil {
 			if ab.platform {
 				return adminScope{platform: true, issuer: iss}, nil
@@ -207,7 +207,7 @@ func (c *compiledAdmin) satisfiedBy(ctx context.Context) error {
 // platform admin, else the scope's issuer (a token's own, or the issuer a
 // certificate mapping names — review #20: a certificate carries no iss).
 func (h *Handler) visibleIssuers(scope adminScope) []IssuerConfig {
-	all := h.issuers.Current().configs
+	all := h.issuers.current().configs
 	if scope.platform {
 		return all
 	}
@@ -328,7 +328,7 @@ func (h *Handler) adminSetIssuerBinding(w http.ResponseWriter, r *http.Request) 
 	// reject fails here instead of silently falling back; an issuer the
 	// environment does not trust is refused for the same reason
 	trusted := false
-	for _, ic := range h.issuers.Current().configs {
+	for _, ic := range h.issuers.current().configs {
 		if ic.Issuer != b.Issuer {
 			continue
 		}

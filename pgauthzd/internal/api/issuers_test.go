@@ -31,7 +31,7 @@ func TestIssuerSetSwap(t *testing.T) {
 	cfg := &config.Config{DefaultStore: "docs", Issuers: env, IssuersSource: "env+db"}
 	h := NewHandler(nil, nil, nil, cfg, WithIssuers(set))
 	mw := NewJWTMiddleware(JWTConfig{Issuers: IssuerConfigsFrom(env), Set: set})
-	corpValidator := set.Current().byIssuer["https://corp"]
+	corpValidator := set.current().byIssuer["https://corp"]
 
 	req := func(issuer, store string) *http.Request {
 		r := httptest.NewRequest("POST", "/x", nil)
@@ -71,7 +71,7 @@ func TestIssuerSetSwap(t *testing.T) {
 	if _, err := mw.pickValidator(unverified(`{"iss":"https://corp"}`)); err != nil {
 		t.Fatalf("corp still accepted: %v", err)
 	}
-	if set.Current().byIssuer["https://corp"] != corpValidator {
+	if set.current().byIssuer["https://corp"] != corpValidator {
 		t.Fatal("the validator of an unchanged anchor must be reused (cached keys)")
 	}
 	// readiness carries the applied revision

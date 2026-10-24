@@ -1007,10 +1007,6 @@ func (c *Config) HasPEPClients() bool {
 	return false
 }
 
-// regexMeta are the characters that make a store pattern a pattern rather
-// than a plain name.
-const regexMeta = `.*+?()[]{}|^$\`
-
 // SwaggerUIOIDC reports whether the embedded Swagger UI logs in via OIDC.
 func (c *Config) SwaggerUIOIDC() bool {
 	return c.SwaggerUIOIDCIssuer != "" && c.SwaggerUIOIDCClientID != ""

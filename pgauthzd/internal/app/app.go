@@ -197,8 +197,8 @@ func Run(name, version string) error {
 	if err != nil {
 		return err
 	}
-	defer dlog.Close() //nolint:errcheck // best-effort flush on exit
-	if dlog.Enabled() {
+	defer dlog.Close() //nolint:errcheck // best-effort flush on exit (nil-safe)
+	if dlog != nil {   // Enabled(); spelled out so the dereferences below are plainly guarded
 		slog.Info("decision log", "sink", cfg.DecisionLog, "sample", cfg.DecisionLogSample, "detail", cfg.DecisionLogDetail)
 		if ps := dlog.Postgres; ps != nil {
 			slog.Info("decision log sink", "table", decisionlog.Schema+"."+decisionlog.Table, "retention_days", cfg.DecisionLogRetentionDays, "queue", cfg.DecisionLogQueue)
@@ -254,12 +254,12 @@ func Run(name, version string) error {
 	// the routes on the public listener otherwise).
 	if cfg.AdminAPIEnabled {
 		if cfg.AdminListenAddr != "" {
-			hAdm := api.NewHandler(nil, raw, rawWrite, cfg, append([]api.Option{dlogOpt, verOpt, issOpt}, admOpts...)...)
-			admSrv := newServer(cfg, cfg.AdminListenAddr, api.NewAdminRouter(hAdm, jwtMW))
 			tlsCfg, terr := mtlsConfig(cfg.AdminTLSCert, cfg.AdminTLSKey, cfg.AdminClientCA, "admin")
 			if terr != nil {
 				return terr
 			}
+			hAdm := api.NewHandler(nil, raw, rawWrite, cfg, append([]api.Option{dlogOpt, verOpt, issOpt}, admOpts...)...)
+			admSrv := newServer(cfg, cfg.AdminListenAddr, api.NewAdminRouter(hAdm, jwtMW))
 			if tlsCfg != nil {
 				admSrv.TLSConfig = tlsCfg
 			}

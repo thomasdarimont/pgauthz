@@ -266,14 +266,14 @@ type JWTMiddleware struct {
 func NewJWTMiddleware(cfg JWTConfig) *JWTMiddleware {
 	m := &JWTMiddleware{cfg: cfg, set: cfg.Set}
 	if m.set == nil {
-		issuers := cfg.Issuers
-		if len(issuers) == 0 { // legacy single-issuer form
-			issuers = []IssuerConfig{{
+		configs := cfg.Issuers
+		if len(configs) == 0 { // legacy single-issuer form
+			configs = []IssuerConfig{{
 				Issuer: cfg.Issuer, Audience: cfg.Audience,
 				JWKSURL: cfg.JWKSURL, JWKSFile: cfg.JWKSFile,
 			}}
 		}
-		m.set = NewIssuers(issuers)
+		m.set = NewIssuers(configs)
 	}
 	return m
 }
@@ -460,7 +460,7 @@ func (m *JWTMiddleware) pickValidator(tokenStr string) (*issuerValidator, error)
 		return nil, fmt.Errorf("parsing token: %w", err)
 	}
 	iss := claimString(claims, "iss")
-	set := m.set.Current()
+	set := m.set.current()
 	if set.disabled[iss] {
 		return nil, fmt.Errorf("issuer %q is disabled (issuer binding enabled=false)", iss)
 	}
@@ -597,11 +597,24 @@ func parseECPublicKey(k jwkKey) (*ecdsa.PublicKey, error) {
 		return nil, fmt.Errorf("decoding y: %w", err)
 	}
 
-	return &ecdsa.PublicKey{
-		Curve: curve,
-		X:     new(big.Int).SetBytes(xBytes),
-		Y:     new(big.Int).SetBytes(yBytes),
-	}, nil
+	// SEC 1 uncompressed point 0x04 || X || Y, each coordinate the curve's
+	// width (RFC 7518 §6.2.1.2 mandates fixed-length coordinates; a shorter
+	// one is left-padded, a longer one is not a point on this curve).
+	// ParseUncompressedPublicKey also rejects a point off the curve, which
+	// the former struct literal never checked.
+	size := (curve.Params().BitSize + 7) / 8
+	if len(xBytes) > size || len(yBytes) > size {
+		return nil, fmt.Errorf("coordinate longer than the %s field", k.Crv)
+	}
+	point := make([]byte, 1+2*size)
+	point[0] = 0x04
+	copy(point[1+size-len(xBytes):], xBytes)
+	copy(point[1+2*size-len(yBytes):], yBytes)
+	pub, err := ecdsa.ParseUncompressedPublicKey(curve, point)
+	if err != nil {
+		return nil, fmt.Errorf("invalid EC point: %w", err)
+	}
+	return pub, nil
 }
 
 func parseRSAPublicKey(k jwkKey) (*rsa.PublicKey, error) {
@@ -641,7 +654,7 @@ func (m *JWTMiddleware) deriveDBRole(claims jwt.MapClaims) string {
 			return r
 		}
 	}
-	if cm := m.set.Current().clientRole[claimString(claims, "iss")]; cm != nil {
+	if cm := m.set.current().clientRole[claimString(claims, "iss")]; cm != nil {
 		if r := cm[claimString(claims, "azp")]; r != "" {
 			return r
 		}
@@ -655,7 +668,7 @@ func (m *JWTMiddleware) deriveDBRole(claims jwt.MapClaims) string {
 // dbRoleAllowed reports whether the issuer may yield the given per-app DB role.
 // Issuers without a configured db_roles list are unrestricted.
 func (m *JWTMiddleware) dbRoleAllowed(issuer, role string) bool {
-	pats, restricted := m.set.Current().dbRoles[issuer]
+	pats, restricted := m.set.current().dbRoles[issuer]
 	if !restricted {
 		return true
 	}

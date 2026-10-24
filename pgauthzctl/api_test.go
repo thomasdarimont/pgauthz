@@ -48,7 +48,7 @@ func newFakeAdmin() *fakeAdmin {
 	}
 }
 
-func (f *fakeAdmin) handler(t *testing.T) http.Handler {
+func (f *fakeAdmin) handler(_ *testing.T) http.Handler {
 	writeJSON := func(w http.ResponseWriter, status int, v any) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)

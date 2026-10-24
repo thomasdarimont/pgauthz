@@ -56,7 +56,7 @@ func cmdStore(verb string, args []string) error {
 		return nil
 	}
 	storePath := func(s string) string { return "/pgauthz/v1/admin/stores/" + url.PathEscape(s) }
-	print := func(v any, line string) {
+	report := func(v any, line string) {
 		if *asJSON {
 			fmt.Println(prettyJSON(v))
 		} else if line != "" {
@@ -127,7 +127,7 @@ func cmdStore(verb string, args []string) error {
 		if res.Created {
 			what = "created"
 		}
-		print(res, fmt.Sprintf("%s store %s", what, pos[0]))
+		report(res, fmt.Sprintf("%s store %s", what, pos[0]))
 		return nil
 	case "delete":
 		if err := need(1, "delete <store> [--purge-audit]"); err != nil {
@@ -141,7 +141,7 @@ func cmdStore(verb string, args []string) error {
 		if err := c.do(ctx, "DELETE", storePath(pos[0])+q, nil, &res); err != nil {
 			return err
 		}
-		print(res, fmt.Sprintf("deleted store %s", pos[0]))
+		report(res, fmt.Sprintf("deleted store %s", pos[0]))
 		return nil
 	case "recorders":
 		if err := need(1, "recorders <store>"); err != nil {
@@ -181,7 +181,7 @@ func cmdStore(verb string, args []string) error {
 		if err := c.do(ctx, "PUT", storePath(pos[0])+"/recorders/"+url.PathEscape(pos[1]), map[string]any{"actions": actions}, &res); err != nil {
 			return err
 		}
-		print(res, fmt.Sprintf("%s may record %s in %s", pos[1], strings.Join(actions, ","), pos[0]))
+		report(res, fmt.Sprintf("%s may record %s in %s", pos[1], strings.Join(actions, ","), pos[0]))
 		return nil
 	case "recorder-lift":
 		if err := need(2, "recorder-lift <store> <db_role>"); err != nil {
@@ -191,7 +191,7 @@ func cmdStore(verb string, args []string) error {
 		if err := c.do(ctx, "DELETE", storePath(pos[0])+"/recorders/"+url.PathEscape(pos[1]), nil, &res); err != nil {
 			return err
 		}
-		print(res, fmt.Sprintf("lifted the allowlist of %s in %s", pos[1], pos[0]))
+		report(res, fmt.Sprintf("lifted the allowlist of %s in %s", pos[1], pos[0]))
 		return nil
 	case "namespaces":
 		if err := need(1, "namespaces <store>"); err != nil {
@@ -235,7 +235,7 @@ func cmdStore(verb string, args []string) error {
 			map[string]any{"can_read": *read, "can_write": *write}, &res); err != nil {
 			return err
 		}
-		print(res, fmt.Sprintf("%s on namespace %s of %s: read=%v write=%v", pos[2], pos[1], pos[0], *read, *write))
+		report(res, fmt.Sprintf("%s on namespace %s of %s: read=%v write=%v", pos[2], pos[1], pos[0], *read, *write))
 		return nil
 	case "namespace-revoke":
 		if err := need(3, "namespace-revoke <store> <ns> <db_role>"); err != nil {
@@ -245,7 +245,7 @@ func cmdStore(verb string, args []string) error {
 		if err := c.do(ctx, "DELETE", storePath(pos[0])+"/namespaces/"+url.PathEscape(pos[1])+"/access/"+url.PathEscape(pos[2]), nil, &res); err != nil {
 			return err
 		}
-		print(res, fmt.Sprintf("removed %s from namespace %s of %s", pos[2], pos[1], pos[0]))
+		report(res, fmt.Sprintf("removed %s from namespace %s of %s", pos[2], pos[1], pos[0]))
 		return nil
 	default:
 		fmt.Fprint(os.Stderr, storeUsage)
