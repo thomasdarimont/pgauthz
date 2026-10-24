@@ -240,13 +240,27 @@ func (s *Server) handleSubjectErase(w http.ResponseWriter, r *http.Request) {
 }
 
 // eraseDecisions writes the erasure tombstone and removes the subject's
-// persisted lines on either side, in one transaction; 0 without a sink.
+// persisted lines on either side; 0 without a sink.
+//
+// Two transactions, ordered against the sinks' batches (pgauthzd's
+// decisionlog package, "Ordering"): the first writes the tombstone and
+// takes the erasure advisory lock EXCLUSIVE right before committing — the
+// sinks hold it SHARED for every batch transaction, so this waits for the
+// batches in flight (they filtered before the tombstone existed) and is
+// released the instant the tombstone is committed; a batch that starts
+// after that filters against the committed tombstone. The delete over the
+// persisted lines then runs in its own transaction with no lock held, so a
+// large log never stalls the sinks. The lock key is hashtext of the
+// tombstone table's name, the same expression the sink uses. A batch stuck
+// longer than lock_timeout fails this step (502 partial, retried), it does
+// not hang the request.
 func (s *Server) eraseDecisions(ctx context.Context, store, typ, id, by string) (int64, error) {
 	ok, err := s.decisionsConfigured(ctx)
 	if err != nil || !ok {
 		return 0, err
 	}
-	tx, err := s.decisionsDB().Begin(ctx)
+	db := s.decisionsDB()
+	tx, err := db.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -254,10 +268,19 @@ func (s *Server) eraseDecisions(ctx context.Context, store, typ, id, by string) 
 	if _, err := tx.Exec(ctx, `INSERT INTO decisionlog.erasures (store, subject_type, subject_id, erased_at, erased_by) VALUES ($1, $2, $3, now(), $4)`, store, typ, id, by); err != nil {
 		return 0, err
 	}
-	tag, err := tx.Exec(ctx, `DELETE FROM decisionlog.decisions
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '10s'`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('decisionlog.erasures'))`); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	tag, err := db.Exec(ctx, `DELETE FROM decisionlog.decisions
 		 WHERE store = $1 AND ((subject_type = $2 AND subject_id = $3) OR (resource_type = $2 AND resource_id = $3))`, store, typ, id)
 	if err != nil {
 		return 0, err
 	}
-	return tag.RowsAffected(), tx.Commit(ctx)
+	return tag.RowsAffected(), nil
 }

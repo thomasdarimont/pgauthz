@@ -126,3 +126,27 @@ covers — decided at or before `erased_at`, naming the person as subject or
 resource. Tombstones are pruned with the retention window. The console's
 erasure runs the engine first (authoritative, audited) and the decision log
 second; a failure there answers 502 `partial`, and a retry completes it.
+
+**Ordering (review #22).** A batch and an erasure run in separate
+transactions; under READ COMMITTED a batch that filtered before the
+tombstone was committed could still commit after the erasure's delete and
+resurrect the line. A transaction-level advisory lock on one key
+(`hashtext('decisionlog.erasures')`) orders them without serialising the
+sinks: every batch holds it **shared** for its transaction — batches never
+wait for each other — and the erasure takes it **exclusive** for an
+instant: it writes the tombstone, acquires the lock (waiting for the batches
+in flight, under a `lock_timeout`), and commits that small transaction. The
+delete over the persisted lines runs afterwards with no lock held, so a
+large log never stalls a sink. A batch that filtered without the tombstone
+has therefore committed before the delete runs; a batch that started after
+the erasure's lock request filters after the tombstone is committed. A
+two-session test pins both interleavings.
+
+**Delivery-age boundary.** Tombstones live as long as the retention window,
+but a line can arrive arbitrarily late (an instance that was down keeps its
+queue) and recreate a dropped partition. The sink therefore **refuses lines
+older than the retention window** (`DECISION_LOG_RETENTION_DAYS`; counted in
+`pgauthzd_decision_log_expired_lines_total`, logged) — one cutoff for
+dropping partitions, pruning tombstones and accepting lines, so a pruned
+tombstone never had a line left to cover. With retention off (0) nothing is
+pruned and nothing is refused.

@@ -209,6 +209,7 @@ func Run(name, version string) error {
 				}
 			}
 			ps.OnDrop = func(lines int) { metrics.DecisionLogDropped.Add(float64(lines)) }
+			ps.OnExpired = func(lines int) { metrics.DecisionLogExpired.Add(float64(lines)) }
 		}
 	}
 	dlogOpt := api.WithDecisionLog(dlog)

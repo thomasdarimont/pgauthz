@@ -113,6 +113,13 @@ var (
 		Name: "pgauthzd_decision_log_dropped_lines_total",
 		Help: "Decision-log lines accepted but lost by the postgres sink (failed batch, queue full).",
 	})
+	// Lines the postgres sink refused because they are older than
+	// DECISION_LOG_RETENTION_DAYS (a delivery delayed past retention would
+	// outlive the erasure tombstones that covered it).
+	DecisionLogExpired = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "pgauthzd_decision_log_expired_lines_total",
+		Help: "Decision-log lines refused by the postgres sink because they were older than the retention window.",
+	})
 
 	// Issuer bindings (ISSUERS_SOURCE=env+db): the revision of
 	// authz.issuer_bindings this instance applies, and reload outcomes.

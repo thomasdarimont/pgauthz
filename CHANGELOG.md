@@ -94,6 +94,17 @@ pre-1.0, minor versions may include breaking changes.
   `events_about` excludes the person's own actions before the page is cut;
   `decisions_about` includes lines without a subject
   (`IS DISTINCT FROM`). Regression checks for each.
+- **Review #22 (Codex, on 19049f6) fixes.** Sink batches and erasures are
+  now ordered: every batch holds a transaction-level advisory lock shared,
+  the erasure writes its tombstone, takes the lock exclusive for an instant
+  and commits before deleting the persisted lines unlocked — a batch in
+  flight at the moment of the erasure can no longer commit a line about the
+  person afterwards, and the sinks never wait for each other or for the
+  delete (P1; a two-session test pins both interleavings). The sink refuses
+  lines older than `DECISION_LOG_RETENTION_DAYS` (new counter
+  `pgauthzd_decision_log_expired_lines_total`), so a delivery delayed past
+  retention cannot outlive the tombstone that covered it (P2). ADR 0015
+  addendum, PRODUCTION.md.
 - **Review #20 (Codex, on 8782230) fixes.** Issuer-scoped client
   certificates now see their issuer on `GET /admin/issuers` (the listing
   took the issuer from the token context, which a certificate has none of);

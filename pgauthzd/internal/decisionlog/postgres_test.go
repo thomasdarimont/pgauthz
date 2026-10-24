@@ -2,12 +2,17 @@ package decisionlog
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // fakeStore records what the sink asks of the database and can fail inserts.
@@ -307,6 +312,198 @@ func TestPostgresSinkIntegration(t *testing.T) {
 	if err := l.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// Review #22 P1: a batch and an erasure in overlapping transactions. The
+// erasure's barrier (tombstone, then the exclusive advisory lock, then
+// commit; the delete afterwards) must wait for a batch in flight and make
+// a later batch see the tombstone — in both orders, deterministically.
+func TestPostgresSinkErasureInterleavings(t *testing.T) {
+	dsn := os.Getenv("PGAUTHZD_TEST_DECISION_LOG_DSN")
+	if dsn == "" {
+		t.Skip("PGAUTHZD_TEST_DECISION_LOG_DSN not set")
+	}
+	ctx := context.Background()
+	ps, err := OpenPostgres(ctx, PostgresConfig{DSN: dsn, FlushInterval: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := ps.db.(*pgStore)
+	// the sink pool is capped at two connections (one per batch in flight);
+	// the erasing side and the observer are other clients with their own
+	aux, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = aux.Exec(ctx, `DROP SCHEMA IF EXISTS decisionlog CASCADE`)
+		aux.Close()
+		db.pool.Close()
+	}()
+	lineAbout := func(subject, resource string, at time.Time) row {
+		b, _ := json.Marshal(Entry{Time: at, Listener: "public", Endpoint: "check", Store: "it_race", Subject: Ref{Type: "user", ID: subject}, Action: "can_read", Resource: Ref{Type: "doc", ID: resource}})
+		r, err := parseRow(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	count := func(resource string) int {
+		var n int
+		_ = aux.QueryRow(ctx, `SELECT count(*) FROM decisionlog.decisions WHERE store = 'it_race' AND resource_id = $1`, resource).Scan(&n)
+		return n
+	}
+	// the console's erasure, step by step (the SQL mirrors eraseDecisions)
+	eraseBarrier := func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO decisionlog.erasures (store, subject_type, subject_id, erased_at, erased_by) VALUES ('it_race', 'user', 'alice', now(), 'test')`); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, erasureBarrierSQL)
+		return err
+	}
+	eraseDelete := func() error {
+		_, err := aux.Exec(ctx, `DELETE FROM decisionlog.decisions WHERE store = 'it_race' AND ((subject_type = 'user' AND subject_id = 'alice') OR (resource_type = 'user' AND resource_id = 'alice'))`)
+		return err
+	}
+	waitingOnLock := func() bool {
+		var n int
+		_ = aux.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`).Scan(&n)
+		return n == 1
+	}
+	before := time.Now().UTC().Add(-time.Minute)
+	if err := db.ensurePartitions(ctx, []time.Time{before}); err != nil {
+		t.Fatal(err)
+	}
+
+	// (a) the batch is in flight — copied and filtered, no tombstone yet —
+	// when the erasure arrives: the barrier waits, the delete then sees the row.
+	txW, err := db.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := insertTx(ctx, txW, []row{lineAbout("alice", "race-a", before)}); err != nil {
+		t.Fatal(err)
+	}
+	erased := make(chan error, 1)
+	go func() {
+		txE, err := aux.Begin(ctx)
+		if err != nil {
+			erased <- err
+			return
+		}
+		defer func() { _ = txE.Rollback(ctx) }()
+		if err := eraseBarrier(txE); err != nil {
+			erased <- err
+			return
+		}
+		if err := txE.Commit(ctx); err != nil {
+			erased <- err
+			return
+		}
+		erased <- eraseDelete()
+	}()
+	waitFor(t, "the erasure to wait for the batch in flight", waitingOnLock)
+	select {
+	case err := <-erased:
+		t.Fatalf("the erasure did not wait for the batch in flight: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := txW.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-erased; err != nil {
+		t.Fatal(err)
+	}
+	if n := count("race-a"); n != 0 {
+		t.Fatalf("(a) alice's line committed after the erasure survived: %d rows", n)
+	}
+
+	// (b) the erasure holds the barrier when a batch arrives: the batch
+	// waits, then filters against the committed tombstone itself.
+	txE, err := aux.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eraseBarrier(txE); err != nil {
+		t.Fatal(err)
+	}
+	inserted := make(chan error, 1)
+	go func() {
+		txW, err := db.pool.Begin(ctx)
+		if err != nil {
+			inserted <- err
+			return
+		}
+		defer func() { _ = txW.Rollback(ctx) }()
+		if err := insertTx(ctx, txW, []row{lineAbout("alice", "race-b", before), lineAbout("bob", "race-b", before)}); err != nil {
+			inserted <- err
+			return
+		}
+		inserted <- txW.Commit(ctx)
+	}()
+	waitFor(t, "the batch to wait for the erasure's barrier", waitingOnLock)
+	select {
+	case err := <-inserted:
+		t.Fatalf("the batch did not wait for the barrier: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := txE.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-inserted; err != nil {
+		t.Fatal(err)
+	}
+	if err := eraseDelete(); err != nil {
+		t.Fatal(err)
+	}
+	var kept []string
+	rows, _ := aux.Query(ctx, `SELECT subject_id FROM decisionlog.decisions WHERE store = 'it_race' AND resource_id = 'race-b' ORDER BY 1`)
+	for rows.Next() {
+		var s string
+		_ = rows.Scan(&s)
+		kept = append(kept, s)
+	}
+	rows.Close()
+	if strings.Join(kept, ",") != "bob" {
+		t.Fatalf("(b) after the barrier: %v (want bob's line only)", kept)
+	}
+	if err := ps.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Review #22 P2: a line older than the retention window is refused on
+// flush — it would recreate a dropped partition and outlive the tombstone
+// that covered it — and counted; without retention everything is accepted.
+func TestPostgresSinkRefusesLinesOlderThanRetention(t *testing.T) {
+	f := &fakeStore{}
+	s := newPostgresSink(PostgresConfig{RetentionDays: 7, BatchSize: 10, FlushInterval: 20 * time.Millisecond, QueueSize: 100}, f)
+	var expired atomic.Int64
+	s.OnExpired = func(n int) { expired.Add(int64(n)) }
+	fresh, _ := json.Marshal(Entry{Time: time.Now().UTC(), Listener: "public", Endpoint: "check", Store: "s", Subject: Ref{Type: "user", ID: "a"}})
+	stale, _ := json.Marshal(Entry{Time: time.Now().UTC().AddDate(0, 0, -8), Listener: "public", Endpoint: "check", Store: "s", Subject: Ref{Type: "user", ID: "a"}})
+	edge, _ := json.Marshal(Entry{Time: time.Now().UTC().AddDate(0, 0, -7).Add(time.Hour), Listener: "public", Endpoint: "check", Store: "s", Subject: Ref{Type: "user", ID: "a"}}) // inside the window's first day
+	for _, l := range [][]byte{fresh, stale, edge} {
+		if _, err := s.Write(append(l, '\n')); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, "the fresh and the edge line inserted", func() bool { return f.rows() == 2 })
+	if expired.Load() != 1 || s.Expired.Load() != 1 {
+		t.Fatalf("expired %d/%d, want the stale line refused once", expired.Load(), s.Expired.Load())
+	}
+	_ = s.Close()
+
+	f2 := &fakeStore{}
+	s2 := newPostgresSink(PostgresConfig{RetentionDays: 0, BatchSize: 10, FlushInterval: 20 * time.Millisecond, QueueSize: 100}, f2)
+	if _, err := s2.Write(append(stale, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the old line inserted without retention", func() bool { return f2.rows() == 1 })
+	if s2.Expired.Load() != 0 {
+		t.Fatalf("without retention the old line must be accepted: rows %d expired %d", f2.rows(), s2.Expired.Load())
+	}
+	_ = s2.Close()
 }
 
 // A failed batch that the full queue cannot take back loses lines: they are

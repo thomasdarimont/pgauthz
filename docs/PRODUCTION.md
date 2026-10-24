@@ -1142,7 +1142,15 @@ fleet-wide *partition drop* is shared by design).
   tombstone is what makes the 200 reliable: a line about the person that an
   instance accepted before the erasure and flushes afterwards is dropped by
   the sink on insert (lines decided after the erasure are new data and
-  stay); tombstones are pruned with the retention window. A decision-log
+  stay); tombstones are pruned with the retention window. Batches and
+  erasures are ordered by a transaction-level advisory lock that the sinks
+  hold shared and the erasure takes exclusive for an instant (the delete of
+  persisted lines runs afterwards, unlocked), so a batch in flight at the
+  moment of the erasure cannot resurrect a line, and the sinks never wait
+  for each other or for the delete (ADR 0015 → Ordering). The sink refuses
+  lines older than `DECISION_LOG_RETENTION_DAYS` (metric
+  `pgauthzd_decision_log_expired_lines_total`), so a delivery delayed past
+  retention cannot outlive the tombstone that covered it. A decision-log
   failure answers 502 `partial` with the engine part done and on record;
   a retry completes the rest — the erasure is idempotent.
 - Not covered by typed matching: free text. `condition_context`, event
