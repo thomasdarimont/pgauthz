@@ -114,7 +114,9 @@ pre-1.0, minor versions may include breaking changes.
   Review #24: the sink's local first pass keeps a day of grace so a clock
   ahead of the database's cannot discard a line the database would keep;
   the retention test pins the default-partition sweep together with its
-  tombstone.
+  tombstone. Review #25: the tolerated skew is a day and documented as
+  such; an integration test skews the sink's clock 23 hours either way
+  against the database's.
 - **Review #20 (Codex, on 8782230) fixes.** Issuer-scoped client
   certificates now see their issuer on `GET /admin/issuers` (the listing
   took the issuer from the token context, which a certificate has none of);

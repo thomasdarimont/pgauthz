@@ -592,6 +592,63 @@ func TestPostgresSinkRetentionBoundary(t *testing.T) {
 	}
 }
 
+// Review #25: the local first pass against the real database clock. An
+// application clock up to a day ahead keeps the window's oldest day (the
+// grace day), and a clock behind cannot smuggle an expired line past the
+// transaction's check.
+func TestPostgresSinkClockSkew(t *testing.T) {
+	dsn := os.Getenv("PGAUTHZD_TEST_DECISION_LOG_DSN")
+	if dsn == "" {
+		t.Skip("PGAUTHZD_TEST_DECISION_LOG_DSN not set")
+	}
+	ctx := context.Background()
+	ps, err := OpenPostgres(ctx, PostgresConfig{DSN: dsn, RetentionDays: 7, FlushInterval: 20 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := ps.db.(*pgStore)
+	defer func() {
+		_, _ = db.pool.Exec(ctx, `DROP SCHEMA IF EXISTS decisionlog CASCADE`)
+		db.pool.Close()
+	}()
+	var dbNow, dbCutoff time.Time
+	if err := db.pool.QueryRow(ctx, `SELECT clock_timestamp(), `+strings.TrimPrefix(retentionCutoffSQL, "SELECT "), 7).Scan(&dbNow, &dbCutoff); err != nil {
+		t.Fatal(err)
+	}
+	count := func(resource string) int {
+		var n int
+		_ = db.pool.QueryRow(ctx, `SELECT count(*) FROM decisionlog.decisions WHERE store = 'it_skew' AND resource_id = $1`, resource).Scan(&n)
+		return n
+	}
+	log := func(at time.Time, resource string) {
+		b, _ := json.Marshal(Entry{Time: at, Listener: "public", Endpoint: "check", Store: "it_skew", Subject: Ref{Type: "user", ID: "alice"}, Action: "can_read", Resource: Ref{Type: "doc", ID: resource}})
+		if _, err := ps.Write(append(b, '\n')); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// the application clock 23 h ahead of the database's: a line on the
+	// database's oldest kept day must still be stored
+	ps.now = func() time.Time { return dbNow.Add(23 * time.Hour) }
+	log(dbCutoff.Add(time.Minute), "ahead")
+	waitFor(t, "the oldest kept day's line to be stored despite the clock ahead", func() bool { return count("ahead") == 1 })
+	if ps.Expired.Load() != 0 {
+		t.Fatalf("a clock less than a day ahead must not refuse anything: expired %d", ps.Expired.Load())
+	}
+
+	// the application clock 23 h behind: a line just before the database's
+	// cutoff passes the local pass and is refused in the transaction
+	ps.now = func() time.Time { return dbNow.Add(-23 * time.Hour) }
+	log(dbCutoff.Add(-time.Minute), "behind")
+	waitFor(t, "the expired line to be refused by the database", func() bool { return ps.Expired.Load() == 1 })
+	if count("behind") != 0 {
+		t.Fatal("a clock behind let an expired line into the log")
+	}
+	if err := ps.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Review #22 P2: a line older than the retention window is refused on
 // flush — it would recreate a dropped partition and outlive the tombstone
 // that covered it — and counted; without retention everything is accepted.

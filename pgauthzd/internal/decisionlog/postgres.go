@@ -196,6 +196,9 @@ type PostgresSink struct {
 	Expired   atomic.Int64
 	// Queued reports the current queue length (metrics).
 	Queued func() int
+	// now is the local clock of the first-pass age check (tests skew it
+	// against the database's).
+	now func() time.Time
 }
 
 // OpenPostgres connects, creates the schema and table when missing, ensures
@@ -232,7 +235,7 @@ func newPostgresSink(cfg PostgresConfig, db store) *PostgresSink {
 	if cfg.FlushInterval <= 0 {
 		cfg.FlushInterval = time.Second
 	}
-	s := &PostgresSink{cfg: cfg, db: db, q: make(chan []byte, cfg.QueueSize), stop: make(chan struct{}), done: make(chan struct{})}
+	s := &PostgresSink{cfg: cfg, db: db, q: make(chan []byte, cfg.QueueSize), stop: make(chan struct{}), done: make(chan struct{}), now: time.Now}
 	s.Queued = func() int { return len(s.q) }
 	go s.run()
 	return s
@@ -355,8 +358,10 @@ func (s *PostgresSink) flushMany(ctx context.Context, batch [][]byte) error {
 		// one day of grace: this pass runs on the local clock, and a clock
 		// ahead of the database's must not discard a line the database
 		// would still keep (review #24) — only the transaction's check
-		// refuses for good
-		oldest = retentionCutoff(s.cfg.RetentionDays + 1)
+		// refuses for good. The grace bounds the tolerated skew: a local
+		// clock more than a day ahead of the database's would still
+		// discard the window's oldest day here.
+		oldest = retentionCutoffAt(s.now(), s.cfg.RetentionDays+1)
 	}
 	expired := 0
 	kept := make([][]byte, 0, len(batch)) // the lines behind rows, for re-queueing
@@ -454,8 +459,10 @@ func (s *PostgresSink) flushMany(ctx context.Context, batch [][]byte) error {
 // retentionCutoff is the local-clock twin of retentionCutoffSQL: the first
 // day the sink keeps. flushMany uses it, one day wider, for the cheap first
 // pass; the database's own answer decides inside the transactions.
-func retentionCutoff(days int) time.Time {
-	return time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -days)
+func retentionCutoff(days int) time.Time { return retentionCutoffAt(time.Now(), days) }
+
+func retentionCutoffAt(now time.Time, days int) time.Time {
+	return now.UTC().Truncate(24*time.Hour).AddDate(0, 0, -days)
 }
 
 // retention drops partitions older than RetentionDays, once an hour.
