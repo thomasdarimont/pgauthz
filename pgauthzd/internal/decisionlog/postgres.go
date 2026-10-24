@@ -82,7 +82,34 @@ CREATE INDEX IF NOT EXISTS decisions_store_trace ON decisionlog.decisions (store
 CREATE INDEX IF NOT EXISTS decisions_store_ts ON decisionlog.decisions (store, ts DESC, id DESC);
 CREATE INDEX IF NOT EXISTS decisions_store_subject_ts ON decisionlog.decisions (store, subject_type, subject_id, ts DESC);
 CREATE INDEX IF NOT EXISTS decisions_store_resource_ts ON decisionlog.decisions (store, resource_type, resource_id, ts DESC);
+CREATE INDEX IF NOT EXISTS decisions_id ON decisionlog.decisions (id);
+CREATE TABLE IF NOT EXISTS decisionlog.erasures (
+    store        text NOT NULL,
+    subject_type text NOT NULL,
+    subject_id   text NOT NULL,
+    erased_at    timestamptz NOT NULL DEFAULT now(),
+    erased_by    text,
+    PRIMARY KEY (store, subject_type, subject_id, erased_at)
+);
 `
+
+// Erasure tombstones (review #21): a data-subject erasure deletes the
+// persisted lines about a person, but a line the Logger accepted BEFORE the
+// erasure may still sit in an instance's queue and flush afterwards. The
+// erasing side writes a tombstone (store, subject, erased_at) into
+// decisionlog.erasures; every batch this sink inserts is followed, in the
+// same transaction, by a delete of the batch's rows that a tombstone
+// covers — a line about the person decided at or before erased_at, on the
+// subject or the resource side. Lines decided after the erasure are new
+// data and stay. Tombstones are pruned with the retention window.
+const applyErasuresSQL = `
+DELETE FROM decisionlog.decisions d
+ USING decisionlog.erasures e
+ WHERE d.id > $1
+   AND d.store = e.store
+   AND d.ts <= e.erased_at
+   AND ((d.subject_type = e.subject_type AND d.subject_id = e.subject_id)
+     OR (d.resource_type = e.subject_type AND d.resource_id = e.subject_id))`
 
 var columns = []string{"ts", "request_id", "trace_id", "span_id", "listener", "endpoint", "via", "store", "subject_type", "subject_id", "action",
 	"resource_type", "resource_id", "decision", "state", "reason", "actor", "client", "issuer", "latency_ms", "error", "line"}
@@ -99,6 +126,7 @@ type store interface {
 	ensurePartitions(ctx context.Context, days []time.Time) error
 	insert(ctx context.Context, rows []row) error
 	dropPartitionsBefore(ctx context.Context, cutoff time.Time) (int, error)
+	pruneErasures(ctx context.Context, cutoff time.Time) error
 	close()
 }
 
@@ -362,6 +390,7 @@ func (s *PostgresSink) retention(ctx context.Context) {
 	defer cancel()
 	cutoff := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -s.cfg.RetentionDays)
 	_, _ = s.db.dropPartitionsBefore(cctx, cutoff)
+	_ = s.db.pruneErasures(cctx, cutoff) // their lines are gone with the partitions
 	// a dropped day must be re-ensured should a late line still name it
 	s.ensured.Range(func(k, _ any) bool { s.ensured.Delete(k); return true })
 }
@@ -430,12 +459,34 @@ func (p *pgStore) ensurePartitions(ctx context.Context, days []time.Time) error 
 	return nil
 }
 
+// insert copies a batch in and, in the same transaction, removes the rows
+// of that batch an erasure tombstone covers (see applyErasuresSQL).
 func (p *pgStore) insert(ctx context.Context, rows []row) error {
 	src := make([][]any, len(rows))
 	for i, r := range rows {
 		src[i] = r.vals
 	}
-	_, err := p.pool.CopyFrom(ctx, pgx.Identifier{Schema, Table}, columns, pgx.CopyFromRows(src))
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var minID int64
+	if err := tx.QueryRow(ctx, `SELECT coalesce(pg_sequence_last_value(pg_get_serial_sequence($1, 'id')::regclass), 0)`, Schema+"."+Table).Scan(&minID); err != nil {
+		return err
+	}
+	if _, err := tx.CopyFrom(ctx, pgx.Identifier{Schema, Table}, columns, pgx.CopyFromRows(src)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, applyErasuresSQL, minID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// pruneErasures drops tombstones older than the retention cutoff.
+func (p *pgStore) pruneErasures(ctx context.Context, cutoff time.Time) error {
+	_, err := p.pool.Exec(ctx, `DELETE FROM decisionlog.erasures WHERE erased_at < $1`, cutoff)
 	return err
 }
 

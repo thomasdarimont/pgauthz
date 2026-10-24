@@ -84,6 +84,16 @@ pre-1.0, minor versions may include breaking changes.
   endpoints) instead of just the outcome; Reset clears every filter back to
   the window; Refresh reloads it. A test pins that every filter value
   reaches SQL as a bound argument.
+- **Review #21 (Codex, on 1e47927) fixes.** The decision-log sink honours
+  **erasure tombstones** (`decisionlog.erasures`, ADR 0015 addendum): a
+  line about an erased person that an instance accepted before the erasure
+  and flushes afterwards is dropped on insert, so a 200 from the console's
+  erasure holds even against buffered writes; the erasure now runs the
+  engine first (re-authorized, recorded in the action log) and the decision
+  log second, answering 502 `partial` on a decision-log failure;
+  `events_about` excludes the person's own actions before the page is cut;
+  `decisions_about` includes lines without a subject
+  (`IS DISTINCT FROM`). Regression checks for each.
 - **Review #20 (Codex, on 8782230) fixes.** Issuer-scoped client
   certificates now see their issuer on `GET /admin/issuers` (the listing
   took the issuer from the token context, which a certificate has none of);

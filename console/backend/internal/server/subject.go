@@ -150,7 +150,8 @@ func (s *Server) subjectDecisions(ctx context.Context, store, typ, id string, li
 	}
 	where := `subject_type = $2 AND subject_id = $3`
 	if asResource {
-		where = `resource_type = $2 AND resource_id = $3 AND NOT (subject_type = $2 AND subject_id = $3)`
+		// IS DISTINCT FROM: a line without a subject (nullable) is still about the person (review #21)
+		where = `resource_type = $2 AND resource_id = $3 AND (subject_type, subject_id) IS DISTINCT FROM ($2, $3)`
 	}
 	rows, err := s.decisionsDB().Query(ctx, `
 		SELECT line FROM decisionlog.decisions
@@ -201,29 +202,17 @@ func (s *Server) handleSubjectErase(w http.ResponseWriter, r *http.Request) {
 	purgeDecisions := req.PurgeDecisions == nil || *req.PurgeDecisions
 	ctx := r.Context()
 
-	// Two databases, no shared transaction (review #20). The decision-log
-	// lines go FIRST: if the sink is down nothing has happened yet and the
-	// answer is a plain error; if the engine then fails, the lines are gone
-	// but the tuples stay, the answer is an error, and a retry completes —
-	// the erasure is idempotent. A 200 means every part is done.
-	var decisions int64
-	if purgeDecisions {
-		ok, err := s.decisionsConfigured(ctx)
-		if err != nil {
-			writeError(w, http.StatusBadGateway, "the decision log could not be reached; nothing was erased: "+err.Error())
-			return
-		}
-		if ok {
-			// the subject's own decisions AND the decisions others asked for on it
-			tag, err := s.decisionsDB().Exec(ctx, `DELETE FROM decisionlog.decisions
-				 WHERE store = $1 AND ((subject_type = $2 AND subject_id = $3) OR (resource_type = $2 AND resource_id = $3))`, store, typ, id)
-			if err != nil {
-				writeError(w, http.StatusBadGateway, "the decision log could not be erased; nothing was erased: "+err.Error())
-				return
-			}
-			decisions = tag.RowsAffected()
-		}
-	}
+	// Two databases, no shared transaction (reviews #20, #21). The ENGINE
+	// goes first: it re-authorizes inside its transaction and records the
+	// erasure in the console's action log — the durable administrative
+	// record — so nothing is deleted before the authoritative check. Then
+	// the decision log, in one transaction: a tombstone
+	// (decisionlog.erasures) and the delete of the persisted lines on
+	// either side. The tombstone is what makes the 200 mean something: a
+	// line about the person that an instance accepted before the erasure
+	// and flushes afterwards is dropped by the sink on insert. If the
+	// decision-log step fails the answer is 502 `partial`; the engine part
+	// is done and on record, and a retry completes the rest (idempotent).
 	var res json.RawMessage
 	payload := map[string]any{"op": "erase_subject", "subject": typ + ":" + id, "purge_events": purgeEvents, "purge_audit": req.PurgeAudit, "purge_decisions": purgeDecisions}
 	err := s.asPerson(ctx, p, "can_manage_access", "store", store, payload, func(tx pgx.Tx) error {
@@ -231,15 +220,44 @@ func (s *Server) handleSubjectErase(w http.ResponseWriter, r *http.Request) {
 			store, typ, id, purgeEvents, req.PurgeAudit, p.typ+":"+p.id).Scan(&res)
 	})
 	if err != nil {
-		if decisions > 0 {
-			writeJSON(w, http.StatusBadGateway, map[string]any{"error": "the engine refused the erasure after " + strconv.FormatInt(decisions, 10) + " decision-log line(s) were removed; retry to complete it: " + err.Error(), "partial": true, "decisions": decisions})
-			return
-		}
 		writeEngineError(w, err)
 		return
 	}
 	out := map[string]any{}
 	_ = json.Unmarshal(res, &out)
-	out["decisions"] = decisions
+	out["decisions"] = 0
+	if purgeDecisions {
+		n, err := s.eraseDecisions(ctx, store, typ, id, p.typ+":"+p.id)
+		if err != nil {
+			out["partial"] = true
+			out["error"] = "the engine erased the subject (recorded in the action log) but the decision log could not be: retry to complete it: " + err.Error()
+			writeJSON(w, http.StatusBadGateway, out)
+			return
+		}
+		out["decisions"] = n
+	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// eraseDecisions writes the erasure tombstone and removes the subject's
+// persisted lines on either side, in one transaction; 0 without a sink.
+func (s *Server) eraseDecisions(ctx context.Context, store, typ, id, by string) (int64, error) {
+	ok, err := s.decisionsConfigured(ctx)
+	if err != nil || !ok {
+		return 0, err
+	}
+	tx, err := s.decisionsDB().Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `INSERT INTO decisionlog.erasures (store, subject_type, subject_id, erased_at, erased_by) VALUES ($1, $2, $3, now(), $4)`, store, typ, id, by); err != nil {
+		return 0, err
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM decisionlog.decisions
+		 WHERE store = $1 AND ((subject_type = $2 AND subject_id = $3) OR (resource_type = $2 AND resource_id = $3))`, store, typ, id)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), tx.Commit(ctx)
 }

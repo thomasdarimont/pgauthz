@@ -113,12 +113,17 @@ func TestSubjectHTTP(t *testing.T) {
 		VALUES (now(), 'public', 'check', $1, 'user', 'bob', 'can_read_user', 'user', 'alice', true, '{"subject_id":"bob","resource_id":"alice"}')`, store); err != nil {
 		t.Fatal(err)
 	}
+	// a line about alice with no subject at all (nullable) is still about her (review #21)
+	if _, err := s.db.Exec(ctx, `INSERT INTO decisionlog.decisions (ts, listener, endpoint, store, action, resource_type, resource_id, decision, line)
+		VALUES (now(), 'public', 'check', $1, 'can_read_user', 'user', 'alice', true, '{"resource_id":"alice"}')`, store); err != nil {
+		t.Fatal(err)
+	}
 	_, m, _ = do("GET", base+"?subject=user:alice", "", owner)
 	if n := len(m["decisions"].([]any)); n != 1 {
 		t.Fatalf("decision-log lines: %d (%v)", n, m["decisions"])
 	}
-	if n := len(m["decisions_about"].([]any)); n != 1 {
-		t.Fatalf("decision-log lines about the subject: %d (%v)", n, m["decisions_about"])
+	if n := len(m["decisions_about"].([]any)); n != 2 {
+		t.Fatalf("decision-log lines about the subject (incl. one without a subject): %d (%v)", n, m["decisions_about"])
 	}
 	// and an action bob recorded ON alice is in events_about
 	if _, err := pool.Exec(ctx, `SELECT authz.model_register_relation($1, 'can_read_user')`, store); err != nil {
@@ -137,9 +142,17 @@ func TestSubjectHTTP(t *testing.T) {
 		t.Fatalf("a viewer may not erase: %d", code)
 	}
 	code, m, _ = do("POST", base+"/erase", `{"subject":"user:alice","purge_audit":true}`, owner)
-	if code != 200 || m["tuples_as_subject"].(float64) != 2 || m["events"].(float64) != 2 || m["decisions"].(float64) != 2 || m["audit"].(float64) < 2 {
+	if code != 200 || m["tuples_as_subject"].(float64) != 2 || m["events"].(float64) != 2 || m["decisions"].(float64) != 3 || m["audit"].(float64) < 2 {
 		t.Fatalf("erase (own + about): %d %v", code, m)
 	}
+	// the tombstone the sink honours for late flushes (review #21)
+	var tomb int
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM decisionlog.erasures WHERE store = $1 AND subject_type = 'user' AND subject_id = 'alice' AND erased_by = 'user:subj_owner'`, store).Scan(&tomb); err != nil || tomb != 1 {
+		t.Fatalf("tombstone: %d %v", tomb, err)
+	}
+	defer func() {
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM decisionlog.erasures WHERE store = $1`, store)
+	}()
 	_, m, _ = do("GET", base+"?subject=user:alice", "", owner)
 	if len(m["direct"].([]any)) != 0 || len(m["events"].([]any)) != 0 || len(m["events_about"].([]any)) != 0 || len(m["decisions"].([]any)) != 0 || len(m["decisions_about"].([]any)) != 0 || len(m["audit"].([]any)) != 0 {
 		t.Fatalf("after the erasure: %v", m)

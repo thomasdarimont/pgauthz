@@ -43,7 +43,9 @@ BEGIN
     PERFORM authz.record_event('test_subject', 'user', 'alice', 'download', 'doc', 'a');
     PERFORM authz.record_event('test_subject', 'user', 'alice', 'download', 'doc', 'b');
     PERFORM authz.record_event('test_subject', 'user', 'bob', 'download', 'doc', 'z');
-    -- bob acts ON alice (she is the event's object): part of her data, erased with her
+    -- alice acts on herself first (her own action, not "about" her), then bob acts
+    -- ON alice (she is the event's object): part of her data, erased with her
+    PERFORM authz.record_event('test_subject', 'user', 'alice', 'can_read_user', 'user', 'alice');
     PERFORM authz.record_event('test_subject', 'user', 'bob', 'can_read_user', 'user', 'alice');
 
     v_doc := authz.export_subject('test_subject', 'user', 'alice');
@@ -65,9 +67,14 @@ BEGIN
         (SELECT string_agg((e->>'object_type') || '#' || (e->>'relation'), ',' ORDER BY e->>'object_type', e->>'relation') FROM jsonb_array_elements(v_doc->'effective') e),
         'doc#can_view,doc#owner,doc#viewer,team#member');
     -- ds_04: the subject's own events, and what others did on the subject
-    PERFORM _test_assert('ds_04_events', jsonb_array_length(v_doc->'events')::text || '|' || (v_doc->'events'->0->>'object_id'), '2|a');
+    PERFORM _test_assert('ds_04_events', jsonb_array_length(v_doc->'events')::text || '|' || (v_doc->'events'->0->>'object_id'), '3|a');
     PERFORM _test_assert('ds_04b_events_about',
         jsonb_array_length(v_doc->'events_about')::text || '|' || (v_doc->'events_about'->0->>'subject_id') || '|' || (v_doc->'events_about'->0->>'action'), '1|bob|can_read_user');
+    -- ds_04c: the self-action is excluded BEFORE the page is cut (review #21):
+    -- with a page of one, bob's action still shows
+    PERFORM _test_assert('ds_04c_events_about_paged',
+        (SELECT (d->'events_about'->0->>'subject_id') || '|' || (d->>'events_about_truncated')
+           FROM authz.export_subject('test_subject', 'user', 'alice', p_limit => 1) d), 'bob|false');
     -- ds_05: the audit trail names the subject on either side: 4 inserts as user, 1 as
     -- object, and the ageing UPDATE above (audited as DELETE + INSERT)
     PERFORM _test_assert('ds_05_audit', jsonb_array_length(v_doc->'audit')::text, '7');
@@ -119,7 +126,7 @@ BEGIN
     v_res := authz.erase_subject('test_subject', 'user', 'alice', p_performed_by => 'dpo');
     PERFORM _test_assert('ds_09_erase_counts',
         (v_res->>'tuples_as_subject') || '|' || (v_res->>'tuples_as_object') || '|' || (v_res->>'events') || '|' || (v_res->>'audit'),
-        '4|1|3|0');
+        '4|1|4|0');
     PERFORM _test_assert('ds_10_nothing_left',
         (SELECT jsonb_array_length(d->'direct')::text || '|' || jsonb_array_length(d->'as_object')::text || '|' || jsonb_array_length(d->'effective')::text || '|' || jsonb_array_length(d->'events')::text || '|' || jsonb_array_length(d->'events_about')::text
            FROM authz.export_subject('test_subject', 'user', 'alice') d),

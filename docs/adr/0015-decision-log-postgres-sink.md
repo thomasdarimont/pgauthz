@@ -113,3 +113,16 @@ takes `decisionLog.dsn`.
   because the default stack would have no Decisions tab.
 - **The engine's database.** Rejected, as in ADR 0013: a different write
   load on the primary and a table replicas would carry for nothing.
+
+## Addendum (2026-10-24): erasure tombstones
+
+A data-subject erasure (PRODUCTION.md → Data subject requests) deletes the
+persisted lines about a person, but the sink is asynchronous: a line the
+Logger accepted before the erasure may flush afterwards and resurrect the
+history. `decisionlog.erasures` (store, subject type, subject id,
+`erased_at`, `erased_by`) is written by the erasing side; after every batch
+the sink inserts, the same transaction deletes the batch's rows a tombstone
+covers — decided at or before `erased_at`, naming the person as subject or
+resource. Tombstones are pruned with the retention window. The console's
+erasure runs the engine first (authoritative, audited) and the decision log
+second; a failure there answers 502 `partial`, and a retry completes it.

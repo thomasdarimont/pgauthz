@@ -45,7 +45,8 @@ func (f *fakeStore) dropPartitionsBefore(_ context.Context, cutoff time.Time) (i
 	return 1, nil
 }
 
-func (f *fakeStore) close() { f.mu.Lock(); f.closed = true; f.mu.Unlock() }
+func (f *fakeStore) close()                                         { f.mu.Lock(); f.closed = true; f.mu.Unlock() }
+func (f *fakeStore) pruneErasures(context.Context, time.Time) error { return nil }
 
 func (f *fakeStore) rows() int {
 	f.mu.Lock()
@@ -264,6 +265,44 @@ func TestPostgresSinkIntegration(t *testing.T) {
 	n, err := db.dropPartitionsBefore(ctx, time.Now().UTC().AddDate(0, 0, -7))
 	if err != nil || n != 1 {
 		t.Fatalf("retention dropped %d (%v), want 1", n, err)
+	}
+
+	// Erasure tombstones (review #21): alice is erased now; a line about her
+	// decided BEFORE the erasure that flushes afterwards is dropped on
+	// insert — on the subject side and on the resource side — while a line
+	// decided after the erasure stays, and so does everyone else's.
+	erasedAt := time.Now().UTC()
+	if _, err := db.pool.Exec(ctx, `INSERT INTO decisionlog.erasures (store, subject_type, subject_id, erased_at, erased_by) VALUES ('it_demo', 'user', 'alice', $1, 'test')`, erasedAt); err != nil {
+		t.Fatal(err)
+	}
+	before, after := erasedAt.Add(-time.Minute), erasedAt.Add(time.Minute)
+	l.Log(Entry{Time: before, Listener: "public", Endpoint: "check", Store: "it_demo", Subject: Ref{Type: "user", ID: "alice"}, Action: "can_read", Resource: Ref{Type: "doc", ID: "late"}})
+	l.Log(Entry{Time: before, Listener: "public", Endpoint: "check", Store: "it_demo", Subject: Ref{Type: "user", ID: "bob"}, Action: "can_read_user", Resource: Ref{Type: "user", ID: "alice"}})
+	l.Log(Entry{Time: before, Listener: "public", Endpoint: "check", Store: "it_demo", Subject: Ref{Type: "user", ID: "bob"}, Action: "can_read", Resource: Ref{Type: "doc", ID: "late"}})
+	l.Log(Entry{Time: after, Listener: "public", Endpoint: "check", Store: "it_demo", Subject: Ref{Type: "user", ID: "alice"}, Action: "can_read", Resource: Ref{Type: "doc", ID: "new"}})
+	waitFor(t, "late lines flushed", func() bool {
+		var n int
+		_ = db.pool.QueryRow(ctx, `SELECT count(*) FROM decisionlog.decisions WHERE store = 'it_demo' AND resource_id IN ('late', 'new')`).Scan(&n)
+		return n == 2
+	})
+	var kept []string
+	rows, _ := db.pool.Query(ctx, `SELECT subject_id || '>' || resource_id FROM decisionlog.decisions WHERE store = 'it_demo' AND resource_id IN ('late', 'new') ORDER BY 1`)
+	for rows.Next() {
+		var s string
+		_ = rows.Scan(&s)
+		kept = append(kept, s)
+	}
+	rows.Close()
+	if strings.Join(kept, ",") != "alice>new,bob>late" {
+		t.Fatalf("after the tombstone: %v (want alice's post-erasure line and bob's unrelated line only)", kept)
+	}
+	if err := db.pruneErasures(ctx, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	_ = db.pool.QueryRow(ctx, `SELECT count(*) FROM decisionlog.erasures`).Scan(&left)
+	if left != 0 {
+		t.Fatalf("tombstones left after pruning: %d", left)
 	}
 	if err := l.Close(); err != nil {
 		t.Fatal(err)

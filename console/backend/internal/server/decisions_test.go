@@ -23,7 +23,11 @@ CREATE TABLE IF NOT EXISTS decisionlog.decisions (
     resource_type text, resource_id text, decision boolean, state text, reason text, actor text, client text,
     issuer text, latency_ms real, error text, line jsonb NOT NULL
 ) PARTITION BY RANGE (ts);
-CREATE TABLE IF NOT EXISTS decisionlog.decisions_default PARTITION OF decisionlog.decisions DEFAULT;`
+CREATE TABLE IF NOT EXISTS decisionlog.decisions_default PARTITION OF decisionlog.decisions DEFAULT;
+CREATE TABLE IF NOT EXISTS decisionlog.erasures (
+    store text NOT NULL, subject_type text NOT NULL, subject_id text NOT NULL,
+    erased_at timestamptz NOT NULL DEFAULT now(), erased_by text,
+    PRIMARY KEY (store, subject_type, subject_id, erased_at));`
 
 // The Decisions tab: not configured without the sink table; then the
 // list (newest first, filters, keyset paging) and the summary (outcomes

@@ -1133,11 +1133,18 @@ fleet-wide *partition drop* is shared by design).
   *subject* (what they did, what they may do) and as the *object* — the
   tuples about them, the actions others recorded on them (`events_about`),
   the decisions others asked for on them (`decisions_about`).
-- **Partial failure of the console's erasure:** the engine and the decision
-  log are two databases with no shared transaction. The console removes
-  the decision-log lines first and only then runs `erase_subject`; a failure
-  at either step answers an error (never 200), and a retry completes the
-  erasure — it is idempotent.
+- **Two databases, one answer:** the engine and the decision log share no
+  transaction. The console runs `erase_subject` first — the engine
+  re-authorizes inside its transaction and the console's action log keeps
+  the durable record — then, in one transaction on the decision log, writes
+  an **erasure tombstone** (`decisionlog.erasures`: store, subject,
+  `erased_at`) and removes the persisted lines on either side. The
+  tombstone is what makes the 200 reliable: a line about the person that an
+  instance accepted before the erasure and flushes afterwards is dropped by
+  the sink on insert (lines decided after the erasure are new data and
+  stay); tombstones are pruned with the retention window. A decision-log
+  failure answers 502 `partial` with the engine part done and on record;
+  a retry completes the rest — the erasure is idempotent.
 - Not covered by typed matching: free text. `condition_context`, event
   payloads and `recorded_by` / `performed_by` / `actor` strings are
   exported as stored; an application that wrote a person's name into a

@@ -220,11 +220,23 @@ BEGIN
         IF v_events_n > p_limit THEN
             v_events := (SELECT coalesce(jsonb_agg(e), '[]'::jsonb) FROM (SELECT e FROM jsonb_array_elements(v_events) e LIMIT p_limit) s);
         END IF;
-        -- what others did TO the subject (the subject as the event's object)
+        -- what others did TO the subject (the subject as the event's object),
+        -- the self-actions excluded BEFORE the limit (review #21), the row
+        -- shape of list_events
         SELECT coalesce(jsonb_agg(to_jsonb(e) ORDER BY e.occurred_at, e.seq), '[]'::jsonb), count(*)
           INTO v_about, v_about_n
-          FROM authz.list_events(p_store, p_object_type => p_user_type, p_object_id => p_user_id, p_limit => p_limit + 1) e
-         WHERE NOT (e.subject_type = p_user_type AND e.subject_id = p_user_id);
+          FROM (SELECT ev.seq, ev.event_id, st.name AS subject_type, ev.subject_id, r.name AS action,
+                       ot.name AS object_type, ev.object_id, authz._event_kind_name(ev.kind) AS kind,
+                       ev.payload, ev.occurred_at, ev.recorded_at, ev.recorded_by
+                  FROM authz.events ev
+                  LEFT JOIN authz.types     st ON st.id = ev.subject_type
+                  LEFT JOIN authz.relations r  ON r.id  = ev.action
+                  LEFT JOIN authz.types     ot ON ot.id = ev.object_type
+                 WHERE ev.store_id = v_store_id
+                   AND ev.object_type = v_type_id AND ev.object_id = p_user_id
+                   AND NOT (ev.subject_type = v_type_id AND ev.subject_id = p_user_id)
+                 ORDER BY ev.occurred_at, ev.seq
+                 LIMIT p_limit + 1) e;
         IF v_about_n > p_limit THEN
             v_about := (SELECT coalesce(jsonb_agg(e), '[]'::jsonb) FROM (SELECT e FROM jsonb_array_elements(v_about) e LIMIT p_limit) s);
         END IF;
