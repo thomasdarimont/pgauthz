@@ -541,7 +541,7 @@ BEGIN
         p_writes  => '[{"user_type":"user","user_id":"carol","relation":"owner","object_type":"doc","object_id":"plan","expires_at":"2099-01-01T00:00:00Z"}]');
     PERFORM _test_assert('rc_16_same_holder_readd_ok', v_res::text, '{"deleted": 1, "written": 1}');
     PERFORM _test_assert('rc_16_same_holder_still_one',
-        (SELECT count(*)::text || ' ' || max(expires_at)::date::text FROM authz.tuples t WHERE t.store_id = authz._s('test_rc') AND t.object_id = 'plan' AND t.relation = authz._r(authz._s('test_rc'), 'owner')), '1 2099-01-01');
+        (SELECT count(*)::text || ' ' || (max(expires_at) = '2099-01-01T00:00:00Z'::timestamptz)::text FROM authz.tuples t WHERE t.store_id = authz._s('test_rc') AND t.object_id = 'plan' AND t.relation = authz._r(authz._s('test_rc'), 'owner')), '1 true');
     -- a re-grant of an active holder that is NOT deleted adds nothing: "revoke carol, grant carol (no-op) + grant dave"? no — plain "revoke carol" with a redundant write of someone already active
     PERFORM authz.model_set_relation_constraint('test_rc', 'doc', 'owner', p_min_direct => 1);
     PERFORM authz.write_tuple('test_rc', 'user', 'dave', 'owner', 'doc', 'plan');

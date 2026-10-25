@@ -324,7 +324,7 @@ BEGIN
     SELECT count(*) INTO v_n FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'alice');
     PERFORM _test_assert('ga_15_apply_grants_recorded', v_n::text, '3');
     PERFORM _test_assert('ga_15_expiry_in_payload',
-        (SELECT (payload->>'expires_at')::timestamptz::date::text FROM authz.list_events('test_grant', p_action => 'share') WHERE payload->>'user_id' = 'tom'), '2099-01-01');
+        (SELECT ((payload->>'expires_at')::timestamptz = '2099-01-01T00:00:00Z'::timestamptz)::text FROM authz.list_events('test_grant', p_action => 'share') WHERE payload->>'user_id' = 'tom'), 'true');
 
     -- a gate on the required relation bounds sharing: at most 3 shares an hour, this one included
     PERFORM authz.add_gate('test_grant', 'document', 'can_share_view', 'share_rate',
@@ -467,9 +467,9 @@ BEGIN
     SELECT count(*) INTO v_n FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'gil');
     PERFORM _test_assert('ga_19_mixed_two_events', (v_n - v_before)::text, '2');
     PERFORM _test_assert('ga_19_mixed_state',
-        (SELECT string_agg(t.user_id || '#' || coalesce(ur.name, '-') || ':' || coalesce(t.expires_at::date::text, 'never'), ',' ORDER BY t.user_id)
+        (SELECT string_agg(t.user_id || '#' || coalesce(ur.name, '-') || ':' || CASE WHEN t.expires_at = '2099-01-01T00:00:00Z'::timestamptz THEN 'expiring' ELSE coalesce(t.expires_at::text, 'never') END, ',' ORDER BY t.user_id)
            FROM authz.tuples t LEFT JOIN authz.relations ur ON ur.id = t.user_relation
-          WHERE t.store_id = authz._s('test_grant') AND t.object_id = 'memo' AND t.user_id IN ('eng', 'eng|member')), 'eng|member#-:2099-01-01');
+          WHERE t.store_id = authz._s('test_grant') AND t.object_id = 'memo' AND t.user_id IN ('eng', 'eng|member')), 'eng|member#-:expiring');
     -- two revokes of the formerly colliding identities in one batch — two revoke events, nothing left
     PERFORM authz.grant('test_grant', 'user', 'gil', 'team', 'eng', 'viewer', 'document', 'memo', p_user_relation => 'member');
     SELECT count(*) INTO v_before FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'gil');
