@@ -1690,6 +1690,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/RelationFloor' }
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /stores/{store}/pgauthz/v1/delete:
@@ -1712,6 +1713,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/RelationFloor' }
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
 
@@ -1853,6 +1855,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/RelationFloor' }
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /stores/{store}/pgauthz/v1/revoke:
@@ -1884,6 +1887,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/RelationFloor' }
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
 
@@ -1909,7 +1913,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
-        '409': { $ref: '#/components/responses/RelationFull' }
+        '409': { $ref: '#/components/responses/RelationConstraintConflict' }
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /stores/{store}/pgauthz/v1/apply-grants:
@@ -1934,7 +1938,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
-        '409': { $ref: '#/components/responses/RelationFull' }
+        '409': { $ref: '#/components/responses/RelationConstraintConflict' }
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /pgauthz/v1/relation-usage:
@@ -2054,7 +2058,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
-        '409': { $ref: '#/components/responses/RelationFull' }
+        '409': { $ref: '#/components/responses/RelationConstraintConflict' }
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /stores/{store}/pgauthz/v1/write-checked:
@@ -2077,7 +2081,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
-        '409': { $ref: '#/components/responses/RelationFull' }
+        '409': { $ref: '#/components/responses/RelationConstraintConflict' }
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
 
@@ -2613,6 +2617,30 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/RelationFull' }
+    RelationConstraintConflict:
+      description: >
+        A relation constraint of the model refused an entry: relation_full
+        (a grant past max_direct, SQLSTATE ZA001) or relation_floor (a revoke
+        that would drop below min_direct, SQLSTATE ZA002). detail carries the
+        object, relation, bound and current count.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/RelationFull'
+              - $ref: '#/components/schemas/RelationFloor'
+    RelationFloor:
+      description: >
+        The delete was refused because it would leave the object with fewer
+        active direct assignments of the relation than its min_direct floor
+        (a relation constraint of the model, SQLSTATE ZA002) — "a document
+        keeps at least one owner". Assign another holder first or lower the
+        floor; offboarding (delete-user) is not subject to it. detail carries
+        the object, relation, floor, current count and how many the request
+        removed.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/RelationFloor' }
     GrantOptionsOK:
       description: The subject's sharing options on the object.
       content:
@@ -3468,6 +3496,7 @@ components:
             direct_count: { type: integer, description: "Active (unexpired) direct tuples on the object for the relation, as written; a userset is one." }
             max_direct: { type: integer, nullable: true }
             direct_headroom: { type: integer, nullable: true }
+            min_direct: { type: integer, nullable: true, description: "The relation's floor on the type: a revocation may not leave fewer active direct assignments." }
             effective_count: { type: integer, nullable: true, description: "Subjects that resolve to the relation on the object; null when unbounded." }
             max_effective: { type: integer, nullable: true }
             effective_headroom: { type: integer, nullable: true }
@@ -3492,6 +3521,25 @@ components:
             relation: { type: string }
             max_direct: { type: integer }
             direct_count: { type: integer }
+      required: [status, error, message]
+    RelationFloor:
+      type: object
+      properties:
+        status: { type: integer }
+        error:
+          type: string
+          enum: [relation_floor]
+        message: { type: string }
+        detail:
+          type: object
+          properties:
+            code: { type: string }
+            object_type: { type: string }
+            object_id: { type: string }
+            relation: { type: string }
+            min_direct: { type: integer }
+            direct_count: { type: integer }
+            removing: { type: integer }
       required: [status, error, message]
     GrantOptionsRequest:
       type: object

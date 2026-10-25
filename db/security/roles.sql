@@ -461,9 +461,9 @@ GRANT EXECUTE ON FUNCTION authz.delete_store_receipt(text, boolean) TO authz_adm
 GRANT EXECUTE ON FUNCTION authz.store_deletions(text) TO authz_admin;                  -- the receipts of a name
 GRANT EXECUTE ON FUNCTION authz.model_register_type(text, text, int, text, text, text[]) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_remove_type(text, text, boolean, text) TO authz_admin;
-GRANT EXECUTE ON FUNCTION authz.model_add_grant_rule(text, text, text, text, text) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.model_add_grant_rule(text, text, text, text, text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_drop_grant_rule(text, text, text) TO authz_admin;
-GRANT EXECUTE ON FUNCTION authz.model_set_relation_constraint(text, text, text, integer, integer) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.model_set_relation_constraint(text, text, text, integer, integer, integer) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_drop_relation_constraint(text, text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_set_type_labels(text, text, text[]) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_add_type_labels(text, text, text[]) TO authz_admin;
@@ -583,9 +583,9 @@ ALTER FUNCTION authz.delete_store_receipt(text, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.store_deletions(text) SECURITY DEFINER;
 ALTER FUNCTION authz.model_register_type(text, text, int, text, text, text[]) SECURITY DEFINER;
 ALTER FUNCTION authz.model_remove_type(text, text, boolean, text) SECURITY DEFINER;
-ALTER FUNCTION authz.model_add_grant_rule(text, text, text, text, text) SECURITY DEFINER;
+ALTER FUNCTION authz.model_add_grant_rule(text, text, text, text, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.model_drop_grant_rule(text, text, text) SECURITY DEFINER;
-ALTER FUNCTION authz.model_set_relation_constraint(text, text, text, integer, integer) SECURITY DEFINER;
+ALTER FUNCTION authz.model_set_relation_constraint(text, text, text, integer, integer, integer) SECURITY DEFINER;
 ALTER FUNCTION authz.model_drop_relation_constraint(text, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.grant(text, text, text, text, text, text, text, text, text, text, jsonb, timestamptz, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.revoke(text, text, text, text, text, text, text, text, text, jsonb) SECURITY DEFINER;

@@ -37,6 +37,9 @@
 #      model_set_relation_constraint on the same relation: apply takes the
 #      relation-model locks up front, so the setter waits instead of
 #      deadlocking on the constraint row, and is then refused.
+#   L. Two revocations race for the last slot above a floor (min_direct 1,
+#      two owners): the second waits on the object lock, counts the first's
+#      delete and is refused — exactly min_direct holders remain.
 #
 # Synchronization: the holder session runs its statement and then pg_sleep(2)
 # in one transaction; the second session is launched only once pg_stat_activity
@@ -282,6 +285,21 @@ case "$out" in *"allows wildcard grants"*) ok "conc_K_setter_refused_after_apply
 [ "$dt" -ge 1000 ] && ok "conc_K_setter_waited_for_apply (${dt} ms)" || bad "conc_K_setter_waited_for_apply" "${dt} ms — did not wait"
 check "conc_K_facet_and_no_cap" "$(q "SELECT (SELECT count(*) FROM authz.list_relation_constraints('$K')) || '/' || (SELECT count(*) FROM authz.type_restrictions tr WHERE tr.store_id = authz._s('$K') AND tr.allow_wildcard)")" "0/1"
 cleanup_k
+
+echo "==> L. two revocations race for the last slot above a floor"
+q "SELECT authz.model_register_type('$S', 'vault');
+   SELECT authz.model_add_rule('$S', 'vault', 'owner', 'direct');
+   SELECT authz.model_set_relation_constraint('$S', 'vault', 'owner', p_min_direct => 1);
+   SELECT authz.write_tuple('$S','user','ann','owner','vault','v1');
+   SELECT authz.write_tuple('$S','user','ben','owner','vault','v1');" >/dev/null
+session "SELECT authz.delete_tuple('$S','user','ann','owner','vault','v1');"
+t0=$(now_ms)
+out=$(q "SELECT authz.delete_tuple('$S','user','ben','owner','vault','v1')")
+dt=$(( $(now_ms) - t0 ))
+wait
+case "$out" in *"would drop below its minimum: 1 of 1"*) ok "conc_L_second_revocation_refused_after_waiting" ;; *) bad "conc_L_second_revocation_refused_after_waiting" "$out" ;; esac
+[ "$dt" -ge 1000 ] && ok "conc_L_second_revocation_waited (${dt} ms)" || bad "conc_L_second_revocation_waited" "${dt} ms — did not wait"
+check "conc_L_exactly_min_direct_holders" "$(q "SELECT count(*) FROM authz.tuples t WHERE t.store_id = authz._s('$S') AND t.object_id = 'v1'")" "1"
 
 echo "==> ${pass} passed, ${fail} failed (of $((pass + fail)) concurrency checks)"
 [ "$fail" -eq 0 ]

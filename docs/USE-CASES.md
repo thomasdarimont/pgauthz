@@ -641,7 +641,10 @@ SELECT authz.apply_grants('gdrive', 'user', 'frank',
 Over HTTP the same two calls are `POST /pgauthz/v1/grant-options` (a read)
 and `POST /pgauthz/v1/apply-grants`, with the actor taken from the token.
 Afterwards `audit_list_object` shows every change with the actor who made
-it.
+it. With `p_record_as => 'share'` on the grant rule, every saved grant and
+revoke is also an event of the actor in the action log, so a temporal gate
+on `can_share` can say "at most ten shares an hour" or "no more than three
+new people a day" without the application recording anything.
 
 Shown in: [`examples/models/gdrive/`](../examples/models/gdrive) (section 12
 of `demo.sql`, with tests), [API → grant / revoke](API.md#grant--revoke--share-on-behalf-of-an-actor).
@@ -672,7 +675,9 @@ SELECT direct_count, direct_headroom, effective_count, limit_reached
 
 Two writers racing for the last slot serialize on the object's lock and the
 second is refused; a batch that would overshoot fails as a whole; expired
-grants free their slot. Over HTTP a refused write is `409 relation_full`
+grants free their slot. The floor works the same way downwards:
+`p_min_direct => 1` on `doc.owner` refuses the revocation of the last owner
+(`409 relation_floor`) while offboarding a person stays possible. Over HTTP a refused write is `409 relation_full`
 (detail: object, relation, cap, count) and `POST /pgauthz/v1/relation-usage`
 is the read behind "48 / 50". Resolved counts are never enforced on a write
 — sharing a folder would have to re-count every document below it — which

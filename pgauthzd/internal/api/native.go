@@ -23,7 +23,12 @@ import (
 func writeWriteError(w http.ResponseWriter, err error) {
 	var full *authz.RelationFull
 	if errors.As(err, &full) {
-		writeRelationFull(w, full)
+		writeConstraintConflict(w, "relation_full", full.Msg, full.Detail)
+		return
+	}
+	var floor *authz.RelationFloor
+	if errors.As(err, &floor) {
+		writeConstraintConflict(w, "relation_floor", floor.Msg, floor.Detail)
 		return
 	}
 	if errors.Is(err, authz.ErrForbiddenRole) {
@@ -37,15 +42,16 @@ func writeWriteError(w http.ResponseWriter, err error) {
 	writeInternalError(w, err)
 }
 
-// writeRelationFull is the structured 409 for a write the engine refused
-// because the relation's max_direct cap on the object is reached (migration
-// 0025): error "relation_full", the engine's message, and its detail — the
-// object, relation, cap and current count — so a client can tell "full"
-// from "forbidden" and render the headroom.
-func writeRelationFull(w http.ResponseWriter, full *authz.RelationFull) {
-	body := map[string]any{"status": http.StatusConflict, "error": "relation_full", "message": full.Msg}
-	if len(full.Detail) > 0 {
-		body["detail"] = full.Detail
+// writeConstraintConflict is the structured 409 for a write a relation
+// constraint refused: "relation_full" (max_direct reached, migration 0025)
+// or "relation_floor" (the delete would drop below min_direct, migration
+// 0026), the engine's message, and its detail — object, relation, bound and
+// current count — so a client can tell the constraint from "forbidden" and
+// render the headroom.
+func writeConstraintConflict(w http.ResponseWriter, code, msg string, detail json.RawMessage) {
+	body := map[string]any{"status": http.StatusConflict, "error": code, "message": msg}
+	if len(detail) > 0 {
+		body["detail"] = detail
 	}
 	writeJSON(w, http.StatusConflict, body)
 }

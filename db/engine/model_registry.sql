@@ -209,12 +209,18 @@ BEGIN
                        'relation',        rl.name,
                        'requires',        rq.name,
                        'requires_revoke', rr.name     -- null when same as requires
-                   ) ORDER BY ot.name, rl.name)
+                   )
+                   -- record_as (migration 0027): emitted only when set, so
+                   -- earlier definitions and checksums do not move
+                   || CASE WHEN ra.name IS NULL THEN '{}'::jsonb
+                           ELSE jsonb_build_object('record_as', ra.name) END
+                   ORDER BY ot.name, rl.name)
               FROM authz.grant_rules g
               JOIN authz.types     ot ON ot.id = g.object_type
               JOIN authz.relations rl ON rl.id = g.relation
               JOIN authz.relations rq ON rq.id = g.requires
          LEFT JOIN authz.relations rr ON rr.id = g.requires_revoke
+         LEFT JOIN authz.relations ra ON ra.id = g.record_as
              WHERE g.store_id = v_store_id), '[]'::jsonb),
         -- Relation constraints (migration 0025): dropped from the checksum
         -- when empty, like gates and grant rules.
@@ -224,7 +230,12 @@ BEGIN
                        'relation',      rl.name,
                        'max_direct',    c.max_direct,
                        'max_effective', c.max_effective
-                   ) ORDER BY ot.name, rl.name)
+                   )
+                   -- min_direct (migration 0026): emitted only when set, so
+                   -- earlier definitions and checksums do not move
+                   || CASE WHEN c.min_direct IS NULL THEN '{}'::jsonb
+                           ELSE jsonb_build_object('min_direct', c.min_direct) END
+                   ORDER BY ot.name, rl.name)
               FROM authz.relation_constraints c
               JOIN authz.types     ot ON ot.id = c.object_type
               JOIN authz.relations rl ON rl.id = c.relation
@@ -645,7 +656,7 @@ BEGIN
     FOR v_row IN SELECT * FROM jsonb_array_elements(COALESCE(v_def->'grant_rules', '[]'::jsonb))
     LOOP
         PERFORM authz.model_add_grant_rule(p_store, v_row->>'object_type', v_row->>'relation',
-                                           v_row->>'requires', v_row->>'requires_revoke');
+                                           v_row->>'requires', v_row->>'requires_revoke', v_row->>'record_as');
     END LOOP;
 
     -- Relation constraints (migration 0025): the stale ones went first (see
@@ -653,7 +664,8 @@ BEGIN
     FOR v_row IN SELECT * FROM jsonb_array_elements(COALESCE(v_def->'relation_constraints', '[]'::jsonb))
     LOOP
         PERFORM authz.model_set_relation_constraint(p_store, v_row->>'object_type', v_row->>'relation',
-                                                    (v_row->>'max_direct')::int, (v_row->>'max_effective')::int);
+                                                    (v_row->>'max_direct')::int, (v_row->>'max_effective')::int,
+                                                    (v_row->>'min_direct')::int);
     END LOOP;
 
     -- Stale relations: removable only when nothing references them anymore.

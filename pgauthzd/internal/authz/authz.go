@@ -147,6 +147,17 @@ type RelationFull struct {
 
 func (e *RelationFull) Error() string { return e.Msg }
 
+// RelationFloor: the engine refused a delete because it would leave the
+// object with fewer active direct assignments than the relation's min_direct
+// (SQLSTATE ZA002, migration 0026) — the handler answers 409 relation_floor
+// with the engine's message and detail (floor, count, how many were removed).
+type RelationFloor struct {
+	Msg    string
+	Detail json.RawMessage
+}
+
+func (e *RelationFloor) Error() string { return e.Msg }
+
 // GrantOptionsRequest asks what Actor may grant/revoke on one object.
 type GrantOptionsRequest struct {
 	Store      string

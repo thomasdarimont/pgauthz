@@ -99,6 +99,9 @@ type GrantRule struct {
 	Relation       string  `json:"relation"`
 	Requires       string  `json:"requires"`
 	RequiresRevoke *string `json:"requires_revoke"`
+	// RecordAs (migration 0027): the action under which grant / revoke /
+	// apply_grants record an event for the actor; nil = nothing recorded.
+	RecordAs *string `json:"record_as,omitempty"`
 }
 
 type RelationConstraint struct {
@@ -106,6 +109,9 @@ type RelationConstraint struct {
 	Relation     string `json:"relation"`
 	MaxDirect    *int   `json:"max_direct"`
 	MaxEffective *int   `json:"max_effective"`
+	// MinDirect (migration 0026): enforced on the revocation paths — an
+	// object keeps at least this many active direct assignments.
+	MinDirect *int `json:"min_direct,omitempty"`
 }
 
 // ExportModel returns a store's live model (authz.export_model), the
@@ -283,12 +289,15 @@ func RenderSQL(store string, m *Model) string {
 			if g.RequiresRevoke != nil && *g.RequiresRevoke != "" {
 				args = append(args, q(*g.RequiresRevoke))
 			}
+			if g.RecordAs != nil && *g.RecordAs != "" {
+				args = append(args, "p_record_as => "+q(*g.RecordAs))
+			}
 			w("SELECT authz.model_add_grant_rule(%s);", strings.Join(args, ", "))
 		}
 		w("")
 	}
 	if len(m.RelationConstraints) > 0 {
-		w("-- Relation constraints: how many may hold a relation on one object (max_direct enforced, max_effective advisory)")
+		w("-- Relation constraints: how many may hold a relation on one object (max_direct / min_direct enforced, max_effective advisory)")
 		for _, c := range m.RelationConstraints {
 			args := []string{q(store), q(c.ObjectType), q(c.Relation)}
 			if c.MaxDirect != nil {
@@ -296,6 +305,9 @@ func RenderSQL(store string, m *Model) string {
 			}
 			if c.MaxEffective != nil {
 				args = append(args, fmt.Sprintf("p_max_effective => %d", *c.MaxEffective))
+			}
+			if c.MinDirect != nil {
+				args = append(args, fmt.Sprintf("p_min_direct => %d", *c.MinDirect))
 			}
 			w("SELECT authz.model_set_relation_constraint(%s);", strings.Join(args, ", "))
 		}

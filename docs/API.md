@@ -213,7 +213,7 @@ indexed scans of the audit log.)
 ```sql
 authz.relation_usage(p_store text, p_object_type text, p_object_id text, p_relation text,
                      p_limit int DEFAULT NULL, p_subject_type text DEFAULT NULL, context jsonb DEFAULT NULL)
-RETURNS TABLE (direct_count bigint, max_direct int, direct_headroom int,
+RETURNS TABLE (direct_count bigint, max_direct int, direct_headroom int, min_direct int,
                effective_count bigint, max_effective int, effective_headroom int,
                unbounded boolean, limit_reached boolean)
 ```
@@ -529,7 +529,12 @@ runs the actor's full check (graph, conditions with `p_request_context`,
 gates) under the same per-object lock `write_tuples_checked` uses, and
 writes the tuple with `performed_by` set to the actor. A relation without a
 grant rule cannot be granted this way at all; the writer role's
-`write_tuple` is unaffected.
+`write_tuple` is unaffected. A rule may name the action its grants and
+revokes are recorded as (`model_add_grant_rule(..., p_record_as => 'share')`,
+migration 0027): each change then records an event for the actor, and a
+temporal gate on the required relation bounds sharing — see
+[MODEL_DESIGN → Grant rules](MODEL_DESIGN.md#grant-rules-who-may-share).
+`list_grant_rules` returns `record_as` as a fifth column.
 
 ```sql
 -- the sharing policy, once, in the model
@@ -627,9 +632,10 @@ SELECT authz.model_set_relation_metadata('documents', 'viewer', '{"label": "View
 
 ```sql
 authz.model_set_relation_constraint(p_store text, p_object_type text, p_relation text,
-                                    p_max_direct integer DEFAULT NULL, p_max_effective integer DEFAULT NULL) RETURNS integer
+                                    p_max_direct integer DEFAULT NULL, p_max_effective integer DEFAULT NULL,
+                                    p_min_direct integer DEFAULT NULL) RETURNS integer
 authz.model_drop_relation_constraint(p_store text, p_object_type text, p_relation text) RETURNS boolean
-authz.list_relation_constraints(p_store text) RETURNS TABLE (object_type text, relation text, max_direct integer, max_effective integer)
+authz.list_relation_constraints(p_store text) RETURNS TABLE (object_type text, relation text, max_direct integer, max_effective integer, min_direct integer)
 ```
 
 A relation constraint (migration 0025) bounds how many subjects hold a
@@ -646,13 +652,20 @@ instead. `max_direct` needs a direct rule on the type and no wildcard facet
 relation, and those cannot be added to a capped relation either; wildcard
 tuples are refused on a capped relation. The cap, the wildcard declarations
 and wildcard tuple writes serialize on a per-(type, relation) lock and
-require `READ COMMITTED` (SQLSTATE `25000` otherwise). Admin tier; the list
-is reader tier.
+require `READ COMMITTED` (SQLSTATE `25000` otherwise). `min_direct`
+(migration 0026) is a floor enforced on revocation: `delete_tuple`,
+`delete_tuples`, `revoke`, `apply_grants` and checked-write deletes refuse
+to leave fewer active direct assignments on the object (SQLSTATE `ZA002`,
+`relation_floor`; detail: floor, count, removing), under the same lock and
+isolation rule; `delete_user_tuples`, erasure, type and store removal and
+expiry are exempt. It needs a direct rule and may not exceed `max_direct`.
+Admin tier; the list is reader tier.
 See [MODEL_DESIGN → Relation constraints](MODEL_DESIGN.md#relation-constraints-how-many-may-hold-a-relation).
 
 ```sql
 SELECT authz.model_set_relation_constraint('documents', 'document', 'viewer', p_max_direct => 50);
 SELECT authz.model_set_relation_constraint('documents', 'document', 'can_read', p_max_effective => 500);
+SELECT authz.model_set_relation_constraint('documents', 'document', 'owner', p_min_direct => 1);
 ```
 
 ### tuple_stats — What a store's data looks like

@@ -285,6 +285,77 @@ BEGIN
 END;
 $$;
 
+-- ga_15: sharing as an action (record_as, migration 0027) — grants and revokes are events of the actor,
+-- gates on the required relation then bound sharing with no PEP code
+DO $$
+DECLARE v_n integer; v_ev record; v_err text; v_state text;
+BEGIN
+    PERFORM authz.model_register_relation('test_grant', 'share', NULL, '{"kind": "permission"}');
+    PERFORM authz.model_add_grant_rule('test_grant', 'document', 'viewer', 'can_share_view', p_record_as => 'share');
+    PERFORM _test_assert('ga_15_rule_lists_record_as',
+        (SELECT record_as FROM authz.list_grant_rules('test_grant') WHERE object_type = 'document' AND relation = 'viewer'), 'share');
+    PERFORM _test_assert_true('ga_15_describe', authz.describe_model('test_grant') LIKE '%# grant requires can_share_view, recorded as share%', authz.describe_model('test_grant'));
+    PERFORM _test_assert('ga_15_export',
+        (SELECT x->>'record_as' FROM jsonb_array_elements(authz.export_model('test_grant')->'grant_rules') x WHERE x->>'relation' = 'viewer'), 'share');
+    PERFORM _test_assert('ga_15_export_absent_when_unset',
+        (SELECT (x ? 'record_as')::text FROM jsonb_array_elements(authz.export_model('test_grant')->'grant_rules') x WHERE x->>'relation' = 'editor'), 'false');
+
+    SELECT count(*) INTO v_n FROM authz.list_events('test_grant', p_action => 'share');
+    PERFORM _test_assert('ga_15_no_events_yet', v_n::text, '0');
+    PERFORM _test_assert('ga_15_grant', authz.grant('test_grant', 'user', 'bob', 'user', 'rick', 'viewer', 'document', 'plan')::text, 'true');
+    SELECT * INTO v_ev FROM authz.list_events('test_grant', p_action => 'share');
+    PERFORM _test_assert('ga_15_event_for_actor', v_ev.subject_type || ':' || v_ev.subject_id || ' ' || v_ev.action || ' ' || v_ev.object_type || ':' || v_ev.object_id || ' ' || v_ev.kind, 'user:bob share document:plan request');
+    PERFORM _test_assert('ga_15_event_payload', v_ev.payload::text, '{"op": "grant", "user_id": "rick", "relation": "viewer", "user_type": "user"}');
+    -- a no-op grant is not an action
+    PERFORM _test_assert('ga_15_regrant_noop', authz.grant('test_grant', 'user', 'bob', 'user', 'rick', 'viewer', 'document', 'plan')::text, 'false');
+    SELECT count(*) INTO v_n FROM authz.list_events('test_grant', p_action => 'share');
+    PERFORM _test_assert('ga_15_noop_not_recorded', v_n::text, '1');
+    -- revoke records op revoke; a rule without record_as records nothing (editor)
+    PERFORM _test_assert('ga_15_revoke', authz.revoke('test_grant', 'user', 'alice', 'user', 'rick', 'viewer', 'document', 'plan')::text, 'true');
+    PERFORM _test_assert('ga_15_revoke_recorded',
+        (SELECT payload->>'op' FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'alice')), 'revoke');
+    PERFORM authz.grant('test_grant', 'user', 'alice', 'user', 'rick', 'editor', 'document', 'plan');
+    SELECT count(*) INTO v_n FROM authz.list_events('test_grant');
+    PERFORM _test_assert('ga_15_unrecorded_rule_silent', v_n::text, '2');
+    -- apply_grants: one event per effective entry
+    PERFORM authz.apply_grants('test_grant', 'user', 'alice',
+        p_grants => '[{"user_type":"user","user_id":"sam","relation":"viewer","object_type":"document","object_id":"plan"},
+                      {"user_type":"user","user_id":"tom","relation":"viewer","object_type":"document","object_id":"plan","expires_at":"2099-01-01T00:00:00Z"}]');
+    SELECT count(*) INTO v_n FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'alice');
+    PERFORM _test_assert('ga_15_apply_grants_recorded', v_n::text, '3');
+    PERFORM _test_assert('ga_15_expiry_in_payload',
+        (SELECT (payload->>'expires_at')::timestamptz::date::text FROM authz.list_events('test_grant', p_action => 'share') WHERE payload->>'user_id' = 'tom'), '2099-01-01');
+
+    -- a gate on the required relation bounds sharing: at most 3 shares an hour, this one included
+    PERFORM authz.add_gate('test_grant', 'document', 'can_share_view', 'share_rate',
+        '{"all_of": [{"count_within": {"window": "1h", "action": "share", "max": 3, "plus": 1}}]}');
+    -- alice has 3 share events: the 4th grant is refused by the gate, not written, not recorded
+    BEGIN PERFORM authz.grant('test_grant', 'user', 'alice', 'user', 'uma', 'viewer', 'document', 'plan');
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; v_state := SQLSTATE; END;
+    PERFORM _test_assert_true('ga_15_gate_vetoes_4th_share', v_err LIKE 'grant refused: user:alice is not allowed can_share_view%', coalesce(v_err, 'no error'));
+    PERFORM _test_assert('ga_15_gate_sqlstate', v_state, '42501');
+    PERFORM _test_assert('ga_15_vetoed_not_written', authz.check_access('test_grant', 'user', 'uma', 'can_view', 'document', 'plan')::text, 'false');
+    -- bob has 1 share event: still within the gate
+    PERFORM _test_assert('ga_15_other_actor_unaffected', authz.grant('test_grant', 'user', 'bob', 'user', 'uma', 'viewer', 'document', 'plan')::text, 'true');
+    PERFORM authz.drop_gate('test_grant', 'document', 'can_share_view', 'share_rate');
+
+    -- a payload schema on the recorded action applies to the engine's payload too
+    PERFORM authz.model_set_payload_schema('test_grant', 'share', '{"required": {"ticket": "string"}}');
+    v_err := NULL;
+    BEGIN PERFORM authz.grant('test_grant', 'user', 'bob', 'user', 'vic', 'viewer', 'document', 'plan');
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert_true('ga_15_payload_schema_applies', v_err IS NOT NULL AND v_err LIKE '%ticket%', coalesce(v_err, 'no error'));
+    PERFORM _test_assert('ga_15_schema_failure_rolls_back_grant', authz.check_access('test_grant', 'user', 'vic', 'can_view', 'document', 'plan')::text, 'false');
+    PERFORM authz.model_set_payload_schema('test_grant', 'share', '{"required": {"op": "string", "relation": "string"}, "additional": true}');
+    PERFORM _test_assert('ga_15_matching_schema_ok', authz.grant('test_grant', 'user', 'bob', 'user', 'vic', 'viewer', 'document', 'plan')::text, 'true');
+    PERFORM authz.model_set_payload_schema('test_grant', 'share', NULL);
+    -- registry round trip keeps record_as
+    PERFORM authz.model_add_grant_rule('test_grant', 'document', 'viewer', 'can_share_view');   -- clears it
+    PERFORM _test_assert('ga_15_clear_record_as',
+        (SELECT coalesce(record_as, '-') FROM authz.list_grant_rules('test_grant') WHERE object_type = 'document' AND relation = 'viewer'), '-');
+END;
+$$;
+
 DROP FUNCTION IF EXISTS _test_setup_grant();
 
 SELECT _test_report('grant / revoke checks');

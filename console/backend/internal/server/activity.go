@@ -166,17 +166,18 @@ func (s *Server) modelChanges(ctx context.Context, q querier, store string, limi
 			UNION ALL
 			SELECT a.seq, 'grant_rule', a.action, a.performed_at, a.performed_by,
 			       coalesce(ot.name, '#' || a.object_type), coalesce(rl.name, '#' || a.relation), '',
-			       jsonb_build_object('id', a.grant_rule_id, 'requires', coalesce(rq.name, '#' || a.requires), 'requires_revoke', rv.name)
+			       jsonb_build_object('id', a.grant_rule_id, 'requires', coalesce(rq.name, '#' || a.requires), 'requires_revoke', rv.name, 'record_as', ra.name)
 			  FROM authz.grant_rules_audit a
 			  LEFT JOIN authz.types ot ON ot.id = a.object_type
 			  LEFT JOIN authz.relations rl ON rl.id = a.relation
 			  LEFT JOIN authz.relations rq ON rq.id = a.requires
 			  LEFT JOIN authz.relations rv ON rv.id = a.requires_revoke
+			  LEFT JOIN authz.relations ra ON ra.id = a.record_as
 			 WHERE a.store_id = (SELECT id FROM st)
 			UNION ALL
 			SELECT a.seq, 'relation_constraint', a.action, a.performed_at, a.performed_by,
 			       coalesce(ot.name, '#' || a.object_type), coalesce(rl.name, '#' || a.relation), '',
-			       jsonb_build_object('id', a.constraint_id, 'max_direct', a.max_direct, 'max_effective', a.max_effective)
+			       jsonb_build_object('id', a.constraint_id, 'max_direct', a.max_direct, 'max_effective', a.max_effective, 'min_direct', a.min_direct)
 			  FROM authz.relation_constraints_audit a
 			  LEFT JOIN authz.types ot ON ot.id = a.object_type
 			  LEFT JOIN authz.relations rl ON rl.id = a.relation

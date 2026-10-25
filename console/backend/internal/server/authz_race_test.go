@@ -72,7 +72,7 @@ func TestConcurrentLastOwnerRemoval(t *testing.T) {
 		var se scopeError
 		switch {
 		case e == nil:
-		case e == errLastOwner, errors.As(e, &se):
+		case isLastOwner(e), errors.As(e, &se):
 			failed++
 		default:
 			t.Fatalf("unexpected error: %v", e)

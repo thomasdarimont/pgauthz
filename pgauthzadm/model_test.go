@@ -26,10 +26,14 @@ func TestRenderSQLHelloWorld(t *testing.T) {
 			{ObjectType: "document", Relation: "viewer", AllowedUserType: "team", AllowedUserRelation: str("member"), AllowWildcard: false, Condition: str("in_hours")},
 		},
 		Conditions: []Condition{{Name: "in_hours", Expression: "(ctx->>'hour')::int < 18", Lang: "sql"}},
-		GrantRules: []GrantRule{{ObjectType: "document", Relation: "viewer", Requires: "owner"}},
+		GrantRules: []GrantRule{
+			{ObjectType: "document", Relation: "viewer", Requires: "owner"},
+			{ObjectType: "document", Relation: "editor", Requires: "owner", RecordAs: str("share")},
+		},
 		RelationConstraints: []RelationConstraint{
 			{ObjectType: "document", Relation: "viewer", MaxDirect: intp(50), MaxEffective: intp(200)},
 			{ObjectType: "document", Relation: "can_read", MaxEffective: intp(500)},
+			{ObjectType: "document", Relation: "owner", MinDirect: intp(1)},
 		},
 	}
 	out := RenderSQL("hello", m)
@@ -47,8 +51,10 @@ func TestRenderSQLHelloWorld(t *testing.T) {
 		"SELECT authz.model_add_type_restriction('hello', 'document', 'viewer', 'user');",
 		"SELECT authz.model_add_type_restriction('hello', 'document', 'viewer', 'team', p_allowed_user_relation => 'member', p_condition => 'in_hours');",
 		"SELECT authz.model_add_grant_rule('hello', 'document', 'viewer', 'owner');",
+		"SELECT authz.model_add_grant_rule('hello', 'document', 'editor', 'owner', p_record_as => 'share');",
 		"SELECT authz.model_set_relation_constraint('hello', 'document', 'viewer', p_max_direct => 50, p_max_effective => 200);",
 		"SELECT authz.model_set_relation_constraint('hello', 'document', 'can_read', p_max_effective => 500);",
+		"SELECT authz.model_set_relation_constraint('hello', 'document', 'owner', p_min_direct => 1);",
 	}
 	for _, w := range want {
 		if !strings.Contains(out, w) {

@@ -314,15 +314,15 @@ BEGIN
     );
     IF TG_OP IN ('UPDATE', 'DELETE') THEN
         INSERT INTO authz.grant_rules_audit (
-            action, performed_at, performed_by, grant_rule_id, store_id, object_type, relation, requires, requires_revoke
+            action, performed_at, performed_by, grant_rule_id, store_id, object_type, relation, requires, requires_revoke, record_as
         ) VALUES
-            ('DELETE', transaction_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.object_type, OLD.relation, OLD.requires, OLD.requires_revoke);
+            ('DELETE', transaction_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.object_type, OLD.relation, OLD.requires, OLD.requires_revoke, OLD.record_as);
     END IF;
     IF TG_OP IN ('UPDATE', 'INSERT') THEN
         INSERT INTO authz.grant_rules_audit (
-            action, performed_at, performed_by, grant_rule_id, store_id, object_type, relation, requires, requires_revoke
+            action, performed_at, performed_by, grant_rule_id, store_id, object_type, relation, requires, requires_revoke, record_as
         ) VALUES
-            ('INSERT', transaction_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.object_type, NEW.relation, NEW.requires, NEW.requires_revoke);
+            ('INSERT', transaction_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.object_type, NEW.relation, NEW.requires, NEW.requires_revoke, NEW.record_as);
     END IF;
     RETURN COALESCE(NEW, OLD);
 END;
@@ -349,15 +349,15 @@ BEGIN
     );
     IF TG_OP IN ('UPDATE', 'DELETE') THEN
         INSERT INTO authz.relation_constraints_audit (
-            action, performed_at, performed_by, constraint_id, store_id, object_type, relation, max_direct, max_effective
+            action, performed_at, performed_by, constraint_id, store_id, object_type, relation, max_direct, max_effective, min_direct
         ) VALUES
-            ('DELETE', transaction_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.object_type, OLD.relation, OLD.max_direct, OLD.max_effective);
+            ('DELETE', transaction_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.object_type, OLD.relation, OLD.max_direct, OLD.max_effective, OLD.min_direct);
     END IF;
     IF TG_OP IN ('UPDATE', 'INSERT') THEN
         INSERT INTO authz.relation_constraints_audit (
-            action, performed_at, performed_by, constraint_id, store_id, object_type, relation, max_direct, max_effective
+            action, performed_at, performed_by, constraint_id, store_id, object_type, relation, max_direct, max_effective, min_direct
         ) VALUES
-            ('INSERT', transaction_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.object_type, NEW.relation, NEW.max_direct, NEW.max_effective);
+            ('INSERT', transaction_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.object_type, NEW.relation, NEW.max_direct, NEW.max_effective, NEW.min_direct);
     END IF;
     RETURN COALESCE(NEW, OLD);
 END;

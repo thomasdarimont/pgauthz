@@ -1130,6 +1130,7 @@ $$;
 --                      a cap declared after the fact shows its real count
 --   max_direct         the declared cap, NULL when none
 --   direct_headroom    max_direct - direct_count (never below 0), NULL without a cap
+--   min_direct         the declared floor (migration 0026), NULL when none
 --   effective_count    subjects that resolve to the relation on the object;
 --                      NULL when unbounded
 --   max_effective      the declared advisory cap, NULL when none
@@ -1152,6 +1153,7 @@ $$;
 --
 --   SELECT * FROM authz.relation_usage('docs', 'document', 'plan', 'viewer');
 ------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS authz.relation_usage(text, text, text, text, int, text, jsonb);
 CREATE OR REPLACE FUNCTION authz.relation_usage(
     p_store        text,
     p_object_type  text,
@@ -1164,6 +1166,7 @@ CREATE OR REPLACE FUNCTION authz.relation_usage(
     direct_count       bigint,
     max_direct         integer,
     direct_headroom    integer,
+    min_direct         integer,
     effective_count    bigint,
     max_effective      integer,
     effective_headroom integer,
@@ -1189,7 +1192,7 @@ BEGIN
         PERFORM authz._t(v_store_id, p_subject_type);  -- raises 'Unknown type'
     END IF;
 
-    SELECT c.max_direct, c.max_effective INTO max_direct, max_effective
+    SELECT c.max_direct, c.max_effective, c.min_direct INTO max_direct, max_effective, min_direct
       FROM authz.relation_constraints c
      WHERE c.store_id = v_store_id AND c.object_type = v_object_type AND c.relation = v_relation;
 

@@ -119,8 +119,8 @@
  * @property {'enforce'|'shadow'|'off'} [mode]
  */
 /** @typedef {{object_type: string, relation: string, name: string, spec: GateSpec}} Gate */
-/** @typedef {{object_type: string, relation: string, requires: string, requires_revoke: string|null}} GrantRule */
-/** @typedef {{object_type: string, relation: string, max_direct: number|null, max_effective: number|null}} RelationConstraint how many may hold the relation on one object: max_direct enforced on writes (active direct tuples), max_effective advisory */
+/** @typedef {{object_type: string, relation: string, requires: string, requires_revoke: string|null, record_as?: string}} GrantRule record_as: the action grants and revokes are recorded as for the actor (absent = none) */
+/** @typedef {{object_type: string, relation: string, max_direct: number|null, max_effective: number|null, min_direct?: number}} RelationConstraint how many may hold the relation on one object: max_direct enforced on writes (active direct tuples), min_direct enforced on revocation, max_effective advisory */
 /**
  * @typedef {Object} ModelExport pgauthzadm.Model — authz.export_model
  * @property {number} format

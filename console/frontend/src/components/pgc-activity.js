@@ -196,9 +196,11 @@ export class PgcActivity extends PgcElement {
         return html`<span class="mono">${c.object_type}.${c.relation}</span>
           <span class="muted">${t('needs')}</span>
           <span class="mono">${d.requires}</span>
-          ${d.requires_revoke ? html`<span class="muted">${t('to revoke')}</span> <span class="mono">${d.requires_revoke}</span>` : nothing}`;
+          ${d.requires_revoke ? html`<span class="muted">${t('to revoke')}</span> <span class="mono">${d.requires_revoke}</span>` : nothing}
+          ${d.record_as ? html`<span class="muted">${t('recorded as')}</span> <span class="mono">${d.record_as}</span>` : nothing}`;
       case 'relation_constraint':
         return html`<span class="mono">${c.object_type}.${c.relation}</span>
+          ${d.min_direct != null ? html`<span class="muted">${t('min direct')}</span> <span class="mono">${d.min_direct}</span>` : nothing}
           ${d.max_direct != null ? html`<span class="muted">${t('max direct')}</span> <span class="mono">${d.max_direct}</span>` : nothing}
           ${d.max_effective != null ? html`<span class="muted">${t('max effective')}</span> <span class="mono">${d.max_effective}</span>` : nothing}`;
       default:

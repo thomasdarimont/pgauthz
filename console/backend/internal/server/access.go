@@ -10,9 +10,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // storeRoles are the assignable console roles on a store, in display order.
@@ -178,7 +180,7 @@ func (s *Server) handleAccessRemove(w http.ResponseWriter, r *http.Request) {
 		return s.ensureOwner(ctx, tx, "store", store)
 	})
 	if err != nil {
-		if err == errLastOwner {
+		if isLastOwner(err) {
 			writeError(w, http.StatusConflict, "a store needs at least one owner — add another owner first")
 			return
 		}
@@ -193,6 +195,18 @@ type ownerError string
 func (e ownerError) Error() string { return string(e) }
 
 const errLastOwner = ownerError("last owner")
+
+// isLastOwner: the removal would leave the object without an owner — either
+// the console's own check (ensureOwner) or the engine's relation floor
+// (min_direct on store.owner / platform.admin in the console model, SQLSTATE
+// ZA002), which refuses the delete itself when the model declares it.
+func isLastOwner(err error) bool {
+	if err == errLastOwner {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "ZA002"
+}
 
 // ensureOwner fails the transaction when the object would be left with no
 // owner (store) / admin (platform) tuple.

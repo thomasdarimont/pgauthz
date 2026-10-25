@@ -587,6 +587,73 @@ END;
 $$;
 
 ------------------------------------------------------------------------
+-- Relation floor (min_direct, migration 0026): the revocation paths —
+-- delete_tuple, delete_tuples (+ jsonb, checked writes), revoke and
+-- apply_grants — refuse a delete that would leave an object with fewer
+-- active direct assignments of a relation than its min_direct. Decided
+-- here, in the functions, not in a trigger: offboarding (delete_user_tuples),
+-- erasure, type and store removal and expiry are deliberately exempt, and
+-- a trigger could not tell them apart. The count runs under the per-object
+-- lock the cap guard and the checked writes use (READ COMMITTED required,
+-- as there), so two revocations racing for the last slot serialize.
+-- p_deletes: a JSON array of {object_type, object_id, relation, user_type,
+-- user_id, user_relation} by name; only elements that match an ACTIVE row
+-- count as removals (deleting a missing or expired row changes nothing).
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz._check_relation_floor(p_store text, p_store_id integer, p_deletes jsonb)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+    v_obj      record;
+    v_total    bigint;
+    v_removing bigint;
+BEGIN
+    FOR v_obj IN
+        SELECT DISTINCT e->>'object_type' AS ot, e->>'object_id' AS oid, e->>'relation' AS rel,
+               t.id AS type_id, r.id AS rel_id, c.min_direct
+          FROM jsonb_array_elements(p_deletes) e
+          JOIN authz.types     t ON t.store_id = p_store_id AND t.name = e->>'object_type'
+          JOIN authz.relations r ON r.store_id = p_store_id AND r.name = e->>'relation'
+          JOIN authz.relation_constraints c
+            ON c.store_id = p_store_id AND c.object_type = t.id AND c.relation = r.id AND c.min_direct IS NOT NULL
+         ORDER BY 1, 2, 3
+    LOOP
+        IF current_setting('transaction_isolation') NOT IN ('read committed', 'read uncommitted') THEN
+            RAISE EXCEPTION 'revoking on a relation with a floor (min_direct) requires READ COMMITTED isolation (current: %): the count must see assignments that committed while waiting for the object lock',
+                current_setting('transaction_isolation')
+                USING ERRCODE = 'invalid_transaction_state';
+        END IF;
+        PERFORM pg_advisory_xact_lock(hashtextextended(p_store || ':' || v_obj.ot || ':' || v_obj.oid, 0));
+        -- The removals that count: batch elements matching an active row.
+        SELECT count(*) INTO v_removing
+          FROM (SELECT DISTINCT e->>'user_type' AS ut, e->>'user_id' AS uid, e->>'user_relation' AS ur
+                  FROM jsonb_array_elements(p_deletes) e
+                 WHERE e->>'object_type' = v_obj.ot AND e->>'object_id' = v_obj.oid AND e->>'relation' = v_obj.rel) d
+          JOIN authz.types ut ON ut.store_id = p_store_id AND ut.name = d.ut
+     LEFT JOIN authz.relations ur ON ur.store_id = p_store_id AND ur.name = d.ur
+          JOIN authz.tuples t
+            ON t.store_id = p_store_id AND t.object_type = v_obj.type_id AND t.object_id = v_obj.oid
+           AND t.relation = v_obj.rel_id AND t.user_type = ut.id AND t.user_id = d.uid
+           AND t.user_relation IS NOT DISTINCT FROM ur.id
+           AND (t.expires_at IS NULL OR t.expires_at > statement_timestamp());
+        CONTINUE WHEN v_removing = 0;
+        SELECT count(*) INTO v_total
+          FROM authz.tuples t
+         WHERE t.store_id = p_store_id AND t.object_type = v_obj.type_id AND t.object_id = v_obj.oid
+           AND t.relation = v_obj.rel_id
+           AND (t.expires_at IS NULL OR t.expires_at > statement_timestamp());
+        IF v_total - v_removing < v_obj.min_direct THEN
+            RAISE EXCEPTION 'relation % on %:% would drop below its minimum: % of % active direct assignments (min_direct), removing %',
+                v_obj.rel, v_obj.ot, v_obj.oid, v_total, v_obj.min_direct, v_removing
+                USING ERRCODE = 'ZA002',
+                      DETAIL = format('{"code": "relation_floor", "object_type": %s, "object_id": %s, "relation": %s, "min_direct": %s, "direct_count": %s, "removing": %s}',
+                                      to_json(v_obj.ot), to_json(v_obj.oid), to_json(v_obj.rel), v_obj.min_direct, v_total, v_removing),
+                      HINT = 'Assign another holder first, or lower min_direct in the model (model_set_relation_constraint). Offboarding (delete_user_tuples) is not subject to the floor.';
+        END IF;
+    END LOOP;
+END;
+$$;
+
+------------------------------------------------------------------------
 -- delete_tuple: explicit parameters — mirrors write_tuple.
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.delete_tuple(
@@ -616,6 +683,11 @@ BEGIN
     IF p_user_relation IS NOT NULL THEN
         v_user_relation := authz._r(v_store_id, p_user_relation);
     END IF;
+
+    -- Relation floor (min_direct, migration 0026).
+    PERFORM authz._check_relation_floor(p_store, v_store_id, jsonb_build_array(jsonb_build_object(
+        'object_type', p_object_type, 'object_id', p_object_id, 'relation', p_relation,
+        'user_type', p_user_type, 'user_id', p_user_id, 'user_relation', p_user_relation)));
 
     DELETE FROM authz.tuples
      WHERE store_id      = v_store_id
@@ -696,6 +768,13 @@ BEGIN
     PERFORM authz._check_namespace_access(v_store_id, ot.id)
        FROM (SELECT DISTINCT t.object_type FROM unnest(p_tuples) AS t) AS t
        JOIN authz.types ot ON ot.store_id = v_store_id AND ot.name = t.object_type;
+
+    -- Relation floor (min_direct, migration 0026): the whole batch at once.
+    PERFORM authz._check_relation_floor(p_store, v_store_id,
+        (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+            'object_type', t.object_type, 'object_id', t.object_id, 'relation', t.relation,
+            'user_type', t.user_type, 'user_id', t.user_id, 'user_relation', t.user_relation)), '[]'::jsonb)
+           FROM unnest(p_tuples) AS t));
 
     DELETE FROM authz.tuples tup
      USING (
@@ -1048,6 +1127,42 @@ BEGIN
 END;
 $$;
 
+-- _record_sharing: sharing as an action (grant_rules.record_as, migration
+-- 0027). When the rule for (type, relation) names a record_as relation, the
+-- change grant / revoke just made is recorded for the ACTOR as an event of
+-- that action on the object, through record_event — the calling role's
+-- recorder allowlist and the relation's payload schema apply as for any
+-- recorder. Payload: op (grant | revoke), relation, user_type, user_id and,
+-- when set, user_relation, expires_at, condition. No-ops (an already
+-- present grant, an absent revoke) record nothing: events are what happened.
+CREATE OR REPLACE FUNCTION authz._record_sharing(
+    p_store       text,
+    p_store_id    integer,
+    p_actor_type  text,
+    p_actor_id    text,
+    p_relation    text,
+    p_object_type text,
+    p_object_id   text,
+    p_payload     jsonb
+) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_action text;
+BEGIN
+    SELECT ra.name INTO v_action
+      FROM authz.grant_rules g
+      JOIN authz.relations ra ON ra.id = g.record_as
+     WHERE g.store_id = p_store_id
+       AND g.object_type = authz._t(p_store_id, p_object_type)
+       AND g.relation    = authz._r(p_store_id, p_relation);
+    IF v_action IS NULL THEN
+        RETURN;
+    END IF;
+    PERFORM authz.record_event(p_store, p_actor_type, p_actor_id, v_action, p_object_type, p_object_id,
+                               'request', jsonb_strip_nulls(p_payload));
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION authz.grant(
     p_store             text,
     p_actor_type        text,
@@ -1066,13 +1181,20 @@ CREATE OR REPLACE FUNCTION authz.grant(
 LANGUAGE plpgsql AS $$
 DECLARE
     v_store_id integer := authz._s(p_store);
+    v_changed  boolean;
 BEGIN
     PERFORM authz._grant_rule_check(p_store, v_store_id, p_actor_type, p_actor_id,
                                     p_relation, p_object_type, p_object_id, false, p_request_context);
-    RETURN authz.write_tuple(p_store, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
-                             p_user_relation, p_condition, p_condition_context,
-                             p_performed_by => p_actor_type || ':' || p_actor_id,
-                             p_expires_at   => p_expires_at);
+    v_changed := authz.write_tuple(p_store, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
+                                   p_user_relation, p_condition, p_condition_context,
+                                   p_performed_by => p_actor_type || ':' || p_actor_id,
+                                   p_expires_at   => p_expires_at);
+    IF v_changed THEN
+        PERFORM authz._record_sharing(p_store, v_store_id, p_actor_type, p_actor_id, p_relation, p_object_type, p_object_id,
+            jsonb_build_object('op', 'grant', 'relation', p_relation, 'user_type', p_user_type, 'user_id', p_user_id,
+                               'user_relation', p_user_relation, 'expires_at', p_expires_at, 'condition', p_condition));
+    END IF;
+    RETURN v_changed;
 END;
 $$;
 
@@ -1091,11 +1213,18 @@ CREATE OR REPLACE FUNCTION authz.revoke(
 LANGUAGE plpgsql AS $$
 DECLARE
     v_store_id integer := authz._s(p_store);
+    v_changed  boolean;
 BEGIN
     PERFORM authz._grant_rule_check(p_store, v_store_id, p_actor_type, p_actor_id,
                                     p_relation, p_object_type, p_object_id, true, p_request_context);
-    RETURN authz.delete_tuple(p_store, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
-                              p_user_relation, p_performed_by => p_actor_type || ':' || p_actor_id);
+    v_changed := authz.delete_tuple(p_store, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
+                                    p_user_relation, p_performed_by => p_actor_type || ':' || p_actor_id);
+    IF v_changed THEN
+        PERFORM authz._record_sharing(p_store, v_store_id, p_actor_type, p_actor_id, p_relation, p_object_type, p_object_id,
+            jsonb_build_object('op', 'revoke', 'relation', p_relation, 'user_type', p_user_type, 'user_id', p_user_id,
+                               'user_relation', p_user_relation));
+    END IF;
+    RETURN v_changed;
 END;
 $$;
 
@@ -1116,15 +1245,17 @@ $$;
 --   list_grant_rules — the store's rules by name (for "which of my
 --                    documents can I share": list_objects on `requires`).
 ------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS authz.list_grant_rules(text);
 CREATE OR REPLACE FUNCTION authz.list_grant_rules(p_store text)
-RETURNS TABLE (object_type text, relation text, requires text, requires_revoke text)
+RETURNS TABLE (object_type text, relation text, requires text, requires_revoke text, record_as text)
 LANGUAGE sql STABLE AS $$
-    SELECT ot.name, rl.name, rq.name, COALESCE(rr.name, rq.name)
+    SELECT ot.name, rl.name, rq.name, COALESCE(rr.name, rq.name), ra.name
       FROM authz.grant_rules g
       JOIN authz.types     ot ON ot.id = g.object_type
       JOIN authz.relations rl ON rl.id = g.relation
       JOIN authz.relations rq ON rq.id = g.requires
  LEFT JOIN authz.relations rr ON rr.id = g.requires_revoke
+ LEFT JOIN authz.relations ra ON ra.id = g.record_as
      WHERE g.store_id = authz._s(p_store)
      ORDER BY 1, 2;
 $$;

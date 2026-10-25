@@ -42,7 +42,7 @@ BEGIN
            FROM authz.list_relation_constraints('test_rc')), 'doc.viewer:3/-');
     BEGIN PERFORM authz.model_set_relation_constraint('test_rc', 'doc', 'editor');
     EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; v_state := SQLSTATE; END;
-    PERFORM _test_assert_true('rc_01_both_null_refused', v_err LIKE '%needs max_direct or max_effective%', coalesce(v_err, 'no error'));
+    PERFORM _test_assert_true('rc_01_both_null_refused', v_err LIKE '%needs max_direct, max_effective or min_direct%', coalesce(v_err, 'no error'));
     PERFORM _test_assert('rc_01_both_null_sqlstate', v_state, '22023');
     v_err := NULL;
     BEGIN PERFORM authz.model_set_relation_constraint('test_rc', 'doc', 'editor', 0);
@@ -395,6 +395,113 @@ BEGIN
     PERFORM authz.delete_store('test_rc', p_purge_audit => true);
 END;
 $$;
+
+-- rc_14: min_direct — a floor on owner, enforced on the revocation paths only
+SELECT _test_setup_rc();
+DO $$
+DECLARE v_err text; v_state text; v_detail text; u record; v_n integer;
+BEGIN
+    PERFORM authz.model_add_rule('test_rc', 'doc', 'can_share', 'computed', 'editor');
+    PERFORM authz.model_add_grant_rule('test_rc', 'doc', 'owner', 'can_share');
+    -- declaration rules
+    BEGIN PERFORM authz.model_set_relation_constraint('test_rc', 'doc', 'can_view', p_min_direct => 1);
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert_true('rc_14_floor_needs_direct_rule', v_err LIKE '%has no direct rule%min_direct cannot apply%', coalesce(v_err, 'no error'));
+    v_err := NULL;
+    BEGIN PERFORM authz.model_set_relation_constraint('test_rc', 'doc', 'owner', p_max_direct => 2, p_min_direct => 3);
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert_true('rc_14_min_above_max_refused', v_err LIKE '%min_direct 3 exceeds max_direct 2%', coalesce(v_err, 'no error'));
+    PERFORM _test_assert_true('rc_14_set_floor', authz.model_set_relation_constraint('test_rc', 'doc', 'owner', p_min_direct => 1) > 0, 'id');
+    PERFORM _test_assert('rc_14_listed',
+        (SELECT coalesce(max_direct::text, '-') || '/' || coalesce(max_effective::text, '-') || '/' || min_direct::text
+           FROM authz.list_relation_constraints('test_rc') WHERE relation = 'owner'), '-/-/1');
+    SELECT * INTO u FROM authz.relation_usage('test_rc', 'doc', 'plan', 'owner');
+    PERFORM _test_assert('rc_14_usage_reports_floor', u.direct_count::text || ' ' || u.min_direct::text, '1 1');
+
+    -- plan has one owner (alice): the last one cannot be revoked
+    v_err := NULL; v_state := NULL;
+    BEGIN PERFORM authz.delete_tuple('test_rc', 'user', 'alice', 'owner', 'doc', 'plan');
+    EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS v_detail = PG_EXCEPTION_DETAIL; v_err := SQLERRM; v_state := SQLSTATE; END;
+    PERFORM _test_assert('rc_14_last_owner_refused', v_state || ' ' || v_err, 'ZA002 relation owner on doc:plan would drop below its minimum: 1 of 1 active direct assignments (min_direct), removing 1');
+    PERFORM _test_assert('rc_14_detail_json', (v_detail::jsonb)->>'code' || ' ' || ((v_detail::jsonb)->>'direct_count') || ' ' || ((v_detail::jsonb)->>'removing'), 'relation_floor 1 1');
+    PERFORM _test_assert('rc_14_still_owner', authz.check_access('test_rc', 'user', 'alice', 'owner', 'doc', 'plan')::text, 'true');
+    -- with a second owner the first may go; then the second is the last
+    PERFORM authz.write_tuple('test_rc', 'user', 'bob', 'owner', 'doc', 'plan');
+    PERFORM _test_assert('rc_14_one_of_two_ok', authz.delete_tuple('test_rc', 'user', 'alice', 'owner', 'doc', 'plan')::text, 'true');
+    v_state := NULL;
+    BEGIN PERFORM authz.delete_tuple('test_rc', 'user', 'bob', 'owner', 'doc', 'plan');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('rc_14_new_last_owner_refused', v_state, 'ZA002');
+    -- deleting a non-holder on a floored relation is not a removal
+    PERFORM _test_assert('rc_14_non_holder_delete_false', authz.delete_tuple('test_rc', 'user', 'nobody', 'owner', 'doc', 'plan')::text, 'false');
+    -- an expired holder does not count towards the floor
+    PERFORM authz.write_tuple('test_rc', 'user', 'carol', 'owner', 'doc', 'plan', p_expires_at => now() + interval '1 day');
+    UPDATE authz.tuples t SET expires_at = now() - interval '1 minute'
+     WHERE t.store_id = authz._s('test_rc') AND t.object_id = 'plan' AND t.user_id = 'carol';
+    v_state := NULL;
+    BEGIN PERFORM authz.delete_tuple('test_rc', 'user', 'bob', 'owner', 'doc', 'plan');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('rc_14_expired_does_not_hold_the_floor', v_state, 'ZA002');
+    PERFORM authz.cleanup_expired_tuples('test_rc', '0 seconds');
+
+    -- the batch path: removing both owners at once is refused as a whole, one of them is fine
+    PERFORM authz.write_tuple('test_rc', 'user', 'alice', 'owner', 'doc', 'plan');
+    v_state := NULL;
+    BEGIN PERFORM authz.delete_tuples('test_rc', ARRAY[
+        ('user','alice',NULL,'owner','doc','plan'), ('user','bob',NULL,'owner','doc','plan')]::authz.tuple_input[]);
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('rc_14_batch_refused', v_state, 'ZA002');
+    PERFORM _test_assert('rc_14_batch_atomic',
+        (SELECT count(*)::text FROM authz.tuples t WHERE t.store_id = authz._s('test_rc') AND t.object_id = 'plan' AND t.relation = authz._r(authz._s('test_rc'), 'owner')), '2');
+    PERFORM authz.write_tuple('test_rc', 'user', 'erin', 'editor', 'doc', 'plan');
+    v_n := authz.delete_tuples('test_rc', ARRAY[('user','alice',NULL,'owner','doc','plan'), ('user','erin',NULL,'editor','doc','plan')]::authz.tuple_input[]);
+    PERFORM _test_assert('rc_14_batch_within_floor_ok', v_n::text, '2');
+    -- a checked write's deletes and the sharing API go through the same floor
+    v_state := NULL;
+    BEGIN PERFORM authz.write_tuples_checked('test_rc', p_deletes => '[{"user_type":"user","user_id":"bob","relation":"owner","object_type":"doc","object_id":"plan"}]');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('rc_14_checked_delete_refused', v_state, 'ZA002');
+    PERFORM authz.write_tuple('test_rc', 'user', 'bob', 'editor', 'doc', 'plan');   -- bob may share (can_share = editor)
+    v_state := NULL;
+    BEGIN PERFORM authz.revoke('test_rc', 'user', 'bob', 'user', 'bob', 'owner', 'doc', 'plan');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('rc_14_revoke_refused', v_state, 'ZA002');
+    v_state := NULL;
+    BEGIN PERFORM authz.apply_grants('test_rc', 'user', 'bob', p_revokes => '[{"user_type":"user","user_id":"bob","relation":"owner","object_type":"doc","object_id":"plan"}]');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('rc_14_apply_grants_revoke_refused', v_state, 'ZA002');
+    -- offboarding is exempt: the person goes, the floor does not hold them
+    PERFORM _test_assert('rc_14_offboarding_exempt', authz.delete_user_tuples('test_rc', 'user', 'bob')::text, '2');
+    PERFORM _test_assert('rc_14_object_without_owner', (SELECT direct_count::text FROM authz.relation_usage('test_rc', 'doc', 'plan', 'owner')), '0');
+    -- the floor guards owner only: another relation on the same object is freely revocable
+    PERFORM authz.write_tuple('test_rc', 'user', 'zed', 'viewer', 'doc', 'memo');
+    PERFORM _test_assert('rc_14_other_relation_unaffected', authz.delete_tuple('test_rc', 'user', 'zed', 'viewer', 'doc', 'memo')::text, 'true');
+    -- describe / export / apply carry the floor
+    PERFORM _test_assert_true('rc_14_describe', authz.describe_model('test_rc') LIKE E'%    define owner: [any]\n    # grant requires can_share\n    # constraint: min_direct 1\n%', authz.describe_model('test_rc'));
+    PERFORM _test_assert('rc_14_export_only_when_set',
+        (SELECT string_agg(coalesce(x->>'min_direct', '-') || ':' || (x ? 'min_direct')::text, ',' ORDER BY x->>'relation')
+           FROM jsonb_array_elements(authz.export_model('test_rc')->'relation_constraints') x), '1:true');
+    PERFORM authz.create_store('test_rc2');
+    PERFORM authz.publish_model('rc_model3', 'test_rc');
+    PERFORM authz.apply_model('test_rc2', 'rc_model3');
+    PERFORM _test_assert('rc_14_apply_propagates', (SELECT min_direct::text FROM authz.list_relation_constraints('test_rc2') WHERE relation = 'owner'), '1');
+    PERFORM authz.delete_store('test_rc2', p_purge_audit => true);
+END;
+$$;
+
+-- rc_15: a floored delete needs READ COMMITTED, like the cap
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+DO $$
+DECLARE v_state text;
+BEGIN
+    BEGIN PERFORM authz.delete_tuple('test_rc', 'user', 'alice', 'owner', 'doc', 'plan');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('rc_15_floored_delete_refused_in_rr', v_state, '25000');
+    PERFORM _test_assert('rc_15_unfloored_delete_ok_in_rr', authz.delete_tuple('test_rc', 'user', 'alice', 'viewer', 'doc', 'nothing')::text, 'false');
+END;
+$$;
+COMMIT;
+SELECT authz.delete_store('test_rc', p_purge_audit => true);
 
 DROP FUNCTION IF EXISTS _test_setup_rc();
 

@@ -130,6 +130,33 @@ func TestWriteRelationFullIs409(t *testing.T) {
 	}
 }
 
+// A delete the engine refused because the relation would drop below its
+// min_direct floor (SQLSTATE ZA002 → authz.RelationFloor) is a 409
+// relation_floor with the engine's detail.
+func TestDeleteRelationFloorIs409(t *testing.T) {
+	floor := &authz.RelationFloor{Msg: "relation owner on doc:plan would drop below its minimum: 1 of 1 active direct assignments (min_direct), removing 1",
+		Detail: json.RawMessage(`{"code": "relation_floor", "object_type": "doc", "object_id": "plan", "relation": "owner", "min_direct": 1, "direct_count": 1, "removing": 1}`)}
+	stub := &writeStubBackend{writeErr: floor}
+	h := NewHandler(stub, stub, stub, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo"})
+	w := httptest.NewRecorder()
+	r := jsonReq("POST", "/pgauthz/v1/delete", `{"tuples":[{"user_type":"user","user_id":"a","relation":"owner","object_type":"doc","object_id":"plan"}]}`)
+	r = r.WithContext(context.WithValue(context.WithValue(r.Context(), ctxSubjectType, "user"), ctxSubjectID, "tester"))
+	h.DeleteTuples(w, r)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d: %s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body is not JSON: %v", err)
+	}
+	if got["error"] != "relation_floor" || got["message"] != floor.Msg {
+		t.Fatalf("want error relation_floor with the engine's message, got %v", got)
+	}
+	if d, _ := got["detail"].(map[string]any); d["min_direct"] != float64(1) || d["removing"] != float64(1) {
+		t.Fatalf("want the engine's detail (floor, count, removing), got %v", got["detail"])
+	}
+}
+
 func TestWriteInternalErrorIs500(t *testing.T) {
 	h := NewHandler(&writeStubBackend{writeErr: context.DeadlineExceeded}, &writeStubBackend{writeErr: context.DeadlineExceeded}, &writeStubBackend{writeErr: context.DeadlineExceeded}, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo"})
 	w := httptest.NewRecorder()

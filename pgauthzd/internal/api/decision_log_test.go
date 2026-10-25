@@ -41,7 +41,7 @@ func (detailStub) GrantOptions(context.Context, authz.GrantOptionsRequest) (json
 	return json.RawMessage(`[]`), nil
 }
 func (detailStub) RelationUsage(context.Context, authz.RelationUsageRequest) (json.RawMessage, error) {
-	return json.RawMessage(`{"direct_count": 1, "max_direct": null, "direct_headroom": null, "effective_count": 1, "max_effective": null, "effective_headroom": null, "unbounded": false, "limit_reached": false}`), nil
+	return json.RawMessage(`{"direct_count": 1, "max_direct": null, "direct_headroom": null, "min_direct": null, "effective_count": 1, "max_effective": null, "effective_headroom": null, "unbounded": false, "limit_reached": false}`), nil
 }
 func (detailStub) WatchChanges(context.Context, authz.WatchRequest) (json.RawMessage, error) {
 	return json.RawMessage(`{"changes": []}`), nil

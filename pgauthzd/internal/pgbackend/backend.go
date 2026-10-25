@@ -400,6 +400,12 @@ func mapEngineError(err error) error {
 			detail = json.RawMessage(pgErr.Detail)
 		}
 		return &authz.RelationFull{Msg: pgErr.Message, Detail: detail}
+	case pgErr.Code == "ZA002": // relation_floor: the delete would drop below min_direct (migration 0026) → 409
+		var detail json.RawMessage
+		if json.Valid([]byte(pgErr.Detail)) {
+			detail = json.RawMessage(pgErr.Detail)
+		}
+		return &authz.RelationFloor{Msg: pgErr.Message, Detail: detail}
 	case pgErr.Code == "42501": // insufficient_privilege (no EXECUTE on the function)
 		return fmt.Errorf("%w: %s", authz.ErrForbiddenRole, pgErr.Message)
 	case pgErr.Code == "P0001" && strings.HasPrefix(pgErr.Message, "Permission denied"):
@@ -545,7 +551,7 @@ func (b *Backend) DeleteTuples(ctx context.Context, req authz.WriteRequest) (int
 		).Scan(&n)
 	})
 	if err != nil {
-		return 0, fmt.Errorf("delete_tuples_jsonb: %w", err)
+		return 0, fmt.Errorf("delete_tuples_jsonb: %w", mapEngineError(err))
 	}
 	return n, nil
 }

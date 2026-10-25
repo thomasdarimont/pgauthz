@@ -135,6 +135,10 @@ SELECT authz.model_add_type_restriction(:'cs', 'team', 'member', 'user');
 -- platform
 ----------------------------------------------------------------------
 SELECT authz.model_add_rule(:'cs', 'platform', 'admin', 'direct');
+-- The engine owns "a store keeps at least one owner" / "the platform keeps at
+-- least one admin" (relation floors, migration 0026): a revocation that would
+-- leave none is refused (SQLSTATE ZA002); offboarding a person is not.
+SELECT authz.model_set_relation_constraint(:'cs', 'platform', 'admin', p_min_direct => 1);
 SELECT authz.model_add_type_restriction(:'cs', 'platform', 'admin', 'user');
 SELECT authz.model_add_type_restriction(:'cs', 'platform', 'admin', 'team', 'member');
 SELECT authz.model_add_rule(:'cs', 'platform', r, 'computed', 'admin')
@@ -173,6 +177,10 @@ SELECT authz.model_add_type_restriction(:'cs', 'store', r, 'user')
   FROM unnest(ARRAY['owner', 'author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'exporter', 'viewer']) AS r;
 SELECT authz.model_add_type_restriction(:'cs', 'store', r, 'team', 'member')
   FROM unnest(ARRAY['owner', 'author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'exporter', 'viewer']) AS r;
+-- A store keeps at least one owner (relation floor, migration 0026): the
+-- engine refuses the revocation of the last one; the console maps it to its
+-- "add another owner first" answer.
+SELECT authz.model_set_relation_constraint(:'cs', 'store', 'owner', p_min_direct => 1);
 
 -- can_view: every store role sees the store, and so does the platform admin.
 SELECT authz.model_add_rule(:'cs', 'store', 'can_view', 'computed', r)

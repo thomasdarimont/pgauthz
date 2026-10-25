@@ -333,13 +333,28 @@ $$;
 --   SELECT authz.model_add_grant_rule('docs', 'document', 'viewer', 'can_share_view');
 --   SELECT authz.model_add_grant_rule('docs', 'document', 'editor', 'can_share_edit',
 --                                      p_requires_revoke => 'owner');
+--
+-- p_record_as (migration 0027): sharing as an ACTION — name a relation of
+-- the store and every grant / revoke / apply_grants entry that changes a
+-- tuple records an event for the actor under it (payload: op, relation,
+-- user_type, user_id, user_relation, expires_at, condition; kind request),
+-- so temporal gates on p_requires rate-limit or four-eye sharing with no
+-- PEP code: a gate on document.can_share with
+-- count_within{action: share, window: 1h, max: 10, plus: 1}. The event is
+-- recorded by record_event under the calling role (its recorder allowlist
+-- applies) and must satisfy a payload schema declared on that relation.
+--   SELECT authz.model_add_grant_rule('docs', 'document', 'viewer', 'can_share_view', p_record_as => 'share');
 ------------------------------------------------------------------------
+-- The pre-0027 five-argument signature would make positional calls
+-- ambiguous next to the new one; drop it on reload.
+DROP FUNCTION IF EXISTS authz.model_add_grant_rule(text, text, text, text, text);
 CREATE OR REPLACE FUNCTION authz.model_add_grant_rule(
     p_store           text,
     p_object_type     text,
     p_relation        text,
     p_requires        text,
-    p_requires_revoke text DEFAULT NULL
+    p_requires_revoke text DEFAULT NULL,
+    p_record_as       text DEFAULT NULL
 ) RETURNS integer
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -349,6 +364,8 @@ DECLARE
     v_req      integer := authz._r(v_store_id, p_requires);
     v_req_rev  integer := CASE WHEN p_requires_revoke IS NULL THEN NULL
                                ELSE authz._r(v_store_id, p_requires_revoke) END;
+    v_rec      integer := CASE WHEN p_record_as IS NULL THEN NULL
+                               ELSE authz._r(v_store_id, p_record_as) END;
     v_id       integer;
 BEGIN
     -- A rule "granting X requires X" would let anyone who holds X hand it
@@ -358,12 +375,12 @@ BEGIN
         RAISE EXCEPTION 'model_add_grant_rule: % on % cannot require itself — use a dedicated sharing relation (e.g. can_share_%)',
             p_relation, p_object_type, p_relation;
     END IF;
-    INSERT INTO authz.grant_rules (store_id, object_type, relation, requires, requires_revoke)
-    VALUES (v_store_id, v_type, v_rel, v_req, v_req_rev)
+    INSERT INTO authz.grant_rules (store_id, object_type, relation, requires, requires_revoke, record_as)
+    VALUES (v_store_id, v_type, v_rel, v_req, v_req_rev, v_rec)
     ON CONFLICT (store_id, object_type, relation) DO UPDATE
-        SET requires = EXCLUDED.requires, requires_revoke = EXCLUDED.requires_revoke
-      WHERE (authz.grant_rules.requires, authz.grant_rules.requires_revoke)
-            IS DISTINCT FROM (EXCLUDED.requires, EXCLUDED.requires_revoke)
+        SET requires = EXCLUDED.requires, requires_revoke = EXCLUDED.requires_revoke, record_as = EXCLUDED.record_as
+      WHERE (authz.grant_rules.requires, authz.grant_rules.requires_revoke, authz.grant_rules.record_as)
+            IS DISTINCT FROM (EXCLUDED.requires, EXCLUDED.requires_revoke, EXCLUDED.record_as)
     RETURNING id INTO v_id;
     IF v_id IS NULL THEN
         SELECT g.id INTO v_id FROM authz.grant_rules g
@@ -413,16 +430,30 @@ $$;
 -- Upsert: setting again replaces both values (audited as DELETE + INSERT);
 -- NULL clears one of them, both NULL is refused — drop the constraint.
 --
+--   min_direct    enforced when a tuple is deleted through the revocation
+--                 paths (delete_tuple, delete_tuples, revoke, apply_grants,
+--                 checked-write deletes): a delete that would leave fewer
+--                 active direct assignments on the object is refused with
+--                 SQLSTATE 'ZA002' (pgauthzd: 409 relation_floor). "A
+--                 document keeps at least one owner." Offboarding
+--                 (delete_user_tuples), erasure, type/store removal and
+--                 expiry are exempt — they are not revocations of one grant.
+--
 --   SELECT authz.model_set_relation_constraint('docs', 'document', 'viewer', p_max_direct => 50);
 --   SELECT authz.model_set_relation_constraint('docs', 'document', 'viewer', 50, 200);
+--   SELECT authz.model_set_relation_constraint('docs', 'document', 'owner', p_min_direct => 1);
 --   SELECT authz.model_drop_relation_constraint('docs', 'document', 'viewer');
 ------------------------------------------------------------------------
+-- The pre-0026 five-argument signature would make positional calls
+-- ambiguous next to the new one; drop it on reload.
+DROP FUNCTION IF EXISTS authz.model_set_relation_constraint(text, text, text, integer, integer);
 CREATE OR REPLACE FUNCTION authz.model_set_relation_constraint(
     p_store         text,
     p_object_type   text,
     p_relation      text,
     p_max_direct    integer DEFAULT NULL,
-    p_max_effective integer DEFAULT NULL
+    p_max_effective integer DEFAULT NULL,
+    p_min_direct    integer DEFAULT NULL
 ) RETURNS integer
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -432,22 +463,35 @@ DECLARE
     v_id       integer;
     v_wild     bigint;
 BEGIN
-    IF p_max_direct IS NULL AND p_max_effective IS NULL THEN
-        RAISE EXCEPTION 'model_set_relation_constraint: % on % needs max_direct or max_effective — use model_drop_relation_constraint to remove the constraint',
+    IF p_max_direct IS NULL AND p_max_effective IS NULL AND p_min_direct IS NULL THEN
+        RAISE EXCEPTION 'model_set_relation_constraint: % on % needs max_direct, max_effective or min_direct — use model_drop_relation_constraint to remove the constraint',
             p_relation, p_object_type
             USING ERRCODE = 'invalid_parameter_value';
     END IF;
-    IF p_max_direct IS NOT NULL AND p_max_direct < 1 OR p_max_effective IS NOT NULL AND p_max_effective < 1 THEN
-        RAISE EXCEPTION 'model_set_relation_constraint: a cap must be at least 1 (max_direct %, max_effective %)',
-            p_max_direct, p_max_effective
+    IF p_max_direct IS NOT NULL AND p_max_direct < 1 OR p_max_effective IS NOT NULL AND p_max_effective < 1
+       OR p_min_direct IS NOT NULL AND p_min_direct < 1 THEN
+        RAISE EXCEPTION 'model_set_relation_constraint: a bound must be at least 1 (max_direct %, max_effective %, min_direct %)',
+            p_max_direct, p_max_effective, p_min_direct
             USING ERRCODE = 'invalid_parameter_value';
     END IF;
-    -- max_direct counts direct tuples: the model must have something to
-    -- count (a direct rule on this type), and must not promise what the cap
-    -- refuses (a wildcard facet `user:*` or an object-wildcard direct rule —
-    -- the guard refuses wildcard tuples on a capped relation, so the two
-    -- declarations could never both hold). max_effective has no such
-    -- coupling: a derived permission may well carry an advisory cap.
+    IF p_min_direct IS NOT NULL AND p_max_direct IS NOT NULL AND p_min_direct > p_max_direct THEN
+        RAISE EXCEPTION 'model_set_relation_constraint: min_direct % exceeds max_direct %', p_min_direct, p_max_direct
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    -- min_direct and max_direct count direct tuples: the model must have
+    -- something to count (a direct rule on this type).
+    IF p_min_direct IS NOT NULL AND NOT EXISTS (SELECT 1 FROM authz.models m
+                        WHERE m.store_id = v_store_id AND m.object_type = v_type AND m.relation = v_rel
+                          AND m.rule_type = authz._rel_direct()) THEN
+        RAISE EXCEPTION 'model_set_relation_constraint: % on % has no direct rule — nothing is assigned by tuple, so min_direct cannot apply',
+            p_relation, p_object_type
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    -- max_direct must also not promise what the cap refuses (a wildcard
+    -- facet `user:*` or an object-wildcard direct rule — the guard refuses
+    -- wildcard tuples on a capped relation, so the two declarations could
+    -- never both hold). max_effective has no such coupling: a derived
+    -- permission may well carry an advisory cap.
     IF p_max_direct IS NOT NULL THEN
         -- Serialize against a concurrent wildcard facet / rule / tuple (see
         -- _lock_relation_model); the checks below then see what committed.
@@ -482,12 +526,12 @@ BEGIN
                 USING ERRCODE = 'invalid_parameter_value';
         END IF;
     END IF;
-    INSERT INTO authz.relation_constraints (store_id, object_type, relation, max_direct, max_effective)
-    VALUES (v_store_id, v_type, v_rel, p_max_direct, p_max_effective)
+    INSERT INTO authz.relation_constraints (store_id, object_type, relation, max_direct, max_effective, min_direct)
+    VALUES (v_store_id, v_type, v_rel, p_max_direct, p_max_effective, p_min_direct)
     ON CONFLICT (store_id, object_type, relation) DO UPDATE
-        SET max_direct = EXCLUDED.max_direct, max_effective = EXCLUDED.max_effective
-      WHERE (authz.relation_constraints.max_direct, authz.relation_constraints.max_effective)
-            IS DISTINCT FROM (EXCLUDED.max_direct, EXCLUDED.max_effective)
+        SET max_direct = EXCLUDED.max_direct, max_effective = EXCLUDED.max_effective, min_direct = EXCLUDED.min_direct
+      WHERE (authz.relation_constraints.max_direct, authz.relation_constraints.max_effective, authz.relation_constraints.min_direct)
+            IS DISTINCT FROM (EXCLUDED.max_direct, EXCLUDED.max_effective, EXCLUDED.min_direct)
     RETURNING id INTO v_id;
     IF v_id IS NULL THEN
         SELECT c.id INTO v_id FROM authz.relation_constraints c
@@ -515,10 +559,11 @@ END;
 $$;
 
 -- list_relation_constraints: a store's constraints by name (reader tier).
+DROP FUNCTION IF EXISTS authz.list_relation_constraints(text);
 CREATE OR REPLACE FUNCTION authz.list_relation_constraints(p_store text)
-RETURNS TABLE (object_type text, relation text, max_direct integer, max_effective integer)
+RETURNS TABLE (object_type text, relation text, max_direct integer, max_effective integer, min_direct integer)
 LANGUAGE sql STABLE AS $$
-    SELECT ot.name, rl.name, c.max_direct, c.max_effective
+    SELECT ot.name, rl.name, c.max_direct, c.max_effective, c.min_direct
       FROM authz.relation_constraints c
       JOIN authz.types     ot ON ot.id = c.object_type
       JOIN authz.relations rl ON rl.id = c.relation
@@ -1177,6 +1222,7 @@ CREATE OR REPLACE FUNCTION authz._describe_constraint(
 ) RETURNS text LANGUAGE sql STABLE AS $$
     SELECT '    # constraint' || CASE WHEN p_prefix_relation THEN ' ' || rl.name ELSE '' END || ': '
            || concat_ws(', ',
+                  CASE WHEN c.min_direct    IS NOT NULL THEN 'min_direct '    || c.min_direct    END,
                   CASE WHEN c.max_direct    IS NOT NULL THEN 'max_direct '    || c.max_direct    END,
                   CASE WHEN c.max_effective IS NOT NULL THEN 'max_effective ' || c.max_effective END)
            || E'\n'
@@ -1262,11 +1308,13 @@ BEGIN
                          || authz._describe_gates(v_store_id, v_type.id, v_rel.id, false);
                 -- Grant rule (migration 0017): who may hand this relation out.
                 SELECT '    # grant requires ' || rq.name
-                       || CASE WHEN g.requires_revoke IS NOT NULL THEN ' (revoke requires ' || rr.name || ')' ELSE '' END || E'\n'
+                       || CASE WHEN g.requires_revoke IS NOT NULL THEN ' (revoke requires ' || rr.name || ')' ELSE '' END
+                       || CASE WHEN g.record_as IS NOT NULL THEN ', recorded as ' || ra.name ELSE '' END || E'\n'
                   INTO v_group
                   FROM authz.grant_rules g
                   JOIN authz.relations rq ON rq.id = g.requires
              LEFT JOIN authz.relations rr ON rr.id = g.requires_revoke
+             LEFT JOIN authz.relations ra ON ra.id = g.record_as
                  WHERE g.store_id = v_store_id AND g.object_type = v_type.id AND g.relation = v_rel.id;
                 IF v_group IS NOT NULL THEN
                     v_out := v_out || v_group;

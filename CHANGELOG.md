@@ -9,6 +9,21 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Relation floors and sharing as an action.** `min_direct` on a relation
+  constraint (migration 0026) is enforced on the revocation paths —
+  `delete_tuple`, `delete_tuples`, `revoke`, `apply_grants`, checked-write
+  deletes refuse to leave fewer active direct assignments on an object
+  (SQLSTATE `ZA002`, pgauthzd `409 relation_floor`), under the per-object
+  lock and `READ COMMITTED`; offboarding, erasure, type and store removal and
+  expiry are exempt. The console model declares it for `platform.admin` and
+  `store.owner`, so the engine owns the last-owner rule the console used to
+  hand-roll. A grant rule may name the action its grants and revokes are
+  **recorded as** (`p_record_as`, migration 0027): `grant`, `revoke` and
+  `apply_grants` record an event for the actor per changed tuple (payload
+  `op`, `relation`, `user_type`, `user_id`, …), so temporal gates on the
+  required relation rate-limit or four-eye sharing with no PEP code.
+  `describe_model`, export, registry, diff, pgauthzadm, the console (Model
+  tab, Structure view, Activity) and the docs carry both; two-session test L.
 - **Relation constraints** (migration 0025, `authz.relation_constraints` +
   audit): per `(type, relation)`, how many subjects may hold the relation on
   one object. `max_direct` is enforced on every write path by a trigger on

@@ -154,6 +154,8 @@ type modelEdit struct {
 	RequiresRevoke      string          `json:"requires_revoke"` // add_grant_rule: … to revoke (empty = same as requires)
 	MaxDirect           *int            `json:"max_direct"`      // set_relation_constraint: cap on active direct tuples per object (null = none)
 	MaxEffective        *int            `json:"max_effective"`   // set_relation_constraint: advisory cap on the resolved holder set (null = none)
+	MinDirect           *int            `json:"min_direct"`      // set_relation_constraint: floor on active direct tuples per object, enforced on revocation (null = none)
+	RecordAs            string          `json:"record_as"`       // add_grant_rule: the action grants/revokes are recorded as for the actor (empty = none)
 	PayloadSchema       json.RawMessage `json:"payload_schema"`  // set_payload_schema: the schema (null / empty clears)
 }
 
@@ -221,13 +223,13 @@ func modelEditSQL(store, op string, e modelEdit) (sql string, args []any, ok boo
 	case "remove_gate":
 		sql, args = `SELECT authz.drop_gate($1, $2, $3, $4)`, []any{store, e.ObjectType, e.Relation, e.Name}
 	case "add_grant_rule": // upsert by (object type, relation): re-adding changes the requirements
-		sql = `SELECT authz.model_add_grant_rule($1, $2, $3, $4, $5)`
-		args = []any{store, e.ObjectType, e.Relation, e.Requires, nullable(e.RequiresRevoke)}
+		sql = `SELECT authz.model_add_grant_rule($1, $2, $3, $4, $5, $6)`
+		args = []any{store, e.ObjectType, e.Relation, e.Requires, nullable(e.RequiresRevoke), nullable(e.RecordAs)}
 	case "remove_grant_rule":
 		sql, args = `SELECT authz.model_drop_grant_rule($1, $2, $3)`, []any{store, e.ObjectType, e.Relation}
 	case "set_relation_constraint": // upsert by (object type, relation): both caps are replaced; the engine refuses both empty
-		sql = `SELECT authz.model_set_relation_constraint($1, $2, $3, $4, $5)`
-		args = []any{store, e.ObjectType, e.Relation, e.MaxDirect, e.MaxEffective}
+		sql = `SELECT authz.model_set_relation_constraint($1, $2, $3, $4, $5, $6)`
+		args = []any{store, e.ObjectType, e.Relation, e.MaxDirect, e.MaxEffective, e.MinDirect}
 	case "remove_relation_constraint":
 		sql, args = `SELECT authz.model_drop_relation_constraint($1, $2, $3)`, []any{store, e.ObjectType, e.Relation}
 	case "set_payload_schema": // the payload shape events for this action must have; null clears it

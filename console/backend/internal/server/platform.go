@@ -151,7 +151,7 @@ func (s *Server) handlePlatformAccessRemove(w http.ResponseWriter, r *http.Reque
 		return s.ensureOwner(ctx, tx, "platform", s.cfg.PlatformID)
 	})
 	if err != nil {
-		if err == errLastOwner {
+		if isLastOwner(err) {
 			writeError(w, http.StatusConflict, "the platform needs at least one admin — add another admin first")
 			return
 		}

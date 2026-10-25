@@ -262,7 +262,7 @@ type document
       const f = { ...this.form };
       delete f.editing;
       if (f.group_id !== undefined) f.group_id = Number(f.group_id) || 0;
-      for (const k of ['max_direct', 'max_effective']) {
+      for (const k of ['max_direct', 'max_effective', 'min_direct']) {
         if (f[k] === undefined) continue;
         f[k] = String(f[k]).trim() === '' ? null : Number(f[k]);
       }
@@ -876,6 +876,15 @@ type document
               ${rels.map((r) => html`<option value=${r} ?selected=${f.requires_revoke === r}>${r}</option>`)}
             </select></label
           >
+          <label class="field"
+            ><span
+              >${t('Record as')}
+              ${help('Sharing as an action: every grant and revoke that changes a tuple is recorded in the action log for the actor under this relation (payload: op, relation, user_type, user_id, …). A temporal gate on the required relation can then bound sharing — count_within with action set to this relation. Empty: nothing is recorded.')}</span
+            ><select class="mono" @change=${this._set('record_as')} data-testid="model-input-grant-record-as">
+              <option value="" ?selected=${!f.record_as}>${t('not recorded')}</option>
+              ${rels.map((r) => html`<option value=${r} ?selected=${f.record_as === r}>${r}</option>`)}
+            </select></label
+          >
           ${this._formActions(f.editing ? 'Save grant rule' : 'Add grant rule')}
         </form>`;
       case 'set_relation_constraint': {
@@ -921,7 +930,12 @@ type document
         const pickRel = (e) => {
           const rel = e.target.value;
           const direct = rulesOn(f.object_type).some((r) => r.relation === rel && r.rule_type === 'direct');
-          this.form = { ...this.form, relation: rel, max_direct: direct ? f.max_direct : '' };
+          this.form = {
+            ...this.form,
+            relation: rel,
+            max_direct: direct ? f.max_direct : '',
+            min_direct: direct ? f.min_direct : '',
+          };
         };
         return html`<form
           class="card form constraint-form"
@@ -983,6 +997,20 @@ type document
             />
             ${directOff ? html`<span class="help" data-testid="model-constraint-direct-why">${directWhy}</span>` : nothing}
           </label>
+          <label class="field"
+            ><span
+              >${t('Min direct')}
+              ${help('Enforced on revocation: delete_tuple, delete_tuples, revoke and apply_grants refuse to leave fewer active direct holders on an object ("a document keeps at least one owner"); offboarding a person, erasure, type and store removal and expiry are exempt. Empty: no floor.')}</span
+            ><input
+              class="mono"
+              type="number"
+              min="1"
+              step="1"
+              ?disabled=${!!f.relation && !hasDirect}
+              .value=${String(f.min_direct ?? '')}
+              @input=${this._set('min_direct')}
+              data-testid="model-input-constraint-min-direct"
+          /></label>
           <label class="field"
             ><span
               >${t('Max effective')}
@@ -1147,12 +1175,14 @@ type document
         relation: (g) => g.relation,
         requires: (g) => g.requires,
         requires_revoke: (g) => g.requires_revoke ?? '',
+        record_as: (g) => g.record_as ?? '',
       },
       relation_constraints: {
         object_type: (c) => c.object_type,
         relation: (c) => c.relation,
         max_direct: (c) => c.max_direct ?? Infinity,
         max_effective: (c) => c.max_effective ?? Infinity,
+        min_direct: (c) => c.min_direct ?? 0,
       },
     };
   }
@@ -1269,6 +1299,7 @@ type document
       relation: g.relation,
       requires: g.requires,
       requires_revoke: g.requires_revoke ?? '',
+      record_as: g.record_as ?? '',
       editing: true,
     };
     this.edit = 'add_grant_rule';
@@ -1281,6 +1312,7 @@ type document
   _grantSQL(g) {
     const args = [this.store, g.object_type, g.relation, g.requires].map((x) => this._q(x));
     if (g.requires_revoke) args.push(`p_requires_revoke => ${this._q(g.requires_revoke)}`);
+    if (g.record_as) args.push(`p_record_as => ${this._q(g.record_as)}`);
     return `SELECT authz.model_add_grant_rule(${args.join(', ')});`;
   }
 
@@ -1290,6 +1322,7 @@ type document
       relation: c.relation,
       max_direct: c.max_direct ?? '',
       max_effective: c.max_effective ?? '',
+      min_direct: c.min_direct ?? '',
       editing: true,
     };
     this.edit = 'set_relation_constraint';
@@ -1311,6 +1344,7 @@ type document
     const args = [this.store, c.object_type, c.relation].map((x) => this._q(x));
     if (c.max_direct != null) args.push(`p_max_direct => ${c.max_direct}`);
     if (c.max_effective != null) args.push(`p_max_effective => ${c.max_effective}`);
+    if (c.min_direct != null) args.push(`p_min_direct => ${c.min_direct}`);
     return `SELECT authz.model_set_relation_constraint(${args.join(', ')});`;
   }
 
@@ -1686,6 +1720,7 @@ type document
                                         @click=${() => this._openConstraint(c)}
                                       >
                                         ${usedOn(r.name).length > 1 ? `${c.object_type}: ` : ''}${[
+                                          c.min_direct != null ? t('≥ {n} direct', { n: c.min_direct }) : '',
                                           c.max_direct != null ? t('≤ {n} direct', { n: c.max_direct }) : '',
                                           c.max_effective != null
                                             ? t('≤ {n} effective', { n: c.max_effective })
@@ -1795,14 +1830,14 @@ type document
     {
       id: 'grant_rules',
       label: 'Grant rules',
-      help: 'The sharing policy: which relation an actor needs on an object to grant — and to revoke — a relation on it through authz.grant / revoke, the path an application’s share dialog takes. Part of the model: versioned and rolled out with it.',
+      help: 'The sharing policy: which relation an actor needs on an object to grant — and to revoke — a relation on it through authz.grant / revoke, the path an application’s share dialog takes; optionally the action each grant and revoke is recorded as, so gates can bound sharing. Part of the model: versioned and rolled out with it.',
       add: ['add_grant_rule', 'grant rule'],
       ops: ['add_grant_rule'],
     },
     {
       id: 'relation_constraints',
       label: 'Relation constraints',
-      help: 'How many subjects may hold a relation on one object: max_direct caps the active (unexpired) direct tuples per object and is enforced on every write — the one past the cap is refused; max_effective is the advisory size of the resolved holder set that relation_usage reports headroom against. Part of the model: versioned and rolled out with it.',
+      help: 'How many subjects may hold a relation on one object: max_direct caps the active (unexpired) direct tuples per object and is enforced on every write — the one past the cap is refused; min_direct is a floor enforced on revocation (an object keeps at least that many); max_effective is the advisory size of the resolved holder set that relation_usage reports headroom against. Part of the model: versioned and rolled out with it.',
       add: ['set_relation_constraint', 'relation constraint'],
       ops: ['set_relation_constraint'],
     },
@@ -2195,6 +2230,7 @@ type document
       g.relation,
       g.requires,
       g.requires_revoke,
+      g.record_as,
     ]);
     return html`${this._panelHead(sec, vis.length, rules.length)}
     ${sec.ops.includes(this.edit) ? this._forms() : nothing}
@@ -2209,6 +2245,7 @@ type document
                   ${this._sortTh('grant_rules', 'relation', t('Relation granted'))}
                   ${this._sortTh('grant_rules', 'requires', t('To grant, the actor needs'))}
                   ${this._sortTh('grant_rules', 'requires_revoke', t('To revoke, the actor needs'))}
+                  ${this._sortTh('grant_rules', 'record_as', t('Recorded as'))}
                   <th></th>
                 </tr>
               </thead>
@@ -2223,6 +2260,9 @@ type document
                         <td class="mono">
                           ${g.requires_revoke ?? html`<span class="dim">${t('same as to grant')}</span>`}
                         </td>
+                        <td class="mono">
+                          ${g.record_as ?? html`<span class="dim">${t('not recorded')}</span>`}
+                        </td>
                         <td class="actions">
                           <button class="sm" @click=${() => this._toggleDetail(this._grantKey(g))}>
                             ${this.detail.has(this._grantKey(g)) ? t('Hide') : t('Details')}
@@ -2230,7 +2270,7 @@ type document
                           ${can ? html`<button class="sm" data-testid=${`model-grant-rule-edit-${g.object_type}-${g.relation}`} @click=${() => this._editGrantRule(g)}>${t('Edit')}</button>` : nothing}
                         </td>
                       </tr>
-                      ${this.detail.has(this._grantKey(g)) ? this._detailRow(6, this._grantSQL(g), g) : nothing}`,
+                      ${this.detail.has(this._grantKey(g)) ? this._detailRow(7, this._grantSQL(g), g) : nothing}`,
                 )}
               </tbody>
             </table>
@@ -2251,6 +2291,7 @@ type document
       c.relation,
       c.max_direct,
       c.max_effective,
+      c.min_direct,
     ]);
     return html`${this._panelHead(sec, vis.length, rows.length)}
     ${sec.ops.includes(this.edit) ? this._forms() : nothing}
@@ -2263,6 +2304,7 @@ type document
                   ${selAll(vis.map((c) => this._constraintKey(c)))}
                   ${this._sortTh('relation_constraints', 'object_type', t('Object type'))}
                   ${this._sortTh('relation_constraints', 'relation', t('Relation'))}
+                  ${this._sortTh('relation_constraints', 'min_direct', t('Min direct (enforced)'))}
                   ${this._sortTh('relation_constraints', 'max_direct', t('Max direct (enforced)'))}
                   ${this._sortTh('relation_constraints', 'max_effective', t('Max effective (advisory)'))}
                   <th></th>
@@ -2275,6 +2317,7 @@ type document
                         ${sel(this._constraintKey(c))}
                         <td class="mono">${c.object_type}</td>
                         <td class="mono">${c.relation}</td>
+                        <td class="mono">${c.min_direct ?? html`<span class="dim">${t('none')}</span>`}</td>
                         <td class="mono">${c.max_direct ?? html`<span class="dim">${t('none')}</span>`}</td>
                         <td class="mono">
                           ${c.max_effective ?? html`<span class="dim">${t('none')}</span>`}
@@ -2286,7 +2329,7 @@ type document
                           ${can ? html`<button class="sm" data-testid=${`model-relation-constraint-edit-${c.object_type}-${c.relation}`} @click=${() => this._editConstraint(c)}>${t('Edit')}</button>` : nothing}
                         </td>
                       </tr>
-                      ${this.detail.has(this._constraintKey(c)) ? this._detailRow(6, this._constraintSQL(c), c) : nothing}`,
+                      ${this.detail.has(this._constraintKey(c)) ? this._detailRow(7, this._constraintSQL(c), c) : nothing}`,
                 )}
               </tbody>
             </table>

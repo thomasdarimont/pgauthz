@@ -1485,6 +1485,31 @@ forbidding self-grant is an exclusion on the required relation. Object
 wildcards stay a writer-role `write_tuple`; multi-tuple invariants and
 delegation chains stay `write_tuples_checked`.
 
+**Sharing as an action.** A grant rule may name the action its grants and
+revokes are *recorded as* (`p_record_as`, migration 0027): every `grant`,
+`revoke` and `apply_grants` entry that changes a tuple then records an event
+for the actor in the [action log](#17-temporal-gates-history-dependent-rules)
+— action `share` on the object, kind `request`, payload `op` (`grant` /
+`revoke`), `relation`, `user_type`, `user_id` and, when set, `user_relation`,
+`expires_at`, `condition`. No-ops record nothing. Because `grant` decides
+the actor's required relation with the full decision, a temporal gate on it
+bounds sharing with no PEP code:
+
+```sql
+SELECT authz.model_register_relation('docs', 'share', p_metadata => '{"kind": "permission"}');
+SELECT authz.model_add_grant_rule('docs', 'document', 'viewer', 'can_share_view', p_record_as => 'share');
+-- at most 10 shares per actor per hour, this one included
+SELECT authz.add_gate('docs', 'document', 'can_share_view', 'share_rate',
+    '{"all_of": [{"count_within": {"window": "1h", "action": "share", "max": 10, "plus": 1}}]}');
+-- ... or no more than 3 distinct people a day: count_distinct_within with key payload.user_id;
+-- revokes are events too: filter with "match": {"op": "grant"} when only grants should count
+```
+
+The event is recorded through `record_event` under the calling role, so a
+recorder allowlist on that role must include the action, and a payload
+schema declared on the action must accept the payload above (`op` and
+`relation` are always strings).
+
 ### Relation constraints: how many may hold a relation
 
 "No more than 50 people on a document", "a document has exactly one
@@ -1519,6 +1544,18 @@ SELECT authz.model_drop_relation_constraint('docs', 'document', 'viewer');
   never enforced on a write: a resolved count fans out (sharing a folder
   would re-count every document below it) and would fail writes for distant
   reasons. `relation_usage` reports the count and the headroom.
+- **`min_direct` is a floor, enforced on revocation.** "A document keeps at
+  least one owner": `delete_tuple`, `delete_tuples`, `revoke`, `apply_grants`
+  and a checked write's deletes refuse a delete that would leave fewer
+  active direct assignments on the object, with SQLSTATE `ZA002`
+  (pgauthzd: `409 relation_floor`; detail: floor, count, how many the
+  request removed), under the same per-object lock and `READ COMMITTED`
+  rule as the cap, so two revocations racing for the last slot serialize.
+  Deliberately exempt: offboarding a person (`delete_user_tuples`), erasure,
+  type and store removal, and expiry — those are not revocations of one
+  grant, and a floor that blocked them would block the wrong thing. A floor
+  needs a direct rule on the type and may not exceed `max_direct`.
+  `relation_usage` reports it next to the direct count.
 
 Expired tuples never count, and there is no option to count them: the
 engine treats an expired row as gone on every path, and a count that
