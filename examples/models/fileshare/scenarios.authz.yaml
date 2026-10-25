@@ -1,0 +1,83 @@
+# Demo scenarios for the fileshare model — paste into the console's
+# Store → Test → Scenarios editor of a store running this model and Run.
+# Hermetic: the run creates an ephemeral store with the store's current model
+# and ONLY these tuples (nothing of the store's data takes part). The action
+# log of that store is empty, so the download and share-rate gates hold
+# nothing back here; tests.sql exercises them.
+# CLI: pgauthzctl model test scenarios.authz.yaml --store fileshare
+tuples:
+  - user: user:alice
+    relation: owner
+    object: folder:root
+  - user: folder:root
+    relation: parent
+    object: folder:projects
+  - user: folder:projects
+    relation: parent
+    object: doc:design_spec
+  - user: folder:projects
+    relation: parent
+    object: doc:budget
+  - user: user:frank
+    relation: owner
+    object: doc:design_spec
+  - user: user:bob
+    relation: viewer
+    object: doc:design_spec
+  - user: user:dana
+    relation: editor
+    object: doc:design_spec
+  - user: user:charlie
+    relation: member
+    object: group:engineering
+  - user: group:engineering#member
+    relation: editor
+    object: doc:budget
+  # a document has exactly one owner (relation constraint max_direct 1):
+  # the model must refuse a second one — asserted, not seeded
+  - user: user:zoe
+    relation: owner
+    object: doc:design_spec
+    refused: true
+
+tests:
+  - name: editors write, viewers read, nobody but owners shares
+    check:
+      - user: user:dana
+        object: doc:design_spec
+        assertions: { can_read: true, can_write: true, can_share: false, download: true }
+      - user: user:bob
+        object: doc:design_spec
+        assertions: { can_read: true, can_write: false, can_share: false }
+      - user: user:frank
+        object: doc:design_spec
+        assertions: { can_share: true, can_change_owner: true }
+      - user: user:alice
+        object: doc:design_spec
+        assertions: { can_share: true, can_change_owner: false }
+        notes: { can_share: "inherited from the root folder she owns" }
+
+  - name: a group as editor
+    check:
+      - user: user:charlie
+        object: doc:budget
+        assertions: { can_write: true, can_read: true }
+    list_subjects:
+      - object: doc:budget
+        type: user
+        assertions: { can_write: [user:alice, user:charlie] }
+
+  - name: the refused second owner grants nothing
+    check:
+      - user: user:zoe
+        object: doc:design_spec
+        assertions: { can_change_owner: false, can_read: false }
+
+  - name: the full action sets
+    list_actions:
+      - user: user:dana
+        object: doc:design_spec
+        expect: [editor, can_read, can_write, download]
+      - user: user:frank
+        object: doc:design_spec
+        expect: [owner, can_read, can_write, can_share, can_change_owner, download]

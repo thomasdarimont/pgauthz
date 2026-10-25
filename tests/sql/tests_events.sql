@@ -532,7 +532,7 @@ BEGIN
     -- same call legitimately drops the (older, empty) current-month partitions
     -- init created — retention is by age, and ensure_event_partitions below
     -- recreates them.
-    -- p_force: the fleet has live gates (the gdrive fixture) whose windows the
+    -- p_force: the fleet has live gates (the fileshare fixture) whose windows the
     -- future cutoff would truncate — the guard is tested in tests_gates.sql.
     PERFORM authz.drop_event_partitions_before('2031-01-20', p_force => true);
     PERFORM _test_assert('ev_18_retention_keeps_partial_month',

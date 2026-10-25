@@ -12,7 +12,8 @@ the watch/changefeed consumer live alongside under
 |---|---|---|
 | `examples/models/helloworld/` | The smallest useful model (documents with editors/viewers, computed `can_read`/`can_write`) — the README's [complete example](../../README.md#a-complete-example) as loadable files | `model.sql`, `seed.sql`, `demo.sql`, `scenarios.authz.yaml` |
 | `examples/models/demo/` | Professional-services engagements: internal/client users, teams, data spaces, documents, conditions, audit | `model.sql`, `seed.sql`, `tests.sql`, `demo.sql`, `scenarios.authz.yaml` |
-| `examples/models/gdrive/` | Google-Drive-style hierarchical folders and documents (deep TTU nesting), plus temporal gates on `doc.download` (daily quota + per-file limit over the action log) | `model.sql`, `seed.sql`, `demo.sql`, `tests.sql`, `scenarios.authz.yaml` |
+| `examples/models/gdrive/` | Google-Drive-style hierarchical folders and documents (deep TTU nesting), sharing as Drive does it: grant rules (who may share, only the owner unshares) and exactly one owner per document with an ownership transfer | `model.sql`, `seed.sql`, `demo.sql`, `tests.sql`, `scenarios.authz.yaml` |
+| `examples/models/fileshare/` | **Advanced file sharing**, derived from gdrive: temporal gates on `doc.download` (daily quota + per-file limit over the action log), sharing as a recorded action (`record_as`) with share-rate gates, relation constraints (one owner, at most ten editors), an editor role, expiring shares | `model.sql`, `seed.sql`, `demo.sql`, `tests.sql`, `scenarios.authz.yaml` |
 | `examples/models/github/` | GitHub repo roles (`admin → maintainer → writer → triager → reader`), imported from an OpenFGA JSON model | `model.sql`, `seed.sql`, `demo.sql`, `scenarios.authz.yaml` |
 | `examples/models/aia-acme/` | The ACME "Customer Collaboration" example from the book *Authorization in Action* (Cedar, ch. 9 + appendix A) re-modelled as ReBAC: Cedar attributes become relations, the `team:legal` membership rule becomes one tuple on a reified `classification` object, `delegatable` and the overrides become flag tuples with intersection/exclusion groups, and the global "managed device" `forbid` becomes a conditional object-wildcard tuple that every employee path must intersect (fail-closed on missing context). Policy-by-policy mapping in its `README.md` | `model.sql`, `seed.sql`, `tests.sql`, `demo.sql`, `scenarios.authz.yaml` |
 | `examples/models/agents/` | Authorization for **AI agents** (*Authorization in Action* ch. 18 / appendix C): every tool call is a check with the agent as principal; task scope as an expiring or contextual tuple; constraint-aware planning with `list_actions` / `list_objects` instead of policy residuals; sequencing ("email only after a summary") and partner reputation as temporal gates over the action log; a control plane with no agent path; delegation as data with evaluation-time attenuation (grants to an agent's `reach` userset, so a delegate holds only what its delegator still holds, revocation cascades) plus an issuance precondition. Mapping and caveats in its `README.md` | `model.sql`, `seed.sql`, `tests.sql`, `demo.sql`, `scenarios.authz.yaml` |
@@ -22,7 +23,7 @@ the watch/changefeed consumer live alongside under
 
 In each: `model.sql` defines the types/relations/rules (creates the store),
 `seed.sql` loads sample tuples, `demo.sql` runs a showcase of example
-queries, and `tests.sql` (demo, todo, gdrive, aia-acme, agents, fourquestions, authzen-cert) asserts expected decisions.
+queries, and `tests.sql` (demo, todo, gdrive, fileshare, aia-acme, agents, fourquestions, authzen-cert) asserts expected decisions.
 `scenarios.authz.yaml` is the model's story as a **test fixture** (the
 `tests.authz.yaml` format of [pgauthzctl](../../pgauthzctl/README.md#test-fixtures-testsauthzyaml)):
 its own tuples plus named scenarios with assertions (checks, reverse searches, exact action sets, explain paths), hermetic — a run creates
@@ -31,7 +32,7 @@ decides there. Two ways to run one against a store carrying the model:
 paste it into the console's Store → Test → **Scenarios** editor and Run, or
 `pgauthzctl model test examples/models/gdrive/scenarios.authz.yaml --store gdrive`.
 Gates read the action log, empty in the ephemeral store, so the fixtures say
-which permissions a gate holds back (agents, fourquestions).
+which permissions a gate holds back (agents, fourquestions, fileshare).
 
 ## Loading an example
 

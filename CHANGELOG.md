@@ -42,6 +42,15 @@ pre-1.0, minor versions may include breaking changes.
   with `max_direct` and `min_direct` 1, a grant rule requiring
   `can_change_owner` for the handover) and its scenarios assert a refused
   second owner; a Playwright spec covers the console's Model tab section.
+- **New example `examples/models/fileshare`, "advanced file sharing".**
+  gdrive now models only what Google Drive offers (inheritance, groups, link
+  sharing, who may share, one owner with an ownership transfer); the pgauthz
+  extras moved to fileshare, derived from it: the download quotas (temporal
+  gates on `doc.download`), sharing as a recorded action (`record_as` with
+  share-rate and share-spread gates on `can_share`), relation constraints
+  (one owner, at most ten direct editors with an advisory ceiling of fifty
+  effective), an editor role and an expiring share. The playground's
+  "record a download" demo now resets `fileshare`.
 - **Relation constraints** (migration 0025, `authz.relation_constraints` +
   audit): per `(type, relation)`, how many subjects may hold the relation on
   one object. `max_direct` is enforced on every write path by a trigger on

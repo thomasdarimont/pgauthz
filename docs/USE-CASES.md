@@ -644,7 +644,8 @@ Afterwards `audit_list_object` shows every change with the actor who made
 it. With `p_record_as => 'share'` on the grant rule, every saved grant and
 revoke is also an event of the actor in the action log, so a temporal gate
 on `can_share` can say "at most ten shares an hour" or "no more than three
-new people a day" without the application recording anything.
+new people a day" without the application recording anything — shown in
+[`examples/models/fileshare/`](../examples/models/fileshare).
 
 Shown in: [`examples/models/gdrive/`](../examples/models/gdrive) (section 12
 of `demo.sql`, with tests), [API → grant / revoke](API.md#grant--revoke--share-on-behalf-of-an-actor).
@@ -683,9 +684,10 @@ is the read behind "48 / 50". Resolved counts are never enforced on a write
 — sharing a folder would have to re-count every document below it — which
 is why `max_effective` is advisory.
 
-Shown in: [`examples/models/gdrive/`](../examples/models/gdrive) (`doc.owner`:
-exactly one owner, the handover in `tests.sql`, the refused second owner in
-`scenarios.authz.yaml`), [MODEL_DESIGN → Relation constraints](MODEL_DESIGN.md#relation-constraints-how-many-may-hold-a-relation),
+Shown in: [`examples/models/fileshare/`](../examples/models/fileshare) (one
+owner with the handover, at most ten editors with `relation_usage`, a refused
+second owner in `scenarios.authz.yaml`; gdrive keeps the one-owner rule),
+[MODEL_DESIGN → Relation constraints](MODEL_DESIGN.md#relation-constraints-how-many-may-hold-a-relation),
 [API → relation_usage](API.md#relation_usage--how-full-is-a-relation-on-an-object).
 
 ### Marker tuples and exclusion — archived, under legal hold, draft only
@@ -1414,12 +1416,12 @@ than three times a day.
 instead of a sliding window; `scope: object` makes the second gate per file.
 
 ```sql
-SELECT authz.add_gate('gdrive', 'doc', 'download', 'daily_quota', '{"all_of": [
+SELECT authz.add_gate('fileshare', 'doc', 'download', 'daily_quota', '{"all_of": [
   {"count_within": {"calendar": "day", "tz": "UTC", "kind": "response", "max": 100, "plus": 1}}]}');
-SELECT authz.add_gate('gdrive', 'doc', 'download', 'per_file', '{"all_of": [
+SELECT authz.add_gate('fileshare', 'doc', 'download', 'per_file', '{"all_of": [
   {"count_within": {"calendar": "day", "tz": "UTC", "scope": "object", "kind": "response", "max": 3, "plus": 1}}]}');
 ```
-Shown in: [`examples/models/gdrive/`](../examples/models/gdrive).
+Shown in: [`examples/models/fileshare/`](../examples/models/fileshare).
 
 ### reserve_event — exact caps under concurrency
 
@@ -1430,7 +1432,7 @@ through. The cap must hold exactly.
 decision and the record happen under one lock.
 
 ```sql
-SELECT authz.reserve_event('gdrive', 'user', 'bob', 'download', 'doc', 'design_spec');
+SELECT authz.reserve_event('fileshare', 'user', 'bob', 'download', 'doc', 'design_spec');
 -- {"allowed": true, "seq": 42, "reason": "allowed", "gates": [...]}
 ```
 Shown in: [MODEL_DESIGN → The strict tier](MODEL_DESIGN.md#the-strict-tier-reserve_event).

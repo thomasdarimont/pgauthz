@@ -74,7 +74,7 @@ check "junit file written" test -s /tmp/pgauthzctl-junit.xml
 
 # The examples' scenarios against the live fixture stores test.sh loads
 # (--store: the store's current model, copied into the ephemeral store).
-for pair in demo:demo todo:todo gdrive:gdrive aia-acme:aia_acme agents:agents fourquestions:fourq; do
+for pair in demo:demo todo:todo gdrive:gdrive fileshare:fileshare aia-acme:aia_acme agents:agents fourquestions:fourq; do
     check "examples/models/${pair%%:*}/scenarios.authz.yaml passes against store ${pair##*:}" \
         "$CTL" model test "$ROOT/examples/models/${pair%%:*}/scenarios.authz.yaml" --store "${pair##*:}"
 done
@@ -155,7 +155,7 @@ if curl -sf "$ADMIN_URL/livez" >/dev/null 2>&1; then
     PGAUTHZ_TOKEN=$(make_token ctl-ops internal_user '["pgauthz_admin"]')
     cat > /tmp/ctl-it-issuers.json <<'JSON'
 {"bindings": [
-  {"issuer": "https://auth.example.com", "stores": ["demo", "todo", "gdrive", "aia_acme", "agents", "fourq", "authzen_cert", "console.*"], "db_roles": [], "client_db_roles": {}, "pep_clients": {}, "enabled": true, "description": "ctl-it over the admin API"}
+  {"issuer": "https://auth.example.com", "stores": ["demo", "todo", "gdrive", "fileshare", "aia_acme", "agents", "fourq", "authzen_cert", "console.*"], "db_roles": [], "client_db_roles": {}, "pep_clients": {}, "enabled": true, "description": "ctl-it over the admin API"}
 ]}
 JSON
     echo '{"bindings":[{"issuer":"https://ctl-it.example/api","stores":["x"],"enabled":true}]}' > /tmp/ctl-it-issuers-2.json

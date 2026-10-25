@@ -346,7 +346,7 @@ in [`console/README.md`](console/README.md).
 
 ### Example models
 
-`helloworld`, `demo`, `gdrive`, `github`, `todo`, `aia-acme`, `agents` and
+`helloworld`, `demo`, `gdrive`, `fileshare`, `github`, `todo`, `aia-acme`, `agents` and
 `fourquestions`, each with a model, seed data and a walkthrough, most with
 tests that run in CI: [`examples/models/`](examples/models/README.md).
 

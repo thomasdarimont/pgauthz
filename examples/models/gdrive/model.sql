@@ -12,8 +12,12 @@
 --   - Usersets / group membership (group#member as viewer)
 --   - Wildcard tuples (user:* as viewer for public access)
 --   - Recursive folder hierarchy (folder.viewer from parent)
---   - Temporal gates on doc.download (ADR 0012): a daily quota and a
---     per-file limit over the action log the file service records to
+--   - Sharing as Drive does it: who may share (grant rules), only the owner
+--     unshares, exactly one owner per document with an ownership transfer
+--
+-- The pgauthz extras a file-sharing product adds (download quotas, share
+-- limits, editor caps, sharing as a recorded action) live in
+-- examples/models/fileshare, derived from this model.
 --
 -- OpenFGA DSL equivalent:
 --
@@ -42,12 +46,10 @@
 --       define can_read:  viewer or owner or viewer from parent
 --       define can_share: owner or can_share from parent
 --       define can_write: owner or can_write from parent
---       define download: can_read
---       # gate daily_download_quota: at most 100 downloads per UTC day
---       #   count_within{calendar: "day", tz: "UTC", kind: "response", max: 100, plus: 1}
---       # gate per_file_limit: at most 3 downloads of THIS document per UTC day
---       #   count_within{calendar: "day", tz: "UTC", scope: "object", kind: "response", max: 3, plus: 1}
+--       define download: can_read   # viewers may download (Drive's default)
 --       # grant viewer requires can_share (revoke requires owner)
+--       # grant owner requires can_change_owner
+--       # constraint owner: min_direct 1, max_direct 1
 
 -- Create the store. Dropped first so this file is idempotent — re-running
 -- it resets the store from scratch instead of failing on the existing
@@ -208,34 +210,11 @@ BEGIN
     (s, t_doc, r_can_write, authz._rel_computed(), r_owner, NULL, NULL),
     (s, t_doc, r_can_write, authz._rel_ttu(),      NULL, r_parent, r_can_write),
 
-    -- define download: can_read  (the action the file service records)
+    -- define download: can_read  (viewers may download — Drive's default setting)
     (s, t_doc, r_download, authz._rel_computed(), r_can_read, NULL, NULL)
     ;
 END;
 $$;
-
--- ── Temporal gates (ADR 0012) ───────────────────────────────────────────
--- RULE OF THUMB: a gate answers a PERMISSION question ("may this happen
--- now, given what already happened?") that a security/compliance owner
--- wants enforced centrally. Anything that decides an OUTCOME — which
--- account to debit, whether to retry, the next workflow state — belongs in
--- the application, not here. Gates are veto-only backstops, not a workflow
--- engine, and they bound RECORDED actions: keep the recorder reliable.
---
--- Both hang on doc#download and are evaluated after the graph allows, over
--- the download events the file service records (authz.record_event) AFTER
--- each download (kind = response: completed downloads count, not attempts).
--- "plus: 1" counts the request being decided, so the caps are inclusive of
--- it. See docs/MODEL_DESIGN.md §17.
---
--- A user may download at most 100 documents per UTC day.
-SELECT authz.add_gate('gdrive', 'doc', 'download', 'daily_download_quota', '{
-  "description": "at most 100 downloads per UTC day",
-  "all_of": [{"count_within": {"calendar": "day", "tz": "UTC", "kind": "response", "max": 100, "plus": 1}}]}');
--- ... and at most 3 downloads of the SAME document per UTC day (object scope).
-SELECT authz.add_gate('gdrive', 'doc', 'download', 'per_file_limit', '{
-  "description": "at most 3 downloads of this document per UTC day",
-  "all_of": [{"count_within": {"calendar": "day", "tz": "UTC", "scope": "object", "kind": "response", "max": 3, "plus": 1}}]}');
 
 -- ── Sharing: who may hand `viewer` out (grant rules, migration 0017) ────────
 -- The "Share" dialog. `can_share` already exists in the model (owner, or

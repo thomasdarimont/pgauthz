@@ -100,7 +100,7 @@ the header combobox or **`?store=`** in the URL
     `POST /pgauthz/v1/events/reserve`); both go to pgauthzd-full's native
     events API with *your* token — the real PEP path, so `recorded_by` is you —
     and re-run the explain so the gate nodes show the moved counters. Demo:
-    select store `gdrive`, ask `is user:bob related to doc:design_spec as
+    select store `fileshare`, ask `is user:bob related to doc:design_spec as
     download?`, press *Record response* three times and watch the fourth check
     come back `gate_denied` (`per_file_limit`, 3 per document per UTC day).
     **Reset events…** (holders of `playground_admin`, allowlisted demo stores
