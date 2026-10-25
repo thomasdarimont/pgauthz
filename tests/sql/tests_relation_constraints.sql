@@ -344,6 +344,20 @@ BEGIN
     PERFORM _test_assert('rc_12_repeatable_read_refused', v_state, '25000');
     PERFORM _test_assert_true('rc_12_message', v_err LIKE 'writing to a capped relation (max_direct) requires READ COMMITTED isolation (current: repeatable read)%', coalesce(v_err, 'no error'));
     PERFORM _test_assert('rc_12_uncapped_write_ok', authz.write_tuple('test_rc', 'user', 'rr', 'editor', 'doc', 'memo')::text, 'true');
+    -- the model edits that take the compatibility lock need READ COMMITTED too
+    v_err := NULL; v_state := NULL;
+    BEGIN PERFORM authz.model_set_relation_constraint('test_rc', 'doc', 'editor', 5);
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; v_state := SQLSTATE; END;
+    PERFORM _test_assert('rc_12_cap_declaration_refused_in_rr', v_state, '25000');
+    v_state := NULL;
+    BEGIN PERFORM authz.model_add_type_restriction('test_rc', 'doc', 'editor', 'user', p_allow_wildcard => true);
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('rc_12_wildcard_facet_refused_in_rr', v_state, '25000');
+    -- an advisory cap and a plain facet need no lock and stay allowed
+    PERFORM _test_assert_true('rc_12_advisory_ok_in_rr', authz.model_set_relation_constraint('test_rc', 'doc', 'editor', p_max_effective => 5) > 0, 'id');
+    PERFORM _test_assert_true('rc_12_plain_facet_ok_in_rr', authz.model_add_type_restriction('test_rc', 'doc', 'editor', 'user') > 0, 'id');
+    PERFORM authz.model_drop_relation_constraint('test_rc', 'doc', 'editor');
+    PERFORM authz.model_remove_type_restrictions('test_rc', 'doc', 'editor');
 END;
 $$;
 COMMIT;
@@ -363,6 +377,20 @@ BEGIN
     PERFORM _test_assert('rc_13_cap_removed_facet_added',
         (SELECT count(*)::text FROM authz.list_relation_constraints('test_rc2')) || ' ' ||
         (SELECT count(*)::text FROM authz.type_restrictions tr WHERE tr.store_id = authz._s('test_rc2') AND tr.allow_wildcard), '0 1');
+    -- (review on 2021177) a hard cap becomes an advisory one AND a facet appears, in one apply
+    PERFORM authz.model_remove_type_restrictions('test_rc', 'doc', 'viewer');
+    PERFORM authz.model_set_relation_constraint('test_rc', 'doc', 'viewer', 3, 10);
+    PERFORM authz.publish_model('rc_model2', 'test_rc');
+    PERFORM authz.apply_model('test_rc2', 'rc_model2');
+    PERFORM _test_assert('rc_13b_hard_cap_applied',
+        (SELECT max_direct::text || '/' || max_effective::text FROM authz.list_relation_constraints('test_rc2')), '3/10');
+    PERFORM authz.model_set_relation_constraint('test_rc', 'doc', 'viewer', p_max_effective => 10);
+    PERFORM authz.model_add_type_restriction('test_rc', 'doc', 'viewer', 'user', p_allow_wildcard => true);
+    PERFORM authz.publish_model('rc_model2', 'test_rc');
+    PERFORM authz.apply_model('test_rc2', 'rc_model2');
+    PERFORM _test_assert('rc_13b_advisory_and_facet',
+        (SELECT coalesce(max_direct::text, '-') || '/' || max_effective::text FROM authz.list_relation_constraints('test_rc2')) || ' ' ||
+        (SELECT count(*)::text FROM authz.type_restrictions tr WHERE tr.store_id = authz._s('test_rc2') AND tr.allow_wildcard), '-/10 1');
     PERFORM authz.delete_store('test_rc2', p_purge_audit => true);
     PERFORM authz.delete_store('test_rc', p_purge_audit => true);
 END;

@@ -35,7 +35,13 @@ pre-1.0, minor versions may include breaking changes.
   the exact direct count, so an object over a lowered cap is visible; the
   cap and wildcards are refused in both orders (facet, object-wildcard rule,
   stored wildcard tuples), and `apply_model` drops stale constraints before
-  syncing rules and restrictions.
+  syncing rules and restrictions. Round 2 (on 2021177): `apply_model` also
+  drops a `max_direct` the definition clears before the sync, so a hard cap
+  can become an advisory one next to a new wildcard facet in one apply; the
+  cap, the wildcard facet, the object-wildcard rule and wildcard tuple writes
+  serialize on a per-(type, relation) advisory lock under `READ COMMITTED`
+  (two-session tests J1–J4), closing the interleaving that could commit a cap
+  and a wildcard together.
 - **Review #27 (Codex, on c5fa4fc) fixes — the store's decision-log purge.**
   The purge removed a store's subject tombstones without the lock protocol,
   so a buffered line about an erased subject could flush back (P1). It now

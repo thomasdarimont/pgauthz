@@ -144,6 +144,26 @@ CREATE OR REPLACE TRIGGER trg_tuples_relation_kind
 -- rows a multi-row INSERT already processed, so a batch that overshoots the
 -- cap fails on the first row over it.
 ------------------------------------------------------------------------
+-- _lock_relation_model: the lock the model edits that can contradict each
+-- other take before they validate — a max_direct cap, a user:* facet, an
+-- allow_object_wildcard rule, and the write of a wildcard tuple on the same
+-- (store, type, relation). Without it two sessions could each find the other's
+-- declaration absent and both commit (cap + wildcard facet). Transaction-
+-- scoped advisory lock, own key prefix (never collides with the per-object
+-- key), READ COMMITTED required for the same reason as the cap count: the
+-- check after the wait must see what committed meanwhile.
+CREATE OR REPLACE FUNCTION authz._lock_relation_model(p_store text, p_object_type text, p_relation text)
+RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    IF current_setting('transaction_isolation') NOT IN ('read committed', 'read uncommitted') THEN
+        RAISE EXCEPTION 'changing a relation constraint or a wildcard declaration requires READ COMMITTED isolation (current: %): the compatibility check must see declarations that committed while waiting for the lock',
+            current_setting('transaction_isolation')
+            USING ERRCODE = 'invalid_transaction_state';
+    END IF;
+    PERFORM pg_advisory_xact_lock(hashtextextended('relation-model:' || p_store || ':' || p_object_type || ':' || p_relation, 0));
+END;
+$$;
+
 -- The constraint lookup must work for whoever runs the INSERT: SECURITY
 -- DEFINER (owned by authz_owner, roles.sql).
 CREATE OR REPLACE FUNCTION authz._tuple_relation_cap_guard() RETURNS trigger
@@ -155,6 +175,15 @@ DECLARE
     v_type   text;
     v_rel    text;
 BEGIN
+    -- A wildcard tuple races with a cap being declared: take the model lock
+    -- first, so the cap lookup below sees a concurrent declaration (and the
+    -- declaring session, waiting on the same lock, then sees this tuple).
+    IF NEW.user_id = '*' OR NEW.object_id = '*' THEN
+        SELECT s.name, t.name, r.name INTO v_store, v_type, v_rel
+          FROM authz.stores s, authz.types t, authz.relations r
+         WHERE s.id = NEW.store_id AND t.id = NEW.object_type AND r.id = NEW.relation;
+        PERFORM authz._lock_relation_model(v_store, v_type, v_rel);
+    END IF;
     SELECT c.max_direct INTO v_max
       FROM authz.relation_constraints c
      WHERE c.store_id = NEW.store_id AND c.object_type = NEW.object_type
@@ -203,16 +232,25 @@ CREATE OR REPLACE TRIGGER trg_tuples_relation_cap
     BEFORE INSERT ON authz.tuples
     FOR EACH ROW EXECUTE FUNCTION authz._tuple_relation_cap_guard();
 
--- _lock_capped_objects: the batch writers' deadlock avoidance — take the
--- per-object advisory lock of every object in the batch whose relation is
--- capped, in a stable order, BEFORE the insert (the trigger re-takes a held
--- lock for free). p_objects: a JSON array of {object_type, object_id,
--- relation} by name; objects of uncapped relations are skipped.
+-- _lock_capped_objects: the batch writers' deadlock avoidance — take, in a
+-- stable order and BEFORE the insert, the model lock of every (type,
+-- relation) a wildcard element of the batch names and the per-object lock of
+-- every object whose relation is capped (the trigger re-takes a held lock
+-- for free). p_objects: a JSON array of {object_type, object_id, relation,
+-- user_id?} by name; elements on uncapped relations are skipped.
 CREATE OR REPLACE FUNCTION authz._lock_capped_objects(p_store text, p_store_id integer, p_objects jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
     v_obj record;
 BEGIN
+    FOR v_obj IN
+        SELECT DISTINCT e->>'object_type' AS ot, e->>'relation' AS rel
+          FROM jsonb_array_elements(p_objects) e
+         WHERE e->>'user_id' = '*' OR e->>'object_id' = '*'
+         ORDER BY 1, 2
+    LOOP
+        PERFORM authz._lock_relation_model(p_store, v_obj.ot, v_obj.rel);
+    END LOOP;
     FOR v_obj IN
         SELECT DISTINCT e->>'object_type' AS ot, e->>'object_id' AS oid
           FROM jsonb_array_elements(p_objects) e

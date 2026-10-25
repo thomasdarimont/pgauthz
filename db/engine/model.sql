@@ -449,6 +449,9 @@ BEGIN
     -- declarations could never both hold). max_effective has no such
     -- coupling: a derived permission may well carry an advisory cap.
     IF p_max_direct IS NOT NULL THEN
+        -- Serialize against a concurrent wildcard facet / rule / tuple (see
+        -- _lock_relation_model); the checks below then see what committed.
+        PERFORM authz._lock_relation_model(p_store, p_object_type, p_relation);
         IF NOT EXISTS (SELECT 1 FROM authz.models m
                         WHERE m.store_id = v_store_id AND m.object_type = v_type AND m.relation = v_rel
                           AND m.rule_type = authz._rel_direct()) THEN
@@ -731,6 +734,9 @@ BEGIN
     -- A capped relation (max_direct, migration 0025) refuses object-wildcard
     -- tuples; the rule would promise them (the setter refuses the cap in the
     -- other order).
+    IF p_allow_object_wildcard THEN
+        PERFORM authz._lock_relation_model(p_store, p_object_type, p_relation);
+    END IF;
     IF p_allow_object_wildcard AND EXISTS (SELECT 1 FROM authz.relation_constraints c
                                             WHERE c.store_id = v_store_id
                                               AND c.object_type = authz._t(v_store_id, p_object_type)
@@ -988,6 +994,9 @@ BEGIN
     -- A capped relation (max_direct, migration 0025) refuses wildcard tuples:
     -- a facet promising them would contradict the model (the setter refuses
     -- the cap in the other order).
+    IF p_allow_wildcard THEN
+        PERFORM authz._lock_relation_model(p_store, p_object_type, p_relation);
+    END IF;
     IF p_allow_wildcard AND EXISTS (SELECT 1 FROM authz.relation_constraints c
                                      WHERE c.store_id = v_store_id AND c.object_type = v_object_type
                                        AND c.relation = v_relation AND c.max_direct IS NOT NULL) THEN

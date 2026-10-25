@@ -499,7 +499,7 @@ BEGIN
     -- order before the insert, so two batches cannot deadlock in the
     -- per-row cap guard (which re-takes the held locks).
     PERFORM authz._lock_capped_objects(p_store, v_store_id,
-        (SELECT COALESCE(jsonb_agg(jsonb_build_object('object_type', t.object_type, 'object_id', t.object_id, 'relation', t.relation)), '[]'::jsonb)
+        (SELECT COALESCE(jsonb_agg(jsonb_build_object('object_type', t.object_type, 'object_id', t.object_id, 'relation', t.relation, 'user_id', t.user_id)), '[]'::jsonb)
            FROM unnest(p_tuples) AS t));
 
     -- The set-based insert (with ON CONFLICT reactivation of expired rows)

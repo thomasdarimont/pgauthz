@@ -29,6 +29,10 @@
 #   I. The same race from a REPEATABLE READ transaction whose snapshot predates
 #      the first writer's commit: the count could not see it, so the cap guard
 #      refuses the write outright (SQLSTATE 25000) — still exactly max_direct.
+#   J. Model edits that contradict each other serialize on the relation's model
+#      lock: a cap being declared vs a user:* facet being added (both orders),
+#      and a cap vs a wildcard tuple being written (both orders) — the second
+#      waits and is then refused, never both committed.
 #
 # Synchronization: the holder session runs its statement and then pg_sleep(2)
 # in one transaction; the second session is launched only once pg_stat_activity
@@ -208,6 +212,48 @@ SQL
 wait
 case "$out" in *"requires READ COMMITTED isolation"*) ok "conc_I_repeatable_read_writer_refused" ;; *) bad "conc_I_repeatable_read_writer_refused" "$out" ;; esac
 check "conc_I_exactly_max_direct_holders" "$(q "SELECT count(*) FROM authz.tuples t WHERE t.store_id = authz._s('$S') AND t.object_id = 'r4'")" "1"
+
+echo "==> J. a cap and a wildcard declaration race: the second waits, then is refused"
+q "SELECT authz.model_register_type('$S', 'shelf');
+   SELECT authz.model_add_rule('$S', 'shelf', 'viewer', 'direct');
+   SELECT authz.model_add_rule('$S', 'shelf', 'owner', 'direct');" >/dev/null
+# J1: the cap holds the lock; the facet waits and is refused
+session "SELECT authz.model_set_relation_constraint('$S', 'shelf', 'viewer', 2);"
+t0=$(now_ms)
+out=$(q "SELECT authz.model_add_type_restriction('$S', 'shelf', 'viewer', 'user', p_allow_wildcard => true)")
+dt=$(( $(now_ms) - t0 ))
+wait
+case "$out" in *"is capped (max_direct)"*) ok "conc_J1_facet_refused_after_waiting" ;; *) bad "conc_J1_facet_refused_after_waiting" "$out" ;; esac
+[ "$dt" -ge 1000 ] && ok "conc_J1_facet_waited_for_the_cap (${dt} ms)" || bad "conc_J1_facet_waited_for_the_cap" "${dt} ms — did not wait"
+check "conc_J1_cap_and_no_facet" "$(q "SELECT (SELECT count(*) FROM authz.list_relation_constraints('$S') WHERE object_type = 'shelf') || '/' || (SELECT count(*) FROM authz.type_restrictions tr WHERE tr.store_id = authz._s('$S') AND tr.allow_wildcard)")" "1/0"
+# J2: the facet holds the lock; the cap waits and is refused
+q "SELECT authz.model_drop_relation_constraint('$S', 'shelf', 'viewer')" >/dev/null
+session "SELECT authz.model_add_type_restriction('$S', 'shelf', 'viewer', 'user', p_allow_wildcard => true);"
+t0=$(now_ms)
+out=$(q "SELECT authz.model_set_relation_constraint('$S', 'shelf', 'viewer', 2)")
+dt=$(( $(now_ms) - t0 ))
+wait
+case "$out" in *"allows wildcard grants"*) ok "conc_J2_cap_refused_after_waiting" ;; *) bad "conc_J2_cap_refused_after_waiting" "$out" ;; esac
+[ "$dt" -ge 1000 ] && ok "conc_J2_cap_waited_for_the_facet (${dt} ms)" || bad "conc_J2_cap_waited_for_the_facet" "${dt} ms — did not wait"
+check "conc_J2_facet_and_no_cap" "$(q "SELECT (SELECT count(*) FROM authz.list_relation_constraints('$S') WHERE object_type = 'shelf') || '/' || (SELECT count(*) FROM authz.type_restrictions tr WHERE tr.store_id = authz._s('$S') AND tr.allow_wildcard)")" "0/1"
+# J3: a wildcard tuple is being written (uncapped, no restrictions on owner); the cap waits and is refused
+session "SELECT authz.write_tuple('$S','user','*','owner','shelf','s1');"
+t0=$(now_ms)
+out=$(q "SELECT authz.model_set_relation_constraint('$S', 'shelf', 'owner', 1)")
+dt=$(( $(now_ms) - t0 ))
+wait
+case "$out" in *"1 active wildcard tuple(s) exist"*) ok "conc_J3_cap_refused_by_in_flight_wildcard" ;; *) bad "conc_J3_cap_refused_by_in_flight_wildcard" "$out" ;; esac
+[ "$dt" -ge 1000 ] && ok "conc_J3_cap_waited_for_the_wildcard_write (${dt} ms)" || bad "conc_J3_cap_waited_for_the_wildcard_write" "${dt} ms — did not wait"
+# J4: the cap is being declared; the wildcard tuple waits and is refused
+q "SELECT authz.delete_tuple('$S','user','*','owner','shelf','s1')" >/dev/null
+session "SELECT authz.model_set_relation_constraint('$S', 'shelf', 'owner', 1);"
+t0=$(now_ms)
+out=$(q "SELECT authz.write_tuple('$S','user','*','owner','shelf','s1')")
+dt=$(( $(now_ms) - t0 ))
+wait
+case "$out" in *"a wildcard tuple is unbounded"*) ok "conc_J4_wildcard_refused_by_in_flight_cap" ;; *) bad "conc_J4_wildcard_refused_by_in_flight_cap" "$out" ;; esac
+[ "$dt" -ge 1000 ] && ok "conc_J4_wildcard_waited_for_the_cap (${dt} ms)" || bad "conc_J4_wildcard_waited_for_the_cap" "${dt} ms — did not wait"
+check "conc_J4_no_wildcard_tuple" "$(q "SELECT count(*) FROM authz.tuples t WHERE t.store_id = authz._s('$S') AND t.object_id = 's1'")" "0"
 
 echo "==> ${pass} passed, ${fail} failed (of $((pass + fail)) concurrency checks)"
 [ "$fail" -eq 0 ]

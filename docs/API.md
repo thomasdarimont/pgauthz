@@ -644,7 +644,10 @@ removal plus an addition); both `NULL` is refused — drop the constraint
 instead. `max_direct` needs a direct rule on the type and no wildcard facet
 (`user:*`, `allow_object_wildcard`) or stored wildcard tuple for that
 relation, and those cannot be added to a capped relation either; wildcard
-tuples are refused on a capped relation. Admin tier; the list is reader tier.
+tuples are refused on a capped relation. The cap, the wildcard declarations
+and wildcard tuple writes serialize on a per-(type, relation) lock and
+require `READ COMMITTED` (SQLSTATE `25000` otherwise). Admin tier; the list
+is reader tier.
 See [MODEL_DESIGN → Relation constraints](MODEL_DESIGN.md#relation-constraints-how-many-may-hold-a-relation).
 
 ```sql

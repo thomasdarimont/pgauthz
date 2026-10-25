@@ -481,17 +481,21 @@ BEGIN
         PERFORM authz.model_set_payload_schema(p_store, v_row->>'name', v_row->'payload_schema');
     END LOOP;
 
-    -- Relation constraints (migration 0025) not in the definition go FIRST:
-    -- a live max_direct refuses the wildcard facet or object-wildcard rule a
-    -- definition may add in its place, so the stale cap must be gone before
-    -- rules and restrictions are synced. Desired constraints are upserted
-    -- after both (they validate against the synced model).
+    -- Relation constraints (migration 0025) whose max_direct the definition
+    -- drops go FIRST — the whole constraint when the pair is gone, or one
+    -- that keeps only an advisory max_effective: a live max_direct refuses the
+    -- wildcard facet or object-wildcard rule a definition may add in its
+    -- place, so the cap must be gone before rules and restrictions are
+    -- synced. Desired constraints are upserted after both (they validate
+    -- against the synced model; a dropped-and-recreated advisory one shows
+    -- as a removal plus an addition in the history).
     DELETE FROM authz.relation_constraints c
      USING authz.types ot, authz.relations rl
      WHERE c.store_id = v_store_id AND ot.id = c.object_type AND rl.id = c.relation
        AND NOT EXISTS (
            SELECT 1 FROM jsonb_array_elements(COALESCE(v_def->'relation_constraints', '[]'::jsonb)) x
-            WHERE x->>'object_type' = ot.name AND x->>'relation' = rl.name);
+            WHERE x->>'object_type' = ot.name AND x->>'relation' = rl.name
+              AND (c.max_direct IS NULL OR x->>'max_direct' IS NOT NULL));
 
     -- Rules: delete stale first (a group whose operator changed must be
     -- emptied before re-adding, or model_add_rule's group-op consistency

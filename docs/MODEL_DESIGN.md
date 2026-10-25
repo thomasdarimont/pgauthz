@@ -1535,8 +1535,12 @@ tuples on a capped relation, the setter refuses a cap while the type
 restriction allows `user:*`, the direct rule allows object wildcards or an
 active wildcard tuple is stored, and `model_add_type_restriction` /
 `model_add_rule` refuse adding those to a capped relation (drop the
-constraint first; `apply_model` removes stale constraints before it syncs
-rules and restrictions, so a definition may swap one for the other).
+constraint first; `apply_model` removes a stale cap before it syncs rules
+and restrictions, so a definition may swap one for the other, or keep only
+the advisory cap next to a new facet). These edits and the write of a
+wildcard tuple serialize on one lock per (type, relation) and, like the cap
+guard, require `READ COMMITTED`, so two sessions cannot each find the
+other's declaration absent and both commit.
 Ordinary existing tuples are not re-checked when a cap is declared: a cap
 below the current count is accepted, further writes are refused, and
 `relation_usage` reports the real count with zero headroom.
