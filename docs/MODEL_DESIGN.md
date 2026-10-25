@@ -1513,7 +1513,11 @@ keeps its sequential meaning: the batch authorizes its entries against the
 original tuple state, but records each entry's event as it authorizes, so
 entry *k*'s quota check sees entries 1 to *k*−1, a batch cannot exceed a
 quota that single calls enforce, and a vetoed entry aborts the whole batch,
-events included.
+events included. Which entries record is decided on a simulated tuple state
+evolved in execution order: revoking and re-granting one holder is two
+events, a grant that restores metadata an earlier grant changed is one, a
+grant identical to the current state is none — exactly the changes the
+batch makes.
 
 ### Relation constraints: how many may hold a relation
 

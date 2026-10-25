@@ -1247,30 +1247,26 @@ BEGIN
 END;
 $$;
 
--- _active_tuple_exists: is there an active tuple for the entry's key (user,
--- relation, object, user_relation)? With p_identical also the same
--- condition, stored context and expiry — what write_tuple treats as a no-op.
--- apply_grants' pre-phase predicts with it which entries change a tuple.
-CREATE OR REPLACE FUNCTION authz._active_tuple_exists(p_store_id integer, p_e jsonb, p_identical boolean DEFAULT false)
-RETURNS boolean LANGUAGE sql STABLE AS $$
-    SELECT EXISTS (
-        SELECT 1
-          FROM authz.tuples t
-          JOIN authz.types ut ON ut.id = t.user_type
-          JOIN authz.types ot ON ot.id = t.object_type
-          JOIN authz.relations r ON r.id = t.relation
-     LEFT JOIN authz.relations ur ON ur.id = t.user_relation
-     LEFT JOIN authz.conditions c ON c.id = t.condition_id
-         WHERE t.store_id = p_store_id
-           AND ut.name = p_e->>'user_type' AND t.user_id = p_e->>'user_id'
-           AND r.name = p_e->>'relation'
-           AND ot.name = p_e->>'object_type' AND t.object_id = p_e->>'object_id'
-           AND ur.name IS NOT DISTINCT FROM p_e->>'user_relation'
-           AND (t.expires_at IS NULL OR t.expires_at > statement_timestamp())
-           AND (NOT p_identical OR (
-                    c.name IS NOT DISTINCT FROM p_e->>'condition'
-                AND t.condition_context IS NOT DISTINCT FROM CASE WHEN jsonb_typeof(p_e->'condition_context') = 'object' THEN p_e->'condition_context' END
-                AND t.expires_at IS NOT DISTINCT FROM (p_e->>'expires_at')::timestamptz)));
+-- _active_tuple_state: the active tuple for the entry's key (user, relation,
+-- object, user_relation) as {condition, condition_context, expires_at}, or
+-- NULL when none — the metadata write_tuple compares for its no-op rule.
+-- apply_grants' pre-phase seeds its simulated state from it.
+CREATE OR REPLACE FUNCTION authz._active_tuple_state(p_store_id integer, p_e jsonb)
+RETURNS jsonb LANGUAGE sql STABLE AS $$
+    SELECT jsonb_build_object('condition', c.name, 'condition_context', t.condition_context, 'expires_at', t.expires_at)
+      FROM authz.tuples t
+      JOIN authz.types ut ON ut.id = t.user_type
+      JOIN authz.types ot ON ot.id = t.object_type
+      JOIN authz.relations r ON r.id = t.relation
+ LEFT JOIN authz.relations ur ON ur.id = t.user_relation
+ LEFT JOIN authz.conditions c ON c.id = t.condition_id
+     WHERE t.store_id = p_store_id
+       AND ut.name = p_e->>'user_type' AND t.user_id = p_e->>'user_id'
+       AND r.name = p_e->>'relation'
+       AND ot.name = p_e->>'object_type' AND t.object_id = p_e->>'object_id'
+       AND ur.name IS NOT DISTINCT FROM p_e->>'user_relation'
+       AND (t.expires_at IS NULL OR t.expires_at > statement_timestamp())
+     LIMIT 1;
 $$;
 
 -- _record_sharing: sharing as an action (grant_rules.record_as, migration
@@ -1575,8 +1571,18 @@ DECLARE
     v_revoked integer := 0;
     v_ctx     jsonb;
     v_store_id integer;
-    v_key     jsonb;
-    v_seen    jsonb := '[]'::jsonb;   -- entries predicted to change a tuple (their event is recorded)
+    v_key     text;
+    v_cur     jsonb;
+    v_want    jsonb;
+    -- The simulated state of every tuple the batch touches, keyed by its
+    -- identity: JSON null = absent, else {condition, condition_context,
+    -- expires_at}. Seeded from the database on first touch, evolved in the
+    -- order the batch executes (revokes, then grants), so an entry's event is
+    -- recorded exactly when the execution will change the tuple — a
+    -- revoke-and-regrant of one holder is two changes and two events, a
+    -- grant restoring metadata an earlier grant changed is a change too, a
+    -- grant identical to the simulated state is a no-op and silent.
+    v_sim     jsonb := '{}'::jsonb;
 BEGIN
     IF jsonb_typeof(p_grants) <> 'array' OR jsonb_typeof(p_revokes) <> 'array' THEN
         RAISE EXCEPTION 'apply_grants: p_grants and p_revokes must be JSON arrays'
@@ -1603,9 +1609,10 @@ BEGIN
     -- sharing event (record_as) right here, so entry k's gate sees entries
     -- 1..k-1 — a batch cannot exceed a per-actor quota that single calls
     -- enforce (and a vetoed entry aborts the whole batch, events included).
-    -- Whether an entry changes a tuple is predicted against the original
-    -- state plus the batch's earlier entries (the object locks make that
-    -- exact); the entries then apply without re-checking or re-recording.
+    -- Whether an entry changes a tuple is predicted on a simulated state
+    -- (v_sim) seeded from the original tuples and evolved entry by entry in
+    -- execution order (the object locks make that exact); the entries then
+    -- apply without re-checking or re-recording.
     v_store_id := authz._s(p_store);
     FOR v_e IN SELECT * FROM jsonb_array_elements(p_revokes)
     LOOP
@@ -1617,9 +1624,10 @@ BEGIN
         EXCEPTION WHEN OTHERS THEN
             RAISE EXCEPTION 'apply_grants: revoke entry %: %', v_i, SQLERRM USING ERRCODE = SQLSTATE;
         END;
-        v_key := v_e - 'context';
-        IF NOT (v_seen @> jsonb_build_array(v_key)) AND authz._active_tuple_exists(v_store_id, v_e) THEN
-            v_seen := v_seen || jsonb_build_array(v_key);
+        v_key := concat_ws('|', v_e->>'user_type', v_e->>'user_id', v_e->>'user_relation', v_e->>'relation', v_e->>'object_type', v_e->>'object_id');
+        v_cur := CASE WHEN v_sim ? v_key THEN v_sim->v_key ELSE COALESCE(authz._active_tuple_state(v_store_id, v_e), 'null'::jsonb) END;
+        v_sim := jsonb_set(v_sim, ARRAY[v_key], 'null'::jsonb);
+        IF v_cur <> 'null'::jsonb THEN
             PERFORM authz._record_sharing(p_store, v_store_id, p_actor_type, p_actor_id,
                 v_e->>'relation', v_e->>'object_type', v_e->>'object_id',
                 jsonb_build_object('op', 'revoke', 'relation', v_e->>'relation', 'user_type', v_e->>'user_type',
@@ -1637,15 +1645,15 @@ BEGIN
         EXCEPTION WHEN OTHERS THEN
             RAISE EXCEPTION 'apply_grants: grant entry %: %', v_i, SQLERRM USING ERRCODE = SQLSTATE;
         END;
-        -- changes a tuple unless an identical active one exists that the batch
-        -- does not revoke, or an identical grant came earlier in the batch
-        v_key := v_e - 'context';
-        IF NOT (v_seen @> jsonb_build_array(v_key))
-           AND NOT (authz._active_tuple_exists(v_store_id, v_e, true)
-                    AND NOT (v_seen @> jsonb_build_array(jsonb_build_object(
-                                 'user_type', v_e->>'user_type', 'user_id', v_e->>'user_id', 'relation', v_e->>'relation',
-                                 'object_type', v_e->>'object_type', 'object_id', v_e->>'object_id') || COALESCE(jsonb_strip_nulls(jsonb_build_object('user_relation', v_e->'user_relation')), '{}'::jsonb)))) THEN
-            v_seen := v_seen || jsonb_build_array(v_key);
+        -- changes the (simulated) tuple unless it already has exactly this
+        -- condition, stored context and expiry — write_tuple's no-op rule
+        v_key := concat_ws('|', v_e->>'user_type', v_e->>'user_id', v_e->>'user_relation', v_e->>'relation', v_e->>'object_type', v_e->>'object_id');
+        v_cur := CASE WHEN v_sim ? v_key THEN v_sim->v_key ELSE COALESCE(authz._active_tuple_state(v_store_id, v_e), 'null'::jsonb) END;
+        v_want := jsonb_build_object('condition', v_e->>'condition',
+                                     'condition_context', CASE WHEN jsonb_typeof(v_e->'condition_context') = 'object' THEN v_e->'condition_context' END,
+                                     'expires_at', (v_e->>'expires_at')::timestamptz);
+        v_sim := jsonb_set(v_sim, ARRAY[v_key], v_want);
+        IF v_cur <> v_want THEN
             PERFORM authz._record_sharing(p_store, v_store_id, p_actor_type, p_actor_id,
                 v_e->>'relation', v_e->>'object_type', v_e->>'object_id',
                 jsonb_build_object('op', 'grant', 'relation', v_e->>'relation', 'user_type', v_e->>'user_type',

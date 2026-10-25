@@ -20,9 +20,10 @@ pre-1.0, minor versions may include breaking changes.
   call, and a delete-and-re-add of the same holder passes (the actual
   resulting set is counted); `apply_grants` authorizes all entries against
   the original state before applying, so a sole owner can hand over, while
-  recording each entry's sharing event as it goes so a temporal gate keeps
-  its sequential meaning inside the batch (a quota cannot be exceeded by
-  batching); a test asserts no internal engine function is executable by
+  recording each entry's sharing event as it goes — decided on a simulated
+  tuple state, so same-holder replacements record exactly the changes made
+  — and a temporal gate keeps its sequential meaning inside the batch (a
+  quota cannot be exceeded by batching); a test asserts no internal engine function is executable by
   an application role;
   `delete_user_tuples` honours it unless `p_force => true`, an `authz_admin`
   capability (the console's Offboard has it; pgauthzd `delete-user` takes

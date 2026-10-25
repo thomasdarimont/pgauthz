@@ -404,6 +404,41 @@ BEGIN
 END;
 $$;
 
+-- ga_18 (review on 144771d): the batch's events follow the simulated tuple state — same-holder replacements count
+DO $$
+DECLARE v_n integer; v_res jsonb; v_before integer;
+BEGIN
+    PERFORM authz.model_add_grant_rule('test_grant', 'document', 'viewer', 'can_share_view', p_record_as => 'share');
+    SELECT count(*) INTO v_before FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'gil');
+    -- revoke-and-regrant of the same holder: two changes, two events (revoke, grant)
+    v_res := authz.apply_grants('test_grant', 'user', 'gil',
+        p_revokes => '[{"user_type":"user","user_id":"h4","relation":"viewer","object_type":"document","object_id":"memo"}]',
+        p_grants  => '[{"user_type":"user","user_id":"h4","relation":"viewer","object_type":"document","object_id":"memo"}]');
+    PERFORM _test_assert('ga_18_regrant_applies', v_res::text, '{"granted": 1, "revoked": 1}');
+    PERFORM _test_assert('ga_18_regrant_two_events',
+        (SELECT string_agg(payload->>'op', ',' ORDER BY seq) FROM (SELECT * FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'gil') ORDER BY seq OFFSET v_before) e), 'revoke,grant');
+    -- two grants on one holder: the first changes the expiry, the second restores it — two changes, two events
+    SELECT count(*) INTO v_before FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'gil');
+    v_res := authz.apply_grants('test_grant', 'user', 'gil',
+        p_grants => '[{"user_type":"user","user_id":"h4","relation":"viewer","object_type":"document","object_id":"memo","expires_at":"2099-01-01T00:00:00Z"},
+                      {"user_type":"user","user_id":"h4","relation":"viewer","object_type":"document","object_id":"memo"}]');
+    PERFORM _test_assert('ga_18_metadata_roundtrip_applies', v_res->>'granted', '2');
+    SELECT count(*) INTO v_n FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'gil');
+    PERFORM _test_assert('ga_18_metadata_roundtrip_two_events', (v_n - v_before)::text, '2');
+    PERFORM _test_assert('ga_18_final_state_no_expiry',
+        (SELECT (expires_at IS NULL)::text FROM authz.tuples t WHERE t.store_id = authz._s('test_grant') AND t.object_id = 'memo' AND t.user_id = 'h4'), 'true');
+    -- a grant identical to the simulated state is a no-op: grant with expiry twice → one change, one event
+    SELECT count(*) INTO v_before FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'gil');
+    v_res := authz.apply_grants('test_grant', 'user', 'gil',
+        p_grants => '[{"user_type":"user","user_id":"h4","relation":"viewer","object_type":"document","object_id":"memo","expires_at":"2099-01-01T00:00:00Z"},
+                      {"user_type":"user","user_id":"h4","relation":"viewer","object_type":"document","object_id":"memo","expires_at":"2099-01-01T00:00:00Z"}]');
+    PERFORM _test_assert('ga_18_duplicate_grant_one_change', v_res->>'granted', '1');
+    SELECT count(*) INTO v_n FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'gil');
+    PERFORM _test_assert('ga_18_duplicate_grant_one_event', (v_n - v_before)::text, '1');
+    PERFORM authz.model_add_grant_rule('test_grant', 'document', 'viewer', 'can_share_view');
+END;
+$$;
+
 -- ga_17: no internal (underscore) engine function is executable by an application role —
 -- the *_impl variants with their check-skipping flags are reachable only through the public API
 DO $$
