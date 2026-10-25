@@ -455,7 +455,34 @@ BEGIN
     SELECT count(*) INTO v_n FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'gil');
     PERFORM _test_assert('ga_19_two_events', (v_n - v_before)::text, '2');
     PERFORM _test_assert('ga_19_two_tuples',
-        (SELECT count(*)::text FROM authz.tuples t WHERE t.store_id = authz._s('test_grant') AND t.object_id = 'memo' AND t.user_id IN ('eng', 'eng|member')), '2');
+        (SELECT string_agg(t.user_id || '#' || coalesce(ur.name, '-'), ',' ORDER BY t.user_id)
+           FROM authz.tuples t LEFT JOIN authz.relations ur ON ur.id = t.user_relation
+          WHERE t.store_id = authz._s('test_grant') AND t.object_id = 'memo' AND t.user_id IN ('eng', 'eng|member')), 'eng#member,eng|member#-');
+    -- mixed: revoke the userset, re-grant the plain subject with an expiry (a metadata change) — two events
+    SELECT count(*) INTO v_before FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'gil');
+    v_res := authz.apply_grants('test_grant', 'user', 'gil',
+        p_revokes => '[{"user_type":"team","user_id":"eng","user_relation":"member","relation":"viewer","object_type":"document","object_id":"memo"}]',
+        p_grants  => '[{"user_type":"team","user_id":"eng|member","relation":"viewer","object_type":"document","object_id":"memo","expires_at":"2099-01-01T00:00:00Z"}]');
+    PERFORM _test_assert('ga_19_mixed_applies', v_res::text, '{"granted": 1, "revoked": 1}');
+    SELECT count(*) INTO v_n FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'gil');
+    PERFORM _test_assert('ga_19_mixed_two_events', (v_n - v_before)::text, '2');
+    PERFORM _test_assert('ga_19_mixed_state',
+        (SELECT string_agg(t.user_id || '#' || coalesce(ur.name, '-') || ':' || coalesce(t.expires_at::date::text, 'never'), ',' ORDER BY t.user_id)
+           FROM authz.tuples t LEFT JOIN authz.relations ur ON ur.id = t.user_relation
+          WHERE t.store_id = authz._s('test_grant') AND t.object_id = 'memo' AND t.user_id IN ('eng', 'eng|member')), 'eng|member#-:2099-01-01');
+    -- two revokes of the formerly colliding identities in one batch — two revoke events, nothing left
+    PERFORM authz.grant('test_grant', 'user', 'gil', 'team', 'eng', 'viewer', 'document', 'memo', p_user_relation => 'member');
+    SELECT count(*) INTO v_before FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'gil');
+    v_res := authz.apply_grants('test_grant', 'user', 'gil',
+        p_revokes => '[{"user_type":"team","user_id":"eng","user_relation":"member","relation":"viewer","object_type":"document","object_id":"memo"},
+                       {"user_type":"team","user_id":"eng|member","relation":"viewer","object_type":"document","object_id":"memo"}]');
+    PERFORM _test_assert('ga_19_two_revokes', v_res->>'revoked', '2');
+    PERFORM _test_assert('ga_19_two_revoke_events',
+        (SELECT string_agg(payload->>'op' || ':' || (payload->>'user_id') || '#' || coalesce(payload->>'user_relation', '-'), ',' ORDER BY seq)
+           FROM (SELECT * FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'gil') ORDER BY seq OFFSET v_before) e),
+        'revoke:eng#member,revoke:eng|member#-');
+    PERFORM _test_assert('ga_19_nothing_left',
+        (SELECT count(*)::text FROM authz.tuples t WHERE t.store_id = authz._s('test_grant') AND t.object_id = 'memo' AND t.user_id IN ('eng', 'eng|member')), '0');
     PERFORM authz.model_add_grant_rule('test_grant', 'document', 'viewer', 'can_share_view');
 END;
 $$;
