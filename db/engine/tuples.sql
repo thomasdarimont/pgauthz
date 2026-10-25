@@ -1575,8 +1575,10 @@ DECLARE
     v_cur     jsonb;
     v_want    jsonb;
     -- The simulated state of every tuple the batch touches, keyed by its
-    -- identity: JSON null = absent, else {condition, condition_context,
-    -- expires_at}. Seeded from the database on first touch, evolved in the
+    -- identity as a JSON array (collision-free: a NULL user_relation keeps
+    -- its position and a '|' in an id cannot run fields together, which a
+    -- delimiter-joined text key would allow): JSON null = absent, else
+    -- {condition, condition_context, expires_at}. Seeded from the database on first touch, evolved in the
     -- order the batch executes (revokes, then grants), so an entry's event is
     -- recorded exactly when the execution will change the tuple — a
     -- revoke-and-regrant of one holder is two changes and two events, a
@@ -1624,7 +1626,7 @@ BEGIN
         EXCEPTION WHEN OTHERS THEN
             RAISE EXCEPTION 'apply_grants: revoke entry %: %', v_i, SQLERRM USING ERRCODE = SQLSTATE;
         END;
-        v_key := concat_ws('|', v_e->>'user_type', v_e->>'user_id', v_e->>'user_relation', v_e->>'relation', v_e->>'object_type', v_e->>'object_id');
+        v_key := jsonb_build_array(v_e->>'user_type', v_e->>'user_id', v_e->>'user_relation', v_e->>'relation', v_e->>'object_type', v_e->>'object_id')::text;
         v_cur := CASE WHEN v_sim ? v_key THEN v_sim->v_key ELSE COALESCE(authz._active_tuple_state(v_store_id, v_e), 'null'::jsonb) END;
         v_sim := jsonb_set(v_sim, ARRAY[v_key], 'null'::jsonb);
         IF v_cur <> 'null'::jsonb THEN
@@ -1647,7 +1649,7 @@ BEGIN
         END;
         -- changes the (simulated) tuple unless it already has exactly this
         -- condition, stored context and expiry — write_tuple's no-op rule
-        v_key := concat_ws('|', v_e->>'user_type', v_e->>'user_id', v_e->>'user_relation', v_e->>'relation', v_e->>'object_type', v_e->>'object_id');
+        v_key := jsonb_build_array(v_e->>'user_type', v_e->>'user_id', v_e->>'user_relation', v_e->>'relation', v_e->>'object_type', v_e->>'object_id')::text;
         v_cur := CASE WHEN v_sim ? v_key THEN v_sim->v_key ELSE COALESCE(authz._active_tuple_state(v_store_id, v_e), 'null'::jsonb) END;
         v_want := jsonb_build_object('condition', v_e->>'condition',
                                      'condition_context', CASE WHEN jsonb_typeof(v_e->'condition_context') = 'object' THEN v_e->'condition_context' END,

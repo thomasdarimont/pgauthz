@@ -439,6 +439,27 @@ BEGIN
 END;
 $$;
 
+-- ga_19 (review on f81b9c0): distinct tuple identities that a delimiter-joined key would merge
+-- (team:eng#member vs the plain subject team:"eng|member") stay distinct in the simulated state
+DO $$
+DECLARE v_res jsonb; v_before integer; v_n integer;
+BEGIN
+    PERFORM authz.model_add_grant_rule('test_grant', 'document', 'viewer', 'can_share_view', p_record_as => 'share');
+    PERFORM authz.model_add_type_restriction('test_grant', 'document', 'viewer', 'team');   -- a team itself may view
+    PERFORM authz.write_tuple('test_grant', 'user', 'eng|member', 'member', 'team', 'eng');
+    SELECT count(*) INTO v_before FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'gil');
+    v_res := authz.apply_grants('test_grant', 'user', 'gil',
+        p_grants => '[{"user_type":"team","user_id":"eng","user_relation":"member","relation":"viewer","object_type":"document","object_id":"memo"},
+                      {"user_type":"team","user_id":"eng|member","relation":"viewer","object_type":"document","object_id":"memo"}]');
+    PERFORM _test_assert('ga_19_both_granted', v_res->>'granted', '2');
+    SELECT count(*) INTO v_n FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'gil');
+    PERFORM _test_assert('ga_19_two_events', (v_n - v_before)::text, '2');
+    PERFORM _test_assert('ga_19_two_tuples',
+        (SELECT count(*)::text FROM authz.tuples t WHERE t.store_id = authz._s('test_grant') AND t.object_id = 'memo' AND t.user_id IN ('eng', 'eng|member')), '2');
+    PERFORM authz.model_add_grant_rule('test_grant', 'document', 'viewer', 'can_share_view');
+END;
+$$;
+
 -- ga_17: no internal (underscore) engine function is executable by an application role —
 -- the *_impl variants with their check-skipping flags are reachable only through the public API
 DO $$
