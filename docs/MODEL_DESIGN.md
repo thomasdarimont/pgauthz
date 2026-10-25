@@ -1508,8 +1508,12 @@ SELECT authz.model_drop_relation_constraint('docs', 'document', 'viewer');
   count, a JSON `DETAIL` carrying both (pgauthzd answers `409 relation_full`
   — "full", not "forbidden"). The count runs under the per-object lock the
   checked writes use, so two writers racing for the last slot serialize and
-  the second is refused (exact under `READ COMMITTED`, which pgauthzd uses).
-  A batch that would overshoot fails as a whole.
+  the second is refused. That is exact only under `READ COMMITTED` (which
+  pgauthzd and the tooling use): a `REPEATABLE READ` or `SERIALIZABLE`
+  transaction could count on a snapshot older than the other writer's
+  commit, so a write to a capped relation under those levels is refused
+  outright with SQLSTATE `25000`, as the type-removal protocol does. A batch
+  that would overshoot fails as a whole.
 - **`max_effective` is advisory.** It is the intended size of the *resolved*
   holder set — direct, usersets, inherited through tuple-to-userset — and is
   never enforced on a write: a resolved count fans out (sharing a folder
@@ -1523,14 +1527,19 @@ lifetime or windowed quota ("shared with at most 50 people in total"), count
 the grants, not the rows: a [temporal gate](#17-temporal-gates-history-dependent-rules)
 with `count_distinct_within`, or a query over the audit trail.
 
-What a cap cannot coexist with, and the engine refuses at declaration: a
-`max_direct` on a relation with no direct rule on the type (nothing is
-assigned by tuple; `max_effective` is fine there, including on a derived
-permission), and on a relation whose type restriction allows `user:*` or
-whose direct rule allows object wildcards — a wildcard grant is unbounded,
-so the guard refuses wildcard tuples on a capped relation. Existing tuples
-are not re-checked when a cap is declared; `relation_usage` shows an object
-over its cap.
+What a cap cannot coexist with, refused in both orders: a `max_direct` on a
+relation with no direct rule on the type (nothing is assigned by tuple;
+`max_effective` is fine there, including on a derived permission), and
+wildcards — a wildcard grant is unbounded, so the guard refuses wildcard
+tuples on a capped relation, the setter refuses a cap while the type
+restriction allows `user:*`, the direct rule allows object wildcards or an
+active wildcard tuple is stored, and `model_add_type_restriction` /
+`model_add_rule` refuse adding those to a capped relation (drop the
+constraint first; `apply_model` removes stale constraints before it syncs
+rules and restrictions, so a definition may swap one for the other).
+Ordinary existing tuples are not re-checked when a cap is declared: a cap
+below the current count is accepted, further writes are refused, and
+`relation_usage` reports the real count with zero headroom.
 
 ```sql
 SELECT * FROM authz.relation_usage('docs', 'document', 'plan', 'viewer');
@@ -1538,7 +1547,8 @@ SELECT * FROM authz.relation_usage('docs', 'document', 'plan', 'viewer');
 --            48 |         50 |               2 |             131 |           200 |                 69 | f         | f
 ```
 
-The resolution is lazy: it stops at `p_limit` (default `max_effective`), so
+`direct_count` is exact (one index range). The resolution of the effective
+set is lazy: it stops at `p_limit` (default `max_effective`), so
 finding the 200th holder already says "no room" without walking the rest;
 `limit_reached` marks the count as a lower bound, `unbounded` says a
 wildcard grant resolves to the relation. An application about to add *k*

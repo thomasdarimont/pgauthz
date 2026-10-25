@@ -1125,7 +1125,9 @@ $$;
 -- and the RESOLVED holder set (direct, usersets, inherited — what
 -- max_effective is about), each with the declared cap and the headroom.
 --
---   direct_count       live direct tuples on (object, relation), as written
+--   direct_count       active (unexpired) direct tuples on (object, relation),
+--                      as written — exact, never bounded, so an object over
+--                      a cap declared after the fact shows its real count
 --   max_direct         the declared cap, NULL when none
 --   direct_headroom    max_direct - direct_count (never below 0), NULL without a cap
 --   effective_count    subjects that resolve to the relation on the object;
@@ -1191,18 +1193,18 @@ BEGIN
       FROM authz.relation_constraints c
      WHERE c.store_id = v_store_id AND c.object_type = v_object_type AND c.relation = v_relation;
 
-    -- Direct: live rows on this object (the wildcard object '*' is not this
-    -- object's assignment; a capped relation has none). Bounded by the cap
-    -- when declared, else by the budget, else exhaustive.
+    -- Direct: active rows on this object (the wildcard object '*' is not this
+    -- object's assignment; a capped relation has none). Exact: one index
+    -- range count, never bounded — a cap declared below the current count
+    -- must show the violation, and the budget is for the resolution below.
     v_budget := COALESCE(p_limit, max_effective);
     SELECT count(*) INTO direct_count
-      FROM (SELECT 1 FROM authz.tuples t
-             WHERE t.store_id = v_store_id AND t.object_type = v_object_type
-               AND t.object_id = p_object_id AND t.relation = v_relation
-               AND (t.expires_at IS NULL OR t.expires_at > statement_timestamp())
-             LIMIT COALESCE(max_direct, v_budget)) x;
+      FROM authz.tuples t
+     WHERE t.store_id = v_store_id AND t.object_type = v_object_type
+       AND t.object_id = p_object_id AND t.relation = v_relation
+       AND (t.expires_at IS NULL OR t.expires_at > statement_timestamp());
     direct_headroom := CASE WHEN max_direct IS NULL THEN NULL ELSE GREATEST(max_direct - direct_count, 0) END;
-    limit_reached := max_direct IS NULL AND v_budget IS NOT NULL AND direct_count >= v_budget;
+    limit_reached := false;
 
     -- Effective: the reverse expansion per subject type, each call bounded
     -- by what is left of the budget; a wildcard row ends the count.

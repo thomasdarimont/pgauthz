@@ -225,8 +225,9 @@ SELECT * FROM authz.relation_usage('docs', 'document', 'plan', 'viewer');
 ```
 
 One row per call. `direct_count` is the **active (unexpired) direct tuples**
-on the object for the relation, as written (a userset counts as one) — what
-the model's `max_direct` caps; `effective_count` is the resolved holder set
+on the object for the relation, as written (a userset counts as one), exact
+and never bounded, so an object over a cap declared after the fact shows its
+real count — what the model's `max_direct` caps; `effective_count` is the resolved holder set
 (direct, usersets, inherited) against the advisory `max_effective`. The caps
 and the headroom columns are `NULL` when the model declares none. The
 resolution stops at `p_limit` (default `max_effective` when declared, else
@@ -636,12 +637,14 @@ relation on one object. `max_direct` is enforced on every write path: the
 **active (unexpired) direct tuples** on the object may not exceed it, and
 the one past the cap is refused with SQLSTATE `ZA001` (`relation_full`;
 message and JSON `DETAIL` carry cap and count), under the per-object lock so
-concurrent writers cannot overshoot. `max_effective` is advisory, reported
+concurrent writers cannot overshoot; the write must run under `READ
+COMMITTED` (SQLSTATE `25000` otherwise). `max_effective` is advisory, reported
 by `relation_usage`. Setting again replaces both values (audited as a
 removal plus an addition); both `NULL` is refused — drop the constraint
 instead. `max_direct` needs a direct rule on the type and no wildcard facet
-(`user:*`, `allow_object_wildcard`) for that relation; wildcard tuples are
-refused on a capped relation. Admin tier; the list is reader tier.
+(`user:*`, `allow_object_wildcard`) or stored wildcard tuple for that
+relation, and those cannot be added to a capped relation either; wildcard
+tuples are refused on a capped relation. Admin tier; the list is reader tier.
 See [MODEL_DESIGN → Relation constraints](MODEL_DESIGN.md#relation-constraints-how-many-may-hold-a-relation).
 
 ```sql

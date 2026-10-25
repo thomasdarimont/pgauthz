@@ -124,9 +124,14 @@ CREATE OR REPLACE TRIGGER trg_tuples_relation_kind
 --
 -- Concurrency: the count runs under the per-object advisory lock the checked
 -- paths already take (same key: store name, type name, object id), so two
--- writers racing past the cap serialize and the second counts the first —
--- exact under READ COMMITTED (the count is a fresh snapshot taken after the
--- wait; a REPEATABLE READ transaction would count on its older snapshot).
+-- writers racing past the cap serialize and the second counts the first.
+-- That is exact only under READ COMMITTED, where the count is a fresh
+-- snapshot taken after the wait; a REPEATABLE READ / SERIALIZABLE
+-- transaction whose snapshot predates the other writer's commit would count
+-- zero and overshoot (PostgreSQL documents this for MVCC-based consistency
+-- checks). A write to a CAPPED relation under such an isolation level is
+-- therefore refused with SQLSTATE 25000, as the removal lock protocol does
+-- (_lock_tuples_for_removal); uncapped relations are unaffected.
 -- The batch writers pre-take the locks of every capped object in a stable
 -- order (_lock_capped_objects), so two batches cannot deadlock here.
 --
@@ -157,6 +162,11 @@ BEGIN
     IF NOT FOUND THEN
         RETURN NEW;
     END IF;
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'writing to a capped relation (max_direct) requires READ COMMITTED isolation (current: %): the count must see assignments that committed while waiting for the object lock',
+            current_setting('transaction_isolation')
+            USING ERRCODE = 'invalid_transaction_state';
+    END IF;
     SELECT s.name, t.name, r.name INTO v_store, v_type, v_rel
       FROM authz.stores s, authz.types t, authz.relations r
      WHERE s.id = NEW.store_id AND t.id = NEW.object_type AND r.id = NEW.relation;
@@ -167,15 +177,16 @@ BEGIN
                   HINT = 'Drop the constraint (model_drop_relation_constraint) to allow wildcard grants on this relation.';
     END IF;
     PERFORM pg_advisory_xact_lock(hashtextextended(v_store || ':' || v_type || ':' || NEW.object_id, 0));
+    -- Exact (no LIMIT): on the success path the count is at most the cap
+    -- anyway, and the refusal of an object already over a lowered cap must
+    -- name the real count.
     SELECT count(*) INTO v_count
-      FROM (SELECT 1
-              FROM authz.tuples t
-             WHERE t.store_id = NEW.store_id AND t.object_type = NEW.object_type
-               AND t.object_id = NEW.object_id AND t.relation = NEW.relation
-               AND (t.expires_at IS NULL OR t.expires_at > statement_timestamp())
-               AND NOT (t.user_type = NEW.user_type AND t.user_id = NEW.user_id
-                        AND COALESCE(t.user_relation, 0) = COALESCE(NEW.user_relation, 0))
-             LIMIT v_max) x;
+      FROM authz.tuples t
+     WHERE t.store_id = NEW.store_id AND t.object_type = NEW.object_type
+       AND t.object_id = NEW.object_id AND t.relation = NEW.relation
+       AND (t.expires_at IS NULL OR t.expires_at > statement_timestamp())
+       AND NOT (t.user_type = NEW.user_type AND t.user_id = NEW.user_id
+                AND COALESCE(t.user_relation, 0) = COALESCE(NEW.user_relation, 0));
     IF v_count >= v_max THEN
         RAISE EXCEPTION 'relation % on %:% is full: % of % active direct assignments (max_direct)',
             v_rel, v_type, NEW.object_id, v_count, v_max

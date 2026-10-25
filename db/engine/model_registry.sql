@@ -481,6 +481,18 @@ BEGIN
         PERFORM authz.model_set_payload_schema(p_store, v_row->>'name', v_row->'payload_schema');
     END LOOP;
 
+    -- Relation constraints (migration 0025) not in the definition go FIRST:
+    -- a live max_direct refuses the wildcard facet or object-wildcard rule a
+    -- definition may add in its place, so the stale cap must be gone before
+    -- rules and restrictions are synced. Desired constraints are upserted
+    -- after both (they validate against the synced model).
+    DELETE FROM authz.relation_constraints c
+     USING authz.types ot, authz.relations rl
+     WHERE c.store_id = v_store_id AND ot.id = c.object_type AND rl.id = c.relation
+       AND NOT EXISTS (
+           SELECT 1 FROM jsonb_array_elements(COALESCE(v_def->'relation_constraints', '[]'::jsonb)) x
+            WHERE x->>'object_type' = ot.name AND x->>'relation' = rl.name);
+
     -- Rules: delete stale first (a group whose operator changed must be
     -- emptied before re-adding, or model_add_rule's group-op consistency
     -- check rejects the new rows), then add every desired rule (idempotent;
@@ -591,13 +603,8 @@ BEGIN
                                            v_row->>'requires', v_row->>'requires_revoke');
     END LOOP;
 
-    -- Relation constraints (migration 0025): exact diff, same protocol.
-    DELETE FROM authz.relation_constraints c
-     USING authz.types ot, authz.relations rl
-     WHERE c.store_id = v_store_id AND ot.id = c.object_type AND rl.id = c.relation
-       AND NOT EXISTS (
-           SELECT 1 FROM jsonb_array_elements(COALESCE(v_def->'relation_constraints', '[]'::jsonb)) x
-            WHERE x->>'object_type' = ot.name AND x->>'relation' = rl.name);
+    -- Relation constraints (migration 0025): the stale ones went first (see
+    -- above); the desired ones are upserted here, against the synced model.
     FOR v_row IN SELECT * FROM jsonb_array_elements(COALESCE(v_def->'relation_constraints', '[]'::jsonb))
     LOOP
         PERFORM authz.model_set_relation_constraint(p_store, v_row->>'object_type', v_row->>'relation',

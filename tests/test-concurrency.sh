@@ -26,6 +26,9 @@
 #      (max_direct, migration 0025): the second waits on the per-object lock
 #      the cap guard takes, counts the first after its commit and is refused —
 #      exactly max_direct holders. Another object stays concurrent.
+#   I. The same race from a REPEATABLE READ transaction whose snapshot predates
+#      the first writer's commit: the count could not see it, so the cap guard
+#      refuses the write outright (SQLSTATE 25000) — still exactly max_direct.
 #
 # Synchronization: the holder session runs its statement and then pg_sleep(2)
 # in one transaction; the second session is launched only once pg_stat_activity
@@ -190,6 +193,21 @@ if holder_alive; then alive=yes; else alive=no; fi
 wait
 check "conc_H_other_object_written" "$out" "t"
 [ "$alive" = yes ] && ok "conc_H_other_object_did_not_wait (holder still open, ${dt} ms)" || bad "conc_H_other_object_did_not_wait" "the holder had already committed (${dt} ms)"
+
+echo "==> I. a REPEATABLE READ writer with an older snapshot cannot slip past the cap"
+session "SELECT authz.write_tuple('$S','user','ann','viewer','room','r4');"
+# the RR transaction takes its snapshot (the SELECT) while the holder's write is uncommitted
+out=$(psql_exec "$PG_DB" -Atq -v ON_ERROR_STOP=0 <<SQL 2>&1 | grep -v '^NOTICE' | tr '\n' ' '
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT count(*) FROM authz.tuples WHERE store_id = authz._s('$S') AND object_id = 'r4';
+SELECT pg_sleep(2.5);
+SELECT authz.write_tuple('$S','user','ben','viewer','room','r4');
+COMMIT;
+SQL
+)
+wait
+case "$out" in *"requires READ COMMITTED isolation"*) ok "conc_I_repeatable_read_writer_refused" ;; *) bad "conc_I_repeatable_read_writer_refused" "$out" ;; esac
+check "conc_I_exactly_max_direct_holders" "$(q "SELECT count(*) FROM authz.tuples t WHERE t.store_id = authz._s('$S') AND t.object_id = 'r4'")" "1"
 
 echo "==> ${pass} passed, ${fail} failed (of $((pass + fail)) concurrency checks)"
 [ "$fail" -eq 0 ]

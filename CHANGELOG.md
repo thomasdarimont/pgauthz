@@ -29,6 +29,13 @@ pre-1.0, minor versions may include breaking changes.
   writes). Console: Model → Relation constraints tab, "n / max active" in the
   share dialog, Activity history. Scenario fixtures: a seed tuple refused by
   a cap is a result, `refused: true` asserts it. Two-session race test (H).
+  Review (Codex, on db28333): a capped write under `REPEATABLE READ` /
+  `SERIALIZABLE` is refused with `25000` (its snapshot could miss a
+  concurrent commit; race test I); `relation_usage` and the refusal report
+  the exact direct count, so an object over a lowered cap is visible; the
+  cap and wildcards are refused in both orders (facet, object-wildcard rule,
+  stored wildcard tuples), and `apply_model` drops stale constraints before
+  syncing rules and restrictions.
 - **Review #27 (Codex, on c5fa4fc) fixes — the store's decision-log purge.**
   The purge removed a store's subject tombstones without the lock protocol,
   so a buffered line about an erased subject could flush back (P1). It now

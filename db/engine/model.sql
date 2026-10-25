@@ -430,6 +430,7 @@ DECLARE
     v_type     integer := authz._t(v_store_id, p_object_type);
     v_rel      integer := authz._r(v_store_id, p_relation);
     v_id       integer;
+    v_wild     bigint;
 BEGIN
     IF p_max_direct IS NULL AND p_max_effective IS NULL THEN
         RAISE EXCEPTION 'model_set_relation_constraint: % on % needs max_direct or max_effective — use model_drop_relation_constraint to remove the constraint',
@@ -462,6 +463,19 @@ BEGIN
                          AND m.rule_type = authz._rel_direct() AND m.allow_object_wildcard) THEN
             RAISE EXCEPTION 'model_set_relation_constraint: % on % allows wildcard grants (a user:* facet or allow_object_wildcard) — a capped relation refuses them; remove the wildcard from the model first',
                 p_relation, p_object_type
+                USING ERRCODE = 'invalid_parameter_value';
+        END IF;
+        -- Stored wildcard tuples outlive the facet that allowed them (type
+        -- restrictions are not re-validated); under a cap they would keep
+        -- granting unboundedly, so the cap is refused while any is active.
+        SELECT count(*) INTO v_wild
+          FROM authz.tuples t
+         WHERE t.store_id = v_store_id AND t.object_type = v_type AND t.relation = v_rel
+           AND (t.user_id = '*' OR t.object_id = '*')
+           AND (t.expires_at IS NULL OR t.expires_at > statement_timestamp());
+        IF v_wild > 0 THEN
+            RAISE EXCEPTION 'model_set_relation_constraint: % active wildcard tuple(s) exist for % on % — delete them first, a capped relation cannot hold them',
+                v_wild, p_relation, p_object_type
                 USING ERRCODE = 'invalid_parameter_value';
         END IF;
     END IF;
@@ -714,6 +728,18 @@ BEGIN
     IF p_allow_object_wildcard AND v_rule_type <> authz._rel_direct() THEN
         RAISE EXCEPTION 'p_allow_object_wildcard is only allowed on direct rules';
     END IF;
+    -- A capped relation (max_direct, migration 0025) refuses object-wildcard
+    -- tuples; the rule would promise them (the setter refuses the cap in the
+    -- other order).
+    IF p_allow_object_wildcard AND EXISTS (SELECT 1 FROM authz.relation_constraints c
+                                            WHERE c.store_id = v_store_id
+                                              AND c.object_type = authz._t(v_store_id, p_object_type)
+                                              AND c.relation = authz._r(v_store_id, p_relation)
+                                              AND c.max_direct IS NOT NULL) THEN
+        RAISE EXCEPTION 'model_add_rule: % on % is capped (max_direct) — allow_object_wildcard would promise grants the cap refuses; drop the constraint first',
+            p_relation, p_object_type
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
 
     -- Resolve group_op
     CASE p_group_op
@@ -958,6 +984,16 @@ BEGIN
     -- Wildcard and user_relation are mutually exclusive
     IF p_allow_wildcard AND p_allowed_user_relation IS NOT NULL THEN
         RAISE EXCEPTION 'allow_wildcard and allowed_user_relation cannot be combined';
+    END IF;
+    -- A capped relation (max_direct, migration 0025) refuses wildcard tuples:
+    -- a facet promising them would contradict the model (the setter refuses
+    -- the cap in the other order).
+    IF p_allow_wildcard AND EXISTS (SELECT 1 FROM authz.relation_constraints c
+                                     WHERE c.store_id = v_store_id AND c.object_type = v_object_type
+                                       AND c.relation = v_relation AND c.max_direct IS NOT NULL) THEN
+        RAISE EXCEPTION 'model_add_type_restriction: % on % is capped (max_direct) — a wildcard facet would promise grants the cap refuses; drop the constraint first',
+            p_relation, p_object_type
+            USING ERRCODE = 'invalid_parameter_value';
     END IF;
     IF p_allowed_user_relation IS NOT NULL THEN
         v_allowed_user_rel := authz._r(v_store_id, p_allowed_user_relation);

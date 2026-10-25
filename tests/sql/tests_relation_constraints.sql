@@ -292,6 +292,82 @@ BEGIN
 END;
 $$;
 
+-- rc_11 (review db28333): the cap and the model stay consistent in both orders, the direct
+-- count is exact above a lowered cap, and a capped write needs READ COMMITTED
+SELECT _test_setup_rc();
+DO $$
+DECLARE v_err text; v_state text; u record;
+BEGIN
+    PERFORM authz.write_tuple('test_rc', 'user', x.n, 'viewer', 'doc', 'plan') FROM unnest(ARRAY['b1','b2','b3','b4','b5']) AS x(n);
+    -- a cap below the current count is accepted (existing data is not re-checked) and reported, not hidden
+    PERFORM authz.model_set_relation_constraint('test_rc', 'doc', 'viewer', 2);
+    SELECT * INTO u FROM authz.relation_usage('test_rc', 'doc', 'plan', 'viewer');
+    PERFORM _test_assert('rc_11_overfull_reported', u.direct_count::text || ' ' || u.max_direct::text || ' ' || u.direct_headroom::text, '5 2 0');
+    BEGIN PERFORM authz.write_tuple('test_rc', 'user', 'b6', 'viewer', 'doc', 'plan');
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; v_state := SQLSTATE; END;
+    PERFORM _test_assert('rc_11_overfull_refuses_more', v_state || ' ' || v_err, 'ZA001 relation viewer on doc:plan is full: 5 of 2 active direct assignments (max_direct)');
+    -- a budget never bounds the direct count
+    SELECT * INTO u FROM authz.relation_usage('test_rc', 'doc', 'plan', 'viewer', p_limit => 1);
+    PERFORM _test_assert('rc_11_budget_leaves_direct_exact', u.direct_count::text || ' ' || u.effective_count::text || ' ' || u.limit_reached::text, '5 1 true');
+    -- the reverse order: a wildcard facet / object-wildcard rule on a capped relation is refused
+    v_err := NULL;
+    BEGIN PERFORM authz.model_add_type_restriction('test_rc', 'doc', 'viewer', 'user', p_allow_wildcard => true);
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert_true('rc_11_facet_on_capped_refused', v_err LIKE 'model_add_type_restriction: viewer on doc is capped%', coalesce(v_err, 'no error'));
+    v_err := NULL;
+    BEGIN PERFORM authz.model_add_rule('test_rc', 'doc', 'viewer', 'direct', p_allow_object_wildcard => true);
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert_true('rc_11_object_wildcard_rule_on_capped_refused', v_err LIKE 'model_add_rule: viewer on doc is capped%', coalesce(v_err, 'no error'));
+    PERFORM _test_assert('rc_11_facet_not_added',
+        (SELECT count(*)::text FROM authz.type_restrictions tr WHERE tr.store_id = authz._s('test_rc') AND tr.allow_wildcard), '0');
+    -- a stored wildcard tuple that outlived its facet blocks a new cap
+    PERFORM authz.model_drop_relation_constraint('test_rc', 'doc', 'viewer');
+    PERFORM authz.model_add_type_restriction('test_rc', 'doc', 'viewer', 'user', p_allow_wildcard => true);
+    PERFORM authz.write_tuple('test_rc', 'user', '*', 'viewer', 'doc', 'memo');
+    PERFORM authz.model_remove_type_restrictions('test_rc', 'doc', 'viewer');
+    v_err := NULL;
+    BEGIN PERFORM authz.model_set_relation_constraint('test_rc', 'doc', 'viewer', 50);
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert_true('rc_11_stored_wildcard_blocks_cap', v_err LIKE 'model_set_relation_constraint: 1 active wildcard tuple(s) exist for viewer on doc%', coalesce(v_err, 'no error'));
+    PERFORM authz.delete_tuple('test_rc', 'user', '*', 'viewer', 'doc', 'memo');
+    PERFORM _test_assert_true('rc_11_cap_after_wildcard_deleted', authz.model_set_relation_constraint('test_rc', 'doc', 'viewer', 50) > 0, 'id');
+END;
+$$;
+
+-- rc_12: a capped write under REPEATABLE READ is refused (25000); uncapped writes are not
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+DO $$
+DECLARE v_err text; v_state text;
+BEGIN
+    BEGIN PERFORM authz.write_tuple('test_rc', 'user', 'rr', 'viewer', 'doc', 'memo');
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; v_state := SQLSTATE; END;
+    PERFORM _test_assert('rc_12_repeatable_read_refused', v_state, '25000');
+    PERFORM _test_assert_true('rc_12_message', v_err LIKE 'writing to a capped relation (max_direct) requires READ COMMITTED isolation (current: repeatable read)%', coalesce(v_err, 'no error'));
+    PERFORM _test_assert('rc_12_uncapped_write_ok', authz.write_tuple('test_rc', 'user', 'rr', 'editor', 'doc', 'memo')::text, 'true');
+END;
+$$;
+COMMIT;
+
+-- rc_13: apply_model where the definition replaces a live cap by a wildcard facet (stale cap goes first)
+DO $$
+DECLARE v_def jsonb;
+BEGIN
+    PERFORM authz.create_store('test_rc2');
+    PERFORM authz.publish_model('rc_model2', 'test_rc');            -- viewer capped at 50
+    PERFORM authz.apply_model('test_rc2', 'rc_model2');
+    PERFORM _test_assert('rc_13_cap_applied', (SELECT count(*)::text FROM authz.list_relation_constraints('test_rc2')), '1');
+    PERFORM authz.model_drop_relation_constraint('test_rc', 'doc', 'viewer');
+    PERFORM authz.model_add_type_restriction('test_rc', 'doc', 'viewer', 'user', p_allow_wildcard => true);
+    PERFORM authz.publish_model('rc_model2', 'test_rc');            -- no cap, a user:* facet
+    PERFORM authz.apply_model('test_rc2', 'rc_model2');
+    PERFORM _test_assert('rc_13_cap_removed_facet_added',
+        (SELECT count(*)::text FROM authz.list_relation_constraints('test_rc2')) || ' ' ||
+        (SELECT count(*)::text FROM authz.type_restrictions tr WHERE tr.store_id = authz._s('test_rc2') AND tr.allow_wildcard), '0 1');
+    PERFORM authz.delete_store('test_rc2', p_purge_audit => true);
+    PERFORM authz.delete_store('test_rc', p_purge_audit => true);
+END;
+$$;
+
 DROP FUNCTION IF EXISTS _test_setup_rc();
 
 SELECT _test_report('relation constraint checks');
