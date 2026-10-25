@@ -81,11 +81,14 @@ fi
 # The chart ships a COPY of the OPA policies (deploy/helm/pgauthz/files/opa/
 # policies). It has drifted silently before — fail the release if it differs
 # from the source of truth.
+# Only the top-level .rego files are shipped (configmap-opa.yaml globs
+# files/opa/policies/*.rego); the hook library (opa/policies/hooks-lib) is
+# mounted from its own source by the chart and is not part of the copy.
 step "Helm OPA policy copy in sync"
-if ! diff -rq opa/policies deploy/helm/pgauthz/files/opa/policies >/dev/null; then
+if ! diff -rq --exclude=hooks-lib opa/policies deploy/helm/pgauthz/files/opa/policies >/dev/null; then
     echo "!! Helm policy copy is STALE — sync it:"
     echo "     cp opa/policies/*.rego deploy/helm/pgauthz/files/opa/policies/"
-    diff -rq opa/policies deploy/helm/pgauthz/files/opa/policies | sed 's/^/     /' || true
+    diff -rq --exclude=hooks-lib opa/policies deploy/helm/pgauthz/files/opa/policies | sed 's/^/     /' || true
     FAILED=1
 else
     echo "    policies in sync"

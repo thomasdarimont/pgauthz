@@ -7,50 +7,10 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-25
+
 ### Added
 
-- **Relation floors and sharing as an action.** `min_direct` on a relation
-  constraint (migration 0026) is enforced on the revocation paths —
-  `delete_tuple`, `delete_tuples`, `revoke`, `apply_grants`, checked-write
-  deletes refuse to leave fewer active direct assignments on an object
-  (SQLSTATE `ZA002`, pgauthzd `409 relation_floor`), under the per-object
-  lock and `READ COMMITTED`, re-read under the lock; `apply_grants` and
-  `write_tuples_checked` decide it on the batch's net result with revokes
-  first, so an owner handoff passes `min_direct = max_direct = 1` in one
-  call, and a delete-and-re-add of the same holder passes (the actual
-  resulting set is counted); `apply_grants` authorizes all entries against
-  the original state before applying, so a sole owner can hand over, while
-  recording each entry's sharing event as it goes — decided on a simulated
-  tuple state, so same-holder replacements record exactly the changes made
-  — and a temporal gate keeps its sequential meaning inside the batch (a
-  quota cannot be exceeded by batching); a test asserts no internal engine function is executable by
-  an application role;
-  `delete_user_tuples` honours it unless `p_force => true`, an `authz_admin`
-  capability (the console's Offboard has it; pgauthzd `delete-user` takes
-  `force` but its writer roles get 403); erasure, type
-  and store removal and expiry are exempt. The cap guard re-reads the cap
-  under the lock too. The console model declares it for `platform.admin` and
-  `store.owner`, so the engine owns the last-owner rule the console used to
-  hand-roll. A grant rule may name the action its grants and revokes are
-  **recorded as** (`p_record_as`, migration 0027): `grant`, `revoke` and
-  `apply_grants` record an event for the actor per changed tuple (payload
-  `op`, `relation`, `user_type`, `user_id`, …), so temporal gates on the
-  required relation rate-limit or four-eye sharing with no PEP code.
-  `describe_model`, export, registry, diff, pgauthzadm, the console (Model
-  tab, Structure view, Activity) and the docs carry both; two-session test L.
-  The gdrive example declares "exactly one owner per document" (`doc.owner`
-  with `max_direct` and `min_direct` 1, a grant rule requiring
-  `can_change_owner` for the handover) and its scenarios assert a refused
-  second owner; a Playwright spec covers the console's Model tab section.
-- **New example `examples/models/fileshare`, "advanced file sharing".**
-  gdrive now models only what Google Drive offers (inheritance, groups, link
-  sharing, who may share, one owner with an ownership transfer); the pgauthz
-  extras moved to fileshare, derived from it: the download quotas (temporal
-  gates on `doc.download`), sharing as a recorded action (`record_as` with
-  share-rate and share-spread gates on `can_share`), relation constraints
-  (one owner, at most ten direct editors with an advisory ceiling of fifty
-  effective), an editor role and an expiring share. The playground's
-  "record a download" demo now resets `fileshare`.
 - **Relation constraints** (migration 0025, `authz.relation_constraints` +
   audit): per `(type, relation)`, how many subjects may hold the relation on
   one object. `max_direct` is enforced on every write path by a trigger on
@@ -88,6 +48,56 @@ pre-1.0, minor versions may include breaking changes.
   or desired, in sorted order right after its table lock, so a concurrent
   `model_set_relation_constraint` waits instead of deadlocking on the
   constraint row (two-session test K).
+- **Relation floors and sharing as an action.** `min_direct` on a relation
+  constraint (migration 0026) is enforced on the revocation paths —
+  `delete_tuple`, `delete_tuples`, `revoke`, `apply_grants`, checked-write
+  deletes refuse to leave fewer active direct assignments on an object
+  (SQLSTATE `ZA002`, pgauthzd `409 relation_floor`), under the per-object
+  lock and `READ COMMITTED`, re-read under the lock; `apply_grants` and
+  `write_tuples_checked` decide it on the batch's net result with revokes
+  first, so an owner handoff passes `min_direct = max_direct = 1` in one
+  call, and a delete-and-re-add of the same holder passes (the actual
+  resulting set is counted); `apply_grants` authorizes all entries against
+  the original state before applying, so a sole owner can hand over, while
+  recording each entry's sharing event as it goes — decided on a simulated
+  tuple state, so same-holder replacements record exactly the changes made
+  — and a temporal gate keeps its sequential meaning inside the batch (a
+  quota cannot be exceeded by batching); a test asserts no internal engine function is executable by
+  an application role;
+  `delete_user_tuples` honours it unless `p_force => true`, an `authz_admin`
+  capability (the console's Offboard has it; pgauthzd `delete-user` takes
+  `force` but its writer roles get 403); erasure, type
+  and store removal and expiry are exempt. The cap guard re-reads the cap
+  under the lock too. The console model declares it for `platform.admin` and
+  `store.owner`, so the engine owns the last-owner rule the console used to
+  hand-roll. A grant rule may name the action its grants and revokes are
+  **recorded as** (`p_record_as`, migration 0027): `grant`, `revoke` and
+  `apply_grants` record an event for the actor per changed tuple (payload
+  `op`, `relation`, `user_type`, `user_id`, …), so temporal gates on the
+  required relation rate-limit or four-eye sharing with no PEP code.
+  `describe_model`, export, registry, diff, pgauthzadm, the console (Model
+  tab, Structure view, Activity) and the docs carry both; two-session test L.
+  The gdrive example declares "exactly one owner per document" (`doc.owner`
+  with `max_direct` and `min_direct` 1, a grant rule requiring
+  `can_change_owner` for the handover) and its scenarios assert a refused
+  second owner; a Playwright spec covers the console's Model tab section.
+- **Architecture: the derived-permissions topology has its diagram.**
+  `docs/architecture-derived-permissions.puml` — the authz primary (tuples,
+  audit changefeed, refresh worker, the four derived tables, the
+  publication), logical replication into an application database, the
+  subscriber-side `check_permission` filtering business queries, and the
+  live pgauthzd path for what a precomputed row cannot hold — as the fifth
+  deployment topology in ARCHITECTURE.md.
+- **New example `examples/models/fileshare`, "advanced file sharing".**
+  gdrive now models only what Google Drive offers (inheritance, groups, link
+  sharing, who may share, one owner with an ownership transfer); the pgauthz
+  extras moved to fileshare, derived from it: the download quotas (temporal
+  gates on `doc.download`), sharing as a recorded action (`record_as` with
+  share-rate and share-spread gates on `can_share`), relation constraints
+  (one owner, at most ten direct editors with an advisory ceiling of fifty
+  effective), an editor role and an expiring share. The playground's
+  "record a download" demo now resets `fileshare`.
+
 - **Review #27 (Codex, on c5fa4fc) fixes — the store's decision-log purge.**
   The purge removed a store's subject tombstones without the lock protocol,
   so a buffered line about an erased subject could flush back (P1). It now
@@ -3581,7 +3591,8 @@ PL/pgSQL.
 - PostgreSQL 18.x (developed/tested on 18.4). PostgREST, OPA, the AuthZEN
   services, and `pg_cel` are optional components of the reference deployment.
 
-[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/thomasdarimont/pgauthz/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/thomasdarimont/pgauthz/compare/v0.15.0...v0.16.0
