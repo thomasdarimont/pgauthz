@@ -356,6 +356,68 @@ BEGIN
 END;
 $$;
 
+-- ga_16 (review on 46d683d): a gate keeps its sequential meaning inside an apply_grants batch —
+-- entry k's quota check sees the events of entries 1..k-1, so a batch cannot exceed what single calls enforce
+DO $$
+DECLARE v_err text; v_n integer; v_res jsonb;
+BEGIN
+    PERFORM authz.model_add_grant_rule('test_grant', 'document', 'viewer', 'can_share_view', p_record_as => 'share');
+    PERFORM authz.write_tuple('test_grant', 'user', 'gil', 'editor', 'document', 'memo');   -- gil may share memo
+    PERFORM authz.add_gate('test_grant', 'document', 'can_share_view', 'one_share',
+        '{"all_of": [{"count_within": {"window": "1h", "action": "share", "max": 1, "plus": 1}}]}');
+    -- two grants in one batch: the second is vetoed by the first's event, nothing is written, nothing recorded
+    BEGIN PERFORM authz.apply_grants('test_grant', 'user', 'gil',
+        p_grants => '[{"user_type":"user","user_id":"h1","relation":"viewer","object_type":"document","object_id":"memo"},
+                      {"user_type":"user","user_id":"h2","relation":"viewer","object_type":"document","object_id":"memo"}]');
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert_true('ga_16_batch_second_entry_vetoed', v_err LIKE 'apply_grants: grant entry 2: grant refused: user:gil is not allowed can_share_view%', coalesce(v_err, 'no error'));
+    PERFORM _test_assert('ga_16_nothing_written', authz.check_access('test_grant', 'user', 'h1', 'can_view', 'document', 'memo')::text, 'false');
+    SELECT count(*) INTO v_n FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'gil');
+    PERFORM _test_assert('ga_16_nothing_recorded', v_n::text, '0');
+    -- one grant passes and is recorded once; a no-op re-grant in a later batch records nothing and is not vetoed
+    v_res := authz.apply_grants('test_grant', 'user', 'gil',
+        p_grants => '[{"user_type":"user","user_id":"h1","relation":"viewer","object_type":"document","object_id":"memo"}]');
+    PERFORM _test_assert('ga_16_single_passes', v_res->>'granted', '1');
+    SELECT count(*) INTO v_n FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'gil');
+    PERFORM _test_assert('ga_16_recorded_once', v_n::text, '1');
+    -- the quota is now used up: a further single grant is refused like the batch was (a no-op
+    -- re-grant too — the gate decides before the write says whether anything would change)
+    v_err := NULL;
+    BEGIN PERFORM authz.grant('test_grant', 'user', 'gil', 'user', 'h3', 'viewer', 'document', 'memo');
+    EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert_true('ga_16_quota_used', v_err LIKE 'grant refused: user:gil is not allowed can_share_view%', coalesce(v_err, 'no error'));
+    PERFORM authz.drop_gate('test_grant', 'document', 'can_share_view', 'one_share');
+    -- a no-op re-grant in a batch records nothing
+    v_res := authz.apply_grants('test_grant', 'user', 'gil',
+        p_grants => '[{"user_type":"user","user_id":"h1","relation":"viewer","object_type":"document","object_id":"memo"}]');
+    PERFORM _test_assert('ga_16_noop_batch_ok', v_res->>'granted', '0');
+    SELECT count(*) INTO v_n FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'gil');
+    PERFORM _test_assert('ga_16_noop_not_recorded', v_n::text, '1');
+    -- the events a batch records match what it changed: revoke h1 + grant h4 → two events, op revoke and op grant
+    PERFORM authz.apply_grants('test_grant', 'user', 'gil',
+        p_grants  => '[{"user_type":"user","user_id":"h4","relation":"viewer","object_type":"document","object_id":"memo"}]',
+        p_revokes => '[{"user_type":"user","user_id":"h1","relation":"viewer","object_type":"document","object_id":"memo"}]');
+    PERFORM _test_assert('ga_16_batch_events',
+        (SELECT string_agg(payload->>'op' || ':' || (payload->>'user_id'), ',' ORDER BY seq)
+           FROM authz.list_events('test_grant', p_action => 'share', p_subject_type => 'user', p_subject_id => 'gil')), 'grant:h1,revoke:h1,grant:h4');
+    PERFORM authz.model_add_grant_rule('test_grant', 'document', 'viewer', 'can_share_view');
+END;
+$$;
+
+-- ga_17: no internal (underscore) engine function is executable by an application role —
+-- the *_impl variants with their check-skipping flags are reachable only through the public API
+DO $$
+DECLARE v_bad text;
+BEGIN
+    SELECT string_agg(r.rolname || ':' || p.proname, ', ' ORDER BY 1) INTO v_bad
+      FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+      CROSS JOIN (VALUES ('authz_reader'),('authz_writer'),('authz_sharer'),('authz_admin'),('authz_recorder'),('authz_auditor'),('authz_contextual_reader')) r(rolname)
+     WHERE n.nspname = 'authz' AND p.proname LIKE '\_%' AND p.proname NOT LIKE '\_test\_%'   -- the suites' own helpers
+       AND has_function_privilege(r.rolname, p.oid, 'EXECUTE');
+    PERFORM _test_assert('ga_17_no_internal_function_executable_by_app_roles', coalesce(v_bad, 'none'), 'none');
+END;
+$$;
+
 DROP FUNCTION IF EXISTS _test_setup_grant();
 
 SELECT _test_report('grant / revoke checks');

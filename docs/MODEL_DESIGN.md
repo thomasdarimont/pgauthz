@@ -1508,7 +1508,12 @@ SELECT authz.add_gate('docs', 'document', 'can_share_view', 'share_rate',
 The event is recorded through `record_event` under the calling role, so a
 recorder allowlist on that role must include the action, and a payload
 schema declared on the action must accept the payload above (`op` and
-`relation` are always strings).
+`relation` are always strings). Inside an `apply_grants` batch the gate
+keeps its sequential meaning: the batch authorizes its entries against the
+original tuple state, but records each entry's event as it authorizes, so
+entry *k*'s quota check sees entries 1 to *k*−1, a batch cannot exceed a
+quota that single calls enforce, and a vetoed entry aborts the whole batch,
+events included.
 
 ### Relation constraints: how many may hold a relation
 
