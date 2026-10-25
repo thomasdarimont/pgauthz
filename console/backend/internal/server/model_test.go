@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+func intp(i int) *int { return &i }
+
 // The editor's vocabulary is the engine's model_* API: every operation maps
 // to exactly one call, with the arguments in the engine's order.
 func TestModelEditSQL(t *testing.T) {
@@ -26,6 +28,12 @@ func TestModelEditSQL(t *testing.T) {
 			"authz.model_add_grant_rule", []any{"s", "doc", "editor", "can_share", "owner"}},
 		{"remove_grant_rule", modelEdit{ObjectType: "doc", Relation: "viewer"},
 			"authz.model_drop_grant_rule", []any{"s", "doc", "viewer"}},
+		{"set_relation_constraint", modelEdit{ObjectType: "doc", Relation: "viewer", MaxDirect: intp(50)},
+			"authz.model_set_relation_constraint", []any{"s", "doc", "viewer", intp(50), (*int)(nil)}},
+		{"set_relation_constraint", modelEdit{ObjectType: "doc", Relation: "can_read", MaxEffective: intp(500)},
+			"authz.model_set_relation_constraint", []any{"s", "doc", "can_read", (*int)(nil), intp(500)}},
+		{"remove_relation_constraint", modelEdit{ObjectType: "doc", Relation: "viewer"},
+			"authz.model_drop_relation_constraint", []any{"s", "doc", "viewer"}},
 		{"set_payload_schema", modelEdit{Name: "transfer", PayloadSchema: json.RawMessage(`{"required": {"input.amount": "number"}}`)},
 			"authz.model_set_payload_schema", []any{"s", "transfer", `{"required": {"input.amount": "number"}}`}},
 		{"set_payload_schema", modelEdit{Name: "transfer", PayloadSchema: json.RawMessage(` null `)},

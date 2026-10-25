@@ -9,6 +9,26 @@ pre-1.0, minor versions may include breaking changes.
 
 ### Added
 
+- **Relation constraints** (migration 0025, `authz.relation_constraints` +
+  audit): per `(type, relation)`, how many subjects may hold the relation on
+  one object. `max_direct` is enforced on every write path by a trigger on
+  the tuples table — it counts the **active (unexpired)** direct tuples as
+  written (a userset is one), under the per-object lock, so two writers
+  racing for the last slot serialize and the second is refused with
+  SQLSTATE `ZA001` (message and JSON detail carry cap and count); wildcard
+  tuples are refused on a capped relation, and a cap is refused where the
+  model has no direct rule or allows wildcards. `max_effective` is advisory:
+  `authz.relation_usage` reports active direct and resolved holder counts
+  with headroom, resolving lazily up to `p_limit` (default `max_effective`),
+  with `unbounded` and `limit_reached`. `model_set_relation_constraint` /
+  `model_drop_relation_constraint` / `list_relation_constraints`;
+  `describe_model` comment line; export, checksum, apply, plan and diff carry
+  the constraints. pgauthzd: `POST /pgauthz/v1/relation-usage` and a
+  structured `409 relation_full` on `write`, `write-checked`, `grant` and
+  `apply-grants` (engine RAISEs on `write` now map to 400 like the other
+  writes). Console: Model → Relation constraints tab, "n / max active" in the
+  share dialog, Activity history. Scenario fixtures: a seed tuple refused by
+  a cap is a result, `refused: true` asserts it. Two-session race test (H).
 - **Review #27 (Codex, on c5fa4fc) fixes — the store's decision-log purge.**
   The purge removed a store's subject tombstones without the lock protocol,
   so a buffered line about an erased subject could flush back (P1). It now

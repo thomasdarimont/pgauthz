@@ -394,6 +394,12 @@ func mapEngineError(err error) error {
 		return err
 	}
 	switch {
+	case pgErr.Code == "ZA001": // relation_full: the max_direct cap is reached (migration 0025) → 409
+		var detail json.RawMessage
+		if json.Valid([]byte(pgErr.Detail)) {
+			detail = json.RawMessage(pgErr.Detail)
+		}
+		return &authz.RelationFull{Msg: pgErr.Message, Detail: detail}
 	case pgErr.Code == "42501": // insufficient_privilege (no EXECUTE on the function)
 		return fmt.Errorf("%w: %s", authz.ErrForbiddenRole, pgErr.Message)
 	case pgErr.Code == "P0001" && strings.HasPrefix(pgErr.Message, "Permission denied"):
@@ -523,7 +529,7 @@ func (b *Backend) WriteTuples(ctx context.Context, req authz.WriteRequest) (int,
 		).Scan(&n)
 	})
 	if err != nil {
-		return 0, fmt.Errorf("write_tuples_jsonb: %w", err)
+		return 0, fmt.Errorf("write_tuples_jsonb: %w", mapEngineError(err))
 	}
 	return n, nil
 }
@@ -572,7 +578,7 @@ func (b *Backend) WriteTuplesChecked(ctx context.Context, req authz.CheckedWrite
 		).Scan(&raw)
 	})
 	if err != nil {
-		return nil, fmt.Errorf("write_tuples_checked: %w", err)
+		return nil, fmt.Errorf("write_tuples_checked: %w", mapEngineError(err))
 	}
 	return raw, nil
 }
@@ -630,6 +636,28 @@ func (b *Backend) GrantOptions(ctx context.Context, req authz.GrantOptionsReques
 			`SELECT COALESCE(jsonb_agg(to_jsonb(o)), '[]'::jsonb)
 			   FROM authz.grant_options($1, $2, $3, $4, $5, $6) o`,
 			req.Store, req.ActorType, req.ActorID, req.ObjectType, req.ObjectID, ctxJSON,
+		).Scan(&raw)
+	})
+	if err != nil {
+		return nil, mapEngineError(err)
+	}
+	return raw, nil
+}
+
+// RelationUsage — SELECT to_jsonb(authz.relation_usage(...)); see authz.NativeReader.
+func (b *Backend) RelationUsage(ctx context.Context, req authz.RelationUsageRequest) (json.RawMessage, error) {
+	var ctxJSON []byte
+	if req.Context != nil {
+		var err error
+		if ctxJSON, err = json.Marshal(req.Context); err != nil {
+			return nil, fmt.Errorf("marshaling context: %w", err)
+		}
+	}
+	var raw []byte
+	err := b.withRole(ctx, func(q querier) error {
+		return q.QueryRow(ctx,
+			`SELECT to_jsonb(u) FROM authz.relation_usage($1, $2, $3, $4, $5, $6, $7) u`,
+			req.Store, req.ObjectType, req.ObjectID, req.Relation, req.Limit, textOrNil(req.SubjectType), ctxJSON,
 		).Scan(&raw)
 	})
 	if err != nil {

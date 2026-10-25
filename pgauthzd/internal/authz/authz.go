@@ -115,7 +115,37 @@ type NativeReader interface {
 	// per relation with a grant rule — can_grant, can_revoke, the required
 	// relations and who may hold it (authz.grant_options as a JSON array).
 	GrantOptions(ctx context.Context, req GrantOptionsRequest) (json.RawMessage, error)
+	// RelationUsage reports how full a relation is on one object: the active
+	// direct assignments against max_direct and the resolved holder set
+	// against max_effective, with headroom (authz.relation_usage as one JSON
+	// object; migration 0025).
+	RelationUsage(ctx context.Context, req RelationUsageRequest) (json.RawMessage, error)
 }
+
+// RelationUsageRequest asks how full Relation is on one object. Limit is the
+// resolution budget for the effective count (nil: max_effective when
+// declared, else exhaustive); SubjectType narrows the resolved set to one
+// type ("" = every type).
+type RelationUsageRequest struct {
+	Store       string
+	ObjectType  string
+	ObjectID    string
+	Relation    string
+	SubjectType string
+	Limit       *int
+	Context     map[string]any
+}
+
+// RelationFull: the engine refused a write because the relation's max_direct
+// cap on the object is reached (SQLSTATE ZA001, migration 0025) — "full",
+// not "forbidden": the handler answers 409 relation_full with the engine's
+// message and its JSON detail (cap and count).
+type RelationFull struct {
+	Msg    string
+	Detail json.RawMessage
+}
+
+func (e *RelationFull) Error() string { return e.Msg }
 
 // GrantOptionsRequest asks what Actor may grant/revoke on one object.
 type GrantOptionsRequest struct {

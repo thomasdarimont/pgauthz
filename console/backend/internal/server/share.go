@@ -180,9 +180,35 @@ func (s *Server) handleShareOptions(w http.ResponseWriter, r *http.Request) {
 		writeEngineError(w, err)
 		return
 	}
+	// The caps (relation constraints, migration 0025) of the object type:
+	// relation → max_direct, so the dialog can say "48 / 50" next to the
+	// holders and tell "full" from "forbidden" before a save is refused.
+	caps := map[string]int{}
+	rows, err = s.engine.Query(ctx, `
+		SELECT relation, max_direct FROM authz.list_relation_constraints($1)
+		 WHERE object_type = $2 AND max_direct IS NOT NULL`, store, o.ObjectType)
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	for rows.Next() {
+		var rel string
+		var max int
+		if err := rows.Scan(&rel, &max); err != nil {
+			rows.Close()
+			writeEngineError(w, err)
+			return
+		}
+		caps[rel] = max
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		writeEngineError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"object": o, "options": options, "holders": holders,
-		"holder_totals": totals, "holders_limit": shareHoldersPerRelation,
+		"holder_totals": totals, "holders_limit": shareHoldersPerRelation, "max_direct": caps,
 	})
 }
 

@@ -369,7 +369,8 @@ export class PgcScenarios extends PgcElement {
       if (!g) {
         g = {
           test: r.test,
-          name: rep.testNames?.[r.test] ?? '',
+          // test -1: the seed tuples a relation constraint decided on (refused or not)
+          name: r.test < 0 ? t('seed tuples') : (rep.testNames?.[r.test] ?? ''),
           description: rep.testDescs?.[r.test] ?? '',
           results: [],
           failed: 0,
@@ -981,7 +982,7 @@ export class PgcScenarios extends PgcElement {
   _resultRow(r, i, g) {
     return html`<tr
       class="pick ${r.failed ? 'deny' : ''} ${this.explained?.result === r ? 'explaining' : ''}"
-      title=${t('Show {tc}', { tc: `TC${r.test + 1}` })}
+      title=${t('Show {tc}', { tc: r.test < 0 ? t('seed tuples') : `TC${r.test + 1}` })}
       data-testid=${`test-scenarios-result-${i + 1}`}
       @click=${() => this._reveal(r)}
     >
@@ -1734,7 +1735,7 @@ export class PgcScenarios extends PgcElement {
             ${PgcScenarios.groups(rep).flatMap((g) => [
               html`<tr
                 class="group"
-                title=${t('Show {tc}', { tc: `TC${g.test + 1}` })}
+                title=${t('Show {tc}', { tc: g.test < 0 ? t('seed tuples') : `TC${g.test + 1}` })}
                 data-testid=${`test-scenarios-group-${g.test + 1}`}
                 @click=${() => this._reveal(g.results[0])}
               >

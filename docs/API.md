@@ -36,6 +36,7 @@ always uses explicit separate parameters for type, ID, and relation.
   - [list_subject_objects — "Which objects does user X relate to at all?"](#list_subject_objects--which-objects-does-user-x-relate-to-at-all)
   - [list_subjects — "Which users of type X can do Y on object Z?"](#list_subjects--which-users-of-type-x-can-do-y-on-object-z)
   - [list_actions — "What can user X do on object Z?"](#list_actions--what-can-user-x-do-on-object-z)
+  - [relation_usage — "How full is a relation on an object?"](#relation_usage--how-full-is-a-relation-on-an-object)
   - [explain_access — "WHY was access allowed or denied?"](#explain_access--why-was-access-allowed-or-denied)
   - [write_tuple — Write a relationship tuple](#write_tuple--write-a-relationship-tuple)
   - [delete_tuple — Remove a relationship tuple](#delete_tuple--remove-a-relationship-tuple)
@@ -46,6 +47,7 @@ always uses explicit separate parameters for type, ID, and relation.
   - [export_subject / erase_subject — Data subject requests](#export_subject--erase_subject--data-subject-requests)
   - [grant / revoke — Share on behalf of an actor](#grant--revoke--share-on-behalf-of-an-actor)
   - [model_register_relation / model_set_relation_metadata — Relations and their kind](#model_register_relation--model_set_relation_metadata--relations-and-their-kind)
+  - [model_set_relation_constraint / model_drop_relation_constraint — How many may hold a relation](#model_set_relation_constraint--model_drop_relation_constraint--how-many-may-hold-a-relation)
   - [tuple_stats — What a store's data looks like](#tuple_stats--what-a-stores-data-looks-like)
   - [update_store — Description and documentation link](#update_store--description-and-documentation-link)
   - [model_remove_type — Remove a type and everything about it](#model_remove_type--remove-a-type-and-everything-about-it)
@@ -205,6 +207,35 @@ relations the *model* defines for the object's type, so its cost is fixed
 by the schema, not the data. (The same holds for `audit_list_actions`;
 the `audit_list_user` / `audit_list_object` trail queries are plain
 indexed scans of the audit log.)
+
+### relation_usage — "How full is a relation on an object?"
+
+```sql
+authz.relation_usage(p_store text, p_object_type text, p_object_id text, p_relation text,
+                     p_limit int DEFAULT NULL, p_subject_type text DEFAULT NULL, context jsonb DEFAULT NULL)
+RETURNS TABLE (direct_count bigint, max_direct int, direct_headroom int,
+               effective_count bigint, max_effective int, effective_headroom int,
+               unbounded boolean, limit_reached boolean)
+```
+
+```sql
+SELECT * FROM authz.relation_usage('docs', 'document', 'plan', 'viewer');
+--  direct_count | max_direct | direct_headroom | effective_count | max_effective | effective_headroom | unbounded | limit_reached
+--            48 |         50 |               2 |             131 |           200 |                 69 | f         | f
+```
+
+One row per call. `direct_count` is the **active (unexpired) direct tuples**
+on the object for the relation, as written (a userset counts as one) — what
+the model's `max_direct` caps; `effective_count` is the resolved holder set
+(direct, usersets, inherited) against the advisory `max_effective`. The caps
+and the headroom columns are `NULL` when the model declares none. The
+resolution stops at `p_limit` (default `max_effective` when declared, else
+exhaustive): `limit_reached` means `effective_count` is a lower bound.
+`unbounded` means a wildcard grant resolves to the relation — every subject
+of that type holds it, so `effective_count` is `NULL`. `p_subject_type`
+narrows the resolved set to one type; `context` feeds conditions as in
+`list_subjects`. Reader tier; namespace-checked. See
+[MODEL_DESIGN → Relation constraints](MODEL_DESIGN.md#relation-constraints-how-many-may-hold-a-relation).
 
 ### explain_access — "WHY was access allowed or denied?"
 
@@ -589,6 +620,33 @@ See [MODEL_DESIGN → Relation kinds](MODEL_DESIGN.md#relation-kinds-what-a-subj
 ```sql
 SELECT authz.model_register_relation('documents', 'can_read', p_metadata => '{"kind": "permission"}');
 SELECT authz.model_set_relation_metadata('documents', 'viewer', '{"label": "Viewer"}');
+```
+
+### model_set_relation_constraint / model_drop_relation_constraint — How many may hold a relation
+
+```sql
+authz.model_set_relation_constraint(p_store text, p_object_type text, p_relation text,
+                                    p_max_direct integer DEFAULT NULL, p_max_effective integer DEFAULT NULL) RETURNS integer
+authz.model_drop_relation_constraint(p_store text, p_object_type text, p_relation text) RETURNS boolean
+authz.list_relation_constraints(p_store text) RETURNS TABLE (object_type text, relation text, max_direct integer, max_effective integer)
+```
+
+A relation constraint (migration 0025) bounds how many subjects hold a
+relation on one object. `max_direct` is enforced on every write path: the
+**active (unexpired) direct tuples** on the object may not exceed it, and
+the one past the cap is refused with SQLSTATE `ZA001` (`relation_full`;
+message and JSON `DETAIL` carry cap and count), under the per-object lock so
+concurrent writers cannot overshoot. `max_effective` is advisory, reported
+by `relation_usage`. Setting again replaces both values (audited as a
+removal plus an addition); both `NULL` is refused — drop the constraint
+instead. `max_direct` needs a direct rule on the type and no wildcard facet
+(`user:*`, `allow_object_wildcard`) for that relation; wildcard tuples are
+refused on a capped relation. Admin tier; the list is reader tier.
+See [MODEL_DESIGN → Relation constraints](MODEL_DESIGN.md#relation-constraints-how-many-may-hold-a-relation).
+
+```sql
+SELECT authz.model_set_relation_constraint('documents', 'document', 'viewer', p_max_direct => 50);
+SELECT authz.model_set_relation_constraint('documents', 'document', 'can_read', p_max_effective => 500);
 ```
 
 ### tuple_stats — What a store's data looks like

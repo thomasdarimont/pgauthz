@@ -124,7 +124,7 @@ type Change struct {
 func (p Plan) Changes() []Change {
 	changes, _ := p["changes"].(map[string]any)
 	var out []Change
-	for _, section := range []string{"types", "relations", "rules", "type_restrictions", "conditions", "gates", "grant_rules"} {
+	for _, section := range []string{"types", "relations", "rules", "type_restrictions", "conditions", "gates", "grant_rules", "relation_constraints"} {
 		sec, _ := changes[section].(map[string]any)
 		for _, op := range []string{"add", "update", "remove"} {
 			items, _ := sec[op].([]any)

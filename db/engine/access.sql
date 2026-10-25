@@ -1117,3 +1117,130 @@ END;
 $$;
 
 -- (find_redundant_tuples and cleanup_redundant_tuples moved to maintenance.sql)
+
+------------------------------------------------------------------------
+-- relation_usage: how full is a relation on one object (migration 0025)?
+--
+-- One row: the live DIRECT assignments on the object (what max_direct caps)
+-- and the RESOLVED holder set (direct, usersets, inherited — what
+-- max_effective is about), each with the declared cap and the headroom.
+--
+--   direct_count       live direct tuples on (object, relation), as written
+--   max_direct         the declared cap, NULL when none
+--   direct_headroom    max_direct - direct_count (never below 0), NULL without a cap
+--   effective_count    subjects that resolve to the relation on the object;
+--                      NULL when unbounded
+--   max_effective      the declared advisory cap, NULL when none
+--   effective_headroom max_effective - effective_count, NULL without a cap or unbounded
+--   unbounded          a wildcard (type:*) resolves to the relation: every
+--                      subject of that type holds it, there is no count
+--   limit_reached      the resolution stopped at the budget: effective_count
+--                      is a lower bound ("at least")
+--
+-- The budget is p_limit, defaulting to max_effective when declared: finding
+-- the Nth holder already says "no room". An application about to add k
+-- holders passes max_effective - k + 1 and reads limit_reached as "would
+-- exceed". Without a cap and without p_limit the resolution is exhaustive.
+-- The resolved set is enumerated lazily per subject type (p_subject_type
+-- narrows it to one; NULL walks every type of the store, cheapest first
+-- is not knowable, so alphabetical) through the reverse expansion
+-- list_subjects uses — the per-candidate check stops at the budget.
+-- Contextual tuples are not part of the picture; the request context feeds
+-- conditions as in list_subjects. Reader tier; namespace-checked.
+--
+--   SELECT * FROM authz.relation_usage('docs', 'document', 'plan', 'viewer');
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.relation_usage(
+    p_store        text,
+    p_object_type  text,
+    p_object_id    text,
+    p_relation     text,
+    p_limit        int  DEFAULT NULL,
+    p_subject_type text DEFAULT NULL,
+    context        jsonb DEFAULT NULL
+) RETURNS TABLE (
+    direct_count       bigint,
+    max_direct         integer,
+    direct_headroom    integer,
+    effective_count    bigint,
+    max_effective      integer,
+    effective_headroom integer,
+    unbounded          boolean,
+    limit_reached      boolean
+)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_store_id    integer := authz._s(p_store);
+    v_object_type integer := authz._t(v_store_id, p_object_type);
+    v_relation    integer := authz._r(v_store_id, p_relation);
+    v_budget      integer;
+    v_remaining   integer;
+    v_type        record;
+    v_row         record;
+BEGIN
+    PERFORM authz._check_namespace_access(v_store_id, v_object_type, 'can_read');
+    IF p_limit IS NOT NULL AND p_limit < 1 THEN
+        RAISE EXCEPTION 'relation_usage: p_limit must be at least 1, got %', p_limit
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    IF p_subject_type IS NOT NULL THEN
+        PERFORM authz._t(v_store_id, p_subject_type);  -- raises 'Unknown type'
+    END IF;
+
+    SELECT c.max_direct, c.max_effective INTO max_direct, max_effective
+      FROM authz.relation_constraints c
+     WHERE c.store_id = v_store_id AND c.object_type = v_object_type AND c.relation = v_relation;
+
+    -- Direct: live rows on this object (the wildcard object '*' is not this
+    -- object's assignment; a capped relation has none). Bounded by the cap
+    -- when declared, else by the budget, else exhaustive.
+    v_budget := COALESCE(p_limit, max_effective);
+    SELECT count(*) INTO direct_count
+      FROM (SELECT 1 FROM authz.tuples t
+             WHERE t.store_id = v_store_id AND t.object_type = v_object_type
+               AND t.object_id = p_object_id AND t.relation = v_relation
+               AND (t.expires_at IS NULL OR t.expires_at > statement_timestamp())
+             LIMIT COALESCE(max_direct, v_budget)) x;
+    direct_headroom := CASE WHEN max_direct IS NULL THEN NULL ELSE GREATEST(max_direct - direct_count, 0) END;
+    limit_reached := max_direct IS NULL AND v_budget IS NOT NULL AND direct_count >= v_budget;
+
+    -- Effective: the reverse expansion per subject type, each call bounded
+    -- by what is left of the budget; a wildcard row ends the count.
+    effective_count := 0;
+    unbounded := false;
+    v_remaining := v_budget;
+    FOR v_type IN
+        SELECT t.name FROM authz.types t
+         WHERE t.store_id = v_store_id
+           AND (p_subject_type IS NULL OR t.name = p_subject_type)
+         ORDER BY t.name
+    LOOP
+        EXIT WHEN v_remaining IS NOT NULL AND v_remaining <= 0;
+        FOR v_row IN
+            SELECT s.subject_id, s.is_wildcard
+              FROM authz._list_subjects(p_store, v_type.name, p_relation, p_object_type, p_object_id,
+                                        context, v_remaining, 0, NULL, false) s
+        LOOP
+            IF v_row.is_wildcard THEN
+                unbounded := true;
+                EXIT;
+            END IF;
+            effective_count := effective_count + 1;
+        END LOOP;
+        EXIT WHEN unbounded;
+        IF v_budget IS NOT NULL THEN
+            v_remaining := v_budget - effective_count;
+        END IF;
+    END LOOP;
+    IF unbounded THEN
+        effective_count := NULL;
+        effective_headroom := NULL;
+    ELSE
+        IF v_budget IS NOT NULL AND effective_count >= v_budget THEN
+            limit_reached := true;
+        END IF;
+        effective_headroom := CASE WHEN max_effective IS NULL THEN NULL ELSE GREATEST(max_effective - effective_count, 0) END;
+    END IF;
+    RETURN NEXT;
+END;
+$$;

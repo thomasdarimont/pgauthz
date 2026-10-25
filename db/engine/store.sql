@@ -240,6 +240,13 @@ BEGIN
         DELETE FROM authz.grant_rules_audit WHERE store_id = v_store_id;
         PERFORM set_config('authz.audit_maintenance', '', true);
     END IF;
+    -- Relation constraints (migration 0025) reference the store's types/relations.
+    DELETE FROM authz.relation_constraints WHERE store_id = v_store_id;
+    IF p_purge_audit THEN
+        PERFORM set_config('authz.audit_maintenance', 'on', true);
+        DELETE FROM authz.relation_constraints_audit WHERE store_id = v_store_id;
+        PERFORM set_config('authz.audit_maintenance', '', true);
+    END IF;
     -- Temporal gates (ADR 0012) reference the store's types/relations.
     DELETE FROM authz.model_gates       WHERE store_id = v_store_id;
     IF p_purge_audit THEN

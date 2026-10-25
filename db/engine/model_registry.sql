@@ -58,7 +58,8 @@ LANGUAGE sql IMMUTABLE AS $$
     -- sync and show no drift after the upgrade.
     SELECT encode(sha256(convert_to((
         jsonb_set((CASE WHEN COALESCE(p_def->'gates', '[]'::jsonb) = '[]'::jsonb THEN p_def - 'gates' ELSE p_def END)
-                  - CASE WHEN COALESCE(p_def->'grant_rules', '[]'::jsonb) = '[]'::jsonb THEN 'grant_rules' ELSE '' END,
+                  - CASE WHEN COALESCE(p_def->'grant_rules', '[]'::jsonb) = '[]'::jsonb THEN 'grant_rules' ELSE '' END
+                  - CASE WHEN COALESCE(p_def->'relation_constraints', '[]'::jsonb) = '[]'::jsonb THEN 'relation_constraints' ELSE '' END,
                   '{types}', (
             SELECT COALESCE(jsonb_agg(t - 'hash_modulus' ORDER BY t->>'name'),
                             '[]'::jsonb)
@@ -214,7 +215,20 @@ BEGIN
               JOIN authz.relations rl ON rl.id = g.relation
               JOIN authz.relations rq ON rq.id = g.requires
          LEFT JOIN authz.relations rr ON rr.id = g.requires_revoke
-             WHERE g.store_id = v_store_id), '[]'::jsonb)
+             WHERE g.store_id = v_store_id), '[]'::jsonb),
+        -- Relation constraints (migration 0025): dropped from the checksum
+        -- when empty, like gates and grant rules.
+        'relation_constraints', COALESCE((
+            SELECT jsonb_agg(jsonb_build_object(
+                       'object_type',   ot.name,
+                       'relation',      rl.name,
+                       'max_direct',    c.max_direct,
+                       'max_effective', c.max_effective
+                   ) ORDER BY ot.name, rl.name)
+              FROM authz.relation_constraints c
+              JOIN authz.types     ot ON ot.id = c.object_type
+              JOIN authz.relations rl ON rl.id = c.relation
+             WHERE c.store_id = v_store_id), '[]'::jsonb)
     );
 END;
 $$;
@@ -575,6 +589,19 @@ BEGIN
     LOOP
         PERFORM authz.model_add_grant_rule(p_store, v_row->>'object_type', v_row->>'relation',
                                            v_row->>'requires', v_row->>'requires_revoke');
+    END LOOP;
+
+    -- Relation constraints (migration 0025): exact diff, same protocol.
+    DELETE FROM authz.relation_constraints c
+     USING authz.types ot, authz.relations rl
+     WHERE c.store_id = v_store_id AND ot.id = c.object_type AND rl.id = c.relation
+       AND NOT EXISTS (
+           SELECT 1 FROM jsonb_array_elements(COALESCE(v_def->'relation_constraints', '[]'::jsonb)) x
+            WHERE x->>'object_type' = ot.name AND x->>'relation' = rl.name);
+    FOR v_row IN SELECT * FROM jsonb_array_elements(COALESCE(v_def->'relation_constraints', '[]'::jsonb))
+    LOOP
+        PERFORM authz.model_set_relation_constraint(p_store, v_row->>'object_type', v_row->>'relation',
+                                                    (v_row->>'max_direct')::int, (v_row->>'max_effective')::int);
     END LOOP;
 
     -- Stale relations: removable only when nothing references them anymore.
@@ -1023,7 +1050,13 @@ BEGIN
                                       v_live->'conditions', v_def->'conditions')) AS c(e))),
             'gates', jsonb_build_object(
                 'add',    authz._jsonb_array_except(COALESCE(v_def->'gates',  '[]'::jsonb), COALESCE(v_live->'gates', '[]'::jsonb)),
-                'remove', authz._jsonb_array_except(COALESCE(v_live->'gates', '[]'::jsonb), COALESCE(v_def->'gates',  '[]'::jsonb)))),
+                'remove', authz._jsonb_array_except(COALESCE(v_live->'gates', '[]'::jsonb), COALESCE(v_def->'gates',  '[]'::jsonb))),
+            'grant_rules', jsonb_build_object(
+                'add',    authz._jsonb_array_except(COALESCE(v_def->'grant_rules',  '[]'::jsonb), COALESCE(v_live->'grant_rules', '[]'::jsonb)),
+                'remove', authz._jsonb_array_except(COALESCE(v_live->'grant_rules', '[]'::jsonb), COALESCE(v_def->'grant_rules',  '[]'::jsonb))),
+            'relation_constraints', jsonb_build_object(
+                'add',    authz._jsonb_array_except(COALESCE(v_def->'relation_constraints',  '[]'::jsonb), COALESCE(v_live->'relation_constraints', '[]'::jsonb)),
+                'remove', authz._jsonb_array_except(COALESCE(v_live->'relation_constraints', '[]'::jsonb), COALESCE(v_def->'relation_constraints',  '[]'::jsonb)))),
         'rollback', v_rollback);
 END;
 $$;

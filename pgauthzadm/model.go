@@ -20,6 +20,11 @@ type Model struct {
 	Conditions       []Condition       `json:"conditions"`
 	Gates            []Gate            `json:"gates"`
 	GrantRules       []GrantRule       `json:"grant_rules"`
+	// RelationConstraints (migration 0025): per (type, relation) how many
+	// subjects may hold it on one object — max_direct enforced on writes,
+	// max_effective advisory (relation_usage). Omitted when empty so
+	// definitions published before the key existed round-trip unchanged.
+	RelationConstraints []RelationConstraint `json:"relation_constraints,omitempty"`
 }
 
 type ModelType struct {
@@ -94,6 +99,13 @@ type GrantRule struct {
 	Relation       string  `json:"relation"`
 	Requires       string  `json:"requires"`
 	RequiresRevoke *string `json:"requires_revoke"`
+}
+
+type RelationConstraint struct {
+	ObjectType   string `json:"object_type"`
+	Relation     string `json:"relation"`
+	MaxDirect    *int   `json:"max_direct"`
+	MaxEffective *int   `json:"max_effective"`
 }
 
 // ExportModel returns a store's live model (authz.export_model), the
@@ -272,6 +284,20 @@ func RenderSQL(store string, m *Model) string {
 				args = append(args, q(*g.RequiresRevoke))
 			}
 			w("SELECT authz.model_add_grant_rule(%s);", strings.Join(args, ", "))
+		}
+		w("")
+	}
+	if len(m.RelationConstraints) > 0 {
+		w("-- Relation constraints: how many may hold a relation on one object (max_direct enforced, max_effective advisory)")
+		for _, c := range m.RelationConstraints {
+			args := []string{q(store), q(c.ObjectType), q(c.Relation)}
+			if c.MaxDirect != nil {
+				args = append(args, fmt.Sprintf("p_max_direct => %d", *c.MaxDirect))
+			}
+			if c.MaxEffective != nil {
+				args = append(args, fmt.Sprintf("p_max_effective => %d", *c.MaxEffective))
+			}
+			w("SELECT authz.model_set_relation_constraint(%s);", strings.Join(args, ", "))
 		}
 		w("")
 	}

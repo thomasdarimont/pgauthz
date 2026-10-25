@@ -181,6 +181,10 @@ tuples:
   - user: group:eng#member     # userset
     relation: viewer
     object: folder:specs
+  - user: user:zed             # a tuple the model must REFUSE (a relation
+    relation: parent           # constraint's max_direct): asserted as a
+    object: doc:design         # result of the run, not a seed
+    refused: true
 
 tests:
   - name: group members read via folder inheritance
@@ -216,7 +220,9 @@ tests:
 
 The runner (`pgauthzadm.RunFixture`, shared with the console's Scenarios)
 creates an ephemeral store per run (hermetic, repeatable), imports the
-model, seeds the tuples, runs the assertions, and drops the store — all in
+model, seeds the tuples (a seed refused by a relation constraint's
+`max_direct` becomes a failed result rather than a run error; `refused: true`
+asserts the refusal), runs the assertions, and drops the store — all in
 one transaction, with the engine's `authz.ephemeral_store` setting on, so
 the store's types get no tuples partitions (no DDL, no lock on the engine's
 tuples table while the run lasts) and the store never appears in the

@@ -722,6 +722,7 @@ Without a configured native backend the routes return `501 Not Implemented`.
 | POST | `/pgauthz/v1/write` | **full** | Batch-upsert tuples (`write_tuples_jsonb`). |
 | POST | `/pgauthz/v1/delete` | **full** | Batch-delete tuples (`delete_tuples_jsonb`). |
 | POST | `/pgauthz/v1/grant-options` | direct | The share dialog's data: per relation with a grant rule, may the subject grant / revoke it and who may hold it (`grant_options`). A read. |
+| POST | `/pgauthz/v1/relation-usage` | direct | How full a relation is on one object: active direct tuples against `max_direct`, the resolved holder set against `max_effective`, headroom (`relation_usage`). A read, gated like a subject search. Writes a relation constraint refuses answer `409 relation_full`. |
 | POST | `/pgauthz/v1/apply-grants` | **full** | A share dialog's save: grants + revokes as one transaction (`apply_grants`); a refused entry → 403 naming it, nothing written. |
 | POST | `/pgauthz/v1/grant`, `/pgauthz/v1/revoke` | **full** | Sharing (`authz.grant` / `authz.revoke`): the token subject gives / takes away a relation on an object, allowed iff the store's **grant rules** say so — not `WRITER_ROLE`-gated, end users share; 403 with the engine's reason when refused. |
 | POST | `/pgauthz/v1/events` | **full** | Record what principals *actually did* — the action log (`record_events_jsonb`, [ADR 0012](../docs/adr/0012-action-log.md)); `RECORDER_ROLE`-gated, atomic batches, `event_id` idempotency. |

@@ -12,12 +12,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"gopkg.in/yaml.v3"
 )
 
@@ -46,6 +48,12 @@ type FixtureTuple struct {
 	Condition string         `yaml:"condition,omitempty" json:"condition,omitempty"`
 	Context   map[string]any `yaml:"context,omitempty" json:"context,omitempty"`       // stored condition context
 	ExpiresAt string         `yaml:"expires_at,omitempty" json:"expires_at,omitempty"` // server-time expiry (RFC3339)
+	// Refused asserts that the model REFUSES this tuple — a relation
+	// constraint (max_direct) turning the write down. The tuple is then a
+	// result of the run (kind "tuple"), not a seed: it passes when the
+	// engine refuses it with the constraint's SQLSTATE, fails when it is
+	// written or refused for another reason.
+	Refused bool `yaml:"refused,omitempty" json:"refused,omitempty"`
 }
 
 // FixtureTest is one named scenario: checks, searches and explains. The
@@ -261,6 +269,41 @@ func ParseRef(s string) (Ref, error) {
 	return r, nil
 }
 
+// sqlstateRelationFull is the engine's SQLSTATE for a write refused by a
+// relation constraint (max_direct, migration 0025).
+const sqlstateRelationFull = "ZA001"
+
+// tupleResult turns the outcome of seeding one fixture tuple into a result
+// when the tuple is about a relation constraint: a tuple expected to be
+// refused (Refused), or a plain tuple the cap turned down — both are
+// assertable outcomes, not run errors. isResult=false means the outcome is
+// the caller's to handle (written as a seed, or a run error).
+func tupleResult(i int, t FixtureTuple, err error) (r Result, isResult bool) {
+	var pgErr *pgconn.PgError
+	full := err != nil && errors.As(err, &pgErr) && pgErr.Code == sqlstateRelationFull
+	if !t.Refused && !full {
+		return Result{}, false
+	}
+	expected := "written"
+	if t.Refused {
+		expected = "refused"
+	}
+	r = Result{Name: fmt.Sprintf("tuples[%d] %s %s %s", i, t.User, t.Relation, t.Object), Test: -1,
+		Kind: "tuple", User: t.User, Relation: t.Relation, Object: t.Object, Expected: []string{expected}}
+	switch {
+	case full && t.Refused:
+		r.Actual = []string{"refused"}
+	case full:
+		r.Actual, r.Failed, r.Detail = []string{"refused"}, true, pgErr.Message
+	case err == nil:
+		r.Actual, r.Failed, r.Detail = []string{"written"}, true, "expected the relation constraint to refuse it; the tuple was written"
+	default:
+		// refused, but not by a constraint: that is a broken fixture
+		return Result{}, false
+	}
+	return r, true
+}
+
 // RunFixture runs the fixture in an ephemeral store on db and drops the
 // store afterwards (unless opts.KeepStore). An error is returned only when
 // the run itself could not proceed (store, model, seed); failed assertions
@@ -269,9 +312,9 @@ func ParseRef(s string) (Ref, error) {
 // (the injection API is deliberately gated).
 func RunFixture(ctx context.Context, db DB, fix *Fixture, opts RunOptions) (*RunReport, error) {
 	var report *RunReport
-	err := WithFixture(ctx, db, fix, opts, func(store string) error {
+	err := withFixture(ctx, db, fix, opts, func(store string, tuples []Result) error {
 		start := time.Now()
-		report = &RunReport{Store: store, Results: []Result{}}
+		report = &RunReport{Store: store, Results: tuples}
 		for i, tc := range fix.Tests {
 			for _, r := range runFixtureCase(ctx, db, store, tc) {
 				r.Test = i
@@ -365,6 +408,14 @@ func ContextualTuplesJSON(ts []FixtureTuple) ([]byte, error) {
 // and the whole run then commits or rolls back as one — the store never
 // appears in the committed state (unless kept).
 func WithFixture(ctx context.Context, db DB, fix *Fixture, opts RunOptions, fn func(store string) error) error {
+	return withFixture(ctx, db, fix, opts, func(store string, _ []Result) error { return fn(store) })
+}
+
+// withFixture is WithFixture plus the tuple results: a seed tuple refused by
+// a relation constraint, or one declared `refused`, is reported to fn as a
+// Result (kind "tuple", Test -1) instead of aborting the run. Each seed is
+// written under a savepoint so a refusal leaves the run's transaction usable.
+func withFixture(ctx context.Context, db DB, fix *Fixture, opts RunOptions, fn func(store string, tuples []Result) error) error {
 	if err := fix.Validate(); err != nil {
 		return err
 	}
@@ -420,12 +471,28 @@ func WithFixture(ctx context.Context, db DB, fix *Fixture, opts RunOptions, fn f
 			return err
 		}
 	}
-	for _, t := range fix.Tuples {
-		if err := writeFixtureTuple(ctx, db, store, t); err != nil {
+	tuples := []Result{}
+	for i, t := range fix.Tuples {
+		if _, err := db.Exec(ctx, "SAVEPOINT fixture_tuple"); err != nil {
+			return err
+		}
+		err := writeFixtureTuple(ctx, db, store, t)
+		if err != nil {
+			if _, rerr := db.Exec(ctx, "ROLLBACK TO SAVEPOINT fixture_tuple"); rerr != nil {
+				return fmt.Errorf("fixture tuple %s %s %s: %w", t.User, t.Relation, t.Object, err)
+			}
+		} else if _, err := db.Exec(ctx, "RELEASE SAVEPOINT fixture_tuple"); err != nil {
+			return err
+		}
+		if r, ok := tupleResult(i, t, err); ok {
+			tuples = append(tuples, r)
+			continue
+		}
+		if err != nil {
 			return fmt.Errorf("fixture tuple %s %s %s: %w", t.User, t.Relation, t.Object, err)
 		}
 	}
-	return fn(store)
+	return fn(store, tuples)
 }
 
 func writeFixtureTuple(ctx context.Context, db DB, store string, t FixtureTuple) error {

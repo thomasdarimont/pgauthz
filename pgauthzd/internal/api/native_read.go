@@ -378,6 +378,57 @@ func (h *Handler) NativeListSubjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, listResponse("subjects", subjects, pageResp, freshTok))
 }
 
+type nativeRelationUsageBody struct {
+	Action      Action         `json:"action"`
+	Resource    Resource       `json:"resource"`
+	SubjectType string         `json:"subject_type,omitempty"` // narrow the resolved set to one type
+	Limit       *int           `json:"limit,omitempty"`        // resolution budget (default: max_effective)
+	Context     map[string]any `json:"context,omitempty"`
+}
+
+// NativeRelationUsage — POST /pgauthz/v1/relation-usage: how full the relation
+// (action) is on the object — active direct assignments against max_direct,
+// the resolved holder set against max_effective (relation_usage). Gated like
+// a subject search: it resolves the holder set, though it returns a count.
+func (h *Handler) NativeRelationUsage(w http.ResponseWriter, r *http.Request) {
+	nr, ok := h.nativeReader(w)
+	if !ok {
+		return
+	}
+	if !h.requireSearchRole(w, r) {
+		return
+	}
+	var req nativeRelationUsageBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.Action.Name == "" || req.Resource.Type == "" || req.Resource.ID == "" {
+		writeBadRequest(w, "action.name and resource.type/id are required")
+		return
+	}
+	if req.Limit != nil && *req.Limit < 1 {
+		writeBadRequest(w, "limit must be at least 1")
+		return
+	}
+	store, ok := h.storeChecked(w, r)
+	if !ok {
+		return
+	}
+	out, err := nr.RelationUsage(r.Context(), authz.RelationUsageRequest{
+		Store: store, ObjectType: req.Resource.Type, ObjectID: req.Resource.ID, Relation: req.Action.Name,
+		SubjectType: req.SubjectType, Limit: req.Limit, Context: req.Context,
+	})
+	if err != nil {
+		writeDecisionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"store": store, "resource": map[string]string{"type": req.Resource.Type, "id": req.Resource.ID},
+		"relation": req.Action.Name, "usage": json.RawMessage(out),
+	})
+}
+
 type nativeListActionsBody struct {
 	Subject  Subject        `json:"subject"`
 	Resource Resource       `json:"resource"`

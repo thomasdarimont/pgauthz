@@ -91,6 +91,45 @@ func TestWriteForbiddenRoleIs403(t *testing.T) {
 }
 
 // A genuine backend fault stays a 500.
+// A write the engine refused because the relation's max_direct cap is
+// reached (SQLSTATE ZA001 → authz.RelationFull) is a structured 409
+// relation_full with the engine's detail, not a 403 and not a 500.
+func TestWriteRelationFullIs409(t *testing.T) {
+	full := &authz.RelationFull{Msg: "relation viewer on doc:plan is full: 3 of 3 active direct assignments (max_direct)",
+		Detail: json.RawMessage(`{"code": "relation_full", "object_type": "doc", "object_id": "plan", "relation": "viewer", "max_direct": 3, "direct_count": 3}`)}
+	stub := &writeStubBackend{writeErr: full}
+	h := NewHandler(stub, stub, stub, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo"})
+	asBob := func(r *http.Request) *http.Request {
+		return r.WithContext(context.WithValue(context.WithValue(r.Context(), ctxSubjectType, "user"), ctxSubjectID, "bob"))
+	}
+	calls := map[string]func(w http.ResponseWriter){
+		"write": func(w http.ResponseWriter) { h.WriteTuples(w, writeReq()) },
+		"grant": func(w http.ResponseWriter) {
+			h.Grant(w, asBob(jsonReq("POST", "/pgauthz/v1/grant", `{"user":{"type":"user","id":"erin"},"relation":"viewer","object":{"type":"doc","id":"plan"}}`)))
+		},
+		"apply-grants": func(w http.ResponseWriter) {
+			h.ApplyGrants(w, asBob(jsonReq("POST", "/pgauthz/v1/apply-grants", `{"grants":[{"user_type":"user","user_id":"erin","relation":"viewer","object_type":"doc","object_id":"plan"}]}`)))
+		},
+	}
+	for name, call := range calls {
+		w := httptest.NewRecorder()
+		call(w)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("%s: want 409, got %d: %s", name, w.Code, w.Body.String())
+		}
+		var got map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatalf("%s: body is not JSON: %v", name, err)
+		}
+		if got["error"] != "relation_full" || got["message"] != full.Msg {
+			t.Fatalf("%s: want error relation_full with the engine's message, got %v", name, got)
+		}
+		if d, _ := got["detail"].(map[string]any); d["max_direct"] != float64(3) || d["direct_count"] != float64(3) {
+			t.Fatalf("%s: want the engine's detail (cap and count), got %v", name, got["detail"])
+		}
+	}
+}
+
 func TestWriteInternalErrorIs500(t *testing.T) {
 	h := NewHandler(&writeStubBackend{writeErr: context.DeadlineExceeded}, &writeStubBackend{writeErr: context.DeadlineExceeded}, &writeStubBackend{writeErr: context.DeadlineExceeded}, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo"})
 	w := httptest.NewRecorder()

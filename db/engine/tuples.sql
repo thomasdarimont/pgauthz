@@ -495,6 +495,13 @@ BEGIN
             USING HINT = 'A facet may require a condition: write those tuples with a condition (write_tuple / write_tuples_jsonb).';
     END IF;
 
+    -- Capped relations (migration 0025): lock their objects in a stable
+    -- order before the insert, so two batches cannot deadlock in the
+    -- per-row cap guard (which re-takes the held locks).
+    PERFORM authz._lock_capped_objects(p_store, v_store_id,
+        (SELECT COALESCE(jsonb_agg(jsonb_build_object('object_type', t.object_type, 'object_id', t.object_id, 'relation', t.relation)), '[]'::jsonb)
+           FROM unnest(p_tuples) AS t));
+
     -- The set-based insert (with ON CONFLICT reactivation of expired rows)
     -- must see hidden rows: the bypass helper owns that statement. All
     -- validation above ran as the effective role.
@@ -536,6 +543,10 @@ DECLARE
     t       jsonb;
 BEGIN
     PERFORM authz._validate_tuple_jsonb(p_tuples);
+
+    -- Capped relations (migration 0025): every object of the batch in a
+    -- stable order, before either path inserts (see write_tuples).
+    PERFORM authz._lock_capped_objects(p_store, authz._s(p_store), p_tuples);
 
     -- Plain elements take the set-based batch path.
     v_count := authz.write_tuples(

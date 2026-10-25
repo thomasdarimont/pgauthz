@@ -197,6 +197,10 @@ export class PgcActivity extends PgcElement {
           <span class="muted">${t('needs')}</span>
           <span class="mono">${d.requires}</span>
           ${d.requires_revoke ? html`<span class="muted">${t('to revoke')}</span> <span class="mono">${d.requires_revoke}</span>` : nothing}`;
+      case 'relation_constraint':
+        return html`<span class="mono">${c.object_type}.${c.relation}</span>
+          ${d.max_direct != null ? html`<span class="muted">${t('max direct')}</span> <span class="mono">${d.max_direct}</span>` : nothing}
+          ${d.max_effective != null ? html`<span class="muted">${t('max effective')}</span> <span class="mono">${d.max_effective}</span>` : nothing}`;
       default:
         return html`<span class="mono">${c.object_type}.${c.relation} ${c.name}</span>`;
     }
@@ -204,7 +208,13 @@ export class PgcActivity extends PgcElement {
 
   _model(rows) {
     if (!rows.length) return html`<div class="empty">${t('No model changes recorded.')}</div>`;
-    const kinds = { rule: 'rule', condition: 'condition', gate: 'gate', grant_rule: 'grant rule' };
+    const kinds = {
+      rule: 'rule',
+      condition: 'condition',
+      gate: 'gate',
+      grant_rule: 'grant rule',
+      relation_constraint: 'relation constraint',
+    };
     return html`<div class="table-wrap">
       <table data-testid="activity-model-table">
         ${PgcActivity.HEAD('The rule, condition, gate or grant rule as it was. Editing a condition, gate or grant rule shows as a removal plus an addition; types and relations themselves are not versioned (they are the dictionary).')}

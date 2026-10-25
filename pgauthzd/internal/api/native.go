@@ -21,6 +21,11 @@ import (
 // per-app role (e.g. a reader-only token reaching the write path) is a caller
 // authorization error → 403, not a server fault → 500.
 func writeWriteError(w http.ResponseWriter, err error) {
+	var full *authz.RelationFull
+	if errors.As(err, &full) {
+		writeRelationFull(w, full)
+		return
+	}
 	if errors.Is(err, authz.ErrForbiddenRole) {
 		writeForbidden(w, err.Error())
 		return
@@ -30,6 +35,19 @@ func writeWriteError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeInternalError(w, err)
+}
+
+// writeRelationFull is the structured 409 for a write the engine refused
+// because the relation's max_direct cap on the object is reached (migration
+// 0025): error "relation_full", the engine's message, and its detail — the
+// object, relation, cap and current count — so a client can tell "full"
+// from "forbidden" and render the headroom.
+func writeRelationFull(w http.ResponseWriter, full *authz.RelationFull) {
+	body := map[string]any{"status": http.StatusConflict, "error": "relation_full", "message": full.Msg}
+	if len(full.Detail) > 0 {
+		body["detail"] = full.Detail
+	}
+	writeJSON(w, http.StatusConflict, body)
 }
 
 // nativeReader returns the backend as a NativeReader, or writes 501 and false.

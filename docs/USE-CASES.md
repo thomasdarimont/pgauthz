@@ -24,6 +24,7 @@ combine several.
   - [Object wildcard — an auditor who sees every document, now and in future](#object-wildcard--an-auditor-who-sees-every-document-now-and-in-future)
   - [Grant rules — who may share, and never more than they hold](#grant-rules--who-may-share-and-never-more-than-they-hold)
   - [grant_options, apply_grants — the share dialog](#grant_options-apply_grants--the-share-dialog)
+  - [Relation constraints — at most 50 viewers, exactly one parent](#relation-constraints--at-most-50-viewers-exactly-one-parent)
   - [Marker tuples and exclusion — archived, under legal hold, draft only](#marker-tuples-and-exclusion--archived-under-legal-hold-draft-only)
   - [Object wildcard, bulk delete, expiry — suspended, offboarded, break-glass](#object-wildcard-bulk-delete-expiry--suspended-offboarded-break-glass)
   - [Search API as a JOIN — show me only what I may see](#search-api-as-a-join--show-me-only-what-i-may-see)
@@ -644,6 +645,41 @@ it.
 
 Shown in: [`examples/models/gdrive/`](../examples/models/gdrive) (section 12
 of `demo.sql`, with tests), [API → grant / revoke](API.md#grant--revoke--share-on-behalf-of-an-actor).
+
+### Relation constraints — at most 50 viewers, exactly one parent
+
+**Scenario:** A plan allows a document to be shared with at most 50 people;
+a document must have exactly one parent folder; the share dialog should say
+"48 / 50" and refuse the 51st grant with a message that is not "forbidden".
+
+**Solution:** A **relation constraint** per `(type, relation)`, part of the
+model. `max_direct` is enforced on every write path and counts the active
+(unexpired) tuples written on the object — a userset such as
+`group:eng#member` is one assignment; `max_effective` is the advisory size
+of the resolved holder set that `relation_usage` reports headroom against.
+
+```sql
+SELECT authz.model_set_relation_constraint('gdrive', 'doc', 'viewer', p_max_direct => 50, p_max_effective => 500);
+SELECT authz.model_set_relation_constraint('gdrive', 'doc', 'parent', p_max_direct => 1);
+
+SELECT authz.grant('gdrive', 'user', 'alice', 'user', 'zed', 'viewer', 'doc', 'design_spec');
+-- ERROR:  relation viewer on doc:design_spec is full: 50 of 50 active direct assignments (max_direct)
+-- SQLSTATE ZA001; DETAIL {"code": "relation_full", …, "max_direct": 50, "direct_count": 50}
+
+SELECT direct_count, direct_headroom, effective_count, limit_reached
+  FROM authz.relation_usage('gdrive', 'doc', 'design_spec', 'viewer');
+```
+
+Two writers racing for the last slot serialize on the object's lock and the
+second is refused; a batch that would overshoot fails as a whole; expired
+grants free their slot. Over HTTP a refused write is `409 relation_full`
+(detail: object, relation, cap, count) and `POST /pgauthz/v1/relation-usage`
+is the read behind "48 / 50". Resolved counts are never enforced on a write
+— sharing a folder would have to re-count every document below it — which
+is why `max_effective` is advisory.
+
+Shown in: [MODEL_DESIGN → Relation constraints](MODEL_DESIGN.md#relation-constraints-how-many-may-hold-a-relation),
+[API → relation_usage](API.md#relation_usage--how-full-is-a-relation-on-an-object).
 
 ### Marker tuples and exclusion — archived, under legal hold, draft only
 

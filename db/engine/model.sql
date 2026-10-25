@@ -268,6 +268,8 @@ BEGIN
     -- 3. Model rows that mention the type (logged to their audit tables).
     DELETE FROM authz.grant_rules g
      WHERE g.store_id = v_store_id AND g.object_type = v_type_id;
+    DELETE FROM authz.relation_constraints c
+     WHERE c.store_id = v_store_id AND c.object_type = v_type_id;
     DELETE FROM authz.type_restrictions x
      WHERE x.store_id = v_store_id
        AND (x.object_type = v_type_id OR x.allowed_user_type = v_type_id);
@@ -386,6 +388,125 @@ BEGIN
        AND g.relation    = authz._r(v_store_id, p_relation);
     RETURN FOUND;
 END;
+$$;
+
+------------------------------------------------------------------------
+-- Relation constraints (migration 0025): how many subjects a relation may
+-- hold on ONE object, per (object type, relation).
+--
+--   max_direct    enforced when a tuple is written: live direct tuples on the
+--                 object for the relation (as written — a userset subject is
+--                 one assignment; expired rows do not count) may not exceed
+--                 it. The guard is a trigger on authz.tuples, so write_tuple,
+--                 the batch writers, checked writes, grant and apply_grants
+--                 all refuse the (N+1)th with SQLSTATE 'ZA001' (pgauthzd
+--                 answers 409 relation_full). Wildcard tuples (user:* or
+--                 object_id '*') are refused on a capped relation: they are
+--                 unbounded. Existing tuples are not re-checked when a cap is
+--                 declared — relation_usage shows an object over the cap.
+--   max_effective advisory: the intended size of the RESOLVED holder set.
+--                 Never enforced on a write (a resolved count fans out and
+--                 fails writes for distant reasons); relation_usage reports
+--                 the count, the headroom and whether a wildcard makes the
+--                 set unbounded.
+--
+-- Upsert: setting again replaces both values (audited as DELETE + INSERT);
+-- NULL clears one of them, both NULL is refused — drop the constraint.
+--
+--   SELECT authz.model_set_relation_constraint('docs', 'document', 'viewer', p_max_direct => 50);
+--   SELECT authz.model_set_relation_constraint('docs', 'document', 'viewer', 50, 200);
+--   SELECT authz.model_drop_relation_constraint('docs', 'document', 'viewer');
+------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION authz.model_set_relation_constraint(
+    p_store         text,
+    p_object_type   text,
+    p_relation      text,
+    p_max_direct    integer DEFAULT NULL,
+    p_max_effective integer DEFAULT NULL
+) RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store);
+    v_type     integer := authz._t(v_store_id, p_object_type);
+    v_rel      integer := authz._r(v_store_id, p_relation);
+    v_id       integer;
+BEGIN
+    IF p_max_direct IS NULL AND p_max_effective IS NULL THEN
+        RAISE EXCEPTION 'model_set_relation_constraint: % on % needs max_direct or max_effective — use model_drop_relation_constraint to remove the constraint',
+            p_relation, p_object_type
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    IF p_max_direct IS NOT NULL AND p_max_direct < 1 OR p_max_effective IS NOT NULL AND p_max_effective < 1 THEN
+        RAISE EXCEPTION 'model_set_relation_constraint: a cap must be at least 1 (max_direct %, max_effective %)',
+            p_max_direct, p_max_effective
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    -- max_direct counts direct tuples: the model must have something to
+    -- count (a direct rule on this type), and must not promise what the cap
+    -- refuses (a wildcard facet `user:*` or an object-wildcard direct rule —
+    -- the guard refuses wildcard tuples on a capped relation, so the two
+    -- declarations could never both hold). max_effective has no such
+    -- coupling: a derived permission may well carry an advisory cap.
+    IF p_max_direct IS NOT NULL THEN
+        IF NOT EXISTS (SELECT 1 FROM authz.models m
+                        WHERE m.store_id = v_store_id AND m.object_type = v_type AND m.relation = v_rel
+                          AND m.rule_type = authz._rel_direct()) THEN
+            RAISE EXCEPTION 'model_set_relation_constraint: % on % has no direct rule — nothing is assigned by tuple, so max_direct cannot apply (max_effective can)',
+                p_relation, p_object_type
+                USING ERRCODE = 'invalid_parameter_value';
+        END IF;
+        IF EXISTS (SELECT 1 FROM authz.type_restrictions tr
+                    WHERE tr.store_id = v_store_id AND tr.object_type = v_type AND tr.relation = v_rel AND tr.allow_wildcard)
+           OR EXISTS (SELECT 1 FROM authz.models m
+                       WHERE m.store_id = v_store_id AND m.object_type = v_type AND m.relation = v_rel
+                         AND m.rule_type = authz._rel_direct() AND m.allow_object_wildcard) THEN
+            RAISE EXCEPTION 'model_set_relation_constraint: % on % allows wildcard grants (a user:* facet or allow_object_wildcard) — a capped relation refuses them; remove the wildcard from the model first',
+                p_relation, p_object_type
+                USING ERRCODE = 'invalid_parameter_value';
+        END IF;
+    END IF;
+    INSERT INTO authz.relation_constraints (store_id, object_type, relation, max_direct, max_effective)
+    VALUES (v_store_id, v_type, v_rel, p_max_direct, p_max_effective)
+    ON CONFLICT (store_id, object_type, relation) DO UPDATE
+        SET max_direct = EXCLUDED.max_direct, max_effective = EXCLUDED.max_effective
+      WHERE (authz.relation_constraints.max_direct, authz.relation_constraints.max_effective)
+            IS DISTINCT FROM (EXCLUDED.max_direct, EXCLUDED.max_effective)
+    RETURNING id INTO v_id;
+    IF v_id IS NULL THEN
+        SELECT c.id INTO v_id FROM authz.relation_constraints c
+         WHERE c.store_id = v_store_id AND c.object_type = v_type AND c.relation = v_rel;
+    END IF;
+    RETURN v_id;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION authz.model_drop_relation_constraint(
+    p_store       text,
+    p_object_type text,
+    p_relation    text
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store);
+BEGIN
+    DELETE FROM authz.relation_constraints c
+     WHERE c.store_id = v_store_id
+       AND c.object_type = authz._t(v_store_id, p_object_type)
+       AND c.relation    = authz._r(v_store_id, p_relation);
+    RETURN FOUND;
+END;
+$$;
+
+-- list_relation_constraints: a store's constraints by name (reader tier).
+CREATE OR REPLACE FUNCTION authz.list_relation_constraints(p_store text)
+RETURNS TABLE (object_type text, relation text, max_direct integer, max_effective integer)
+LANGUAGE sql STABLE AS $$
+    SELECT ot.name, rl.name, c.max_direct, c.max_effective
+      FROM authz.relation_constraints c
+      JOIN authz.types     ot ON ot.id = c.object_type
+      JOIN authz.relations rl ON rl.id = c.relation
+     WHERE c.store_id = authz._s(p_store)
+     ORDER BY ot.name, rl.name;
 $$;
 
 ------------------------------------------------------------------------
@@ -1003,6 +1124,22 @@ BEGIN
 END;
 $$;
 
+-- Relation constraints (migration 0025) render as one `#` comment line under
+-- the define line: `# constraint: max_direct 50, max_effective 200`. Display
+-- only, like gates: the round-trip carrier is export_model.
+CREATE OR REPLACE FUNCTION authz._describe_constraint(
+    p_store_id integer, p_object_type integer, p_relation integer, p_prefix_relation boolean
+) RETURNS text LANGUAGE sql STABLE AS $$
+    SELECT '    # constraint' || CASE WHEN p_prefix_relation THEN ' ' || rl.name ELSE '' END || ': '
+           || concat_ws(', ',
+                  CASE WHEN c.max_direct    IS NOT NULL THEN 'max_direct '    || c.max_direct    END,
+                  CASE WHEN c.max_effective IS NOT NULL THEN 'max_effective ' || c.max_effective END)
+           || E'\n'
+      FROM authz.relation_constraints c
+      JOIN authz.relations rl ON rl.id = c.relation
+     WHERE c.store_id = p_store_id AND c.object_type = p_object_type AND c.relation = p_relation;
+$$;
+
 CREATE OR REPLACE FUNCTION authz.describe_model(p_store text)
 RETURNS text LANGUAGE plpgsql STABLE AS $$
 DECLARE
@@ -1089,8 +1226,21 @@ BEGIN
                 IF v_group IS NOT NULL THEN
                     v_out := v_out || v_group;
                 END IF;
+                v_out := v_out || COALESCE(authz._describe_constraint(v_store_id, v_type.id, v_rel.id, false), '');
             END LOOP;
         END IF;
+        -- Constraints on relations that have no rules on this type: listed
+        -- with the relation name so nothing is silently dropped (as gates).
+        FOR v_rel IN
+            SELECT c.relation AS id
+              FROM authz.relation_constraints c
+             WHERE c.store_id = v_store_id AND c.object_type = v_type.id
+               AND NOT EXISTS (SELECT 1 FROM authz.models m
+                                WHERE m.store_id = v_store_id AND m.object_type = v_type.id AND m.relation = c.relation)
+             ORDER BY 1
+        LOOP
+            v_out := v_out || authz._describe_constraint(v_store_id, v_type.id, v_rel.id, true);
+        END LOOP;
         -- Gates on relations that have no rules on this type (declared-vocabulary
         -- relations) have no define line to hang on: list them with the
         -- relation name so nothing is silently dropped.

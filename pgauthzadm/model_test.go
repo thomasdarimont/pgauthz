@@ -8,6 +8,7 @@ import (
 )
 
 func str(s string) *string { return &s }
+func intp(i int) *int      { return &i }
 
 func TestRenderSQLHelloWorld(t *testing.T) {
 	m := &Model{
@@ -26,6 +27,10 @@ func TestRenderSQLHelloWorld(t *testing.T) {
 		},
 		Conditions: []Condition{{Name: "in_hours", Expression: "(ctx->>'hour')::int < 18", Lang: "sql"}},
 		GrantRules: []GrantRule{{ObjectType: "document", Relation: "viewer", Requires: "owner"}},
+		RelationConstraints: []RelationConstraint{
+			{ObjectType: "document", Relation: "viewer", MaxDirect: intp(50), MaxEffective: intp(200)},
+			{ObjectType: "document", Relation: "can_read", MaxEffective: intp(500)},
+		},
 	}
 	out := RenderSQL("hello", m)
 	want := []string{
@@ -42,6 +47,8 @@ func TestRenderSQLHelloWorld(t *testing.T) {
 		"SELECT authz.model_add_type_restriction('hello', 'document', 'viewer', 'user');",
 		"SELECT authz.model_add_type_restriction('hello', 'document', 'viewer', 'team', p_allowed_user_relation => 'member', p_condition => 'in_hours');",
 		"SELECT authz.model_add_grant_rule('hello', 'document', 'viewer', 'owner');",
+		"SELECT authz.model_set_relation_constraint('hello', 'document', 'viewer', p_max_direct => 50, p_max_effective => 200);",
+		"SELECT authz.model_set_relation_constraint('hello', 'document', 'can_read', p_max_effective => 500);",
 	}
 	for _, w := range want {
 		if !strings.Contains(out, w) {

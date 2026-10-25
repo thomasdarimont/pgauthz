@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestParseRef(t *testing.T) {
@@ -197,5 +199,32 @@ tests:
 	}
 	if _, err := ContextualTuplesJSON([]FixtureTuple{{User: "user:frank", Object: "doc:x"}}); err == nil {
 		t.Error("a missing relation must be refused")
+	}
+}
+
+// A seed tuple a relation constraint refuses (SQLSTATE ZA001) is a result
+// of the run, not a run error: a plain tuple fails, a `refused: true` tuple
+// passes, and a `refused: true` tuple that was written fails. Any other
+// error, and a plain tuple that was written, are the caller's.
+func TestTupleResultRelationFull(t *testing.T) {
+	full := &pgconn.PgError{Code: "ZA001", Message: "relation viewer on doc:plan is full: 3 of 3 active direct assignments (max_direct)"}
+	other := &pgconn.PgError{Code: "P0001", Message: "Unknown type: nope"}
+	tup := FixtureTuple{User: "user:zed", Relation: "viewer", Object: "doc:plan"}
+	refused := FixtureTuple{User: "user:zed", Relation: "viewer", Object: "doc:plan", Refused: true}
+
+	if r, ok := tupleResult(2, tup, full); !ok || !r.Failed || r.Kind != "tuple" || r.Test != -1 || r.Detail != full.Message || r.Name != "tuples[2] user:zed viewer doc:plan" {
+		t.Fatalf("plain tuple refused by the cap: want a failed tuple result, got ok=%v %+v", ok, r)
+	}
+	if r, ok := tupleResult(0, refused, full); !ok || r.Failed || r.Actual[0] != "refused" || r.Expected[0] != "refused" {
+		t.Fatalf("refused tuple refused by the cap: want a passing result, got ok=%v %+v", ok, r)
+	}
+	if r, ok := tupleResult(0, refused, nil); !ok || !r.Failed || r.Actual[0] != "written" {
+		t.Fatalf("refused tuple that was written: want a failed result, got ok=%v %+v", ok, r)
+	}
+	if _, ok := tupleResult(0, tup, nil); ok {
+		t.Fatal("a plain seed that was written is not a result")
+	}
+	if _, ok := tupleResult(0, refused, other); ok {
+		t.Fatal("a refusal for another reason is a run error, not a result")
 	}
 }

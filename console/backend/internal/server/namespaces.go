@@ -134,7 +134,7 @@ func (s *Server) modelOpNamespace(ctx context.Context, store, op string, e model
 		return e.Namespace, nil
 	case "remove_type", "set_type_labels":
 		return s.typeNamespace(ctx, store, e.Name)
-	case "add_rule", "add_restriction", "add_gate", "remove_gate", "add_grant_rule", "remove_grant_rule":
+	case "add_rule", "add_restriction", "add_gate", "remove_gate", "add_grant_rule", "remove_grant_rule", "set_relation_constraint", "remove_relation_constraint":
 		return s.typeNamespace(ctx, store, e.ObjectType)
 	case "remove_rule":
 		var typ string

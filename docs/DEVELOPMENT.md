@@ -826,7 +826,7 @@ subject is recorded as the audit author (`performed_by`); an explicit
 
 | Endpoint | Body | Response |
 |---|---|---|
-| `POST /pgauthz/v1/write` | `{"tuples":[…]}` (batch upsert) | `{"store":…,"written":N}` |
+| `POST /pgauthz/v1/write` | `{"tuples":[…]}` (batch upsert) | `{"store":…,"written":N}`; `409 relation_full` (with the engine's detail: object, relation, `max_direct`, `direct_count`) when a [relation constraint](MODEL_DESIGN.md#relation-constraints-how-many-may-hold-a-relation) refuses a tuple — the same on `write-checked`, `grant` and `apply-grants` |
 | `POST /pgauthz/v1/delete` | `{"tuples":[…]}` (batch delete) | `{"store":…,"deleted":N}` |
 | `POST /pgauthz/v1/delete-user` | `{"user":{"type","id"}}` (offboarding) | `{"store":…,"deleted":N}` |
 | `POST /pgauthz/v1/write-checked` | `{"preconditions":[…],"deletes":[…],"writes":[…]}` (conditional/atomic — see below) | engine JSONB verbatim, e.g. `{"deleted":1,"written":1}` |
@@ -834,6 +834,7 @@ subject is recorded as the audit author (`performed_by`); an explicit
 | `POST /pgauthz/v1/revoke` | same body (minus condition/expiry) | `{"store":…,"revoked":bool,"actor":{…}}` |
 | `POST /pgauthz/v1/apply-grants` | `{"grants":[…],"revokes":[…],"context"?}` — a share dialog's save, one transaction; entries in the flat tuple shape (+ `user_relation`, `condition`, `condition_context`, `expires_at`, per-entry `context`) | `{"store":…,"granted":N,"revoked":M,"actor":{…}}`; a refused entry → 403 naming it, nothing written |
 | `POST /pgauthz/v1/grant-options` | `{"subject"?,"resource":{"type","id"},"context"?}` — a **read**: what the subject may share on the object | `{"options":[{"relation","can_grant","can_revoke","requires","requires_revoke","grantee_types"}…]}` |
+| `POST /pgauthz/v1/relation-usage` | `{"action":{"name"},"resource":{"type","id"},"subject_type"?,"limit"?,"context"?}` — a **read**: how full the relation is on the object (active direct tuples vs `max_direct`, resolved holders vs `max_effective`) | `{"store":…,"resource":…,"relation":…,"usage":{"direct_count","max_direct","direct_headroom","effective_count","max_effective","effective_headroom","unbounded","limit_reached"}}` |
 
 A **tuple** element is `{user_type, user_id, relation, object_type, object_id}`
 plus optional `user_relation`, `condition_name`, `context`, and `expires_at`.

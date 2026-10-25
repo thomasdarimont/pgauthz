@@ -157,7 +157,7 @@ type document
   // Selected keys → batch operations, dependants first (rules and type
   // restrictions before types; conditions before types that might need them).
   _selectedOps() {
-    const order = { grant: 0, gate: 1, rule: 2, restriction: 3, condition: 4, type: 5 };
+    const order = { grant: 0, constraint: 0, gate: 1, rule: 2, restriction: 3, condition: 4, type: 5 };
     return [...this.selected]
       .map((k) => {
         const i = k.indexOf(':');
@@ -175,7 +175,9 @@ type document
                 ? { op: 'remove_gate', ...this._gateRef(id) }
                 : kind === 'grant'
                   ? { op: 'remove_grant_rule', ...this._grantRef(id) }
-                  : { op: 'remove_type', name: id },
+                  : kind === 'constraint'
+                    ? { op: 'remove_relation_constraint', ...this._grantRef(id) }
+                    : { op: 'remove_type', name: id },
       );
   }
 
@@ -187,6 +189,11 @@ type document
 
   _grantKey(g) {
     return `grant:${g.object_type}.${g.relation}`;
+  }
+
+  // Relation constraint keys are "constraint:<object_type>.<relation>" (one per pair).
+  _constraintKey(c) {
+    return `constraint:${c.object_type}.${c.relation}`;
   }
 
   // Gate keys are "gate:<object_type>.<relation>/<name>".
@@ -208,6 +215,10 @@ type document
     if (k.startsWith('grant:')) {
       const r = this._grantRef(k.slice(6));
       return `${t('grant rule')}: ${r.object_type}.${r.relation}`;
+    }
+    if (k.startsWith('constraint:')) {
+      const r = this._grantRef(k.slice(11));
+      return `${t('relation constraint')}: ${r.object_type}.${r.relation}`;
     }
     const i = k.indexOf(':');
     const kind = k.slice(0, i);
@@ -251,6 +262,10 @@ type document
       const f = { ...this.form };
       delete f.editing;
       if (f.group_id !== undefined) f.group_id = Number(f.group_id) || 0;
+      for (const k of ['max_direct', 'max_effective']) {
+        if (f[k] === undefined) continue;
+        f[k] = String(f[k]).trim() === '' ? null : Number(f[k]);
+      }
       if (f.required_context) {
         try {
           f.required_context = JSON.parse(f.required_context);
@@ -863,6 +878,69 @@ type document
           >
           ${this._formActions(f.editing ? 'Save grant rule' : 'Add grant rule')}
         </form>`;
+      case 'set_relation_constraint':
+        return html`<form
+          class="card form constraint-form"
+          data-testid="model-form-set-relation-constraint"
+          @submit=${this._submit('set_relation_constraint')}
+        >
+          ${dl}
+          <h3 class="wide">
+            ${f.editing ? t('Edit relation constraint') : t('New relation constraint')}
+            ${help('How many subjects may hold this relation on one object. The direct cap counts the ACTIVE (unexpired) tuples written on an object for the relation — a userset such as team:eng#member is one — and is enforced on every write path: the one past the cap is refused (pgauthzd answers 409 relation_full). Wildcard grants are refused on a capped relation, and the relation needs a direct rule on the type. The effective cap is advisory: relation_usage reports the resolved holder set (direct, usersets, inherited) against it, nothing is refused. Saving for an existing type and relation replaces both values; leave one empty for no cap of that kind.')}
+          </h3>
+          <label class="field"
+            ><span>${t('On object type')}</span
+            ><select
+              class="mono"
+              required
+              @change=${this._set('object_type')}
+              data-testid="model-input-constraint-object-type"
+            >
+              <option value="" ?selected=${!f.object_type}>${t('choose…')}</option>
+              ${types.map((ty) => html`<option value=${ty} ?selected=${f.object_type === ty}>${ty}</option>`)}
+            </select></label
+          >
+          <label class="field"
+            ><span>${t('Relation')}</span
+            ><select
+              class="mono"
+              required
+              @change=${this._set('relation')}
+              data-testid="model-input-constraint-relation"
+            >
+              <option value="" ?selected=${!f.relation}>${t('choose…')}</option>
+              ${rels.map((r) => html`<option value=${r} ?selected=${f.relation === r}>${r}</option>`)}
+            </select></label
+          >
+          <label class="field"
+            ><span
+              >${t('Max direct')}
+              ${help('Enforced: at most this many active direct tuples per object. Empty: no direct cap.')}</span
+            ><input
+              class="mono"
+              type="number"
+              min="1"
+              step="1"
+              .value=${String(f.max_direct ?? '')}
+              @input=${this._set('max_direct')}
+              data-testid="model-input-constraint-max-direct"
+          /></label>
+          <label class="field"
+            ><span
+              >${t('Max effective')}
+              ${help('Advisory: the intended size of the resolved holder set, reported with headroom by relation_usage. Empty: none.')}</span
+            ><input
+              class="mono"
+              type="number"
+              min="1"
+              step="1"
+              .value=${String(f.max_effective ?? '')}
+              @input=${this._set('max_effective')}
+              data-testid="model-input-constraint-max-effective"
+          /></label>
+          ${this._formActions(f.editing ? 'Save relation constraint' : 'Add relation constraint')}
+        </form>`;
       case 'add_gate': {
         const clauses = this._gateClauses();
         return html`<form class="card form gate-form" @submit=${this._submitGate}>
@@ -1012,6 +1090,12 @@ type document
         requires: (g) => g.requires,
         requires_revoke: (g) => g.requires_revoke ?? '',
       },
+      relation_constraints: {
+        object_type: (c) => c.object_type,
+        relation: (c) => c.relation,
+        max_direct: (c) => c.max_direct ?? Infinity,
+        max_effective: (c) => c.max_effective ?? Infinity,
+      },
     };
   }
 
@@ -1140,6 +1224,28 @@ type document
     const args = [this.store, g.object_type, g.relation, g.requires].map((x) => this._q(x));
     if (g.requires_revoke) args.push(`p_requires_revoke => ${this._q(g.requires_revoke)}`);
     return `SELECT authz.model_add_grant_rule(${args.join(', ')});`;
+  }
+
+  _editConstraint(c) {
+    this.form = {
+      object_type: c.object_type,
+      relation: c.relation,
+      max_direct: c.max_direct ?? '',
+      max_effective: c.max_effective ?? '',
+      editing: true,
+    };
+    this.edit = 'set_relation_constraint';
+    clearSelection(this);
+    this.updateComplete.then(() =>
+      this.querySelector('form.constraint-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+    );
+  }
+
+  _constraintSQL(c) {
+    const args = [this.store, c.object_type, c.relation].map((x) => this._q(x));
+    if (c.max_direct != null) args.push(`p_max_direct => ${c.max_direct}`);
+    if (c.max_effective != null) args.push(`p_max_effective => ${c.max_effective}`);
+    return `SELECT authz.model_set_relation_constraint(${args.join(', ')});`;
   }
 
   _renameNamespace = async (e) => {
@@ -1592,6 +1698,13 @@ type document
       add: ['add_grant_rule', 'grant rule'],
       ops: ['add_grant_rule'],
     },
+    {
+      id: 'relation_constraints',
+      label: 'Relation constraints',
+      help: 'How many subjects may hold a relation on one object: max_direct caps the active (unexpired) direct tuples per object and is enforced on every write — the one past the cap is refused; max_effective is the advisory size of the resolved holder set that relation_usage reports headroom against. Part of the model: versioned and rolled out with it.',
+      add: ['set_relation_constraint', 'relation constraint'],
+      ops: ['set_relation_constraint'],
+    },
   ];
 
   // The active section: the URL's part (stores/<store>/model/<section>),
@@ -2027,6 +2140,62 @@ type document
     }`;
   }
 
+  _panelRelationConstraints(sec) {
+    const m = this.m;
+    const { can, sel, selAll } = this._cells();
+    const rows = m.json.relation_constraints ?? [];
+    const vis = this._filtered('relation_constraints', rows, (c) => [
+      `${c.object_type}.${c.relation}`,
+      c.object_type,
+      c.relation,
+      c.max_direct,
+      c.max_effective,
+    ]);
+    return html`${this._panelHead(sec, vis.length, rows.length)}
+    ${sec.ops.includes(this.edit) ? this._forms() : nothing}
+    ${
+      rows.length
+        ? html`<div class="table-wrap">
+            <table data-testid="model-relation-constraints">
+              <thead>
+                <tr>
+                  ${selAll(vis.map((c) => this._constraintKey(c)))}
+                  ${this._sortTh('relation_constraints', 'object_type', t('Object type'))}
+                  ${this._sortTh('relation_constraints', 'relation', t('Relation'))}
+                  ${this._sortTh('relation_constraints', 'max_direct', t('Max direct (enforced)'))}
+                  ${this._sortTh('relation_constraints', 'max_effective', t('Max effective (advisory)'))}
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                ${vis.map(
+                  (c) =>
+                    html`<tr data-testid=${`model-relation-constraint-${c.object_type}-${c.relation}`}>
+                        ${sel(this._constraintKey(c))}
+                        <td class="mono">${c.object_type}</td>
+                        <td class="mono">${c.relation}</td>
+                        <td class="mono">${c.max_direct ?? html`<span class="dim">${t('none')}</span>`}</td>
+                        <td class="mono">
+                          ${c.max_effective ?? html`<span class="dim">${t('none')}</span>`}
+                        </td>
+                        <td class="actions">
+                          <button class="sm" @click=${() => this._toggleDetail(this._constraintKey(c))}>
+                            ${this.detail.has(this._constraintKey(c)) ? t('Hide') : t('Details')}
+                          </button>
+                          ${can ? html`<button class="sm" data-testid=${`model-relation-constraint-edit-${c.object_type}-${c.relation}`} @click=${() => this._editConstraint(c)}>${t('Edit')}</button>` : nothing}
+                        </td>
+                      </tr>
+                      ${this.detail.has(this._constraintKey(c)) ? this._detailRow(6, this._constraintSQL(c), c) : nothing}`,
+                )}
+              </tbody>
+            </table>
+          </div>`
+        : html`<p class="help">
+            ${t('No relation constraints in this model: a relation may hold any number of subjects on an object. Add one to cap, say, viewer on document at 50.')}
+          </p>`
+    }`;
+  }
+
   // The Structure card: one tab per section (the URL carries it, so a
   // section can be linked and tested), the section's add button and form
   // inside its panel, and the selection bar above the tabs — a selection
@@ -2043,6 +2212,7 @@ type document
       conditions: m.json.conditions.length,
       gates: (m.json.gates ?? []).length,
       grant_rules: (m.json.grant_rules ?? []).length,
+      relation_constraints: (m.json.relation_constraints ?? []).length,
     };
     const sec = PgcModel.SECTIONS.find((x) => x.id === active);
     const panel = {
@@ -2053,6 +2223,7 @@ type document
       conditions: () => this._panelConditions(sec),
       gates: () => this._panelGates(sec),
       grant_rules: () => this._panelGrantRules(sec),
+      relation_constraints: () => this._panelRelationConstraints(sec),
     }[active];
     return html` <section class="card" data-testid="model-structure">
       <div class="toolbar">
@@ -2107,6 +2278,7 @@ type document
         <span><b>${m.json.conditions.length}</b> ${t('conditions')}</span>
         ${m.json.gates?.length ? html`<span><b>${m.json.gates.length}</b> ${t('gates')}</span>` : nothing}
         ${m.json.grant_rules?.length ? html`<span><b>${m.json.grant_rules.length}</b> ${t('grant rules')}</span>` : nothing}
+        ${m.json.relation_constraints?.length ? html`<span><b>${m.json.relation_constraints.length}</b> ${t('relation constraints')}</span>` : nothing}
       </div>
       ${
         this.dslReport

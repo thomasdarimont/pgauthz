@@ -40,7 +40,7 @@ type eventRow struct {
 // condition, gate or grant rule is a DELETE + INSERT pair.
 type modelChangeRow struct {
 	Seq         int64           `json:"seq"`
-	Kind        string          `json:"kind"` // rule | condition | gate | grant_rule
+	Kind        string          `json:"kind"` // rule | condition | gate | grant_rule | relation_constraint
 	Action      string          `json:"action"`
 	PerformedAt time.Time       `json:"performed_at"`
 	PerformedBy string          `json:"performed_by"`
@@ -172,6 +172,14 @@ func (s *Server) modelChanges(ctx context.Context, q querier, store string, limi
 			  LEFT JOIN authz.relations rl ON rl.id = a.relation
 			  LEFT JOIN authz.relations rq ON rq.id = a.requires
 			  LEFT JOIN authz.relations rv ON rv.id = a.requires_revoke
+			 WHERE a.store_id = (SELECT id FROM st)
+			UNION ALL
+			SELECT a.seq, 'relation_constraint', a.action, a.performed_at, a.performed_by,
+			       coalesce(ot.name, '#' || a.object_type), coalesce(rl.name, '#' || a.relation), '',
+			       jsonb_build_object('id', a.constraint_id, 'max_direct', a.max_direct, 'max_effective', a.max_effective)
+			  FROM authz.relation_constraints_audit a
+			  LEFT JOIN authz.types ot ON ot.id = a.object_type
+			  LEFT JOIN authz.relations rl ON rl.id = a.relation
 			 WHERE a.store_id = (SELECT id FROM st)
 		) x ORDER BY performed_at DESC, seq DESC LIMIT $2`, store, limit)
 	if err != nil {

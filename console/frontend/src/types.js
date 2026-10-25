@@ -120,6 +120,7 @@
  */
 /** @typedef {{object_type: string, relation: string, name: string, spec: GateSpec}} Gate */
 /** @typedef {{object_type: string, relation: string, requires: string, requires_revoke: string|null}} GrantRule */
+/** @typedef {{object_type: string, relation: string, max_direct: number|null, max_effective: number|null}} RelationConstraint how many may hold the relation on one object: max_direct enforced on writes (active direct tuples), max_effective advisory */
 /**
  * @typedef {Object} ModelExport pgauthzadm.Model — authz.export_model
  * @property {number} format
@@ -130,6 +131,7 @@
  * @property {Condition[]} conditions
  * @property {Gate[]} gates
  * @property {GrantRule[]} grant_rules
+ * @property {RelationConstraint[]} [relation_constraints]
  */
 /**
  * @typedef {Object} ModelResponse api/stores/{store}/model
@@ -192,7 +194,7 @@
 /** @typedef {{name: string, failed: boolean, detail?: string, test: number, note?: string, kind: 'check'|'list_objects'|'list_subjects'|'list_actions'|'explain', user: string, relation: string, object: string, expected: string[], actual?: string[]}} ScenarioResult test = index of the fixture's tests: entry; kind/user/relation/object = what was asserted (object = the type for list_objects) */
 /** @typedef {{results: ScenarioResult[], passed: number, failed: number, duration_ms: number}} ScenariosRun */
 /** @typedef {{store: string, yaml: string, model_fga?: string, command: string}} ScenariosExport the fixture for pgauthzctl, model_file filled in, the model as DSL */
-/** @typedef {{object: ShareObject, options: GrantOption[], holders: HolderRow[], holder_totals: Record<string, number>, holders_limit: number}} ShareOptions the share dialog: what the actor may grant and revoke, who holds what (live tuples of the offered relations, at most holders_limit per relation; holder_totals has every relation's full count) */
+/** @typedef {{object: ShareObject, options: GrantOption[], holders: HolderRow[], holder_totals: Record<string, number>, holders_limit: number, max_direct: Record<string, number>}} ShareOptions the share dialog: what the actor may grant and revoke, who holds what (live tuples of the offered relations, at most holders_limit per relation; holder_totals has every relation's full count; max_direct the capped relations' caps) */
 
 // ── test ───────────────────────────────────────────────────────────────────
 

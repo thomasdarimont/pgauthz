@@ -22,6 +22,10 @@
 #   G. The removal lock conflicts with itself (measured directly, no partition
 #      detach involved), and a second removal of the SAME type waits and then
 #      fails with "Unknown type" instead of acting on a stale id.
+#   H. Two plain write_tuple calls race for the last slot of a capped relation
+#      (max_direct, migration 0025): the second waits on the per-object lock
+#      the cap guard takes, counts the first after its commit and is refused —
+#      exactly max_direct holders. Another object stays concurrent.
 #
 # Synchronization: the holder session runs its statement and then pg_sleep(2)
 # in one transaction; the second session is launched only once pg_stat_activity
@@ -165,6 +169,27 @@ case "$out" in *"Unknown type"*) ok "conc_G_same_type_second_removal_fails_clean
 [ "$dt" -ge 1000 ] && ok "conc_G_same_type_second_removal_waited (${dt} ms)" || bad "conc_G_same_type_second_removal_waited" "${dt} ms — did not wait"
 check "conc_G_type_gone_once" "$(q "SELECT count(*) FROM authz.types WHERE store_id = authz._s('$S') AND name = 'same'")" "0"
 check "conc_G_no_leftover_partition" "$(q "SELECT count(*) FROM pg_class WHERE relname = 'tuples_test_conc_same'")" "0"
+
+echo "==> H. two writers race for the last slot of a capped relation"
+q "SELECT authz.model_register_type('$S', 'room');
+   SELECT authz.model_add_rule('$S', 'room', 'viewer', 'direct');
+   SELECT authz.model_set_relation_constraint('$S', 'room', 'viewer', p_max_direct => 1);" >/dev/null
+session "SELECT authz.write_tuple('$S','user','ann','viewer','room','r1');"
+t0=$(now_ms)
+out=$(q "SELECT authz.write_tuple('$S','user','ben','viewer','room','r1')")
+dt=$(( $(now_ms) - t0 ))
+wait
+case "$out" in *"relation viewer on room:r1 is full: 1 of 1 active"*) ok "conc_H_second_writer_refused_after_waiting" ;; *) bad "conc_H_second_writer_refused_after_waiting" "$out" ;; esac
+[ "$dt" -ge 1000 ] && ok "conc_H_second_writer_waited_for_the_first (${dt} ms)" || bad "conc_H_second_writer_waited_for_the_first" "${dt} ms — did not wait"
+check "conc_H_exactly_max_direct_holders" "$(q "SELECT count(*) FROM authz.tuples t WHERE t.store_id = authz._s('$S') AND t.object_id = 'r1'")" "1"
+session "SELECT authz.write_tuple('$S','user','ann','viewer','room','r2');"
+t0=$(now_ms)
+out=$(q "SELECT authz.write_tuple('$S','user','ben','viewer','room','r3')")
+dt=$(( $(now_ms) - t0 ))
+if holder_alive; then alive=yes; else alive=no; fi
+wait
+check "conc_H_other_object_written" "$out" "t"
+[ "$alive" = yes ] && ok "conc_H_other_object_did_not_wait (holder still open, ${dt} ms)" || bad "conc_H_other_object_did_not_wait" "the holder had already committed (${dt} ms)"
 
 echo "==> ${pass} passed, ${fail} failed (of $((pass + fail)) concurrency checks)"
 [ "$fail" -eq 0 ]

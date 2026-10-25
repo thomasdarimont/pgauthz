@@ -1485,6 +1485,72 @@ forbidding self-grant is an exclusion on the required relation. Object
 wildcards stay a writer-role `write_tuple`; multi-tuple invariants and
 delegation chains stay `write_tuples_checked`.
 
+### Relation constraints: how many may hold a relation
+
+"No more than 50 people on a document", "a document has exactly one
+parent": a **relation constraint** per `(type, relation)` bounds how many
+subjects hold the relation on *one object*. Two caps, deliberately
+different in strength:
+
+```sql
+SELECT authz.model_set_relation_constraint('docs', 'document', 'viewer', p_max_direct => 50, p_max_effective => 200);
+SELECT authz.model_set_relation_constraint('docs', 'document', 'parent', p_max_direct => 1);
+SELECT authz.model_drop_relation_constraint('docs', 'document', 'viewer');
+```
+
+- **`max_direct` is enforced on every write.** It counts the **active
+  (unexpired) tuples** written on the object for the relation, as written:
+  a userset subject such as `team:eng#member` is one assignment, an expired
+  row does not count, a re-grant of a holder consumes no slot. The guard is a
+  trigger on the tuples table, so `write_tuple`, the batch writers,
+  `write_tuples_checked`, `grant` and `apply_grants` all refuse the one past
+  the cap with the same error: SQLSTATE `ZA001`, the message naming cap and
+  count, a JSON `DETAIL` carrying both (pgauthzd answers `409 relation_full`
+  — "full", not "forbidden"). The count runs under the per-object lock the
+  checked writes use, so two writers racing for the last slot serialize and
+  the second is refused (exact under `READ COMMITTED`, which pgauthzd uses).
+  A batch that would overshoot fails as a whole.
+- **`max_effective` is advisory.** It is the intended size of the *resolved*
+  holder set — direct, usersets, inherited through tuple-to-userset — and is
+  never enforced on a write: a resolved count fans out (sharing a folder
+  would re-count every document below it) and would fail writes for distant
+  reasons. `relation_usage` reports the count and the headroom.
+
+Expired tuples never count, and there is no option to count them: the
+engine treats an expired row as gone on every path, and a count that
+included them would depend on when `cleanup_expired_tuples` last ran. For a
+lifetime or windowed quota ("shared with at most 50 people in total"), count
+the grants, not the rows: a [temporal gate](#17-temporal-gates-history-dependent-rules)
+with `count_distinct_within`, or a query over the audit trail.
+
+What a cap cannot coexist with, and the engine refuses at declaration: a
+`max_direct` on a relation with no direct rule on the type (nothing is
+assigned by tuple; `max_effective` is fine there, including on a derived
+permission), and on a relation whose type restriction allows `user:*` or
+whose direct rule allows object wildcards — a wildcard grant is unbounded,
+so the guard refuses wildcard tuples on a capped relation. Existing tuples
+are not re-checked when a cap is declared; `relation_usage` shows an object
+over its cap.
+
+```sql
+SELECT * FROM authz.relation_usage('docs', 'document', 'plan', 'viewer');
+--  direct_count | max_direct | direct_headroom | effective_count | max_effective | effective_headroom | unbounded | limit_reached
+--            48 |         50 |               2 |             131 |           200 |                 69 | f         | f
+```
+
+The resolution is lazy: it stops at `p_limit` (default `max_effective`), so
+finding the 200th holder already says "no room" without walking the rest;
+`limit_reached` marks the count as a lower bound, `unbounded` says a
+wildcard grant resolves to the relation. An application about to add *k*
+holders passes `max_effective - k + 1` and reads `limit_reached` as "would
+exceed".
+
+The constraints are model data: `describe_model` renders
+`# constraint: max_direct 50, max_effective 200` under the relation, the
+registry exports, checksums, applies and diffs them, the audit table keeps
+their history, and a scenario fixture asserts a refused seed tuple with
+`refused: true`. Over HTTP, `POST /pgauthz/v1/relation-usage` is the read.
+
 ### Deleting Tuples
 
 Remove a specific tuple to revoke access:

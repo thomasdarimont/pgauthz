@@ -338,6 +338,9 @@ func registerNativeRead(mux *http.ServeMux, h *Handler) {
 	listActions := h.readGuard(h.NativeListActions)
 
 	grantOptions := h.readGuard(h.GrantOptions)
+	relationUsage := h.readGuard(h.NativeRelationUsage)
+	mux.HandleFunc("POST /pgauthz/v1/relation-usage", relationUsage)
+	mux.HandleFunc("POST /stores/{store}/pgauthz/v1/relation-usage", relationUsage)
 	mux.HandleFunc("POST /pgauthz/v1/explain", explain)
 	mux.HandleFunc("POST /pgauthz/v1/watch", h.Watch)
 	mux.HandleFunc("POST /pgauthz/v1/grant-options", grantOptions)

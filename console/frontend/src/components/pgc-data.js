@@ -637,6 +637,17 @@ export class PgcData extends PgcElement {
                             </div>
                           </td>
                           <td>
+                            ${
+                              d.max_direct?.[opt.relation]
+                                ? html`<div class="help" data-testid=${`data-share-usage-${opt.relation}`}>
+                                    <span
+                                      class="badge ${(d.holder_totals?.[opt.relation] ?? 0) + queued.length >= d.max_direct[opt.relation] ? 'deny' : 'muted'}"
+                                      >${t('{n} / {max} active', { n: (d.holder_totals?.[opt.relation] ?? 0) + queued.length, max: d.max_direct[opt.relation] })}</span
+                                    >
+                                    ${help("Active (unexpired) direct holders against the relation's max_direct cap, queued grants included; the save is refused once the cap is reached.")}
+                                  </div>`
+                                : nothing
+                            }
                             <div class="chips">
                               ${holders.map(
                                 (h) =>

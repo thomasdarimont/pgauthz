@@ -241,7 +241,7 @@ GRANT authz_namespace_bypass  TO authz_console;
 GRANT SELECT ON authz.stores, authz.types, authz.relations, authz.conditions, authz.tuples,
                 authz.models_view, authz.type_restrictions_view, authz.model_registry,
                 authz.tuples_audit, authz.models_audit, authz.conditions_audit,
-                authz.model_gates_audit, authz.grant_rules_audit,
+                authz.model_gates_audit, authz.grant_rules_audit, authz.relation_constraints_audit,
                 authz.recorder_actions TO authz_console;  -- audit listing + model change history (Activity tab), last-change times, recorder allowlists (Operations tab)
 
 -- Watch/changefeed consumer role: a dedicated read-only LOGIN role for the
@@ -325,6 +325,9 @@ GRANT EXECUTE ON FUNCTION authz.grant_options(text, text, text, text, text, json
 GRANT EXECUTE ON FUNCTION authz.can_grant(text, text, text, text, text, text, jsonb) TO authz_reader, authz_sharer;
 GRANT EXECUTE ON FUNCTION authz.can_revoke(text, text, text, text, text, text, jsonb) TO authz_reader, authz_sharer;
 GRANT EXECUTE ON FUNCTION authz.list_grant_rules(text) TO authz_reader, authz_sharer;
+-- Relation constraints (migration 0025): the caps are model data a sharer's dialog renders.
+GRANT EXECUTE ON FUNCTION authz.list_relation_constraints(text) TO authz_reader, authz_sharer;
+GRANT EXECUTE ON FUNCTION authz.relation_usage(text, text, text, text, int, text, jsonb) TO authz_reader, authz_sharer;
 GRANT EXECUTE ON FUNCTION authz.grant_options_batch(text, jsonb) TO authz_reader, authz_sharer;
 
 ------------------------------------------------------------------------
@@ -460,6 +463,8 @@ GRANT EXECUTE ON FUNCTION authz.model_register_type(text, text, int, text, text,
 GRANT EXECUTE ON FUNCTION authz.model_remove_type(text, text, boolean, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_add_grant_rule(text, text, text, text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_drop_grant_rule(text, text, text) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.model_set_relation_constraint(text, text, text, integer, integer) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.model_drop_relation_constraint(text, text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_set_type_labels(text, text, text[]) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_add_type_labels(text, text, text[]) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.model_remove_type_labels(text, text, text[]) TO authz_admin;
@@ -580,6 +585,8 @@ ALTER FUNCTION authz.model_register_type(text, text, int, text, text, text[]) SE
 ALTER FUNCTION authz.model_remove_type(text, text, boolean, text) SECURITY DEFINER;
 ALTER FUNCTION authz.model_add_grant_rule(text, text, text, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.model_drop_grant_rule(text, text, text) SECURITY DEFINER;
+ALTER FUNCTION authz.model_set_relation_constraint(text, text, text, integer, integer) SECURITY DEFINER;
+ALTER FUNCTION authz.model_drop_relation_constraint(text, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.grant(text, text, text, text, text, text, text, text, text, text, jsonb, timestamptz, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.revoke(text, text, text, text, text, text, text, text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.apply_grants(text, text, text, jsonb, jsonb, jsonb) SECURITY DEFINER;
@@ -587,6 +594,8 @@ ALTER FUNCTION authz.grant_options(text, text, text, text, text, jsonb) SECURITY
 ALTER FUNCTION authz.can_grant(text, text, text, text, text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.can_revoke(text, text, text, text, text, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.list_grant_rules(text) SECURITY DEFINER;
+ALTER FUNCTION authz.list_relation_constraints(text) SECURITY DEFINER;
+ALTER FUNCTION authz.relation_usage(text, text, text, text, int, text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.grant_options_batch(text, jsonb) SECURITY DEFINER;
 ALTER FUNCTION authz.model_set_type_labels(text, text, text[]) SECURITY DEFINER;
 ALTER FUNCTION authz.model_add_type_labels(text, text, text[]) SECURITY DEFINER;

@@ -157,6 +157,15 @@ func DiffModels(a, b *Model) []Change {
 		return o
 	}
 	section("grant_rules", grants(a), grants(b), plain)
+
+	constraints := func(m *Model) map[string]any {
+		o := map[string]any{}
+		for _, c := range m.RelationConstraints {
+			o[fmt.Sprintf("%s.%s", c.ObjectType, c.Relation)] = c
+		}
+		return o
+	}
+	section("relation_constraints", constraints(a), constraints(b), plain)
 	return out
 }
 

@@ -261,6 +261,11 @@ echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_grant.sql"
 
 echo ""
+echo "==> Running relation constraint (max_direct / relation_usage) checks..."
+echo ""
+psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_relation_constraints.sql"
+
+echo ""
 echo "==> Running model_remove_type checks..."
 echo ""
 psql_file "$PG_DB" "$PG_DIR/tests/sql/tests_model_remove_type.sql"

@@ -1643,6 +1643,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/RelationFull' }
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /stores/{store}/pgauthz/v1/write:
@@ -1665,6 +1666,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/RelationFull' }
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
 
@@ -1787,6 +1789,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/RelationFull' }
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /stores/{store}/pgauthz/v1/grant:
@@ -1818,6 +1821,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/RelationFull' }
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /pgauthz/v1/revoke:
@@ -1905,6 +1909,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/RelationFull' }
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /stores/{store}/pgauthz/v1/apply-grants:
@@ -1929,6 +1934,57 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/RelationFull' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/relation-usage:
+    post:
+      tags: [native-read]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+      operationId: relationUsage
+      summary: How full is a relation on an object?
+      description: >
+        How many subjects hold the relation (action) on one object (authz.relation_usage, migration 0025): the ACTIVE direct assignments — unexpired tuples as written, a userset counting as one — against the model's max_direct cap, and the resolved holder set (direct, usersets, inherited) against the advisory max_effective, each with its headroom. limit bounds the resolution (default: max_effective when declared); limit_reached means the effective count is a lower bound; unbounded means a wildcard grant resolves to the relation. Gated like a subject search (SEARCH_REQUIRED_ROLE).
+      parameters:
+        - $ref: '#/components/parameters/StoreHeader'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/RelationUsage' }
+      responses:
+        '200': { $ref: '#/components/responses/RelationUsageOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /stores/{store}/pgauthz/v1/relation-usage:
+    post:
+      tags: [native-read]
+      security:
+        - bearerAuth: []
+        - serviceToken: []
+      x-pgauthz-availability:
+        listeners: [public, internal-callback]
+        public_listener: not-when-opa-fronted
+      operationId: relationUsageStore
+      summary: Relation usage, store-scoped
+      parameters:
+        - $ref: '#/components/parameters/StorePath'
+        - $ref: '#/components/parameters/ConsistencyHeader'
+        - $ref: '#/components/parameters/RevisionHeader'
+      requestBody: { $ref: '#/components/requestBodies/RelationUsage' }
+      responses:
+        '200': { $ref: '#/components/responses/RelationUsageOK' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/FreshnessConflict' }
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /pgauthz/v1/grant-options:
@@ -1998,6 +2054,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/RelationFull' }
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /stores/{store}/pgauthz/v1/write-checked:
@@ -2020,6 +2077,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/RelationFull' }
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
 
@@ -2397,6 +2455,11 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/GrantOptionsRequest' }
+    RelationUsage:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/RelationUsageRequest' }
     RecordEvents:
       required: true
       content:
@@ -2535,6 +2598,21 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ApplyGrantsResponse' }
+    RelationUsageOK:
+      description: The relation's usage on the object — direct and effective counts, caps and headroom.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/RelationUsageResponse' }
+    RelationFull:
+      description: >
+        The write was refused because the relation's max_direct cap on the
+        object is reached (a relation constraint of the model, SQLSTATE
+        ZA001): "full", not "forbidden" — revoke an assignment or raise the
+        cap. detail carries the object, relation, cap and current count of
+        active assignments.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/RelationFull' }
     GrantOptionsOK:
       description: The subject's sharing options on the object.
       content:
@@ -3362,6 +3440,59 @@ components:
         actor: { $ref: '#/components/schemas/Subject' }
         revision: { type: string }
       required: [store, granted, revoked, actor]
+    RelationUsageRequest:
+      type: object
+      properties:
+        action: { $ref: '#/components/schemas/Action' }
+        resource: { $ref: '#/components/schemas/Resource' }
+        subject_type:
+          type: string
+          description: Count only holders of this subject type (default every type of the store).
+        limit:
+          type: integer
+          minimum: 1
+          description: Resolution budget for the effective count; default max_effective when declared, else exhaustive.
+        context:
+          type: object
+          additionalProperties: true
+      required: [action, resource]
+    RelationUsageResponse:
+      type: object
+      properties:
+        store: { type: string }
+        resource: { $ref: '#/components/schemas/Resource' }
+        relation: { type: string }
+        usage:
+          type: object
+          properties:
+            direct_count: { type: integer, description: "Active (unexpired) direct tuples on the object for the relation, as written; a userset is one." }
+            max_direct: { type: integer, nullable: true }
+            direct_headroom: { type: integer, nullable: true }
+            effective_count: { type: integer, nullable: true, description: "Subjects that resolve to the relation on the object; null when unbounded." }
+            max_effective: { type: integer, nullable: true }
+            effective_headroom: { type: integer, nullable: true }
+            unbounded: { type: boolean, description: "A wildcard grant resolves to the relation: every subject of that type holds it." }
+            limit_reached: { type: boolean, description: "The resolution stopped at the budget: effective_count is a lower bound." }
+          required: [direct_count, effective_count, unbounded, limit_reached]
+      required: [store, resource, relation, usage]
+    RelationFull:
+      type: object
+      properties:
+        status: { type: integer }
+        error:
+          type: string
+          enum: [relation_full]
+        message: { type: string }
+        detail:
+          type: object
+          properties:
+            code: { type: string }
+            object_type: { type: string }
+            object_id: { type: string }
+            relation: { type: string }
+            max_direct: { type: integer }
+            direct_count: { type: integer }
+      required: [status, error, message]
     GrantOptionsRequest:
       type: object
       properties:

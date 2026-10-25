@@ -335,3 +335,38 @@ CREATE OR REPLACE TRIGGER trg_grant_rules_audit
 CREATE OR REPLACE TRIGGER trg_grant_rules_audit_block_dml
     BEFORE UPDATE OR DELETE ON authz.grant_rules_audit
     FOR EACH ROW EXECUTE FUNCTION authz._audit_block_dml();
+
+-- Relation-constraint history (migration 0025): same shape — an UPDATE
+-- (model_set_relation_constraint upsert) is split into DELETE(old) + INSERT(new).
+CREATE OR REPLACE FUNCTION authz._audit_relation_constraint() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_performed_by text;
+BEGIN
+    v_performed_by := COALESCE(
+        NULLIF(current_setting('authz.performed_by', true), ''),
+        authz._effective_role()
+    );
+    IF TG_OP IN ('UPDATE', 'DELETE') THEN
+        INSERT INTO authz.relation_constraints_audit (
+            action, performed_at, performed_by, constraint_id, store_id, object_type, relation, max_direct, max_effective
+        ) VALUES
+            ('DELETE', transaction_timestamp(), v_performed_by, OLD.id, OLD.store_id, OLD.object_type, OLD.relation, OLD.max_direct, OLD.max_effective);
+    END IF;
+    IF TG_OP IN ('UPDATE', 'INSERT') THEN
+        INSERT INTO authz.relation_constraints_audit (
+            action, performed_at, performed_by, constraint_id, store_id, object_type, relation, max_direct, max_effective
+        ) VALUES
+            ('INSERT', transaction_timestamp(), v_performed_by, NEW.id, NEW.store_id, NEW.object_type, NEW.relation, NEW.max_direct, NEW.max_effective);
+    END IF;
+    RETURN COALESCE(NEW, OLD);
+END;
+$$;
+
+CREATE OR REPLACE TRIGGER trg_relation_constraints_audit
+    AFTER INSERT OR UPDATE OR DELETE ON authz.relation_constraints
+    FOR EACH ROW EXECUTE FUNCTION authz._audit_relation_constraint();
+
+CREATE OR REPLACE TRIGGER trg_relation_constraints_audit_block_dml
+    BEFORE UPDATE OR DELETE ON authz.relation_constraints_audit
+    FOR EACH ROW EXECUTE FUNCTION authz._audit_block_dml();
