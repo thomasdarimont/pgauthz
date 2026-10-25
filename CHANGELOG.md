@@ -41,7 +41,11 @@ pre-1.0, minor versions may include breaking changes.
   cap, the wildcard facet, the object-wildcard rule and wildcard tuple writes
   serialize on a per-(type, relation) advisory lock under `READ COMMITTED`
   (two-session tests J1–J4), closing the interleaving that could commit a cap
-  and a wildcard together.
+  and a wildcard together. Round 3 (on 06f1888): `apply_model` takes the
+  relation-model locks of every cap or wildcard declaration it touches, live
+  or desired, in sorted order right after its table lock, so a concurrent
+  `model_set_relation_constraint` waits instead of deadlocking on the
+  constraint row (two-session test K).
 - **Review #27 (Codex, on c5fa4fc) fixes — the store's decision-log purge.**
   The purge removed a store's subject tombstones without the lock protocol,
   so a buffered line about an erased subject could flush back (P1). It now

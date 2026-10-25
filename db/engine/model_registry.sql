@@ -406,6 +406,7 @@ DECLARE
     v_row      jsonb;
     v_stale    record;
     v_rel      record;
+    v_lock     record;
     v_live_sum text;
 BEGIN
     SELECT r.version, r.checksum, r.definition INTO v_version, v_sum, v_def
@@ -428,6 +429,46 @@ BEGIN
     -- read under it, never from before it. model_remove_type re-takes it
     -- (a no-op within the transaction).
     PERFORM authz._lock_tuples_for_removal();
+
+    -- Relation-model locks (migration 0025) for every (type, relation) a cap
+    -- or a wildcard declaration touches — live or desired — in one sorted
+    -- pass, before any row changes. The constraint delete below would
+    -- otherwise hold a row lock while a concurrent
+    -- model_set_relation_constraint holds the relation's model lock and
+    -- waits for that row: a deadlock. Same order as every other path:
+    -- table lock first (above), then model locks, then object locks.
+    FOR v_lock IN
+        SELECT DISTINCT k.ot, k.rel FROM (
+            SELECT ot.name AS ot, rl.name AS rel
+              FROM authz.relation_constraints c
+              JOIN authz.types ot ON ot.id = c.object_type JOIN authz.relations rl ON rl.id = c.relation
+             WHERE c.store_id = v_store_id AND c.max_direct IS NOT NULL
+            UNION ALL
+            SELECT ot.name, rl.name
+              FROM authz.type_restrictions tr
+              JOIN authz.types ot ON ot.id = tr.object_type JOIN authz.relations rl ON rl.id = tr.relation
+             WHERE tr.store_id = v_store_id AND tr.allow_wildcard
+            UNION ALL
+            SELECT ot.name, rl.name
+              FROM authz.models m
+              JOIN authz.types ot ON ot.id = m.object_type JOIN authz.relations rl ON rl.id = m.relation
+             WHERE m.store_id = v_store_id AND m.allow_object_wildcard
+            UNION ALL
+            SELECT x->>'object_type', x->>'relation'
+              FROM jsonb_array_elements(COALESCE(v_def->'relation_constraints', '[]'::jsonb)) x
+             WHERE x->>'max_direct' IS NOT NULL
+            UNION ALL
+            SELECT x->>'object_type', x->>'relation'
+              FROM jsonb_array_elements(COALESCE(v_def->'type_restrictions', '[]'::jsonb)) x
+             WHERE (x->>'allow_wildcard')::boolean
+            UNION ALL
+            SELECT x->>'object_type', x->>'relation'
+              FROM jsonb_array_elements(COALESCE(v_def->'rules', '[]'::jsonb)) x
+             WHERE (x->>'allow_object_wildcard')::boolean
+        ) k ORDER BY 1, 2
+    LOOP
+        PERFORM authz._lock_relation_model(p_store, v_lock.ot, v_lock.rel);
+    END LOOP;
 
     -- Stale types: removed through model_remove_type, which fails closed —
     -- a type still referenced by tuples (either side), gates or events

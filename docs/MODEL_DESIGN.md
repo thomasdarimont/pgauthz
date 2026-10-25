@@ -1540,7 +1540,9 @@ and restrictions, so a definition may swap one for the other, or keep only
 the advisory cap next to a new facet). These edits and the write of a
 wildcard tuple serialize on one lock per (type, relation) and, like the cap
 guard, require `READ COMMITTED`, so two sessions cannot each find the
-other's declaration absent and both commit.
+other's declaration absent and both commit; `apply_model` takes those locks
+for every relation it touches up front, after its table lock, so a
+concurrent cap update waits instead of deadlocking on the constraint row.
 Ordinary existing tuples are not re-checked when a cap is declared: a cap
 below the current count is accepted, further writes are refused, and
 `relation_usage` reports the real count with zero headroom.

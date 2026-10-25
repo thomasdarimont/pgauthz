@@ -33,6 +33,10 @@
 #      lock: a cap being declared vs a user:* facet being added (both orders),
 #      and a cap vs a wildcard tuple being written (both orders) — the second
 #      waits and is then refused, never both committed.
+#   K. apply_model (replacing a cap by a wildcard facet) vs a concurrent
+#      model_set_relation_constraint on the same relation: apply takes the
+#      relation-model locks up front, so the setter waits instead of
+#      deadlocking on the constraint row, and is then refused.
 #
 # Synchronization: the holder session runs its statement and then pg_sleep(2)
 # in one transaction; the second session is launched only once pg_stat_activity
@@ -254,6 +258,30 @@ wait
 case "$out" in *"a wildcard tuple is unbounded"*) ok "conc_J4_wildcard_refused_by_in_flight_cap" ;; *) bad "conc_J4_wildcard_refused_by_in_flight_cap" "$out" ;; esac
 [ "$dt" -ge 1000 ] && ok "conc_J4_wildcard_waited_for_the_cap (${dt} ms)" || bad "conc_J4_wildcard_waited_for_the_cap" "${dt} ms — did not wait"
 check "conc_J4_no_wildcard_tuple" "$(q "SELECT count(*) FROM authz.tuples t WHERE t.store_id = authz._s('$S') AND t.object_id = 's1'")" "0"
+
+echo "==> K. apply_model vs a concurrent cap update: no deadlock, the setter waits"
+K=${S}_k; KSRC=${S}_ksrc
+cleanup_k(){ q "SELECT authz.delete_store('$K', p_purge_audit => true); SELECT authz.delete_store('$KSRC', p_purge_audit => true); DELETE FROM authz.model_registry WHERE name = 'conc_k_model';" >/dev/null 2>&1 || true; }
+cleanup_k
+for st in "$K" "$KSRC"; do
+  q "SELECT authz.create_store('$st');
+     SELECT authz.model_register_type('$st', t) FROM unnest(ARRAY['user','shelf']) t;
+     SELECT authz.model_register_relation('$st', 'viewer');
+     SELECT authz.model_add_rule('$st', 'shelf', 'viewer', 'direct');" >/dev/null
+done
+q "SELECT authz.model_set_relation_constraint('$K', 'shelf', 'viewer', 2);
+   SELECT authz.model_add_type_restriction('$KSRC', 'shelf', 'viewer', 'user', p_allow_wildcard => true);
+   SELECT authz.publish_model('conc_k_model', '$KSRC');" >/dev/null
+session "SELECT authz.apply_model('$K', 'conc_k_model');"
+t0=$(now_ms)
+out=$(q "SELECT authz.model_set_relation_constraint('$K', 'shelf', 'viewer', 3)")
+dt=$(( $(now_ms) - t0 ))
+wait
+case "$out" in *deadlock*) bad "conc_K_no_deadlock" "$out" ;; *) ok "conc_K_no_deadlock" ;; esac
+case "$out" in *"allows wildcard grants"*) ok "conc_K_setter_refused_after_apply" ;; *) bad "conc_K_setter_refused_after_apply" "$out" ;; esac
+[ "$dt" -ge 1000 ] && ok "conc_K_setter_waited_for_apply (${dt} ms)" || bad "conc_K_setter_waited_for_apply" "${dt} ms — did not wait"
+check "conc_K_facet_and_no_cap" "$(q "SELECT (SELECT count(*) FROM authz.list_relation_constraints('$K')) || '/' || (SELECT count(*) FROM authz.type_restrictions tr WHERE tr.store_id = authz._s('$K') AND tr.allow_wildcard)")" "0/1"
+cleanup_k
 
 echo "==> ${pass} passed, ${fail} failed (of $((pass + fail)) concurrency checks)"
 [ "$fail" -eq 0 ]
