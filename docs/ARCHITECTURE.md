@@ -124,7 +124,7 @@ fetch JWKS from the identity provider.
 
 ### Deployment Topologies
 
-Four topologies are supported. Diagrams are rendered from the `.puml`
+Five topologies are supported. Diagrams are rendered from the `.puml`
 sources next to this file (regenerate with
 [`scripts/gen-diagrams.sh`](../scripts/gen-diagrams.sh)).
 
@@ -175,6 +175,31 @@ sources next to this file (regenerate with
 
    ![Full architecture](architecture-full.svg)
    ([source](architecture-full.puml))
+
+5. **Derived permissions (permissions index)** — for applications that are
+   *not* co-located and should not run the engine: the authz primary keeps
+   a flat `materialized_relations` table of every (subject, relation,
+   object) the engine answers yes to, refreshed incrementally by a worker
+   that consumes the audit changefeed and re-derives only the affected
+   (subject, object) pairs; logical replication ships that table, the
+   known-subjects and known-objects side tables (the wildcard contract) and
+   a freshness row per store into each application database. There, a
+   subscriber-side helper (`authz.check_permission(...)`, one inlinable SQL
+   expression) filters business queries in the same plan — authorization as
+   a JOIN without the authz schema, functions or model — and
+   `authz.permissions_as_of(store)` says how stale the answer may be.
+   What a precomputed row cannot hold stays live: conditions and contextual
+   tuples (evaluated with no request context, so the conditional grant is
+   absent), temporal gates (per-principal history), explain and search —
+   the same application asks pgauthzd for those. Code:
+   [`db/replication/materialized_relations.sql`](../db/replication/materialized_relations.sql)
+   (the tables and the refresh), `schema-derived.sql` (the subscriber
+   helper), `worker.sh` (the loop; the Helm chart's `derivedRelations` and
+   the compose `derived` profile run it); design and trade-offs:
+   [DESIGN → Derived permissions](DESIGN.md#approach-2-derived-permissions-recommended-for-most-apps).
+
+   ![Derived permissions architecture](architecture-derived-permissions.svg)
+   ([source](architecture-derived-permissions.puml))
 
 ### Reference: Enterprise IAM Integration
 

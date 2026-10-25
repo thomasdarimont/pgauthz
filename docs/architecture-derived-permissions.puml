@@ -1,0 +1,62 @@
+@startuml architecture-derived-permissions
+
+!theme plain
+skinparam backgroundColor white
+skinparam componentStyle rectangle
+skinparam defaultFontName monospaced
+skinparam nodesep 50
+skinparam ranksep 40
+skinparam padding 6
+
+title Derived permissions (permissions index) shipped by logical replication
+
+actor "Application" as app
+
+node "authz primary (PostgreSQL)" as prim {
+    database "tuples\n(source of truth)" as tuples #Orange
+    component "audit changefeed\nauthz.watch_changes\n+ NOTIFY authz_changes" as feed #LightYellow
+    component "refresh worker\nauthz.refresh_materialized_relations()\n(cursor per store, incremental)" as worker #PaleGreen
+    database "materialized_relations\n+ materialized_subjects\n+ materialized_objects\n+ materialized_refresh_state" as mat #LightBlue
+    component "PUBLICATION authz_derived\n(optionally row-filtered\nper namespace)" as pub #Plum
+}
+
+node "application database (PostgreSQL)" as appdb {
+    component "SUBSCRIPTION\nauthz_derived" as sub #Plum
+    database "the four tables\n(replicated, read-only)" as mat2 #LightBlue
+    component "authz.check_permission(...)\nauthz.permissions_as_of(store)\n(schema-derived.sql, no engine)" as helper #PaleGreen
+    database "business tables" as biz #White
+}
+
+component "pgauthzd\n(decision-only)" as pgd #PaleGreen
+
+' Writes land in the tuples; the audit trail is the changefeed the worker reads.
+app -down-> tuples : "grants / revokes\n(write API or SQL)"
+tuples -right-> feed : "audited"
+feed -right-> worker : "one lag-gated page\nper store per run"
+worker -down-> mat : "re-derive the affected\n(subject, object) pairs,\ndiff → inserts / deletes"
+mat -right-> pub
+
+' Logical replication carries only the flat tables — no authz schema, functions
+' or model on the subscriber.
+pub -down-> sub : "  logical replication  "
+sub -down-> mat2
+mat2 -right-> helper
+helper -right-> biz : "WHERE authz.check_permission(...)\n— authorization as a JOIN"
+app -down-> appdb : "business queries,\nfiltered in the plan"
+
+' Decisions that need the request (conditions, contextual tuples) or the
+' principal's history (temporal gates) stay live: a precomputed row cannot
+' hold them. The same application asks pgauthzd for those.
+app ..> pgd : "exact decisions:\nconditions, gates,\nexplain, search"
+pgd ..> tuples : "SQL (pgx)"
+
+legend bottom left
+  |= Color |= Component |
+  | <#Orange> | tuples — the source of truth on the authz primary; every write is audited |
+  | <#LightYellow> | the audit changefeed — what the worker consumes (stability lag, default 1 s) |
+  | <#PaleGreen> | engine code: the refresh worker on the primary; the subscriber-side helper; pgauthzd for live decisions |
+  | <#LightBlue> | the derived tables — flat (subject, relation, object) rows plus the known subjects / objects (the wildcard contract) and a freshness row per store |
+  | <#Plum> | logical replication — publication on the primary, subscription in each application database |
+end legend
+
+@enduml
