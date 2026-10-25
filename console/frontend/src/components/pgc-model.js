@@ -878,7 +878,51 @@ type document
           >
           ${this._formActions(f.editing ? 'Save grant rule' : 'Add grant rule')}
         </form>`;
-      case 'set_relation_constraint':
+      case 'set_relation_constraint': {
+        // Only pairs a constraint can apply to: types with rules, and on the
+        // chosen type the relations that have rules there. Max direct needs a
+        // direct rule and no wildcard declaration on that pair (the engine
+        // refuses it otherwise); max effective applies to any relation.
+        const m = this.m;
+        const rulesOn = (ty) => m.rules.filter((r) => r.object_type === ty);
+        const ctypes = types.filter((ty) => rulesOn(ty).length);
+        const crels = f.object_type
+          ? byOrder(
+              m.json.relations.filter((x) => rulesOn(f.object_type).some((r) => r.relation === x.name)),
+            ).map((x) => x.name)
+          : [];
+        const hasDirect = rulesOn(f.object_type).some(
+          (r) => r.relation === f.relation && r.rule_type === 'direct',
+        );
+        const hasWildcard =
+          rulesOn(f.object_type).some((r) => r.relation === f.relation && r.allow_object_wildcard) ||
+          m.restrictions.some(
+            (x) => x.object_type === f.object_type && x.relation === f.relation && x.allow_wildcard,
+          );
+        const directOff = !!f.relation && (!hasDirect || hasWildcard);
+        const directWhy = !f.relation
+          ? ''
+          : !hasDirect
+            ? t(
+                '{rel} is derived on {type} (no direct rule): nothing is assigned by tuple, so only the effective cap applies.',
+                { rel: f.relation, type: f.object_type },
+              )
+            : hasWildcard
+              ? t(
+                  '{rel} on {type} allows wildcard grants (a user:* facet or an object-wildcard rule); a capped relation refuses them. Remove the wildcard first, or set only the effective cap.',
+                  { rel: f.relation, type: f.object_type },
+                )
+              : '';
+        const pickType = (e) => {
+          const ty = e.target.value;
+          const keep = rulesOn(ty).some((r) => r.relation === f.relation);
+          this.form = { ...this.form, object_type: ty, relation: keep ? f.relation : '' };
+        };
+        const pickRel = (e) => {
+          const rel = e.target.value;
+          const direct = rulesOn(f.object_type).some((r) => r.relation === rel && r.rule_type === 'direct');
+          this.form = { ...this.form, relation: rel, max_direct: direct ? f.max_direct : '' };
+        };
         return html`<form
           class="card form constraint-form"
           data-testid="model-form-set-relation-constraint"
@@ -890,27 +934,37 @@ type document
             ${help('How many subjects may hold this relation on one object. The direct cap counts the ACTIVE (unexpired) tuples written on an object for the relation — a userset such as team:eng#member is one — and is enforced on every write path: the one past the cap is refused (pgauthzd answers 409 relation_full). Wildcard grants are refused on a capped relation, and the relation needs a direct rule on the type. The effective cap is advisory: relation_usage reports the resolved holder set (direct, usersets, inherited) against it, nothing is refused. Saving for an existing type and relation replaces both values; leave one empty for no cap of that kind.')}
           </h3>
           <label class="field"
-            ><span>${t('On object type')}</span
+            ><span
+              >${t('On object type')}
+              ${help('Types that have rules; a relation is constrained where it is defined.')}</span
             ><select
               class="mono"
               required
-              @change=${this._set('object_type')}
+              @change=${pickType}
               data-testid="model-input-constraint-object-type"
             >
               <option value="" ?selected=${!f.object_type}>${t('choose…')}</option>
-              ${types.map((ty) => html`<option value=${ty} ?selected=${f.object_type === ty}>${ty}</option>`)}
+              ${ctypes.map((ty) => html`<option value=${ty} ?selected=${f.object_type === ty}>${ty}</option>`)}
             </select></label
           >
           <label class="field"
-            ><span>${t('Relation')}</span
+            ><span>${t('Relation')} ${help('The relations defined on the chosen type.')}</span
             ><select
               class="mono"
               required
-              @change=${this._set('relation')}
+              ?disabled=${!f.object_type}
+              @change=${pickRel}
               data-testid="model-input-constraint-relation"
             >
-              <option value="" ?selected=${!f.relation}>${t('choose…')}</option>
-              ${rels.map((r) => html`<option value=${r} ?selected=${f.relation === r}>${r}</option>`)}
+              <option value="" ?selected=${!f.relation}>
+                ${f.object_type ? t('choose…') : t('choose a type first')}
+              </option>
+              ${crels.map(
+                (r) =>
+                  html`<option value=${r} ?selected=${f.relation === r}>
+                    ${r}${rulesOn(f.object_type).some((x) => x.relation === r && x.rule_type === 'direct') ? '' : ` · ${t('derived')}`}
+                  </option>`,
+              )}
             </select></label
           >
           <label class="field"
@@ -922,10 +976,13 @@ type document
               type="number"
               min="1"
               step="1"
+              ?disabled=${directOff}
               .value=${String(f.max_direct ?? '')}
               @input=${this._set('max_direct')}
               data-testid="model-input-constraint-max-direct"
-          /></label>
+            />
+            ${directOff ? html`<span class="help" data-testid="model-constraint-direct-why">${directWhy}</span>` : nothing}
+          </label>
           <label class="field"
             ><span
               >${t('Max effective')}
@@ -941,6 +998,7 @@ type document
           /></label>
           ${this._formActions(f.editing ? 'Save relation constraint' : 'Add relation constraint')}
         </form>`;
+      }
       case 'add_gate': {
         const clauses = this._gateClauses();
         return html`<form class="card form gate-form" @submit=${this._submitGate}>
@@ -1241,6 +1299,14 @@ type document
     );
   }
 
+  // From the Structure view: show the Relation constraints section with the
+  // edit form for this constraint open.
+  _openConstraint(c) {
+    // the section tab is a router link: clicking it is the one way to switch
+    this.querySelector('a[data-testid="model-section-relation_constraints"]')?.click();
+    this._editConstraint(c);
+  }
+
   _constraintSQL(c) {
     const args = [this.store, c.object_type, c.relation].map((x) => this._q(x));
     if (c.max_direct != null) args.push(`p_max_direct => ${c.max_direct}`);
@@ -1480,6 +1546,10 @@ type document
       relation: rels.filter((r) => r.metadata?.kind !== 'permission'),
     };
     // Object types each relation is defined on, from the rules.
+    const constraintsOf = (name) =>
+      (this.m.json.relation_constraints ?? [])
+        .filter((c) => c.relation === name)
+        .sort((a, b) => a.object_type.localeCompare(b.object_type));
     const usedOn = (name) => [
       ...new Set(this.m.rules.filter((x) => x.relation === name).map((x) => x.object_type)),
     ];
@@ -1564,6 +1634,7 @@ type document
                     <col class="c-name" />
                     <col class="c-desc" />
                     <col class="c-on" />
+                    <col class="c-constraints" />
                     <col class="c-payload" />
                     ${can ? html`<col class="c-actions" />` : nothing}
                   </colgroup>
@@ -1573,6 +1644,10 @@ type document
                       <th>${t('Name')}</th>
                       <th>${t('Description')}</th>
                       <th>${t('Defined on')} ${help('The object types with a rule for this relation.')}</th>
+                      <th>
+                        ${t('Constraints')}
+                        ${help('How many subjects may hold the relation on one object, per type: "direct" is enforced on every write (active tuples), "effective" is the advisory size of the resolved holder set. Declared on the Relation constraints tab; click one to edit it.')}
+                      </th>
                       <th>
                         ${t('Payload')}
                         ${help('For actions recorded in the action log: the payload shape their events must have (record_event enforces it). Set with "Payload…".')}
@@ -1597,6 +1672,32 @@ type document
                           <td class="mono">${r.name}</td>
                           <td class="muted">${r.description ?? ''}</td>
                           <td class="mono muted">${usedOn(r.name).join(', ')}</td>
+                          <td class="constraints">
+                            ${
+                              constraintsOf(r.name).length
+                                ? constraintsOf(r.name).map(
+                                    (c) =>
+                                      html`<button
+                                        type="button"
+                                        class="badge link"
+                                        title=${t('relation constraint on {type}: click to edit', { type: c.object_type })}
+                                        data-testid=${`model-relation-constraint-badge-${c.object_type}-${c.relation}`}
+                                        ?disabled=${!can}
+                                        @click=${() => this._openConstraint(c)}
+                                      >
+                                        ${usedOn(r.name).length > 1 ? `${c.object_type}: ` : ''}${[
+                                          c.max_direct != null ? t('≤ {n} direct', { n: c.max_direct }) : '',
+                                          c.max_effective != null
+                                            ? t('≤ {n} effective', { n: c.max_effective })
+                                            : '',
+                                        ]
+                                          .filter(Boolean)
+                                          .join(' · ')}
+                                      </button>`,
+                                  )
+                                : html`<span class="dim">—</span>`
+                            }
+                          </td>
                           <td>
                             ${
                               r.payload_schema
