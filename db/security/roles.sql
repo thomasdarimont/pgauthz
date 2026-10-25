@@ -176,6 +176,18 @@ BEGIN
 END
 $$;
 GRANT authz_admin TO pgauthzd_admin;
+-- authz_namespace_bypass: a role that decides namespace access by other means
+-- (the console per person, the admin API per credential) is not bound to the
+-- per-application namespace grants. Created here, before its first grant — on
+-- a fresh cluster the order matters (CI installs from scratch; a dev cluster
+-- already had the role and hid a grant placed above its creation).
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authz_namespace_bypass') THEN
+        CREATE ROLE authz_namespace_bypass NOLOGIN;
+    END IF;
+END
+$$;
 GRANT authz_namespace_bypass TO pgauthzd_admin;   -- management crosses the per-application namespaces (the takeout walks every type)
 
 -- Playground BFF metadata/explore role: a dedicated read-only LOGIN role for the
@@ -229,14 +241,8 @@ $$;
 GRANT authz_admin             TO authz_console;
 GRANT authz_contextual_reader TO authz_console;
 -- The console decides namespace access per person (its console store), so it
--- is not bound to the per-application namespace grants (namespace_access).
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authz_namespace_bypass') THEN
-        CREATE ROLE authz_namespace_bypass NOLOGIN;
-    END IF;
-END
-$$;
+-- is not bound to the per-application namespace grants (namespace_access);
+-- the role is created above, before its first grant.
 GRANT authz_namespace_bypass  TO authz_console;
 GRANT SELECT ON authz.stores, authz.types, authz.relations, authz.conditions, authz.tuples,
                 authz.models_view, authz.type_restrictions_view, authz.model_registry,
