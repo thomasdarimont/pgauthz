@@ -683,7 +683,9 @@ is the read behind "48 / 50". Resolved counts are never enforced on a write
 — sharing a folder would have to re-count every document below it — which
 is why `max_effective` is advisory.
 
-Shown in: [MODEL_DESIGN → Relation constraints](MODEL_DESIGN.md#relation-constraints-how-many-may-hold-a-relation),
+Shown in: [`examples/models/gdrive/`](../examples/models/gdrive) (`doc.owner`:
+exactly one owner, the handover in `tests.sql`, the refused second owner in
+`scenarios.authz.yaml`), [MODEL_DESIGN → Relation constraints](MODEL_DESIGN.md#relation-constraints-how-many-may-hold-a-relation),
 [API → relation_usage](API.md#relation_usage--how-full-is-a-relation-on-an-object).
 
 ### Marker tuples and exclusion — archived, under legal hold, draft only

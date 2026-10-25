@@ -245,6 +245,18 @@ SELECT authz.add_gate('gdrive', 'doc', 'download', 'per_file_limit', '{
 -- sharing: only the owner may take a viewer away (p_requires_revoke).
 SELECT authz.model_add_grant_rule('gdrive', 'folder', 'viewer', 'can_share');
 SELECT authz.model_add_grant_rule('gdrive', 'doc',    'viewer', 'can_share', p_requires_revoke => 'owner');
+-- Handing a document over: granting `owner` needs can_change_owner (the
+-- current owner), so ownership transfers through the same sharing API.
+SELECT authz.model_add_grant_rule('gdrive', 'doc', 'owner', 'can_change_owner');
+
+-- ── A document has exactly one owner (relation constraints, migrations 0025/26) ──
+-- max_direct 1: a second owner tuple is refused (SQLSTATE ZA001 / 409
+-- relation_full); min_direct 1: revoking the last owner is refused (ZA002 /
+-- 409 relation_floor). A handover is one apply_grants / write_tuples_checked
+-- batch (revoke the old owner, grant the new one), decided on its net result.
+-- Offboarding a person (delete_user_tuples) is exempt only when forced by an
+-- administrator. Shown in the console as "1 / 1 active" on the share dialog.
+SELECT authz.model_set_relation_constraint('gdrive', 'doc', 'owner', p_max_direct => 1, p_min_direct => 1);
 
 -- Relation kinds (migration 0019): what a subject IS (assignable) versus what
 -- it CAN DO (derived). Inferred from the rules: a relation without any

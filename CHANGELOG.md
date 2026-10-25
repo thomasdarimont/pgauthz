@@ -38,6 +38,10 @@ pre-1.0, minor versions may include breaking changes.
   required relation rate-limit or four-eye sharing with no PEP code.
   `describe_model`, export, registry, diff, pgauthzadm, the console (Model
   tab, Structure view, Activity) and the docs carry both; two-session test L.
+  The gdrive example declares "exactly one owner per document" (`doc.owner`
+  with `max_direct` and `min_direct` 1, a grant rule requiring
+  `can_change_owner` for the handover) and its scenarios assert a refused
+  second owner; a Playwright spec covers the console's Model tab section.
 - **Relation constraints** (migration 0025, `authz.relation_constraints` +
   audit): per `(type, relation)`, how many subjects may hold the relation on
   one object. `max_direct` is enforced on every write path by a trigger on

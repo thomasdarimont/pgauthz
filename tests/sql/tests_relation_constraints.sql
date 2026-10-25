@@ -272,7 +272,7 @@ $$;
 
 -- rc_10: dropping the cap frees the relation; removing the type removes the constraint; delete_store purges
 DO $$
-DECLARE v_err text; v_state text;
+DECLARE v_err text; v_state text; v_sid integer;
 BEGIN
     PERFORM _test_assert('rc_10_drop', authz.model_drop_relation_constraint('test_rc', 'doc', 'viewer')::text, 'true');
     PERFORM _test_assert('rc_10_drop_again_false', authz.model_drop_relation_constraint('test_rc', 'doc', 'viewer')::text, 'false');
@@ -286,9 +286,12 @@ BEGIN
     PERFORM _test_assert('rc_10_remove_type_drops_constraint', (SELECT count(*)::text FROM authz.list_relation_constraints('test_rc')), '0');
     PERFORM _test_assert_true('rc_10_audit_has_history',
         (SELECT count(*) FROM authz.relation_constraints_audit a WHERE a.store_id = authz._s('test_rc')) >= 6, 'audit rows');
+    -- scoped to this store: an ephemeral scenario store deleted without
+    -- p_purge_audit legitimately leaves its rows behind
+    v_sid := authz._s('test_rc2');
     PERFORM authz.delete_store('test_rc2', p_purge_audit => true);
     PERFORM _test_assert('rc_10_delete_store_purges_audit',
-        (SELECT count(*)::text FROM authz.relation_constraints_audit a WHERE a.store_id NOT IN (SELECT id FROM authz.stores)), '0');
+        (SELECT count(*)::text FROM authz.relation_constraints_audit a WHERE a.store_id = v_sid), '0');
 END;
 $$;
 

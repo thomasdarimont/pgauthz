@@ -9,7 +9,8 @@
 # They cover what the Go handler tests cannot reach: the share dialog's
 # request/response race, Save's binding to the loaded object, the post-save
 # state when the refresh fails, the expiry chip; the Decisions tab's summary,
-# pager, filters, detail and hand-over into Test. Loads the fixture store
+# pager, filters, detail and hand-over into Test; the Model tab's relation
+# constraints (guided form, Structure badge, share-dialog usage). Loads the fixture store
 # console_uitest (console/frontend/tests/ui/fixture.sql) and the decisions
 # fixture (decisions.sql, into the console's database) and drops both after.
 # Without a reachable console the suite is SKIPPED (it needs the stack this

@@ -41,6 +41,12 @@ tuples:
   - user: user:*
     relation: viewer
     object: folder:public
+  # a document has exactly one owner (relation constraint max_direct 1):
+  # the model must refuse a second one — asserted, not seeded
+  - user: user:zoe
+    relation: owner
+    object: doc:design_spec
+    refused: true
 
 tests:
   - name: the root owner writes everywhere through the folder tree
@@ -66,6 +72,10 @@ tests:
       - user: user:frank
         object: doc:budget
         assertions: { can_read: false }
+      - user: user:zoe
+        object: doc:design_spec
+        assertions: { can_change_owner: false, can_read: false }
+        notes: { can_change_owner: "the refused second owner tuple grants nothing" }
 
   - name: group membership reaches the docs of the folder
     check:
