@@ -470,8 +470,12 @@ BEGIN
     BEGIN PERFORM authz.apply_grants('test_rc', 'user', 'bob', p_revokes => '[{"user_type":"user","user_id":"bob","relation":"owner","object_type":"doc","object_id":"plan"}]');
     EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
     PERFORM _test_assert('rc_14_apply_grants_revoke_refused', v_state, 'ZA002');
-    -- offboarding is exempt: the person goes, the floor does not hold them
-    PERFORM _test_assert('rc_14_offboarding_exempt', authz.delete_user_tuples('test_rc', 'user', 'bob')::text, '2');
+    -- offboarding: subject to the floor unless forced (the caller states the intent)
+    v_state := NULL;
+    BEGIN PERFORM authz.delete_user_tuples('test_rc', 'user', 'bob');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('rc_14_offboarding_floored_by_default', v_state, 'ZA002');
+    PERFORM _test_assert('rc_14_offboarding_forced', authz.delete_user_tuples('test_rc', 'user', 'bob', p_force => true)::text, '2');
     PERFORM _test_assert('rc_14_object_without_owner', (SELECT direct_count::text FROM authz.relation_usage('test_rc', 'doc', 'plan', 'owner')), '0');
     -- the floor guards owner only: another relation on the same object is freely revocable
     PERFORM authz.write_tuple('test_rc', 'user', 'zed', 'viewer', 'doc', 'memo');
@@ -486,6 +490,52 @@ BEGIN
     PERFORM authz.apply_model('test_rc2', 'rc_model3');
     PERFORM _test_assert('rc_14_apply_propagates', (SELECT min_direct::text FROM authz.list_relation_constraints('test_rc2') WHERE relation = 'owner'), '1');
     PERFORM authz.delete_store('test_rc2', p_purge_audit => true);
+END;
+$$;
+
+-- rc_16 (review on d9b387a): owner handoff under min_direct = max_direct = 1 — the batch paths decide on the net result
+DO $$
+DECLARE v_state text; v_res jsonb;
+BEGIN
+    PERFORM authz.model_set_relation_constraint('test_rc', 'doc', 'owner', p_max_direct => 1, p_min_direct => 1);
+    PERFORM authz.write_tuple('test_rc', 'user', 'alice', 'owner', 'doc', 'plan');
+    PERFORM authz.write_tuple('test_rc', 'user', 'alice', 'editor', 'doc', 'plan');   -- alice may share (can_share = editor)
+    -- single steps cannot: revoke first hits the floor, grant first hits the cap
+    v_state := NULL;
+    BEGIN PERFORM authz.revoke('test_rc', 'user', 'alice', 'user', 'alice', 'owner', 'doc', 'plan');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('rc_16_revoke_first_floor', v_state, 'ZA002');
+    v_state := NULL;
+    BEGIN PERFORM authz.grant('test_rc', 'user', 'alice', 'user', 'bob', 'owner', 'doc', 'plan');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('rc_16_grant_first_cap', v_state, 'ZA001');
+    -- the handoff as one apply_grants: net 1 → 1
+    v_res := authz.apply_grants('test_rc', 'user', 'alice',
+        p_grants  => '[{"user_type":"user","user_id":"bob","relation":"owner","object_type":"doc","object_id":"plan"}]',
+        p_revokes => '[{"user_type":"user","user_id":"alice","relation":"owner","object_type":"doc","object_id":"plan"}]');
+    PERFORM _test_assert('rc_16_handoff_apply_grants', v_res::text, '{"granted": 1, "revoked": 1}');
+    PERFORM _test_assert('rc_16_bob_is_the_owner',
+        (SELECT string_agg(user_id, ',') FROM authz.tuples t WHERE t.store_id = authz._s('test_rc') AND t.object_id = 'plan' AND t.relation = authz._r(authz._s('test_rc'), 'owner')), 'bob');
+    -- and as one checked write (deletes before writes)
+    v_res := authz.write_tuples_checked('test_rc',
+        p_deletes => '[{"user_type":"user","user_id":"bob","relation":"owner","object_type":"doc","object_id":"plan"}]',
+        p_writes  => '[{"user_type":"user","user_id":"carol","relation":"owner","object_type":"doc","object_id":"plan"}]');
+    PERFORM _test_assert('rc_16_handoff_checked_write', v_res::text, '{"deleted": 1, "written": 1}');
+    -- the net result still has to hold: a revoke without a replacement is refused in the batch too
+    v_state := NULL;
+    BEGIN PERFORM authz.write_tuples_checked('test_rc',
+        p_deletes => '[{"user_type":"user","user_id":"carol","relation":"owner","object_type":"doc","object_id":"plan"}]');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('rc_16_net_below_floor_refused', v_state, 'ZA002');
+    -- a write that is already an active holder adds nothing: "revoke carol, grant carol" nets to -1
+    v_state := NULL;
+    BEGIN PERFORM authz.write_tuples_checked('test_rc',
+        p_deletes => '[{"user_type":"user","user_id":"carol","relation":"owner","object_type":"doc","object_id":"plan"}]',
+        p_writes  => '[{"user_type":"user","user_id":"carol","relation":"owner","object_type":"doc","object_id":"plan"}]');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('rc_16_same_holder_nets_zero_add', v_state, 'ZA002');
+    PERFORM authz.model_set_relation_constraint('test_rc', 'doc', 'owner', p_min_direct => 1);
+    PERFORM authz.write_tuple('test_rc', 'user', 'alice', 'owner', 'doc', 'plan');
 END;
 $$;
 

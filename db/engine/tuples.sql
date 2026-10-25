@@ -600,16 +600,23 @@ $$;
 -- user_id, user_relation} by name; only elements that match an ACTIVE row
 -- count as removals (deleting a missing or expired row changes nothing).
 ------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION authz._check_relation_floor(p_store text, p_store_id integer, p_deletes jsonb)
+DROP FUNCTION IF EXISTS authz._check_relation_floor(text, integer, jsonb);
+CREATE OR REPLACE FUNCTION authz._check_relation_floor(p_store text, p_store_id integer, p_deletes jsonb, p_writes jsonb DEFAULT '[]'::jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
     v_obj      record;
+    v_min      integer;
     v_total    bigint;
     v_removing bigint;
+    v_adding   bigint;
 BEGIN
+    -- Pairs with a floor at the time of the call: a floor declared after this
+    -- read applies to the object from then on (as a cap does). For each, the
+    -- object lock FIRST, then the floor is read again — a floor raised while
+    -- this call waited for the lock is seen (READ COMMITTED: fresh snapshot).
     FOR v_obj IN
         SELECT DISTINCT e->>'object_type' AS ot, e->>'object_id' AS oid, e->>'relation' AS rel,
-               t.id AS type_id, r.id AS rel_id, c.min_direct
+               t.id AS type_id, r.id AS rel_id
           FROM jsonb_array_elements(p_deletes) e
           JOIN authz.types     t ON t.store_id = p_store_id AND t.name = e->>'object_type'
           JOIN authz.relations r ON r.store_id = p_store_id AND r.name = e->>'relation'
@@ -623,7 +630,11 @@ BEGIN
                 USING ERRCODE = 'invalid_transaction_state';
         END IF;
         PERFORM pg_advisory_xact_lock(hashtextextended(p_store || ':' || v_obj.ot || ':' || v_obj.oid, 0));
-        -- The removals that count: batch elements matching an active row.
+        SELECT c.min_direct INTO v_min
+          FROM authz.relation_constraints c
+         WHERE c.store_id = p_store_id AND c.object_type = v_obj.type_id AND c.relation = v_obj.rel_id;
+        CONTINUE WHEN v_min IS NULL;   -- dropped while we waited
+        -- The removals that count: delete elements matching an active row.
         SELECT count(*) INTO v_removing
           FROM (SELECT DISTINCT e->>'user_type' AS ut, e->>'user_id' AS uid, e->>'user_relation' AS ur
                   FROM jsonb_array_elements(p_deletes) e
@@ -636,18 +647,39 @@ BEGIN
            AND t.user_relation IS NOT DISTINCT FROM ur.id
            AND (t.expires_at IS NULL OR t.expires_at > statement_timestamp());
         CONTINUE WHEN v_removing = 0;
+        -- The additions that count (a batch's writes, decided as one): write
+        -- elements for the same pair that are NOT an active row already —
+        -- an owner handoff (revoke alice, grant bob) nets to zero.
+        SELECT count(*) INTO v_adding
+          FROM (SELECT DISTINCT e->>'user_type' AS ut, e->>'user_id' AS uid, e->>'user_relation' AS ur
+                  FROM jsonb_array_elements(p_writes) e
+                 WHERE e->>'object_type' = v_obj.ot AND e->>'object_id' = v_obj.oid AND e->>'relation' = v_obj.rel
+                   AND e->>'user_id' <> '*') w
+          JOIN authz.types ut ON ut.store_id = p_store_id AND ut.name = w.ut
+     LEFT JOIN authz.relations ur ON ur.store_id = p_store_id AND ur.name = w.ur
+         WHERE NOT EXISTS (
+             SELECT 1 FROM authz.tuples t
+              WHERE t.store_id = p_store_id AND t.object_type = v_obj.type_id AND t.object_id = v_obj.oid
+                AND t.relation = v_obj.rel_id AND t.user_type = ut.id AND t.user_id = w.uid
+                AND t.user_relation IS NOT DISTINCT FROM ur.id
+                AND (t.expires_at IS NULL OR t.expires_at > statement_timestamp()))
+           -- a write that is also deleted in the same batch nets out
+           AND NOT EXISTS (
+             SELECT 1 FROM jsonb_array_elements(p_deletes) d
+              WHERE d->>'object_type' = v_obj.ot AND d->>'object_id' = v_obj.oid AND d->>'relation' = v_obj.rel
+                AND d->>'user_type' = w.ut AND d->>'user_id' = w.uid AND d->>'user_relation' IS NOT DISTINCT FROM w.ur);
         SELECT count(*) INTO v_total
           FROM authz.tuples t
          WHERE t.store_id = p_store_id AND t.object_type = v_obj.type_id AND t.object_id = v_obj.oid
            AND t.relation = v_obj.rel_id
            AND (t.expires_at IS NULL OR t.expires_at > statement_timestamp());
-        IF v_total - v_removing < v_obj.min_direct THEN
+        IF v_total - v_removing + v_adding < v_min THEN
             RAISE EXCEPTION 'relation % on %:% would drop below its minimum: % of % active direct assignments (min_direct), removing %',
-                v_obj.rel, v_obj.ot, v_obj.oid, v_total, v_obj.min_direct, v_removing
+                v_obj.rel, v_obj.ot, v_obj.oid, v_total, v_min, v_removing
                 USING ERRCODE = 'ZA002',
                       DETAIL = format('{"code": "relation_floor", "object_type": %s, "object_id": %s, "relation": %s, "min_direct": %s, "direct_count": %s, "removing": %s}',
-                                      to_json(v_obj.ot), to_json(v_obj.oid), to_json(v_obj.rel), v_obj.min_direct, v_total, v_removing),
-                      HINT = 'Assign another holder first, or lower min_direct in the model (model_set_relation_constraint). Offboarding (delete_user_tuples) is not subject to the floor.';
+                                      to_json(v_obj.ot), to_json(v_obj.oid), to_json(v_obj.rel), v_min, v_total, v_removing),
+                      HINT = 'Assign another holder first — in the same apply_grants / write_tuples_checked batch, which is decided on its net result — or lower min_direct in the model (model_set_relation_constraint). Offboarding (delete_user_tuples with p_force) is not subject to the floor.';
         END IF;
     END LOOP;
 END;
@@ -656,15 +688,19 @@ $$;
 ------------------------------------------------------------------------
 -- delete_tuple: explicit parameters — mirrors write_tuple.
 ------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION authz.delete_tuple(
+-- _delete_tuple_impl: delete_tuple's body; p_check_floor = false is for the
+-- batch paths (apply_grants, write_tuples_checked) that have already decided
+-- the relation floor on their NET result — internal, not granted to any role.
+CREATE OR REPLACE FUNCTION authz._delete_tuple_impl(
     p_store         text,
     p_user_type     text,
     p_user_id       text,
     p_relation      text,
     p_object_type   text,
     p_object_id     text,
-    p_user_relation text DEFAULT NULL,
-    p_performed_by  text DEFAULT NULL
+    p_user_relation text,
+    p_performed_by  text,
+    p_check_floor   boolean
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -685,9 +721,11 @@ BEGIN
     END IF;
 
     -- Relation floor (min_direct, migration 0026).
-    PERFORM authz._check_relation_floor(p_store, v_store_id, jsonb_build_array(jsonb_build_object(
-        'object_type', p_object_type, 'object_id', p_object_id, 'relation', p_relation,
-        'user_type', p_user_type, 'user_id', p_user_id, 'user_relation', p_user_relation)));
+    IF p_check_floor THEN
+        PERFORM authz._check_relation_floor(p_store, v_store_id, jsonb_build_array(jsonb_build_object(
+            'object_type', p_object_type, 'object_id', p_object_id, 'relation', p_relation,
+            'user_type', p_user_type, 'user_id', p_user_id, 'user_relation', p_user_relation)));
+    END IF;
 
     DELETE FROM authz.tuples
      WHERE store_id      = v_store_id
@@ -702,6 +740,23 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION authz.delete_tuple(
+    p_store         text,
+    p_user_type     text,
+    p_user_id       text,
+    p_relation      text,
+    p_object_type   text,
+    p_object_id     text,
+    p_user_relation text DEFAULT NULL,
+    p_performed_by  text DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+BEGIN
+    RETURN authz._delete_tuple_impl(p_store, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
+                                    p_user_relation, p_performed_by, true);
+END;
+$$;
+
 
 ------------------------------------------------------------------------
 -- delete_tuples: batch delete using a single DELETE ... USING.
@@ -713,10 +768,12 @@ $$;
 --       ('internal_user','bob',  NULL,'editor','document','doc1')
 --   ]::authz.tuple_input[]);
 ------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION authz.delete_tuples(
+-- _delete_tuples_impl: delete_tuples' body; p_check_floor as in _delete_tuple_impl.
+CREATE OR REPLACE FUNCTION authz._delete_tuples_impl(
     p_store        text,
     p_tuples       authz.tuple_input[],
-    p_performed_by text DEFAULT NULL
+    p_performed_by text,
+    p_check_floor  boolean
 ) RETURNS integer
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -770,11 +827,13 @@ BEGIN
        JOIN authz.types ot ON ot.store_id = v_store_id AND ot.name = t.object_type;
 
     -- Relation floor (min_direct, migration 0026): the whole batch at once.
-    PERFORM authz._check_relation_floor(p_store, v_store_id,
-        (SELECT COALESCE(jsonb_agg(jsonb_build_object(
-            'object_type', t.object_type, 'object_id', t.object_id, 'relation', t.relation,
-            'user_type', t.user_type, 'user_id', t.user_id, 'user_relation', t.user_relation)), '[]'::jsonb)
-           FROM unnest(p_tuples) AS t));
+    IF p_check_floor THEN
+        PERFORM authz._check_relation_floor(p_store, v_store_id,
+            (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                'object_type', t.object_type, 'object_id', t.object_id, 'relation', t.relation,
+                'user_type', t.user_type, 'user_id', t.user_id, 'user_relation', t.user_relation)), '[]'::jsonb)
+               FROM unnest(p_tuples) AS t));
+    END IF;
 
     DELETE FROM authz.tuples tup
      USING (
@@ -803,6 +862,17 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION authz.delete_tuples(
+    p_store        text,
+    p_tuples       authz.tuple_input[],
+    p_performed_by text DEFAULT NULL
+) RETURNS integer
+LANGUAGE plpgsql AS $$
+BEGIN
+    RETURN authz._delete_tuples_impl(p_store, p_tuples, p_performed_by, true);
+END;
+$$;
+
 ------------------------------------------------------------------------
 -- delete_tuples_jsonb: HTTP/JSON-friendly version of delete_tuples.
 -- Accepts tuples as a JSONB array of objects, each with:
@@ -818,15 +888,16 @@ $$;
 --   ], "p_performed_by": "hr_system"}
 --   => 2
 ------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION authz.delete_tuples_jsonb(
+CREATE OR REPLACE FUNCTION authz._delete_tuples_jsonb_impl(
     p_store        text,
     p_tuples       jsonb,
-    p_performed_by text DEFAULT NULL
+    p_performed_by text,
+    p_check_floor  boolean
 ) RETURNS integer
 LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM authz._validate_tuple_jsonb(p_tuples);
-    RETURN authz.delete_tuples(
+    RETURN authz._delete_tuples_impl(
         p_store,
         (SELECT coalesce(array_agg(ROW(
             t->>'user_type',
@@ -837,8 +908,20 @@ BEGIN
             t->>'object_id'
         )::authz.tuple_input), '{}')
         FROM jsonb_array_elements(p_tuples) AS t),
-        p_performed_by
+        p_performed_by,
+        p_check_floor
     );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION authz.delete_tuples_jsonb(
+    p_store        text,
+    p_tuples       jsonb,
+    p_performed_by text DEFAULT NULL
+) RETURNS integer
+LANGUAGE plpgsql AS $$
+BEGIN
+    RETURN authz._delete_tuples_jsonb_impl(p_store, p_tuples, p_performed_by, true);
 END;
 $$;
 
@@ -855,11 +938,19 @@ $$;
 --   SELECT authz.delete_user_tuples('demo', 'internal_user', 'alice',
 --       p_performed_by => 'admin');
 ------------------------------------------------------------------------
+-- p_force (migration 0026): offboarding states its intent. Without it the
+-- subject's tuples are subject to the relation floors (min_direct) like any
+-- revocation — the last owner of a document cannot be offboarded away by an
+-- ordinary writer. With p_force => true the floors do not apply: the person
+-- is leaving, the objects' floors are the model's problem afterwards (shown
+-- by relation_usage). The audit trail carries p_performed_by either way.
+DROP FUNCTION IF EXISTS authz.delete_user_tuples(text, text, text, text);
 CREATE OR REPLACE FUNCTION authz.delete_user_tuples(
     p_store        text,
     p_user_type    text,
     p_user_id      text,
-    p_performed_by text DEFAULT NULL
+    p_performed_by text    DEFAULT NULL,
+    p_force        boolean DEFAULT false
 ) RETURNS integer
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -868,6 +959,20 @@ DECLARE
     v_count     integer;
 BEGIN
     PERFORM set_config('authz.performed_by', COALESCE(p_performed_by, ''), true);
+
+    -- Relation floors (min_direct): the subject's active assignments are the
+    -- deletes, unless the caller forces the offboarding.
+    IF NOT p_force THEN
+        PERFORM authz._check_relation_floor(p_store, v_store_id,
+            (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                'object_type', ot.name, 'object_id', t.object_id, 'relation', r.name,
+                'user_type', p_user_type, 'user_id', p_user_id, 'user_relation', ur.name)), '[]'::jsonb)
+               FROM authz.tuples t
+               JOIN authz.types ot ON ot.id = t.object_type
+               JOIN authz.relations r ON r.id = t.relation
+          LEFT JOIN authz.relations ur ON ur.id = t.user_relation
+              WHERE t.store_id = v_store_id AND t.user_type = v_user_type AND t.user_id = p_user_id));
+    END IF;
 
     -- Enforce namespace-based write restrictions for all object types the user has tuples in
     PERFORM authz._check_namespace_access(v_store_id, t.object_type)
@@ -1032,9 +1137,14 @@ BEGIN
         END IF;
     END LOOP;
 
+    -- Relation floors (min_direct, migration 0026) on the NET result of
+    -- deletes and writes (see apply_grants): the deletes then skip the
+    -- per-tuple check; deletes go first so a handoff also passes a cap.
+    PERFORM authz._check_relation_floor(p_store, v_store_id, p_deletes, p_writes);
+
     -- Apply deletes, then writes, in this same transaction.
     IF jsonb_array_length(p_deletes) > 0 THEN
-        v_deleted := authz.delete_tuples_jsonb(p_store, p_deletes, p_performed_by);
+        v_deleted := authz._delete_tuples_jsonb_impl(p_store, p_deletes, p_performed_by, false);
     END IF;
     IF jsonb_array_length(p_writes) > 0 THEN
         v_written := authz.write_tuples_jsonb(p_store, p_writes, p_performed_by);
@@ -1198,6 +1308,39 @@ BEGIN
 END;
 $$;
 
+-- _revoke_impl: revoke's body; p_check_floor = false for apply_grants, which
+-- decides the floors on the batch's net result first (internal).
+CREATE OR REPLACE FUNCTION authz._revoke_impl(
+    p_store           text,
+    p_actor_type      text,
+    p_actor_id        text,
+    p_user_type       text,
+    p_user_id         text,
+    p_relation        text,
+    p_object_type     text,
+    p_object_id       text,
+    p_user_relation   text,
+    p_request_context jsonb,
+    p_check_floor     boolean
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store);
+    v_changed  boolean;
+BEGIN
+    PERFORM authz._grant_rule_check(p_store, v_store_id, p_actor_type, p_actor_id,
+                                    p_relation, p_object_type, p_object_id, true, p_request_context);
+    v_changed := authz._delete_tuple_impl(p_store, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
+                                          p_user_relation, p_actor_type || ':' || p_actor_id, p_check_floor);
+    IF v_changed THEN
+        PERFORM authz._record_sharing(p_store, v_store_id, p_actor_type, p_actor_id, p_relation, p_object_type, p_object_id,
+            jsonb_build_object('op', 'revoke', 'relation', p_relation, 'user_type', p_user_type, 'user_id', p_user_id,
+                               'user_relation', p_user_relation));
+    END IF;
+    RETURN v_changed;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION authz.revoke(
     p_store           text,
     p_actor_type      text,
@@ -1211,20 +1354,9 @@ CREATE OR REPLACE FUNCTION authz.revoke(
     p_request_context jsonb DEFAULT NULL
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
-DECLARE
-    v_store_id integer := authz._s(p_store);
-    v_changed  boolean;
 BEGIN
-    PERFORM authz._grant_rule_check(p_store, v_store_id, p_actor_type, p_actor_id,
-                                    p_relation, p_object_type, p_object_id, true, p_request_context);
-    v_changed := authz.delete_tuple(p_store, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
-                                    p_user_relation, p_performed_by => p_actor_type || ':' || p_actor_id);
-    IF v_changed THEN
-        PERFORM authz._record_sharing(p_store, v_store_id, p_actor_type, p_actor_id, p_relation, p_object_type, p_object_id,
-            jsonb_build_object('op', 'revoke', 'relation', p_relation, 'user_type', p_user_type, 'user_id', p_user_id,
-                               'user_relation', p_user_relation));
-    END IF;
-    RETURN v_changed;
+    RETURN authz._revoke_impl(p_store, p_actor_type, p_actor_id, p_user_type, p_user_id, p_relation,
+                              p_object_type, p_object_id, p_user_relation, p_request_context, true);
 END;
 $$;
 
@@ -1390,15 +1522,22 @@ BEGIN
         PERFORM pg_advisory_xact_lock(hashtextextended(p_store || ':' || v_obj.ot || ':' || v_obj.oid, 0));
     END LOOP;
 
+    -- Relation floors (min_direct, migration 0026) on the batch's NET result:
+    -- revokes minus the grants that add a holder, so an owner handoff
+    -- ("revoke alice, grant bob") passes a floor of one — and, with the
+    -- revokes applied first, a cap of one. The revokes below skip the
+    -- per-tuple floor check (already decided here, under the locks above).
+    PERFORM authz._check_relation_floor(p_store, authz._s(p_store), p_revokes, p_grants);
+
     FOR v_e IN SELECT * FROM jsonb_array_elements(p_revokes)
     LOOP
         v_i := v_i + 1;
         v_ctx := CASE WHEN jsonb_typeof(v_e->'context') = 'object' THEN v_e->'context' ELSE p_context END;
         BEGIN
-            IF authz.revoke(p_store, p_actor_type, p_actor_id,
+            IF authz._revoke_impl(p_store, p_actor_type, p_actor_id,
                             v_e->>'user_type', v_e->>'user_id', v_e->>'relation',
                             v_e->>'object_type', v_e->>'object_id',
-                            p_user_relation => v_e->>'user_relation', p_request_context => v_ctx) THEN
+                            v_e->>'user_relation', v_ctx, false) THEN
                 v_revoked := v_revoked + 1;
             END IF;
         EXCEPTION WHEN OTHERS THEN

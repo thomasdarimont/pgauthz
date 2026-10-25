@@ -40,6 +40,9 @@
 #   L. Two revocations race for the last slot above a floor (min_direct 1,
 #      two owners): the second waits on the object lock, counts the first's
 #      delete and is refused — exactly min_direct holders remain.
+#   M. The floor is raised while a revocation waits for the object lock: the
+#      revocation re-reads the floor under the lock and is refused by the new
+#      value (a cap lowered meanwhile is re-read the same way).
 #
 # Synchronization: the holder session runs its statement and then pg_sleep(2)
 # in one transaction; the second session is launched only once pg_stat_activity
@@ -300,6 +303,18 @@ wait
 case "$out" in *"would drop below its minimum: 1 of 1"*) ok "conc_L_second_revocation_refused_after_waiting" ;; *) bad "conc_L_second_revocation_refused_after_waiting" "$out" ;; esac
 [ "$dt" -ge 1000 ] && ok "conc_L_second_revocation_waited (${dt} ms)" || bad "conc_L_second_revocation_waited" "${dt} ms — did not wait"
 check "conc_L_exactly_min_direct_holders" "$(q "SELECT count(*) FROM authz.tuples t WHERE t.store_id = authz._s('$S') AND t.object_id = 'v1'")" "1"
+
+echo "==> M. a floor raised while a revocation waits is the floor that counts"
+q "SELECT authz.write_tuple('$S','user',u,'owner','vault','v2') FROM unnest(ARRAY['ann','ben','cid']) u;" >/dev/null
+session "SELECT authz.delete_tuple('$S','user','ann','owner','vault','v2');"
+q "SELECT authz.model_set_relation_constraint('$S', 'vault', 'owner', p_min_direct => 2);" >/dev/null
+t0=$(now_ms)
+out=$(q "SELECT authz.delete_tuple('$S','user','ben','owner','vault','v2')")
+dt=$(( $(now_ms) - t0 ))
+wait
+case "$out" in *"would drop below its minimum: 2 of 2"*) ok "conc_M_raised_floor_counts" ;; *) bad "conc_M_raised_floor_counts" "$out" ;; esac
+[ "$dt" -ge 1000 ] && ok "conc_M_revocation_waited (${dt} ms)" || bad "conc_M_revocation_waited" "${dt} ms — did not wait"
+check "conc_M_two_owners_remain" "$(q "SELECT count(*) FROM authz.tuples t WHERE t.store_id = authz._s('$S') AND t.object_id = 'v2'")" "2"
 
 echo "==> ${pass} passed, ${fail} failed (of $((pass + fail)) concurrency checks)"
 [ "$fail" -eq 0 ]

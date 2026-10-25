@@ -18,17 +18,19 @@ import (
 // returns whatever writeErr is set to, so we can drive the handler's status
 // mapping. Only the methods the write path touches are meaningful.
 type writeStubBackend struct {
-	authz.Backend // embedded nil: unused methods panic if ever called
-	writeErr      error
-	written       int
-	lastReserve   authz.ReserveEventRequest
-	lastGrant     authz.GrantRequest
+	authz.Backend  // embedded nil: unused methods panic if ever called
+	writeErr       error
+	written        int
+	lastReserve    authz.ReserveEventRequest
+	lastGrant      authz.GrantRequest
+	lastDeleteUser authz.DeleteUserRequest
 }
 
 func (b *writeStubBackend) WriteTuples(context.Context, authz.WriteRequest) (int, error) {
 	return b.written, b.writeErr
 }
-func (b *writeStubBackend) DeleteUserTuples(context.Context, authz.DeleteUserRequest) (int, error) {
+func (b *writeStubBackend) DeleteUserTuples(_ context.Context, req authz.DeleteUserRequest) (int, error) {
+	b.lastDeleteUser = req
 	return b.written, b.writeErr
 }
 func (b *writeStubBackend) WriteTuplesChecked(context.Context, authz.CheckedWriteRequest) (json.RawMessage, error) {
@@ -154,6 +156,31 @@ func TestDeleteRelationFloorIs409(t *testing.T) {
 	}
 	if d, _ := got["detail"].(map[string]any); d["min_direct"] != float64(1) || d["removing"] != float64(1) {
 		t.Fatalf("want the engine's detail (floor, count, removing), got %v", got["detail"])
+	}
+}
+
+// delete-user passes `force` through (offboarding regardless of relation
+// floors); without it the backend applies the floors like any revocation.
+func TestDeleteUserForcePassthrough(t *testing.T) {
+	stub := &writeStubBackend{written: 3}
+	h := NewHandler(stub, stub, stub, &config.Config{Profile: config.ProfileFull, DefaultStore: "demo"})
+	for _, tc := range []struct {
+		body  string
+		force bool
+	}{
+		{`{"user":{"type":"user","id":"alice"}}`, false},
+		{`{"user":{"type":"user","id":"alice"},"force":true}`, true},
+	} {
+		w := httptest.NewRecorder()
+		r := jsonReq("POST", "/pgauthz/v1/delete-user", tc.body)
+		r = r.WithContext(context.WithValue(context.WithValue(r.Context(), ctxSubjectType, "user"), ctxSubjectID, "hr"))
+		h.DeleteUserTuples(w, r)
+		if w.Code != 200 {
+			t.Fatalf("%s: status %d: %s", tc.body, w.Code, w.Body)
+		}
+		if stub.lastDeleteUser.Force != tc.force {
+			t.Fatalf("%s: want Force=%v, got %+v", tc.body, tc.force, stub.lastDeleteUser)
+		}
 	}
 }
 

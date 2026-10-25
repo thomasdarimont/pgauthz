@@ -14,8 +14,13 @@ pre-1.0, minor versions may include breaking changes.
   `delete_tuple`, `delete_tuples`, `revoke`, `apply_grants`, checked-write
   deletes refuse to leave fewer active direct assignments on an object
   (SQLSTATE `ZA002`, pgauthzd `409 relation_floor`), under the per-object
-  lock and `READ COMMITTED`; offboarding, erasure, type and store removal and
-  expiry are exempt. The console model declares it for `platform.admin` and
+  lock and `READ COMMITTED`, re-read under the lock; `apply_grants` and
+  `write_tuples_checked` decide it on the batch's net result with revokes
+  first, so an owner handoff passes `min_direct = max_direct = 1` in one
+  call; `delete_user_tuples` honours it unless `p_force => true` (pgauthzd
+  `delete-user` takes `force`, the console's Offboard sets it); erasure, type
+  and store removal and expiry are exempt. The cap guard re-reads the cap
+  under the lock too. The console model declares it for `platform.admin` and
   `store.owner`, so the engine owns the last-owner rule the console used to
   hand-roll. A grant rule may name the action its grants and revokes are
   **recorded as** (`p_record_as`, migration 0027): `grant`, `revoke` and

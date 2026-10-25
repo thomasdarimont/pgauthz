@@ -1550,12 +1550,19 @@ SELECT authz.model_drop_relation_constraint('docs', 'document', 'viewer');
   active direct assignments on the object, with SQLSTATE `ZA002`
   (pgauthzd: `409 relation_floor`; detail: floor, count, how many the
   request removed), under the same per-object lock and `READ COMMITTED`
-  rule as the cap, so two revocations racing for the last slot serialize.
-  Deliberately exempt: offboarding a person (`delete_user_tuples`), erasure,
-  type and store removal, and expiry — those are not revocations of one
-  grant, and a floor that blocked them would block the wrong thing. A floor
-  needs a direct rule on the type and may not exceed `max_direct`.
-  `relation_usage` reports it next to the direct count.
+  rule as the cap, so two revocations racing for the last slot serialize,
+  and the floor is read again under the lock, so one raised meanwhile is
+  the one that counts. `apply_grants` and `write_tuples_checked` decide the
+  floor on the **net result** of the batch — revokes minus the grants that
+  add a holder — and apply the revokes first, so an owner handoff ("revoke
+  alice, grant bob") passes a floor of one and a cap of one in one call,
+  which no sequence of single calls could. Offboarding (`delete_user_tuples`)
+  is subject to the floor unless the caller says `p_force => true` (the
+  offboarding intent, audited as `performed_by`; pgauthzd's `delete-user`
+  takes `force`, the console's Offboard sets it); erasure, type and store
+  removal and expiry are not revocations and are exempt. A floor needs a
+  direct rule on the type and may not exceed `max_direct`. `relation_usage`
+  reports it next to the direct count.
 
 Expired tuples never count, and there is no option to count them: the
 engine treats an expired row as gone on every path, and a count that

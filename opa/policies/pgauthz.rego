@@ -367,7 +367,7 @@ write_tuples(store, tuples, performed_by, headers) := _native_write(store, "writ
 delete_tuples(store, tuples, performed_by, headers) := _native_write(store, "delete", {"tuples": tuples, "performed_by": performed_by}, headers)
 
 # delete_user_tuples: offboarding — remove every tuple for a subject.
-delete_user_tuples(store, user, performed_by, headers) := _native_write(store, "delete-user", {"user": {"type": user.user_type, "id": user.user_id}, "performed_by": performed_by}, headers)
+delete_user_tuples(store, user, performed_by, headers) := _native_write(store, "delete-user", {"user": {"type": user.user_type, "id": user.user_id}, "performed_by": performed_by, "force": object.get(user, "force", false)}, headers)
 
 # write_tuples_checked: conditional/atomic write — preconditions, then deletes
 # and writes, in one transaction (optimistic concurrency).

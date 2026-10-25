@@ -360,7 +360,10 @@ func (s *Server) handleOffboard(w http.ResponseWriter, r *http.Request) {
 	}
 	var n int
 	err := s.asPerson(ctx, p, "can_grant", "store", store, map[string]any{"op": "offboard", "subject_type": req.UserType, "subject_id": req.UserID, "count": count}, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT authz.delete_user_tuples($1, $2, $3, $4)`, store, req.UserType, req.UserID, p.typ+":"+p.id).Scan(&n)
+		// p_force: offboarding is the explicit intent here — the subject
+		// leaves even where a relation floor (min_direct) would refuse the
+		// revocation of a last owner; relation_usage shows the gap afterwards.
+		return tx.QueryRow(ctx, `SELECT authz.delete_user_tuples($1, $2, $3, $4, p_force => true)`, store, req.UserType, req.UserID, p.typ+":"+p.id).Scan(&n)
 	})
 	if err != nil {
 		writeEngineError(w, err)

@@ -206,6 +206,15 @@ BEGIN
                   HINT = 'Drop the constraint (model_drop_relation_constraint) to allow wildcard grants on this relation.';
     END IF;
     PERFORM pg_advisory_xact_lock(hashtextextended(v_store || ':' || v_type || ':' || NEW.object_id, 0));
+    -- The cap again, now under the lock: one lowered (or dropped) while this
+    -- row waited is what counts (READ COMMITTED: a fresh snapshot).
+    SELECT c.max_direct INTO v_max
+      FROM authz.relation_constraints c
+     WHERE c.store_id = NEW.store_id AND c.object_type = NEW.object_type
+       AND c.relation = NEW.relation AND c.max_direct IS NOT NULL;
+    IF NOT FOUND THEN
+        RETURN NEW;
+    END IF;
     -- Exact (no LIMIT): on the success path the count is at most the cap
     -- anyway, and the refusal of an object already over a lowered cap must
     -- name the real count.

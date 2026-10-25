@@ -562,12 +562,12 @@ func (b *Backend) DeleteUserTuples(ctx context.Context, req authz.DeleteUserRequ
 	var n int
 	err := b.writeWithRole(ctx, req.Consistency, func(q querier) error {
 		return q.QueryRow(ctx,
-			"SELECT authz.delete_user_tuples($1, $2, $3, $4)",
-			req.Store, req.UserType, req.UserID, textOrNil(req.PerformedBy),
+			"SELECT authz.delete_user_tuples($1, $2, $3, $4, $5)",
+			req.Store, req.UserType, req.UserID, textOrNil(req.PerformedBy), req.Force,
 		).Scan(&n)
 	})
 	if err != nil {
-		return 0, fmt.Errorf("delete_user_tuples: %w", err)
+		return 0, fmt.Errorf("delete_user_tuples: %w", mapEngineError(err))
 	}
 	return n, nil
 }

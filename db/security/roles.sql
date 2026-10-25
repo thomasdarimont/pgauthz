@@ -419,7 +419,7 @@ GRANT EXECUTE ON FUNCTION authz.write_tuples(text, authz.tuple_input[], text) TO
 GRANT EXECUTE ON FUNCTION authz.write_tuples_jsonb(text, jsonb, text) TO authz_writer;
 GRANT EXECUTE ON FUNCTION authz.delete_tuples(text, authz.tuple_input[], text) TO authz_writer;
 GRANT EXECUTE ON FUNCTION authz.delete_tuples_jsonb(text, jsonb, text) TO authz_writer;
-GRANT EXECUTE ON FUNCTION authz.delete_user_tuples(text, text, text, text) TO authz_writer;
+GRANT EXECUTE ON FUNCTION authz.delete_user_tuples(text, text, text, text, boolean) TO authz_writer;
 GRANT EXECUTE ON FUNCTION authz.write_tuples_checked(text, jsonb, jsonb, jsonb, text) TO authz_writer;
 -- Freshness token (ADR 0009): the writer mints it post-commit (primary-only —
 -- it errors on a standby, so only the full/writer instance ever calls it).
@@ -549,7 +549,7 @@ ALTER FUNCTION authz.write_tuples(text, authz.tuple_input[], text) SECURITY DEFI
 ALTER FUNCTION authz.write_tuples_jsonb(text, jsonb, text) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_tuples(text, authz.tuple_input[], text) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_tuples_jsonb(text, jsonb, text) SECURITY DEFINER;
-ALTER FUNCTION authz.delete_user_tuples(text, text, text, text) SECURITY DEFINER;
+ALTER FUNCTION authz.delete_user_tuples(text, text, text, text, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.write_tuples_checked(text, jsonb, jsonb, jsonb, text) SECURITY DEFINER;
 ALTER FUNCTION authz.grant_namespace_access(text, text, text, boolean, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.revoke_namespace_access(text, text, text, boolean, boolean) SECURITY DEFINER;

@@ -274,6 +274,9 @@ type DeleteUserRequest struct {
 	UserID      string
 	PerformedBy string
 	Consistency string
+	// Force: offboarding regardless of relation floors (min_direct); without
+	// it the subject's tuples are subject to them like any revocation.
+	Force bool
 }
 
 // CheckedWriteRequest is a conditional/atomic write: preconditions gate the

@@ -253,6 +253,7 @@ type deleteUserBody struct {
 	User        Subject `json:"user"` // Type=user_type, ID=user_id
 	Consistency string  `json:"consistency,omitempty"`
 	PerformedBy string  `json:"performed_by,omitempty"`
+	Force       bool    `json:"force,omitempty"` // offboard regardless of relation floors (min_direct)
 }
 
 // DeleteUserTuples — POST /pgauthz/v1/delete-user: offboarding, remove every
@@ -281,7 +282,7 @@ func (h *Handler) DeleteUserTuples(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := nw.DeleteUserTuples(r.Context(), authz.DeleteUserRequest{
 		Store: store, UserType: req.User.Type, UserID: req.User.ID,
-		PerformedBy: performedBy, Consistency: req.Consistency,
+		PerformedBy: performedBy, Consistency: req.Consistency, Force: req.Force,
 	})
 	if err != nil {
 		writeWriteError(w, err)

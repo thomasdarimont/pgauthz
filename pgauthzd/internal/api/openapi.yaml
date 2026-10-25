@@ -1737,6 +1737,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/RelationFloor' }
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /stores/{store}/pgauthz/v1/delete-user:
@@ -1759,6 +1760,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/RelationFloor' }
         '500': { $ref: '#/components/responses/ServerError' }
         '501': { $ref: '#/components/responses/NotImplemented' }
 
@@ -3395,6 +3397,14 @@ components:
         user: { $ref: '#/components/schemas/Subject' }
         consistency: { $ref: '#/components/schemas/Consistency' }
         performed_by: { $ref: '#/components/schemas/PerformedBy' }
+        force:
+          type: boolean
+          default: false
+          description: >
+            Offboard regardless of relation floors (min_direct). Without it
+            the subject's tuples are subject to the floors like any
+            revocation and the request answers 409 relation_floor when, say,
+            the subject is the last owner of a document.
       required: [user]
     GrantRequest:
       type: object
