@@ -424,7 +424,9 @@ SELECT authz.delete_tuples_jsonb('demo', '[
 `delete_user_tuples(p_store, p_user_type, p_user_id, p_performed_by DEFAULT NULL, p_force DEFAULT false)`:
 without `p_force` the subject's tuples are subject to relation floors
 (`min_direct`) like any revocation; with it the offboarding goes through
-regardless (the audit trail carries `p_performed_by`).
+regardless (the audit trail carries `p_performed_by`). Forcing requires
+`authz_admin` (SQLSTATE `42501` otherwise): the console's Offboard has it,
+a pgauthzd writer does not.
 
 Revokes all permissions for a user in a single call. Useful for offboarding.
 
@@ -663,9 +665,11 @@ require `READ COMMITTED` (SQLSTATE `25000` otherwise). `min_direct`
 to leave fewer active direct assignments on the object (SQLSTATE `ZA002`,
 `relation_floor`; detail: floor, count, removing), under the same lock and
 isolation rule, re-reading the floor under the lock. `apply_grants` and
-`write_tuples_checked` decide it on the batch's net result (revokes first),
-so a handoff passes `min_direct = max_direct = 1`. `delete_user_tuples`
-honours it unless called with `p_force => true`; erasure, type and store
+`write_tuples_checked` decide it on the actual resulting set (revokes
+first), so a handoff passes `min_direct = max_direct = 1` and a delete-and-
+re-add of the same holder passes; `apply_grants` authorizes all entries
+against the original state first. `delete_user_tuples` honours it unless
+called with `p_force => true`, an admin capability; erasure, type and store
 removal and expiry are exempt. It needs a direct rule and may not exceed
 `max_direct`.
 Admin tier; the list is reader tier.

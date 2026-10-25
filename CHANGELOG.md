@@ -17,8 +17,12 @@ pre-1.0, minor versions may include breaking changes.
   lock and `READ COMMITTED`, re-read under the lock; `apply_grants` and
   `write_tuples_checked` decide it on the batch's net result with revokes
   first, so an owner handoff passes `min_direct = max_direct = 1` in one
-  call; `delete_user_tuples` honours it unless `p_force => true` (pgauthzd
-  `delete-user` takes `force`, the console's Offboard sets it); erasure, type
+  call, and a delete-and-re-add of the same holder passes (the actual
+  resulting set is counted); `apply_grants` authorizes all entries against
+  the original state before applying, so a sole owner can hand over;
+  `delete_user_tuples` honours it unless `p_force => true`, an `authz_admin`
+  capability (the console's Offboard has it; pgauthzd `delete-user` takes
+  `force` but its writer roles get 403); erasure, type
   and store removal and expiry are exempt. The cap guard re-reads the cap
   under the lock too. The console model declares it for `platform.admin` and
   `store.owner`, so the engine owns the last-owner rule the console used to

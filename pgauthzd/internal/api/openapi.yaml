@@ -3404,7 +3404,9 @@ components:
             Offboard regardless of relation floors (min_direct). Without it
             the subject's tuples are subject to the floors like any
             revocation and the request answers 409 relation_floor when, say,
-            the subject is the last owner of a document.
+            the subject is the last owner of a document. Forcing is an
+            administrative capability of the database role (authz_admin);
+            the write path's roles are not, so it answers 403 here.
       required: [user]
     GrantRequest:
       type: object

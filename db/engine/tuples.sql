@@ -647,9 +647,12 @@ BEGIN
            AND t.user_relation IS NOT DISTINCT FROM ur.id
            AND (t.expires_at IS NULL OR t.expires_at > statement_timestamp());
         CONTINUE WHEN v_removing = 0;
-        -- The additions that count (a batch's writes, decided as one): write
-        -- elements for the same pair that are NOT an active row already —
-        -- an owner handoff (revoke alice, grant bob) nets to zero.
+        -- The additions that count (a batch's writes, decided as one): the
+        -- resulting set is (active \ deletes) ∪ writes, so a write counts
+        -- unless it is an active holder that the batch does NOT delete — an
+        -- owner handoff (revoke alice, grant bob) nets to zero, and a
+        -- delete-and-re-add of the same holder (to change its condition or
+        -- expiry) nets to zero as well.
         SELECT count(*) INTO v_adding
           FROM (SELECT DISTINCT e->>'user_type' AS ut, e->>'user_id' AS uid, e->>'user_relation' AS ur
                   FROM jsonb_array_elements(p_writes) e
@@ -657,17 +660,17 @@ BEGIN
                    AND e->>'user_id' <> '*') w
           JOIN authz.types ut ON ut.store_id = p_store_id AND ut.name = w.ut
      LEFT JOIN authz.relations ur ON ur.store_id = p_store_id AND ur.name = w.ur
-         WHERE NOT EXISTS (
-             SELECT 1 FROM authz.tuples t
-              WHERE t.store_id = p_store_id AND t.object_type = v_obj.type_id AND t.object_id = v_obj.oid
-                AND t.relation = v_obj.rel_id AND t.user_type = ut.id AND t.user_id = w.uid
-                AND t.user_relation IS NOT DISTINCT FROM ur.id
-                AND (t.expires_at IS NULL OR t.expires_at > statement_timestamp()))
-           -- a write that is also deleted in the same batch nets out
-           AND NOT EXISTS (
-             SELECT 1 FROM jsonb_array_elements(p_deletes) d
-              WHERE d->>'object_type' = v_obj.ot AND d->>'object_id' = v_obj.oid AND d->>'relation' = v_obj.rel
-                AND d->>'user_type' = w.ut AND d->>'user_id' = w.uid AND d->>'user_relation' IS NOT DISTINCT FROM w.ur);
+         WHERE NOT (
+             EXISTS (
+                 SELECT 1 FROM authz.tuples t
+                  WHERE t.store_id = p_store_id AND t.object_type = v_obj.type_id AND t.object_id = v_obj.oid
+                    AND t.relation = v_obj.rel_id AND t.user_type = ut.id AND t.user_id = w.uid
+                    AND t.user_relation IS NOT DISTINCT FROM ur.id
+                    AND (t.expires_at IS NULL OR t.expires_at > statement_timestamp()))
+             AND NOT EXISTS (
+                 SELECT 1 FROM jsonb_array_elements(p_deletes) d
+                  WHERE d->>'object_type' = v_obj.ot AND d->>'object_id' = v_obj.oid AND d->>'relation' = v_obj.rel
+                    AND d->>'user_type' = w.ut AND d->>'user_id' = w.uid AND d->>'user_relation' IS NOT DISTINCT FROM w.ur));
         SELECT count(*) INTO v_total
           FROM authz.tuples t
          WHERE t.store_id = p_store_id AND t.object_type = v_obj.type_id AND t.object_id = v_obj.oid
@@ -961,7 +964,14 @@ BEGIN
     PERFORM set_config('authz.performed_by', COALESCE(p_performed_by, ''), true);
 
     -- Relation floors (min_direct): the subject's active assignments are the
-    -- deletes, unless the caller forces the offboarding.
+    -- deletes, unless the caller forces the offboarding. Forcing is an
+    -- administrative capability: a plain writer (pgauthzd's write path runs
+    -- as one) cannot use it to step around a floor it could not revoke past.
+    IF p_force AND NOT pg_has_role(authz._effective_role(), 'authz_admin', 'MEMBER') THEN
+        RAISE EXCEPTION 'Permission denied: forcing an offboarding past relation floors (p_force) requires authz_admin (role "%")',
+            authz._effective_role()
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
     IF NOT p_force THEN
         PERFORM authz._check_relation_floor(p_store, v_store_id,
             (SELECT COALESCE(jsonb_agg(jsonb_build_object(
@@ -1273,6 +1283,46 @@ BEGIN
 END;
 $$;
 
+-- _grant_impl: grant's body; p_check_rule = false for apply_grants, which
+-- authorizes every entry against the ORIGINAL state first (internal).
+CREATE OR REPLACE FUNCTION authz._grant_impl(
+    p_store             text,
+    p_actor_type        text,
+    p_actor_id          text,
+    p_user_type         text,
+    p_user_id           text,
+    p_relation          text,
+    p_object_type       text,
+    p_object_id         text,
+    p_user_relation     text,
+    p_condition         text,
+    p_condition_context jsonb,
+    p_expires_at        timestamptz,
+    p_request_context   jsonb,
+    p_check_rule        boolean
+) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_store_id integer := authz._s(p_store);
+    v_changed  boolean;
+BEGIN
+    IF p_check_rule THEN
+        PERFORM authz._grant_rule_check(p_store, v_store_id, p_actor_type, p_actor_id,
+                                        p_relation, p_object_type, p_object_id, false, p_request_context);
+    END IF;
+    v_changed := authz.write_tuple(p_store, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
+                                   p_user_relation, p_condition, p_condition_context,
+                                   p_performed_by => p_actor_type || ':' || p_actor_id,
+                                   p_expires_at   => p_expires_at);
+    IF v_changed THEN
+        PERFORM authz._record_sharing(p_store, v_store_id, p_actor_type, p_actor_id, p_relation, p_object_type, p_object_id,
+            jsonb_build_object('op', 'grant', 'relation', p_relation, 'user_type', p_user_type, 'user_id', p_user_id,
+                               'user_relation', p_user_relation, 'expires_at', p_expires_at, 'condition', p_condition));
+    END IF;
+    RETURN v_changed;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION authz.grant(
     p_store             text,
     p_actor_type        text,
@@ -1289,22 +1339,10 @@ CREATE OR REPLACE FUNCTION authz.grant(
     p_request_context   jsonb       DEFAULT NULL
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
-DECLARE
-    v_store_id integer := authz._s(p_store);
-    v_changed  boolean;
 BEGIN
-    PERFORM authz._grant_rule_check(p_store, v_store_id, p_actor_type, p_actor_id,
-                                    p_relation, p_object_type, p_object_id, false, p_request_context);
-    v_changed := authz.write_tuple(p_store, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
-                                   p_user_relation, p_condition, p_condition_context,
-                                   p_performed_by => p_actor_type || ':' || p_actor_id,
-                                   p_expires_at   => p_expires_at);
-    IF v_changed THEN
-        PERFORM authz._record_sharing(p_store, v_store_id, p_actor_type, p_actor_id, p_relation, p_object_type, p_object_id,
-            jsonb_build_object('op', 'grant', 'relation', p_relation, 'user_type', p_user_type, 'user_id', p_user_id,
-                               'user_relation', p_user_relation, 'expires_at', p_expires_at, 'condition', p_condition));
-    END IF;
-    RETURN v_changed;
+    RETURN authz._grant_impl(p_store, p_actor_type, p_actor_id, p_user_type, p_user_id, p_relation,
+                             p_object_type, p_object_id, p_user_relation, p_condition, p_condition_context,
+                             p_expires_at, p_request_context, true);
 END;
 $$;
 
@@ -1321,15 +1359,18 @@ CREATE OR REPLACE FUNCTION authz._revoke_impl(
     p_object_id       text,
     p_user_relation   text,
     p_request_context jsonb,
-    p_check_floor     boolean
+    p_check_floor     boolean,
+    p_check_rule      boolean
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
     v_store_id integer := authz._s(p_store);
     v_changed  boolean;
 BEGIN
-    PERFORM authz._grant_rule_check(p_store, v_store_id, p_actor_type, p_actor_id,
-                                    p_relation, p_object_type, p_object_id, true, p_request_context);
+    IF p_check_rule THEN
+        PERFORM authz._grant_rule_check(p_store, v_store_id, p_actor_type, p_actor_id,
+                                        p_relation, p_object_type, p_object_id, true, p_request_context);
+    END IF;
     v_changed := authz._delete_tuple_impl(p_store, p_user_type, p_user_id, p_relation, p_object_type, p_object_id,
                                           p_user_relation, p_actor_type || ':' || p_actor_id, p_check_floor);
     IF v_changed THEN
@@ -1356,7 +1397,7 @@ CREATE OR REPLACE FUNCTION authz.revoke(
 LANGUAGE plpgsql AS $$
 BEGIN
     RETURN authz._revoke_impl(p_store, p_actor_type, p_actor_id, p_user_type, p_user_id, p_relation,
-                              p_object_type, p_object_id, p_user_relation, p_request_context, true);
+                              p_object_type, p_object_id, p_user_relation, p_request_context, true, true);
 END;
 $$;
 
@@ -1522,6 +1563,35 @@ BEGIN
         PERFORM pg_advisory_xact_lock(hashtextextended(p_store || ':' || v_obj.ot || ':' || v_obj.oid, 0));
     END LOOP;
 
+    -- Every entry is authorized against the ORIGINAL state, under the locks
+    -- above, before anything changes: the actor may do all of this at the
+    -- moment of the request. Otherwise a sole owner handing ownership over
+    -- ("revoke me, grant bob") would lose the right to grant with the first
+    -- half of the batch. The entries then apply without re-checking.
+    FOR v_e IN SELECT * FROM jsonb_array_elements(p_revokes)
+    LOOP
+        v_i := v_i + 1;
+        v_ctx := CASE WHEN jsonb_typeof(v_e->'context') = 'object' THEN v_e->'context' ELSE p_context END;
+        BEGIN
+            PERFORM authz._grant_rule_check(p_store, authz._s(p_store), p_actor_type, p_actor_id,
+                                            v_e->>'relation', v_e->>'object_type', v_e->>'object_id', true, v_ctx);
+        EXCEPTION WHEN OTHERS THEN
+            RAISE EXCEPTION 'apply_grants: revoke entry %: %', v_i, SQLERRM USING ERRCODE = SQLSTATE;
+        END;
+    END LOOP;
+    v_i := 0;
+    FOR v_e IN SELECT * FROM jsonb_array_elements(p_grants)
+    LOOP
+        v_i := v_i + 1;
+        v_ctx := CASE WHEN jsonb_typeof(v_e->'context') = 'object' THEN v_e->'context' ELSE p_context END;
+        BEGIN
+            PERFORM authz._grant_rule_check(p_store, authz._s(p_store), p_actor_type, p_actor_id,
+                                            v_e->>'relation', v_e->>'object_type', v_e->>'object_id', false, v_ctx);
+        EXCEPTION WHEN OTHERS THEN
+            RAISE EXCEPTION 'apply_grants: grant entry %: %', v_i, SQLERRM USING ERRCODE = SQLSTATE;
+        END;
+    END LOOP;
+
     -- Relation floors (min_direct, migration 0026) on the batch's NET result:
     -- revokes minus the grants that add a holder, so an owner handoff
     -- ("revoke alice, grant bob") passes a floor of one — and, with the
@@ -1529,6 +1599,7 @@ BEGIN
     -- per-tuple floor check (already decided here, under the locks above).
     PERFORM authz._check_relation_floor(p_store, authz._s(p_store), p_revokes, p_grants);
 
+    v_i := 0;
     FOR v_e IN SELECT * FROM jsonb_array_elements(p_revokes)
     LOOP
         v_i := v_i + 1;
@@ -1537,7 +1608,7 @@ BEGIN
             IF authz._revoke_impl(p_store, p_actor_type, p_actor_id,
                             v_e->>'user_type', v_e->>'user_id', v_e->>'relation',
                             v_e->>'object_type', v_e->>'object_id',
-                            v_e->>'user_relation', v_ctx, false) THEN
+                            v_e->>'user_relation', v_ctx, false, false) THEN
                 v_revoked := v_revoked + 1;
             END IF;
         EXCEPTION WHEN OTHERS THEN
@@ -1550,14 +1621,14 @@ BEGIN
         v_i := v_i + 1;
         v_ctx := CASE WHEN jsonb_typeof(v_e->'context') = 'object' THEN v_e->'context' ELSE p_context END;
         BEGIN
-            IF authz.grant(p_store, p_actor_type, p_actor_id,
+            IF authz._grant_impl(p_store, p_actor_type, p_actor_id,
                            v_e->>'user_type', v_e->>'user_id', v_e->>'relation',
                            v_e->>'object_type', v_e->>'object_id',
-                           p_user_relation     => v_e->>'user_relation',
-                           p_condition         => v_e->>'condition',
-                           p_condition_context => CASE WHEN jsonb_typeof(v_e->'condition_context') = 'object' THEN v_e->'condition_context' END,
-                           p_expires_at        => (v_e->>'expires_at')::timestamptz,
-                           p_request_context   => v_ctx) THEN
+                           v_e->>'user_relation',
+                           v_e->>'condition',
+                           CASE WHEN jsonb_typeof(v_e->'condition_context') = 'object' THEN v_e->'condition_context' END,
+                           (v_e->>'expires_at')::timestamptz,
+                           v_ctx, false) THEN
                 v_granted := v_granted + 1;
             END IF;
         EXCEPTION WHEN OTHERS THEN

@@ -475,6 +475,14 @@ BEGIN
     BEGIN PERFORM authz.delete_user_tuples('test_rc', 'user', 'bob');
     EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
     PERFORM _test_assert('rc_14_offboarding_floored_by_default', v_state, 'ZA002');
+    -- forcing is an admin capability: a plain writer role cannot
+    v_state := NULL;
+    BEGIN
+        SET LOCAL ROLE app_readwrite;
+        PERFORM authz.delete_user_tuples('test_rc', 'user', 'bob', p_force => true);
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    RESET ROLE;
+    PERFORM _test_assert('rc_14_force_needs_admin', v_state, '42501');
     PERFORM _test_assert('rc_14_offboarding_forced', authz.delete_user_tuples('test_rc', 'user', 'bob', p_force => true)::text, '2');
     PERFORM _test_assert('rc_14_object_without_owner', (SELECT direct_count::text FROM authz.relation_usage('test_rc', 'doc', 'plan', 'owner')), '0');
     -- the floor guards owner only: another relation on the same object is freely revocable
@@ -527,14 +535,42 @@ BEGIN
         p_deletes => '[{"user_type":"user","user_id":"carol","relation":"owner","object_type":"doc","object_id":"plan"}]');
     EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
     PERFORM _test_assert('rc_16_net_below_floor_refused', v_state, 'ZA002');
-    -- a write that is already an active holder adds nothing: "revoke carol, grant carol" nets to -1
+    -- delete-and-re-add of the same holder (to change its expiry) nets to zero: the result still holds carol
+    v_res := authz.write_tuples_checked('test_rc',
+        p_deletes => '[{"user_type":"user","user_id":"carol","relation":"owner","object_type":"doc","object_id":"plan"}]',
+        p_writes  => '[{"user_type":"user","user_id":"carol","relation":"owner","object_type":"doc","object_id":"plan","expires_at":"2099-01-01T00:00:00Z"}]');
+    PERFORM _test_assert('rc_16_same_holder_readd_ok', v_res::text, '{"deleted": 1, "written": 1}');
+    PERFORM _test_assert('rc_16_same_holder_still_one',
+        (SELECT count(*)::text || ' ' || max(expires_at)::date::text FROM authz.tuples t WHERE t.store_id = authz._s('test_rc') AND t.object_id = 'plan' AND t.relation = authz._r(authz._s('test_rc'), 'owner')), '1 2099-01-01');
+    -- a re-grant of an active holder that is NOT deleted adds nothing: "revoke carol, grant carol (no-op) + grant dave"? no — plain "revoke carol" with a redundant write of someone already active
+    PERFORM authz.model_set_relation_constraint('test_rc', 'doc', 'owner', p_min_direct => 1);
+    PERFORM authz.write_tuple('test_rc', 'user', 'dave', 'owner', 'doc', 'plan');
     v_state := NULL;
     BEGIN PERFORM authz.write_tuples_checked('test_rc',
-        p_deletes => '[{"user_type":"user","user_id":"carol","relation":"owner","object_type":"doc","object_id":"plan"}]',
-        p_writes  => '[{"user_type":"user","user_id":"carol","relation":"owner","object_type":"doc","object_id":"plan"}]');
+        p_deletes => '[{"user_type":"user","user_id":"carol","relation":"owner","object_type":"doc","object_id":"plan"},
+                       {"user_type":"user","user_id":"dave","relation":"owner","object_type":"doc","object_id":"plan"}]',
+        p_writes  => '[{"user_type":"user","user_id":"dave","relation":"owner","object_type":"doc","object_id":"plan"}]');
     EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
-    PERFORM _test_assert('rc_16_same_holder_nets_zero_add', v_state, 'ZA002');
-    PERFORM authz.model_set_relation_constraint('test_rc', 'doc', 'owner', p_min_direct => 1);
+    PERFORM _test_assert('rc_16_result_set_counts', v_state, NULL);   -- (active \ {carol, dave}) ∪ {dave} = {dave}: 1 ≥ 1
+    PERFORM _test_assert('rc_16_dave_remains',
+        (SELECT string_agg(user_id, ',') FROM authz.tuples t WHERE t.store_id = authz._s('test_rc') AND t.object_id = 'plan' AND t.relation = authz._r(authz._s('test_rc'), 'owner')), 'dave');
+    -- a sole owner hands over without any other right: every entry is authorized against the original state
+    PERFORM authz.delete_tuple('test_rc', 'user', 'alice', 'editor', 'doc', 'plan');
+    v_res := authz.apply_grants('test_rc', 'user', 'dave',
+        p_grants  => '[{"user_type":"user","user_id":"erin","relation":"owner","object_type":"doc","object_id":"plan"}]',
+        p_revokes => '[{"user_type":"user","user_id":"dave","relation":"owner","object_type":"doc","object_id":"plan"}]');
+    PERFORM _test_assert('rc_16_sole_owner_handoff', v_res::text, '{"granted": 1, "revoked": 1}');
+    PERFORM _test_assert('rc_16_erin_is_the_owner',
+        (SELECT string_agg(user_id, ',') FROM authz.tuples t WHERE t.store_id = authz._s('test_rc') AND t.object_id = 'plan' AND t.relation = authz._r(authz._s('test_rc'), 'owner')), 'erin');
+    -- but an actor without the right at the start is refused before anything changes
+    v_state := NULL;
+    BEGIN PERFORM authz.apply_grants('test_rc', 'user', 'dave',
+        p_grants  => '[{"user_type":"user","user_id":"fay","relation":"owner","object_type":"doc","object_id":"plan"}]',
+        p_revokes => '[{"user_type":"user","user_id":"erin","relation":"owner","object_type":"doc","object_id":"plan"}]');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('rc_16_former_owner_refused', v_state, '42501');
+    PERFORM _test_assert('rc_16_nothing_changed',
+        (SELECT string_agg(user_id, ',') FROM authz.tuples t WHERE t.store_id = authz._s('test_rc') AND t.object_id = 'plan' AND t.relation = authz._r(authz._s('test_rc'), 'owner')), 'erin');
     PERFORM authz.write_tuple('test_rc', 'user', 'alice', 'owner', 'doc', 'plan');
 END;
 $$;

@@ -1556,13 +1556,27 @@ SELECT authz.model_drop_relation_constraint('docs', 'document', 'viewer');
   floor on the **net result** of the batch — revokes minus the grants that
   add a holder — and apply the revokes first, so an owner handoff ("revoke
   alice, grant bob") passes a floor of one and a cap of one in one call,
-  which no sequence of single calls could. Offboarding (`delete_user_tuples`)
-  is subject to the floor unless the caller says `p_force => true` (the
-  offboarding intent, audited as `performed_by`; pgauthzd's `delete-user`
-  takes `force`, the console's Offboard sets it); erasure, type and store
-  removal and expiry are not revocations and are exempt. A floor needs a
-  direct rule on the type and may not exceed `max_direct`. `relation_usage`
-  reports it next to the direct count.
+  which no sequence of single calls could; the result counted is the actual
+  resulting set, so deleting and re-adding the same holder (to change its
+  expiry) passes too. `apply_grants` authorizes every entry against the
+  original state before it applies any, so a sole owner may hand ownership
+  over without holding a second right. Offboarding (`delete_user_tuples`)
+  is subject to the floor unless the caller says `p_force => true`, which
+  is an **administrative** capability (`authz_admin`; the console's Offboard
+  has it, a pgauthzd writer does not): a writer cannot step around a floor
+  by offboarding the holder. Erasure, type and store removal and expiry are
+  not revocations and are exempt. A floor needs a direct rule on the type
+  and may not exceed `max_direct`. `relation_usage` reports it next to the
+  direct count.
+
+  The contract for changing a floor or a cap: it applies to the writes and
+  revocations that see it committed. Existing objects are never re-validated
+  — declaring a floor of two on documents that have one owner is allowed and
+  leaves them below it — so a floor raised while a revocation is in flight
+  yields the same state as one raised just after it; `relation_usage` shows
+  objects below their floor or above their cap. Model changes and tuple
+  writes are therefore not serialized against each other beyond the
+  re-read under the object lock.
 
 Expired tuples never count, and there is no option to count them: the
 engine treats an expired row as gone on every path, and a count that
