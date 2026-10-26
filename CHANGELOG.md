@@ -70,6 +70,20 @@ pre-1.0, minor versions may include breaking changes.
   a `group` type in the access model (a group admin sees and administers
   the group's stores), Platform → Groups, the group on each store and on
   store creation.
+- **Store groups, phase 2: group issuers** ([ADR 0017](docs/adr/0017-store-groups.md)).
+  Migration 0029 gives an issuer binding row `store_group`, `jwks_url`,
+  `audience`/`audiences` and `admin`: a row naming a group reaches the
+  group's stores (resolved by the engine; membership changes reload the
+  fleet), may carry the provider's own trust anchor — an issuer the
+  environment does not list, admitted for the group only — and delegated
+  admin rules only. The engine validates (https, an audience, no patterns
+  with a group); a group with issuers is not deleted. Admin API: platform
+  scope or a delegated credential with `can_manage_issuers` on the group
+  writes, lists and deletes such rows; `GET …/issuers` reports
+  `anchor_source`. Console: group admins open Platform → Issuers for their
+  groups, the form takes the group, the JWKS URL (OpenID discovery from the
+  issuer URL) and audiences; `set_issuer_binding` grew five parameters
+  (the old signature is dropped).
 - **Every error names its request.** pgauthzd's and the console's JSON
   errors carry `request_id` (the response's `X-Request-ID`, unique per
   request, also on the request's log line and the decision log), so a

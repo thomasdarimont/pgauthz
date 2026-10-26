@@ -189,7 +189,8 @@ export const api = {
   platformIssuersAudit: (p = {}) => call(`api/platform/issuers/audit?${new URLSearchParams(p)}`),
   /** @param {import('./types.js').IssuerBinding} b */
   platformIssuerSave: (b) => call('api/platform/issuers', b, { method: 'PUT' }),
-  platformIssuerDelete: (issuer) => call('api/platform/issuers/delete', { issuer }),
+  platformIssuerDelete: (issuer, store_group = '') => call('api/platform/issuers/delete', store_group ? { issuer, store_group } : { issuer }),
+  platformIssuerDiscover: (issuer) => call(`api/platform/issuers/discover?issuer=${enc(issuer)}`),
   /** @returns {Promise<import('./types.js').PoliciesResponse>} */
   policies: (store) => call(`api/stores/${enc(store)}/policies`),
   /** @returns {Promise<import('./types.js').NamespacesResponse>} */

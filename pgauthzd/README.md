@@ -815,6 +815,19 @@ client scope that carries the `authz-api` audience with it
 (`keycloak/terraform/scopes.pgauthz.tf`), one scope per capability. `ADMIN_CLIENT_CERTS` entries take
 the same two fields for certificate-based runners.
 
+**Group issuers (ADR 0017).** A database row may name a `store_group`
+instead of store patterns and carry its own anchor (`jwks_url`,
+`audience`/`audiences`): an issuer the environment does not list is then
+trusted for that group's stores only — the engine resolves the group's
+members into the row's `stores`, and a store joining the group reaches the
+fleet on the next reload (membership changes bump the bindings revision).
+Such a row may carry delegated admin rules only (`admin: [{"decide": …}]`).
+Over the admin API a group issuer is written by platform scope or by a
+delegated credential the console store grants `can_manage_issuers` on
+that group; a plain row for an unknown issuer is still refused ("a binding
+cannot add trust"). `GET …/issuers` reports `anchor_source` (`env` or
+`db`) and `store_group`.
+
 **Delegated rules: the management console decides.** Instead of listing
 what a credential may do, a rule can name the authorization store that
 decides — the console's own: `{"scopes":["pgauthz:admin"],"decide":{"store":"console"}}`.

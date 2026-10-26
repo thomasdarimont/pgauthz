@@ -15,6 +15,11 @@ $$;
 
 -- list_issuer_bindings: every binding row, as pgauthzd and the console read
 -- them (the console joins them with the instance's effective issuer set).
+-- The shape grew in 0029 (group issuers): CREATE OR REPLACE cannot change
+-- a function's columns, so the old shape is dropped first. A group row's
+-- `stores` are the group's member stores as they are now (plain names), so
+-- pgauthzd needs no second lookup; `store_group` says it is a group row.
+DROP FUNCTION IF EXISTS authz.list_issuer_bindings();
 CREATE OR REPLACE FUNCTION authz.list_issuer_bindings()
 RETURNS TABLE (
     issuer          text,
@@ -27,12 +32,21 @@ RETURNS TABLE (
     created_at      timestamptz,
     created_by      text,
     updated_at      timestamptz,
-    updated_by      text
+    updated_by      text,
+    store_group     text,
+    jwks_url        text,
+    audience        text,
+    audiences       text[],
+    admin           jsonb
 )
 LANGUAGE sql STABLE AS $$
-    SELECT issuer, stores, db_roles, client_db_roles, pep_clients, enabled, description, created_at, created_by, updated_at, updated_by
-      FROM authz.issuer_bindings
-     ORDER BY issuer;
+    SELECT b.issuer,
+           CASE WHEN b.store_group IS NULL THEN b.stores
+                ELSE COALESCE((SELECT array_agg(s.name ORDER BY s.name) FROM authz.stores s JOIN authz.store_groups g ON g.id = s.group_id WHERE g.name = b.store_group), '{}') END,
+           b.db_roles, b.client_db_roles, b.pep_clients, b.enabled, b.description, b.created_at, b.created_by, b.updated_at, b.updated_by,
+           b.store_group, b.jwks_url, b.audience, b.audiences, b.admin
+      FROM authz.issuer_bindings b
+     ORDER BY b.issuer;
 $$;
 
 -- list_issuer_bindings_audit: the change history, newest first; keyset

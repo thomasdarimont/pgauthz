@@ -20,11 +20,15 @@ DECLARE
     v_rev bigint;
 BEGIN
     IF TG_OP = 'DELETE' THEN
-        INSERT INTO authz.issuer_bindings_audit (action, performed_by, issuer, stores, db_roles, client_db_roles, pep_clients, enabled, description)
-        VALUES ('DELETE', v_by, OLD.issuer, OLD.stores, OLD.db_roles, OLD.client_db_roles, OLD.pep_clients, OLD.enabled, OLD.description);
+        INSERT INTO authz.issuer_bindings_audit (action, performed_by, issuer, stores, db_roles, client_db_roles, pep_clients, enabled, description,
+                                                 store_group, jwks_url, audience, audiences, admin)
+        VALUES ('DELETE', v_by, OLD.issuer, OLD.stores, OLD.db_roles, OLD.client_db_roles, OLD.pep_clients, OLD.enabled, OLD.description,
+                OLD.store_group, OLD.jwks_url, OLD.audience, OLD.audiences, OLD.admin);
     ELSE
-        INSERT INTO authz.issuer_bindings_audit (action, performed_by, issuer, stores, db_roles, client_db_roles, pep_clients, enabled, description)
-        VALUES (TG_OP, v_by, NEW.issuer, NEW.stores, NEW.db_roles, NEW.client_db_roles, NEW.pep_clients, NEW.enabled, NEW.description);
+        INSERT INTO authz.issuer_bindings_audit (action, performed_by, issuer, stores, db_roles, client_db_roles, pep_clients, enabled, description,
+                                                 store_group, jwks_url, audience, audiences, admin)
+        VALUES (TG_OP, v_by, NEW.issuer, NEW.stores, NEW.db_roles, NEW.client_db_roles, NEW.pep_clients, NEW.enabled, NEW.description,
+                NEW.store_group, NEW.jwks_url, NEW.audience, NEW.audiences, NEW.admin);
     END IF;
     UPDATE authz.issuer_bindings_revision SET revision = revision + 1, changed_at = now() RETURNING revision INTO v_rev;
     PERFORM pg_notify('authz_issuer_bindings', v_rev::text);
@@ -45,11 +49,17 @@ CREATE OR REPLACE TRIGGER issuer_bindings_changed
 -- pattern, or the same pattern) — assertion cannot widen where tokens may
 -- ask (ADR 0014).
 ------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS authz._validate_issuer_binding(text[], text[], jsonb, jsonb);
 CREATE OR REPLACE FUNCTION authz._validate_issuer_binding(
     p_stores          text[],
     p_db_roles        text[],
     p_client_db_roles jsonb,
-    p_pep_clients     jsonb
+    p_pep_clients     jsonb,
+    p_store_group     text  DEFAULT NULL,
+    p_jwks_url        text  DEFAULT NULL,
+    p_audience        text  DEFAULT NULL,
+    p_audiences       text[] DEFAULT '{}',
+    p_admin           jsonb DEFAULT '[]'::jsonb
 ) RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -58,7 +68,39 @@ DECLARE
     v_value   jsonb;
     v_covered boolean;
     v_sp      text;
+    v_rule    jsonb;
 BEGIN
+    -- group issuers (ADR 0017): the group decides the stores; a trust anchor
+    -- is only ever a group's (platform issuers stay in the environment) and
+    -- needs an audience; admin rules on a row delegate only.
+    IF p_store_group IS NOT NULL THEN
+        PERFORM authz._sg(p_store_group);
+        IF COALESCE(array_length(p_stores, 1), 0) > 0 THEN
+            RAISE EXCEPTION 'a group issuer binds the group''s stores: stores must be empty when store_group is set' USING ERRCODE = 'invalid_parameter_value';
+        END IF;
+    END IF;
+    IF p_jwks_url IS NOT NULL THEN
+        IF p_store_group IS NULL THEN
+            RAISE EXCEPTION 'a trust anchor (jwks_url) needs a store group: platform issuers are configured in the environment (JWT_ISSUERS)' USING ERRCODE = 'invalid_parameter_value';
+        END IF;
+        IF p_jwks_url !~ '^https://' THEN
+            RAISE EXCEPTION 'jwks_url must be an https:// URL' USING ERRCODE = 'invalid_parameter_value';
+        END IF;
+        IF NULLIF(btrim(COALESCE(p_audience, '')), '') IS NULL AND COALESCE(array_length(p_audiences, 1), 0) = 0 THEN
+            RAISE EXCEPTION 'a trust anchor needs an audience (audience or audiences): without one, tokens the provider mints for any other API would be accepted' USING ERRCODE = 'invalid_parameter_value';
+        END IF;
+    END IF;
+    IF p_admin IS NULL OR jsonb_typeof(p_admin) <> 'array' THEN
+        RAISE EXCEPTION 'admin must be a JSON array of rules' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    FOR v_rule IN SELECT jsonb_array_elements(p_admin) LOOP
+        IF jsonb_typeof(v_rule) <> 'object' OR jsonb_typeof(v_rule -> 'decide') <> 'object' OR NULLIF(v_rule #>> '{decide,store}', '') IS NULL THEN
+            RAISE EXCEPTION 'admin rules of a database row delegate only: each rule needs {"decide": {"store": …}}' USING ERRCODE = 'invalid_parameter_value';
+        END IF;
+        IF v_rule ? 'capabilities' OR v_rule ? 'stores' OR (v_rule ->> 'scope') = 'platform' THEN
+            RAISE EXCEPTION 'admin rules of a database row take no capabilities, stores or platform scope: the deciding store grants what the credential may manage' USING ERRCODE = 'invalid_parameter_value';
+        END IF;
+    END LOOP;
     FOREACH v_pat IN ARRAY COALESCE(p_stores, '{}') LOOP
         IF v_pat = '' THEN RAISE EXCEPTION 'stores: empty pattern' USING ERRCODE = 'invalid_parameter_value'; END IF;
         PERFORM regexp_match('', '^(?:' || v_pat || ')$');   -- compiles, or raises
@@ -108,6 +150,9 @@ $$;
 -- whole row — a PUT), validated, recorded as p_performed_by (else the
 -- session's authz.performed_by, else the connection role).
 ------------------------------------------------------------------------
+-- The signature grew in 0029 (group issuers): the old overload is dropped so
+-- a positional call cannot be ambiguous between the two.
+DROP FUNCTION IF EXISTS authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text);
 CREATE OR REPLACE FUNCTION authz.set_issuer_binding(
     p_issuer          text,
     p_stores          text[]  DEFAULT '{}',
@@ -116,7 +161,12 @@ CREATE OR REPLACE FUNCTION authz.set_issuer_binding(
     p_pep_clients     jsonb   DEFAULT '{}'::jsonb,
     p_enabled         boolean DEFAULT true,
     p_description     text    DEFAULT NULL,
-    p_performed_by    text    DEFAULT NULL
+    p_performed_by    text    DEFAULT NULL,
+    p_store_group     text    DEFAULT NULL,      -- ADR 0017: the group whose stores the issuer reaches
+    p_jwks_url        text    DEFAULT NULL,      -- a group issuer's own trust anchor
+    p_audience        text    DEFAULT NULL,
+    p_audiences       text[]  DEFAULT '{}',
+    p_admin           jsonb   DEFAULT '[]'::jsonb -- delegated admin rules only
 ) RETURNS bigint
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -126,18 +176,25 @@ BEGIN
         RAISE EXCEPTION 'issuer is required (the token''s iss)' USING ERRCODE = 'invalid_parameter_value';
     END IF;
     PERFORM authz._validate_issuer_binding(COALESCE(p_stores, '{}'), COALESCE(p_db_roles, '{}'),
-                                           COALESCE(p_client_db_roles, '{}'::jsonb), COALESCE(p_pep_clients, '{}'::jsonb));
+                                           COALESCE(p_client_db_roles, '{}'::jsonb), COALESCE(p_pep_clients, '{}'::jsonb),
+                                           NULLIF(btrim(COALESCE(p_store_group, '')), ''), NULLIF(btrim(COALESCE(p_jwks_url, '')), ''),
+                                           NULLIF(btrim(COALESCE(p_audience, '')), ''), COALESCE(p_audiences, '{}'), COALESCE(p_admin, '[]'::jsonb));
     PERFORM set_config('authz.performed_by', COALESCE(p_performed_by, ''), true);
     -- created_at / created_by are set once (the INSERT) and kept by a replace.
     INSERT INTO authz.issuer_bindings (issuer, stores, db_roles, client_db_roles, pep_clients, enabled, description,
+                                       store_group, jwks_url, audience, audiences, admin,
                                        created_at, created_by, updated_at, updated_by)
     VALUES (btrim(p_issuer), COALESCE(p_stores, '{}'), COALESCE(p_db_roles, '{}'), COALESCE(p_client_db_roles, '{}'::jsonb),
             COALESCE(p_pep_clients, '{}'::jsonb), COALESCE(p_enabled, true), p_description,
+            NULLIF(btrim(COALESCE(p_store_group, '')), ''), NULLIF(btrim(COALESCE(p_jwks_url, '')), ''),
+            NULLIF(btrim(COALESCE(p_audience, '')), ''), COALESCE(p_audiences, '{}'), COALESCE(p_admin, '[]'::jsonb),
             now(), COALESCE(NULLIF(p_performed_by, ''), current_user),
             now(), COALESCE(NULLIF(p_performed_by, ''), current_user))
     ON CONFLICT (issuer) DO UPDATE SET
         stores = EXCLUDED.stores, db_roles = EXCLUDED.db_roles, client_db_roles = EXCLUDED.client_db_roles,
         pep_clients = EXCLUDED.pep_clients, enabled = EXCLUDED.enabled, description = EXCLUDED.description,
+        store_group = EXCLUDED.store_group, jwks_url = EXCLUDED.jwks_url, audience = EXCLUDED.audience,
+        audiences = EXCLUDED.audiences, admin = EXCLUDED.admin,
         updated_at = now(), updated_by = EXCLUDED.updated_by;
     SELECT revision INTO v_rev FROM authz.issuer_bindings_revision;
     RETURN v_rev;

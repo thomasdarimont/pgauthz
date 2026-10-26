@@ -500,3 +500,51 @@ func TestAdminGateClientCertificate(t *testing.T) {
 		t.Fatalf("certificate on a listener without AllowClientCert: %d", rec.Code)
 	}
 }
+
+// Group issuers over the admin API (ADR 0017): an unknown issuer is still
+// refused as a plain binding, admitted as a group issuer (store group +
+// anchor + audience) by platform scope or by a delegated credential the
+// console store grants can_manage_issuers on that group; a static tenant
+// admin never; the group's admins see and delete the row; a row for an
+// environment issuer may not carry admin rules.
+func TestAdminGroupIssuers(t *testing.T) {
+	h, stub := storesFixture(t)
+	stub.grants = map[string]bool{"user:carol can_manage_issuers group:tenant_c": true}
+	plain := `{"issuer":"https://new-idp","stores":["x"],"enabled":true}`
+	group := `{"issuer":"https://new-idp","store_group":"tenant_c","jwks_url":"https://new-idp/jwks","audience":"authz-api","enabled":true,"admin":[{"decide":{"store":"console"}}]}`
+	if w := serveAdmin(h, platformAdmin.request("PUT", "/pgauthz/v1/admin/issuer-bindings", plain)); w.Code != 400 || !strings.Contains(w.Body.String(), "cannot add trust") {
+		t.Fatalf("plain unknown: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, platformAdmin.request("PUT", "/pgauthz/v1/admin/issuer-bindings", group)); w.Code != 200 {
+		t.Fatalf("platform adds a group issuer: %d %s", w.Code, w.Body.String())
+	}
+	if row := stub.rows["https://new-idp"]; row.StoreGroup != "tenant_c" || row.JWKSURL != "https://new-idp/jwks" || len(row.Admin) != 1 {
+		t.Fatalf("the row keeps its group and anchor: %+v", row)
+	}
+	if w := serveAdmin(h, tenantAAdmin.request("PUT", "/pgauthz/v1/admin/issuer-bindings", group)); w.Code != http.StatusForbidden {
+		t.Fatalf("static tenant adds a group issuer: %d %s", w.Code, w.Body.String())
+	}
+	// carol (delegated, tenant-c): the console store grants her the group's issuers
+	if w := serveAdmin(h, tenantCUser.request("PUT", "/pgauthz/v1/admin/issuer-bindings", strings.Replace(group, "https://new-idp", "https://carol-idp", 2))); w.Code != 200 {
+		t.Fatalf("group admin adds a group issuer: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCUser.request("PUT", "/pgauthz/v1/admin/issuer-bindings", strings.Replace(strings.Replace(group, "https://new-idp", "https://other-idp", 2), "tenant_c", "tenant_x", 1))); w.Code != http.StatusForbidden {
+		t.Fatalf("group admin adds for another group: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCUser.request("GET", "/pgauthz/v1/admin/issuer-bindings", "")); w.Code != 200 || !strings.Contains(w.Body.String(), "https://carol-idp") || strings.Contains(w.Body.String(), "https://tenant-a") {
+		t.Fatalf("group admin lists its group's rows: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCUser.request("DELETE", "/pgauthz/v1/admin/issuer-bindings?issuer=https://carol-idp", "")); w.Code != 200 {
+		t.Fatalf("group admin deletes its row: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCUser.request("DELETE", "/pgauthz/v1/admin/issuer-bindings?issuer=https://tenant-a", "")); w.Code != http.StatusForbidden {
+		t.Fatalf("group admin deletes another's row: %d %s", w.Code, w.Body.String())
+	}
+	// an anchor-less unknown issuer, and a group row without an audience
+	if w := serveAdmin(h, platformAdmin.request("PUT", "/pgauthz/v1/admin/issuer-bindings", `{"issuer":"https://x","store_group":"tenant_c","enabled":true}`)); w.Code != 400 {
+		t.Fatalf("group row without anchor for an unknown issuer: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, platformAdmin.request("PUT", "/pgauthz/v1/admin/issuer-bindings", `{"issuer":"https://tenant-a","stores":["a_docs"],"enabled":true,"admin":[{"clients":["tf"]}]}`)); w.Code != 400 || !strings.Contains(w.Body.String(), "delegate only") {
+		t.Fatalf("static admin rules on a row: %d %s", w.Code, w.Body.String())
+	}
+}

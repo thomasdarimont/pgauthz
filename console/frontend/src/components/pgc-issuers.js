@@ -86,7 +86,7 @@ export class PgcIssuers extends PgcElement {
     const pages = this._pages();
     const total = this.audit?.total ?? 0;
     const from = total ? (this.page - 1) * this.limit + 1 : 0;
-    const to = Math.min(total, from + (this.audit?.rows.length ?? 0) - 1);
+    const to = total ? Math.min(total, from + (this.audit?.rows.length ?? 0) - 1) : 0;
     return html`<div class="toolbar" data-testid="issuers-audit-pager">
       <span class="muted"
         >${t('Page {p} of {n}', { p: this.page, n: pages })} ·
@@ -148,6 +148,10 @@ export class PgcIssuers extends PgcElement {
       pep_clients: '{}',
       enabled: true,
       description: '',
+      store_group: '',
+      jwks_url: '',
+      audience: '',
+      audiences: '',
       isNew: true,
     };
   }
@@ -163,8 +167,31 @@ export class PgcIssuers extends PgcElement {
       pep_clients: JSON.stringify(b.pep_clients ?? {}, null, 2),
       enabled: b.enabled,
       description: b.description ?? '',
+      store_group: b.store_group ?? '',
+      jwks_url: b.jwks_url ?? '',
+      audience: b.audience ?? '',
+      audiences: (b.audiences ?? []).join('\n'),
       isNew: false,
     };
+  }
+
+  // OpenID discovery: the JWKS URL from the issuer URL (the console fetches
+  // the provider's .well-known document and reports it; nothing is saved).
+  async _discover() {
+    const issuer = this.form.issuer?.trim();
+    if (!issuer) return;
+    const r = await run(this, async () => {
+      try {
+        return await api.platformIssuerDiscover(issuer);
+      } catch (err) {
+        throw new Error(forbiddenText(err));
+      }
+    });
+    if (!r) return;
+    this.form = { ...this.form, jwks_url: r.jwks_uri ?? '' };
+    this.saved = r.matches
+      ? t('Discovered: the provider names itself as this issuer; JWKS URL filled in.')
+      : t('Discovered, but the provider names itself {issuer} — check the issuer URL.', { issuer: r.issuer });
   }
 
   _set(k) {
@@ -225,6 +252,10 @@ export class PgcIssuers extends PgcElement {
           pep_clients,
           enabled: !!f.enabled,
           description: f.description,
+          store_group: f.store_group || '',
+          jwks_url: f.jwks_url?.trim() || '',
+          audience: f.audience?.trim() || '',
+          audiences: parseList(f.audiences),
         });
       } catch (err) {
         throw new Error(forbiddenText(err));
@@ -242,10 +273,10 @@ export class PgcIssuers extends PgcElement {
     }
   }
 
-  async _delete(issuer) {
+  async _delete(issuer, storeGroup = '') {
     const r = await run(this, async () => {
       try {
-        return await api.platformIssuerDelete(issuer);
+        return await api.platformIssuerDelete(issuer, storeGroup);
       } catch (err) {
         throw new Error(forbiddenText(err));
       }
@@ -280,17 +311,60 @@ export class PgcIssuers extends PgcElement {
       </label>
       <label class="field"
         ><span
-          >${t('Stores')}
-          ${help('One anchored pattern per line (docs, tenant_a_.*). Tokens of this issuer may ask about these stores only. Must stay within what the environment binds — a row narrows, never widens; empty only when the environment leaves the issuer unbound.')}</span
-        ><textarea
-          class="list"
-          rows="3"
-          .value=${f.stores}
-          @input=${this._set('stores')}
-          data-testid="issuers-stores"
-        ></textarea>
-        ${this._picker('stores', 'stores', t('Add a store…'))}
+          >${t('Store group')}
+          ${help('A group issuer (ADR 0017): its tokens reach the stores of this group, as they are at any moment, and the group\'s admins manage it. With a group the Stores list below stays empty. Empty = a platform issuer bound by patterns.')}</span
+        >
+        <select .value=${f.store_group ?? ''} @change=${this._set('store_group')} data-testid="issuers-store-group">
+          <option value="">${t('— none: a platform issuer, bound by patterns —')}</option>
+          ${(this.d?.known?.groups ?? []).map((g) => html`<option value=${g} ?selected=${g === f.store_group}>${g}</option>`)}
+        </select>
       </label>
+      ${
+        f.store_group
+          ? html`<label class="field wide"
+                ><span
+                  >${t('JWKS URL')}
+                  ${help('The provider\'s signing keys (https). With it this row is the group\'s own trust anchor: a provider the environment does not list is accepted for the group\'s stores only. Discover fills it from the issuer URL.')}</span
+                >
+                <div class="row">
+                  <input
+                    type="url"
+                    class="mono"
+                    placeholder="https://idp.example/realms/tenant/protocol/openid-connect/certs"
+                    .value=${f.jwks_url ?? ''}
+                    @input=${this._set('jwks_url')}
+                    data-testid="issuers-jwks-url"
+                  />
+                  <button type="button" class="small" @click=${() => this._discover()} ?disabled=${this.busy} data-testid="issuers-discover">
+                    ${t('Discover')}
+                  </button>
+                </div>
+              </label>
+              <label class="field"
+                ><span
+                  >${t('Audience')}
+                  ${help('The `aud` the provider puts into tokens for this API — a client id (Keycloak) or the API\'s URI (others). Required with a JWKS URL; further accepted values go below, one per line.')}</span
+                >
+                <input class="mono" .value=${f.audience ?? ''} @input=${this._set('audience')} data-testid="issuers-audience"
+              /></label>
+              <label class="field"
+                ><span>${t('Further audiences')}</span>
+                <textarea class="list" rows="2" .value=${f.audiences ?? ''} @input=${this._set('audiences')} data-testid="issuers-audiences"></textarea>
+              </label>`
+          : html`<label class="field"
+              ><span
+                >${t('Stores')}
+                ${help('One anchored pattern per line (docs, tenant_a_.*). Tokens of this issuer may ask about these stores only. Must stay within what the environment binds — a row narrows, never widens; empty only when the environment leaves the issuer unbound.')}</span
+              ><textarea
+                class="list"
+                rows="3"
+                .value=${f.stores}
+                @input=${this._set('stores')}
+                data-testid="issuers-stores"
+              ></textarea>
+              ${this._picker('stores', 'stores', t('Add a store…'))}
+            </label>`
+      }
       <label class="field"
         ><span
           >${t('DB roles')}
@@ -481,9 +555,13 @@ export class PgcIssuers extends PgcElement {
                   ${d.bindings.map(
                     (b) =>
                       html`<tr data-testid="issuers-row" data-issuer=${b.issuer}>
-                        <td class="mono">${b.issuer}</td>
                         <td class="mono">
-                          ${b.stores.length ? b.stores.join(', ') : html`<span class="muted">${t('as the environment')}</span>`}
+                          ${b.issuer}
+                          ${b.store_group ? html` <span class="badge muted" title=${t('a group issuer: reaches the stores of this group')}>${b.store_group}</span>` : nothing}
+                          ${b.jwks_url ? html` <span class="badge ok" title=${b.jwks_url}>${t('own anchor')}</span>` : nothing}
+                        </td>
+                        <td class="mono">
+                          ${b.stores.length ? b.stores.join(', ') : html`<span class="muted">${b.store_group ? t('no stores in the group yet') : t('as the environment')}</span>`}
                         </td>
                         <td class="mono">
                           ${b.db_roles.length ? b.db_roles.join(', ') : html`<span class="muted">${t('any')}</span>`}
@@ -513,7 +591,7 @@ export class PgcIssuers extends PgcElement {
                               ? html`<button
                                     class="sm danger"
                                     ?disabled=${this.busy}
-                                    @click=${() => this._delete(b.issuer)}
+                                    @click=${() => this._delete(b.issuer, b.store_group ?? '')}
                                     data-testid="issuers-confirm-delete"
                                   >
                                     ${t('Really remove')}

@@ -196,6 +196,7 @@ func (s *Server) Routes() http.Handler {
 	h("PUT /api/stores/{store}/group", s.handleStoreGroupSet)
 	h("GET /api/platform/issuers", s.handleIssuers)
 	h("GET /api/platform/issuers/audit", s.handleIssuersAudit)
+	h("GET /api/platform/issuers/discover", s.handleIssuerDiscover)
 	h("PUT /api/platform/issuers", s.handleIssuerSave)
 	h("POST /api/platform/issuers/delete", s.handleIssuerDelete)
 	// Platform → Operations (fleet): partitions and retention of both logs

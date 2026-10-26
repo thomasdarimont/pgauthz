@@ -12,6 +12,7 @@ import (
 
 	"thomasdarimont.de/authz/pgauthzadm"
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
+	"thomasdarimont.de/authz/pgauthzd/pkg/issuers"
 )
 
 // storeStub is the store and model admin behind the handlers in these tests:
@@ -19,6 +20,7 @@ import (
 type storeStub struct {
 	authz.Backend
 	grantStub
+	adminStub  // the issuer-binding rows too (group issuers, ADR 0017)
 	stores     map[string]*authz.StoreRow
 	versions   map[string][]int
 	blocked    map[string]bool // store → the plan reports blockers
@@ -311,6 +313,10 @@ func storesFixture(t *testing.T) (*Handler, *storeStub) {
 		recorders:  map[string]map[string][]string{},
 		namespaces: map[string]map[string]map[string][2]bool{},
 		groups:     map[string]*authz.StoreGroupRow{"default": {Name: "default", Description: "the platform's own"}},
+		adminStub: adminStub{rows: map[string]issuers.Binding{
+			"https://tenant-a": {Issuer: "https://tenant-a", Stores: []string{"a_docs"}, Enabled: true},
+			"https://tenant-b": {Issuer: "https://tenant-b", Stores: []string{"b_docs"}, Enabled: true},
+		}},
 	}
 	for _, st := range stub.stores {
 		st.Group = "default"

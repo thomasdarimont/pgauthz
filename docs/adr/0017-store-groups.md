@@ -1,6 +1,6 @@
 # ADR 0017 — Store groups: tenancy, delegated administration and group issuers
 
-- **Status:** Accepted (2026-10-26; phase 1 in progress)
+- **Status:** Accepted (2026-10-26; phases 1 and 2 implemented, 3 and 4 open)
 - **Date:** 2026-10-26
 - **Deciders:** maintainers
 - **Relates to:** [0016](0016-issuer-bindings-and-admin-api.md) (issuer

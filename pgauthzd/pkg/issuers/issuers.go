@@ -29,8 +29,14 @@ type Issuer struct {
 	// there (Keycloak a client id, others the API's URI); listing both
 	// lets a deployment move between them without a cut-over.
 	Audiences []string `json:"audiences,omitempty"`
-	JWKSURL   string   `json:"jwks_url"`
-	JWKSFile  string   `json:"jwks_file"`
+	// StoreGroup (ADR 0017): a group issuer — its tokens reach the group's
+	// stores as they are now (Stores is that list, resolved by the engine).
+	StoreGroup string `json:"store_group,omitempty"`
+	// AnchorSource says where the trust anchor (keys, audiences) came from:
+	// "env" (JWT_ISSUERS) or "db" (a group issuer's row, ADR 0017).
+	AnchorSource string `json:"anchor_source,omitempty"`
+	JWKSURL      string `json:"jwks_url"`
+	JWKSFile     string `json:"jwks_file"`
 	// Stores restricts which pgauthz stores this issuer's tokens may access
 	// (store binding for multi-tenant setups: tenant A's IdP → tenant A's
 	// stores). Each entry is an ANCHORED regular expression (^(?:entry)$), so
@@ -205,6 +211,16 @@ type Binding struct {
 	PEPClients    map[string][]string `json:"pep_clients"`
 	Enabled       bool                `json:"enabled"`
 	Description   string              `json:"description,omitempty"`
+	// Group issuers (ADR 0017): StoreGroup names the group whose stores the
+	// issuer reaches (then Stores is the engine's resolution of its members,
+	// not patterns); JWKSURL and the audiences are the row's own trust
+	// anchor — a provider the environment does not list, admitted for the
+	// group only; Admin may carry delegated rules (decide), nothing else.
+	StoreGroup string     `json:"store_group,omitempty"`
+	JWKSURL    string     `json:"jwks_url,omitempty"`
+	Audience   string     `json:"audience,omitempty"`
+	Audiences  []string   `json:"audiences,omitempty"`
+	Admin      AdminRules `json:"admin,omitempty"`
 	// CreatedAt/By: the row's first write; UpdatedAt/By: its last (a replace
 	// keeps the former). Read-only: a PUT carries them without effect.
 	CreatedAt time.Time `json:"created_at,omitempty"`
@@ -352,16 +368,37 @@ func ValidateBindings(iss Issuer) error {
 	return nil
 }
 
+// DelegatedOnly refuses admin rules a database row may not carry: a row
+// grants trust, the console store decides what its credentials manage, so
+// every rule must delegate (decide) and none may list capabilities,
+// stores or platform scope of its own.
+func DelegatedOnly(rules AdminRules) error {
+	for i, r := range rules {
+		if r.Decide == nil || r.Decide.Store == "" {
+			return fmt.Errorf("admin[%d]: a database row's admin rules delegate only (decide.store)", i)
+		}
+		if len(r.Capabilities) > 0 || len(r.Stores) > 0 || r.Scope == AdminScopePlatform {
+			return fmt.Errorf("admin[%d]: a database row's admin rule takes no capabilities, stores or platform scope", i)
+		}
+	}
+	return nil
+}
+
 // Merge applies database bindings over the environment's issuers. For each
 // environment issuer with a row of the same `iss`, the row's bindings
 // REPLACE the environment's (the row is the whole binding, as the console
 // edits it) — except that a row may only narrow the environment's stores:
 // when the environment binds stores, the row must bind stores too and each
 // of its patterns must be covered by the environment's. A row that breaks
-// that rule, fails validation, or names an issuer the environment does not
-// trust is reported and ignored (that issuer keeps its environment
-// bindings): the database can never add trust or widen reach. Anchors
-// always come from the environment.
+// that rule or fails validation is reported and ignored (that issuer keeps
+// its environment bindings): the database never widens reach, and a
+// platform issuer's anchor always comes from the environment.
+//
+// A row naming an issuer the environment does not trust is admitted only
+// as a GROUP issuer (ADR 0017): it names a store group and carries its own
+// anchor (jwks_url + audiences), reaches the group's stores as the engine
+// resolved them, and may hold delegated admin rules only. Anything else
+// about an unknown issuer is reported and ignored.
 func Merge(env []Issuer, rows []Binding) (merged []Issuer, problems []string) {
 	byIssuer := make(map[string]Binding, len(rows))
 	for _, r := range rows {
@@ -372,6 +409,7 @@ func Merge(env []Issuer, rows []Binding) (merged []Issuer, problems []string) {
 		out := e
 		out.BindingSource = "env"
 		row, ok := byIssuer[e.Issuer]
+		out.AnchorSource = "env"
 		if ok && e.Issuer != "" {
 			seen[e.Issuer] = true
 			cand := e
@@ -380,6 +418,11 @@ func Merge(env []Issuer, rows []Binding) (merged []Issuer, problems []string) {
 			cand.ClientDBRoles, cand.PEPClients = row.ClientDBRoles, row.PEPClients
 			cand.Disabled = !row.Enabled
 			cand.BindingSource = "db"
+			cand.StoreGroup = row.StoreGroup
+			cand.AnchorSource = "env"
+			if len(row.Admin) > 0 {
+				problems = append(problems, fmt.Sprintf("issuer %q: the row's admin rules are ignored: a platform issuer's admin rules are the environment's", e.Issuer))
+			}
 			if err := narrowing(e.Stores, row.Stores); err != nil {
 				problems = append(problems, fmt.Sprintf("issuer %q: binding ignored: %v", e.Issuer, err))
 			} else if err := ValidateBindings(cand); err != nil {
@@ -398,7 +441,28 @@ func Merge(env []Issuer, rows []Binding) (merged []Issuer, problems []string) {
 	}
 	sort.Strings(unknown)
 	for _, iss := range unknown {
-		problems = append(problems, fmt.Sprintf("issuer %q: binding ignored: the environment does not trust this issuer (JWT_ISSUERS)", iss))
+		row := byIssuer[iss]
+		if row.StoreGroup == "" || row.JWKSURL == "" {
+			problems = append(problems, fmt.Sprintf("issuer %q: binding ignored: the environment does not trust this issuer (JWT_ISSUERS); a group issuer needs store_group and jwks_url", iss))
+			continue
+		}
+		cand := Issuer{Issuer: iss, Audience: row.Audience, Audiences: row.Audiences, JWKSURL: row.JWKSURL,
+			Stores: row.Stores, DBRoles: row.DBRoles, ClientDBRoles: row.ClientDBRoles, PEPClients: row.PEPClients,
+			Disabled: !row.Enabled, BindingSource: "db", AnchorSource: "db", StoreGroup: row.StoreGroup, Admin: row.Admin}
+		switch {
+		case row.Audience == "" && len(row.Audiences) == 0:
+			problems = append(problems, fmt.Sprintf("issuer %q: group issuer ignored: no audience", iss))
+		case !strings.HasPrefix(row.JWKSURL, "https://"):
+			problems = append(problems, fmt.Sprintf("issuer %q: group issuer ignored: jwks_url must be https", iss))
+		default:
+			if err := DelegatedOnly(row.Admin); err != nil {
+				problems = append(problems, fmt.Sprintf("issuer %q: group issuer ignored: %v", iss, err))
+			} else if err := ValidateBindings(cand); err != nil {
+				problems = append(problems, fmt.Sprintf("issuer %q: group issuer ignored: %v", iss, err))
+			} else {
+				merged = append(merged, cand)
+			}
+		}
 	}
 	return merged, problems
 }

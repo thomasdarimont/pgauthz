@@ -147,7 +147,7 @@ func IssuerConfigsFrom(list []issuers.Issuer) []IssuerConfig {
 	out := make([]IssuerConfig, 0, len(list))
 	for _, i := range list {
 		out = append(out, IssuerConfig{
-			Issuer: i.Issuer, Audience: i.Audience, Audiences: i.Audiences, JWKSURL: i.JWKSURL, JWKSFile: i.JWKSFile,
+			Issuer: i.Issuer, Audience: i.Audience, Audiences: i.Audiences, StoreGroup: i.StoreGroup, AnchorSource: i.AnchorSource, JWKSURL: i.JWKSURL, JWKSFile: i.JWKSFile,
 			DBRoles: i.DBRoles, ClientDBRoles: i.ClientDBRoles, Stores: i.Stores, PEPClients: i.PEPClients,
 			Disabled: i.Disabled, BindingSource: i.BindingSource, EnvStores: i.EnvStores, Admin: i.Admin,
 		})
@@ -214,6 +214,8 @@ func (h *Handler) writeIssuers(w http.ResponseWriter, configs []IssuerConfig) {
 			"issuer":         ic.Issuer,
 			"audience":       ic.Audience,
 			"audiences":      ic.AcceptedAudiences(),
+			"anchor_source":  ic.AnchorSource,
+			"store_group":    ic.StoreGroup,
 			"enabled":        !ic.Disabled,
 			"binding_source": firstNonEmpty(ic.BindingSource, "env"),
 			"stores":         orEmpty(ic.Stores),

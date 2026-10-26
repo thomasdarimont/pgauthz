@@ -32,6 +32,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -155,10 +156,17 @@ type issuerBinding struct {
 	PEPClients    map[string][]string `json:"pep_clients"`
 	Enabled       bool                `json:"enabled"`
 	Description   string              `json:"description"`
-	CreatedAt     *time.Time          `json:"created_at,omitempty"`
-	CreatedBy     string              `json:"created_by,omitempty"`
-	UpdatedAt     *time.Time          `json:"updated_at,omitempty"`
-	UpdatedBy     string              `json:"updated_by,omitempty"`
+	// group issuers (ADR 0017): the group whose stores the issuer reaches
+	// (stores then come from the engine), its own anchor, delegated rules
+	StoreGroup string          `json:"store_group,omitempty"`
+	JWKSURL    string          `json:"jwks_url,omitempty"`
+	Audience   string          `json:"audience,omitempty"`
+	Audiences  []string        `json:"audiences,omitempty"`
+	Admin      json.RawMessage `json:"admin,omitempty"`
+	CreatedAt  *time.Time      `json:"created_at,omitempty"`
+	CreatedBy  string          `json:"created_by,omitempty"`
+	UpdatedAt  *time.Time      `json:"updated_at,omitempty"`
+	UpdatedBy  string          `json:"updated_by,omitempty"`
 }
 
 type issuerAuditRow struct {
@@ -190,12 +198,62 @@ type effectiveIssuers struct {
 // handleIssuers — GET /api/platform/issuers: the rows, the revision they
 // are at, and the effective set when reachable (the history is its own,
 // paged, endpoint).
+// issuerManager resolves who may open Platform → Issuers: the platform's
+// issuer admins, or (ADR 0017) anyone the console store grants
+// can_manage_issuers on at least one store group — they see and manage
+// their groups' issuers. Returns the person, whether they are the
+// platform's, and the groups they manage (every group for the platform's).
+func (s *Server) issuerManager(w http.ResponseWriter, r *http.Request) (*principal, bool, []string) {
+	p := s.principal(r)
+	if p == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return nil, false, nil
+	}
+	ctx := r.Context()
+	platform, err := s.can(ctx, p, "can_manage_issuers", "platform", s.cfg.PlatformID)
+	if err != nil {
+		writeEngineError(w, err)
+		return nil, false, nil
+	}
+	groups, err := s.allGroups(ctx)
+	if err != nil {
+		writeEngineError(w, err)
+		return nil, false, nil
+	}
+	ids := make([]string, len(groups))
+	for i, g := range groups {
+		ids[i] = g.Name
+	}
+	managed := []string{}
+	if platform {
+		managed = ids
+	} else if len(ids) > 0 {
+		caps, err := s.capabilities(ctx, p, "group", ids, []string{"can_manage_issuers"})
+		if err != nil {
+			writeEngineError(w, err)
+			return nil, false, nil
+		}
+		for _, id := range ids {
+			if caps[id]["can_manage_issuers"] {
+				managed = append(managed, id)
+			}
+		}
+	}
+	if !platform && len(managed) == 0 {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "this needs can_manage_issuers on platform:" + s.cfg.PlatformID + " or on a store group", "required": "can_manage_issuers", "object": "platform:" + s.cfg.PlatformID})
+		return nil, false, nil
+	}
+	return p, platform, managed
+}
+
 func (s *Server) handleIssuers(w http.ResponseWriter, r *http.Request) {
-	p := s.require(w, r, "can_manage_issuers", "platform", s.cfg.PlatformID)
+	p, platform, managed := s.issuerManager(w, r)
 	if p == nil {
 		return
 	}
 	ctx := r.Context()
+	known := s.knownForBindings(ctx)
+	known["groups"] = managed
 	if s.adminAPI() {
 		var list struct {
 			Bindings []issuerBinding `json:"bindings"`
@@ -215,7 +273,8 @@ func (s *Server) handleIssuers(w http.ResponseWriter, r *http.Request) {
 			"revision":  list.Revision,
 			"effective": s.effectiveIssuersAdmin(ctx, r),
 			"via":       "admin-api",
-			"known":     s.knownForBindings(ctx),
+			"known":     known,
+			"platform":  platform,
 		})
 		return
 	}
@@ -224,18 +283,76 @@ func (s *Server) handleIssuers(w http.ResponseWriter, r *http.Request) {
 		writeEngineError(w, err)
 		return
 	}
+	if !platform { // a group admin sees the rows of their groups only
+		mine := map[string]bool{}
+		for _, g := range managed {
+			mine[g] = true
+		}
+		kept := []issuerBinding{}
+		for _, b := range bindings {
+			if b.StoreGroup != "" && mine[b.StoreGroup] {
+				kept = append(kept, b)
+			}
+		}
+		bindings = kept
+	}
 	var revision int64
 	if err := s.engine.QueryRow(ctx, `SELECT authz.issuer_bindings_revision()`).Scan(&revision); err != nil {
 		writeEngineError(w, err)
 		return
 	}
+	effective := s.effectiveIssuers(ctx)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"bindings":  bindings,
 		"revision":  revision,
-		"effective": s.effectiveIssuers(ctx),
+		"effective": effective,
 		"via":       "db",
-		"known":     s.knownForBindings(ctx),
+		"known":     known,
+		"platform":  platform,
 	})
+}
+
+// handleIssuerDiscover — GET /api/platform/issuers/discover?issuer=…: the
+// provider's OpenID discovery document, so the form fills the JWKS URL
+// from the issuer URL instead of asking a person to find it. Fetched by
+// the console (which trusts the deployment's CA), reported as data: the
+// person still saves the row.
+func (s *Server) handleIssuerDiscover(w http.ResponseWriter, r *http.Request) {
+	if p, _, _ := s.issuerManager(w, r); p == nil {
+		return
+	}
+	issuer := strings.TrimRight(strings.TrimSpace(r.URL.Query().Get("issuer")), "/")
+	if !strings.HasPrefix(issuer, "https://") {
+		writeError(w, http.StatusBadRequest, "issuer must be an https:// URL")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, issuer+"/.well-known/openid-configuration", nil)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := s.http.Do(req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "discovery failed: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		writeError(w, http.StatusBadGateway, "discovery answered "+resp.Status)
+		return
+	}
+	var doc struct {
+		Issuer  string `json:"issuer"`
+		JWKSURI string `json:"jwks_uri"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, resp.Body, 1<<20)).Decode(&doc); err != nil {
+		writeError(w, http.StatusBadGateway, "discovery document did not decode: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"issuer": doc.Issuer, "jwks_uri": doc.JWKSURI, "matches": strings.TrimRight(doc.Issuer, "/") == issuer})
 }
 
 // knownForBindings: what a binding's lists can be picked from instead of
@@ -350,7 +467,8 @@ func (s *Server) handleIssuersAudit(w http.ResponseWriter, r *http.Request) {
 func (s *Server) issuerBindings(ctx context.Context) ([]issuerBinding, error) {
 	rows, err := s.engine.Query(ctx, `
 		SELECT issuer, stores, db_roles, client_db_roles, pep_clients, enabled, coalesce(description, ''),
-		       created_at, coalesce(created_by, ''), updated_at, coalesce(updated_by, '')
+		       created_at, coalesce(created_by, ''), updated_at, coalesce(updated_by, ''),
+		       coalesce(store_group, ''), coalesce(jwks_url, ''), coalesce(audience, ''), audiences, admin
 		  FROM authz.list_issuer_bindings()`)
 	if err != nil {
 		return nil, err
@@ -359,9 +477,13 @@ func (s *Server) issuerBindings(ctx context.Context) ([]issuerBinding, error) {
 	out := []issuerBinding{}
 	for rows.Next() {
 		var b issuerBinding
+		var admin []byte
 		if err := rows.Scan(&b.Issuer, &b.Stores, &b.DBRoles, &b.ClientDBRoles, &b.PEPClients, &b.Enabled, &b.Description,
-			&b.CreatedAt, &b.CreatedBy, &b.UpdatedAt, &b.UpdatedBy); err != nil {
+			&b.CreatedAt, &b.CreatedBy, &b.UpdatedAt, &b.UpdatedBy, &b.StoreGroup, &b.JWKSURL, &b.Audience, &b.Audiences, &admin); err != nil {
 			return nil, err
+		}
+		if len(admin) > 0 && string(admin) != "[]" {
+			b.Admin = json.RawMessage(admin)
 		}
 		if b.Stores == nil {
 			b.Stores = []string{}
@@ -447,7 +569,7 @@ func (s *Server) effectiveIssuers(ctx context.Context) effectiveIssuers {
 // clients within stores); pgauthzd applies it if it narrows the
 // environment's binding — the effective set shows whether it did.
 func (s *Server) handleIssuerSave(w http.ResponseWriter, r *http.Request) {
-	p := s.require(w, r, "can_manage_issuers", "platform", s.cfg.PlatformID)
+	p, platform, _ := s.issuerManager(w, r)
 	if p == nil {
 		return
 	}
@@ -460,6 +582,23 @@ func (s *Server) handleIssuerSave(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "issuer is required (the token's iss, as in JWT_ISSUERS)")
 		return
 	}
+	// a group issuer is the group's business; everything else the platform's
+	objType, objID := "platform", s.cfg.PlatformID
+	if !platform {
+		if b.StoreGroup == "" {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "a platform issuer needs can_manage_issuers on platform:" + s.cfg.PlatformID + "; name a store group you manage for a group issuer", "required": "can_manage_issuers", "object": "platform:" + s.cfg.PlatformID})
+			return
+		}
+		objType, objID = "group", b.StoreGroup
+	}
+	if ok, err := s.can(r.Context(), p, "can_manage_issuers", objType, objID); err != nil || !ok {
+		if err != nil {
+			writeEngineError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "this needs can_manage_issuers on " + objType + ":" + objID, "required": "can_manage_issuers", "object": objType + ":" + objID})
+		return
+	}
 	cdr, _ := json.Marshal(orMap(b.ClientDBRoles))
 	pep, _ := json.Marshal(orMapList(b.PEPClients))
 	var revision int64
@@ -470,7 +609,7 @@ func (s *Server) handleIssuerSave(w http.ResponseWriter, r *http.Request) {
 		// row itself is written by pgauthzd as whoever the credential names
 		payload["via"] = "admin-api"
 		b.Stores, b.DBRoles, b.ClientDBRoles, b.PEPClients = orList(b.Stores), orList(b.DBRoles), orMap(b.ClientDBRoles), orMapList(b.PEPClients)
-		err = s.asPerson(r.Context(), p, "can_manage_issuers", "platform", s.cfg.PlatformID, payload, func(pgx.Tx) error {
+		err = s.asPerson(r.Context(), p, "can_manage_issuers", objType, objID, payload, func(pgx.Tx) error {
 			var res struct {
 				Revision int64 `json:"revision"`
 			}
@@ -481,9 +620,14 @@ func (s *Server) handleIssuerSave(w http.ResponseWriter, r *http.Request) {
 			return nil
 		})
 	} else {
-		err = s.asPerson(r.Context(), p, "can_manage_issuers", "platform", s.cfg.PlatformID, payload, func(tx pgx.Tx) error {
-			return tx.QueryRow(r.Context(), `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8)`,
-				b.Issuer, orList(b.Stores), orList(b.DBRoles), string(cdr), string(pep), b.Enabled, nullable(b.Description), p.typ+":"+p.id).Scan(&revision)
+		admin := "[]"
+		if len(b.Admin) > 0 {
+			admin = string(b.Admin)
+		}
+		err = s.asPerson(r.Context(), p, "can_manage_issuers", objType, objID, payload, func(tx pgx.Tx) error {
+			return tx.QueryRow(r.Context(), `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)`,
+				b.Issuer, orList(b.Stores), orList(b.DBRoles), string(cdr), string(pep), b.Enabled, nullable(b.Description), p.typ+":"+p.id,
+				nullable(b.StoreGroup), nullable(b.JWKSURL), nullable(b.Audience), orList(b.Audiences), admin).Scan(&revision)
 		})
 	}
 	if err != nil {
@@ -498,16 +642,24 @@ func (s *Server) handleIssuerSave(w http.ResponseWriter, r *http.Request) {
 // handleIssuerDelete — POST /api/platform/issuers/delete {issuer}: the
 // issuer falls back to its environment bindings.
 func (s *Server) handleIssuerDelete(w http.ResponseWriter, r *http.Request) {
-	p := s.require(w, r, "can_manage_issuers", "platform", s.cfg.PlatformID)
+	p, platform, managed := s.issuerManager(w, r)
 	if p == nil {
 		return
 	}
 	var req struct {
-		Issuer string `json:"issuer"`
+		Issuer     string `json:"issuer"`
+		StoreGroup string `json:"store_group"` // the row's group: a group admin removes their group's rows
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	if !platform {
+		if req.StoreGroup == "" || !slices.Contains(managed, req.StoreGroup) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "removing this binding needs can_manage_issuers on platform:" + s.cfg.PlatformID + ", or on the row's store group", "required": "can_manage_issuers", "object": "platform:" + s.cfg.PlatformID})
+			return
+		}
+	}
+
 	req.Issuer = strings.TrimSpace(req.Issuer)
 	if req.Issuer == "" {
 		writeError(w, http.StatusBadRequest, "issuer is required")

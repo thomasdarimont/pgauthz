@@ -145,3 +145,39 @@ func TestAdminRulesJSON(t *testing.T) {
 		t.Fatalf("null: %v %+v", err, none.Admin)
 	}
 }
+
+// A row for an issuer the environment does not trust is admitted only as a
+// group issuer (ADR 0017): store group + its own anchor + an audience,
+// delegated admin rules only; its stores are what the engine resolved.
+func TestMergeGroupIssuer(t *testing.T) {
+	env := []Issuer{{Issuer: "https://corp", Audience: "api", JWKSURL: "https://corp/jwks", Stores: []string{"docs"}}}
+	good := Binding{Issuer: "https://tenant-a-idp", StoreGroup: "tenant_a", JWKSURL: "https://tenant-a-idp/jwks", Audience: "authz-api", Audiences: []string{"https://api.example"},
+		Stores: []string{"tenant_a_docs", "tenant_a_hr"}, Enabled: true, Admin: AdminRules{{Decide: &AdminDecision{Store: "console"}}}}
+	merged, problems := Merge(env, []Binding{good})
+	if len(problems) != 0 || len(merged) != 2 {
+		t.Fatalf("merged %d problems %v", len(merged), problems)
+	}
+	g := merged[1]
+	if g.Issuer != "https://tenant-a-idp" || g.AnchorSource != "db" || g.BindingSource != "db" || g.JWKSURL != "https://tenant-a-idp/jwks" || g.Audience != "authz-api" ||
+		strings.Join(g.Stores, ",") != "tenant_a_docs,tenant_a_hr" || g.StoreGroup != "tenant_a" || len(g.Admin) != 1 || merged[0].AnchorSource != "env" {
+		t.Fatalf("group issuer: %+v", g)
+	}
+	for name, row := range map[string]Binding{
+		"no group":   {Issuer: "https://x", JWKSURL: "https://x/jwks", Audience: "a", Enabled: true},
+		"no anchor":  {Issuer: "https://x", StoreGroup: "g", Audience: "a", Enabled: true},
+		"no aud":     {Issuer: "https://x", StoreGroup: "g", JWKSURL: "https://x/jwks", Enabled: true},
+		"http":       {Issuer: "https://x", StoreGroup: "g", JWKSURL: "http://x/jwks", Audience: "a", Enabled: true},
+		"static adm": {Issuer: "https://x", StoreGroup: "g", JWKSURL: "https://x/jwks", Audience: "a", Enabled: true, Admin: AdminRules{{Clients: []string{"tf"}, Scope: AdminScopePlatform}}},
+		"caps adm":   {Issuer: "https://x", StoreGroup: "g", JWKSURL: "https://x/jwks", Audience: "a", Enabled: true, Admin: AdminRules{{Decide: &AdminDecision{Store: "console"}, Capabilities: []string{"test"}}}},
+	} {
+		m, p := Merge(env, []Binding{row})
+		if len(p) != 1 || len(m) != 1 {
+			t.Errorf("%s: merged %d problems %v", name, len(m), p)
+		}
+	}
+	// a row for an environment issuer may name a group (the engine resolved its stores) but not carry admin rules
+	m, p := Merge(env, []Binding{{Issuer: "https://corp", StoreGroup: "g", Stores: []string{"docs"}, Enabled: true, Admin: AdminRules{{Decide: &AdminDecision{Store: "console"}}}}})
+	if len(p) != 1 || !strings.Contains(p[0], "admin rules are ignored") || m[0].StoreGroup != "g" || m[0].AnchorSource != "env" || len(m[0].Admin) != 0 {
+		t.Errorf("env issuer with a group row: %+v %v", m[0], p)
+	}
+}

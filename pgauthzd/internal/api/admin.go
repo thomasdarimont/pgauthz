@@ -510,7 +510,7 @@ func (h *Handler) visibleIssuers(scope adminScope) []IssuerConfig {
 	own := scope.issuer
 	var out []IssuerConfig
 	for _, ic := range all {
-		if ic.Issuer == own {
+		if ic.Issuer == own || (ic.StoreGroup != "" && h.scopeManagesGroup(scope, ic.StoreGroup)) {
 			out = append(out, ic)
 		}
 	}
@@ -570,7 +570,7 @@ func (h *Handler) adminIssuerBindings(w http.ResponseWriter, r *http.Request) {
 	}
 	visible := []issuers.Binding{}
 	for _, b := range rows {
-		if scope.covers(b.Issuer) {
+		if scope.covers(b.Issuer) || (b.StoreGroup != "" && h.scopeManagesGroup(scope, b.StoreGroup)) {
 			visible = append(visible, b)
 		}
 	}
@@ -607,7 +607,7 @@ func (h *Handler) adminIssuerBindingsAudit(w http.ResponseWriter, r *http.Reques
 	}
 	q := r.URL.Query()
 	issuer := strings.TrimSpace(q.Get("issuer"))
-	if !scope.platform {
+	if !scope.platformWide() {
 		if issuer == "" {
 			issuer = scope.issuer
 		} else if issuer != scope.issuer {
@@ -668,14 +668,22 @@ func (h *Handler) adminSetIssuerBinding(w http.ResponseWriter, r *http.Request) 
 		writeBadRequest(w, "issuer is required (the token's iss)")
 		return
 	}
-	if !scope.covers(b.Issuer) {
+	// a group issuer (ADR 0017) is the group's business: its admins write it
+	groupManaged := b.StoreGroup != "" && h.scopeManagesGroup(scope, b.StoreGroup)
+	if !scope.covers(b.Issuer) && !groupManaged {
 		metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
-		writeForbidden(w, "management refused: this token manages the issuer "+scope.issuer+" only")
+		writeForbidden(w, scope.refusal("this token manages the issuer "+scope.issuer+" only (a group issuer needs can_manage_issuers on its group)"))
 		return
 	}
-	if err := issuers.ValidateBindings(issuers.Issuer{Stores: b.Stores, DBRoles: b.DBRoles, ClientDBRoles: b.ClientDBRoles, PEPClients: b.PEPClients}); err != nil {
+	if err := issuers.ValidateBindings(issuers.Issuer{Stores: b.Stores, DBRoles: b.DBRoles, ClientDBRoles: b.ClientDBRoles, PEPClients: b.PEPClients, Admin: b.Admin}); err != nil {
 		writeBadRequest(w, err.Error())
 		return
+	}
+	if len(b.Admin) > 0 {
+		if err := issuers.DelegatedOnly(b.Admin); err != nil {
+			writeBadRequest(w, err.Error())
+			return
+		}
 	}
 	// the narrowing rule against the environment, so a PUT the fleet would
 	// reject fails here instead of silently falling back; an issuer the
@@ -686,9 +694,15 @@ func (h *Handler) adminSetIssuerBinding(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 		trusted = true
+		if ic.AnchorSource == "db" {
+			break // a group issuer's own row: the engine resolves its stores, nothing to narrow
+		}
 		envStores := ic.Stores
 		if ic.BindingSource == "db" {
 			envStores = ic.EnvStores
+		}
+		if b.StoreGroup != "" {
+			break // the group decides the stores; Merge re-checks the narrowing with the engine's resolution at reload
 		}
 		if _, problems := issuers.Merge([]issuers.Issuer{{Issuer: ic.Issuer, Stores: envStores}}, []issuers.Binding{b}); len(problems) > 0 {
 			writeBadRequest(w, problems[0])
@@ -696,8 +710,17 @@ func (h *Handler) adminSetIssuerBinding(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	if !trusted {
-		writeBadRequest(w, "issuer "+b.Issuer+" is not trusted by this instance (JWT_ISSUERS): a binding cannot add trust")
-		return
+		// an unknown issuer is admitted only as a group issuer with its own
+		// anchor, by someone who manages the group: trust bounded by the group
+		if b.StoreGroup == "" || b.JWKSURL == "" {
+			writeBadRequest(w, "issuer "+b.Issuer+" is not trusted by this instance (JWT_ISSUERS): a binding cannot add trust; a group issuer — store_group and jwks_url, with an audience — may be added by the group's admins (ADR 0017)")
+			return
+		}
+		if !groupManaged && !scope.platformWide() {
+			metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
+			writeForbidden(w, scope.refusal("adding an identity provider for store group '"+b.StoreGroup+"' needs can_manage_issuers on that group, or platform scope"))
+			return
+		}
 	}
 	rev, err := a.SetIssuerBinding(r.Context(), b, actorLabel(r))
 	if err != nil {
@@ -723,9 +746,20 @@ func (h *Handler) adminDeleteIssuerBinding(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if !scope.covers(iss) {
-		metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
-		writeForbidden(w, "management refused: this token manages the issuer "+scope.issuer+" only")
-		return
+		// a group issuer's row: the group's admins remove it (ADR 0017)
+		group := ""
+		if rows, err := a.IssuerBindings(r.Context()); err == nil {
+			for _, b := range rows {
+				if b.Issuer == iss {
+					group = b.StoreGroup
+				}
+			}
+		}
+		if group == "" || !h.scopeManagesGroup(scope, group) {
+			metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
+			writeForbidden(w, scope.refusal("this token manages the issuer "+scope.issuer+" only"))
+			return
+		}
 	}
 	existed, err := a.DeleteIssuerBinding(r.Context(), iss, actorLabel(r))
 	if err != nil {
@@ -814,4 +848,20 @@ func NewManagementRouter(h *Handler, metricsHandler http.Handler) http.Handler {
 	mux.HandleFunc("GET /livez", h.Livez)
 	mux.HandleFunc("GET /readyz", h.Readyz)
 	return Recovery(mux)
+}
+
+// scopeManagesGroup: the credential administers the store group's issuers
+// (ADR 0017) — platform scope, or (delegated) the console store granting
+// can_manage_issuers on group:<name>. Static tenant rules never do: a
+// tenant's reach is its issuer's, a group is the platform's unit.
+func (h *Handler) scopeManagesGroup(scope adminScope, group string) bool {
+	if !storeNameRe.MatchString(group) {
+		return false
+	}
+	if scope.decide != nil {
+		// the group's own grant, or the platform's issuer administration
+		// (a platform issuer admin manages every group's issuers)
+		return scope.decide.allowed("can_manage_issuers", "group", group) || scope.decide.allowed("can_manage_issuers", "platform", "default")
+	}
+	return scope.platform
 }

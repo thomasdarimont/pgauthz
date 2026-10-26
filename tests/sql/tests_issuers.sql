@@ -86,13 +86,66 @@ BEGIN
     PERFORM _test_assert('ib_17_role_tiers',
         has_function_privilege('authz_reader', 'authz.list_issuer_bindings()', 'EXECUTE')::text || ','
         || has_function_privilege('authz_reader', 'authz.issuer_bindings_revision()', 'EXECUTE')::text || ','
-        || has_function_privilege('authz_reader', 'authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text)', 'EXECUTE')::text || ','
-        || has_function_privilege('authz_admin', 'authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text)', 'EXECUTE')::text || ','
+        || has_function_privilege('authz_reader', 'authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text, text, text, text, text[], jsonb)', 'EXECUTE')::text || ','
+        || has_function_privilege('authz_admin', 'authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text, text, text, text, text[], jsonb)', 'EXECUTE')::text || ','
         || has_function_privilege('authz_auditor', 'authz.list_issuer_bindings_audit(text, int, bigint)', 'EXECUTE')::text,
         'true,true,false,true,true');
 
     DELETE FROM authz.issuer_bindings WHERE issuer LIKE 'https://test-issuer%';
     DELETE FROM authz.issuer_bindings_audit WHERE issuer LIKE 'https://test-issuer%';
+END;
+$$;
+
+-- Group issuers (ADR 0017, migration 0029): a row names a group instead of
+-- patterns and carries its own anchor; its stores are the group's members
+-- as they are now; the validation; a group with issuers is not deleted.
+DO $$
+DECLARE v_err text; v_row record; v_rev0 bigint; v_rev bigint;
+BEGIN
+    DELETE FROM authz.issuer_bindings WHERE issuer LIKE 'https://test-group-issuer%';
+    PERFORM authz.delete_store('gi_store', p_purge_audit => true) FROM (SELECT 1) x WHERE EXISTS (SELECT 1 FROM authz.stores WHERE name = 'gi_store');
+    DELETE FROM authz.store_groups WHERE name = 'gi_tenant';
+    PERFORM authz.create_store_group('gi_tenant', 'group issuer test');
+    PERFORM authz.create_store('gi_store');
+
+    -- a group issuer with its anchor; the listing resolves the group's stores (none yet)
+    PERFORM authz.set_issuer_binding('https://test-group-issuer/a', p_enabled => true, p_description => 'tenant idp', p_performed_by => 'user:tenant_admin',
+        p_store_group => 'gi_tenant', p_jwks_url => 'https://idp.tenant/jwks', p_audience => 'authz-api', p_audiences => ARRAY['https://api.example'],
+        p_admin => '[{"decide":{"store":"console"}},{"clients":["ci"],"decide":{"store":"console","subject_type":"service_account","subject_claim":"azp"}}]');
+    SELECT * INTO v_row FROM authz.list_issuer_bindings() WHERE issuer = 'https://test-group-issuer/a';
+    PERFORM _test_assert('gi_01_row', v_row.store_group || '|' || v_row.jwks_url || '|' || v_row.audience || '|' || v_row.audiences::text || '|' || v_row.stores::text || '|' || jsonb_array_length(v_row.admin)::text,
+        'gi_tenant|https://idp.tenant/jwks|authz-api|{https://api.example}|{}|2');
+    -- membership changes the reach and bumps the revision pgauthzd polls
+    v_rev0 := authz.issuer_bindings_revision();
+    PERFORM authz.set_store_group('gi_store', 'gi_tenant');
+    SELECT * INTO v_row FROM authz.list_issuer_bindings() WHERE issuer = 'https://test-group-issuer/a';
+    PERFORM _test_assert('gi_02_stores_follow_membership', v_row.stores::text, '{gi_store}');
+    PERFORM _test_assert('gi_03_membership_bumps_revision', (authz.issuer_bindings_revision() > v_rev0)::text, 'true');
+    -- the audit carries the anchor
+    PERFORM _test_assert('gi_04_audit', (SELECT jwks_url || '|' || store_group FROM authz.issuer_bindings_audit WHERE issuer = 'https://test-group-issuer/a' ORDER BY seq DESC LIMIT 1), 'https://idp.tenant/jwks|gi_tenant');
+
+    -- validation: patterns with a group, an anchor without a group, http, no audience, non-delegated admin rules, unknown group
+    v_err := NULL; BEGIN PERFORM authz.set_issuer_binding('https://test-group-issuer/b', p_stores => ARRAY['x'], p_store_group => 'gi_tenant'); EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert('gi_05_group_xor_patterns', v_err, 'a group issuer binds the group''s stores: stores must be empty when store_group is set');
+    v_err := NULL; BEGIN PERFORM authz.set_issuer_binding('https://test-group-issuer/b', p_jwks_url => 'https://x/jwks', p_audience => 'a'); EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert('gi_06_anchor_needs_group', (position('needs a store group' in v_err) > 0)::text, 'true');
+    v_err := NULL; BEGIN PERFORM authz.set_issuer_binding('https://test-group-issuer/b', p_store_group => 'gi_tenant', p_jwks_url => 'http://x/jwks', p_audience => 'a'); EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert('gi_07_https_only', v_err, 'jwks_url must be an https:// URL');
+    v_err := NULL; BEGIN PERFORM authz.set_issuer_binding('https://test-group-issuer/b', p_store_group => 'gi_tenant', p_jwks_url => 'https://x/jwks'); EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert('gi_08_anchor_needs_audience', (position('needs an audience' in v_err) > 0)::text, 'true');
+    v_err := NULL; BEGIN PERFORM authz.set_issuer_binding('https://test-group-issuer/b', p_store_group => 'gi_tenant', p_admin => '[{"clients":["tf"],"scope":"platform"}]'); EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert('gi_09_admin_delegates_only', (position('delegate only' in v_err) > 0)::text, 'true');
+    v_err := NULL; BEGIN PERFORM authz.set_issuer_binding('https://test-group-issuer/b', p_store_group => 'gi_tenant', p_admin => '[{"decide":{"store":"console"},"capabilities":["test"]}]'); EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert('gi_10_admin_no_caps', (position('no capabilities' in v_err) > 0)::text, 'true');
+    v_err := NULL; BEGIN PERFORM authz.set_issuer_binding('https://test-group-issuer/b', p_store_group => 'gi_nope'); EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert('gi_11_unknown_group', v_err, 'Unknown store group: gi_nope');
+    -- a group with issuers is not deleted; without them it is
+    PERFORM authz.set_store_group('gi_store', NULL);
+    v_err := NULL; BEGIN PERFORM authz.delete_store_group('gi_tenant'); EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert('gi_12_group_with_issuers_stays', v_err, 'store group gi_tenant still has 1 issuer(s): remove them first');
+    PERFORM authz.delete_issuer_binding('https://test-group-issuer/a');
+    PERFORM _test_assert('gi_13_group_deleted', authz.delete_store_group('gi_tenant')::text, 'true');
+    PERFORM authz.delete_store('gi_store', p_purge_audit => true);
 END;
 $$;
 

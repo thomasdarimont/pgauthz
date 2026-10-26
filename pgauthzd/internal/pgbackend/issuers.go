@@ -24,7 +24,8 @@ func (b *Backend) IssuerBindingsRevision(ctx context.Context) (int64, error) {
 func (b *Backend) IssuerBindings(ctx context.Context) ([]issuers.Binding, error) {
 	rows, err := b.readPool(ctx).Query(ctx, `
 		SELECT issuer, stores, db_roles, client_db_roles, pep_clients, enabled, coalesce(description, ''),
-		       created_at, coalesce(created_by, ''), updated_at, coalesce(updated_by, '')
+		       created_at, coalesce(created_by, ''), updated_at, coalesce(updated_by, ''),
+		       coalesce(store_group, ''), coalesce(jwks_url, ''), coalesce(audience, ''), audiences, admin
 		  FROM authz.list_issuer_bindings()`)
 	if err != nil {
 		return nil, err
@@ -33,8 +34,15 @@ func (b *Backend) IssuerBindings(ctx context.Context) ([]issuers.Binding, error)
 	var out []issuers.Binding
 	for rows.Next() {
 		var r issuers.Binding
-		if err := rows.Scan(&r.Issuer, &r.Stores, &r.DBRoles, &r.ClientDBRoles, &r.PEPClients, &r.Enabled, &r.Description, &r.CreatedAt, &r.CreatedBy, &r.UpdatedAt, &r.UpdatedBy); err != nil {
+		var admin []byte
+		if err := rows.Scan(&r.Issuer, &r.Stores, &r.DBRoles, &r.ClientDBRoles, &r.PEPClients, &r.Enabled, &r.Description, &r.CreatedAt, &r.CreatedBy, &r.UpdatedAt, &r.UpdatedBy,
+			&r.StoreGroup, &r.JWKSURL, &r.Audience, &r.Audiences, &admin); err != nil {
 			return nil, err
+		}
+		if len(admin) > 0 {
+			if err := json.Unmarshal(admin, &r.Admin); err != nil {
+				return nil, fmt.Errorf("issuer %s: admin rules: %w", r.Issuer, err)
+			}
 		}
 		out = append(out, r)
 	}
@@ -123,9 +131,14 @@ func (b *Backend) AssertAdmin(ctx context.Context) error {
 func (b *Backend) SetIssuerBinding(ctx context.Context, bnd issuers.Binding, performedBy string) (int64, error) {
 	cdr, _ := json.Marshal(orMap(bnd.ClientDBRoles))
 	pep, _ := json.Marshal(orMapList(bnd.PEPClients))
+	admin, _ := json.Marshal(bnd.Admin)
+	if bnd.Admin == nil {
+		admin = []byte("[]")
+	}
 	var rev int64
-	err := b.pool.QueryRow(ctx, `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8)`,
-		bnd.Issuer, orSlice(bnd.Stores), orSlice(bnd.DBRoles), string(cdr), string(pep), bnd.Enabled, nullable(bnd.Description), nullable(performedBy)).Scan(&rev)
+	err := b.pool.QueryRow(ctx, `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)`,
+		bnd.Issuer, orSlice(bnd.Stores), orSlice(bnd.DBRoles), string(cdr), string(pep), bnd.Enabled, nullable(bnd.Description), nullable(performedBy),
+		nullable(bnd.StoreGroup), nullable(bnd.JWKSURL), nullable(bnd.Audience), orSlice(bnd.Audiences), string(admin)).Scan(&rev)
 	return rev, bindingError(err)
 }
 

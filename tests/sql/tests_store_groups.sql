@@ -5,7 +5,7 @@
 SELECT _test_reset();
 
 DO $$
-DECLARE v_err text; v_state text; v_n bigint; r record;
+DECLARE v_err text; v_state text; v_n bigint; r record; v_seq0 bigint := COALESCE((SELECT max(seq) FROM authz.store_group_audit), 0);
 BEGIN
     PERFORM authz.delete_store('sg_test_a', p_purge_audit => true) FROM (SELECT 1) x WHERE EXISTS (SELECT 1 FROM authz.stores WHERE name = 'sg_test_a');
     PERFORM authz.delete_store('sg_test_b', p_purge_audit => true) FROM (SELECT 1) x WHERE EXISTS (SELECT 1 FROM authz.stores WHERE name = 'sg_test_b');
@@ -32,9 +32,9 @@ BEGIN
     PERFORM _test_assert('sg_attached', (SELECT store_group FROM authz.list_stores() WHERE name = 'sg_test_a'), 'sg_tenant');
     PERFORM _test_assert('sg_store_count', (SELECT store_count FROM authz.list_store_groups() WHERE name = 'sg_tenant')::text, '2');
     -- attaching again records nothing
-    SELECT count(*) INTO v_n FROM authz.store_group_audit WHERE group_name = 'sg_tenant';
+    SELECT count(*) INTO v_n FROM authz.store_group_audit WHERE group_name = 'sg_tenant' AND seq > v_seq0;
     PERFORM authz.set_store_group('sg_test_a', 'sg_tenant');
-    PERFORM _test_assert('sg_attach_idempotent', (SELECT count(*) FROM authz.store_group_audit WHERE group_name = 'sg_tenant')::text, v_n::text);
+    PERFORM _test_assert('sg_attach_idempotent', (SELECT count(*) FROM authz.store_group_audit WHERE group_name = 'sg_tenant' AND seq > v_seq0)::text, v_n::text);
 
     -- names follow the store rule; an unknown group raises; the default group stays
     v_state := NULL;
@@ -62,7 +62,7 @@ BEGIN
     SELECT * INTO r FROM authz.list_store_group_audit('sg_other', 1);
     PERFORM _test_assert('sg_audit_last', r.action || ' ' || r.store || ' by ' || r.performed_by, 'ATTACH sg_test_a by user:tester');
     PERFORM _test_assert('sg_audit_actions',
-        (SELECT string_agg(action, ',' ORDER BY seq) FROM authz.store_group_audit WHERE group_name = 'sg_tenant'),
+        (SELECT string_agg(action, ',' ORDER BY seq) FROM authz.store_group_audit WHERE group_name = 'sg_tenant' AND seq > v_seq0),
         'CREATE,UPDATE,ATTACH,ATTACH,DETACH,DETACH,DELETE');
 
     -- a retired store keeps its group

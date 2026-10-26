@@ -86,6 +86,11 @@ BEGIN
         RAISE EXCEPTION 'store group % still holds % store(s): move or detach them first', p_name, v_n
             USING ERRCODE = 'invalid_parameter_value';
     END IF;
+    SELECT count(*) INTO v_n FROM authz.issuer_bindings WHERE store_group = p_name;
+    IF v_n > 0 THEN
+        RAISE EXCEPTION 'store group % still has % issuer(s): remove them first', p_name, v_n
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
     DELETE FROM authz.store_groups WHERE id = v_id;
     PERFORM authz._store_group_audit('DELETE', p_name);
     RETURN true;
@@ -119,5 +124,9 @@ BEGIN
     IF v_new IS NOT NULL THEN
         PERFORM authz._store_group_audit('ATTACH', p_group, p_store);
     END IF;
+    -- a group issuer's reach is the group's stores: the fleet re-reads the
+    -- bindings (the revision pgauthzd polls, the doorbell it listens to)
+    UPDATE authz.issuer_bindings_revision SET revision = revision + 1, changed_at = now();
+    PERFORM pg_notify('authz_issuer_bindings', (SELECT revision FROM authz.issuer_bindings_revision)::text);
 END;
 $$;

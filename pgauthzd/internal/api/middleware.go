@@ -188,11 +188,13 @@ func (c IssuerConfig) AcceptedAudiences() []string {
 // keys. A deployment can trust several issuers at once (e.g. a demo IdP for tests
 // and Keycloak for the playground); the token's "iss" claim selects the validator.
 type IssuerConfig struct {
-	Issuer    string
-	Audience  string   // optional; if set, the token's "aud" must contain it (or one of Audiences)
-	Audiences []string // further accepted audiences (any of)
-	JWKSURL   string
-	JWKSFile  string // alternative to JWKSURL: load JWKS from a local file
+	Issuer       string
+	Audience     string   // optional; if set, the token's "aud" must contain it (or one of Audiences)
+	Audiences    []string // further accepted audiences (any of)
+	StoreGroup   string   // ADR 0017: a group issuer's group
+	AnchorSource string   // "env" or "db" (a group issuer's row)
+	JWKSURL      string
+	JWKSFile     string // alternative to JWKSURL: load JWKS from a local file
 	// DBRoles: anchored regex patterns of the per-app DB roles this issuer's
 	// tokens may yield (empty = unrestricted). Validated upstream in
 	// config.Load; a violating token is rejected with 403.

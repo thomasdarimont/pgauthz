@@ -265,8 +265,13 @@ stores where nothing is shared (and always per tenant).
   them in step on every listing. New stores land in the `default` group
   unless the form says otherwise; a store outside every group is its own
   group of one. Moving a store between groups is the platform's, since it
-  changes who administers it. Group issuers and model sharing follow in
-  later phases.
+  changes who administers it. **Group issuers** (phase 2): under Platform →
+  Issuers a row may name a store group instead of store patterns and carry
+  the provider's own trust anchor (JWKS URL, discovered from the issuer
+  URL, and the audiences); its tokens reach the group's stores and nothing
+  else, so the group's admins (`can_manage_issuers` on the group) add their
+  tenant's identity provider themselves, bounded by the group. Such a row
+  may carry delegated admin rules only. Model sharing follows in phase 3.
 - **Every action is attributed and recorded.** Writes run in one
   transaction with `authz.performed_by = user:alice`, so the tuple audit
   trail, `created_by` of a published version and `applied_by` of a rollout

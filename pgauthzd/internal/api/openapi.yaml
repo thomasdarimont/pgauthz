@@ -3179,6 +3179,14 @@ components:
           additionalProperties: { type: array, items: { type: string } }
         enabled: { type: boolean, description: false pauses the issuer — every token refused (401). }
         description: { type: string }
+        store_group: { type: string, description: "A group issuer (ADR 0017): the store group whose stores the issuer reaches; then `stores` is the engine's resolution of its members, read-only." }
+        jwks_url: { type: string, description: "A group issuer's own trust anchor (https); admits an issuer the environment does not list, for the group only." }
+        audience: { type: string }
+        audiences: { type: array, items: { type: string } }
+        admin:
+          type: array
+          description: Delegated admin rules only (`decide`), the console store decides what the issuer's credentials manage.
+          items: { type: object, additionalProperties: true }
         created_at: { type: string, format: date-time, readOnly: true, description: The row's first write (kept by a replace). }
         created_by: { type: string, readOnly: true }
         updated_at: { type: string, format: date-time, readOnly: true, description: The row's last write. }
