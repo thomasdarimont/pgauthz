@@ -271,7 +271,12 @@ stores where nothing is shared (and always per tenant).
   URL, and the audiences); its tokens reach the group's stores and nothing
   else, so the group's admins (`can_manage_issuers` on the group) add their
   tenant's identity provider themselves, bounded by the group. Such a row
-  may carry delegated admin rules only. Model sharing follows in phase 3.
+  may carry delegated admin rules only. **Model sharing** (phase 3): a
+  registry model belongs to the group whose store published it; a store
+  applies its own group's and the platform's models, another group's only
+  after that group shared them (*Models shared with* under the group in
+  Platform → Groups, `model_consumer`); the Rollout plan names the blocker
+  otherwise, and the Registry shows every model's owner.
 - **Every action is attributed and recorded.** Writes run in one
   transaction with `authz.performed_by = user:alice`, so the tuple audit
   trail, `created_by` of a published version and `applied_by` of a rollout

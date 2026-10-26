@@ -69,6 +69,10 @@ type Version struct {
 	Description string    `json:"description"`
 	CreatedAt   time.Time `json:"created_at"`
 	CreatedBy   string    `json:"created_by"`
+	// ADR 0017: the group the model belongs to ("default" = the platform's),
+	// or the ungrouped store that published it.
+	OwnerGroup string `json:"owner_group,omitempty"`
+	OwnerStore string `json:"owner_store,omitempty"`
 }
 
 // ListVersions lists registry versions, all models when name is empty.
@@ -77,7 +81,8 @@ func ListVersions(ctx context.Context, db DB, name string) ([]Version, error) {
 	if name != "" {
 		arg = name
 	}
-	rows, err := db.Query(ctx, `SELECT name, version, checksum, COALESCE(description,''), created_at, COALESCE(created_by,'')
+	rows, err := db.Query(ctx, `SELECT name, version, checksum, COALESCE(description,''), created_at, COALESCE(created_by,''),
+	                                     COALESCE(owner_group,''), COALESCE(owner_store,'')
 	                              FROM authz.list_model_versions($1)`, arg)
 	if err != nil {
 		return nil, err
@@ -86,7 +91,7 @@ func ListVersions(ctx context.Context, db DB, name string) ([]Version, error) {
 	out := []Version{}
 	for rows.Next() {
 		var v Version
-		if err := rows.Scan(&v.Name, &v.Version, &v.Checksum, &v.Description, &v.CreatedAt, &v.CreatedBy); err != nil {
+		if err := rows.Scan(&v.Name, &v.Version, &v.Checksum, &v.Description, &v.CreatedAt, &v.CreatedBy, &v.OwnerGroup, &v.OwnerStore); err != nil {
 			return nil, err
 		}
 		out = append(out, v)

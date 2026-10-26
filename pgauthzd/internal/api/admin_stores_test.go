@@ -30,6 +30,7 @@ type storeStub struct {
 	namespaces map[string]map[string]map[string][2]bool // store → namespace → role → (read, write)
 	tests      []testModelCall
 	groups     map[string]*authz.StoreGroupRow // ADR 0017
+	consumers  map[string][]string             // owner group → consumer groups
 }
 
 // the data-subject methods: canned rows, the arguments remembered
@@ -301,6 +302,39 @@ func (s *storeStub) SetStoreGroup(_ context.Context, store, group, actor string)
 	}
 	st.Group = group
 	return nil
+}
+
+func (s *storeStub) ModelConsumers(_ context.Context, owner string) ([]authz.ModelConsumerRow, error) {
+	out := []authz.ModelConsumerRow{}
+	for _, c := range s.consumers[owner] {
+		out = append(out, authz.ModelConsumerRow{Group: c, CreatedBy: "stub"})
+	}
+	return out, nil
+}
+func (s *storeStub) GrantModelConsumer(_ context.Context, owner, consumer, actor string) error {
+	s.actors = append(s.actors, actor)
+	if owner == consumer {
+		return fmt.Errorf("%w: a group always applies its own models: no relationship with itself", authz.ErrInvalidRequest)
+	}
+	if s.consumers == nil {
+		s.consumers = map[string][]string{}
+	}
+	s.consumers[owner] = append(s.consumers[owner], consumer)
+	return nil
+}
+func (s *storeStub) RevokeModelConsumer(_ context.Context, owner, consumer, actor string) (bool, error) {
+	s.actors = append(s.actors, actor)
+	kept := []string{}
+	found := false
+	for _, c := range s.consumers[owner] {
+		if c == consumer {
+			found = true
+		} else {
+			kept = append(kept, c)
+		}
+	}
+	s.consumers[owner] = kept
+	return found, nil
 }
 
 func storesFixture(t *testing.T) (*Handler, *storeStub) {
@@ -916,5 +950,41 @@ func TestAdminGroups(t *testing.T) {
 	}
 	if last := stub.actors[len(stub.actors)-1]; last != "user:ops" {
 		t.Fatalf("actor: %q", last)
+	}
+}
+
+// Model sharing over the admin API (ADR 0017 phase 3): the owner group's
+// admins (delegated: can_manage_access on the group) or platform scope
+// grant and revoke model_consumer; a self-grant is the engine's 400; a
+// static tenant admin never.
+func TestAdminModelConsumers(t *testing.T) {
+	h, stub := storesFixture(t)
+	stub.groups["tenant_a"] = &authz.StoreGroupRow{Name: "tenant_a"}
+	stub.groups["tenant_c"] = &authz.StoreGroupRow{Name: "tenant_c"}
+	stub.grants = map[string]bool{"user:carol can_manage_access group:tenant_c": true}
+	if w := serveAdmin(h, platformAdmin.request("PUT", "/pgauthz/v1/admin/groups/tenant_a/consumers/tenant_c", "")); w.Code != 200 {
+		t.Fatalf("platform grants: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, platformAdmin.request("GET", "/pgauthz/v1/admin/groups/tenant_a/consumers", "")); w.Code != 200 || !strings.Contains(w.Body.String(), `"group":"tenant_c"`) {
+		t.Fatalf("consumers: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantAAdmin.request("PUT", "/pgauthz/v1/admin/groups/tenant_a/consumers/tenant_c", "")); w.Code != http.StatusForbidden {
+		t.Fatalf("static tenant grants: %d %s", w.Code, w.Body.String())
+	}
+	// carol administers tenant_c: she may share tenant_c's models, not tenant_a's
+	if w := serveAdmin(h, tenantCUser.request("PUT", "/pgauthz/v1/admin/groups/tenant_c/consumers/tenant_a", "")); w.Code != 200 {
+		t.Fatalf("group admin grants: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCUser.request("PUT", "/pgauthz/v1/admin/groups/tenant_a/consumers/tenant_c", "")); w.Code != http.StatusForbidden {
+		t.Fatalf("group admin grants another's: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCUser.request("PUT", "/pgauthz/v1/admin/groups/tenant_c/consumers/tenant_c", "")); w.Code != 400 {
+		t.Fatalf("self grant: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCUser.request("DELETE", "/pgauthz/v1/admin/groups/tenant_c/consumers/tenant_a", "")); w.Code != 200 {
+		t.Fatalf("group admin revokes: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCUser.request("DELETE", "/pgauthz/v1/admin/groups/tenant_c/consumers/tenant_a", "")); w.Code != http.StatusNotFound {
+		t.Fatalf("revoke again: %d %s", w.Code, w.Body.String())
 	}
 }

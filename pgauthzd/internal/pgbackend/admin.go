@@ -473,3 +473,36 @@ func (b *Backend) SetStoreGroup(ctx context.Context, store, group, actor string)
 		return err
 	})
 }
+
+// ModelConsumers: the groups that may apply the owner group's models.
+func (b *Backend) ModelConsumers(ctx context.Context, owner string) ([]authz.ModelConsumerRow, error) {
+	rows, err := b.pool.Query(ctx, `SELECT consumer_group, created_at, created_by FROM authz.list_model_consumers($1)`, owner)
+	if err != nil {
+		return nil, adminError(err)
+	}
+	defer rows.Close()
+	out := []authz.ModelConsumerRow{}
+	for rows.Next() {
+		var r authz.ModelConsumerRow
+		if err := rows.Scan(&r.Group, &r.CreatedAt, &r.CreatedBy); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (b *Backend) GrantModelConsumer(ctx context.Context, owner, consumer, actor string) error {
+	return b.asActor(ctx, actor, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `SELECT authz.grant_model_consumer($1, $2)`, owner, consumer)
+		return err
+	})
+}
+
+func (b *Backend) RevokeModelConsumer(ctx context.Context, owner, consumer, actor string) (bool, error) {
+	var revoked bool
+	err := b.asActor(ctx, actor, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT authz.revoke_model_consumer($1, $2)`, owner, consumer).Scan(&revoked)
+	})
+	return revoked, err
+}

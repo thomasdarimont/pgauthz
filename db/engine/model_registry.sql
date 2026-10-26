@@ -278,6 +278,7 @@ BEGIN
         RETURN v_latest;  -- unchanged — no new version
     END IF;
 
+    PERFORM authz._claim_model_owner(p_name, p_from_store);   -- the publisher's group owns the name (ADR 0017)
     INSERT INTO authz.model_registry (name, version, definition, checksum, description, created_by)
     VALUES (p_name, COALESCE(v_latest, 0) + 1, v_def, v_sum, p_description, authz._actor());
 
@@ -335,6 +336,7 @@ BEGIN
     IF v_latest_sum = v_sum THEN
         RETURN v_latest;
     END IF;
+    PERFORM authz._claim_model_owner(p_name, NULL);   -- published without a store: the platform's (ADR 0017)
     INSERT INTO authz.model_registry (name, version, definition, checksum, description, created_by)
     VALUES (p_name, COALESCE(v_latest, 0) + 1, p_definition, v_sum, p_description, authz._actor());
     RETURN COALESCE(v_latest, 0) + 1;
@@ -433,6 +435,11 @@ BEGIN
     IF (v_def->>'format')::int IS DISTINCT FROM 1 THEN
         RAISE EXCEPTION 'apply_model: unsupported definition format % (expected 1)',
             v_def->>'format';
+    END IF;
+    -- ownership (ADR 0017): own group's, the platform's, or shared with the store's group
+    SELECT * INTO v_row FROM (SELECT to_jsonb(a) AS j FROM authz._model_applicable(p_store, p_name) a) x;
+    IF NOT (v_row->>'ok')::boolean THEN
+        RAISE EXCEPTION 'apply_model: %', v_row->>'why' USING ERRCODE = 'insufficient_privilege';
     END IF;
 
     -- The removal lock before anything is resolved or removed (see
@@ -855,6 +862,9 @@ $$;
 ------------------------------------------------------------------------
 -- list_model_versions: registry contents (all models, or one by name).
 ------------------------------------------------------------------------
+-- The shape grew in 0030 (owner_group / owner_store): dropped first, since
+-- CREATE OR REPLACE cannot change a function's columns.
+DROP FUNCTION IF EXISTS authz.list_model_versions(text);
 CREATE OR REPLACE FUNCTION authz.list_model_versions(p_name text DEFAULT NULL)
 RETURNS TABLE (
     name        text,
@@ -862,11 +872,14 @@ RETURNS TABLE (
     checksum    text,
     description text,
     created_at  timestamptz,
-    created_by  text
+    created_by  text,
+    owner_group text,           -- ADR 0017: the group the model belongs to ('default' = the platform's) …
+    owner_store text            -- … or the ungrouped store that published it
 )
 LANGUAGE sql STABLE AS $$
-    SELECT r.name, r.version, r.checksum, r.description, r.created_at, r.created_by
+    SELECT r.name, r.version, r.checksum, r.description, r.created_at, r.created_by, o.owner_group, o.owner_store
       FROM authz.model_registry r
+      LEFT JOIN authz.model_owners o ON o.name = r.name
      WHERE p_name IS NULL OR r.name = p_name
      ORDER BY r.name, r.version;
 $$;
@@ -961,6 +974,7 @@ DECLARE
     v_refs      bigint;
     v_rel_remove jsonb;
     v_cel_missing jsonb;
+    v_own       record;
 BEGIN
     SELECT r.version, r.checksum, r.definition INTO v_version, v_sum, v_def
       FROM authz.model_registry r
@@ -971,6 +985,11 @@ BEGIN
     IF v_version IS NULL THEN
         RAISE EXCEPTION 'plan_model_apply: no registry entry for model % version %',
             p_name, COALESCE(p_version::text, '(latest)');
+    END IF;
+    -- ownership (ADR 0017): a model the store's group may not apply is a blocker
+    SELECT * INTO v_own FROM authz._model_applicable(p_store, p_name);
+    IF NOT v_own.ok THEN
+        v_blockers := v_blockers || jsonb_build_object('kind', 'model_not_shared', 'name', p_name, 'why', v_own.why);
     END IF;
     IF (v_def->>'format')::int IS DISTINCT FROM 1 THEN
         RAISE EXCEPTION 'plan_model_apply: unsupported definition format % (expected 1)',

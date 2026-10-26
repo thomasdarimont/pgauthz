@@ -75,6 +75,7 @@ export class PgcRegistry extends PgcElement {
           <tr>
             <th>${t('Version')}</th>
             <th>${t('Description')}</th>
+            <th>${t('Owner')}</th>
             <th>${t('Published')}</th>
             <th>${t('By')}</th>
             <th>${t('Checksum')}</th>
@@ -93,6 +94,9 @@ export class PgcRegistry extends PgcElement {
                   ${v.version === latest ? html` <span class="badge muted">${t('latest')}</span>` : nothing}
                 </td>
                 <td>${v.description}</td>
+                <td class="mono" title=${t('The group the model belongs to (default = the platform\'s), or the ungrouped store that published it.')}>
+                  ${v.owner_group ? (v.owner_group === 'default' ? html`<span class="muted">${t('platform')}</span>` : v.owner_group) : v.owner_store ? html`<span class="muted">${t('store')} ${v.owner_store}</span>` : html`<span class="dim">—</span>`}
+                </td>
                 <td class="muted">${fmtTime(v.created_at)}</td>
                 <td class="mono">${v.created_by}</td>
                 <td class="mono muted">${v.checksum.slice(0, 12)}</td>

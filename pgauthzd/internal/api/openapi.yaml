@@ -1248,6 +1248,97 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/admin/groups/{group}/consumers:
+    parameters:
+      - { name: group, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' } }
+    get:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminModelConsumers
+      summary: The groups that may apply this group's registry models (ADR 0017)
+      description: The group's admins (a delegated credential with can_manage_access on the group) or platform scope.
+      responses:
+        '200':
+          description: The consumers.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [group, consumers]
+                properties:
+                  group: { type: string }
+                  consumers:
+                    type: array
+                    items:
+                      type: object
+                      required: [group, created_at, created_by]
+                      properties:
+                        group: { type: string }
+                        created_at: { type: string, format: date-time }
+                        created_by: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/admin/groups/{group}/consumers/{consumer}:
+    parameters:
+      - { name: group, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' } }
+      - { name: consumer, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' } }
+    put:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminGrantModelConsumer
+      summary: Let a group apply this group's models (group:A model_consumer group:B)
+      responses:
+        '200':
+          description: Granted (idempotent).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [group, consumer, granted]
+                properties:
+                  group: { type: string }
+                  consumer: { type: string }
+                  granted: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+    delete:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminRevokeModelConsumer
+      summary: End a group's right to apply this group's models
+      responses:
+        '200':
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [group, consumer, revoked]
+                properties:
+                  group: { type: string }
+                  consumer: { type: string }
+                  revoked: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
   /pgauthz/v1/admin/stores/{store}/decisions:
     parameters:
       - { name: store, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' } }
@@ -3101,6 +3192,8 @@ components:
       type: object
       required: [name, version, checksum, created_at]
       properties:
+        owner_group: { type: string, description: "ADR 0017: the group the model belongs to (default = the platform's)." }
+        owner_store: { type: string, description: "The ungrouped store that published it, when no group does." }
         name: { type: string }
         version: { type: integer }
         checksum: { type: string }

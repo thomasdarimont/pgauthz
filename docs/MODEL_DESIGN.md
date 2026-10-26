@@ -2378,6 +2378,25 @@ apply enforces. `plan_model_apply` is reader-callable (like `model_status`),
 so CI/CD pipelines can gate a rollout on `can_apply` and on
 `rollback.possible` without admin credentials.
 
+### Who owns a model, and who may apply it (store groups)
+
+With store groups ([ADR 0017](adr/0017-store-groups.md), migration 0030)
+a registry model — every version of a name — belongs to the group whose
+store published it; a model published without a store (`publish_model_definition`,
+`publish_model_openfga`, the admin API's publish) is the platform's, the
+`default` group's. A store applies its own group's models and the
+platform's; another group's only when that group granted
+`group:A model_consumer group:B` (`grant_model_consumer` /
+`revoke_model_consumer`, the Groups tab's *Models shared with*, the admin
+API's `…/groups/{group}/consumers`). `apply_model` refuses otherwise
+(SQLSTATE 42501) and `plan_model_apply` reports the blocker
+`model_not_shared` with the reason. A group's name takes new versions
+from that group only; `set_model_owner` moves a model (the platform's
+call). Isolation is a group's property: the platform's models and an
+ungrouped store's models stay open to every store, so a deployment that
+never creates a group keeps the registry it always had.
+`list_model_versions` names the owner (`owner_group` / `owner_store`).
+
 ## 17. Temporal Gates (History-Dependent Rules)
 
 Temporal gates are **centrally managed, history-dependent veto rules over

@@ -1,6 +1,6 @@
 # ADR 0017 — Store groups: tenancy, delegated administration and group issuers
 
-- **Status:** Accepted (2026-10-26; phases 1 and 2 implemented, 3 and 4 open)
+- **Status:** Accepted (2026-10-26; phases 1, 2 and 3 implemented, 4 open)
 - **Date:** 2026-10-26
 - **Deciders:** maintainers
 - **Relates to:** [0016](0016-issuer-bindings-and-admin-api.md) (issuer
@@ -79,8 +79,9 @@ console; the console's own access model gets the matching `group` type.
    checksum and drift mechanics are unchanged. The `default` group's
    models are the platform's models of today, so nothing a current
    deployment applies changes meaning. A model published from an
-   ungrouped store belongs to that store's own group of one, so sharing
-   it is the same relationship.
+   ungrouped store is recorded as that store's, but stays open like the
+   platform's: isolation is a group's property, and a deployment that
+   never creates a group keeps the registry it always had.
 
 ## Consequences
 

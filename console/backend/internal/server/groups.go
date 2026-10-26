@@ -391,3 +391,81 @@ func (s *Server) handleGroupAccessRemove(w http.ResponseWriter, r *http.Request)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
+
+// the group's model consumers (ADR 0017 phase 3): group:A model_consumer
+// group:B, granted by A's admins — the groups that may apply A's models
+func (s *Server) handleGroupConsumers(w http.ResponseWriter, r *http.Request) {
+	group := r.PathValue("group")
+	p := s.require(w, r, "can_view", "group", group)
+	if p == nil {
+		return
+	}
+	rows, err := s.engine.Query(r.Context(), `SELECT consumer_group, created_at, created_by FROM authz.list_model_consumers($1)`, group)
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	defer rows.Close()
+	type consumer struct {
+		Group     string    `json:"group"`
+		CreatedAt time.Time `json:"created_at"`
+		CreatedBy string    `json:"created_by"`
+	}
+	out := []consumer{}
+	for rows.Next() {
+		var c consumer
+		if err := rows.Scan(&c.Group, &c.CreatedAt, &c.CreatedBy); err != nil {
+			writeEngineError(w, err)
+			return
+		}
+		out = append(out, c)
+	}
+	manage, _ := s.can(r.Context(), p, "can_manage_access", "group", group)
+	writeJSON(w, http.StatusOK, map[string]any{"group": group, "consumers": out, "can_manage": manage})
+}
+
+type consumerReq struct {
+	Consumer string `json:"consumer"`
+}
+
+func (s *Server) handleGroupConsumerGrant(w http.ResponseWriter, r *http.Request) {
+	group := r.PathValue("group")
+	p := s.require(w, r, "can_manage_access", "group", group)
+	if p == nil {
+		return
+	}
+	var req consumerReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	err := s.asPerson(r.Context(), p, "can_manage_access", "group", group, map[string]any{"op": "model_consumer_grant", "consumer": req.Consumer}, func(tx pgx.Tx) error {
+		_, err := tx.Exec(r.Context(), `SELECT authz.grant_model_consumer($1, $2)`, group, req.Consumer)
+		return err
+	})
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"group": group, "consumer": req.Consumer, "granted": true})
+}
+
+func (s *Server) handleGroupConsumerRevoke(w http.ResponseWriter, r *http.Request) {
+	group := r.PathValue("group")
+	p := s.require(w, r, "can_manage_access", "group", group)
+	if p == nil {
+		return
+	}
+	var req consumerReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	var revoked bool
+	err := s.asPerson(r.Context(), p, "can_manage_access", "group", group, map[string]any{"op": "model_consumer_revoke", "consumer": req.Consumer}, func(tx pgx.Tx) error {
+		return tx.QueryRow(r.Context(), `SELECT authz.revoke_model_consumer($1, $2)`, group, req.Consumer).Scan(&revoked)
+	})
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"group": group, "consumer": req.Consumer, "revoked": revoked})
+}

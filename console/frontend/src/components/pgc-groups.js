@@ -19,6 +19,8 @@ export class PgcGroups extends PgcElement {
     open: { state: true }, // the group whose admins are shown
     access: { state: true },
     accessForm: { state: true },
+    consumers: { state: true }, // the open group's model consumers
+    consumerPick: { state: true },
     editing: { state: true }, // the group whose description is edited
   };
 
@@ -53,6 +55,66 @@ export class PgcGroups extends PgcElement {
   async _loadAccess(group) {
     const a = await run(this, () => api.groupAccess(group));
     if (a) this.access = a;
+    const c = await run(this, () => api.groupConsumers(group));
+    if (c) this.consumers = c;
+  }
+
+  async _grantConsumer(group) {
+    if (!this.consumerPick) return;
+    const ok = await run(this, () => api.groupConsumerGrant(group, this.consumerPick));
+    if (ok) {
+      this.consumerPick = '';
+      await this._loadAccess(group);
+    }
+  }
+
+  async _revokeConsumer(group, consumer) {
+    const ok = await run(this, () => api.groupConsumerRevoke(group, consumer));
+    if (ok) await this._loadAccess(group);
+  }
+
+  // Models shared with: the groups that may apply this group's registry
+  // models (group:A model_consumer group:B, ADR 0017 phase 3). The default
+  // group's models are everyone's; sharing is for the other groups.
+  _sharing(group) {
+    const c = this.consumers;
+    if (!c) return nothing;
+    const others = (this.d?.groups ?? []).map((g) => g.name).filter((n) => n !== group && !c.consumers.some((x) => x.group === n));
+    return html`<div class="card" data-testid="groups-consumers-${group}">
+      <h4>${t('Models shared with')} ${help('The groups whose stores may apply this group\'s registry models. A group always applies its own models and the default group\'s; another group\'s only with this grant, which the plan reports as a blocker otherwise.')}</h4>
+      ${
+        group === 'default'
+          ? html`<p class="help">${t('The default group\'s models are the platform\'s: every store may apply them.')}</p>`
+          : html`${
+                c.consumers.length
+                  ? html`<table class="table compact">
+                      <tbody>
+                        ${c.consumers.map(
+                          (x) => html`<tr>
+                            <td class="mono">${x.group}</td>
+                            <td class="muted">${t('since {when} by {who}', { when: fmtTime(x.created_at), who: x.created_by })}</td>
+                            <td>
+                              ${c.can_manage ? html`<button type="button" class="small" @click=${() => this._revokeConsumer(group, x.group)}>${t('Revoke')}</button>` : nothing}
+                            </td>
+                          </tr>`,
+                        )}
+                      </tbody>
+                    </table>`
+                  : html`<p class="help">${t('No other group may apply this group\'s models yet.')}</p>`
+              }
+              ${
+                c.can_manage && others.length
+                  ? html`<form class="form inline" @submit=${(e) => { e.preventDefault(); this._grantConsumer(group); }}>
+                      <select .value=${this.consumerPick ?? ''} @change=${(e) => (this.consumerPick = e.target.value)} data-testid="groups-consumer-pick">
+                        <option value="">${t('— choose a group —')}</option>
+                        ${others.map((n) => html`<option value=${n}>${n}</option>`)}
+                      </select>
+                      <button class="primary" ?disabled=${this.busy || !this.consumerPick} data-testid="groups-consumer-grant">${t('Share models')}</button>
+                    </form>`
+                  : nothing
+              }`
+      }
+    </div>`;
   }
 
   _set(k) {
@@ -145,7 +207,7 @@ export class PgcGroups extends PgcElement {
     const a = this.access;
     if (!a) return loading(2);
     return html`<div class="card" data-testid="groups-access-${group}">
-      <h4>${t('Group admins')} ${help('Group admins see and administer every store of the group; issuer admins will manage the group\'s identity providers (a later phase).')}</h4>
+      <h4>${t('Group admins')} ${help('Group admins see and administer every store of the group; issuer admins manage the group\'s identity providers (Platform → Issuers).')}</h4>
       ${
         a.access.length
           ? html`<table class="table compact">
@@ -264,7 +326,7 @@ export class PgcGroups extends PgcElement {
                       >${t('{n} stores', { n: g.store_count })} · ${t('created {when} by {who}', { when: fmtTime(g.created_at), who: g.created_by })}</span
                     >
                     <button type="button" class="small" @click=${() => this._toggle(g.name)} data-testid="groups-admins-${g.name}">
-                      ${this.open === g.name ? t('Hide admins') : t('Admins')}
+                      ${this.open === g.name ? t('Hide admins & sharing') : t('Admins & sharing')}
                     </button>
                     ${
                       d.can_manage && g.name !== 'default' && g.store_count === 0
@@ -290,7 +352,7 @@ export class PgcGroups extends PgcElement {
                         </table>`
                       : html`<p class="help">${t('No stores in this group yet.')}</p>`
                   }
-                  ${this.open === g.name ? this._admins(g.name) : nothing}
+                  ${this.open === g.name ? html`${this._admins(g.name)}${this._sharing(g.name)}` : nothing}
                 </section>`,
               )}
               ${

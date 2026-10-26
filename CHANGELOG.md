@@ -84,6 +84,21 @@ pre-1.0, minor versions may include breaking changes.
   groups, the form takes the group, the JWKS URL (OpenID discovery from the
   issuer URL) and audiences; `set_issuer_binding` grew five parameters
   (the old signature is dropped).
+- **Store groups, phase 3: model ownership and sharing** ([ADR 0017](docs/adr/0017-store-groups.md)).
+  Migration 0030: a registry model belongs to the group whose store
+  published it (`authz.model_owners`; published without a store = the
+  platform's, the `default` group's); `authz.store_group_relations`
+  holds `group:A model_consumer group:B`. `apply_model` refuses a model
+  the store's group may not apply (42501), `plan_model_apply` reports the
+  blocker `model_not_shared`, a group's name takes new versions from that
+  group only; `grant_model_consumer` / `revoke_model_consumer` /
+  `list_model_consumers` / `model_owner` / `set_model_owner`;
+  `list_model_versions` names the owner. The platform's and an ungrouped
+  store's models stay open, so a deployment without groups keeps today's
+  registry. Admin API: `…/admin/groups/{group}/consumers[/{consumer}]`.
+  Console: *Models shared with* under each group, the owner in the
+  Registry, the Group column in the stores list (sortable, searchable).
+  `pgauthzctl model versions` prints the owner.
 - **Every error names its request.** pgauthzd's and the console's JSON
   errors carry `request_id` (the response's `X-Request-ID`, unique per
   request, also on the request's log line and the decision log), so a

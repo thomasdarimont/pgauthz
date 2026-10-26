@@ -184,6 +184,9 @@ export const api = {
   groupAccessAdd: (group, a) => call(`api/platform/groups/${enc(group)}/access`, a),
   groupAccessRemove: (group, items) => call(`api/platform/groups/${enc(group)}/access/remove`, { items }),
   storeGroupSet: (store, group) => call(`api/stores/${enc(store)}/group`, { group }, { method: 'PUT' }),
+  groupConsumers: (group) => call(`api/platform/groups/${enc(group)}/consumers`),
+  groupConsumerGrant: (group, consumer) => call(`api/platform/groups/${enc(group)}/consumers`, { consumer }),
+  groupConsumerRevoke: (group, consumer) => call(`api/platform/groups/${enc(group)}/consumers/revoke`, { consumer }),
   platformIssuers: () => call('api/platform/issuers'),
   /** @returns {Promise<import('./types.js').IssuerAuditPage>} */
   platformIssuersAudit: (p = {}) => call(`api/platform/issuers/audit?${new URLSearchParams(p)}`),

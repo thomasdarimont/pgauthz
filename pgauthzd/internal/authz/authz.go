@@ -416,6 +416,13 @@ type StoreRow struct {
 	Model       json.RawMessage `json:"model,omitempty"`
 }
 
+// ModelConsumerRow: a group that may apply another group's models (ADR 0017).
+type ModelConsumerRow struct {
+	Group     string    `json:"group"`
+	CreatedAt time.Time `json:"created_at"`
+	CreatedBy string    `json:"created_by"`
+}
+
 // StoreGroupRow is one store group (ADR 0017): a named set of stores that
 // shares administration, trust and models.
 type StoreGroupRow struct {

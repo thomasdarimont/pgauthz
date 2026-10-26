@@ -21,6 +21,7 @@ package api
 //   PUT    /pgauthz/v1/admin/groups/{group}          {description}: create (201) or update (200)
 //   DELETE /pgauthz/v1/admin/groups/{group}          an empty group; never default
 //   PUT    /pgauthz/v1/admin/stores/{store}/group    {group: "name" | ""}: attach, or detach (its own group of one)
+//   GET/PUT/DELETE /pgauthz/v1/admin/groups/{group}/consumers[/{consumer}]   who may apply the group's models (model_consumer)
 
 import (
 	"context"
@@ -53,6 +54,10 @@ type StoreAdmin interface {
 	UpsertStoreGroup(ctx context.Context, name string, description *string, actor string) (created bool, err error)
 	DeleteStoreGroup(ctx context.Context, name, actor string) (bool, error)
 	SetStoreGroup(ctx context.Context, store, group, actor string) error
+	// Model sharing (ADR 0017 phase 3): the groups a group lets apply its models.
+	ModelConsumers(ctx context.Context, owner string) ([]authz.ModelConsumerRow, error)
+	GrantModelConsumer(ctx context.Context, owner, consumer, actor string) error
+	RevokeModelConsumer(ctx context.Context, owner, consumer, actor string) (bool, error)
 	ExportModel(ctx context.Context, store string) (json.RawMessage, error)
 	ModelStatus(ctx context.Context, store string) (json.RawMessage, error)
 	PlanApply(ctx context.Context, store, name string, version *int) (json.RawMessage, error)
@@ -639,6 +644,97 @@ func (h *Handler) adminSetStoreGroup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"store": store, "group": req.Group})
 }
 
+// ── model sharing (ADR 0017 phase 3): group:A model_consumer group:B ──────
+
+// requireGroupOwner: the group's own admins (delegated: can_manage_access on
+// group:<name> in the console store) or platform scope decide who may apply
+// the group's models.
+func (h *Handler) requireGroupOwner(w http.ResponseWriter, r *http.Request) (string, bool) {
+	scope, ok := h.requireAdmin(w, r)
+	if !ok {
+		return "", false
+	}
+	group := r.PathValue("group")
+	if !storeNameRe.MatchString(group) {
+		writeBadRequest(w, "store group names are [a-zA-Z_][a-zA-Z0-9_]*, at most 63 characters")
+		return "", false
+	}
+	allowed := scope.platform
+	if scope.decide != nil {
+		allowed = scope.decide.allowed("can_manage_access", "group", group) || scope.decide.allowed("can_manage_access", "platform", "default")
+	}
+	if !allowed {
+		metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
+		writeForbidden(w, scope.refusal("sharing the models of store group '"+group+"' is its admins' (can_manage_access on the group) or the platform's"))
+		return "", false
+	}
+	return group, true
+}
+
+func (h *Handler) adminModelConsumers(w http.ResponseWriter, r *http.Request) {
+	group, ok := h.requireGroupOwner(w, r)
+	if !ok {
+		return
+	}
+	a, ok := h.storeAdmin(w)
+	if !ok {
+		return
+	}
+	rows, err := a.ModelConsumers(r.Context(), group)
+	if err != nil {
+		writeDecisionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"group": group, "consumers": rows})
+}
+
+func (h *Handler) adminGrantModelConsumer(w http.ResponseWriter, r *http.Request) {
+	group, ok := h.requireGroupOwner(w, r)
+	if !ok {
+		return
+	}
+	a, ok := h.storeAdmin(w)
+	if !ok {
+		return
+	}
+	consumer := r.PathValue("consumer")
+	if !storeNameRe.MatchString(consumer) {
+		writeBadRequest(w, "store group names are [a-zA-Z_][a-zA-Z0-9_]*, at most 63 characters")
+		return
+	}
+	if err := a.GrantModelConsumer(r.Context(), group, consumer, actorLabel(r)); err != nil {
+		writeDecisionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"group": group, "consumer": consumer, "granted": true})
+}
+
+func (h *Handler) adminRevokeModelConsumer(w http.ResponseWriter, r *http.Request) {
+	group, ok := h.requireGroupOwner(w, r)
+	if !ok {
+		return
+	}
+	a, ok := h.storeAdmin(w)
+	if !ok {
+		return
+	}
+	consumer := r.PathValue("consumer")
+	if !storeNameRe.MatchString(consumer) {
+		writeBadRequest(w, "store group names are [a-zA-Z_][a-zA-Z0-9_]*, at most 63 characters")
+		return
+	}
+	revoked, err := a.RevokeModelConsumer(r.Context(), group, consumer, actorLabel(r))
+	if err != nil {
+		writeDecisionError(w, err)
+		return
+	}
+	if !revoked {
+		writeError(w, http.StatusNotFound, "group "+consumer+" was not a consumer of "+group+"'s models")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"group": group, "consumer": consumer, "revoked": true})
+}
+
 // ── model test: a fixture run in an ephemeral store ──────────────────────
 
 // testModelReq is a tests.authz.yaml plus what the file could not carry:
@@ -934,6 +1030,9 @@ func registerAdminStores(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("PUT /pgauthz/v1/admin/groups/{group}", h.adminUpsertGroup)
 	mux.HandleFunc("DELETE /pgauthz/v1/admin/groups/{group}", h.adminDeleteGroup)
 	mux.HandleFunc("PUT /pgauthz/v1/admin/stores/{store}/group", h.adminSetStoreGroup)
+	mux.HandleFunc("GET /pgauthz/v1/admin/groups/{group}/consumers", h.adminModelConsumers)
+	mux.HandleFunc("PUT /pgauthz/v1/admin/groups/{group}/consumers/{consumer}", h.adminGrantModelConsumer)
+	mux.HandleFunc("DELETE /pgauthz/v1/admin/groups/{group}/consumers/{consumer}", h.adminRevokeModelConsumer)
 	mux.HandleFunc("GET /pgauthz/v1/admin/models", h.adminModels)
 	mux.HandleFunc("POST /pgauthz/v1/admin/models/test", h.adminTestModel)
 	mux.HandleFunc("POST /pgauthz/v1/admin/models/{name}/versions", h.adminPublishModel)

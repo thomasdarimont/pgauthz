@@ -492,6 +492,23 @@ SELECT * FROM authz.list_store_groups();                     -- name | descripti
 SELECT * FROM authz.list_store_group_audit('tenant_a', 50);  -- auditor tier: CREATE/UPDATE/DELETE/ATTACH/DETACH, newest first
 ```
 
+### Model ownership — model_owner / grant_model_consumer / set_model_owner
+
+A registry model belongs to the group whose store published it (the
+platform's — the `default` group's — when published without a store);
+another group's stores apply it only with a `model_consumer` grant
+([ADR 0017](adr/0017-store-groups.md), `docs/MODEL_DESIGN.md` §16).
+
+```sql
+SELECT * FROM authz.model_owner('saas_core');                 -- owner_group | owner_store (reader tier)
+SELECT authz.grant_model_consumer('tenant_a', 'tenant_b');   -- B's stores may apply A's models (admin tier; audited under A)
+SELECT authz.revoke_model_consumer('tenant_a', 'tenant_b');  -- false when there was no grant
+SELECT * FROM authz.list_model_consumers('tenant_a');        -- consumer_group | created_at | created_by
+SELECT authz.set_model_owner('saas_core', 'tenant_a');       -- move a model to a group (NULL, NULL: the platform's)
+-- apply_model raises 42501 for a model the store may not apply; plan_model_apply
+-- reports it as a blocker {kind: model_not_shared, why}
+```
+
 ### list_recorder_actions / list_namespaces — The allowlists and namespaces of a store
 
 ```sql

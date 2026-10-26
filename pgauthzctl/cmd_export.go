@@ -219,7 +219,13 @@ func cmdVersions(args []string) error {
 		}
 	}
 	for _, v := range versions {
-		fmt.Printf("%s@%d  %s  %s  %s  %s\n", v.Name, v.Version, v.Checksum[:12], v.CreatedAt.Format("2006-01-02 15:04:05-07"), v.CreatedBy, v.Description)
+		owner := ""
+		if v.OwnerGroup != "" {
+			owner = "  [group " + v.OwnerGroup + "]"
+		} else if v.OwnerStore != "" {
+			owner = "  [store " + v.OwnerStore + "]"
+		}
+		fmt.Printf("%s@%d  %s  %s  %s  %s%s\n", v.Name, v.Version, v.Checksum[:12], v.CreatedAt.Format("2006-01-02 15:04:05-07"), v.CreatedBy, v.Description, owner)
 	}
 	return nil
 }

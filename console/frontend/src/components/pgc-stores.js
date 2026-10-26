@@ -167,7 +167,7 @@ export class PgcStores extends PgcElement {
     const rows = (this.data?.stores ?? []).filter(
       (st) =>
         (this.showRetired || !st.retired_at) &&
-        words.every((w) => `${st.name} ${st.description ?? ''}`.toLowerCase().includes(w)),
+        words.every((w) => `${st.name} ${st.description ?? ''} ${st.store_group ?? ''}`.toLowerCase().includes(w)),
     );
     const { key, dir } = this.sort;
     const val = (st) => {
@@ -178,6 +178,8 @@ export class PgcStores extends PgcElement {
           return st.last_change_at ? new Date(st.last_change_at).getTime() : 0;
         case 'model':
           return st.status?.model_name ? `${st.status.model_name}@${st.status.model_version}` : '';
+        case 'group':
+          return st.store_group ?? '';
         default:
           return st.name;
       }
@@ -233,11 +235,6 @@ export class PgcStores extends PgcElement {
               > `
             : nothing
         }
-        ${
-          st.store_group
-            ? html`<span class="badge muted" title=${t('store group')} data-testid="store-group-badge">${st.store_group}</span> `
-            : nothing
-        }
         ${st.description || html`<span class="dim">${t('no description')}</span>`}
         ${
           st.docs_url
@@ -251,6 +248,9 @@ export class PgcStores extends PgcElement {
               >`
             : nothing
         }
+      </td>
+      <td class="mono" data-testid="store-group-cell">
+        ${st.store_group ? html`<a href=${`platform/groups`} title=${t('store group')}>${st.store_group}</a>` : html`<span class="dim">${t('ungrouped')}</span>`}
       </td>
       <td>${statusBadge(st.status)}</td>
       <td>
@@ -431,6 +431,7 @@ export class PgcStores extends PgcElement {
                             <tr>
                               ${this._sortTh('name', t('Store'))}
                               <th>${t('Description')}</th>
+                              ${this._sortTh('group', t('Group'), help('The store group that administers the store (Platform → Groups); ungrouped = its own group of one.'))}
                               ${this._sortTh('model', t('Model'), help('The registry version the store runs, or unmanaged when its model was built in place.'))}
                               <th>${t('Your access')}</th>
                               ${this._sortTh('created', t('Created at'))}
