@@ -603,3 +603,4 @@ input.group-pick.invalid { border-color: var(--c-warn); }
 .group-main .form.inline { display: flex; gap: var(--s-2); align-items: center; }
 .group-meta { font-size: var(--t-xs); }
 .group-actions { flex: 0 0 auto; justify-content: flex-end; }
+.toolbar .pager { display: inline-flex; gap: var(--s-2); align-items: center; font-size: var(--t-sm); }

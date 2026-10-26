@@ -1,5 +1,6 @@
 import { html, nothing } from 'lit';
-import { PgcElement, help, errorBox, loading, groupPick, groupList } from '../base.js';
+import { PgcElement, help, errorBox, loading } from '../base.js';
+import './pgc-group-pick.js';
 import { api } from '../api.js';
 import { t } from '../i18n.js';
 import { run, forbiddenText, fmtTime, parseList } from '../util.js';
@@ -370,15 +371,13 @@ export class PgcIssuers extends PgcElement {
           >${t('Store group')}
           ${help('A group issuer (ADR 0017): its tokens reach the stores of this group, as they are at any moment, and the group\'s admins manage it. With a group the Stores list below stays empty. Empty = a platform issuer bound by patterns.')}</span
         >
-        ${groupPick({
-          list: 'issuers-known-groups',
-          names: this.d?.known?.groups ?? [],
-          value: f.store_group ?? '',
-          onPick: (v) => (this.form = { ...this.form, store_group: v }),
-          placeholder: t('none — a platform issuer, bound by patterns'),
-          testid: 'issuers-store-group',
-        })}
-        ${groupList('issuers-known-groups', this.d?.known?.groups ?? [])}
+        <pgc-group-pick
+          .value=${f.store_group ?? ''}
+          allow-empty
+          placeholder=${t('none — a platform issuer, bound by patterns')}
+          testid="issuers-store-group"
+          @pick=${(e) => (this.form = { ...this.form, store_group: e.detail })}
+        ></pgc-group-pick>
       </label>
       ${
         f.store_group

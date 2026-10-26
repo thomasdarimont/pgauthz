@@ -271,6 +271,12 @@ stores where nothing is shared (and always per tenant).
   on pgauthzd) with `HTTPS_PROXY` / `NO_PROXY` in the environment: the
   in-app checks are then off and the proxy decides. `off` is for
   development and refused in production.
+- **Groups at scale.** Platform → Groups lists a page of the groups the
+  person may see, searched on the server by name, description or a store
+  name; which groups those are is one reverse search in the console store,
+  not a check per group, and the same query decides whether the Groups tab
+  shows. The group pickers (a store's group, moving a store, sharing
+  models, an issuer's group) fetch matching names as you type.
 - **Auto-login.** An internal deployment with one provider needs no
   sign-in page: `CONSOLE_AUTO_LOGIN=true` sends a signed-out visitor
   straight to the platform's provider (an issuer URL names a registered

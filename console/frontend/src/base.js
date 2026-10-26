@@ -1,4 +1,4 @@
-import { LitElement, html, nothing } from 'lit';
+import { LitElement, html } from 'lit';
 import { t } from './i18n.js';
 
 // Base class of the page components: light DOM (styled by styles.css) and a
@@ -164,28 +164,3 @@ document.addEventListener('dblclick', (e) => {
 // header edge (or a synthetic click with no coordinates) still is.
 document.addEventListener('click', (e) => justResized && e.stopPropagation(), true);
 
-// A group picker that scales: a text input over a <datalist> of the known
-// group names (a <select> of hundreds of tenant groups is unusable). The
-// pick is taken when the value is a known name, or empty where allowed;
-// an unknown name is marked and ignored. Render groupList(id, names) once
-// per component and point every picker at it.
-export function groupList(id, names) {
-  return html`<datalist id=${id}>${names.map((g) => html`<option value=${g}></option>`)}</datalist>`;
-}
-export function groupPick({ list, names, value, onPick, placeholder = '', testid = '', allowEmpty = true, title = '' }) {
-  const known = (v) => (v === '' && allowEmpty) || names.includes(v);
-  return html`<input
-    class="mono group-pick"
-    list=${list}
-    .value=${value ?? ''}
-    placeholder=${placeholder}
-    title=${title || nothing}
-    autocomplete="off"
-    data-testid=${testid || nothing}
-    @input=${(e) => e.target.classList.toggle('invalid', !known(e.target.value.trim()))}
-    @change=${(e) => {
-      const v = e.target.value.trim();
-      if (known(v)) onPick(v);
-    }}
-  />`;
-}

@@ -151,7 +151,13 @@ pre-1.0, minor versions may include breaking changes.
   (a select of a tenant per group does not scale): the store's group on
   creation, moving a store, sharing models, the issuer's group, and the
   stores list's group filter (part of a name). The Groups tab is searched
-  and capped at 100 cards; a group card keeps its buttons on the right.
+  and paged on the server (`GET /api/platform/groups?q=&limit=&offset=`,
+  with the page's stores and capabilities only); the pickers fetch
+  matching names as you type (`GET /api/platform/groups/names?q=`). Which
+  groups a person may see is one reverse search (`list_objects`) instead
+  of a check per group — on the listing, the Issuers tab's managed groups
+  and the identity endpoint every page load calls. A group card keeps its
+  buttons on the right.
   The Issuers form is grouped into Identity provider (issuer, description,
   enabled, trust), Scope, Database roles and Trusted enforcement points,
   each with what it decides.

@@ -7,7 +7,9 @@ package server
 // model's ttu rules make a group admin reach the group's stores — and keeps
 // those links in step with the engine on every listing (syncGroupLinks).
 //
-//   GET  /api/platform/groups                 the groups you may see, with their stores and your capabilities
+//   GET  /api/platform/groups?q=&limit=&offset=   a page of the groups you may see (name, description or a
+//                                             store name matching q), with their stores and your capabilities
+//   GET  /api/platform/groups/names?q=&limit=  the names of the groups you may see, for pickers
 //   POST /api/platform/groups                 {name, description} create (platform admin)
 //   PUT  /api/platform/groups/{group}         {description}
 //   POST /api/platform/groups/{group}/delete  an empty group (platform admin)
@@ -17,6 +19,8 @@ package server
 import (
 	"context"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -122,6 +126,52 @@ func (s *Server) syncGroupLinks(ctx context.Context, stores []storeRow, groups [
 	return nil
 }
 
+// groupsReaching: the groups the person holds a relation on, by the engine's
+// reverse search — one call however many groups exist, instead of a check
+// per group (which is what made the listing and the identity endpoint grow
+// with the fleet). limit 0 = all.
+func (s *Server) groupsReaching(ctx context.Context, p *principal, relation string, limit int) ([]string, error) {
+	var lim any
+	if limit > 0 {
+		lim = limit
+	}
+	rows, err := s.engine.Query(ctx, `
+		SELECT object_id FROM authz.list_objects_with_contextual_tuples_jsonb($1, $2, $3, $4, 'group', NULL, $5::jsonb, $6)
+		 WHERE NOT is_wildcard`,
+		s.cfg.ConsoleStore, p.typ, p.id, relation, nullable(p.tuplesFor("group", nil)), lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// visibleGroups: which groups the person may see — every one for a
+// platform admin (admin of each group through the platform), else the
+// reverse search on can_view. Returns (all, names).
+func (s *Server) visibleGroups(ctx context.Context, p *principal) (bool, []string, error) {
+	all, err := s.can(ctx, p, "can_manage_access", "platform", s.cfg.PlatformID)
+	if err != nil || all {
+		return all, nil, err
+	}
+	names, err := s.groupsReaching(ctx, p, "can_view", 0)
+	return false, names, err
+}
+
+// groupQuery is the listing's filter: a substring of the name, the
+// description or one of the group's store names.
+const groupQuery = `($2 = '' OR g.name ILIKE '%' || $2 || '%' OR coalesce(g.description, '') ILIKE '%' || $2 || '%'
+       OR EXISTS (SELECT 1 FROM authz.stores st JOIN authz.store_groups sg ON sg.id = st.group_id
+                   WHERE sg.name = g.name AND st.deleted_at IS NULL AND st.name ILIKE '%' || $2 || '%'))`
+
 func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 	p := s.principal(r)
 	if p == nil {
@@ -129,55 +179,159 @@ func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	groups, err := s.allGroups(ctx)
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 {
+		limit = 25
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if offset < 0 {
+		offset = 0
+	}
+	all, names, err := s.visibleGroups(ctx, p)
 	if err != nil {
 		writeEngineError(w, err)
 		return
 	}
-	stores, err := s.allStores(ctx)
-	if err != nil {
-		writeEngineError(w, err)
-		return
-	}
-	if err := s.syncGroupLinks(ctx, stores, groups); err != nil {
-		writeEngineError(w, err)
-		return
-	}
-	byName := map[string]int{}
-	ids := make([]string, len(groups))
-	for i := range groups {
-		byName[groups[i].Name] = i
-		ids[i] = groups[i].Name
-	}
-	ungrouped := []string{}
-	for _, st := range stores {
-		if i, ok := byName[st.Group]; ok {
-			groups[i].Stores = append(groups[i].Stores, st.Name)
-		} else {
-			ungrouped = append(ungrouped, st.Name)
+	if all {
+		// the platform's admin is who moves stores and creates groups: keep
+		// the console's link tuples in step with the engine for them
+		groups, err := s.allGroups(ctx)
+		if err == nil {
+			var stores []storeRow
+			if stores, err = s.allStores(ctx); err == nil {
+				err = s.syncGroupLinks(ctx, stores, groups)
+			}
 		}
+		if err != nil {
+			writeEngineError(w, err)
+			return
+		}
+	}
+	// one page of the visible groups, with the total under the filter
+	rows, err := s.engine.Query(ctx, `
+		SELECT g.name, coalesce(g.description, ''), g.store_count, g.created_at, g.created_by, g.updated_at, g.updated_by, count(*) OVER ()
+		  FROM authz.list_store_groups() g
+		 WHERE ($1 OR g.name = ANY($3)) AND `+groupQuery+`
+		 ORDER BY g.name
+		 LIMIT $4 OFFSET $5`, all, q, names, limit, offset)
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	page := []groupRow{}
+	var total int64
+	for rows.Next() {
+		var g groupRow
+		if err := rows.Scan(&g.Name, &g.Description, &g.StoreCount, &g.CreatedAt, &g.CreatedBy, &g.UpdatedAt, &g.UpdatedBy, &total); err != nil {
+			rows.Close()
+			writeEngineError(w, err)
+			return
+		}
+		g.Stores = []string{}
+		page = append(page, g)
+	}
+	rows.Close()
+	ids := make([]string, len(page))
+	byName := map[string]int{}
+	for i := range page {
+		ids[i] = page[i].Name
+		byName[page[i].Name] = i
+	}
+	// the page's stores, and the person's capabilities on the page's groups only
+	if len(ids) > 0 {
+		srows, err := s.engine.Query(ctx, `
+			SELECT st.name, sg.name FROM authz.stores st JOIN authz.store_groups sg ON sg.id = st.group_id
+			 WHERE sg.name = ANY($1) AND st.deleted_at IS NULL ORDER BY st.name`, ids)
+		if err != nil {
+			writeEngineError(w, err)
+			return
+		}
+		for srows.Next() {
+			var st, g string
+			if err := srows.Scan(&st, &g); err != nil {
+				srows.Close()
+				writeEngineError(w, err)
+				return
+			}
+			page[byName[g]].Stores = append(page[byName[g]].Stores, st)
+		}
+		srows.Close()
 	}
 	caps, err := s.capabilities(ctx, p, "group", ids, groupCapabilities)
 	if err != nil {
 		writeEngineError(w, err)
 		return
 	}
-	visible := []groupRow{}
-	for _, g := range groups {
-		g.Capabilities = caps[g.Name]
-		if g.Capabilities["can_view"] {
-			visible = append(visible, g)
+	for i := range page {
+		page[i].Capabilities = caps[page[i].Name]
+		if page[i].Capabilities == nil {
+			page[i].Capabilities = map[string]bool{}
 		}
+		page[i].Capabilities["can_view"] = true // it is in the visible set
 	}
-	platformAdmin, err := s.can(ctx, p, "can_manage_access", "platform", s.cfg.PlatformID)
+	// the detached stores — tenancy is the platform's: its admins only, on the first page
+	var ungrouped []string
+	if all && offset == 0 {
+		ungrouped = []string{}
+		urows, err := s.engine.Query(ctx, `SELECT name FROM authz.stores WHERE group_id IS NULL AND deleted_at IS NULL AND ($1 = '' OR name ILIKE '%' || $1 || '%') ORDER BY name`, q)
+		if err != nil {
+			writeEngineError(w, err)
+			return
+		}
+		for urows.Next() {
+			var n string
+			if err := urows.Scan(&n); err == nil {
+				ungrouped = append(ungrouped, n)
+			}
+		}
+		urows.Close()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"groups": page, "total": total, "offset": offset, "limit": limit, "q": q,
+		"ungrouped": ungrouped, "can_manage": all, "teams": p.teams})
+}
+
+// handleGroupNames — GET /api/platform/groups/names?q=&limit=: the names of
+// the groups the person may see that contain q, for the pickers (a select
+// over every group does not scale to a tenant per group).
+func (s *Server) handleGroupNames(w http.ResponseWriter, r *http.Request) {
+	p := s.principal(r)
+	if p == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	ctx := r.Context()
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	all, names, err := s.visibleGroups(ctx, p)
 	if err != nil {
 		writeEngineError(w, err)
 		return
 	}
-	if !platformAdmin {
-		ungrouped = nil // tenancy is the platform's: a group admin sees only their groups
+	rows, err := s.engine.Query(ctx, `
+		SELECT g.name FROM authz.list_store_groups() g
+		 WHERE ($1 OR g.name = ANY($3)) AND ($2 = '' OR g.name ILIKE '%' || $2 || '%')
+		 ORDER BY (g.name ILIKE $2 || '%') DESC, g.name
+		 LIMIT $4`, all, q, names, limit)
+	if err != nil {
+		writeEngineError(w, err)
+		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"groups": visible, "ungrouped": ungrouped, "can_manage": platformAdmin, "teams": p.teams})
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err == nil {
+			out = append(out, n)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"names": out})
 }
 
 type groupReq struct {

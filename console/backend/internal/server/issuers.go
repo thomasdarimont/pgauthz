@@ -216,29 +216,16 @@ func (s *Server) issuerManager(w http.ResponseWriter, r *http.Request) (*princip
 		writeEngineError(w, err)
 		return nil, false, nil
 	}
-	groups, err := s.allGroups(ctx)
-	if err != nil {
-		writeEngineError(w, err)
-		return nil, false, nil
-	}
-	ids := make([]string, len(groups))
-	for i, g := range groups {
-		ids[i] = g.Name
-	}
 	managed := []string{}
-	if platform {
-		managed = ids
-	} else if len(ids) > 0 {
-		caps, err := s.capabilities(ctx, p, "group", ids, []string{"can_manage_issuers"})
+	if !platform {
+		// the groups whose identity providers the person manages, by the
+		// engine's reverse search (one call, however many groups there are)
+		names, err := s.groupsReaching(ctx, p, "can_manage_issuers", 0)
 		if err != nil {
 			writeEngineError(w, err)
 			return nil, false, nil
 		}
-		for _, id := range ids {
-			if caps[id]["can_manage_issuers"] {
-				managed = append(managed, id)
-			}
-		}
+		managed = names
 	}
 	if !platform && len(managed) == 0 {
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": "this needs can_manage_issuers on platform:" + s.cfg.PlatformID + " or on a store group", "required": "can_manage_issuers", "object": "platform:" + s.cfg.PlatformID})

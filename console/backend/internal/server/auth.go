@@ -191,16 +191,13 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeEngineError(w, err)
 		return
 	}
-	groupAdmin := false
-	if groups, err := s.allGroups(r.Context()); err == nil && len(groups) > 0 {
-		ids := make([]string, len(groups))
-		for i, g := range groups {
-			ids[i] = g.Name
-		}
-		if caps, err := s.capabilities(r.Context(), p, "group", ids, []string{"can_view"}); err == nil {
-			for _, c := range caps {
-				groupAdmin = groupAdmin || c["can_view"]
-			}
+	// sees at least one store group (ADR 0017): the platform's admin, or
+	// anyone the reverse search finds a group for — one call, not a check
+	// per group on every page load
+	groupAdmin := platform[s.cfg.PlatformID]["can_manage_access"]
+	if !groupAdmin {
+		if names, err := s.groupsReaching(r.Context(), p, "can_view", 1); err == nil {
+			groupAdmin = len(names) > 0
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

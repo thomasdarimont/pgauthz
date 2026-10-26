@@ -1,5 +1,6 @@
 import { html, nothing } from 'lit';
-import { PgcElement, help, errorBox, groupPick, groupList } from '../base.js';
+import { PgcElement, help, errorBox } from '../base.js';
+import './pgc-group-pick.js';
 import { api } from '../api.js';
 import { t, t2 } from '../i18n.js';
 import { capLabel, statusBadge, run, forbiddenText, fmtTime, fmtRelative } from '../util.js';
@@ -15,7 +16,6 @@ export class PgcStores extends PgcElement {
     error: { state: true },
     creating: { state: true },
     form: { state: true },
-    groups: { state: true }, // the store groups a new store can be placed in (ADR 0017)
     groupFilter: { state: true }, // '' = every group, '-' = ungrouped, else a group name
     deleting: { state: true },
     deleteName: { state: true },
@@ -104,14 +104,6 @@ export class PgcStores extends PgcElement {
   async _load() {
     const d = await run(this, () => api.stores());
     if (d) this.data = d;
-    if (d?.can_create) {
-      try {
-        const g = await api.platformGroups();
-        this.groups = g.groups.map((x) => x.name);
-      } catch {
-        this.groups = ['default'];
-      }
-    }
   }
 
   _set(k) {
@@ -327,15 +319,13 @@ export class PgcStores extends PgcElement {
                   >${t('Store group')}
                   ${help('Which group administers the store (ADR 0017): the default group is the platform\'s own; ungrouped means the store is its own group of one.')}</span
                 >
-                ${groupPick({
-                  list: 'dl-store-groups',
-                  names: this.groups ?? ['default'],
-                  value: this.form.group ?? 'default',
-                  onPick: (v) => (this.form = { ...this.form, group: v }),
-                  placeholder: t('ungrouped — its own group'),
-                  testid: 'store-create-group',
-                })}
-                ${groupList('dl-store-groups', this.groups ?? ['default'])}</label
+                <pgc-group-pick
+                  .value=${this.form.group ?? 'default'}
+                  allow-empty
+                  placeholder=${t('ungrouped — its own group')}
+                  testid="store-create-group"
+                  @pick=${(e) => (this.form = { ...this.form, group: e.detail })}
+                ></pgc-group-pick></label
               >
               <label class="field wide"
                 ><span

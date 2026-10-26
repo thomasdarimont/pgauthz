@@ -1,6 +1,7 @@
 import { html, nothing } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
-import { PgcElement, help, errorBox, loading, groupPick, groupList } from '../base.js';
+import { PgcElement, help, errorBox, loading } from '../base.js';
+import './pgc-group-pick.js';
 import { api } from '../api.js';
 import { t } from '../i18n.js';
 import { run, forbiddenText, fmtTime } from '../util.js';
@@ -22,8 +23,10 @@ export class PgcGroups extends PgcElement {
     consumers: { state: true }, // the open group's model consumers
     consumerPick: { state: true },
     editing: { state: true }, // the group whose description is edited
-    q: { state: true }, // search: part of a group or store name
+    q: { state: true }, // search: part of a group name, description or store name (server side)
+    offset: { state: true },
   };
+  static LIMIT = 25;
 
   constructor() {
     super();
@@ -35,16 +38,21 @@ export class PgcGroups extends PgcElement {
     this.accessForm = { subject_type: 'user', role: 'admin' };
     this.editing = '';
     this.q = '';
+    this.offset = 0;
+    this._searchTimer = 0;
   }
 
-  // The groups to show: with a tenant per group there are hundreds, so the
-  // list is searched (name, description, store names) and capped.
-  static SHOW = 100;
-  _visible() {
-    const all = this.d?.groups ?? [];
-    const words = this.q.toLowerCase().split(/\s+/).filter(Boolean);
-    if (!words.length) return all;
-    return all.filter((g) => words.every((w) => `${g.name} ${g.description ?? ''} ${g.stores.join(' ')}`.toLowerCase().includes(w)));
+  // The listing is a page of the groups the person may see (with a tenant
+  // per group there are hundreds): searched and paged on the server.
+  _search(q) {
+    this.q = q;
+    this.offset = 0;
+    clearTimeout(this._searchTimer);
+    this._searchTimer = setTimeout(() => void this._load(), 200);
+  }
+  async _page(offset) {
+    this.offset = Math.max(0, offset);
+    await this._load();
   }
 
   connectedCallback() {
@@ -55,7 +63,7 @@ export class PgcGroups extends PgcElement {
   async _load() {
     const d = await run(this, async () => {
       try {
-        return await api.platformGroups();
+        return await api.platformGroups({ q: this.q, limit: PgcGroups.LIMIT, offset: this.offset });
       } catch (e) {
         throw new Error(forbiddenText(e));
       }
@@ -91,7 +99,7 @@ export class PgcGroups extends PgcElement {
   _sharing(group) {
     const c = this.consumers;
     if (!c) return nothing;
-    const others = (this.d?.groups ?? []).map((g) => g.name).filter((n) => n !== group && !c.consumers.some((x) => x.group === n));
+    const taken = [group, ...c.consumers.map((x) => x.group)]; // not offered by the picker
     return html`<div class="card" data-testid="groups-consumers-${group}">
       <h4>${t('Models shared with')} ${help('The groups whose stores may apply this group\'s registry models. A group always applies its own models and the default group\'s; another group\'s only with this grant, which the plan reports as a blocker otherwise.')}</h4>
       ${
@@ -115,18 +123,15 @@ export class PgcGroups extends PgcElement {
                   : html`<p class="help">${t('No other group may apply this group\'s models yet.')}</p>`
               }
               ${
-                c.can_manage && others.length
+                c.can_manage
                   ? html`<form class="form inline" @submit=${(e) => { e.preventDefault(); this._grantConsumer(group); }}>
-                      ${groupPick({
-                        list: `dl-groups-consumers-${group}`,
-                        names: others,
-                        value: this.consumerPick ?? '',
-                        onPick: (v) => (this.consumerPick = v),
-                        placeholder: t('a group name…'),
-                        allowEmpty: false,
-                        testid: 'groups-consumer-pick',
-                      })}
-                      ${groupList(`dl-groups-consumers-${group}`, others)}
+                      <pgc-group-pick
+                        .value=${this.consumerPick ?? ''}
+                        .exclude=${taken}
+                        placeholder=${t('a group name…')}
+                        testid="groups-consumer-pick"
+                        @pick=${(e) => (this.consumerPick = e.detail)}
+                      ></pgc-group-pick>
                       <button class="primary" ?disabled=${this.busy || !this.consumerPick} data-testid="groups-consumer-grant">${t('Share models')}</button>
                     </form>`
                   : nothing
@@ -209,17 +214,16 @@ export class PgcGroups extends PgcElement {
   }
 
   _moveSelect(store, current) {
-    return groupPick({
-      list: 'dl-groups-all',
-      names: (this.d?.groups ?? []).map((g) => g.name),
-      value: current,
-      onPick: (v) => {
-        if (v !== current) this._move(store, v);
-      },
-      placeholder: t('ungrouped — its own group'),
-      title: t('Move the store to another group (type its name), or clear to detach it'),
-      testid: `groups-move-${store}`,
-    });
+    return html`<pgc-group-pick
+      .value=${current}
+      allow-empty
+      placeholder=${t('ungrouped — its own group')}
+      title=${t('Move the store to another group (type its name), or clear to detach it')}
+      testid=${`groups-move-${store}`}
+      @pick=${(e) => {
+        if (e.detail !== current) this._move(store, e.detail);
+      }}
+    ></pgc-group-pick>`;
   }
 
   _admins(group) {
@@ -290,19 +294,27 @@ export class PgcGroups extends PgcElement {
             : html`<span></span>`
         }
         ${
-          (d?.groups?.length ?? 0) > 8
+          (d?.total ?? 0) > 8 || this.q
             ? html`<input
                 class="groups-search"
                 type="search"
                 placeholder=${t('search groups by name, description or store')}
                 .value=${this.q}
-                @input=${(e) => (this.q = e.target.value)}
+                @input=${(e) => this._search(e.target.value)}
                 data-testid="groups-search"
               />`
             : nothing
         }
+        ${
+          d && d.total > PgcGroups.LIMIT
+            ? html`<span class="muted pager" data-testid="groups-pager">
+                ${t('{a}–{b} of {n}', { a: d.offset + 1, b: Math.min(d.offset + PgcGroups.LIMIT, d.total), n: d.total })}
+                <button type="button" class="small" ?disabled=${d.offset === 0} @click=${() => this._page(d.offset - PgcGroups.LIMIT)}>${t('Previous')}</button>
+                <button type="button" class="small" ?disabled=${d.offset + PgcGroups.LIMIT >= d.total} @click=${() => this._page(d.offset + PgcGroups.LIMIT)}>${t('Next')}</button>
+              </span>`
+            : nothing
+        }
       </div>
-      ${d ? groupList('dl-groups-all', d.groups.map((g) => g.name)) : nothing}
       ${
         this.creating
           ? html`<form class="card form" @submit=${this._create} data-testid="groups-form">
@@ -326,7 +338,7 @@ export class PgcGroups extends PgcElement {
           ? loading(3)
           : html`
               ${repeat(
-                this._visible().slice(0, PgcGroups.SHOW),
+                d.groups,
                 (g) => g.name,
                 (g) => html`<section class="card" data-testid="groups-row-${g.name}">
                   <div class="group-head">
@@ -392,18 +404,9 @@ export class PgcGroups extends PgcElement {
                   ${this.open === g.name ? html`${this._admins(g.name)}${this._sharing(g.name)}` : nothing}
                 </section>`,
               )}
+              ${this.q && !d.groups.length ? html`<p class="help">${t('No group matches.')}</p>` : nothing}
               ${
-                this._visible().length > PgcGroups.SHOW
-                  ? html`<p class="help">${t('{n} more groups — narrow the search.', { n: this._visible().length - PgcGroups.SHOW })}</p>`
-                  : nothing
-              }
-              ${
-                this.q && !this._visible().length
-                  ? html`<p class="help">${t('No group matches.')}</p>`
-                  : nothing
-              }
-              ${
-                d.ungrouped?.length && !this.q
+                d.ungrouped?.length
                   ? html`<section class="card" data-testid="groups-ungrouped">
                       <div class="group-head">
                         <h3>${t('Ungrouped stores')}</h3>

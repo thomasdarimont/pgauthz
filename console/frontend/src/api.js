@@ -176,7 +176,10 @@ export const api = {
   // Platform → Issuers: the database-managed issuer bindings.
   /** @returns {Promise<import('./types.js').IssuersResponse>} */
   // store groups (ADR 0017)
-  platformGroups: () => call('api/platform/groups'),
+  // a page of the groups you may see: {q, limit, offset}
+  platformGroups: (p = {}) =>
+    call(`api/platform/groups?q=${enc(p.q ?? '')}&limit=${p.limit ?? 25}&offset=${p.offset ?? 0}`),
+  groupNames: (q = '', limit = 20) => call(`api/platform/groups/names?q=${enc(q)}&limit=${limit}`),
   groupCreate: (name, description) => call('api/platform/groups', { name, description }),
   groupUpdate: (group, description) => call(`api/platform/groups/${enc(group)}`, { description }, { method: 'PUT' }),
   groupDelete: (group) => call(`api/platform/groups/${enc(group)}/delete`, {}),

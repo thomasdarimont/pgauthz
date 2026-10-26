@@ -205,6 +205,7 @@ func (s *Server) Routes() http.Handler {
 	h("POST /api/platform/access/remove", s.handlePlatformAccessRemove)
 	// Platform → Issuers: the database-managed issuer bindings (can_manage_issuers)
 	h("GET /api/platform/groups", s.handleGroups)
+	h("GET /api/platform/groups/names", s.handleGroupNames)
 	h("POST /api/platform/groups", s.handleGroupCreate)
 	h("PUT /api/platform/groups/{group}", s.handleGroupUpdate)
 	h("POST /api/platform/groups/{group}/delete", s.handleGroupDelete)

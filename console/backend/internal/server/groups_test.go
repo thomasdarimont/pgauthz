@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -62,7 +63,7 @@ func TestGroupsHTTP(t *testing.T) {
 	}
 
 	// the default group exists for everyone who may see the platform; nobody sees none
-	if code, m := do("GET", "/api/platform/groups", "", admin); code != 200 || len(names(m)) == 0 || names(m)[0] != "default" || m["can_manage"] != true {
+	if code, m := do("GET", "/api/platform/groups?limit=200", "", admin); code != 200 || !slices.Contains(names(m), "default") || m["can_manage"] != true {
 		t.Fatalf("admin lists groups: %d %v", code, m)
 	}
 	if code, m := do("GET", "/api/platform/groups", "", nobody); code != 200 || len(names(m)) != 0 || m["can_manage"] != false {
