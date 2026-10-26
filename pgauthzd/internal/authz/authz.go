@@ -410,9 +410,22 @@ type StoreRow struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	DocsURL     string          `json:"docs_url,omitempty"`
+	Group       string          `json:"store_group,omitempty"` // ADR 0017: the group the store belongs to; "" = ungrouped
 	CreatedAt   time.Time       `json:"created_at"`
 	RetiredAt   *time.Time      `json:"retired_at,omitempty"`
 	Model       json.RawMessage `json:"model,omitempty"`
+}
+
+// StoreGroupRow is one store group (ADR 0017): a named set of stores that
+// shares administration, trust and models.
+type StoreGroupRow struct {
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	StoreCount  int64     `json:"store_count"`
+	CreatedAt   time.Time `json:"created_at"`
+	CreatedBy   string    `json:"created_by"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	UpdatedBy   string    `json:"updated_by"`
 }
 
 // RecorderRow is one recorder allowlist of a store (ADR 0012): the DB role

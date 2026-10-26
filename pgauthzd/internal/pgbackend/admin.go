@@ -56,14 +56,14 @@ func (b *Backend) asActor(ctx context.Context, actor string, fn func(tx pgx.Tx) 
 }
 
 const storeRowSQL = `
-	SELECT s.name, coalesce(s.description, ''), coalesce(s.docs_url, ''), s.created_at, s.retired_at,
+	SELECT s.name, coalesce(s.description, ''), coalesce(s.docs_url, ''), coalesce(s.store_group, ''), s.created_at, s.retired_at,
 	       CASE WHEN s.retired_at IS NULL THEN (SELECT to_jsonb(ms) FROM authz.model_status(s.name) ms) END
 	  FROM authz.list_stores() s`
 
 func scanStore(row pgx.Row) (authz.StoreRow, error) {
 	var s authz.StoreRow
 	var model *json.RawMessage
-	if err := row.Scan(&s.Name, &s.Description, &s.DocsURL, &s.CreatedAt, &s.RetiredAt, &model); err != nil {
+	if err := row.Scan(&s.Name, &s.Description, &s.DocsURL, &s.Group, &s.CreatedAt, &s.RetiredAt, &model); err != nil {
 		return s, err
 	}
 	if model != nil {
@@ -408,4 +408,68 @@ func (b *Backend) TestModel(ctx context.Context, fix *pgauthzadm.Fixture, modelJ
 		return err
 	})
 	return report, err
+}
+
+// ── store groups (ADR 0017) ──────────────────────────────────────────────
+
+// ListStoreGroups: every group with its store count (authz.list_store_groups).
+func (b *Backend) ListStoreGroups(ctx context.Context) ([]authz.StoreGroupRow, error) {
+	rows, err := b.pool.Query(ctx, `SELECT name, coalesce(description, ''), store_count, created_at, created_by, updated_at, updated_by FROM authz.list_store_groups()`)
+	if err != nil {
+		return nil, adminError(err)
+	}
+	defer rows.Close()
+	out := []authz.StoreGroupRow{}
+	for rows.Next() {
+		var g authz.StoreGroupRow
+		if err := rows.Scan(&g.Name, &g.Description, &g.StoreCount, &g.CreatedAt, &g.CreatedBy, &g.UpdatedAt, &g.UpdatedBy); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+// UpsertStoreGroup creates the group (created = true) or updates its
+// description (nil leaves it), as the actor.
+func (b *Backend) UpsertStoreGroup(ctx context.Context, name string, description *string, actor string) (bool, error) {
+	created := false
+	err := b.asActor(ctx, actor, func(tx pgx.Tx) error {
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM authz.list_store_groups() WHERE name = $1)`, name).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			created = true
+			_, err := tx.Exec(ctx, `SELECT authz.create_store_group($1, $2)`, name, description)
+			return err
+		}
+		if description == nil {
+			return nil
+		}
+		_, err := tx.Exec(ctx, `SELECT authz.update_store_group($1, $2)`, name, *description)
+		return err
+	})
+	return created, err
+}
+
+// DeleteStoreGroup drops an empty group (false when there was none).
+func (b *Backend) DeleteStoreGroup(ctx context.Context, name, actor string) (bool, error) {
+	var deleted bool
+	err := b.asActor(ctx, actor, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT authz.delete_store_group($1)`, name).Scan(&deleted)
+	})
+	return deleted, err
+}
+
+// SetStoreGroup attaches the store to the group, or detaches it ("").
+func (b *Backend) SetStoreGroup(ctx context.Context, store, group, actor string) error {
+	return b.asActor(ctx, actor, func(tx pgx.Tx) error {
+		var g any
+		if group != "" {
+			g = group
+		}
+		_, err := tx.Exec(ctx, `SELECT authz.set_store_group($1, $2)`, store, g)
+		return err
+	})
 }

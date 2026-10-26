@@ -110,6 +110,7 @@ SELECT authz.model_register_type(:'cs', 'service_account', p_description => 'a t
 SELECT authz.model_register_type(:'cs', 'team',     p_description => 'a directory group: realm role, group or organization, as contextual tuples');
 SELECT authz.model_register_type(:'cs', 'platform', p_description => 'the console deployment itself (platform:default)');
 SELECT authz.model_register_type(:'cs', 'registry', p_description => 'the model registry (registry:default)');
+SELECT authz.model_register_type(:'cs', 'group',    p_description => 'a store group (ADR 0017): a named set of stores sharing administration, trust and models (id = group name; group:default is the platform''s own)');
 SELECT authz.model_register_type(:'cs', 'store',    p_description => 'a managed pgauthz store (id = store name)');
 SELECT authz.model_register_type(:'cs', 'namespace', p_description => 'a namespace of a managed store (id = <store>/<namespace>)');
 
@@ -117,7 +118,7 @@ SELECT authz.model_register_type(:'cs', 'namespace', p_description => 'a namespa
 -- Relations
 ----------------------------------------------------------------------
 SELECT authz.model_register_relation(:'cs', r) FROM unnest(ARRAY[
-    'member', 'admin', 'issuer_admin', 'platform',
+    'member', 'admin', 'issuer_admin', 'platform', 'group',
     'owner', 'author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'exporter', 'viewer',
     'can_manage_issuers', 'can_view_health', 'can_create_store', 'can_view_all_stores',
     'can_view', 'can_run_tests', 'can_edit_model', 'can_publish', 'can_rollout',
@@ -155,6 +156,29 @@ SELECT authz.model_add_type_restriction(:'cs', 'platform', 'issuer_admin', 'team
 SELECT authz.model_add_rule(:'cs', 'platform', 'can_manage_issuers', 'computed', 'issuer_admin');
 
 ----------------------------------------------------------------------
+-- group (ADR 0017): one level below the platform — a group admin reaches
+-- every store of the group the way a platform admin reaches every group.
+-- Link tuples (group:X platform platform:default, store:Y group group:X)
+-- mirror the engine's membership; the console writes them.
+----------------------------------------------------------------------
+SELECT authz.model_add_rule(:'cs', 'group', 'platform', 'direct');
+SELECT authz.model_add_type_restriction(:'cs', 'group', 'platform', 'platform');
+SELECT authz.model_add_rule(:'cs', 'group', 'admin', 'direct');
+SELECT authz.model_add_type_restriction(:'cs', 'group', 'admin', 'user');
+SELECT authz.model_add_type_restriction(:'cs', 'group', 'admin', 'service_account');
+SELECT authz.model_add_type_restriction(:'cs', 'group', 'admin', 'team', 'member');
+SELECT authz.model_add_rule(:'cs', 'group', 'issuer_admin', 'direct');
+SELECT authz.model_add_type_restriction(:'cs', 'group', 'issuer_admin', 'user');
+SELECT authz.model_add_type_restriction(:'cs', 'group', 'issuer_admin', 'service_account');
+SELECT authz.model_add_type_restriction(:'cs', 'group', 'issuer_admin', 'team', 'member');
+-- a group admin, or the platform admin above it, manages the group
+SELECT authz.model_add_rule(:'cs', 'group', r, 'computed', 'admin')
+  FROM unnest(ARRAY['can_view', 'can_create_store', 'can_manage_access', 'can_manage_issuers']) AS r;
+SELECT authz.model_add_rule(:'cs', 'group', r, 'ttu', NULL, 'platform', 'admin')
+  FROM unnest(ARRAY['can_view', 'can_create_store', 'can_manage_access', 'can_manage_issuers']) AS r;
+SELECT authz.model_add_rule(:'cs', 'group', 'can_manage_issuers', 'computed', 'issuer_admin');
+
+----------------------------------------------------------------------
 -- registry
 ----------------------------------------------------------------------
 SELECT authz.model_add_rule(:'cs', 'registry', 'platform', 'direct');
@@ -175,6 +199,9 @@ SELECT authz.model_add_rule(:'cs', 'registry', 'can_view', 'ttu', NULL, 'platfor
 ----------------------------------------------------------------------
 SELECT authz.model_add_rule(:'cs', 'store', 'platform', 'direct');
 SELECT authz.model_add_type_restriction(:'cs', 'store', 'platform', 'platform');
+-- the store's group (ADR 0017): its admins see and administer the store
+SELECT authz.model_add_rule(:'cs', 'store', 'group', 'direct');
+SELECT authz.model_add_type_restriction(:'cs', 'store', 'group', 'group');
 
 SELECT authz.model_add_rule(:'cs', 'store', r, 'direct')
   FROM unnest(ARRAY['owner', 'author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'exporter', 'viewer']) AS r;
@@ -195,6 +222,7 @@ SELECT authz.model_set_relation_constraint(:'cs', 'store', 'owner', p_min_direct
 SELECT authz.model_add_rule(:'cs', 'store', 'can_view', 'computed', r)
   FROM unnest(ARRAY['viewer', 'tester', 'supporter', 'sharer', 'author', 'publisher', 'auditor', 'exporter', 'owner']) AS r;
 SELECT authz.model_add_rule(:'cs', 'store', 'can_view', 'ttu', NULL, 'platform', 'admin');
+SELECT authz.model_add_rule(:'cs', 'store', 'can_view', 'ttu', NULL, 'group', 'admin');
 -- namespace roles open the store (link tuples written by the console)
 SELECT authz.model_add_rule(:'cs', 'store', 'namespace', 'direct');
 SELECT authz.model_add_type_restriction(:'cs', 'store', 'namespace', 'namespace');
@@ -232,6 +260,7 @@ SELECT authz.model_add_rule(:'cs', 'store', 'can_view_decisions', 'computed', r)
   FROM unnest(ARRAY['auditor', 'publisher', 'owner']) AS r;
 SELECT authz.model_add_rule(:'cs', 'store', 'can_manage_access', 'computed', 'owner');
 SELECT authz.model_add_rule(:'cs', 'store', 'can_manage_access', 'ttu', NULL, 'platform', 'admin');
+SELECT authz.model_add_rule(:'cs', 'store', 'can_manage_access', 'ttu', NULL, 'group', 'admin');
 
 ----------------------------------------------------------------------
 -- namespace: an application team's slice of a shared store

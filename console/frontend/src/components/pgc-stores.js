@@ -15,6 +15,7 @@ export class PgcStores extends PgcElement {
     error: { state: true },
     creating: { state: true },
     form: { state: true },
+    groups: { state: true }, // the store groups a new store can be placed in (ADR 0017)
     deleting: { state: true },
     deleteName: { state: true },
     q: { state: true }, // search text: matches name and description, instantly
@@ -102,6 +103,14 @@ export class PgcStores extends PgcElement {
   async _load() {
     const d = await run(this, () => api.stores());
     if (d) this.data = d;
+    if (d?.can_create) {
+      try {
+        const g = await api.platformGroups();
+        this.groups = g.groups.map((x) => x.name);
+      } catch {
+        this.groups = ['default'];
+      }
+    }
   }
 
   _set(k) {
@@ -112,7 +121,11 @@ export class PgcStores extends PgcElement {
     e.preventDefault();
     const ok = await run(this, async () => {
       try {
-        const r = await api.createStore(this.form.name?.trim(), this.form.description?.trim() ?? '');
+        const r = await api.createStore(
+          this.form.name?.trim(),
+          this.form.description?.trim() ?? '',
+          this.form.group === undefined ? undefined : this.form.group,
+        );
         if (this.form.docs_url?.trim())
           await api.storeSettings(r.name, {
             description: this.form.description?.trim() ?? '',
@@ -220,6 +233,11 @@ export class PgcStores extends PgcElement {
               > `
             : nothing
         }
+        ${
+          st.store_group
+            ? html`<span class="badge muted" title=${t('store group')} data-testid="store-group-badge">${st.store_group}</span> `
+            : nothing
+        }
         ${st.description || html`<span class="dim">${t('no description')}</span>`}
         ${
           st.docs_url
@@ -301,6 +319,16 @@ export class PgcStores extends PgcElement {
                 >
                 <input @input=${this._set('description')}
               /></label>
+              <label class="field"
+                ><span
+                  >${t('Store group')}
+                  ${help('Which group administers the store (ADR 0017): the default group is the platform\'s own; ungrouped means the store is its own group of one.')}</span
+                >
+                <select class="mono" @change=${this._set('group')} data-testid="store-create-group">
+                  ${(this.groups ?? ['default']).map((g) => html`<option value=${g} ?selected=${g === 'default'}>${g}</option>`)}
+                  <option value="">${t('— ungrouped (its own group) —')}</option>
+                </select></label
+              >
               <label class="field wide"
                 ><span
                   >${t('Documentation link')}

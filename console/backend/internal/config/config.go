@@ -2,6 +2,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strings"
 )
@@ -40,6 +41,13 @@ type Config struct {
 	// token's preferred_username (fallback: sub).
 	SubjectType string
 	TeamClaims  []TeamClaim
+	// SubjectIDClaims (CONSOLE_SUBJECT_ID_CLAIMS): the ID-token claims tried
+	// in order for the person's id, the first non-empty wins (default
+	// preferred_username, then sub; dotted paths allowed). SubjectIDCEL
+	// (CONSOLE_SUBJECT_ID_CEL) computes it instead with a CEL expression
+	// over `claims`, for identity providers whose claims need shaping.
+	SubjectIDClaims []string
+	SubjectIDCEL    string
 	// PgauthzdURL (optional) is a pgauthzd instance whose /readyz the Settings
 	// page shows; empty = not shown.
 	PgauthzdURL string
@@ -174,11 +182,13 @@ func Load() Config {
 		Scopes:       env("SCOPES", "openid profile"),
 		TLSCAFile:    env("TLS_CA_FILE", ""),
 
-		ConsoleStore: env("CONSOLE_STORE", "console"),
-		PlatformID:   env("CONSOLE_PLATFORM_ID", "default"),
-		RegistryID:   env("CONSOLE_REGISTRY_ID", "default"),
-		SubjectType:  env("CONSOLE_SUBJECT_TYPE", "user"),
-		TeamClaims:   parseTeamClaims(env("CONSOLE_TEAM_CLAIMS", "role=realm_access.roles,group=groups,org=organization")),
+		ConsoleStore:    env("CONSOLE_STORE", "console"),
+		PlatformID:      env("CONSOLE_PLATFORM_ID", "default"),
+		RegistryID:      env("CONSOLE_REGISTRY_ID", "default"),
+		SubjectType:     env("CONSOLE_SUBJECT_TYPE", "user"),
+		TeamClaims:      parseTeamClaims(env("CONSOLE_TEAM_CLAIMS", "role=realm_access.roles,group=groups,org=organization")),
+		SubjectIDClaims: splitList(env("CONSOLE_SUBJECT_ID_CLAIMS", "preferred_username,sub")),
+		SubjectIDCEL:    strings.TrimSpace(env("CONSOLE_SUBJECT_ID_CEL", "")),
 
 		PgauthzdURL:           env("PGAUTHZD_URL", ""),
 		DecisionURL:           env("PGAUTHZD_DECISION_URL", ""),
@@ -213,4 +223,31 @@ func splitList(v string) []string {
 		}
 	}
 	return out
+}
+
+// TechnicalClaims are token-mechanics claims that are always present and
+// never identify a person: a subject-id list naming one of them (a typo,
+// `iss` or `iat` instead of `sub`) would silently make every sign-in the
+// same person or a timestamp. Refused by Validate, skipped by the resolver.
+var TechnicalClaims = map[string]bool{
+	"iss": true, "aud": true, "azp": true, "client_id": true, "exp": true, "iat": true, "nbf": true, "jti": true,
+	"typ": true, "sid": true, "at_hash": true, "c_hash": true, "nonce": true, "acr": true, "amr": true,
+	"auth_time": true, "session_state": true, "scope": true, "email_verified": true, "cnf": true,
+}
+
+// Validate refuses a configuration that cannot identify people: a subject-id
+// claim list that is empty or names a technical claim.
+func (c Config) Validate() error {
+	if c.SubjectIDCEL != "" {
+		return nil
+	}
+	if len(c.SubjectIDClaims) == 0 {
+		return fmt.Errorf("CONSOLE_SUBJECT_ID_CLAIMS names no claim (default preferred_username,sub)")
+	}
+	for _, claim := range c.SubjectIDClaims {
+		if TechnicalClaims[strings.TrimSpace(claim)] {
+			return fmt.Errorf("CONSOLE_SUBJECT_ID_CLAIMS: %q is a token-technical claim, never a person's identity (use preferred_username, sub, upn, email, …)", claim)
+		}
+	}
+	return nil
 }

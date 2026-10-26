@@ -424,7 +424,7 @@ func TestPartialBodySubjectIsNotCompletedFromToken(t *testing.T) {
 // §11.3: a 401 names the expected scheme.
 func TestUnauthorizedCarriesWWWAuthenticate(t *testing.T) {
 	w := httptest.NewRecorder()
-	writeUnauthorized(w)
+	writeUnauthorized(w, httptest.NewRequest("POST", "/access/v1/evaluation", nil))
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("want 401, got %d", w.Code)
 	}

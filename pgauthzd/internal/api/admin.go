@@ -278,7 +278,7 @@ func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) (adminSco
 		return adminScope{}, false
 	}
 	if d := scope.decide; d != nil {
-		if want := d.scopeFor(r, need); !d.covers(want) {
+		if want := d.scopeFor(r, need); !d.covers(want, strings.HasPrefix(r.URL.Path, "/pgauthz/v1/admin/issuer")) {
 			metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
 			msg := "management refused: the token's pgauthz scopes (" + d.scopeList() + ") do not cover this call; it needs pgauthz:" + want
 			if want != "admin" {
@@ -305,9 +305,14 @@ func (d *delegated) scopeFor(r *http.Request, need string) string {
 	return need
 }
 
-// covers: admin covers everything, manage covers test and read as well.
-func (d *delegated) covers(want string) bool {
+// covers: admin covers everything; ci (a pipeline's token) everything the
+// store grants on stores and the registry but never the issuers; manage
+// covers test and read as well.
+func (d *delegated) covers(want string, issuersRoute bool) bool {
 	if d.scopes["admin"] || d.scopes[want] {
+		return true
+	}
+	if d.scopes["ci"] && !issuersRoute {
 		return true
 	}
 	return d.scopes["manage"] && (want == issuers.AdminCapTest || want == issuers.AdminCapRead)
@@ -389,7 +394,14 @@ func (h *Handler) delegate(ctx context.Context, d *issuers.AdminDecision) (*dele
 	if claim == "" {
 		claim = "preferred_username"
 	}
-	id := strings.TrimSpace(claimStringPath(claims, claim))
+	// a comma-separated list: the first non-empty claim wins (the console's
+	// CONSOLE_SUBJECT_ID_CLAIMS takes the same form, so both derive one id)
+	id := ""
+	for _, c := range strings.Split(claim, ",") {
+		if id = strings.TrimSpace(claimStringPath(claims, strings.TrimSpace(c))); id != "" {
+			break
+		}
+	}
 	if id == "" {
 		return nil, errors.New("the token has no " + claim + " claim (the admin rule's decide.subject_claim)")
 	}
@@ -414,7 +426,8 @@ func (h *Handler) delegate(ctx context.Context, d *issuers.AdminDecision) (*dele
 	ctxTuples, _ := json.Marshal(memberships)
 	// The token's own statement of what it is for caps the store's grants:
 	// pgauthz:test (fixtures), pgauthz:read (GETs), pgauthz:manage (store
-	// writes), pgauthz:admin (everything, the platform included).
+	// writes), pgauthz:ci (a pipeline: stores and the registry, never the
+	// issuers), pgauthz:admin (everything, the platform included).
 	scopes := map[string]bool{}
 	for _, s := range strings.Fields(claimString(claims, "scope")) {
 		if strings.HasPrefix(s, "pgauthz:") {
@@ -422,7 +435,7 @@ func (h *Handler) delegate(ctx context.Context, d *issuers.AdminDecision) (*dele
 		}
 	}
 	if len(scopes) == 0 {
-		return nil, errors.New("the token carries no pgauthz scope (pgauthz:test, pgauthz:read, pgauthz:manage or pgauthz:admin): it was not issued for this API's management")
+		return nil, errors.New("the token carries no pgauthz scope (pgauthz:test, pgauthz:read, pgauthz:manage, pgauthz:ci or pgauthz:admin): it was not issued for this API's management")
 	}
 	checker, _ := h.adminBackend().(authz.ContextualChecker)
 	return &delegated{store: d.Store, subjType: typ, subjID: id, ctxTuples: ctxTuples, scopes: scopes,

@@ -9,8 +9,15 @@
 #   pgauthz:read     the GET verbs on those stores
 #   pgauthz:manage   writes on those stores (apply a model, settings, recorders,
 #                    namespaces), test and read included
+#   pgauthz:ci       a pipeline's token: whatever the console grants it on stores
+#                    and the registry (test, plan, apply, publish), never the
+#                    issuers — platform admins shape CI access in the console
 #   pgauthz:admin    everything, the platform included (issuers, the registry,
 #                    creating stores) — what the console's own sessions carry
+#
+# In the management console, pgauthz:test on a session's token is what opens
+# the Test pages (a session without it sees no Test tab, whatever the store
+# grants); console-bff therefore carries it by default.
 #
 # Two audiences travel with every scope: the API's client id (authz-api, what
 # Keycloak puts in `aud` by default) and the API's URI (https://api.pgauthz.test,
@@ -22,6 +29,7 @@ locals {
     test   = "pgauthz admin API: run model test fixtures on the stores the console grants"
     read   = "pgauthz admin API: read those stores"
     manage = "pgauthz admin API: manage those stores (test and read included)"
+    ci     = "pgauthz admin API as a pipeline: whatever the console grants on stores and the registry, never the issuers"
     admin  = "pgauthz admin API: everything, the platform included — the management console's own sessions"
   }
   pgauthz_api_uri = "https://api.pgauthz.test"
@@ -61,7 +69,7 @@ resource "keycloak_openid_audience_protocol_mapper" "pgauthz_aud_uri" {
 #                admin, read and test on request (SCOPE="pgauthz:admin" get-token.sh alice)
 #   console-bff  the management console's sessions call the admin API as the
 #                person: admin — the console store decides what the person may
-#   ci           (client.ci.tf) test only
+#   ci           (client.ci.tf) pgauthz:ci
 resource "keycloak_openid_client_default_scopes" "authz_api" {
   realm_id       = keycloak_realm.pgauthz.id
   client_id      = keycloak_openid_client.authz_api.id
@@ -76,11 +84,12 @@ resource "keycloak_openid_client_optional_scopes" "authz_api" {
     keycloak_openid_client_scope.pgauthz["admin"].name,
     keycloak_openid_client_scope.pgauthz["read"].name,
     keycloak_openid_client_scope.pgauthz["test"].name,
+    keycloak_openid_client_scope.pgauthz["ci"].name,
   ]
 }
 
 resource "keycloak_openid_client_default_scopes" "console_bff" {
   realm_id       = keycloak_realm.pgauthz.id
   client_id      = keycloak_openid_client.console_bff.id
-  default_scopes = ["basic", "acr", "roles", "profile", "email", "web-origins", keycloak_openid_client_scope.pgauthz["admin"].name]
+  default_scopes = ["basic", "acr", "roles", "profile", "email", "web-origins", keycloak_openid_client_scope.pgauthz["admin"].name, keycloak_openid_client_scope.pgauthz["test"].name]
 }

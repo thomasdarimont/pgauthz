@@ -252,7 +252,7 @@ GRANT SELECT ON authz.stores, authz.types, authz.relations, authz.conditions, au
                 authz.models_view, authz.type_restrictions_view, authz.model_registry,
                 authz.tuples_audit, authz.models_audit, authz.conditions_audit,
                 authz.model_gates_audit, authz.grant_rules_audit, authz.relation_constraints_audit,
-                authz.recorder_actions TO authz_console;  -- audit listing + model change history (Activity tab), last-change times, recorder allowlists (Operations tab)
+                authz.recorder_actions, authz.store_groups TO authz_console;  -- audit listing + model change history (Activity tab), last-change times, recorder allowlists (Operations tab), store groups (ADR 0017)
 
 -- Watch/changefeed consumer role: a dedicated read-only LOGIN role for the
 -- watch-API example (examples/watch). Granted authz_auditor (which INHERITs
@@ -411,6 +411,8 @@ GRANT EXECUTE ON FUNCTION authz.assert_fresh(int, pg_lsn) TO authz_reader;
 -- Engine/tenant stats (ADR 0010): pgauthzd samples this for per-store gauges.
 GRANT EXECUTE ON FUNCTION authz.store_stats(int) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.list_stores() TO authz_reader;
+GRANT EXECUTE ON FUNCTION authz.list_store_groups() TO authz_reader;
+GRANT EXECUTE ON FUNCTION authz.list_store_group_audit(text, int) TO authz_auditor;
 GRANT EXECUTE ON FUNCTION authz.store_id(text) TO authz_reader;   -- the store's incarnation, stamped on decision-log lines
 GRANT EXECUTE ON FUNCTION authz.list_recorder_actions(text) TO authz_reader;
 GRANT EXECUTE ON FUNCTION authz.list_namespaces(text) TO authz_reader;
@@ -464,6 +466,11 @@ GRANT EXECUTE ON FUNCTION authz.purge_events(text, timestamptz, boolean) TO auth
 GRANT EXECUTE ON FUNCTION authz.erase_subject(text, text, text, boolean, boolean, text) TO authz_admin;   -- data subject erasure (crosses namespaces, removes history)
 GRANT EXECUTE ON FUNCTION authz.purge_events(text, timestamptz, boolean) TO authz_playground_reset;   -- demo reset (see above)
 GRANT EXECUTE ON FUNCTION authz.create_store(text, text) TO authz_admin;
+-- store groups (ADR 0017): the admin tier shapes tenancy
+GRANT EXECUTE ON FUNCTION authz.create_store_group(text, text) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.update_store_group(text, text) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.delete_store_group(text) TO authz_admin;
+GRANT EXECUTE ON FUNCTION authz.set_store_group(text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.update_store(text, text, text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.retire_store(text) TO authz_admin;
 GRANT EXECUTE ON FUNCTION authz.delete_store(text, boolean) TO authz_admin;
@@ -545,6 +552,8 @@ ALTER FUNCTION authz.freshness_token() SECURITY DEFINER;
 ALTER FUNCTION authz.assert_fresh(int, pg_lsn) SECURITY DEFINER;
 ALTER FUNCTION authz.store_stats(int) SECURITY DEFINER;
 ALTER FUNCTION authz.list_stores() SECURITY DEFINER;
+ALTER FUNCTION authz.list_store_groups() SECURITY DEFINER;
+ALTER FUNCTION authz.list_store_group_audit(text, int) SECURITY DEFINER;
 ALTER FUNCTION authz.store_id(text) SECURITY DEFINER;
 ALTER FUNCTION authz.list_recorder_actions(text) SECURITY DEFINER;
 ALTER FUNCTION authz.list_namespaces(text) SECURITY DEFINER;
@@ -586,6 +595,10 @@ ALTER FUNCTION authz.purge_events(text, timestamptz, boolean) SECURITY DEFINER;
 ALTER FUNCTION authz.export_subject(text, text, text, text[], boolean, boolean, boolean, int) SECURITY DEFINER;
 ALTER FUNCTION authz.erase_subject(text, text, text, boolean, boolean, text) SECURITY DEFINER;
 ALTER FUNCTION authz.create_store(text, text) SECURITY DEFINER;
+ALTER FUNCTION authz.create_store_group(text, text) SECURITY DEFINER;
+ALTER FUNCTION authz.update_store_group(text, text) SECURITY DEFINER;
+ALTER FUNCTION authz.delete_store_group(text) SECURITY DEFINER;
+ALTER FUNCTION authz.set_store_group(text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.update_store(text, text, text) SECURITY DEFINER;
 ALTER FUNCTION authz.retire_store(text) SECURITY DEFINER;
 ALTER FUNCTION authz.delete_store(text, boolean) SECURITY DEFINER;

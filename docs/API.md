@@ -467,9 +467,29 @@ store cannot be fenced. Admin tier.
 
 ```sql
 SELECT * FROM authz.list_stores();
---  name | description | docs_url | created_at | retired_at
--- the facts of every store (retired ones carry retired_at); reader tier,
--- for tooling that calls functions but may not read the tables
+--  name | description | docs_url | created_at | retired_at | store_group
+-- the facts of every store (retired ones carry retired_at; store_group is
+-- the group it belongs to, NULL = ungrouped); reader tier, for tooling
+-- that calls functions but may not read the tables
+```
+
+### Store groups — create_store_group / set_store_group / list_store_groups
+
+A store group ([ADR 0017](adr/0017-store-groups.md)) is a named set of
+stores that shares administration, trust and models. The platform-owned
+`default` group holds every store that predates migration 0028; a store
+may be attached to one group or to none (an ungrouped store is its own
+group of one). Every change is recorded in `authz.store_group_audit` as
+`authz.performed_by`.
+
+```sql
+SELECT authz.create_store_group('tenant_a', 'Tenant A');   -- admin tier; names follow the store rule
+SELECT authz.update_store_group('tenant_a', 'Tenant A, EU');  -- NULL leaves the description, '' clears it
+SELECT authz.set_store_group('tenant_a_docs', 'tenant_a');   -- attach (a move detaches first)
+SELECT authz.set_store_group('scratch', NULL);               -- detach: its own group of one
+SELECT authz.delete_store_group('tenant_a');                 -- only when empty; never `default`; false when missing
+SELECT * FROM authz.list_store_groups();                     -- name | description | store_count | created_at/by | updated_at/by
+SELECT * FROM authz.list_store_group_audit('tenant_a', 50);  -- auditor tier: CREATE/UPDATE/DELETE/ATTACH/DETACH, newest first
 ```
 
 ### list_recorder_actions / list_namespaces — The allowlists and namespaces of a store

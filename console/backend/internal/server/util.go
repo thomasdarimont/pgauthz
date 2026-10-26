@@ -3,8 +3,10 @@ package server
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -18,7 +20,18 @@ func randToken(n int) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+// writeJSON writes the body; an error body (status ≥ 400 with an "error"
+// field, however it was built) gets the request's reference (X-Request-ID,
+// requestIDMiddleware) and one log line naming both — a screenshot of the
+// error box finds the line.
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	if m, ok := v.(map[string]any); ok && status >= 400 {
+		if msg, isErr := m["error"]; isErr {
+			id := w.Header().Get("X-Request-ID")
+			m["request_id"] = id
+			log.Printf("error status=%d request_id=%s %v", status, id, msg)
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
@@ -27,6 +40,21 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]any{"error": msg})
+}
+
+// requestIDMiddleware stamps every response with a unique X-Request-ID (an
+// incoming one is kept for correlation with a caller's own logs).
+func requestIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := r.Header.Get("X-Request-ID")
+		if id == "" {
+			b := make([]byte, 8)
+			_, _ = rand.Read(b)
+			id = hex.EncodeToString(b)
+		}
+		w.Header().Set("X-Request-ID", id)
+		next.ServeHTTP(w, r)
+	})
 }
 
 // writeEngineError maps an engine failure to a response: the engine's own

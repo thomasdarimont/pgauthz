@@ -1120,6 +1120,134 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/admin/stores/{store}/group:
+    parameters:
+      - { name: store, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' } }
+    put:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminSetStoreGroup
+      summary: Attach the store to a store group, or detach it (platform scope)
+      description: >
+        Moving a store between groups changes who administers it and which
+        issuers reach it, so it is the platform's (ADR 0017). An empty group
+        detaches the store, which then is its own group of one. Recorded in
+        authz.store_group_audit as the credential.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [group]
+              properties:
+                group: { type: string, description: "The group name, or empty to detach." }
+      responses:
+        '200':
+          description: Attached or detached.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [store, group]
+                properties:
+                  store: { type: string }
+                  group: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/admin/groups:
+    get:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminGroups
+      summary: The store groups (platform scope)
+      description: Every store group with its store count (ADR 0017); the platform-owned `default` group first.
+      responses:
+        '200':
+          description: The groups.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [groups]
+                properties:
+                  groups:
+                    type: array
+                    items: { $ref: '#/components/schemas/StoreGroup' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/admin/groups/{group}:
+    parameters:
+      - { name: group, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' } }
+    put:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminUpsertGroup
+      summary: Create a store group, or update its description (platform scope)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                description: { type: string, description: "Omitted leaves the description; empty clears it." }
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StoreGroupResult' }
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StoreGroupResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+    delete:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminDeleteGroup
+      summary: Delete an empty store group (platform scope)
+      description: A group that still holds stores is refused (400) — move or detach them first; the `default` group is never deleted.
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [group, deleted]
+                properties:
+                  group: { type: string }
+                  deleted: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
   /pgauthz/v1/admin/stores/{store}/decisions:
     parameters:
       - { name: store, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$' } }
@@ -2851,9 +2979,28 @@ components:
         name: { type: string }
         description: { type: string }
         docs_url: { type: string }
+        store_group: { type: string, description: "The store group the store belongs to (ADR 0017); absent = ungrouped, its own group of one." }
         created_at: { type: string, format: date-time }
         retired_at: { type: string, format: date-time, description: Present for a retired store. }
         model: { $ref: '#/components/schemas/ModelStatus' }
+    StoreGroup:
+      type: object
+      description: A store group (ADR 0017) — a named set of stores that shares administration, trust and models.
+      required: [name, description, store_count, created_at, created_by, updated_at, updated_by]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        store_count: { type: integer }
+        created_at: { type: string, format: date-time }
+        created_by: { type: string }
+        updated_at: { type: string, format: date-time }
+        updated_by: { type: string }
+    StoreGroupResult:
+      type: object
+      required: [group, created]
+      properties:
+        group: { type: string }
+        created: { type: boolean }
     AdminStoreResult:
       type: object
       required: [store, created]
@@ -3015,7 +3162,7 @@ components:
                       properties:
                         store: { type: string }
                         subject_type: { type: string, default: user }
-                        subject_claim: { type: string, description: "Default: SUBJECT_ID_CLAIM (preferred_username); azp for a client credentials token." }
+                        subject_claim: { type: string, description: "The claim (or a comma-separated list, the first non-empty wins) the subject id is read from; default: SUBJECT_ID_CLAIM (preferred_username); azp for a client credentials token." }
     IssuerBinding:
       type: object
       description: >
@@ -3824,6 +3971,7 @@ components:
       properties:
         status: { type: integer }
         message: { type: string }
+        request_id: { type: string, description: "The request's X-Request-ID: quote it to find the request in the server's log." }
       required: [status, message]
     FreshnessConflict:
       type: object

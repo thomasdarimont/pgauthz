@@ -213,6 +213,15 @@ type Binding struct {
 	UpdatedBy string    `json:"updated_by,omitempty"`
 }
 
+// technicalClaims are token-mechanics claims that never identify a subject;
+// a delegated rule naming one (`iat` for `sub`) is refused. azp / client_id
+// are not here: they ARE the identity of a client credentials token.
+var technicalClaims = map[string]bool{
+	"iss": true, "aud": true, "exp": true, "iat": true, "nbf": true, "jti": true, "typ": true, "sid": true,
+	"at_hash": true, "c_hash": true, "nonce": true, "acr": true, "amr": true, "auth_time": true,
+	"session_state": true, "scope": true, "email_verified": true, "cnf": true,
+}
+
 // storeNameRe is a plain store (or type) name, as the engine accepts it.
 var storeNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]{0,62}$`)
 
@@ -308,6 +317,11 @@ func ValidateBindings(iss Issuer) error {
 			}
 			if d.SubjectType != "" && !storeNameRe.MatchString(d.SubjectType) {
 				return fmt.Errorf("%s.decide.subject_type %q: a type name", at, d.SubjectType)
+			}
+			for _, c := range strings.Split(d.SubjectClaim, ",") {
+				if technicalClaims[strings.TrimSpace(c)] {
+					return fmt.Errorf("%s.decide.subject_claim: %q is a token-technical claim, never a subject's identity", at, strings.TrimSpace(c))
+				}
 			}
 			if len(rule.Capabilities) > 0 || len(rule.Stores) > 0 || rule.Scope == AdminScopePlatform {
 				return fmt.Errorf("%s: decide (the store decides) takes no capabilities, stores or platform scope", at)

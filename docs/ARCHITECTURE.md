@@ -1352,6 +1352,7 @@ sequentially; status flows Proposed → Accepted → Superseded. The log:
 | [0014](adr/0014-subject-assertion-policy.md) | Subject assertion policy: per-client `pep_clients` | Accepted |
 | [0015](adr/0015-decision-log-postgres-sink.md) | A PostgreSQL sink for the decision log | Accepted |
 | [0016](adr/0016-issuer-bindings-and-admin-api.md) | Issuer bindings in the database; the tenant-scoped admin API | Accepted |
+| [0017](adr/0017-store-groups.md) | Store groups: tenancy, delegated administration, group issuers, model sharing | Accepted |
 
 To add one: create `docs/adr/NNNN-*.md` (for decisions on authorization
 semantics, security boundaries, or operational contracts) and a row here.

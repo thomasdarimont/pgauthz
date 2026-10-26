@@ -107,6 +107,7 @@ func TestAdminBindingValidation(t *testing.T) {
 		"platform+st":  {Admin: AdminRules{{Clients: []string{"ci"}, Scope: "platform", Stores: []string{"x"}}}},
 		"bad pattern":  {Admin: AdminRules{{Clients: []string{"ci"}, Stores: []string{"a("}}}},
 		"second empty": {Admin: AdminRules{{Clients: []string{"tf"}}, {}}},
+		"tech claim":   {Admin: AdminRules{{Decide: &AdminDecision{Store: "console", SubjectClaim: "preferred_username,iat"}}}},
 	} {
 		if err := ValidateBindings(iss); err == nil {
 			t.Errorf("%s: accepted", name)

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -63,6 +64,12 @@ func TestIssuersHTTP(t *testing.T) {
 	code, m := do("GET", "/api/platform/issuers", "", admin)
 	if code != 200 || m["bindings"] == nil || m["effective"] == nil {
 		t.Fatalf("list: %d %v", code, m)
+	}
+	// the pickers: the live stores (this test's console store among them) and the per-app DB roles
+	known, _ := m["known"].(map[string]any)
+	stores, _ := known["stores"].([]any)
+	if _, isList := known["db_roles"].([]any); !isList || !slices.Contains(stores, any(cs)) {
+		t.Fatalf("known values for the form: %v", m["known"])
 	}
 	if code, _ := do("GET", "/api/platform/issuers/audit", "", nobody); code != 403 {
 		t.Fatalf("audit without can_manage_issuers: %d", code)

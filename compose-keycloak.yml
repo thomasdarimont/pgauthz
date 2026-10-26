@@ -177,12 +177,13 @@ services:
       # Admin rules — the management console decides (delegated rules): a
       # token of the realm becomes a subject of the `console` store and may
       # manage what that store grants it, in the console's Access tabs — the
-      # `ci` client (client.ci.tf, no role, the pgauthz:test scope) as
+      # `ci` client (client.ci.tf, no role, the pgauthz:ci scope) as
       # service_account:ci, a person as user:<preferred_username> with their
       # realm roles as team memberships (role_console_admin = platform
       # admin). The token's pgauthz:* scopes cap what the store grants
-      # (scopes.pgauthz.tf): test / read / manage on the granted stores,
-      # admin for the platform. Either audience is accepted: the client id
+      # (scopes.pgauthz.tf): test / read / manage on the granted stores, ci
+      # for a pipeline (stores and the registry, never the issuers), admin
+      # for the platform. Either audience is accepted: the client id
       # (Keycloak's default) or the API's URI (other identity providers).
       # The self-minted demo issuer keeps a static rule (pgauthz_tester →
       # test on demo; tests/test-pgauthzctl.sh); ADMIN_ROLE stays the
@@ -191,7 +192,7 @@ services:
         [{"issuer":"${JWT_ISSUER:-https://auth.example.com}","audience":"${JWT_AUDIENCE:-authz-api}","jwks_file":"/jwks/jwks.json","stores":["${DEFAULT_STORE:-demo}"],
           "admin":[{"claims":{"roles":["pgauthz_tester"]},"capabilities":["test"],"stores":["${DEFAULT_STORE:-demo}"]}]},
          {"issuer":"https://id.pgauthz.test/realms/pgauthz","audience":"authz-api","audiences":["https://api.pgauthz.test"],"jwks_url":"http://keycloak:8080/realms/pgauthz/protocol/openid-connect/certs","stores":[".*"],
-          "admin":[{"clients":["ci"],"scopes":["pgauthz:test"],"decide":{"store":"console","subject_type":"service_account","subject_claim":"azp"}},
+          "admin":[{"clients":["ci"],"scopes":["pgauthz:ci"],"decide":{"store":"console","subject_type":"service_account","subject_claim":"azp"}},
                    {"decide":{"store":"console"}}]}]
       JWT_ROLES_CLAIM: roles,realm_access.roles,resource_access.authz-api.roles
       ACTOR_CLAIM: act.client_id

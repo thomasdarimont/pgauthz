@@ -6,6 +6,7 @@ import { run } from '../util.js';
 import './pgc-access.js';
 import './pgc-fleet-ops.js';
 import './pgc-issuers.js';
+import './pgc-groups.js';
 
 // Platform: who administers the console (Admins), how it is wired
 // (Configuration: issuer, team-claim mapping, engine and pgauthzd health),
@@ -106,13 +107,20 @@ export class PgcPlatform extends PgcElement {
         </div>
       </div>
       <nav class="tabs">
-        <a href="platform/access" class=${!['settings', 'ops', 'issuers'].includes(this.tab) ? 'active' : ''}
+        <a href="platform/access" class=${!['settings', 'ops', 'issuers', 'groups'].includes(this.tab) ? 'active' : ''}
           >${t('Admins')}</a
         >
         <a href="platform/settings" class=${this.tab === 'settings' ? 'active' : ''}>${t('Configuration')}</a>
         <a href="platform/ops" class=${this.tab === 'ops' ? 'active' : ''} data-testid="platform-tab-ops"
           >${t('Operations')}</a
         >
+        ${
+          this.me?.platform?.can_manage_access || this.me?.groups?.any
+            ? html`<a href="platform/groups" class=${this.tab === 'groups' ? 'active' : ''} data-testid="platform-tab-groups"
+                >${t('Groups')}</a
+              >`
+            : nothing
+        }
         ${
           this.me?.platform?.can_manage_issuers
             ? html`<a
@@ -131,6 +139,8 @@ export class PgcPlatform extends PgcElement {
             ? html`<pgc-fleet-ops .me=${this.me}></pgc-fleet-ops>`
             : this.tab === 'issuers'
               ? html`<pgc-issuers .me=${this.me}></pgc-issuers>`
+              : this.tab === 'groups'
+                ? html`<pgc-groups .me=${this.me}></pgc-groups>`
               : html`<pgc-access scope="platform" .me=${this.me}></pgc-access>`
       }
     `;

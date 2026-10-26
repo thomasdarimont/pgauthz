@@ -103,7 +103,7 @@ func adminFixture(t *testing.T) (*Handler, *adminStub) {
 		// service_account:ci-c, everyone else as user:<preferred_username>
 		{Issuer: "https://tenant-c", Audience: "api", JWKSURL: "https://tenant-c/jwks", Stores: []string{"c_.*"},
 			Admin: issuers.AdminRules{
-				{Clients: []string{"ci-c"}, Scopes: []string{"pgauthz:test"}, Decide: &issuers.AdminDecision{Store: "console", SubjectType: "service_account", SubjectClaim: "azp"}},
+				{Clients: []string{"ci-c"}, Decide: &issuers.AdminDecision{Store: "console", SubjectType: "service_account", SubjectClaim: "azp"}},
 				{Decide: &issuers.AdminDecision{Store: "console"}}}},
 	}
 	cfg := &config.Config{Profile: config.ProfileFull, Issuers: env, IssuersSource: "env+db", AdminAPIEnabled: true, AdminRole: "pgauthz_admin"}
@@ -156,6 +156,7 @@ var (
 	tenantCNobody  = token{iss: "https://tenant-c", sub: "nobody-uuid"} // no preferred_username, not the ci client
 	tenantCManage  = token{iss: "https://tenant-c", sub: "dave-uuid", scope: "pgauthz:manage", claims: jwt.MapClaims{"preferred_username": "dave"}}
 	tenantCNoScope = token{iss: "https://tenant-c", sub: "erin-uuid", scope: "openid profile", claims: jwt.MapClaims{"preferred_username": "erin"}}
+	tenantCPipe    = token{iss: "https://tenant-c", sub: "pipe-uuid", client: "ci-c", scope: "pgauthz:ci"} // a pipeline: stores and the registry, never the issuers
 	tenantAUser    = token{iss: "https://tenant-a", sub: "bob", client: "docs-app"}
 	tenantBUser    = token{iss: "https://tenant-b", sub: "carol"}
 	roleAdmin      = token{iss: "https://tenant-b", sub: "root", roles: []string{"pgauthz_admin"}}

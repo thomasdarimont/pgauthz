@@ -15,6 +15,7 @@ type storeRow struct {
 	Name         string                     `json:"name"`
 	Description  string                     `json:"description"`
 	DocsURL      string                     `json:"docs_url"`
+	Group        string                     `json:"store_group"`          // ADR 0017: the store's group; "" = ungrouped, its own group of one
 	Namespaces   map[string]map[string]bool `json:"namespaces,omitempty"` // what you may do in each namespace (store screen)
 	CreatedAt    *time.Time                 `json:"created_at"`
 	LastChangeAt *time.Time                 `json:"last_change_at"` // latest model, condition or tuple change in the audit trail
@@ -29,11 +30,11 @@ type storeRow struct {
 // allStores lists the engine's live stores with descriptions.
 func (s *Server) allStores(ctx context.Context) ([]storeRow, error) {
 	rows, err := s.engine.Query(ctx, `
-		SELECT s.name, coalesce(s.description,''), coalesce(s.docs_url,''), s.created_at, s.deleted_at,
+		SELECT s.name, coalesce(s.description,''), coalesce(s.docs_url,''), coalesce(g.name, ''), s.created_at, s.deleted_at,
 		       GREATEST((SELECT max(a.performed_at) FROM authz.tuples_audit a WHERE a.store_id = s.id),
 		                (SELECT max(a.performed_at) FROM authz.models_audit a WHERE a.store_id = s.id),
 		                (SELECT max(a.performed_at) FROM authz.conditions_audit a WHERE a.store_id = s.id))
-		  FROM authz.stores s ORDER BY s.name`)
+		  FROM authz.stores s LEFT JOIN authz.store_groups g ON g.id = s.group_id ORDER BY s.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +42,7 @@ func (s *Server) allStores(ctx context.Context) ([]storeRow, error) {
 	var out []storeRow
 	for rows.Next() {
 		var r storeRow
-		if err := rows.Scan(&r.Name, &r.Description, &r.DocsURL, &r.CreatedAt, &r.RetiredAt, &r.LastChangeAt); err != nil {
+		if err := rows.Scan(&r.Name, &r.Description, &r.DocsURL, &r.Group, &r.CreatedAt, &r.RetiredAt, &r.LastChangeAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -107,6 +108,9 @@ func (s *Server) handleStores(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeEngineError(w, err)
 		return
+	}
+	if groups, err := s.allGroups(ctx); err == nil {
+		_ = s.syncGroupLinks(ctx, all, groups) // the engine's membership, mirrored as link tuples
 	}
 	admin, err := s.can(ctx, p, "can_view_all_stores", "platform", s.cfg.PlatformID)
 	if err != nil {
@@ -183,8 +187,9 @@ func (s *Server) handleStore(w http.ResponseWriter, r *http.Request) {
 }
 
 type createStoreReq struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	Group       *string `json:"group"` // ADR 0017: absent = the default group; "" = ungrouped; else the group
 }
 
 // handleCreateStore — platform admins create stores; the creator becomes the
@@ -202,9 +207,25 @@ func (s *Server) handleCreateStore(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "store name must match ^[a-zA-Z_][a-zA-Z0-9_]*$")
 		return
 	}
-	err := s.asPersonAuthorized(r.Context(), p, s.platformGate(r.Context(), p, "can_create_store"), "can_create_store", "store", req.Name, map[string]any{"description": req.Description}, func(tx pgx.Tx) error {
+	group := "default"
+	if req.Group != nil {
+		group = *req.Group
+	}
+	if group != "" && (!validName.MatchString(group) || len(group) > 63) {
+		writeError(w, http.StatusBadRequest, "group name must match ^[a-zA-Z_][a-zA-Z0-9_]*$")
+		return
+	}
+	err := s.asPersonAuthorized(r.Context(), p, s.platformGate(r.Context(), p, "can_create_store"), "can_create_store", "store", req.Name, map[string]any{"description": req.Description, "group": group}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(r.Context(), `SELECT authz.create_store($1, $2)`, req.Name, nullable(req.Description)); err != nil {
 			return err
+		}
+		if group != "" {
+			if _, err := tx.Exec(r.Context(), `SELECT authz.set_store_group($1, $2)`, req.Name, group); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(r.Context(), `SELECT authz.write_tuple($1, 'group', $2, 'group', 'store', $3)`, s.cfg.ConsoleStore, group, req.Name); err != nil {
+				return err
+			}
 		}
 		return s.claimStore(r.Context(), tx, p, req.Name)
 	})

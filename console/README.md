@@ -192,20 +192,39 @@ stores where nothing is shared (and always per tenant).
 
 ## How the access works
 
-- **People** are `user:<preferred_username>` in the console store (the local
-  admin sign-in: `user:<CONSOLE_LOCAL_ADMIN_USER>`, with the configured teams
-  instead of token claims).
-- **Directory memberships come from the token, as contextual tuples.** For
-  every realm role, group and organization in the access token the BFF adds
+- **People** are `user:<id>` in the console store, the id read from the
+  **ID token** — what OpenID Connect issues to the console about the person
+  who signed in; the access token is the API's and is only forwarded to
+  pgauthzd (its `scope` decides the Test pages, see below). The id is the
+  first non-empty of `CONSOLE_SUBJECT_ID_CLAIMS` (default
+  `preferred_username,sub`; dotted paths allowed), or a CEL expression over
+  the claims in `CONSOLE_SUBJECT_ID_CEL` (`has(claims.upn) ? claims.upn :
+  claims.sub`) for identity providers whose claims need shaping — the same
+  id the issuer's delegated admin rule derives for pgauthzd must come out.
+  Token-technical claims (`iss`, `iat`, `exp`, `aud`, `azp`, `jti`, `sid`, …)
+  are refused at startup and never taken as an identity: they are always
+  present, and a typo there would make every sign-in the same person.
+  The local admin sign-in: `user:<CONSOLE_LOCAL_ADMIN_USER>`, with the
+  configured teams instead of token claims.
+- **Directory memberships come from the ID token, as contextual tuples.** For
+  every realm role, group and organization in the ID token the BFF adds
   `user:alice member team:role_<name>` / `team:group_<path>` / `team:org_<alias>`
   to each console check (`CONSOLE_TEAM_CLAIMS`, default
   `role=realm_access.roles,groups,organization`). Nothing is written: the
   IdP stays the source of truth for membership, and the Access tab can grant
-  a role to a team that only exists there.
+  a role to a team that only exists there. The identity provider must put
+  those claims into the ID token (Keycloak: the mappers' "add to ID token",
+  which the demo's `console-bff` client sets for realm roles and groups).
 - **Explicit roles** are ordinary tuples of the console store, written by the
   Access tab (`user:bob tester store:demo`). The creator of a store becomes
   its first owner; ownership is transferable; the last owner cannot be
   removed.
+- **`pgauthz:test` on the session's token opens the Test pages.** A session
+  whose access token carries `pgauthz:*` scopes but not `pgauthz:test` sees
+  no Test tab and gets no `can_run_tests` (nor the other `can_test_*`),
+  whatever the console store grants — the identity provider decides whom it
+  issues testing sessions to. The local admin has no token and is never
+  masked. The demo's `console-bff` client carries the scope by default.
 - **Technical users are subjects too.** A CI pipeline or a Terraform runner
   is `service_account:<client id>` in the console store and holds store,
   registry and platform roles like a person (`service_account:ci tester
@@ -235,6 +254,19 @@ stores where nothing is shared (and always per tenant).
 - **The platform admin** reaches every store through `store:X platform
   platform:default`: they can see it, adopt unclaimed stores and reassign
   owners, but editing, publishing or sharing still needs a store role.
+- **Store groups** ([ADR 0017](../docs/adr/0017-store-groups.md)) sit one
+  level below the platform: `group:<name>` carries `admin` and
+  `issuer_admin`, and `store:X group group:<name>` links a store to its
+  group the way `store.platform` links it to the platform — a group admin
+  sees and administers every store of the group (`can_view`,
+  `can_manage_access`), a platform admin every group. Membership is the
+  engine's (`authz.store_groups`, managed under Platform → Groups and over
+  the admin API); the console mirrors it as those link tuples and keeps
+  them in step on every listing. New stores land in the `default` group
+  unless the form says otherwise; a store outside every group is its own
+  group of one. Moving a store between groups is the platform's, since it
+  changes who administers it. Group issuers and model sharing follow in
+  later phases.
 - **Every action is attributed and recorded.** Writes run in one
   transaction with `authz.performed_by = user:alice`, so the tuple audit
   trail, `created_by` of a published version and `applied_by` of a rollout
@@ -320,7 +352,7 @@ which is translated.
 Configuration (environment): `ENGINE_DSN`, `PG_DSN` (sessions), `ISSUER`,
 `CLIENT_ID`/`CLIENT_SECRET`, `REDIRECT_URI`, `BASE_URL`, `BASE_PATH`,
 `TLS_CA_FILE`, `CONSOLE_STORE` (default `console`), `CONSOLE_PLATFORM_ID`,
-`CONSOLE_REGISTRY_ID`, `CONSOLE_SUBJECT_TYPE`, `CONSOLE_SELF_SUBJECT_TYPES`, `CONSOLE_TEAM_CLAIMS`,
+`CONSOLE_REGISTRY_ID`, `CONSOLE_SUBJECT_TYPE`, `CONSOLE_SUBJECT_ID_CLAIMS`, `CONSOLE_SUBJECT_ID_CEL`, `CONSOLE_SELF_SUBJECT_TYPES`, `CONSOLE_TEAM_CLAIMS`,
 `CONSOLE_I18N_DIR` (translation overrides), `CONSOLE_OPA_URL` / `CONSOLE_OPA_TOKEN` (Policies tab), `PGAUTHZD_URL` (readiness shown on Settings), `PGAUTHZD_ADMIN_URL` (a pgauthzd admin listener — Platform → Issuers then runs over the admin API as the signed-in person; `PGAUTHZD_ADMIN_CERT` / `_KEY` / `_CA` the console's client certificate for sessions without a token, the local admin), `PGAUTHZD_INTERNAL_URL` / `PGAUTHZD_SERVICE_TOKEN` (a pgauthzd's internal callback listener and OPA's service token — without the admin URL, Platform → Issuers shows the issuer set in force from it; empty: the rows only), `PGAUTHZD_DECISION_URL` (the
 "as me" test mode; empty hides it), `CONSOLE_TRACE_URL` (the tracing UI's trace page with a
 `{trace_id}` placeholder — the Decisions tab links a decision into the application's trace), `SUBJECT_ERASURE_ENABLED` (default `false`: the Data

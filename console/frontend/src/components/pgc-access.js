@@ -242,12 +242,13 @@ export class PgcAccess extends PgcElement {
                 ><select .value=${this.nsForm.subject_type} @change=${this._nsSet('subject_type')}>
                   <option value="user">${t('user — a person (preferred_username)')}</option>
                   <option value="team">${t('team — a directory group from the token')}</option>
+                  <option value="service_account">${t('service account — a technical user (an OAuth client)')}</option>
                 </select></label
               >
               <label class="field"
                 ><span
-                  >${this.nsForm.subject_type === 'team' ? t('Team id') : t('Username')}
-                  ${this.nsForm.subject_type === 'team' ? help('A team from the token: role_<realm role>, group_<path> or org_<alias>, e.g. role_authz_writer. Known teams are suggested.') : help('The preferred_username of the person, e.g. bob.')}</span
+                  >${this.nsForm.subject_type === 'team' ? t('Team id') : this.nsForm.subject_type === 'service_account' ? t('Client id') : t('Username')}
+                  ${this.nsForm.subject_type === 'team' ? help('A team from the token: role_<realm role>, group_<path> or org_<alias>, e.g. role_authz_writer. Known teams are suggested.') : this.nsForm.subject_type === 'service_account' ? help('The OAuth client id, e.g. ci.') : help('The preferred_username of the person, e.g. bob.')}</span
                 ><input
                   class="mono"
                   required
@@ -373,12 +374,13 @@ export class PgcAccess extends PgcElement {
                 <select .value=${this.form.subject_type} @change=${this._set('subject_type')}>
                   <option value="user">${t('user — a person (preferred_username)')}</option>
                   <option value="team">${t('team — a directory group from the token')}</option>
+                  <option value="service_account">${t('service account — a technical user (an OAuth client)')}</option>
                 </select></label
               >
               <label class="field"
                 ><span
-                  >${this.form.subject_type === 'team' ? t('Team id') : t('Username')}
-                  ${this.form.subject_type === 'team' ? help('A team from the token: role_<realm role>, group_<path> or org_<alias>, e.g. role_authz_writer. Known teams are suggested.') : help('The preferred_username of the person, e.g. bob.')}</span
+                  >${this.form.subject_type === 'team' ? t('Team id') : this.form.subject_type === 'service_account' ? t('Client id') : t('Username')}
+                  ${this.form.subject_type === 'team' ? help('A team from the token: role_<realm role>, group_<path> or org_<alias>, e.g. role_authz_writer. Known teams are suggested.') : this.form.subject_type === 'service_account' ? help('The OAuth client id, e.g. ci.') : help('The preferred_username of the person, e.g. bob.')}</span
                 >
                 <input
                   class="mono"

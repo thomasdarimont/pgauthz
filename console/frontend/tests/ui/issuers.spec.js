@@ -10,6 +10,7 @@ import { test, expect } from '@playwright/test';
 const USER = process.env.CONSOLE_UI_USER ?? 'admin';
 const PASSWORD = process.env.CONSOLE_UI_PASSWORD ?? 'admin';
 const ISSUER = `https://uitest.example/realms/${Date.now()}`;
+const STORE = process.env.CONSOLE_UI_STORE ?? 'console_uitest';
 
 const tid = (page, id) => page.getByTestId(id);
 
@@ -34,6 +35,12 @@ test('a binding is created, edited, audited and removed', async ({ page }) => {
   // create
   await tid(page, 'issuers-new').click();
   await tid(page, 'issuers-issuer').fill(ISSUER);
+  await tid(page, 'issuers-stores').fill('uitest_docs\nuitest_.*');
+  // a known store is picked by name (datalist-backed input) and becomes a line of the list
+  await tid(page, 'issuers-pick-stores').fill(STORE);
+  await tid(page, 'issuers-pick-stores').press('Enter');
+  await expect(tid(page, 'issuers-stores')).toHaveValue(`uitest_docs\nuitest_.*\n${STORE}`);
+  await expect(tid(page, 'issuers-pick-stores')).toHaveValue('');
   await tid(page, 'issuers-stores').fill('uitest_docs\nuitest_.*');
   await tid(page, 'issuers-db-roles').fill('app_uitest');
   await tid(page, 'issuers-pep-clients').fill('{"gateway": ["uitest_docs"]}');

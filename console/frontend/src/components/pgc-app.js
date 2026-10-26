@@ -148,7 +148,8 @@ export class PgcApp extends PgcElement {
                   ${
                     me.platform?.can_view_health ||
                     me.platform?.can_manage_access ||
-                    me.platform?.can_manage_issuers
+                    me.platform?.can_manage_issuers ||
+                    me.groups?.any
                       ? html`<a href="platform" class=${area === 'platform' ? 'active' : ''}
                           >${t('Platform')}</a
                         >`

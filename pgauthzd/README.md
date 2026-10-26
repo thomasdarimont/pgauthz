@@ -819,7 +819,7 @@ the same two fields for certificate-based runners.
 what a credential may do, a rule can name the authorization store that
 decides — the console's own: `{"scopes":["pgauthz:admin"],"decide":{"store":"console"}}`.
 The token becomes a subject of that store (`subject_type`, default
-`user`, with the id from `subject_claim`, default `SUBJECT_ID_CLAIM`;
+`user`, with the id from `subject_claim` — a claim or a comma-separated list, the first non-empty wins; token-technical claims such as `iat` or `iss` are refused at startup — default `SUBJECT_ID_CLAIM`;
 `{"subject_type":"service_account","subject_claim":"azp"}` for a client
 credentials token), its roles and scopes travel into the check as
 contextual team memberships (`team:role_<role>#member`,
@@ -840,6 +840,8 @@ verb asks for the relation the console checks for the same action:
 The token's own `pgauthz:*` scopes cap what the store grants — `pgauthz:test`
 (the fixture runner), `pgauthz:read` (the GET verbs on stores and the
 registry), `pgauthz:manage` (store writes, test and read included),
+`pgauthz:ci` (a pipeline's token: whatever the store grants on stores and
+the registry — tests, a rollout, publishing — never the issuers),
 `pgauthz:admin` (everything: the issuers, reading included, registry
 writes, creating a store, `keep_store`); a token without any of them does
 not satisfy a delegated rule. So a CI client's token says it may only test, a person's console
@@ -883,6 +885,8 @@ so configuration as code never needs the console's BFF):
 | GET | `/pgauthz/v1/admin/models[?name=]` | The registry's versions (platform scope) |
 | POST | `/pgauthz/v1/admin/models/{name}/versions` | Publish the next version from `from_store` or from a `definition` (the export shape; `publish_model_definition`), idempotent on the checksum (platform scope) |
 | GET | `/pgauthz/v1/admin/models/{name}/rollout` | Every store under the model with version and drift (platform scope) |
+| GET/PUT/DELETE | `/pgauthz/v1/admin/groups[/{group}]` | Store groups ([ADR 0017](../docs/adr/0017-store-groups.md)): the groups with their store counts; create or describe one (`{"description"}`, 201/200); delete an empty one (never `default`). Platform scope |
+| PUT | `/pgauthz/v1/admin/stores/{store}/group` | `{"group": "name"}` attaches the store to a group, `""` detaches it (its own group of one). Moving a store is the platform's: it changes who administers it (platform scope) |
 | POST | `/pgauthz/v1/admin/models/test` | Run a `tests.authz.yaml` fixture (`{"fixture": "<the file's text>", "openfga": {…}, "store": "…", "keep_store": false}`) in an ephemeral store on the admin pool — what `pgauthzctl model test --server` and a CI job with a token call. `openfga` is the model a `model_file` parsed to (a `.fga` is parsed by the client); `store` tests a live store's current model (a fixture without a model line). Needs the `test` capability (`manage` implies it). A fixture testing a live store needs a credential whose scope covers that store; one bringing its own model touches no store of anyone's, so any admin credential runs it; `keep_store` needs platform scope. Failed checks are a `200` with the report (`passed`, `failed`, `results[]`, `duration_ms`); a fixture that cannot run is a `400` with the engine's message. The store is dropped with its audit rows before the commit unless `keep_store` |
 
 Writes are recorded in `authz.issuer_bindings_audit` with the token's subject

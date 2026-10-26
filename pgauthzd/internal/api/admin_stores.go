@@ -17,6 +17,10 @@ package api
 //   POST   /pgauthz/v1/admin/models/{name}/versions  {from_store | definition, description} publish
 //   GET    /pgauthz/v1/admin/models/{name}/rollout   every store under the model
 //   POST   /pgauthz/v1/admin/models/test            {fixture, openfga?, store?, keep_store?} run a tests.authz.yaml in an ephemeral store
+//   GET    /pgauthz/v1/admin/groups                  the store groups (ADR 0017), platform scope
+//   PUT    /pgauthz/v1/admin/groups/{group}          {description}: create (201) or update (200)
+//   DELETE /pgauthz/v1/admin/groups/{group}          an empty group; never default
+//   PUT    /pgauthz/v1/admin/stores/{store}/group    {group: "name" | ""}: attach, or detach (its own group of one)
 
 import (
 	"context"
@@ -43,6 +47,12 @@ type StoreAdmin interface {
 	DeleteStore(ctx context.Context, name string, purgeAudit bool, actor string) (storeID int32, deletedAt time.Time, existed bool, err error)
 	// StoreDeletions lists the receipts for a name, newest first.
 	StoreDeletions(ctx context.Context, name string) ([]authz.StoreDeletion, error)
+	// Store groups (ADR 0017): the platform's tenancy — a group is a named
+	// set of stores; a store belongs to one or to none.
+	ListStoreGroups(ctx context.Context) ([]authz.StoreGroupRow, error)
+	UpsertStoreGroup(ctx context.Context, name string, description *string, actor string) (created bool, err error)
+	DeleteStoreGroup(ctx context.Context, name, actor string) (bool, error)
+	SetStoreGroup(ctx context.Context, store, group, actor string) error
 	ExportModel(ctx context.Context, store string) (json.RawMessage, error)
 	ModelStatus(ctx context.Context, store string) (json.RawMessage, error)
 	PlanApply(ctx context.Context, store, name string, version *int) (json.RawMessage, error)
@@ -98,7 +108,7 @@ func (h *Handler) requireStoreScope(w http.ResponseWriter, r *http.Request) (adm
 		// may create a store it does not own yet (the platform's
 		// can_create_store, PUT on the store itself)
 		refusal := scope.refusal("this credential does not manage store '" + store + "' (its issuer's stores binding, narrowed by its admin rule's stores, decides)")
-		creating := scope.decide != nil && scope.decide.scopes["admin"] && r.Method == http.MethodPut && r.URL.Path == "/pgauthz/v1/admin/stores/"+store && scope.platformWide()
+		creating := scope.decide != nil && (scope.decide.scopes["admin"] || scope.decide.scopes["ci"]) && r.Method == http.MethodPut && r.URL.Path == "/pgauthz/v1/admin/stores/"+store && scope.platformWide()
 		if !creating {
 			metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
 			writeForbidden(w, refusal)
@@ -513,6 +523,122 @@ func (h *Handler) adminPublishModel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"model": name, "version": version})
 }
 
+// ── store groups (ADR 0017): the platform's tenancy ──────────────────────
+
+func (h *Handler) adminGroups(w http.ResponseWriter, r *http.Request) {
+	if !h.requirePlatform(w, r) {
+		return
+	}
+	a, ok := h.storeAdmin(w)
+	if !ok {
+		return
+	}
+	groups, err := a.ListStoreGroups(r.Context())
+	if err != nil {
+		writeDecisionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"groups": groups})
+}
+
+type groupUpsertReq struct {
+	Description *string `json:"description"`
+}
+
+func (h *Handler) adminUpsertGroup(w http.ResponseWriter, r *http.Request) {
+	if !h.requirePlatform(w, r) {
+		return
+	}
+	a, ok := h.storeAdmin(w)
+	if !ok {
+		return
+	}
+	name := r.PathValue("group")
+	if !storeNameRe.MatchString(name) {
+		writeBadRequest(w, "store group names are [a-zA-Z_][a-zA-Z0-9_]*, at most 63 characters")
+		return
+	}
+	var req groupUpsertReq
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeBadRequest(w, "invalid JSON: "+err.Error())
+		return
+	}
+	created, err := a.UpsertStoreGroup(r.Context(), name, req.Description, actorLabel(r))
+	if err != nil {
+		writeDecisionError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, map[string]any{"group": name, "created": created})
+}
+
+func (h *Handler) adminDeleteGroup(w http.ResponseWriter, r *http.Request) {
+	if !h.requirePlatform(w, r) {
+		return
+	}
+	a, ok := h.storeAdmin(w)
+	if !ok {
+		return
+	}
+	name := r.PathValue("group")
+	if !storeNameRe.MatchString(name) {
+		writeBadRequest(w, "store group names are [a-zA-Z_][a-zA-Z0-9_]*, at most 63 characters")
+		return
+	}
+	deleted, err := a.DeleteStoreGroup(r.Context(), name, actorLabel(r))
+	if err != nil {
+		writeDecisionError(w, err)
+		return
+	}
+	if !deleted {
+		writeError(w, http.StatusNotFound, "no store group "+name)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"group": name, "deleted": true})
+}
+
+type setGroupReq struct {
+	Group string `json:"group"`
+}
+
+// adminSetStoreGroup: moving a store between groups is the platform's —
+// it changes who administers the store and which issuers reach it.
+func (h *Handler) adminSetStoreGroup(w http.ResponseWriter, r *http.Request) {
+	if !h.requirePlatform(w, r) {
+		return
+	}
+	a, ok := h.storeAdmin(w)
+	if !ok {
+		return
+	}
+	store := r.PathValue("store")
+	if !storeNameRe.MatchString(store) {
+		writeBadRequest(w, "store names are [a-zA-Z_][a-zA-Z0-9_]*, at most 63 characters")
+		return
+	}
+	var req setGroupReq
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeBadRequest(w, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.Group != "" && !storeNameRe.MatchString(req.Group) {
+		writeBadRequest(w, "store group names are [a-zA-Z_][a-zA-Z0-9_]*, at most 63 characters (empty detaches)")
+		return
+	}
+	if err := a.SetStoreGroup(r.Context(), store, req.Group, actorLabel(r)); err != nil {
+		writeDecisionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"store": store, "group": req.Group})
+}
+
 // ── model test: a fixture run in an ephemeral store ──────────────────────
 
 // testModelReq is a tests.authz.yaml plus what the file could not carry:
@@ -600,7 +726,7 @@ func (h *Handler) adminTestModel(w http.ResponseWriter, r *http.Request) {
 	}
 	keepAllowed := scope.platform
 	if scope.decide != nil {
-		keepAllowed = scope.decide.scopes["admin"] && scope.decide.allowed("can_create_store", "platform", "default")
+		keepAllowed = (scope.decide.scopes["admin"] || scope.decide.scopes["ci"]) && scope.decide.allowed("can_create_store", "platform", "default")
 	}
 	if req.KeepStore && !keepAllowed {
 		metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
@@ -804,6 +930,10 @@ func registerAdminStores(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("GET /pgauthz/v1/admin/stores/{store}/deletions", h.adminStoreDeletions)
 	mux.HandleFunc("GET /pgauthz/v1/admin/stores/{store}/model", h.adminStoreModel)
 	mux.HandleFunc("PUT /pgauthz/v1/admin/stores/{store}/model", h.adminApplyModel)
+	mux.HandleFunc("GET /pgauthz/v1/admin/groups", h.adminGroups)
+	mux.HandleFunc("PUT /pgauthz/v1/admin/groups/{group}", h.adminUpsertGroup)
+	mux.HandleFunc("DELETE /pgauthz/v1/admin/groups/{group}", h.adminDeleteGroup)
+	mux.HandleFunc("PUT /pgauthz/v1/admin/stores/{store}/group", h.adminSetStoreGroup)
 	mux.HandleFunc("GET /pgauthz/v1/admin/models", h.adminModels)
 	mux.HandleFunc("POST /pgauthz/v1/admin/models/test", h.adminTestModel)
 	mux.HandleFunc("POST /pgauthz/v1/admin/models/{name}/versions", h.adminPublishModel)

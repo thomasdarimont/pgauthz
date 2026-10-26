@@ -44,7 +44,7 @@ resource "keycloak_openid_group_membership_protocol_mapper" "console_groups" {
   claim_name          = "groups"
   full_path           = true
   add_to_access_token = true
-  add_to_id_token     = false
+  add_to_id_token     = true # the console reads memberships from the ID token
   add_to_userinfo     = false
 }
 
@@ -68,5 +68,19 @@ resource "keycloak_openid_user_attribute_protocol_mapper" "console_subject_type"
   claim_value_type    = "String"
   add_to_access_token = true
   add_to_id_token     = false
+  add_to_userinfo     = false
+}
+
+# The console derives who signed in and their memberships from the ID token
+# (console/README.md → How the access works), so the realm roles go there
+# too — the realm-wide "roles" scope puts them into access tokens only.
+resource "keycloak_openid_user_realm_role_protocol_mapper" "console_realm_roles_id_token" {
+  realm_id            = keycloak_realm.pgauthz.id
+  client_id           = keycloak_openid_client.console_bff.id
+  name                = "realm roles (ID token)"
+  claim_name          = "realm_access.roles"
+  multivalued         = true
+  add_to_id_token     = true
+  add_to_access_token = false
   add_to_userinfo     = false
 }

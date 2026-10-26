@@ -59,6 +59,9 @@ func buildVersion() server.Version {
 
 func main() {
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("%v", err)
+	}
 	ctx := context.Background()
 
 	pool, err := pgxpool.New(ctx, cfg.PgDSN)

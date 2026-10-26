@@ -36,6 +36,7 @@ ENGINE_MANIFEST=(
   "issuers.sql:read"
   "subject.sql:read"
   "store.sql:write"
+  "groups.sql:write"
   "tuples.sql:write"
   "maintenance.sql:write"
   "model.sql:write"

@@ -18,7 +18,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"sort"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -35,7 +37,29 @@ type principal struct {
 	// request, so checks on a store's namespaces reach it too. Empty otherwise.
 	storeRole string
 	pathStore string
+	// noTesting: the session's token carries pgauthz:* scopes but not
+	// pgauthz:test — the identity provider did not issue it for testing, so
+	// the test pages stay closed whatever the console store grants (the
+	// local admin has no token and is never masked).
+	noTesting bool
 }
+
+// scopeLacksTesting: a token issued with pgauthz:* scopes but without
+// pgauthz:test was not issued for testing; a token without any pgauthz
+// scope (an identity provider that does not use them) is not masked.
+func scopeLacksTesting(scope string) bool {
+	fields := strings.Fields(scope)
+	hasPgauthz := false
+	for _, f := range fields {
+		if strings.HasPrefix(f, "pgauthz:") {
+			hasPgauthz = true
+		}
+	}
+	return hasPgauthz && !slices.Contains(fields, "pgauthz:test")
+}
+
+// testingRelations are the console capabilities pgauthz:test guards.
+var testingRelations = map[string]bool{"can_run_tests": true, "can_test_others": true, "can_test_explain_full": true, "can_test_search": true, "can_test_history": true}
 
 // tuplesFor returns the contextual tuples for a check on objectType/ids: the
 // membership tuples, plus — for the local admin — its store role on every
@@ -82,12 +106,18 @@ func (s *Server) principal(r *http.Request) *principal {
 		p.storeRole = s.cfg.LocalAdminStoreRole
 		p.pathStore = r.PathValue("store")
 	} else {
-		claims := claimMap(se.accessToken)
+		// Identity and memberships: the ID token (what OpenID Connect tells
+		// the relying party about the person); the access token only says
+		// what it may be used for (its scope) and is forwarded to pgauthzd.
+		claims := claimMap(se.idToken)
 		if n, ok := claims["name"].(string); ok {
 			p.name = n
 		}
 		if e, ok := claims["email"].(string); ok {
 			p.email = e
+		}
+		if sc, ok := claimMap(se.accessToken)["scope"].(string); ok {
+			p.noTesting = scopeLacksTesting(sc)
 		}
 		seen := map[string]bool{}
 		for _, tc := range s.cfg.TeamClaims {
@@ -126,6 +156,9 @@ func (s *Server) can(ctx context.Context, p *principal, relation, objectType, ob
 }
 
 func (s *Server) canQ(ctx context.Context, q querier, p *principal, relation, objectType, objectID string) (bool, error) {
+	if p.noTesting && testingRelations[relation] {
+		return false, nil
+	}
 	var ok bool
 	err := q.QueryRow(ctx,
 		`SELECT authz.check_access_with_contextual_tuples_jsonb($1, $2, $3, $4, $5, $6, NULL, $7::jsonb)`,
@@ -216,7 +249,7 @@ func (s *Server) capabilities(ctx context.Context, p *principal, objectType stri
 		if err := rows.Scan(&id, &rel, &ok); err != nil {
 			return nil, err
 		}
-		out[id][rel] = ok
+		out[id][rel] = ok && !(p.noTesting && testingRelations[rel])
 	}
 	return out, rows.Err()
 }

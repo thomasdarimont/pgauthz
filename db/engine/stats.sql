@@ -14,18 +14,61 @@
 -- set) — for tooling that may call the API but not read the tables (the
 -- admin API, pgauthzctl with a reader DSN). Reader tier: a store's name and
 -- description are what every reader already learns from the functions.
+-- The return shape changed in 0028 (store_group): CREATE OR REPLACE cannot
+-- change a function's columns, so the old shape is dropped first.
+DROP FUNCTION IF EXISTS authz.list_stores();
 CREATE OR REPLACE FUNCTION authz.list_stores()
 RETURNS TABLE (
     name        text,
     description text,
     docs_url    text,
     created_at  timestamptz,
-    retired_at  timestamptz
+    retired_at  timestamptz,
+    store_group text            -- the group the store belongs to (ADR 0017); NULL = ungrouped, its own group of one
 )
 LANGUAGE sql STABLE AS $$
-    SELECT s.name, s.description, s.docs_url, s.created_at, s.deleted_at
+    SELECT s.name, s.description, s.docs_url, s.created_at, s.deleted_at, g.name
       FROM authz.stores s
+      LEFT JOIN authz.store_groups g ON g.id = s.group_id
      ORDER BY s.name;
+$$;
+
+-- list_store_groups: every group with how many stores it holds (ADR 0017).
+CREATE OR REPLACE FUNCTION authz.list_store_groups()
+RETURNS TABLE (
+    name        text,
+    description text,
+    store_count bigint,
+    created_at  timestamptz,
+    created_by  text,
+    updated_at  timestamptz,
+    updated_by  text
+)
+LANGUAGE sql STABLE AS $$
+    SELECT g.name, g.description, (SELECT count(*) FROM authz.stores s WHERE s.group_id = g.id),
+           g.created_at, g.created_by, g.updated_at, g.updated_by
+      FROM authz.store_groups g
+     ORDER BY (g.name <> 'default'), g.name;
+$$;
+
+-- list_store_group_audit: the trail of one group (or every group: NULL),
+-- newest first, at most p_limit rows.
+CREATE OR REPLACE FUNCTION authz.list_store_group_audit(p_group text DEFAULT NULL, p_limit int DEFAULT 100)
+RETURNS TABLE (
+    seq          bigint,
+    action       text,
+    performed_at timestamptz,
+    performed_by text,
+    group_name   text,
+    store        text,
+    description  text
+)
+LANGUAGE sql STABLE AS $$
+    SELECT a.seq, a.action, a.performed_at, a.performed_by, a.group_name, a.store, a.description
+      FROM authz.store_group_audit a
+     WHERE p_group IS NULL OR a.group_name = p_group
+     ORDER BY a.seq DESC
+     LIMIT GREATEST(1, LEAST(COALESCE(p_limit, 100), 1000));
 $$;
 
 -- store_id: the store's incarnation — a deleted and recreated store has a

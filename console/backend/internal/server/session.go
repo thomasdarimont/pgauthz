@@ -66,14 +66,18 @@ func (s *Server) createLocalSession(ctx context.Context, username string) (strin
 
 const localSessionTTL = 8 * time.Hour
 
+// createSession opens a session for a signed-in person. Who they are comes
+// from the ID token — the claims OpenID Connect issues to the relying party
+// (the console) — never from the access token, which is for the API and
+// whose claims an identity provider shapes for the API's needs.
 func (s *Server) createSession(ctx context.Context, t *oidc.TokenResp) (string, error) {
 	id := randToken(32)
 	exp := time.Now().Add(time.Duration(t.ExpiresIn) * time.Second)
-	user := claimString(t.AccessToken, "preferred_username")
-	if user == "" {
-		user = claimString(t.AccessToken, "sub")
+	user, err := s.subjectID(claimMap(t.IDToken))
+	if err != nil {
+		return "", err
 	}
-	_, err := s.db.Exec(ctx,
+	_, err = s.db.Exec(ctx,
 		`INSERT INTO sessions (id, access_token, refresh_token, id_token, username, expires_at)
 		 VALUES ($1,$2,$3,$4,$5,$6)`, id, t.AccessToken, t.RefreshToken, t.IDToken, user, exp)
 	return id, err
@@ -118,8 +122,11 @@ func (s *Server) getSession(ctx context.Context, id string) (*session, error) {
 		if t.RefreshToken != "" {
 			se.refreshToken = t.RefreshToken
 		}
-		_, _ = s.db.Exec(ctx, `UPDATE sessions SET access_token=$2, refresh_token=$3, expires_at=$4 WHERE id=$1`,
-			se.id, se.accessToken, se.refreshToken, se.expiresAt)
+		if t.IDToken != "" {
+			se.idToken = t.IDToken // renewed memberships, as the access token's expiry intends
+		}
+		_, _ = s.db.Exec(ctx, `UPDATE sessions SET access_token=$2, refresh_token=$3, id_token=$4, expires_at=$5 WHERE id=$1`,
+			se.id, se.accessToken, se.refreshToken, se.idToken, se.expiresAt)
 	}
 	return &se, nil
 }

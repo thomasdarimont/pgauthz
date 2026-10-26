@@ -13,20 +13,21 @@ resource "keycloak_openid_client" "ci" {
 }
 
 # No role at all: pgauthzd's admin rule for this issuer names the client AND
-# requires the pgauthz:test scope, and the management console's store decides
-# which stores it may test (`azp` ci → service_account:ci, granted `tester`
-# on a store in the console's Access tab; compose-keycloak.yml). The token
-# says what it is for and carries nothing worth stealing;
+# requires the pgauthz:ci scope, and the management console's store decides
+# what it may do (`azp` ci → service_account:ci, granted `tester` on a store
+# in the console's Access tab to run its scenarios, `publisher` to roll out;
+# compose-keycloak.yml). The token says what it is for and carries nothing
+# worth stealing;
 # full_scope_allowed = false keeps the realm's default roles (offline_access,
 # the account client) out of it.
 
-# only what pgauthzd reads: sub and azp (basic) and the pgauthz:test scope,
-# which brings the authz-api audience (scopes.pgauthz.tf); no profile/email,
-# no roles
+# only what pgauthzd reads: sub and azp (basic) and the pgauthz:ci scope,
+# which brings the API audiences (scopes.pgauthz.tf); no profile/email, no
+# roles
 resource "keycloak_openid_client_default_scopes" "ci" {
   realm_id       = keycloak_realm.pgauthz.id
   client_id      = keycloak_openid_client.ci.id
-  default_scopes = ["basic", keycloak_openid_client_scope.pgauthz["test"].name]
+  default_scopes = ["basic", keycloak_openid_client_scope.pgauthz["ci"].name]
 }
 
 output "ci_client_secret" {

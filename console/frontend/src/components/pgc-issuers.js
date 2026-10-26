@@ -172,6 +172,38 @@ export class PgcIssuers extends PgcElement {
       (this.form = { ...this.form, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value });
   }
 
+  // Adding a known value to a list field (the live stores, the per-app DB
+  // roles): a search-as-you-type input backed by a datalist, which scales
+  // to hundreds of stores; a chosen name becomes one line of the list.
+  // Patterns are still typed into the list itself.
+  _picker(k, kind, placeholder) {
+    const vals = this.d?.known?.[kind] ?? [];
+    if (!vals.length) return nothing;
+    const have = new Set(parseList(this.form[k] || ''));
+    const add = (e) => {
+      const v = e.target.value.trim();
+      if (!vals.includes(v)) return; // typing continues; a complete known name is taken
+      if (!have.has(v)) this.form = { ...this.form, [k]: [...parseList(this.form[k] || ''), v].join('\n') };
+      e.target.value = '';
+    };
+    const listId = `issuers-known-${kind}`;
+    return html`<input
+        class="picker"
+        list=${listId}
+        placeholder=${placeholder}
+        autocomplete="off"
+        data-testid="issuers-pick-${kind}"
+        @change=${add}
+        @keydown=${(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            add(e);
+          }
+        }}
+      />
+      <datalist id=${listId}>${vals.filter((v) => !have.has(v)).map((v) => html`<option value=${v}></option>`)}</datalist>`;
+  }
+
   async _save(e) {
     e.preventDefault();
     const f = this.form;
@@ -257,6 +289,7 @@ export class PgcIssuers extends PgcElement {
           @input=${this._set('stores')}
           data-testid="issuers-stores"
         ></textarea>
+        ${this._picker('stores', 'stores', t('Add a store…'))}
       </label>
       <label class="field"
         ><span
@@ -269,6 +302,7 @@ export class PgcIssuers extends PgcElement {
           @input=${this._set('db_roles')}
           data-testid="issuers-db-roles"
         ></textarea>
+        ${this._picker('db_roles', 'db_roles', t('Add a DB role…'))}
       </label>
       <label class="field"
         ><span

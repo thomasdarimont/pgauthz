@@ -166,8 +166,21 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeEngineError(w, err)
 		return
 	}
+	groupAdmin := false
+	if groups, err := s.allGroups(r.Context()); err == nil && len(groups) > 0 {
+		ids := make([]string, len(groups))
+		for i, g := range groups {
+			ids[i] = g.Name
+		}
+		if caps, err := s.capabilities(r.Context(), p, "group", ids, []string{"can_view"}); err == nil {
+			for _, c := range caps {
+				groupAdmin = groupAdmin || c["can_view"]
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"authenticated": true,
+		"groups":        map[string]any{"any": groupAdmin}, // sees at least one store group (ADR 0017)
 		"username":      p.id,
 		"name":          p.name,
 		"email":         p.email,

@@ -4,8 +4,11 @@
 // status and, for 403s, which console capability was missing.
 export class ApiError extends Error {
   constructor(status, body) {
-    super(body?.error ?? body?.message ?? `HTTP ${status}`);
+    // the reference (request_id) names the request in the BFF's and pgauthzd's logs:
+    // kept in the message so every error box, copied or screenshotted, carries it
+    super((body?.error ?? body?.message ?? `HTTP ${status}`) + (body?.request_id ? ` (ref ${body.request_id})` : ''));
     this.status = status;
+    this.requestId = body?.request_id;
     this.required = body?.required;
     this.object = body?.object;
     this.code = body?.code;
@@ -46,7 +49,7 @@ export const api = {
 
   /** @returns {Promise<import('./types.js').StoreList>} */
   stores: () => call('api/stores'),
-  createStore: (name, description) => call('api/stores', { name, description }),
+  createStore: (name, description, group) => call('api/stores', group === undefined ? { name, description } : { name, description, group }),
   adoptStore: (store) => call(`api/stores/${enc(store)}/adopt`, {}),
   deleteStore: (store, confirm, purgeAudit, purgeDecisions) =>
     call(`api/stores/${enc(store)}/delete`, {
@@ -172,6 +175,15 @@ export const api = {
   platformAccessRemove: (items) => call('api/platform/access/remove', { items }),
   // Platform → Issuers: the database-managed issuer bindings.
   /** @returns {Promise<import('./types.js').IssuersResponse>} */
+  // store groups (ADR 0017)
+  platformGroups: () => call('api/platform/groups'),
+  groupCreate: (name, description) => call('api/platform/groups', { name, description }),
+  groupUpdate: (group, description) => call(`api/platform/groups/${enc(group)}`, { description }, { method: 'PUT' }),
+  groupDelete: (group) => call(`api/platform/groups/${enc(group)}/delete`, {}),
+  groupAccess: (group) => call(`api/platform/groups/${enc(group)}/access`),
+  groupAccessAdd: (group, a) => call(`api/platform/groups/${enc(group)}/access`, a),
+  groupAccessRemove: (group, items) => call(`api/platform/groups/${enc(group)}/access/remove`, { items }),
+  storeGroupSet: (store, group) => call(`api/stores/${enc(store)}/group`, { group }, { method: 'PUT' }),
   platformIssuers: () => call('api/platform/issuers'),
   /** @returns {Promise<import('./types.js').IssuerAuditPage>} */
   platformIssuersAudit: (p = {}) => call(`api/platform/issuers/audit?${new URLSearchParams(p)}`),

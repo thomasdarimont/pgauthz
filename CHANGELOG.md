@@ -40,11 +40,49 @@ pre-1.0, minor versions may include breaking changes.
   `can_manage_access`, `can_publish`, `can_manage_issuers`, …). Access
   for people and technical users is managed in the console's Access tabs;
   the console model admits `service_account` subjects. The demo realm
-  gains the `pgauthz:test` / `read` / `manage` / `admin` client scopes
-  (each carrying the client-id and the URI audience) and delegates both
-  rules to the `console` store. The token's `pgauthz:*` scopes cap what
-  the store grants: test, read and manage on the granted stores, admin
-  for the platform; a token without one satisfies no delegated rule.
+  gains the `pgauthz:test` / `read` / `manage` / `ci` / `admin` client
+  scopes (each carrying the client-id and the URI audience) and delegates
+  both rules to the `console` store. The token's `pgauthz:*` scopes cap
+  what the store grants: test, read and manage on the granted stores, ci
+  for a pipeline (stores and the registry, never the issuers), admin for
+  the platform; a token without one satisfies no delegated rule. In the
+  console, `pgauthz:test` on the session's token opens the Test pages.
+- **Console identity from the ID token**: who signed in and the directory
+  memberships now come from the ID token, the claims OpenID Connect
+  issues to the console; the access token is only forwarded to pgauthzd
+  and read for its `scope`. The person's id is the first non-empty of
+  `CONSOLE_SUBJECT_ID_CLAIMS` (default `preferred_username,sub`) or a CEL
+  expression over the claims (`CONSOLE_SUBJECT_ID_CEL`); a delegated admin
+  rule's `subject_claim` takes the same comma-separated list. Token-technical
+  claims (`iss`, `iat`, `exp`, `aud`, `jti`, …) are refused in both at
+  startup, since they are always present and never an identity. The demo's
+  `console-bff` client maps realm roles and groups into the ID token.
+- **Store groups, phase 1** ([ADR 0017](docs/adr/0017-store-groups.md)):
+  a named set of stores that shares administration (trust and models
+  follow in later phases). Migration 0028 creates `authz.store_groups`,
+  a group on each store, an audit trail, and the platform-owned `default`
+  group holding every existing store; an ungrouped store is its own
+  group of one. Engine: `create_store_group`, `update_store_group`,
+  `delete_store_group` (empty only), `set_store_group`,
+  `list_store_groups`, `list_store_group_audit`; `list_stores` names the
+  group. Admin API: `GET/PUT/DELETE /pgauthz/v1/admin/groups[/{group}]`,
+  `PUT …/stores/{store}/group`; store rows carry `store_group`. Console:
+  a `group` type in the access model (a group admin sees and administers
+  the group's stores), Platform → Groups, the group on each store and on
+  store creation.
+- **Every error names its request.** pgauthzd's and the console's JSON
+  errors carry `request_id` (the response's `X-Request-ID`, unique per
+  request, also on the request's log line and the decision log), so a
+  screenshot or a pasted error finds the log entry; the console shows it
+  as `(ref …)` in every error box. A browser landing on pgauthzd without
+  a token (an address bar, `Accept: text/html`) gets a readable page with
+  the same reference instead of JSON. The demo proxy re-resolves its
+  upstreams every 10 s, so a recreated container no longer answers from
+  a stale address.
+- **Issuer form pickers**: the stores and DB roles lists take known
+  values from a search-as-you-type input (the live stores; the
+  per-application DB roles, i.e. the NOLOGIN roles inheriting
+  `authz_reader`); patterns are still typed.
 - **Several audiences per issuer**: `audiences` in `JWT_ISSUERS` lists
   further accepted `aud` values (any of) beside `audience`, so a client
   id (Keycloak) and the API's URI (other identity providers) are both

@@ -26,6 +26,7 @@ type Version struct {
 
 // Server holds the BFF dependencies shared by all handlers.
 type Server struct {
+	subject subjectResolver // the ID-token → person id resolution (subjectid.go)
 	version Version
 	cfg     config.Config
 	db      *pgxpool.Pool // sessions
@@ -185,6 +186,14 @@ func (s *Server) Routes() http.Handler {
 	h("POST /api/platform/access", s.handlePlatformAccessAdd)
 	h("POST /api/platform/access/remove", s.handlePlatformAccessRemove)
 	// Platform → Issuers: the database-managed issuer bindings (can_manage_issuers)
+	h("GET /api/platform/groups", s.handleGroups)
+	h("POST /api/platform/groups", s.handleGroupCreate)
+	h("PUT /api/platform/groups/{group}", s.handleGroupUpdate)
+	h("POST /api/platform/groups/{group}/delete", s.handleGroupDelete)
+	h("GET /api/platform/groups/{group}/access", s.handleGroupAccess)
+	h("POST /api/platform/groups/{group}/access", s.handleGroupAccessAdd)
+	h("POST /api/platform/groups/{group}/access/remove", s.handleGroupAccessRemove)
+	h("PUT /api/stores/{store}/group", s.handleStoreGroupSet)
 	h("GET /api/platform/issuers", s.handleIssuers)
 	h("GET /api/platform/issuers/audit", s.handleIssuersAudit)
 	h("PUT /api/platform/issuers", s.handleIssuerSave)
@@ -200,5 +209,5 @@ func (s *Server) Routes() http.Handler {
 			http.Redirect(w, r, bp+"/", http.StatusFound)
 		})
 	}
-	return mux
+	return requestIDMiddleware(mux)
 }

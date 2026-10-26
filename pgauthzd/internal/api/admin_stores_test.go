@@ -27,6 +27,7 @@ type storeStub struct {
 	deletions  map[string][]authz.StoreDeletion         // store → receipts
 	namespaces map[string]map[string]map[string][2]bool // store → namespace → role → (read, write)
 	tests      []testModelCall
+	groups     map[string]*authz.StoreGroupRow // ADR 0017
 }
 
 // the data-subject methods: canned rows, the arguments remembered
@@ -238,6 +239,68 @@ func (s *storeStub) TestModel(_ context.Context, fix *pgauthzadm.Fixture, modelJ
 	}}, nil
 }
 
+// store groups (ADR 0017): the default group and whatever the tests add;
+// a store's group lives on its row
+func (s *storeStub) ListStoreGroups(context.Context) ([]authz.StoreGroupRow, error) {
+	out := []authz.StoreGroupRow{}
+	for _, g := range s.groups {
+		n := int64(0)
+		for _, st := range s.stores {
+			if st.Group == g.Name {
+				n++
+			}
+		}
+		g.StoreCount = n
+		out = append(out, *g)
+	}
+	return out, nil
+}
+func (s *storeStub) UpsertStoreGroup(_ context.Context, name string, description *string, actor string) (bool, error) {
+	s.actors = append(s.actors, actor)
+	if g, ok := s.groups[name]; ok {
+		if description != nil {
+			g.Description = *description
+		}
+		return false, nil
+	}
+	g := &authz.StoreGroupRow{Name: name}
+	if description != nil {
+		g.Description = *description
+	}
+	s.groups[name] = g
+	return true, nil
+}
+func (s *storeStub) DeleteStoreGroup(_ context.Context, name, actor string) (bool, error) {
+	s.actors = append(s.actors, actor)
+	if name == "default" {
+		return false, fmt.Errorf("%w: the default store group cannot be deleted", authz.ErrInvalidRequest)
+	}
+	if _, ok := s.groups[name]; !ok {
+		return false, nil
+	}
+	for _, st := range s.stores {
+		if st.Group == name {
+			return false, fmt.Errorf("%w: store group %s still holds 1 store(s): move or detach them first", authz.ErrInvalidRequest, name)
+		}
+	}
+	delete(s.groups, name)
+	return true, nil
+}
+func (s *storeStub) SetStoreGroup(_ context.Context, store, group, actor string) error {
+	s.actors = append(s.actors, actor)
+	st, ok := s.stores[store]
+	if !ok {
+		return fmt.Errorf("%w: Unknown store: %s", authz.ErrInvalidRequest, store)
+	}
+	if group != "" {
+		if _, ok := s.groups[group]; !ok {
+			return fmt.Errorf("%w: Unknown store group: %s", authz.ErrInvalidRequest, group)
+		}
+	}
+	st.Group = group
+	return nil
+}
+
 func storesFixture(t *testing.T) (*Handler, *storeStub) {
 	t.Helper()
 	h, _ := adminFixture(t)
@@ -247,6 +310,10 @@ func storesFixture(t *testing.T) (*Handler, *storeStub) {
 		blocked:    map[string]bool{"b_docs": true},
 		recorders:  map[string]map[string][]string{},
 		namespaces: map[string]map[string]map[string][2]bool{},
+		groups:     map[string]*authz.StoreGroupRow{"default": {Name: "default", Description: "the platform's own"}},
+	}
+	for _, st := range stub.stores {
+		st.Group = "default"
 	}
 	h.rawWrite = stub
 	return h, stub
@@ -754,6 +821,23 @@ func TestAdminDelegated(t *testing.T) {
 	if w := serveAdmin(h, tenantCManage.request("GET", "/pgauthz/v1/admin/issuer-bindings", "")); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "needs pgauthz:admin") || strings.Contains(w.Body.String(), "(or pgauthz:admin)") {
 		t.Fatalf("dave reads the issuers without pgauthz:admin: %d %s", w.Code, w.Body.String())
 	}
+	// pgauthz:ci: whatever the store grants a pipeline on stores and the registry — tests, a rollout,
+	// publishing — but never the issuers, whatever the store says
+	stub.grants["service_account:ci-c can_rollout store:c_docs"] = true
+	stub.grants["service_account:ci-c can_publish registry:default"] = true
+	stub.grants["service_account:ci-c can_manage_issuers platform:default"] = true
+	if w := serveAdmin(h, tenantCPipe.request("POST", "/pgauthz/v1/admin/models/test", body(map[string]any{"fixture": bare, "store": "c_docs"}))); w.Code != 200 {
+		t.Fatalf("pipeline tests c_docs: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCPipe.request("PUT", "/pgauthz/v1/admin/stores/c_docs/model", `{"model":"core"}`)); w.Code != 200 {
+		t.Fatalf("pipeline rolls out: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCPipe.request("POST", "/pgauthz/v1/admin/models/core/versions", `{"from_store":"c_docs"}`)); w.Code != 200 {
+		t.Fatalf("pipeline publishes: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCPipe.request("GET", "/pgauthz/v1/admin/issuer-bindings", "")); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "needs pgauthz:admin") {
+		t.Fatalf("pipeline reads the issuers: %d %s", w.Code, w.Body.String())
+	}
 	// no pgauthz scope at all: the delegated rule is not satisfied
 	if w := serveAdmin(h, tenantCNoScope.request("GET", "/pgauthz/v1/admin/stores", "")); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "carries no pgauthz scope") {
 		t.Fatalf("erin without a pgauthz scope: %d %s", w.Code, w.Body.String())
@@ -769,5 +853,62 @@ func TestAdminDelegated(t *testing.T) {
 	stub.grants["err"] = true
 	if w := serveAdmin(h, tenantCUser.request("GET", "/pgauthz/v1/admin/stores/c_docs", "")); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "could not decide") {
 		t.Fatalf("store down: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// Store groups over the admin API (ADR 0017): platform scope only; create
+// (201) / update (200) / delete (404 when missing, 400 while it holds
+// stores, never default); a store moves between groups or is detached;
+// the store rows name their group; the actor is the credential.
+func TestAdminGroups(t *testing.T) {
+	h, stub := storesFixture(t)
+	if w := serveAdmin(h, tenantAAdmin.request("GET", "/pgauthz/v1/admin/groups", "")); w.Code != http.StatusForbidden {
+		t.Fatalf("tenant admin lists groups: %d %s", w.Code, w.Body.String())
+	}
+	w := serveAdmin(h, platformAdmin.request("GET", "/pgauthz/v1/admin/groups", ""))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"name":"default"`) || !strings.Contains(w.Body.String(), `"store_count":5`) {
+		t.Fatalf("groups: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, platformAdmin.request("PUT", "/pgauthz/v1/admin/groups/tenant_a", `{"description":"Tenant A"}`)); w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"created":true`) {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, platformAdmin.request("PUT", "/pgauthz/v1/admin/groups/tenant_a", `{"description":"Tenant A, EU"}`)); w.Code != 200 || stub.groups["tenant_a"].Description != "Tenant A, EU" {
+		t.Fatalf("update: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, platformAdmin.request("PUT", "/pgauthz/v1/admin/groups/bad-name", `{}`)); w.Code != 400 {
+		t.Fatalf("bad name: %d %s", w.Code, w.Body.String())
+	}
+	// a store moves into the group, the store row says so, the group counts it
+	if w := serveAdmin(h, platformAdmin.request("PUT", "/pgauthz/v1/admin/stores/a_docs/group", `{"group":"tenant_a"}`)); w.Code != 200 || stub.stores["a_docs"].Group != "tenant_a" {
+		t.Fatalf("attach: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, platformAdmin.request("GET", "/pgauthz/v1/admin/stores/a_docs", "")); w.Code != 200 || !strings.Contains(w.Body.String(), `"store_group":"tenant_a"`) {
+		t.Fatalf("store row: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, platformAdmin.request("PUT", "/pgauthz/v1/admin/stores/a_docs/group", `{"group":"nope"}`)); w.Code != 400 || !strings.Contains(w.Body.String(), "Unknown store group") {
+		t.Fatalf("unknown group: %d %s", w.Code, w.Body.String())
+	}
+	// not while it holds a store; detach, then delete; the default group never
+	if w := serveAdmin(h, platformAdmin.request("DELETE", "/pgauthz/v1/admin/groups/tenant_a", "")); w.Code != 400 || !strings.Contains(w.Body.String(), "still holds") {
+		t.Fatalf("delete non-empty: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, platformAdmin.request("PUT", "/pgauthz/v1/admin/stores/a_docs/group", `{"group":""}`)); w.Code != 200 || stub.stores["a_docs"].Group != "" {
+		t.Fatalf("detach: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, platformAdmin.request("DELETE", "/pgauthz/v1/admin/groups/tenant_a", "")); w.Code != 200 || !strings.Contains(w.Body.String(), `"deleted":true`) {
+		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, platformAdmin.request("DELETE", "/pgauthz/v1/admin/groups/tenant_a", "")); w.Code != http.StatusNotFound {
+		t.Fatalf("delete missing: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, platformAdmin.request("DELETE", "/pgauthz/v1/admin/groups/default", "")); w.Code != 400 {
+		t.Fatalf("delete default: %d %s", w.Code, w.Body.String())
+	}
+	// a tenant admin cannot move its own store either: tenancy is the platform's
+	if w := serveAdmin(h, tenantAAdmin.request("PUT", "/pgauthz/v1/admin/stores/a_docs/group", `{"group":"default"}`)); w.Code != http.StatusForbidden {
+		t.Fatalf("tenant moves a store: %d %s", w.Code, w.Body.String())
+	}
+	if last := stub.actors[len(stub.actors)-1]; last != "user:ops" {
+		t.Fatalf("actor: %q", last)
 	}
 }

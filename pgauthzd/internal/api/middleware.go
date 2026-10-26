@@ -5,10 +5,12 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/subtle"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -50,7 +52,7 @@ func ServiceAuthMiddleware(token string) func(http.Handler) http.Handler {
 			}
 			got := []byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 			if len(want) == 0 || subtle.ConstantTimeCompare(got, want) != 1 {
-				writeUnauthorized(w)
+				writeUnauthorized(w, r)
 				return
 			}
 			ctx := r.Context()
@@ -314,14 +316,14 @@ func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 				return
 			}
 			metrics.JWTFailures.WithLabelValues("missing").Inc()
-			writeUnauthorized(w)
+			writeUnauthorized(w, r)
 			return
 		}
 
 		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 		if tokenStr == authHeader {
 			metrics.JWTFailures.WithLabelValues("malformed").Inc()
-			writeUnauthorized(w)
+			writeUnauthorized(w, r)
 			return
 		}
 
@@ -329,7 +331,7 @@ func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 		if err != nil {
 			slog.Debug("JWT verification failed", "error", err)
 			metrics.JWTFailures.WithLabelValues("invalid_token").Inc()
-			writeUnauthorized(w)
+			writeUnauthorized(w, r)
 			return
 		}
 
@@ -756,18 +758,17 @@ func claimString(claims jwt.MapClaims, key string) string {
 // the caller's X-Request-ID, else the propagated trace id (OpenTelemetry:
 // traceparent / B3, extracted by the server span), else a counter.
 func RequestID(next http.Handler) http.Handler {
-	var counter uint64
-	var mu sync.Mutex
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-ID")
 		if id == "" {
 			id, _ = telemetry.IDs(r.Context())
 		}
 		if id == "" {
-			mu.Lock()
-			counter++
-			id = fmt.Sprintf("%d", counter)
-			mu.Unlock()
+			// unique across instances and restarts: a screenshot of an error
+			// names the one log line to look for
+			b := make([]byte, 8)
+			_, _ = rand.Read(b)
+			id = hex.EncodeToString(b)
 		}
 		w.Header().Set("X-Request-ID", id)
 		ctx := context.WithValue(r.Context(), ctxRequestID, id)
@@ -795,6 +796,7 @@ func Logging(next http.Handler) http.Handler {
 			"path", r.URL.Path,
 			"status", sw.status,
 			"duration_ms", time.Since(start).Milliseconds(),
+			"request_id", sw.Header().Get("X-Request-ID"), // set by RequestID inside; the id an error body carries
 		)
 	})
 }

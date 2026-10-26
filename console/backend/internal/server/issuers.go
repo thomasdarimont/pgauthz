@@ -215,6 +215,7 @@ func (s *Server) handleIssuers(w http.ResponseWriter, r *http.Request) {
 			"revision":  list.Revision,
 			"effective": s.effectiveIssuersAdmin(ctx, r),
 			"via":       "admin-api",
+			"known":     s.knownForBindings(ctx),
 		})
 		return
 	}
@@ -233,7 +234,39 @@ func (s *Server) handleIssuers(w http.ResponseWriter, r *http.Request) {
 		"revision":  revision,
 		"effective": s.effectiveIssuers(ctx),
 		"via":       "db",
+		"known":     s.knownForBindings(ctx),
 	})
+}
+
+// knownForBindings: what a binding's lists can be picked from instead of
+// typed — the live stores, and the per-application DB roles (the NOLOGIN
+// roles that inherit authz_reader: app_dms, …; the engine's own authz_*
+// roles and the daemons' login roles are not what a token claims).
+// Patterns stay typed; the form adds a picked name as one line.
+func (s *Server) knownForBindings(ctx context.Context) map[string]any {
+	names := func(sql string) []string {
+		out := []string{}
+		rows, err := s.engine.Query(ctx, sql)
+		if err != nil {
+			return out
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var n string
+			if rows.Scan(&n) == nil {
+				out = append(out, n)
+			}
+		}
+		return out
+	}
+	return map[string]any{
+		"stores": names(`SELECT name FROM authz.list_stores() WHERE retired_at IS NULL ORDER BY 1`),
+		"db_roles": names(`SELECT r.rolname FROM pg_roles r
+			 WHERE NOT r.rolcanlogin AND NOT r.rolsuper
+			   AND r.rolname NOT LIKE 'pg\_%' AND r.rolname NOT LIKE 'authz\_%'
+			   AND pg_has_role(r.oid, 'authz_reader', 'MEMBER')
+			 ORDER BY 1`),
+	}
 }
 
 // effectiveIssuersAdmin is the set in force as the admin API answers it
