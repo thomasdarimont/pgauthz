@@ -405,6 +405,7 @@
 /**
  * @typedef {Object} IssuerBinding one row of authz.issuer_bindings (api/platform/issuers)
  * @property {string} issuer
+ * @property {string} [alias] a short handle for the issuer (migration 0031)
  * @property {string[]} stores
  * @property {string[]} db_roles
  * @property {Object<string, string>} client_db_roles

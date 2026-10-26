@@ -144,6 +144,7 @@ export class PgcIssuers extends PgcElement {
   _blank(issuer = '') {
     return {
       issuer,
+      alias: '',
       stores: '',
       db_roles: '',
       client_db_roles: '{}',
@@ -169,6 +170,7 @@ export class PgcIssuers extends PgcElement {
     this.saved = '';
     this.form = {
       issuer: b.issuer,
+      alias: b.alias ?? '',
       stores: b.stores.join('\n'),
       db_roles: b.db_roles.join('\n'),
       client_db_roles: JSON.stringify(b.client_db_roles ?? {}, null, 2),
@@ -265,6 +267,7 @@ export class PgcIssuers extends PgcElement {
           pep_clients,
           enabled: !!f.enabled,
           description: f.description,
+          alias: f.alias?.trim().toLowerCase() || '',
           store_group: f.store_group || '',
           jwks_url: f.jwks_url?.trim() || '',
           audience: f.audience?.trim() || '',
@@ -342,6 +345,12 @@ export class PgcIssuers extends PgcElement {
         />
         <datalist id="issuers-known">${known.map((i) => html`<option value=${i}></option>`)}</datalist>
       </label>
+      <label class="field"
+        ><span
+          >${t('Alias')}
+          ${help('A short name that stands for the issuer URL wherever an issuer is referenced: the admin API and pgauthzctl (issuers delete tenant-a), the console sign-in (?login=tenant-a, CONSOLE_AUTO_LOGIN). Letters, digits, _ and -; unique.')}</span
+        ><input class="mono" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}" placeholder="tenant-a" .value=${f.alias ?? ''} @input=${this._set('alias')} data-testid="issuers-alias"
+      /></label>
       <label class="field"
         ><span>${t('Description')}</span
         ><input .value=${f.description} @input=${this._set('description')} data-testid="issuers-description"
@@ -659,6 +668,7 @@ export class PgcIssuers extends PgcElement {
                       html`<tr data-testid="issuers-row" data-issuer=${b.issuer}>
                         <td class="mono">
                           ${b.issuer}
+                          ${b.alias ? html` <span class="badge accent mono" title=${t('alias: stands for the issuer URL in the admin API, pgauthzctl and sign-in links')}>${b.alias}</span>` : nothing}
                           ${b.store_group ? html` <span class="badge muted" title=${t('a group issuer: reaches the stores of this group')}>${b.store_group}</span>` : nothing}
                           ${b.jwks_url ? html` <span class="badge ok" title=${b.jwks_url}>${t('own anchor')}</span>` : nothing}
                           ${d.signin?.[b.issuer]?.enabled ? html` <span class="badge muted" title=${t('a button on the sign-in page')}>${t('sign-in')}</span>` : nothing}${d.signin?.[b.issuer]?.auto_login ? html` <span class="badge muted" title=${t('signs visitors in automatically')}>${t('auto')}</span>` : nothing}

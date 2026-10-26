@@ -113,6 +113,8 @@ services:
       # Issuer bindings (console-managed): env = JWT_ISSUERS only; env+db merges
       # authz.issuer_bindings over it (anchors stay in the environment).
       ISSUERS_SOURCE: "${ISSUERS_SOURCE:-env}"
+      # Hosts a tenant may bring as a group issuer (issuer + jwks_url; the daemon fetches its keys): empty = none.
+      GROUP_ISSUER_HOSTS: "${GROUP_ISSUER_HOSTS:-}"
       ISSUERS_POLL_INTERVAL: "${ISSUERS_POLL_INTERVAL:-30}"
       ISSUERS_REQUIRED_ROLE: "${ISSUERS_REQUIRED_ROLE:-}"
       TRACING: "${TRACING:-auto}"

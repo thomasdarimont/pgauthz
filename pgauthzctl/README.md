@@ -149,6 +149,7 @@ pgauthzctl issuers export --out issuers.json # the file to commit (audit columns
 pgauthzctl issuers import issuers.json --dry-run   # + create / ~ update / - delete
 pgauthzctl issuers import issuers.json --prune     # one transaction; --prune drops rows the file no longer names
 pgauthzctl issuers delete https://old-idp.example   # the issuer is back to its environment bindings
+pgauthzctl issuers delete old-idp                   # … or by the row's alias (`alias` in the export file)
 ```
 
 The file is `{"bindings": [{issuer, stores, db_roles, client_db_roles,

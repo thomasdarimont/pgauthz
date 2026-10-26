@@ -148,6 +148,9 @@ startup via ALLOW_OPEN_DIAGNOSTICS, so a hand-edited manifest cannot slip past).
 {{- with $is.requiredRole }}
 - { name: ISSUERS_REQUIRED_ROLE, value: {{ . | quote }} }
 {{- end }}
+{{- with $is.groupHosts }}
+- { name: GROUP_ISSUER_HOSTS, value: {{ . | quote }} }
+{{- end }}
 {{- $ot := .root.Values.otel | default dict }}
 {{- with $ot.tracing }}
 - { name: TRACING, value: {{ . | quote }} }

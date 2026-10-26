@@ -27,6 +27,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -38,7 +39,10 @@ import (
 )
 
 type signinProvider struct {
-	Issuer   string `json:"issuer"`
+	Issuer string `json:"issuer"`
+	// Alias: the issuer's short handle (the binding row's, migration 0031),
+	// accepted wherever the sign-in names a provider (?login=, CONSOLE_AUTO_LOGIN).
+	Alias    string `json:"alias,omitempty"`
 	Label    string `json:"label"`
 	Group    string `json:"store_group,omitempty"`
 	ClientID string `json:"client_id,omitempty"`
@@ -63,14 +67,68 @@ type providerCache struct {
 
 const providerTTL, providerErrTTL = 10 * time.Minute, time.Minute
 
+// issuerAliases: alias → issuer URL, from the engine's binding rows (the
+// console's own read) and, when pgauthzd is reachable, the fleet's
+// effective set (an alias set in JWT_ISSUERS only).
+func (s *Server) issuerAliases(ctx context.Context) map[string]string {
+	out := map[string]string{}
+	if s.engine != nil {
+		if rows, err := s.engine.Query(ctx, `SELECT issuer, alias FROM authz.list_issuer_bindings() WHERE alias IS NOT NULL`); err == nil {
+			for rows.Next() {
+				var iss, alias string
+				if rows.Scan(&iss, &alias) == nil {
+					out[alias] = iss
+				}
+			}
+			rows.Close()
+		}
+	}
+	if eff := s.effectiveIssuers(ctx); eff.Available && len(eff.Issuers) > 0 {
+		var list []struct {
+			Issuer string `json:"issuer"`
+			Alias  string `json:"alias"`
+		}
+		if json.Unmarshal(eff.Issuers, &list) == nil {
+			for _, i := range list {
+				if i.Alias != "" {
+					if _, taken := out[i.Alias]; !taken {
+						out[i.Alias] = i.Issuer
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// refersTo says whether a reference (an issuer URL or an alias, as in
+// CONSOLE_AUTO_LOGIN or ?login=) names the issuer.
+func refersTo(ref, issuer, alias string) bool {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return false
+	}
+	return strings.TrimRight(ref, "/") == strings.TrimRight(issuer, "/") || (alias != "" && strings.EqualFold(ref, alias))
+}
+
 // platformProvider is the environment's provider, the one every
 // deployment starts with; nil without ISSUER.
 func (s *Server) platformProvider() *signinProvider {
 	if s.oidc == nil {
 		return nil
 	}
-	auto := strings.EqualFold(s.cfg.AutoLogin, "true") || strings.TrimRight(s.cfg.AutoLogin, "/") == strings.TrimRight(s.cfg.Issuer, "/")
-	return &signinProvider{Issuer: s.cfg.Issuer, Label: s.cfg.ProviderName(), ClientID: s.cfg.ClientID, Enabled: true, AutoLogin: auto, meta: s.endpoints, client: s.oidc}
+	return s.platformProviderWith(nil)
+}
+
+func (s *Server) platformProviderWith(aliases map[string]string) *signinProvider {
+	alias := ""
+	for a, iss := range aliases {
+		if strings.TrimRight(iss, "/") == strings.TrimRight(s.cfg.Issuer, "/") {
+			alias = a
+		}
+	}
+	auto := strings.EqualFold(s.cfg.AutoLogin, "true") || refersTo(s.cfg.AutoLogin, s.cfg.Issuer, alias)
+	return &signinProvider{Issuer: s.cfg.Issuer, Alias: alias, Label: s.cfg.ProviderName(), ClientID: s.cfg.ClientID, Enabled: true, AutoLogin: auto, meta: s.endpoints, client: s.oidc}
 }
 
 // dbProviders reads the registered providers (secrets included: the
@@ -97,7 +155,7 @@ func (s *Server) dbProviders(ctx context.Context) ([]signinProvider, error) {
 			p.Label = p.Issuer
 		}
 		// the environment may name a registered provider as the auto-login one
-		p.AutoLogin = p.AutoLogin || strings.TrimRight(s.cfg.AutoLogin, "/") == strings.TrimRight(p.Issuer, "/")
+		p.AutoLogin = p.AutoLogin || refersTo(s.cfg.AutoLogin, p.Issuer, "")
 		out = append(out, p)
 	}
 	return out, rows.Err()
@@ -114,13 +172,16 @@ func (s *Server) discoverOnce(ctx context.Context, issuer, discoveryURL string) 
 	if discoveryURL == "" {
 		discoveryURL = strings.TrimRight(issuer, "/") + "/.well-known/openid-configuration"
 	}
+	if err := s.outboundAllowed(ctx, discoveryURL); err != nil {
+		return oidc.Metadata{}, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, nil)
 	if err != nil {
 		return oidc.Metadata{}, err
 	}
-	hc := s.http
+	hc := s.outbound
 	if hc == nil {
-		hc = http.DefaultClient
+		hc = noRedirects(s.http)
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
@@ -139,6 +200,10 @@ func (s *Server) discoverOnce(ctx context.Context, issuer, discoveryURL string) 
 	}
 	if m.Issuer != "" && strings.TrimRight(m.Issuer, "/") != strings.TrimRight(issuer, "/") {
 		return oidc.Metadata{}, errors.New("discovery document names issuer " + m.Issuer + ", not " + issuer)
+	}
+	// the token endpoint is where the console will POST the client secret
+	if err := s.outboundAllowed(ctx, m.TokenURL); err != nil {
+		return oidc.Metadata{}, fmt.Errorf("token endpoint: %w", err)
 	}
 	return m, nil
 }
@@ -180,9 +245,9 @@ func (s *Server) providerFor(ctx context.Context, issuer string) (*signinProvide
 		meta, err := s.discoverOnce(ctx, issuer, row.DiscoveryURL)
 		c = &signinProvider{Issuer: issuer, Label: row.Label, Group: row.Group, ClientID: row.ClientID, Enabled: true, AutoLogin: row.AutoLogin, DiscoveryURL: row.DiscoveryURL, secret: row.secret, meta: meta, fetched: time.Now(), err: err}
 		if err == nil {
-			hc := s.http
+			hc := s.outbound
 			if hc == nil {
-				hc = http.DefaultClient
+				hc = noRedirects(s.http)
 			}
 			c.client = &oidc.Client{HTTP: hc, ClientID: row.ClientID, ClientSecret: row.secret, TokenURL: meta.TokenURL}
 		}
@@ -202,19 +267,35 @@ func (s *Server) providerFor(ctx context.Context, issuer string) (*signinProvide
 func (s *Server) signinProviders(ctx context.Context) ([]map[string]any, string) {
 	out := []map[string]any{}
 	auto := ""
+	aliases := s.issuerAliases(ctx)
+	aliasOf := func(issuer string) string {
+		for a, iss := range aliases {
+			if strings.TrimRight(iss, "/") == strings.TrimRight(issuer, "/") {
+				return a
+			}
+		}
+		return ""
+	}
 	add := func(p *signinProvider) {
+		if p.Alias == "" {
+			p.Alias = aliasOf(p.Issuer)
+		}
 		m := map[string]any{"issuer": p.Issuer, "label": p.Label}
+		if p.Alias != "" {
+			m["alias"] = p.Alias
+		}
 		if p.Group != "" {
 			m["store_group"] = p.Group
 		}
-		if p.AutoLogin && auto == "" {
+		// the environment may name a registered provider, by URL or alias
+		if (p.AutoLogin || refersTo(s.cfg.AutoLogin, p.Issuer, p.Alias)) && auto == "" {
 			auto = p.Issuer
 			m["auto_login"] = true
 		}
 		out = append(out, m)
 	}
-	if p := s.platformProvider(); p != nil {
-		add(p)
+	if s.oidc != nil {
+		add(s.platformProviderWith(aliases))
 	}
 	rows, err := s.dbProviders(ctx)
 	if err != nil {
@@ -225,7 +306,8 @@ func (s *Server) signinProviders(ctx context.Context) ([]map[string]any, string)
 			continue
 		}
 		if p, err := s.providerFor(ctx, r.Issuer); err == nil {
-			add(p)
+			cp := *p
+			add(&cp)
 		}
 	}
 	return out, auto

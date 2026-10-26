@@ -137,3 +137,15 @@ console; the console's own access model gets the matching `group` type.
   models; each store's graph stays its own (store layering, if ever,
   is a separate decision).
 - Moving platform issuers into the database.
+
+## Addendum: the hosts a group issuer may name
+
+A group issuer's row carries the `jwks_url` pgauthzd fetches keys from,
+and the console discovers such a provider from a URL its admin typed — so
+whoever may write the row could point either service at any address it
+can reach. Both now check the host against an operator's allow-list,
+`GROUP_ISSUER_HOSTS` on pgauthzd and `CONSOLE_OUTBOUND_HOSTS` on the
+console (the platform's own issuer always allowed), fail closed when the
+list is empty, and never follow redirects. A tenant's identity provider
+is therefore admitted twice: its host by the platform operator, the issuer
+itself by the group's admins.

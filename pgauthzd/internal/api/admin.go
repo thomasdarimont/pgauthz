@@ -552,8 +552,45 @@ func (h *Handler) bindingAdmin(w http.ResponseWriter) (IssuerBindingAdmin, bool)
 	return a, true
 }
 
+// mergeOptions: the instance's host restriction for group issuers.
+func (h *Handler) mergeOptions() issuers.MergeOptions {
+	if h.cfg == nil {
+		return issuers.MergeOptions{}
+	}
+	return h.cfg.MergeOptions()
+}
+
+// resolveIssuer turns an issuer reference — the URL, or an alias from the
+// effective set or a binding row — into the URL; "" when nothing matches.
+// Every admin route that names an issuer accepts both.
+func (h *Handler) resolveIssuer(ctx context.Context, a IssuerBindingAdmin, ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	set := make([]issuers.Issuer, 0, len(h.issuers.current().configs))
+	for _, ic := range h.issuers.current().configs {
+		set = append(set, issuers.Issuer{Issuer: ic.Issuer, Alias: ic.Alias})
+	}
+	if iss := issuers.Resolve(set, ref); iss != "" {
+		return iss
+	}
+	// a row whose alias the fleet has not applied yet (or whose bindings it rejected)
+	if a != nil {
+		if rows, err := a.IssuerBindings(ctx); err == nil {
+			rowSet := make([]issuers.Issuer, 0, len(rows))
+			for _, b := range rows {
+				rowSet = append(rowSet, issuers.Issuer{Issuer: b.Issuer, Alias: strings.ToLower(b.Alias)})
+			}
+			return issuers.Resolve(rowSet, ref)
+		}
+	}
+	return ""
+}
+
 // adminIssuerBindings — GET /pgauthz/v1/admin/issuer-bindings[?issuer=…]:
-// the database rows within the caller's scope (all of them, or one).
+// the database rows within the caller's scope (all of them, or one; the
+// issuer by URL or alias).
 func (h *Handler) adminIssuerBindings(w http.ResponseWriter, r *http.Request) {
 	scope, ok := h.requireAdmin(w, r)
 	if !ok {
@@ -575,8 +612,9 @@ func (h *Handler) adminIssuerBindings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if want := strings.TrimSpace(r.URL.Query().Get("issuer")); want != "" {
+		iss := h.resolveIssuer(r.Context(), a, want)
 		for _, b := range visible {
-			if b.Issuer == want {
+			if b.Issuer == iss {
 				writeJSON(w, http.StatusOK, b)
 				return
 			}
@@ -607,6 +645,11 @@ func (h *Handler) adminIssuerBindingsAudit(w http.ResponseWriter, r *http.Reques
 	}
 	q := r.URL.Query()
 	issuer := strings.TrimSpace(q.Get("issuer"))
+	if issuer != "" {
+		if resolved := h.resolveIssuer(r.Context(), a, issuer); resolved != "" {
+			issuer = resolved // an alias reads as its URL
+		}
+	}
 	if !scope.platformWide() {
 		if issuer == "" {
 			issuer = scope.issuer
@@ -668,6 +711,27 @@ func (h *Handler) adminSetIssuerBinding(w http.ResponseWriter, r *http.Request) 
 		writeBadRequest(w, "issuer is required (the token's iss)")
 		return
 	}
+	if !strings.HasPrefix(b.Issuer, "https://") && !strings.HasPrefix(b.Issuer, "http://") {
+		// an alias names an existing issuer; a new issuer needs its URL
+		if iss := h.resolveIssuer(r.Context(), a, b.Issuer); iss != "" {
+			b.Issuer = iss
+		} else {
+			writeBadRequest(w, "issuer "+b.Issuer+" is neither an issuer URL nor a known alias")
+			return
+		}
+	}
+	alias, err := issuers.ValidAlias(b.Alias)
+	if err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	b.Alias = alias
+	if alias != "" {
+		if other := h.resolveIssuer(r.Context(), a, alias); other != "" && other != b.Issuer {
+			writeBadRequest(w, "alias "+alias+" already names issuer "+other)
+			return
+		}
+	}
 	// a group issuer (ADR 0017) is the group's business: its admins write it
 	groupManaged := b.StoreGroup != "" && h.scopeManagesGroup(scope, b.StoreGroup)
 	if !scope.covers(b.Issuer) && !groupManaged {
@@ -721,6 +785,12 @@ func (h *Handler) adminSetIssuerBinding(w http.ResponseWriter, r *http.Request) 
 			writeForbidden(w, scope.refusal("adding an identity provider for store group '"+b.StoreGroup+"' needs can_manage_issuers on that group, or platform scope"))
 			return
 		}
+		// the daemon will fetch this row's keys: only from the hosts the
+		// platform operator allows (GROUP_ISSUER_HOSTS), never any address
+		if p := issuers.GroupIssuerHostProblem(h.mergeOptions(), b.Issuer, b.JWKSURL); p != "" {
+			writeBadRequest(w, "group issuer refused: "+p)
+			return
+		}
 	}
 	rev, err := a.SetIssuerBinding(r.Context(), b, actorLabel(r))
 	if err != nil {
@@ -740,9 +810,13 @@ func (h *Handler) adminDeleteIssuerBinding(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	iss := strings.TrimSpace(r.URL.Query().Get("issuer"))
+	iss := h.resolveIssuer(r.Context(), a, r.URL.Query().Get("issuer"))
 	if iss == "" {
-		writeBadRequest(w, "issuer query parameter is required")
+		if strings.TrimSpace(r.URL.Query().Get("issuer")) == "" {
+			writeBadRequest(w, "issuer query parameter is required")
+		} else {
+			writeError(w, http.StatusNotFound, "no binding for issuer "+strings.TrimSpace(r.URL.Query().Get("issuer")))
+		}
 		return
 	}
 	if !scope.covers(iss) {

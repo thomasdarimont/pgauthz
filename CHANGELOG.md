@@ -118,6 +118,22 @@ pre-1.0, minor versions may include breaking changes.
   provider (and for the Issuers form's Discover) for providers whose
   `openid-configuration` is not at the well-known location; a document
   naming another issuer is flagged in the form and refused at sign-in.
+- **Outbound host allow-lists (SSRF).** A group issuer's row names the
+  `jwks_url` pgauthzd fetches keys from, and the console's Discover and
+  registered sign-in providers fetch URLs an issuer admin typed. Both are
+  now allow-listed by host: `GROUP_ISSUER_HOSTS` on pgauthzd (empty = no
+  group issuer admitted; refused on the admin API, ignored at reload) and
+  `CONSOLE_OUTBOUND_HOSTS` on the console (the platform's issuer and the
+  fleet's environment issuers always allowed; redirects never followed).
+  Helm `issuers.groupHosts` / `console.outboundHosts`; the demo stack
+  allows `*.acme.test`.
+- **Issuer aliases** (migration 0031). A binding row — or a `JWT_ISSUERS`
+  entry — carries a short `alias` (`[a-z0-9_-]`, unique) that stands for
+  the issuer URL wherever an issuer is referenced: the admin API's
+  `?issuer=` and a PUT's `issuer`, `pgauthzctl issuers delete tenant-a`,
+  the console's `?login=` and `CONSOLE_AUTO_LOGIN`; `authz.resolve_issuer`
+  in SQL, the engine's audit readers and delete take both. Shown as a badge
+  in the Issuers tab, edited in its form, exported with the rows.
 - **Console at scale (ADR 0017).** Group pickers are typed over a datalist
   (a select of a tenant per group does not scale): the store's group on
   creation, moving a store, sharing models, the issuer's group, and the

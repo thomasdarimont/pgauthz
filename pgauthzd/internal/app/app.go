@@ -164,7 +164,7 @@ func Run(name, version string) error {
 		if pgb == nil {
 			return fmt.Errorf("ISSUERS_SOURCE=env+db needs the direct PostgreSQL backend (DATABASE_URL)")
 		}
-		startIssuerReloader(ctx, pgb, cfg.Issuers, issuerSet, time.Duration(cfg.IssuersPollInterval)*time.Second)
+		startIssuerReloader(ctx, pgb, cfg.Issuers, cfg.MergeOptions(), issuerSet, time.Duration(cfg.IssuersPollInterval)*time.Second)
 	}
 	jwtMW := api.NewJWTMiddleware(api.JWTConfig{
 		Issuers:            api.IssuerConfigsFrom(cfg.Issuers),

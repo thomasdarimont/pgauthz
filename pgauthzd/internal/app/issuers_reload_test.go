@@ -33,7 +33,7 @@ func TestIssuerReloader(t *testing.T) {
 	db := &fakeBindings{rev: 3, rows: []issuers.Binding{{Issuer: "https://corp", Stores: []string{"tenant-.*"}, Enabled: true}}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	r := startIssuerReloader(ctx, db, env, set, time.Hour)
+	r := startIssuerReloader(ctx, db, env, issuers.MergeOptions{}, set, time.Hour)
 	if set.Revision() != 3 || strings.Join(set.Configs()[0].Stores, ",") != "tenant-.*" || set.Configs()[0].BindingSource != "db" {
 		t.Fatalf("startup merge not applied: rev %d %+v", set.Revision(), set.Configs()[0])
 	}

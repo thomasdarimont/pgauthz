@@ -88,8 +88,12 @@ func (s *dbIssuerStore) set(ctx context.Context, b issuerBinding, by string) (in
 		desc = b.Description
 	}
 	var rev int64
-	err := s.exec().QueryRow(ctx, `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8)`,
-		b.Issuer, b.Stores, b.DBRoles, string(cdr), string(pep), b.Enabled, desc, by).Scan(&rev)
+	var alias any
+	if b.Alias != "" {
+		alias = b.Alias
+	}
+	err := s.exec().QueryRow(ctx, `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, p_alias => $9)`,
+		b.Issuer, b.Stores, b.DBRoles, string(cdr), string(pep), b.Enabled, desc, by, alias).Scan(&rev)
 	return rev, err
 }
 
@@ -152,6 +156,7 @@ func (s *apiIssuerStore) close(context.Context) {}
 // fields the admin API and the console use).
 type issuerBinding struct {
 	Issuer        string              `json:"issuer"`
+	Alias         string              `json:"alias,omitempty"` // a short handle for the issuer (0031)
 	Stores        []string            `json:"stores"`
 	DBRoles       []string            `json:"db_roles"`
 	ClientDBRoles map[string]string   `json:"client_db_roles"`
@@ -167,7 +172,7 @@ type issuerBinding struct {
 func readIssuerBindings(ctx context.Context, conn *pgx.Conn) ([]issuerBinding, error) {
 	rows, err := conn.Query(ctx, `
 		SELECT issuer, stores, db_roles, client_db_roles, pep_clients, enabled, coalesce(description, ''),
-		       created_at, coalesce(created_by, ''), updated_at, coalesce(updated_by, '')
+		       created_at, coalesce(created_by, ''), updated_at, coalesce(updated_by, ''), coalesce(alias, '')
 		  FROM authz.list_issuer_bindings()`)
 	if err != nil {
 		return nil, err
@@ -177,7 +182,7 @@ func readIssuerBindings(ctx context.Context, conn *pgx.Conn) ([]issuerBinding, e
 	for rows.Next() {
 		var b issuerBinding
 		if err := rows.Scan(&b.Issuer, &b.Stores, &b.DBRoles, &b.ClientDBRoles, &b.PEPClients, &b.Enabled, &b.Description,
-			&b.CreatedAt, &b.CreatedBy, &b.UpdatedAt, &b.UpdatedBy); err != nil {
+			&b.CreatedAt, &b.CreatedBy, &b.UpdatedAt, &b.UpdatedBy, &b.Alias); err != nil {
 			return nil, err
 		}
 		out = append(out, normalizeBinding(b))
@@ -238,8 +243,12 @@ func cmdIssuersList(args []string) error {
 		if len(b.Stores) > 0 {
 			stores = strings.Join(b.Stores, ",")
 		}
+		name := b.Issuer
+		if b.Alias != "" {
+			name = b.Alias + " = " + b.Issuer
+		}
 		fmt.Printf("  %-50s %-9s stores=%s db_roles=%s clients=%d pep_clients=%d  (updated %s by %s)\n",
-			b.Issuer, state, stores, orDash(strings.Join(b.DBRoles, ",")), len(b.ClientDBRoles), len(b.PEPClients),
+			name, state, stores, orDash(strings.Join(b.DBRoles, ",")), len(b.ClientDBRoles), len(b.PEPClients),
 			fmtTime(b.UpdatedAt), b.UpdatedBy)
 		if b.Description != "" {
 			fmt.Printf("  %-50s %s\n", "", b.Description)
@@ -434,7 +443,7 @@ func cmdIssuersDelete(args []string) error {
 	by := fs.String("performed-by", "pgauthzctl", "recorded as the actor in the audit trail (--dsn only)")
 	pos := parseAll(fs, args)
 	if len(pos) != 1 {
-		return fmt.Errorf("usage: pgauthzctl issuers delete <issuer> [--server … | --dsn …] [--performed-by <who>]")
+		return fmt.Errorf("usage: pgauthzctl issuers delete <issuer-url-or-alias> [--server … | --dsn …] [--performed-by <who>]")
 	}
 	ctx := context.Background()
 	st, err := openIssuerStore(ctx, sf, *dsn)

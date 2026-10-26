@@ -34,13 +34,14 @@ type notifier interface {
 type issuerReloader struct {
 	db   bindingReader
 	env  []issuers.Issuer
+	opts issuers.MergeOptions // the host restriction for group issuers (GROUP_ISSUER_HOSTS)
 	set  *api.Issuers
 	mu   sync.Mutex
 	last int64
 }
 
-func startIssuerReloader(ctx context.Context, db bindingReader, env []issuers.Issuer, set *api.Issuers, poll time.Duration) *issuerReloader {
-	r := &issuerReloader{db: db, env: env, set: set}
+func startIssuerReloader(ctx context.Context, db bindingReader, env []issuers.Issuer, opts issuers.MergeOptions, set *api.Issuers, poll time.Duration) *issuerReloader {
+	r := &issuerReloader{db: db, env: env, opts: opts, set: set}
 	// The first merge before the listeners open, so the first request already
 	// sees the database's bindings; a failure here is logged, not fatal — the
 	// environment's set serves until the database answers.
@@ -86,7 +87,7 @@ func (r *issuerReloader) reload(ctx context.Context, why string) {
 		slog.Warn("issuer bindings: reading the bindings failed; the set in force stays", "why", why, "err", err)
 		return
 	}
-	merged, problems := issuers.Merge(r.env, rows)
+	merged, problems := issuers.MergeWith(r.env, rows, r.opts)
 	for _, p := range problems {
 		metrics.IssuersReloads.WithLabelValues("rejected").Inc()
 		slog.Warn("issuer bindings: "+p, "revision", rev)

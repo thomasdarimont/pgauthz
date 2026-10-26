@@ -258,6 +258,14 @@ stores where nothing is shared (and always per tenant).
   provider off the page (its tokens would never match). Registrations and
   secrets live in the console's own database (`console_providers`), like
   the sessions.
+- **Outbound hosts.** Discover and a registered sign-in provider make the
+  console fetch URLs an issuer admin typed. The host must be the platform
+  issuer's, one of the fleet's environment-anchored issuers', or match
+  `CONSOLE_OUTBOUND_HOSTS` (`*.idp.example, login.microsoftonline.com`);
+  anything else is refused with a message naming the setting, and
+  redirects are never followed — an issuer admin cannot turn the console
+  into a request proxy into the network. pgauthzd has the same list for
+  the keys it fetches: `GROUP_ISSUER_HOSTS`.
 - **Auto-login.** An internal deployment with one provider needs no
   sign-in page: `CONSOLE_AUTO_LOGIN=true` sends a signed-out visitor
   straight to the platform's provider (an issuer URL names a registered
@@ -265,7 +273,9 @@ stores where nothing is shared (and always per tenant).
   here automatically* — one provider at most, the platform's wins). The
   chooser stays reachable: after a sign-out (once), at
   `<console>/?login=select`, and `?login=<issuer>` deep-links into one
-  provider — a tenant's bookmark.
+  provider — a tenant's bookmark. An issuer's **alias** (Platform →
+  Issuers, the binding row's short name) stands for the URL in both:
+  `?login=tenant-a`, `CONSOLE_AUTO_LOGIN=tenant-a`.
 - **Sessions live as long as the access token.** Memberships come from the
   token, so the BFF renews it with the refresh token shortly before expiry
   and ends the session (401, sign in again) when it cannot. The cookie's 8

@@ -150,6 +150,7 @@ func writeUpstreamError(w http.ResponseWriter, err error) bool {
 
 type issuerBinding struct {
 	Issuer        string              `json:"issuer"`
+	Alias         string              `json:"alias,omitempty"` // a short handle for the issuer (migration 0031)
 	Stores        []string            `json:"stores"`
 	DBRoles       []string            `json:"db_roles"`
 	ClientDBRoles map[string]string   `json:"client_db_roles"`
@@ -340,6 +341,10 @@ func (s *Server) handleIssuerDiscover(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "the discovery URL must be an https:// URL")
 		return
 	}
+	if err := s.outboundAllowed(r.Context(), disc); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, disc, nil)
@@ -348,7 +353,11 @@ func (s *Server) handleIssuerDiscover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Header.Set("Accept", "application/json")
-	resp, err := s.http.Do(req)
+	hc := s.outbound
+	if hc == nil {
+		hc = noRedirects(s.http)
+	}
+	resp, err := hc.Do(req)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "discovery failed: "+err.Error())
 		return
@@ -482,7 +491,7 @@ func (s *Server) issuerBindings(ctx context.Context) ([]issuerBinding, error) {
 	rows, err := s.engine.Query(ctx, `
 		SELECT issuer, stores, db_roles, client_db_roles, pep_clients, enabled, coalesce(description, ''),
 		       created_at, coalesce(created_by, ''), updated_at, coalesce(updated_by, ''),
-		       coalesce(store_group, ''), coalesce(jwks_url, ''), coalesce(audience, ''), audiences, admin
+		       coalesce(store_group, ''), coalesce(jwks_url, ''), coalesce(audience, ''), audiences, admin, coalesce(alias, '')
 		  FROM authz.list_issuer_bindings()`)
 	if err != nil {
 		return nil, err
@@ -493,7 +502,7 @@ func (s *Server) issuerBindings(ctx context.Context) ([]issuerBinding, error) {
 		var b issuerBinding
 		var admin []byte
 		if err := rows.Scan(&b.Issuer, &b.Stores, &b.DBRoles, &b.ClientDBRoles, &b.PEPClients, &b.Enabled, &b.Description,
-			&b.CreatedAt, &b.CreatedBy, &b.UpdatedAt, &b.UpdatedBy, &b.StoreGroup, &b.JWKSURL, &b.Audience, &b.Audiences, &admin); err != nil {
+			&b.CreatedAt, &b.CreatedBy, &b.UpdatedAt, &b.UpdatedBy, &b.StoreGroup, &b.JWKSURL, &b.Audience, &b.Audiences, &admin, &b.Alias); err != nil {
 			return nil, err
 		}
 		if len(admin) > 0 && string(admin) != "[]" {
@@ -639,9 +648,9 @@ func (s *Server) handleIssuerSave(w http.ResponseWriter, r *http.Request) {
 			admin = string(b.Admin)
 		}
 		err = s.asPerson(r.Context(), p, "can_manage_issuers", objType, objID, payload, func(tx pgx.Tx) error {
-			return tx.QueryRow(r.Context(), `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)`,
+			return tx.QueryRow(r.Context(), `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14)`,
 				b.Issuer, orList(b.Stores), orList(b.DBRoles), string(cdr), string(pep), b.Enabled, nullable(b.Description), p.typ+":"+p.id,
-				nullable(b.StoreGroup), nullable(b.JWKSURL), nullable(b.Audience), orList(b.Audiences), admin).Scan(&revision)
+				nullable(b.StoreGroup), nullable(b.JWKSURL), nullable(b.Audience), orList(b.Audiences), admin, nullable(strings.ToLower(strings.TrimSpace(b.Alias)))).Scan(&revision)
 		})
 	}
 	if err != nil {

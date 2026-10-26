@@ -21,14 +21,14 @@ DECLARE
 BEGIN
     IF TG_OP = 'DELETE' THEN
         INSERT INTO authz.issuer_bindings_audit (action, performed_by, issuer, stores, db_roles, client_db_roles, pep_clients, enabled, description,
-                                                 store_group, jwks_url, audience, audiences, admin)
+                                                 store_group, jwks_url, audience, audiences, admin, alias)
         VALUES ('DELETE', v_by, OLD.issuer, OLD.stores, OLD.db_roles, OLD.client_db_roles, OLD.pep_clients, OLD.enabled, OLD.description,
-                OLD.store_group, OLD.jwks_url, OLD.audience, OLD.audiences, OLD.admin);
+                OLD.store_group, OLD.jwks_url, OLD.audience, OLD.audiences, OLD.admin, OLD.alias);
     ELSE
         INSERT INTO authz.issuer_bindings_audit (action, performed_by, issuer, stores, db_roles, client_db_roles, pep_clients, enabled, description,
-                                                 store_group, jwks_url, audience, audiences, admin)
+                                                 store_group, jwks_url, audience, audiences, admin, alias)
         VALUES (TG_OP, v_by, NEW.issuer, NEW.stores, NEW.db_roles, NEW.client_db_roles, NEW.pep_clients, NEW.enabled, NEW.description,
-                NEW.store_group, NEW.jwks_url, NEW.audience, NEW.audiences, NEW.admin);
+                NEW.store_group, NEW.jwks_url, NEW.audience, NEW.audiences, NEW.admin, NEW.alias);
     END IF;
     UPDATE authz.issuer_bindings_revision SET revision = revision + 1, changed_at = now() RETURNING revision INTO v_rev;
     PERFORM pg_notify('authz_issuer_bindings', v_rev::text);
@@ -153,6 +153,9 @@ $$;
 -- The signature grew in 0029 (group issuers): the old overload is dropped so
 -- a positional call cannot be ambiguous between the two.
 DROP FUNCTION IF EXISTS authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text);
+-- The 13-parameter signature (before the alias, migration 0031) is dropped so
+-- a reload never leaves two overloads behind.
+DROP FUNCTION IF EXISTS authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text, text, text, text, text[], jsonb);
 CREATE OR REPLACE FUNCTION authz.set_issuer_binding(
     p_issuer          text,
     p_stores          text[]  DEFAULT '{}',
@@ -166,14 +169,30 @@ CREATE OR REPLACE FUNCTION authz.set_issuer_binding(
     p_jwks_url        text    DEFAULT NULL,      -- a group issuer's own trust anchor
     p_audience        text    DEFAULT NULL,
     p_audiences       text[]  DEFAULT '{}',
-    p_admin           jsonb   DEFAULT '[]'::jsonb -- delegated admin rules only
+    p_admin           jsonb   DEFAULT '[]'::jsonb, -- delegated admin rules only
+    p_alias           text    DEFAULT NULL       -- a short handle for the issuer (0031): [a-z0-9_-], unique
 ) RETURNS bigint
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_rev bigint;
+    v_rev   bigint;
+    v_alias text := NULLIF(lower(btrim(COALESCE(p_alias, ''))), '');
+    v_other text;
 BEGIN
     IF p_issuer IS NULL OR btrim(p_issuer) = '' THEN
         RAISE EXCEPTION 'issuer is required (the token''s iss)' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    IF v_alias IS NOT NULL THEN
+        IF v_alias !~ '^[a-z0-9][a-z0-9_-]{0,63}$' THEN
+            RAISE EXCEPTION 'alias %: letters, digits, _ and - only (max 64), starting with a letter or digit', v_alias
+                USING ERRCODE = 'invalid_parameter_value';
+        END IF;
+        IF v_alias ~ '^https?' THEN
+            RAISE EXCEPTION 'alias % looks like a URL: an alias is a short name', v_alias USING ERRCODE = 'invalid_parameter_value';
+        END IF;
+        SELECT b.issuer INTO v_other FROM authz.issuer_bindings b WHERE b.alias = v_alias AND b.issuer <> btrim(p_issuer);
+        IF FOUND THEN
+            RAISE EXCEPTION 'alias % already names issuer %', v_alias, v_other USING ERRCODE = 'invalid_parameter_value';
+        END IF;
     END IF;
     PERFORM authz._validate_issuer_binding(COALESCE(p_stores, '{}'), COALESCE(p_db_roles, '{}'),
                                            COALESCE(p_client_db_roles, '{}'::jsonb), COALESCE(p_pep_clients, '{}'::jsonb),
@@ -182,19 +201,19 @@ BEGIN
     PERFORM set_config('authz.performed_by', COALESCE(p_performed_by, ''), true);
     -- created_at / created_by are set once (the INSERT) and kept by a replace.
     INSERT INTO authz.issuer_bindings (issuer, stores, db_roles, client_db_roles, pep_clients, enabled, description,
-                                       store_group, jwks_url, audience, audiences, admin,
+                                       store_group, jwks_url, audience, audiences, admin, alias,
                                        created_at, created_by, updated_at, updated_by)
     VALUES (btrim(p_issuer), COALESCE(p_stores, '{}'), COALESCE(p_db_roles, '{}'), COALESCE(p_client_db_roles, '{}'::jsonb),
             COALESCE(p_pep_clients, '{}'::jsonb), COALESCE(p_enabled, true), p_description,
             NULLIF(btrim(COALESCE(p_store_group, '')), ''), NULLIF(btrim(COALESCE(p_jwks_url, '')), ''),
-            NULLIF(btrim(COALESCE(p_audience, '')), ''), COALESCE(p_audiences, '{}'), COALESCE(p_admin, '[]'::jsonb),
+            NULLIF(btrim(COALESCE(p_audience, '')), ''), COALESCE(p_audiences, '{}'), COALESCE(p_admin, '[]'::jsonb), v_alias,
             now(), COALESCE(NULLIF(p_performed_by, ''), current_user),
             now(), COALESCE(NULLIF(p_performed_by, ''), current_user))
     ON CONFLICT (issuer) DO UPDATE SET
         stores = EXCLUDED.stores, db_roles = EXCLUDED.db_roles, client_db_roles = EXCLUDED.client_db_roles,
         pep_clients = EXCLUDED.pep_clients, enabled = EXCLUDED.enabled, description = EXCLUDED.description,
         store_group = EXCLUDED.store_group, jwks_url = EXCLUDED.jwks_url, audience = EXCLUDED.audience,
-        audiences = EXCLUDED.audiences, admin = EXCLUDED.admin,
+        audiences = EXCLUDED.audiences, admin = EXCLUDED.admin, alias = EXCLUDED.alias,
         updated_at = now(), updated_by = EXCLUDED.updated_by;
     SELECT revision INTO v_rev FROM authz.issuer_bindings_revision;
     RETURN v_rev;
@@ -203,7 +222,8 @@ $$;
 
 ------------------------------------------------------------------------
 -- delete_issuer_binding: drop the row — the issuer falls back to its
--- environment bindings. Returns true when a row existed.
+-- environment bindings. Returns true when a row existed. p_issuer is the
+-- URL or the row's alias (resolve_issuer).
 ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION authz.delete_issuer_binding(
     p_issuer       text,
@@ -214,7 +234,7 @@ DECLARE
     v_n integer;
 BEGIN
     PERFORM set_config('authz.performed_by', COALESCE(p_performed_by, ''), true);
-    DELETE FROM authz.issuer_bindings WHERE issuer = btrim(p_issuer);
+    DELETE FROM authz.issuer_bindings WHERE issuer = COALESCE(authz.resolve_issuer(p_issuer), btrim(p_issuer));
     GET DIAGNOSTICS v_n = ROW_COUNT;
     RETURN v_n > 0;
 END;

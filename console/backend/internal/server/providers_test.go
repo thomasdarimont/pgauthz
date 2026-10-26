@@ -17,7 +17,8 @@ import (
 func TestSigninProviders(t *testing.T) {
 	s, pool, ctx := testServer(t)
 	_ = pool
-	_ = httpSession(t, s, "prov_schema") // creates the console's own tables
+	s.cfg.OutboundHosts = []string{"127.0.0.1", "dead.example"} // the test providers' hosts (CONSOLE_OUTBOUND_HOSTS)
+	_ = httpSession(t, s, "prov_schema")                        // creates the console's own tables
 	cleanup := func() {
 		_, _ = s.db.Exec(context.Background(), `DELETE FROM console_providers WHERE issuer LIKE 'http://127.0.0.1%' OR issuer = 'https://dead.example'`)
 	}
@@ -82,6 +83,7 @@ func TestSigninProviders(t *testing.T) {
 // another issuer takes the provider off the page.
 func TestSigninAutoLoginAndDiscoveryURL(t *testing.T) {
 	s, _, ctx := testServer(t)
+	s.cfg.OutboundHosts = []string{"127.0.0.1"}
 	_ = httpSession(t, s, "prov_schema2")
 	cleanup := func() {
 		_, _ = s.db.Exec(context.Background(), `DELETE FROM console_providers WHERE issuer LIKE 'http://127.0.0.1%'`)

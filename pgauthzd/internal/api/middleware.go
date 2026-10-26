@@ -189,6 +189,7 @@ func (c IssuerConfig) AcceptedAudiences() []string {
 // and Keycloak for the playground); the token's "iss" claim selects the validator.
 type IssuerConfig struct {
 	Issuer       string
+	Alias        string   // a short handle for the issuer (issuers.Issuer.Alias)
 	Audience     string   // optional; if set, the token's "aud" must contain it (or one of Audiences)
 	Audiences    []string // further accepted audiences (any of)
 	StoreGroup   string   // ADR 0017: a group issuer's group

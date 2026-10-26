@@ -25,7 +25,7 @@ func (b *Backend) IssuerBindings(ctx context.Context) ([]issuers.Binding, error)
 	rows, err := b.readPool(ctx).Query(ctx, `
 		SELECT issuer, stores, db_roles, client_db_roles, pep_clients, enabled, coalesce(description, ''),
 		       created_at, coalesce(created_by, ''), updated_at, coalesce(updated_by, ''),
-		       coalesce(store_group, ''), coalesce(jwks_url, ''), coalesce(audience, ''), audiences, admin
+		       coalesce(store_group, ''), coalesce(jwks_url, ''), coalesce(audience, ''), audiences, admin, coalesce(alias, '')
 		  FROM authz.list_issuer_bindings()`)
 	if err != nil {
 		return nil, err
@@ -36,7 +36,7 @@ func (b *Backend) IssuerBindings(ctx context.Context) ([]issuers.Binding, error)
 		var r issuers.Binding
 		var admin []byte
 		if err := rows.Scan(&r.Issuer, &r.Stores, &r.DBRoles, &r.ClientDBRoles, &r.PEPClients, &r.Enabled, &r.Description, &r.CreatedAt, &r.CreatedBy, &r.UpdatedAt, &r.UpdatedBy,
-			&r.StoreGroup, &r.JWKSURL, &r.Audience, &r.Audiences, &admin); err != nil {
+			&r.StoreGroup, &r.JWKSURL, &r.Audience, &r.Audiences, &admin, &r.Alias); err != nil {
 			return nil, err
 		}
 		if len(admin) > 0 {
@@ -136,9 +136,9 @@ func (b *Backend) SetIssuerBinding(ctx context.Context, bnd issuers.Binding, per
 		admin = []byte("[]")
 	}
 	var rev int64
-	err := b.pool.QueryRow(ctx, `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)`,
+	err := b.pool.QueryRow(ctx, `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14)`,
 		bnd.Issuer, orSlice(bnd.Stores), orSlice(bnd.DBRoles), string(cdr), string(pep), bnd.Enabled, nullable(bnd.Description), nullable(performedBy),
-		nullable(bnd.StoreGroup), nullable(bnd.JWKSURL), nullable(bnd.Audience), orSlice(bnd.Audiences), string(admin)).Scan(&rev)
+		nullable(bnd.StoreGroup), nullable(bnd.JWKSURL), nullable(bnd.Audience), orSlice(bnd.Audiences), string(admin), nullable(bnd.Alias)).Scan(&rev)
 	return rev, bindingError(err)
 }
 

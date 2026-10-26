@@ -51,6 +51,8 @@ services:
       CLIENT_SECRET: ${CONSOLE_BFF_CLIENT_SECRET:-console-bff-demo-secret}
       ISSUER: https://id.pgauthz.test/realms/pgauthz
       PROVIDER_LABEL: Keycloak
+      # The demo's tenant IdP may be discovered from the Issuers form
+      CONSOLE_OUTBOUND_HOSTS: "${CONSOLE_OUTBOUND_HOSTS:-*.acme.test}"
       TLS_CA_FILE: /etc/pgauthz/rootCA.pem
       REDIRECT_URI: https://app.pgauthz.test/console/auth/callback
       BASE_URL: https://app.pgauthz.test

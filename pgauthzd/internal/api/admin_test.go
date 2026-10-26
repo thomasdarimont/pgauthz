@@ -98,7 +98,7 @@ func adminFixture(t *testing.T) (*Handler, *adminStub) {
 		// run fixtures, and only against a_docs (a CI credential)
 		{Issuer: "https://tenant-a", Audience: "api", JWKSURL: "https://tenant-a/jwks", Stores: []string{"a_.*"},
 			Admin: issuers.AdminRules{{Clients: []string{"terraform-a"}}, {Clients: []string{"ci-a"}, Capabilities: []string{issuers.AdminCapTest}, Stores: []string{"a_docs"}}}},
-		{Issuer: "https://tenant-b", Audience: "api", JWKSURL: "https://tenant-b/jwks", Stores: []string{"b_.*"}},
+		{Issuer: "https://tenant-b", Alias: "tenant-b", Audience: "api", JWKSURL: "https://tenant-b/jwks", Stores: []string{"b_.*"}},
 		// delegated: the console store decides — the ci-c client as
 		// service_account:ci-c, everyone else as user:<preferred_username>
 		{Issuer: "https://tenant-c", Audience: "api", JWKSURL: "https://tenant-c/jwks", Stores: []string{"c_.*"},
@@ -106,9 +106,10 @@ func adminFixture(t *testing.T) (*Handler, *adminStub) {
 				{Clients: []string{"ci-c"}, Decide: &issuers.AdminDecision{Store: "console", SubjectType: "service_account", SubjectClaim: "azp"}},
 				{Decide: &issuers.AdminDecision{Store: "console"}}}},
 	}
-	cfg := &config.Config{Profile: config.ProfileFull, Issuers: env, IssuersSource: "env+db", AdminAPIEnabled: true, AdminRole: "pgauthz_admin"}
+	cfg := &config.Config{Profile: config.ProfileFull, Issuers: env, IssuersSource: "env+db", AdminAPIEnabled: true, AdminRole: "pgauthz_admin",
+		GroupIssuerHosts: []string{"new-idp", "carol-idp", "other-idp"}} // the tenant IdP hosts the platform admits (GROUP_ISSUER_HOSTS)
 	stub := &adminStub{rows: map[string]issuers.Binding{
-		"https://tenant-a": {Issuer: "https://tenant-a", Stores: []string{"a_docs"}, Enabled: true},
+		"https://tenant-a": {Issuer: "https://tenant-a", Alias: "tenant-a", Stores: []string{"a_docs"}, Enabled: true},
 		"https://tenant-b": {Issuer: "https://tenant-b", Stores: []string{"b_docs"}, Enabled: true},
 	}}
 	h := NewHandler(nil, nil, stub, cfg, WithIssuers(NewIssuers(IssuerConfigsFrom(env))))
@@ -541,10 +542,57 @@ func TestAdminGroupIssuers(t *testing.T) {
 		t.Fatalf("group admin deletes another's row: %d %s", w.Code, w.Body.String())
 	}
 	// an anchor-less unknown issuer, and a group row without an audience
+	// a host outside GROUP_ISSUER_HOSTS: the daemon would fetch keys from it (SSRF) — refused, even for the platform admin
+	if w := serveAdmin(h, platformAdmin.request("PUT", "/pgauthz/v1/admin/issuer-bindings", strings.Replace(group, "https://new-idp/jwks", "https://10.0.0.5/jwks", 1))); w.Code != 400 || !strings.Contains(w.Body.String(), "not in GROUP_ISSUER_HOSTS") {
+		t.Fatalf("jwks host outside the allow-list: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, platformAdmin.request("PUT", "/pgauthz/v1/admin/issuer-bindings", strings.Replace(group, "https://new-idp", "https://metadata.internal", 2))); w.Code != 400 || !strings.Contains(w.Body.String(), "not in GROUP_ISSUER_HOSTS") {
+		t.Fatalf("issuer host outside the allow-list: %d %s", w.Code, w.Body.String())
+	}
 	if w := serveAdmin(h, platformAdmin.request("PUT", "/pgauthz/v1/admin/issuer-bindings", `{"issuer":"https://x","store_group":"tenant_c","enabled":true}`)); w.Code != 400 {
 		t.Fatalf("group row without anchor for an unknown issuer: %d %s", w.Code, w.Body.String())
 	}
 	if w := serveAdmin(h, platformAdmin.request("PUT", "/pgauthz/v1/admin/issuer-bindings", `{"issuer":"https://tenant-a","stores":["a_docs"],"enabled":true,"admin":[{"clients":["tf"]}]}`)); w.Code != 400 || !strings.Contains(w.Body.String(), "delegate only") {
 		t.Fatalf("static admin rules on a row: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// Aliases on the admin API: an issuer is referenced by its URL or its alias
+// — the environment's (tenant-b) or a row's (tenant-a) — on the binding
+// read, the audit filter and the delete; a PUT may name an existing issuer
+// by alias and sets the alias; a taken alias is refused.
+func TestAdminIssuerAlias(t *testing.T) {
+	h, stub := adminFixture(t)
+	w := do(h, h.adminIssuerBindings, platformAdmin.request("GET", "/pgauthz/v1/admin/issuer-bindings?issuer=TENANT-A", ""))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"issuer":"https://tenant-a"`) {
+		t.Fatalf("row alias: %d %s", w.Code, w.Body.String())
+	}
+	w = do(h, h.adminIssuerBindings, platformAdmin.request("GET", "/pgauthz/v1/admin/issuer-bindings?issuer=tenant-b", ""))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"issuer":"https://tenant-b"`) {
+		t.Fatalf("env alias: %d %s", w.Code, w.Body.String())
+	}
+	w = do(h, h.adminIssuerBindingsAudit, platformAdmin.request("GET", "/pgauthz/v1/admin/issuer-bindings/audit?issuer=tenant-b", ""))
+	if w.Code != 200 || strings.Contains(w.Body.String(), "https://tenant-a") {
+		t.Fatalf("audit by alias: %d %s", w.Code, w.Body.String())
+	}
+	// PUT by alias, setting a new alias; then the alias is taken
+	w = do(h, h.adminSetIssuerBinding, platformAdmin.request("PUT", "/pgauthz/v1/admin/issuer-bindings", `{"issuer":"tenant-b","alias":"B-Corp","stores":["b_docs"],"enabled":true}`))
+	if w.Code != 200 || stub.rows["https://tenant-b"].Alias != "b-corp" {
+		t.Fatalf("put by alias: %d %s %+v", w.Code, w.Body.String(), stub.rows["https://tenant-b"])
+	}
+	w = do(h, h.adminSetIssuerBinding, platformAdmin.request("PUT", "/pgauthz/v1/admin/issuer-bindings", `{"issuer":"https://tenant-a","alias":"b-corp","stores":["a_docs"],"enabled":true}`))
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "already names") {
+		t.Fatalf("taken alias: %d %s", w.Code, w.Body.String())
+	}
+	w = do(h, h.adminSetIssuerBinding, platformAdmin.request("PUT", "/pgauthz/v1/admin/issuer-bindings", `{"issuer":"no-such-alias","stores":["a_docs"],"enabled":true}`))
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "neither an issuer URL nor a known alias") {
+		t.Fatalf("unknown alias: %d %s", w.Code, w.Body.String())
+	}
+	w = do(h, h.adminDeleteIssuerBinding, platformAdmin.request("DELETE", "/pgauthz/v1/admin/issuer-bindings?issuer=b-corp", ""))
+	if w.Code != 200 {
+		t.Fatalf("delete by alias: %d %s", w.Code, w.Body.String())
+	}
+	if _, still := stub.rows["https://tenant-b"]; still {
+		t.Fatal("the row named by alias was not deleted")
 	}
 }

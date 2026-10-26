@@ -412,6 +412,13 @@ type Config struct {
 	IssuersSource       string
 	IssuersPollInterval int
 	IssuersRequiredRole string
+	// GroupIssuerHosts (GROUP_ISSUER_HOSTS): the identity-provider hosts a
+	// group issuer (a row-anchored issuer, ADR 0017) may name as its issuer
+	// and jwks_url — exact hosts or "*.suffix", comma-separated. The daemon
+	// fetches a group issuer's keys from its row, so without this list a
+	// binding writer could point it at any reachable address (SSRF). Empty
+	// = no group issuer is admitted; "*" = any host (refused in production).
+	GroupIssuerHosts []string
 
 	// The admin API (ADMIN_API_ENABLED, default false): the privileged
 	// management surface under /pgauthz/v1/admin/ (issuer bindings first;
@@ -484,6 +491,11 @@ type Config struct {
 // (letters/digits/_/-, ≤32), since hooks gate on it.
 var deploymentEnvRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,31}$`)
 
+// MergeOptions is what the issuer merge may admit on this instance.
+func (c *Config) MergeOptions() issuers.MergeOptions {
+	return issuers.MergeOptions{RestrictGroupIssuerHosts: true, GroupIssuerHosts: c.GroupIssuerHosts}
+}
+
 func Load() (*Config, error) {
 	envErrs = nil // fresh collection per Load (tests call it repeatedly)
 	c := &Config{
@@ -504,6 +516,7 @@ func Load() (*Config, error) {
 		RolesClaims:                   env("JWT_ROLES_CLAIM", "roles"),
 		SearchRequiredRole:            env("SEARCH_REQUIRED_ROLE", ""),
 		AllowUnboundMultiIssuer:       envBool("ALLOW_UNBOUND_MULTI_ISSUER", false),
+		GroupIssuerHosts:              envList("GROUP_ISSUER_HOSTS"),
 		WatchRequiredRole:             env("WATCH_REQUIRED_ROLE", ""),
 		ExplainRequiredRole:           env("EXPLAIN_REQUIRED_ROLE", ""),
 		WriterRole:                    env("WRITER_ROLE", "authz_writer"),
@@ -653,10 +666,23 @@ func Load() (*Config, error) {
 		}
 		c.Issuers = append(c.Issuers, extra...)
 	}
+	aliases := map[string]string{}
 	for i, iss := range c.Issuers {
 		if iss.JWKSURL == "" && iss.JWKSFile == "" {
 			return nil, fmt.Errorf("issuer %d (%q) has no jwks_url or jwks_file", i, iss.Issuer)
 		}
+		// an alias stands for the issuer wherever one is referenced: unique
+		a, err := issuers.ValidAlias(iss.Alias)
+		if err != nil {
+			return nil, fmt.Errorf("issuer %d (%q): %w", i, iss.Issuer, err)
+		}
+		if a != "" {
+			if other, taken := aliases[a]; taken {
+				return nil, fmt.Errorf("issuer %d (%q): alias %q already names %q", i, iss.Issuer, a, other)
+			}
+			aliases[a] = iss.Issuer
+		}
+		c.Issuers[i].Alias = a
 		if err := issuers.ValidateBindings(iss); err != nil {
 			return nil, fmt.Errorf("issuer %d (%q): %w", i, iss.Issuer, err)
 		}
@@ -706,6 +732,14 @@ func Load() (*Config, error) {
 	}
 	if c.IssuersPollInterval <= 0 {
 		return nil, fmt.Errorf("ISSUERS_POLL_INTERVAL %d: expected a positive number of seconds", c.IssuersPollInterval)
+	}
+	for _, h := range c.GroupIssuerHosts {
+		if h == "*" && c.IsProduction() {
+			return nil, fmt.Errorf("GROUP_ISSUER_HOSTS=* admits any host as a tenant's identity provider; name the hosts (DEPLOYMENT_ENVIRONMENT=%s)", c.DeploymentEnvironment)
+		}
+		if strings.ContainsAny(h, "/:") {
+			return nil, fmt.Errorf("GROUP_ISSUER_HOSTS: %q is not a host (no scheme, path or port; e.g. *.idp.example)", h)
+		}
 	}
 	if c.PublicHealthDisabled && c.MetricsListenAddr == "" {
 		return nil, fmt.Errorf("PUBLIC_HEALTH_ENABLED=false needs a management listener for the probes: set MANAGEMENT_LISTEN_ADDR")

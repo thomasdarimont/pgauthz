@@ -86,8 +86,8 @@ BEGIN
     PERFORM _test_assert('ib_17_role_tiers',
         has_function_privilege('authz_reader', 'authz.list_issuer_bindings()', 'EXECUTE')::text || ','
         || has_function_privilege('authz_reader', 'authz.issuer_bindings_revision()', 'EXECUTE')::text || ','
-        || has_function_privilege('authz_reader', 'authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text, text, text, text, text[], jsonb)', 'EXECUTE')::text || ','
-        || has_function_privilege('authz_admin', 'authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text, text, text, text, text[], jsonb)', 'EXECUTE')::text || ','
+        || has_function_privilege('authz_reader', 'authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text, text, text, text, text[], jsonb, text)', 'EXECUTE')::text || ','
+        || has_function_privilege('authz_admin', 'authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text, text, text, text, text[], jsonb, text)', 'EXECUTE')::text || ','
         || has_function_privilege('authz_auditor', 'authz.list_issuer_bindings_audit(text, int, bigint)', 'EXECUTE')::text,
         'true,true,false,true,true');
 
@@ -146,6 +146,31 @@ BEGIN
     PERFORM authz.delete_issuer_binding('https://test-group-issuer/a');
     PERFORM _test_assert('gi_13_group_deleted', authz.delete_store_group('gi_tenant')::text, 'true');
     PERFORM authz.delete_store('gi_store', p_purge_audit => true);
+END;
+$$;
+
+-- Aliases (migration 0031): a short handle stands for the issuer URL
+-- wherever an issuer is referenced.
+DO $$
+DECLARE v_err text; v_row record;
+BEGIN
+    PERFORM authz.set_issuer_binding('https://test-alias/a', ARRAY['docs'], p_alias => 'Tenant-A');
+    SELECT * INTO v_row FROM authz.list_issuer_bindings() WHERE issuer = 'https://test-alias/a';
+    PERFORM _test_assert('al_01_lowercased', v_row.alias, 'tenant-a');
+    PERFORM _test_assert('al_02_resolve_alias', authz.resolve_issuer('tenant-a'), 'https://test-alias/a');
+    PERFORM _test_assert('al_03_resolve_url', authz.resolve_issuer('https://test-alias/a'), 'https://test-alias/a');
+    PERFORM _test_assert('al_04_resolve_unknown', COALESCE(authz.resolve_issuer('nope'), 'NULL'), 'NULL');
+    PERFORM _test_assert('al_05_audit_by_alias', (SELECT count(*) FROM authz.list_issuer_bindings_audit('tenant-a'))::text, '1');
+    v_err := NULL; BEGIN PERFORM authz.set_issuer_binding('https://test-alias/b', ARRAY['docs'], p_alias => 'tenant-a'); EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert('al_06_unique', v_err, 'alias tenant-a already names issuer https://test-alias/a');
+    v_err := NULL; BEGIN PERFORM authz.set_issuer_binding('https://test-alias/b', ARRAY['docs'], p_alias => 'bad alias!'); EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
+    PERFORM _test_assert('al_07_format', (position('letters, digits' in v_err) > 0)::text, 'true');
+    -- a replace keeps or changes the alias; clearing it frees the name
+    PERFORM authz.set_issuer_binding('https://test-alias/a', ARRAY['docs']);
+    PERFORM _test_assert('al_08_cleared', COALESCE(authz.resolve_issuer('tenant-a'), 'NULL'), 'NULL');
+    PERFORM authz.set_issuer_binding('https://test-alias/a', ARRAY['docs'], p_alias => 'tenant_a');
+    PERFORM _test_assert('al_09_delete_by_alias', authz.delete_issuer_binding('tenant_a')::text, 'true');
+    PERFORM _test_assert('al_10_gone', (SELECT count(*) FROM authz.list_issuer_bindings() WHERE issuer = 'https://test-alias/a')::text, '0');
 END;
 $$;
 

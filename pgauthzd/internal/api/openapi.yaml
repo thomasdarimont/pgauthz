@@ -767,7 +767,7 @@ paths:
           in: query
           required: false
           schema: { type: string }
-          description: Return the binding of this issuer only.
+          description: Return the binding of this issuer only (its URL or its alias).
       responses:
         '200':
           description: The bindings (an object with `bindings` and the database `revision`), or the one binding with `issuer`.
@@ -842,6 +842,7 @@ paths:
           in: query
           required: true
           schema: { type: string }
+          description: The issuer's URL or its alias.
       responses:
         '200':
           description: The binding is deleted.
@@ -1097,7 +1098,7 @@ paths:
         pager. A tenant admin reads its own issuer's history only — the
         filter is set for it, another issuer is refused (403).
       parameters:
-        - { name: issuer, in: query, required: false, schema: { type: string }, description: One issuer's history (a tenant admin's own). }
+        - { name: issuer, in: query, required: false, schema: { type: string }, description: One issuer's history (a tenant admin's own); the URL or its alias. }
         - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 500, default: 25 } }
         - { name: before, in: query, required: false, schema: { type: integer, format: int64 }, description: The previous page's `next`. }
       responses:
@@ -3263,7 +3264,8 @@ components:
         here. Patterns are anchored regular expressions, as in JWT_ISSUERS.
       required: [issuer]
       properties:
-        issuer: { type: string, description: The token `iss` — must be trusted by JWT_ISSUERS. }
+        issuer: { type: string, description: "The token `iss` — must be trusted by JWT_ISSUERS. On a PUT, an existing issuer's alias is accepted in its place." }
+        alias: { type: string, description: "A short handle for the issuer ([a-z0-9][a-z0-9_-]{0,63}, unique): accepted wherever a route names an issuer (`?issuer=`), shown by pgauthzctl and the console." }
         stores: { type: array, items: { type: string }, description: "Store patterns (empty = unbound; allowed only when the environment leaves the issuer unbound)." }
         db_roles: { type: array, items: { type: string } }
         client_db_roles: { type: object, additionalProperties: { type: string } }

@@ -1253,5 +1253,8 @@
   "Discovery URL": "Discovery-URL",
   "Optional: where the provider's openid-configuration is, when not at <issuer>/.well-known/openid-configuration (a proxy, a provider that serves it elsewhere). Used by Discover and, with console sign-in, by the sign-in itself.": "Optional: wo die openid-configuration des Providers liegt, wenn nicht unter <issuer>/.well-known/openid-configuration (ein Proxy, ein Provider, der sie woanders ausliefert). Von Discover genutzt und, mit Konsolen-Anmeldung, von der Anmeldung selbst.",
   "The discovery document names the issuer {issuer}, not the one above. Tokens carry that iss — a binding for another issuer never matches them.": "Das Discovery-Dokument nennt den Issuer {issuer}, nicht den oben. Tokens tragen dieses iss — eine Bindung für einen anderen Issuer passt nie auf sie.",
-  "Use {issuer}": "{issuer} übernehmen"
+  "Use {issuer}": "{issuer} übernehmen",
+  "Alias": "Alias",
+  "A short name that stands for the issuer URL wherever an issuer is referenced: the admin API and pgauthzctl (issuers delete tenant-a), the console sign-in (?login=tenant-a, CONSOLE_AUTO_LOGIN). Letters, digits, _ and -; unique.": "Ein Kurzname, der überall für die Issuer-URL steht, wo ein Issuer referenziert wird: Admin-API und pgauthzctl (issuers delete tenant-a), die Konsolen-Anmeldung (?login=tenant-a, CONSOLE_AUTO_LOGIN). Buchstaben, Ziffern, _ und -; eindeutig.",
+  "alias: stands for the issuer URL in the admin API, pgauthzctl and sign-in links": "Alias: steht in Admin-API, pgauthzctl und Anmeldelinks für die Issuer-URL"
 }

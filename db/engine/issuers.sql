@@ -20,6 +20,22 @@ $$;
 -- `stores` are the group's member stores as they are now (plain names), so
 -- pgauthzd needs no second lookup; `store_group` says it is a group row.
 DROP FUNCTION IF EXISTS authz.list_issuer_bindings();
+-- resolve_issuer: an issuer reference — the full `iss` URL, or a binding
+-- row's alias (migration 0031, case-insensitive) — to the URL; NULL when an
+-- alias names nothing. Everything that takes an issuer accepts both.
+CREATE OR REPLACE FUNCTION authz.resolve_issuer(p_ref text)
+RETURNS text
+LANGUAGE sql STABLE AS $$
+    SELECT CASE
+        WHEN p_ref IS NULL OR btrim(p_ref) = '' THEN NULL
+        WHEN btrim(p_ref) ~ '^https?://' THEN btrim(p_ref)
+        ELSE (SELECT b.issuer FROM authz.issuer_bindings b WHERE b.alias = lower(btrim(p_ref)))
+    END;
+$$;
+
+-- the return shape gained `alias` (0031): drop the old one so a reload
+-- replaces it instead of failing on the changed record type
+DROP FUNCTION IF EXISTS authz.list_issuer_bindings();
 CREATE OR REPLACE FUNCTION authz.list_issuer_bindings()
 RETURNS TABLE (
     issuer          text,
@@ -37,14 +53,15 @@ RETURNS TABLE (
     jwks_url        text,
     audience        text,
     audiences       text[],
-    admin           jsonb
+    admin           jsonb,
+    alias           text
 )
 LANGUAGE sql STABLE AS $$
     SELECT b.issuer,
            CASE WHEN b.store_group IS NULL THEN b.stores
                 ELSE COALESCE((SELECT array_agg(s.name ORDER BY s.name) FROM authz.stores s JOIN authz.store_groups g ON g.id = s.group_id WHERE g.name = b.store_group), '{}') END,
            b.db_roles, b.client_db_roles, b.pep_clients, b.enabled, b.description, b.created_at, b.created_by, b.updated_at, b.updated_by,
-           b.store_group, b.jwks_url, b.audience, b.audiences, b.admin
+           b.store_group, b.jwks_url, b.audience, b.audiences, b.admin, b.alias
       FROM authz.issuer_bindings b
      ORDER BY b.issuer;
 $$;
@@ -72,7 +89,7 @@ RETURNS TABLE (
 LANGUAGE sql STABLE AS $$
     SELECT seq, action, performed_at, performed_by, issuer, stores, db_roles, client_db_roles, pep_clients, enabled, description
       FROM authz.issuer_bindings_audit
-     WHERE (p_issuer IS NULL OR issuer = p_issuer)
+     WHERE (p_issuer IS NULL OR issuer = COALESCE(authz.resolve_issuer(p_issuer), p_issuer))
        AND (p_before_seq IS NULL OR seq < p_before_seq)
      ORDER BY seq DESC
      LIMIT p_limit;
@@ -82,5 +99,5 @@ $$;
 CREATE OR REPLACE FUNCTION authz.count_issuer_bindings_audit(p_issuer text DEFAULT NULL)
 RETURNS bigint
 LANGUAGE sql STABLE AS $$
-    SELECT count(*) FROM authz.issuer_bindings_audit WHERE p_issuer IS NULL OR issuer = p_issuer;
+    SELECT count(*) FROM authz.issuer_bindings_audit WHERE p_issuer IS NULL OR issuer = COALESCE(authz.resolve_issuer(p_issuer), p_issuer);
 $$;

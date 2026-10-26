@@ -118,7 +118,7 @@ export class PgcApp extends PgcElement {
     const want = q.get('login');
     if (want === 'select') return;
     const issuer = want || this.login.auto_login;
-    const p = issuer && (this.login.providers ?? []).find((x) => x.issuer === issuer);
+    const p = issuer && (this.login.providers ?? []).find((x) => x.issuer === issuer || (x.alias && x.alias === issuer.toLowerCase()));
     if (!p) return;
     this.redirecting = p.label;
     api.login(location.pathname, p.issuer);

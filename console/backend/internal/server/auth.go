@@ -23,7 +23,13 @@ func pkce() (verifier, challenge string) {
 // one otherwise, ADR 0017 phase 4). The auth cookie carries the provider so
 // the callback exchanges the code at the same one.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	prov, err := s.providerFor(r.Context(), strings.TrimSpace(r.URL.Query().Get("issuer")))
+	ref := strings.TrimSpace(r.URL.Query().Get("issuer"))
+	if ref != "" && !strings.HasPrefix(ref, "https://") && !strings.HasPrefix(ref, "http://") {
+		if iss, ok := s.issuerAliases(r.Context())[strings.ToLower(ref)]; ok {
+			ref = iss // an alias names the provider
+		}
+	}
+	prov, err := s.providerFor(r.Context(), ref)
 	if err != nil {
 		// No OpenID Provider (the SPA offers the local sign-in instead), or
 		// a provider that is unknown or not reachable right now.

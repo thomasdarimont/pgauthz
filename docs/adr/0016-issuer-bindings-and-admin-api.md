@@ -190,3 +190,14 @@ scopes cap the store's grants, so a token says itself what it is for.
 - Replacing `JWT_ISSUERS` validation at startup: the environment's
   bindings are still validated and may still be made mandatory
   (`REQUIRE_STORE_BINDING`).
+
+## Addendum: issuer aliases (migration 0031)
+
+An issuer is referenced by its full `iss` URL on every surface, which is
+long to type and easy to get wrong. A binding row (or a `JWT_ISSUERS`
+entry) may carry a short, unique `alias` that every reference accepts in
+the URL's place — `?issuer=` on the admin API, `pgauthzctl issuers
+delete`, the console's sign-in links — resolved by `authz.resolve_issuer`
+or the daemon's effective set; the row's alias wins over the
+environment's, a collision is reported and the row's alias ignored.
+Tokens are still matched by `iss`: an alias never appears in a token.

@@ -37,14 +37,14 @@ func TestProviderName(t *testing.T) {
 // CONSOLE_AUTO_LOGIN is a switch or an https issuer, nothing else.
 func TestValidateAutoLogin(t *testing.T) {
 	base := Config{SubjectIDClaims: []string{"sub"}}
-	for _, ok := range []string{"", "true", "false", "TRUE", "https://id.acme.test/realms/demo"} {
+	for _, ok := range []string{"", "true", "false", "TRUE", "https://id.acme.test/realms/demo", "keycloak", "tenant-a"} {
 		c := base
 		c.AutoLogin = ok
 		if err := c.Validate(); err != nil {
 			t.Errorf("%q: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"yes", "http://id.acme.test", "keycloak"} {
+	for _, bad := range []string{"bad alias", "http://id.acme.test", "Keycloak!"} {
 		c := base
 		c.AutoLogin = bad
 		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "CONSOLE_AUTO_LOGIN") {

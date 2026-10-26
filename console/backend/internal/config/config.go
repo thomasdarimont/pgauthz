@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -34,13 +35,22 @@ type Config struct {
 	// issuer URL names the provider (the platform's or a registered one)
 	// that does so. The chooser stays reachable (?login=select, and after a
 	// sign-out). Default off.
-	AutoLogin    string
-	BaseURL      string // public app base, e.g. https://app.pgauthz.test
-	BasePath     string // public path prefix, e.g. /console
-	CookieSecure bool
-	WebDir       string
-	Scopes       string
-	TLSCAFile    string // optional extra CA (mkcert dev root) for outbound TLS
+	AutoLogin string
+	// OutboundHosts (CONSOLE_OUTBOUND_HOSTS): the hosts the console may
+	// reach for an identity provider that is not the platform's — the
+	// Issuers form's Discover, a registered sign-in provider's discovery
+	// and token endpoint. Exact hosts or "*.suffix", comma-separated; the
+	// platform issuer's host and the hosts of the fleet's environment-
+	// anchored issuers are always allowed. Whoever may edit an issuer can
+	// make the console fetch a URL: without the list that is any address
+	// the console can reach (SSRF). "*" = any host (refused in production).
+	OutboundHosts []string
+	BaseURL       string // public app base, e.g. https://app.pgauthz.test
+	BasePath      string // public path prefix, e.g. /console
+	CookieSecure  bool
+	WebDir        string
+	Scopes        string
+	TLSCAFile     string // optional extra CA (mkcert dev root) for outbound TLS
 
 	// ConsoleStore is the pgauthz store that answers "may this person do this
 	// in the console?" (examples/models/console). PlatformID / RegistryID are
@@ -188,6 +198,7 @@ func Load() Config {
 		RedirectURI:   env("REDIRECT_URI", "https://app.pgauthz.test/console/auth/callback"),
 		ProviderLabel: strings.TrimSpace(env("PROVIDER_LABEL", "")),
 		AutoLogin:     strings.TrimSpace(env("CONSOLE_AUTO_LOGIN", "")),
+		OutboundHosts: splitList(env("CONSOLE_OUTBOUND_HOSTS", "")),
 		BaseURL:       env("BASE_URL", "https://app.pgauthz.test"),
 		BasePath:      strings.TrimRight(env("BASE_PATH", "/console"), "/"),
 		CookieSecure:  env("COOKIE_SECURE", "true") == "true",
@@ -248,6 +259,9 @@ var TechnicalClaims = map[string]bool{
 	"auth_time": true, "session_state": true, "scope": true, "email_verified": true, "cnf": true,
 }
 
+// aliasRe is an issuer alias's shape (authz.issuer_bindings.alias).
+var aliasRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+
 // ProviderName is the platform provider's label: PROVIDER_LABEL, else the
 // issuer's host (an EntraID or Okta tenant must not say "Keycloak").
 func (c Config) ProviderName() string {
@@ -264,11 +278,20 @@ func (c Config) ProviderName() string {
 // claim list that is empty or names a technical claim; and an auto-login
 // value that is neither a switch nor an https issuer.
 func (c Config) Validate() error {
+	for _, h := range c.OutboundHosts {
+		if h == "*" && c.DeploymentEnvironment == "production" {
+			return fmt.Errorf("CONSOLE_OUTBOUND_HOSTS=* lets an issuer admin point the console at any host; name the hosts (DEPLOYMENT_ENVIRONMENT=production)")
+		}
+		if strings.ContainsAny(h, "/:") {
+			return fmt.Errorf("CONSOLE_OUTBOUND_HOSTS: %q is not a host (no scheme, path or port; e.g. *.idp.example)", h)
+		}
+	}
 	switch a := strings.ToLower(c.AutoLogin); {
 	case a == "" || a == "true" || a == "false":
 	case strings.HasPrefix(c.AutoLogin, "https://"):
+	case aliasRe.MatchString(a): // an issuer alias (the binding row's)
 	default:
-		return fmt.Errorf("CONSOLE_AUTO_LOGIN: %q is neither true/false nor an https issuer URL", c.AutoLogin)
+		return fmt.Errorf("CONSOLE_AUTO_LOGIN: %q is neither true/false, an https issuer URL nor an issuer alias", c.AutoLogin)
 	}
 	if c.SubjectIDCEL != "" {
 		return nil

@@ -26,12 +26,13 @@ type Version struct {
 
 // Server holds the BFF dependencies shared by all handlers.
 type Server struct {
-	subject subjectResolver // the ID-token → person id resolution (subjectid.go)
-	version Version
-	cfg     config.Config
-	db      *pgxpool.Pool // sessions
-	engine  *pgxpool.Pool // pgauthz, as authz_console
-	http    *http.Client
+	subject  subjectResolver // the ID-token → person id resolution (subjectid.go)
+	version  Version
+	cfg      config.Config
+	db       *pgxpool.Pool // sessions
+	engine   *pgxpool.Pool // pgauthz, as authz_console
+	http     *http.Client
+	outbound *http.Client // http without redirects, for operator-chosen URLs (outbound.go)
 	// adminHTTP presents the console's client certificate to pgauthzd's
 	// admin listener (PGAUTHZD_ADMIN_CERT/_KEY); nil = no certificate.
 	adminHTTP *http.Client
@@ -49,7 +50,20 @@ func (s *Server) WithAdminHTTPClient(c *http.Client) *Server {
 
 // New wires up a Server.
 func New(cfg config.Config, db, engine *pgxpool.Pool, hc *http.Client, oc *oidc.Client, ep oidc.Metadata) *Server {
-	return &Server{cfg: cfg, db: db, engine: engine, http: hc, oidc: oc, endpoints: ep}
+	return &Server{cfg: cfg, db: db, engine: engine, http: hc, outbound: noRedirects(hc), oidc: oc, endpoints: ep}
+}
+
+// noRedirects is the client for URLs an issuer admin chose (discovery, a
+// provider's token endpoint): the same transport, but a redirect is not
+// followed — the allow-list was checked for the URL asked, not for where
+// it might send us.
+func noRedirects(hc *http.Client) *http.Client {
+	if hc == nil {
+		hc = http.DefaultClient
+	}
+	c := *hc
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &c
 }
 
 // SetVersion records the build identity served at /api/version.

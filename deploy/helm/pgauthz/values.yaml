@@ -92,6 +92,11 @@ issuers:
   source: env
   pollInterval: 30
   requiredRole: ""    # ISSUERS_REQUIRED_ROLE: who may read GET /pgauthz/v1/issuers on the public listener
+  # GROUP_ISSUER_HOSTS: the identity-provider hosts a store group's admins may
+  # bring as a group issuer (ADR 0017) — the daemon fetches such an issuer's
+  # keys from its row, so the hosts are allow-listed ("*.idp.example",
+  # "login.microsoftonline.com"). Empty = no group issuer is admitted.
+  groupHosts: ""
 # The admin API on the writer (/pgauthz/v1/admin/…: issuer bindings; the
 # configuration-as-code surface for Terraform / pgauthzctl / the console).
 # Off by default. Enabled, the writer serves the routes on their own listener
@@ -442,6 +447,11 @@ console:
   # the platform's provider; an issuer URL names a registered one. The
   # chooser stays reachable at ?login=select and after a sign-out.
   autoLogin: ""
+  # CONSOLE_OUTBOUND_HOSTS: the identity-provider hosts the console may reach
+  # for the Issuers form's Discover and for registered sign-in providers
+  # ("*.idp.example"); the platform's issuer and the fleet's environment
+  # issuers are always allowed. Pair with issuers.groupHosts.
+  outboundHosts: ""
   # The local admin sign-in — a username/password that needs no IdP, for a
   # first look and tests; signs in as <subjectType>:<user> with the teams
   # below (the seed makes team role_console_admin the platform admin). Set

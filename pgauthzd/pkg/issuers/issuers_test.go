@@ -181,3 +181,66 @@ func TestMergeGroupIssuer(t *testing.T) {
 		t.Errorf("env issuer with a group row: %+v %v", m[0], p)
 	}
 }
+
+// Aliases: a row's alias names the issuer (a group issuer's too); a bad
+// shape or a collision with another issuer's alias is reported and ignored;
+// Resolve turns either form into the URL.
+func TestMergeAlias(t *testing.T) {
+	env := []Issuer{
+		{Issuer: "https://corp", Alias: "corp", Audience: "api", JWKSURL: "https://corp/jwks", Stores: []string{"docs"}},
+		{Issuer: "https://other", Audience: "api", JWKSURL: "https://other/jwks", Stores: []string{"x"}},
+	}
+	rows := []Binding{
+		{Issuer: "https://other", Alias: "Other-IdP", Stores: []string{"x"}, Enabled: true},
+		{Issuer: "https://tenant-a-idp", Alias: "corp", StoreGroup: "tenant_a", JWKSURL: "https://tenant-a-idp/jwks", Audience: "a", Enabled: true}, // collides with corp
+		{Issuer: "https://tenant-b-idp", Alias: "bad alias", StoreGroup: "tenant_b", JWKSURL: "https://tenant-b-idp/jwks", Audience: "a", Enabled: true},
+	}
+	merged, problems := Merge(env, rows)
+	got := map[string]string{}
+	for _, m := range merged {
+		got[m.Issuer] = m.Alias
+	}
+	if got["https://corp"] != "corp" || got["https://other"] != "other-idp" || got["https://tenant-a-idp"] != "" || got["https://tenant-b-idp"] != "" {
+		t.Fatalf("aliases: %v (problems %v)", got, problems)
+	}
+	if len(problems) != 2 || !strings.Contains(problems[0], `alias "corp" already names`) || !strings.Contains(problems[1], "letters, digits") {
+		t.Fatalf("problems: %v", problems)
+	}
+	if Resolve(merged, "OTHER-IDP") != "https://other" || Resolve(merged, "https://x") != "https://x" || Resolve(merged, "nope") != "" {
+		t.Fatal("resolve")
+	}
+	if _, err := ValidAlias("https://x"); err == nil {
+		t.Fatal("a URL is not an alias")
+	}
+}
+
+// The host allow-list for group issuers: the daemon fetches a row's jwks_url,
+// so under the restriction a row whose issuer or jwks_url host is not listed
+// is ignored (and with no host listed, every group issuer is).
+func TestMergeGroupIssuerHosts(t *testing.T) {
+	for host, want := range map[string]bool{"id.acme.test": true, "a.b.acme.test": true, "acme.test": false, "ID.ACME.TEST": true, "idp.example:8443": true, "evil.example": false, "": false} {
+		if got := HostAllowed([]string{"*.acme.test", "idp.example"}, host); got != want {
+			t.Errorf("HostAllowed(%q) = %v", host, got)
+		}
+	}
+	if !HostAllowed([]string{"*"}, "anything") || HostAllowed(nil, "anything") {
+		t.Fatal("wildcard / empty list")
+	}
+	env := []Issuer{{Issuer: "https://corp", Audience: "api", JWKSURL: "https://corp/jwks", Stores: []string{"docs"}}}
+	row := func(iss, jwks string) Binding {
+		return Binding{Issuer: iss, StoreGroup: "t", JWKSURL: jwks, Audience: "a", Enabled: true}
+	}
+	rows := []Binding{row("https://id.acme.test/realms/t", "https://id.acme.test/realms/t/certs"), row("https://id.acme.test/realms/u", "https://169.254.169.254/latest"), row("https://evil.example", "https://evil.example/jwks")}
+	merged, problems := MergeWith(env, rows, MergeOptions{RestrictGroupIssuerHosts: true, GroupIssuerHosts: []string{"*.acme.test"}})
+	if len(merged) != 2 || merged[1].Issuer != "https://id.acme.test/realms/t" || len(problems) != 2 ||
+		!strings.Contains(problems[0], `host "evil.example" is not in GROUP_ISSUER_HOSTS`) || !strings.Contains(problems[1], `host "169.254.169.254"`) { // problems come sorted by issuer
+		t.Fatalf("merged %+v problems %v", merged, problems)
+	}
+	// no host listed: nothing is admitted; without the restriction (the library default) everything is
+	if m, p := MergeWith(env, rows[:1], MergeOptions{RestrictGroupIssuerHosts: true}); len(m) != 1 || len(p) != 1 || !strings.Contains(p[0], "names no host") {
+		t.Fatalf("empty list: %v %v", m, p)
+	}
+	if m, p := Merge(env, rows); len(m) != 4 || len(p) != 0 {
+		t.Fatalf("unrestricted: %d %v", len(m), p)
+	}
+}

@@ -13,6 +13,8 @@ package issuers
 import (
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -22,7 +24,12 @@ import (
 // Issuer is one trusted identity provider with its bindings — the JSON shape
 // of a JWT_ISSUERS entry.
 type Issuer struct {
-	Issuer   string `json:"issuer"`
+	Issuer string `json:"issuer"`
+	// Alias: a short handle ([a-z0-9][a-z0-9_-]{0,63}, unique across the
+	// set) that stands for the issuer URL wherever an issuer is referenced
+	// — admin API queries, pgauthzctl, console deep links. From the
+	// environment entry or the binding row (the row's wins).
+	Alias    string `json:"alias,omitempty"`
 	Audience string `json:"audience"`
 	// Audiences: further accepted `aud` values — a token must carry the
 	// audience OR one of these. Identity providers differ in what they put
@@ -205,6 +212,7 @@ type AuditRow struct {
 
 type Binding struct {
 	Issuer        string              `json:"issuer"`
+	Alias         string              `json:"alias,omitempty"`
 	Stores        []string            `json:"stores"`
 	DBRoles       []string            `json:"db_roles"`
 	ClientDBRoles map[string]string   `json:"client_db_roles"`
@@ -368,6 +376,92 @@ func ValidateBindings(iss Issuer) error {
 	return nil
 }
 
+// aliasRe is the shape of an issuer alias: lowercase, a letter or digit
+// first, then letters, digits, _ and -, at most 64 characters.
+var aliasRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+
+// ValidAlias normalises an alias (trimmed, lowercased; "" = none) and
+// refuses one of the wrong shape or one that looks like a URL.
+func ValidAlias(alias string) (string, error) {
+	a := strings.ToLower(strings.TrimSpace(alias))
+	if a == "" {
+		return "", nil
+	}
+	if !aliasRe.MatchString(a) {
+		return "", fmt.Errorf("alias %q: letters, digits, _ and - only (max 64), starting with a letter or digit", alias)
+	}
+	return a, nil
+}
+
+// Resolve turns an issuer reference — the URL, or an alias — into the
+// issuer URL within a set; "" when an alias names nothing. A URL is
+// returned as given (trusted or not: the caller decides what that means).
+func Resolve(set []Issuer, ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	if strings.HasPrefix(ref, "https://") || strings.HasPrefix(ref, "http://") {
+		return ref
+	}
+	a := strings.ToLower(ref)
+	for _, i := range set {
+		if i.Alias == a {
+			return i.Issuer
+		}
+	}
+	return ""
+}
+
+// HostAllowed says whether a host matches one of the patterns: an exact
+// host, "*.example.com" (any subdomain, at any depth — not the apex) or
+// "*" (every host). Case-insensitive; a port is ignored.
+func HostAllowed(patterns []string, host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	if host == "" {
+		return false
+	}
+	for _, p := range patterns {
+		p = strings.ToLower(strings.TrimSpace(p))
+		switch {
+		case p == "":
+		case p == "*":
+			return true
+		case strings.HasPrefix(p, "*."):
+			if strings.HasSuffix(host, p[1:]) && len(host) > len(p)-1 {
+				return true
+			}
+		case p == host:
+			return true
+		}
+	}
+	return false
+}
+
+// URLHost is the host of a URL ("" when it does not parse).
+func URLHost(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
+}
+
+// MergeOptions: what Merge may admit beyond the environment's issuers.
+// RestrictGroupIssuerHosts applies GroupIssuerHosts to the issuer and the
+// jwks_url of every row-anchored (group) issuer — the operator's list of
+// identity-provider hosts tenants may bring (GROUP_ISSUER_HOSTS); with the
+// restriction on and no host listed, no group issuer is admitted. A row's
+// jwks_url is fetched by the daemon: without the list, whoever may write
+// a binding row could point the daemon at any reachable address.
+type MergeOptions struct {
+	RestrictGroupIssuerHosts bool
+	GroupIssuerHosts         []string
+}
+
 // DelegatedOnly refuses admin rules a database row may not carry: a row
 // grants trust, the console store decides what its credentials manage, so
 // every rule must delegate (decide) and none may list capabilities,
@@ -400,9 +494,57 @@ func DelegatedOnly(rules AdminRules) error {
 // resolved them, and may hold delegated admin rules only. Anything else
 // about an unknown issuer is reported and ignored.
 func Merge(env []Issuer, rows []Binding) (merged []Issuer, problems []string) {
+	return MergeWith(env, rows, MergeOptions{})
+}
+
+// GroupIssuerHostProblem says why a group issuer's hosts are not admitted
+// under the options ("" when they are): the issuer's host and the jwks_url's
+// host must both match GroupIssuerHosts.
+func GroupIssuerHostProblem(opts MergeOptions, issuer, jwksURL string) string {
+	if !opts.RestrictGroupIssuerHosts {
+		return ""
+	}
+	if len(opts.GroupIssuerHosts) == 0 {
+		return "GROUP_ISSUER_HOSTS names no host: set it to the identity-provider hosts tenants may bring (e.g. *.idp.example, login.microsoftonline.com)"
+	}
+	for _, h := range []string{URLHost(issuer), URLHost(jwksURL)} {
+		if !HostAllowed(opts.GroupIssuerHosts, h) {
+			return fmt.Sprintf("host %q is not in GROUP_ISSUER_HOSTS", h)
+		}
+	}
+	return ""
+}
+
+// MergeWith is Merge under options (the daemon's host restriction for
+// group issuers); Merge is MergeWith with none.
+func MergeWith(env []Issuer, rows []Binding, opts MergeOptions) (merged []Issuer, problems []string) {
 	byIssuer := make(map[string]Binding, len(rows))
 	for _, r := range rows {
 		byIssuer[r.Issuer] = r
+	}
+	// aliases: the environment's are taken as given (config.Load checked
+	// them); a row's alias is applied unless it collides with another issuer
+	aliasOf := map[string]string{} // alias → issuer
+	for _, e := range env {
+		if e.Alias != "" {
+			aliasOf[e.Alias] = e.Issuer
+		}
+	}
+	rowAlias := func(iss string, raw string) string {
+		a, err := ValidAlias(raw)
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("issuer %q: %v (alias ignored)", iss, err))
+			return ""
+		}
+		if a == "" {
+			return ""
+		}
+		if other, taken := aliasOf[a]; taken && other != iss {
+			problems = append(problems, fmt.Sprintf("issuer %q: alias %q already names %q (alias ignored)", iss, a, other))
+			return ""
+		}
+		aliasOf[a] = iss
+		return a
 	}
 	seen := map[string]bool{}
 	for _, e := range env {
@@ -412,7 +554,11 @@ func Merge(env []Issuer, rows []Binding) (merged []Issuer, problems []string) {
 		out.AnchorSource = "env"
 		if ok && e.Issuer != "" {
 			seen[e.Issuer] = true
+			if a := rowAlias(e.Issuer, row.Alias); a != "" {
+				out.Alias = a // the row's alias holds even when its bindings are rejected
+			}
 			cand := e
+			cand.Alias = out.Alias
 			cand.EnvStores = e.Stores
 			cand.Stores, cand.DBRoles = row.Stores, row.DBRoles
 			cand.ClientDBRoles, cand.PEPClients = row.ClientDBRoles, row.PEPClients
@@ -446,7 +592,7 @@ func Merge(env []Issuer, rows []Binding) (merged []Issuer, problems []string) {
 			problems = append(problems, fmt.Sprintf("issuer %q: binding ignored: the environment does not trust this issuer (JWT_ISSUERS); a group issuer needs store_group and jwks_url", iss))
 			continue
 		}
-		cand := Issuer{Issuer: iss, Audience: row.Audience, Audiences: row.Audiences, JWKSURL: row.JWKSURL,
+		cand := Issuer{Issuer: iss, Alias: rowAlias(iss, row.Alias), Audience: row.Audience, Audiences: row.Audiences, JWKSURL: row.JWKSURL,
 			Stores: row.Stores, DBRoles: row.DBRoles, ClientDBRoles: row.ClientDBRoles, PEPClients: row.PEPClients,
 			Disabled: !row.Enabled, BindingSource: "db", AnchorSource: "db", StoreGroup: row.StoreGroup, Admin: row.Admin}
 		switch {
@@ -454,6 +600,8 @@ func Merge(env []Issuer, rows []Binding) (merged []Issuer, problems []string) {
 			problems = append(problems, fmt.Sprintf("issuer %q: group issuer ignored: no audience", iss))
 		case !strings.HasPrefix(row.JWKSURL, "https://"):
 			problems = append(problems, fmt.Sprintf("issuer %q: group issuer ignored: jwks_url must be https", iss))
+		case GroupIssuerHostProblem(opts, iss, row.JWKSURL) != "":
+			problems = append(problems, fmt.Sprintf("issuer %q: group issuer ignored: %s", iss, GroupIssuerHostProblem(opts, iss, row.JWKSURL)))
 		default:
 			if err := DelegatedOnly(row.Admin); err != nil {
 				problems = append(problems, fmt.Sprintf("issuer %q: group issuer ignored: %v", iss, err))

@@ -157,6 +157,10 @@ export ALLOW_SUBJECT_OVERRIDE="${ALLOW_SUBJECT_OVERRIDE:-true}"
 # The demo stack manages issuer bindings from the console (Platform →
 # Issuers): the instances merge authz.issuer_bindings over JWT_ISSUERS.
 export ISSUERS_SOURCE="${ISSUERS_SOURCE:-env+db}"
+# The demo's tenant identity provider (id.acme.test) may be brought as a
+# group issuer; the console may discover it (both are host allow-lists).
+export GROUP_ISSUER_HOSTS="${GROUP_ISSUER_HOSTS:-*.acme.test}"
+export CONSOLE_OUTBOUND_HOSTS="${CONSOLE_OUTBOUND_HOSTS:-*.acme.test}"
 # … and serves the admin API on the full instance (host port 8096, its own
 # listener), gated by the pgauthz_admin role in the demo tokens; management
 # runs on its own pool as pgauthzd_admin (authz_admin tier) while the
