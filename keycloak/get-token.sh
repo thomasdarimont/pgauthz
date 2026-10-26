@@ -9,13 +9,16 @@
 #   eval "$(./keycloak/get-token.sh --service app-dms)"  # client_credentials as the app-dms client
 #   curl -s https://api.pgauthz.test/v1/evaluation -H "Authorization: Bearer $TOKEN" ...
 #
-# Env overrides: ISSUER, CLIENT_ID, CLIENT_SECRET, DEMO_PASSWORD, SCOPE (extra
-# scopes to request, e.g. SCOPE="pgauthz:admin" — the pgauthz:* scopes are the
-# token's cap on the management API, see keycloak/terraform/scopes.pgauthz.tf).
+# Env overrides: REALM (another realm of the same Keycloak, e.g. REALM=acme —
+# the ACME tenant, keycloak/terraform/realm.acme.tf), ISSUER, CLIENT_ID,
+# CLIENT_SECRET, DEMO_PASSWORD, SCOPE (extra scopes to request, e.g.
+# SCOPE="pgauthz:admin" — the pgauthz:* scopes are the token's cap on the
+# management API, see keycloak/terraform/scopes.pgauthz.tf).
 # The client secret is read from `terraform output` if not supplied.
 set -euo pipefail
 
-ISSUER="${ISSUER:-https://id.pgauthz.test/realms/pgauthz}"
+REALM="${REALM:-pgauthz}"
+ISSUER="${ISSUER:-https://id.pgauthz.test/realms/${REALM}}"
 CLIENT_ID="${CLIENT_ID:-authz-api}"
 # `--service [<client-id>]` selects a client for client_credentials (e.g. app-dms).
 if [ "${1:-}" = "--service" ] && [ -n "${2:-}" ]; then CLIENT_ID="$2"; fi
@@ -27,6 +30,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Pull the client secret from terraform state if not provided.
 if [ -z "$CLIENT_SECRET" ] && [ -d "$script_dir/terraform/.terraform" ]; then
   secret_out="$(printf '%s' "$CLIENT_ID" | tr '-' '_')_client_secret"
+  [ "$REALM" = "pgauthz" ] || secret_out="${REALM}_${secret_out}" # realm.<realm>.tf outputs <realm>_<client>_client_secret
   CLIENT_SECRET="$(cd "$script_dir/terraform" && terraform output -raw "$secret_out" 2>/dev/null || true)"
 fi
 

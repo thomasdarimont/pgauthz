@@ -130,6 +130,16 @@ pre-1.0, minor versions may include breaking changes.
   can be handed over: `OUTBOUND_HOST_POLICY=proxy` /
   `CONSOLE_OUTBOUND_HOST_POLICY=proxy` (an `HTTPS_PROXY` must be set; the
   console's custom transports now honour it), `off` for development.
+- **The ACME tenant example** (`examples/tenants/acme`, `keycloak/terraform/realm.acme.tf`):
+  a second Keycloak realm as a tenant's identity provider, trusted as a
+  group issuer of the store group `acme` (alias `acme`), three stores
+  carrying the fileshare, todo and demo models via the registry, four
+  personas (store group admin, IAM team lead, auditor, developer) whose
+  realm roles the group grants roles to, and the console's sign-in
+  registration — `setup.sh` does it all on the demo stack. pgauthzd in the
+  Keycloak overlay now reaches the proxy host over TLS (`SSL_CERT_FILE`),
+  so a group issuer's keys can be fetched from its https `jwks_url`;
+  `REALM=<realm>` on `get-token.sh`.
 - **Issuer aliases** (migration 0031). A binding row — or a `JWT_ISSUERS`
   entry — carries a short `alias` (`[a-z0-9_-]`, unique) that stands for
   the issuer URL wherever an issuer is referenced: the admin API's

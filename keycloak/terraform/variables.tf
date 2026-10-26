@@ -78,3 +78,17 @@ variable "console_bff_client_secret" {
   default     = "console-bff-demo-secret"
   sensitive   = true
 }
+
+variable "acme_authz_api_client_secret" {
+  description = "Client secret of the ACME tenant realm's authz-api client (realm.acme.tf). Override for anything real."
+  type        = string
+  default     = "acme-authz-api-demo-secret"
+  sensitive   = true
+}
+
+variable "acme_console_bff_client_secret" {
+  description = "Client secret of the ACME tenant realm's console-bff client — what examples/tenants/acme registers in the console. Override for anything real."
+  type        = string
+  default     = "acme-console-bff-demo-secret"
+  sensitive   = true
+}

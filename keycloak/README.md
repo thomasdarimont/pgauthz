@@ -102,6 +102,20 @@ keep it **off** (unset `TOKEN_DEBUG`) in production.
 bob and eva together exercise OPA's role aggregation across **both** claim paths.
 Password for all: `password` (override `demo_user_password`).
 
+### A tenant's realm: `acme`
+
+[`terraform/realm.acme.tf`](terraform/realm.acme.tf) provisions a second
+realm — the identity provider of the **ACME tenant**, issuer
+`https://id.pgauthz.test/realms/acme` — with its own `authz-api` audience
+client, the `pgauthz:*` scopes, a `console-bff` client the management
+console registers as a sign-in provider, and four people (`acme-admin`,
+`acme-iam`, `acme-auditor`, `acme-dev`; one realm role each, password
+`password`). pgauthz trusts it as a *group issuer* of the store group
+`acme`: [`examples/tenants/acme`](../examples/tenants/acme/README.md) sets
+the group, its stores and models, the binding (alias `acme`) and the
+people's console access up. `REALM=acme ./keycloak/get-token.sh acme-dev`
+mints a token of that realm.
+
 ### App-as-a-service: the `app-dms` client
 
 A second client, **`app-dms`**, demonstrates an application accessing data with

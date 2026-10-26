@@ -145,7 +145,16 @@ services:
   # true), pgauthzd must FORWARD the verified bearer token to OPA so it
   # re-validates via the input.token path (no tokenless subject-trust).
   pgauthzd-opa:
+    # A group issuer's keys (ADR 0017: a tenant's identity provider trusted by
+    # a binding row, e.g. the ACME realm, examples/tenants/acme) are fetched
+    # from its https jwks_url — through the proxy, trusting the mkcert CA
+    # (Go reads SSL_CERT_FILE). The platform realm keeps its internal http URL.
+    extra_hosts:
+      - "id.pgauthz.test:host-gateway"
+    volumes:
+      - ./keycloak/config/certs/rootCA.pem:/etc/pgauthz/rootCA.pem:ro
     environment:
+      SSL_CERT_FILE: /etc/pgauthz/rootCA.pem
       # Blank the legacy single-issuer form so it is not ALSO appended as an
       # unbound issuer; both issuers live in JWT_ISSUERS.
       JWKS_FILE: ""
@@ -172,7 +181,16 @@ services:
   # task scope with a Keycloak service-account token; the playground records
   # events with the user's token).
   pgauthzd-full:
+    # A group issuer's keys (ADR 0017: a tenant's identity provider trusted by
+    # a binding row, e.g. the ACME realm, examples/tenants/acme) are fetched
+    # from its https jwks_url — through the proxy, trusting the mkcert CA
+    # (Go reads SSL_CERT_FILE). The platform realm keeps its internal http URL.
+    extra_hosts:
+      - "id.pgauthz.test:host-gateway"
+    volumes:
+      - ./keycloak/config/certs/rootCA.pem:/etc/pgauthz/rootCA.pem:ro
     environment:
+      SSL_CERT_FILE: /etc/pgauthz/rootCA.pem
       JWKS_FILE: ""
       # Admin rules — the management console decides (delegated rules): a
       # token of the realm becomes a subject of the `console` store and may
@@ -203,6 +221,15 @@ services:
       # uses (one Authorize section) instead of every grant type Keycloak lists.
       SWAGGER_UI_OIDC_AUTHORIZATION_URL: https://id.pgauthz.test/realms/pgauthz/protocol/openid-connect/auth
       SWAGGER_UI_OIDC_TOKEN_URL: https://id.pgauthz.test/realms/pgauthz/protocol/openid-connect/token
+
+  # The decision instance (compose-authzen.yml) validates the same tokens.
+  pgauthzd-decision:
+    extra_hosts:
+      - "id.pgauthz.test:host-gateway"
+    volumes:
+      - ./keycloak/config/certs/rootCA.pem:/etc/pgauthz/rootCA.pem:ro
+    environment:
+      SSL_CERT_FILE: /etc/pgauthz/rootCA.pem
 
 volumes:
   keycloak-db-data:
