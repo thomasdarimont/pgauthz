@@ -1,8 +1,8 @@
 import { html, nothing } from 'lit';
 import { PgcElement, help, errorBox, loading } from '../base.js';
 import { api } from '../api.js';
-import { t, t2 } from '../i18n.js';
-import { capLabel, run, forbiddenText, fmtTime } from '../util.js';
+import { t } from '../i18n.js';
+import { capLabel, roleHelp, run, forbiddenText, fmtTime } from '../util.js';
 import './pgc-model.js';
 import './pgc-data.js';
 import './pgc-test.js';
@@ -217,6 +217,41 @@ export class PgcStore extends PgcElement {
                     }
                   </div>
                 </div>
+                <details class="caps-details" data-testid="store-caps">
+                  <summary class="caps yours">
+                    <span class="caps-label"
+                      >${t('You are')}:
+                      ${
+                        i.roles?.length
+                          ? i.roles.map(
+                              (r, n) =>
+                                html`${n ? ', ' : ''}<span class="role" title=${roleHelp(r)}>${t(r)}</span>`,
+                            )
+                          : caps.can_manage_access
+                            ? html`<span class="role" title=${roleHelp('admin')}
+                                >${t('platform admin')}</span
+                              >`
+                            : html`<span class="role">${t('without a store role')}</span>`
+                      }
+                      ${help('Your console role on this store, from your own tuples and your teams; it decides which tabs are open. Expand for what it allows; a locked tab names the capability it needs. Roles are managed on the Access tab.')}</span
+                    >
+                    ${!i.claimed ? html`<span class="badge warn" title=${t('no platform tuple in the console store')}>${t('not under the platform')}</span>` : nothing}
+                    ${Object.entries(i.namespaces ?? {})
+                      .filter(([, c]) => !caps.can_edit_model && (c.can_edit_model || c.can_grant)) // namespace-only access
+                      .map(
+                        ([ns, c]) =>
+                          html`<span class="badge accent" title=${t('your namespace role in this store')}
+                            >${ns}: ${c.can_edit_model ? t('author') : t('viewer')}</span
+                          >`,
+                      )}
+                  </summary>
+                  <div class="caps yours caps-popover">
+                    <span class="caps-title">${t('what this allows')}</span>
+                    ${Object.entries(caps)
+                      .filter(([k, v]) => v && k !== 'can_view')
+                      .map(([k]) => html`<span class="cap">✓ ${capLabel(k)}</span>`)}
+                  </div>
+                </details>
               </div>
               ${
                 i.retired_at
@@ -226,29 +261,6 @@ export class PgcStore extends PgcElement {
                   : nothing
               }
               ${this.editing ? this._settingsForm(i) : nothing}
-              <details class="caps-details">
-                <summary class="caps yours">
-                  <span class="caps-label"
-                    >${t('Your access')}:
-                    ${t2('{n} capability', '{n} capabilities', Object.values(caps).filter(Boolean).length - (caps.can_view ? 1 : 0))}
-                    ${help('What you may do with this store, as decided by the console store from your roles and team memberships. Informational — the tabs below are where you act.')}</span
-                  >
-                  ${!i.claimed ? html`<span class="badge warn" title=${t('no platform tuple in the console store')}>${t('not under the platform')}</span>` : nothing}
-                  ${Object.entries(i.namespaces ?? {})
-                    .filter(([, c]) => !caps.can_edit_model && (c.can_edit_model || c.can_grant)) // namespace-only access
-                    .map(
-                      ([ns, c]) =>
-                        html`<span class="badge accent" title=${t('your namespace role in this store')}
-                          >${ns}: ${c.can_edit_model ? t('author') : t('viewer')}</span
-                        >`,
-                    )}
-                </summary>
-                <div class="caps yours">
-                  ${Object.entries(caps)
-                    .filter(([k, v]) => v && k !== 'can_view')
-                    .map(([k]) => html`<span class="cap">✓ ${capLabel(k)}</span>`)}
-                </div>
-              </details>
               <nav class="tabs">
                 ${TABS.map(
                   (tab) =>

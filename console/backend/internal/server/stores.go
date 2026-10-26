@@ -19,6 +19,7 @@ type storeRow struct {
 	CreatedAt    *time.Time                 `json:"created_at"`
 	LastChangeAt *time.Time                 `json:"last_change_at"` // latest model, condition or tuple change in the audit trail
 	Capabilities map[string]bool            `json:"capabilities"`
+	Roles        []string                   `json:"roles,omitempty"` // the person's console roles on this store (owner, author, …), in display order
 	Status       *pgauthzadm.Status         `json:"status,omitempty"`
 	Counts       map[string]int             `json:"counts,omitempty"`
 	Claimed      bool                       `json:"claimed"`              // has a platform tuple in the console store
@@ -148,7 +149,20 @@ func (s *Server) handleStore(w http.ResponseWriter, r *http.Request) {
 		writeEngineError(w, err)
 		return
 	}
-	row := storeRow{Name: store, Capabilities: caps[store], Namespaces: nsCaps, Counts: map[string]int{}}
+	// The roles behind the capabilities — what the header names ("you are an
+	// author here"); a platform admin without a store role shows as such.
+	held, err := s.capabilities(ctx, p, "store", []string{store}, storeRoles)
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	roles := []string{}
+	for _, role := range storeRoles {
+		if held[store][role] {
+			roles = append(roles, role)
+		}
+	}
+	row := storeRow{Name: store, Capabilities: caps[store], Roles: roles, Namespaces: nsCaps, Counts: map[string]int{}}
 	_ = s.engine.QueryRow(ctx, `SELECT coalesce(description,''), coalesce(docs_url,''), deleted_at FROM authz.stores WHERE name=$1`, store).Scan(&row.Description, &row.DocsURL, &row.RetiredAt)
 	if row.RetiredAt == nil {
 		if st, err := pgauthzadm.ModelStatus(ctx, s.engine, store); err == nil {

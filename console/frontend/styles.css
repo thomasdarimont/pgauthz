@@ -340,15 +340,21 @@ th.sortable button { text-transform: none; letter-spacing: 0; font-size: var(--t
 .footer { margin-top: auto; padding: var(--s-3) max(16px, env(safe-area-inset-right, 0px)) calc(var(--s-4) + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
   border-top: 1px solid var(--c-border); display: flex; flex-wrap: wrap; justify-content: center; text-align: center; gap: var(--s-3); font-size: var(--t-xs); color: var(--c-muted); }
 .footer a { color: var(--c-muted); }
-/* "Your access": informational, deliberately not button-like */
+/* "Your access": informational, deliberately not button-like. Sits at the
+   right of the store's page head; the capability list opens as a popover
+   under it, so expanding it never shifts the tabs and the content below. */
 .caps.yours { align-items: center; gap: var(--s-1) var(--s-3); font-size: var(--t-sm); color: var(--c-muted); }
 .caps.yours .caps-label { display: inline-flex; align-items: center; gap: var(--s-1); text-transform: uppercase; letter-spacing: .04em; font-size: var(--t-xs); }
 .caps.yours .cap { color: var(--c-muted); white-space: nowrap; }
-.caps-details > summary { cursor: pointer; list-style: none; display: flex; }
+.caps.yours .role { text-transform: none; letter-spacing: 0; font-size: var(--t-sm); color: var(--c-fg); font-weight: 600; }
+.caps.yours .caps-title { text-transform: uppercase; letter-spacing: .04em; font-size: var(--t-xs); color: var(--c-muted); margin-bottom: var(--s-1); }
+.caps-details { position: relative; margin-left: auto; }
+.caps-details > summary { cursor: pointer; list-style: none; display: flex; justify-content: flex-end; }
 .caps-details > summary::-webkit-details-marker { display: none; }
 .caps-details > summary .caps-label::before { content: "\25B8"; margin-right: var(--s-1); transition: transform .12s; }
 .caps-details[open] > summary .caps-label::before { transform: rotate(90deg); }
-.caps-details > .caps { margin-top: var(--s-1); padding-left: var(--s-4); }
+.caps-details > .caps-popover { position: absolute; right: 0; top: calc(100% + var(--s-1)); z-index: 30; flex-direction: column; align-items: flex-start; gap: var(--s-1);
+  min-width: 16rem; max-width: min(28rem, calc(100vw - 32px)); padding: var(--s-2) var(--s-3); background: var(--c-surface); border: 1px solid var(--c-border); border-radius: var(--r-md); box-shadow: 0 6px 20px rgba(0, 0, 0, .12); }
 .model-stats, .data-stats { margin-bottom: var(--s-3); }
 .data-stats .warn-text, .data-stats .warn-text b { color: var(--c-warn); }
 .data-stats .by-type { display: inline-flex; flex-wrap: wrap; gap: var(--s-1); }

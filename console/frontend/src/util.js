@@ -14,6 +14,10 @@ const CAP_LABELS = {
   can_export: 'export',
   can_view_decisions: 'decisions',
   can_manage_access: 'manage access',
+  can_test_others: 'test others',
+  can_test_explain_full: 'full explain trees',
+  can_test_search: 'search',
+  can_test_history: 'point-in-time tests',
 };
 
 export function capLabel(cap) {

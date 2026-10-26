@@ -27,6 +27,7 @@
  * @property {string|null} created_at
  * @property {string|null} last_change_at
  * @property {Capabilities} capabilities
+ * @property {string[]} [roles] the person's console roles on the store (owner, author, …), in display order
  * @property {Status} [status]
  * @property {{types: number, relations: number, tuples: number, conditions: number}} [counts]
  * @property {boolean} claimed
