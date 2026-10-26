@@ -109,7 +109,23 @@ pre-1.0, minor versions may include breaking changes.
   in the console's database), the sign-in page offers one button per
   reachable provider (`GET /api/providers`), a session remembers its
   provider for refresh and logout. `PROVIDER_LABEL` names the platform's
-  button.
+  button (default: the issuer's host; Helm `console.providerLabel`,
+  compose `CONSOLE_PROVIDER_LABEL`). **Auto-login:** `CONSOLE_AUTO_LOGIN`
+  (`true` = the platform's provider, or an issuer URL; a registered
+  provider's *Sign people in here automatically*) skips the sign-in page;
+  the chooser stays at `?login=select` and after a sign-out, `?login=<issuer>`
+  deep-links into a provider. An optional **discovery URL** per registered
+  provider (and for the Issuers form's Discover) for providers whose
+  `openid-configuration` is not at the well-known location; a document
+  naming another issuer is flagged in the form and refused at sign-in.
+- **Console at scale (ADR 0017).** Group pickers are typed over a datalist
+  (a select of a tenant per group does not scale): the store's group on
+  creation, moving a store, sharing models, the issuer's group, and the
+  stores list's group filter (part of a name). The Groups tab is searched
+  and capped at 100 cards; a group card keeps its buttons on the right.
+  The Issuers form is grouped into Identity provider (issuer, description,
+  enabled, trust), Scope, Database roles and Trusted enforcement points,
+  each with what it decides.
 - **Every error names its request.** pgauthzd's and the console's JSON
   errors carry `request_id` (the response's `X-Request-ID`, unique per
   request, also on the request's log line and the decision log), so a

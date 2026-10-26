@@ -56,6 +56,10 @@ func InitSchema(ctx context.Context, db *pgxpool.Pool) error {
 		)`); err != nil {
 		return err
 	}
+	if _, err = db.Exec(ctx, `ALTER TABLE console_providers ADD COLUMN IF NOT EXISTS auto_login boolean NOT NULL DEFAULT false,
+		ADD COLUMN IF NOT EXISTS discovery_url text`); err != nil {
+		return err
+	}
 	// scenarios: one tests.authz.yaml per managed store (scenarios.go).
 	_, err = db.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS scenarios (

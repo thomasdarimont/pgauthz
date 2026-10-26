@@ -584,3 +584,22 @@ table.decisions pre.json .line { display: block; }
 table.rel-table col.c-constraints { width: 16%; }
 table.rel-table td.constraints .badge.link { cursor: pointer; margin: 0 .25rem .25rem 0; font: inherit; }
 table.rel-table td.constraints .badge.link:disabled { cursor: default; }
+
+/* a field whose input shares the line with a button (Issuers: JWKS URL + Discover) */
+.field .row { display: flex; gap: var(--s-2); align-items: center; }
+.field .row > input { flex: 1 1 auto; min-width: 0; }
+/* the group picker (base.js groupPick): typed, over a datalist */
+input.group-pick.invalid { border-color: var(--c-warn); }
+.toolbar input.group-filter { margin-left: var(--s-2); max-width: 16rem; }
+.groups-search { margin-left: var(--s-2); min-width: 14rem; }
+.form h5.form-section { grid-column: 1 / -1; margin: var(--s-2) 0 0; padding-bottom: var(--s-1); border-bottom: 1px solid var(--c-border);
+  font-size: var(--t-xs); font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--c-muted); }
+.notice.warn { display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: center; padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--c-warn); border-radius: var(--r-md); background: var(--c-warn-bg); color: var(--c-fg); font-size: var(--t-sm); }
+/* a group card's head: name, description and meta on the left, the buttons on the right */
+.group-head { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-4); align-items: flex-start; justify-content: space-between; margin-bottom: var(--s-2); }
+.group-main { display: flex; flex-direction: column; gap: var(--s-1); min-width: 0; flex: 1 1 20rem; }
+.group-main h3 { margin: 0; }
+.group-main .form.inline { display: flex; gap: var(--s-2); align-items: center; }
+.group-meta { font-size: var(--t-xs); }
+.group-actions { flex: 0 0 auto; justify-content: flex-end; }

@@ -436,6 +436,12 @@ console:
   # both. One of the two is required.
   issuer: ""                   # OpenID Provider issuer, e.g. https://id.example.com/realms/pgauthz
   clientId: console-bff
+  providerLabel: ""            # the sign-in button ("Sign in with …"); empty = the issuer's host
+  # Auto-login: a signed-out visitor goes straight to the provider instead of
+  # the sign-in page — for an internal deployment with one provider. true =
+  # the platform's provider; an issuer URL names a registered one. The
+  # chooser stays reachable at ?login=select and after a sign-out.
+  autoLogin: ""
   # The local admin sign-in — a username/password that needs no IdP, for a
   # first look and tests; signs in as <subjectType>:<user> with the teams
   # below (the seed makes team role_console_admin the platform admin). Set

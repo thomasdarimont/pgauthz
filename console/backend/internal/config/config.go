@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -25,14 +26,21 @@ type Config struct {
 	Issuer       string // OIDC issuer base; endpoints are resolved from its discovery doc
 	RedirectURI  string
 	// ProviderLabel (PROVIDER_LABEL) names the platform's provider on the
-	// sign-in page ("Sign in with …"); registered providers carry their own.
+	// sign-in page ("Sign in with …"); empty = the issuer's host name.
+	// Registered providers carry their own label.
 	ProviderLabel string
-	BaseURL       string // public app base, e.g. https://app.pgauthz.test
-	BasePath      string // public path prefix, e.g. /console
-	CookieSecure  bool
-	WebDir        string
-	Scopes        string
-	TLSCAFile     string // optional extra CA (mkcert dev root) for outbound TLS
+	// AutoLogin (CONSOLE_AUTO_LOGIN): "true" sends a signed-out visitor
+	// straight to the platform's provider instead of the sign-in page; an
+	// issuer URL names the provider (the platform's or a registered one)
+	// that does so. The chooser stays reachable (?login=select, and after a
+	// sign-out). Default off.
+	AutoLogin    string
+	BaseURL      string // public app base, e.g. https://app.pgauthz.test
+	BasePath     string // public path prefix, e.g. /console
+	CookieSecure bool
+	WebDir       string
+	Scopes       string
+	TLSCAFile    string // optional extra CA (mkcert dev root) for outbound TLS
 
 	// ConsoleStore is the pgauthz store that answers "may this person do this
 	// in the console?" (examples/models/console). PlatformID / RegistryID are
@@ -178,7 +186,8 @@ func Load() Config {
 		ClientSecret:  env("CLIENT_SECRET", "console-bff-demo-secret"),
 		Issuer:        env("ISSUER", ""), // empty = no OpenID Provider (local admin only)
 		RedirectURI:   env("REDIRECT_URI", "https://app.pgauthz.test/console/auth/callback"),
-		ProviderLabel: env("PROVIDER_LABEL", "Keycloak"),
+		ProviderLabel: strings.TrimSpace(env("PROVIDER_LABEL", "")),
+		AutoLogin:     strings.TrimSpace(env("CONSOLE_AUTO_LOGIN", "")),
 		BaseURL:       env("BASE_URL", "https://app.pgauthz.test"),
 		BasePath:      strings.TrimRight(env("BASE_PATH", "/console"), "/"),
 		CookieSecure:  env("COOKIE_SECURE", "true") == "true",
@@ -239,9 +248,28 @@ var TechnicalClaims = map[string]bool{
 	"auth_time": true, "session_state": true, "scope": true, "email_verified": true, "cnf": true,
 }
 
+// ProviderName is the platform provider's label: PROVIDER_LABEL, else the
+// issuer's host (an EntraID or Okta tenant must not say "Keycloak").
+func (c Config) ProviderName() string {
+	if c.ProviderLabel != "" {
+		return c.ProviderLabel
+	}
+	if u, err := url.Parse(c.Issuer); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return c.Issuer
+}
+
 // Validate refuses a configuration that cannot identify people: a subject-id
-// claim list that is empty or names a technical claim.
+// claim list that is empty or names a technical claim; and an auto-login
+// value that is neither a switch nor an https issuer.
 func (c Config) Validate() error {
+	switch a := strings.ToLower(c.AutoLogin); {
+	case a == "" || a == "true" || a == "false":
+	case strings.HasPrefix(c.AutoLogin, "https://"):
+	default:
+		return fmt.Errorf("CONSOLE_AUTO_LOGIN: %q is neither true/false nor an https issuer URL", c.AutoLogin)
+	}
 	if c.SubjectIDCEL != "" {
 		return nil
 	}

@@ -328,9 +328,21 @@ func (s *Server) handleIssuerDiscover(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "issuer must be an https:// URL")
 		return
 	}
+	// the discovery document: the issuer's well-known location by default,
+	// or a URL the operator names (a provider that serves it elsewhere, a
+	// proxy); the document's own `issuer` is reported, and whether it is
+	// the configured one — tokens carry that `iss`, so a mismatch means
+	// the binding would never match a token
+	disc := strings.TrimSpace(r.URL.Query().Get("url"))
+	if disc == "" {
+		disc = issuer + "/.well-known/openid-configuration"
+	} else if !strings.HasPrefix(disc, "https://") {
+		writeError(w, http.StatusBadRequest, "the discovery URL must be an https:// URL")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, issuer+"/.well-known/openid-configuration", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, disc, nil)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -354,7 +366,7 @@ func (s *Server) handleIssuerDiscover(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "discovery document did not decode: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"issuer": doc.Issuer, "jwks_uri": doc.JWKSURI, "matches": strings.TrimRight(doc.Issuer, "/") == issuer})
+	writeJSON(w, http.StatusOK, map[string]any{"issuer": doc.Issuer, "jwks_uri": doc.JWKSURI, "discovery_url": disc, "matches": strings.TrimRight(doc.Issuer, "/") == issuer})
 }
 
 // knownForBindings: what a binding's lists can be picked from instead of

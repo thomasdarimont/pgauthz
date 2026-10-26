@@ -1,6 +1,6 @@
 import { html, nothing } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
-import { PgcElement, help, errorBox, loading } from '../base.js';
+import { PgcElement, help, errorBox, loading, groupPick, groupList } from '../base.js';
 import { api } from '../api.js';
 import { t } from '../i18n.js';
 import { run, forbiddenText, fmtTime } from '../util.js';
@@ -22,6 +22,7 @@ export class PgcGroups extends PgcElement {
     consumers: { state: true }, // the open group's model consumers
     consumerPick: { state: true },
     editing: { state: true }, // the group whose description is edited
+    q: { state: true }, // search: part of a group or store name
   };
 
   constructor() {
@@ -33,6 +34,17 @@ export class PgcGroups extends PgcElement {
     this.access = null;
     this.accessForm = { subject_type: 'user', role: 'admin' };
     this.editing = '';
+    this.q = '';
+  }
+
+  // The groups to show: with a tenant per group there are hundreds, so the
+  // list is searched (name, description, store names) and capped.
+  static SHOW = 100;
+  _visible() {
+    const all = this.d?.groups ?? [];
+    const words = this.q.toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.length) return all;
+    return all.filter((g) => words.every((w) => `${g.name} ${g.description ?? ''} ${g.stores.join(' ')}`.toLowerCase().includes(w)));
   }
 
   connectedCallback() {
@@ -105,10 +117,16 @@ export class PgcGroups extends PgcElement {
               ${
                 c.can_manage && others.length
                   ? html`<form class="form inline" @submit=${(e) => { e.preventDefault(); this._grantConsumer(group); }}>
-                      <select .value=${this.consumerPick ?? ''} @change=${(e) => (this.consumerPick = e.target.value)} data-testid="groups-consumer-pick">
-                        <option value="">${t('— choose a group —')}</option>
-                        ${others.map((n) => html`<option value=${n}>${n}</option>`)}
-                      </select>
+                      ${groupPick({
+                        list: `dl-groups-consumers-${group}`,
+                        names: others,
+                        value: this.consumerPick ?? '',
+                        onPick: (v) => (this.consumerPick = v),
+                        placeholder: t('a group name…'),
+                        allowEmpty: false,
+                        testid: 'groups-consumer-pick',
+                      })}
+                      ${groupList(`dl-groups-consumers-${group}`, others)}
                       <button class="primary" ?disabled=${this.busy || !this.consumerPick} data-testid="groups-consumer-grant">${t('Share models')}</button>
                     </form>`
                   : nothing
@@ -191,16 +209,17 @@ export class PgcGroups extends PgcElement {
   }
 
   _moveSelect(store, current) {
-    const groups = this.d?.groups ?? [];
-    return html`<select
-      class="mono"
-      title=${t('Move the store to another group, or detach it')}
-      data-testid="groups-move-${store}"
-      @change=${(e) => this._move(store, e.target.value)}
-    >
-      ${groups.map((g) => html`<option value=${g.name} ?selected=${g.name === current}>${g.name}</option>`)}
-      <option value="" ?selected=${!current}>${t('— ungrouped (its own group) —')}</option>
-    </select>`;
+    return groupPick({
+      list: 'dl-groups-all',
+      names: (this.d?.groups ?? []).map((g) => g.name),
+      value: current,
+      onPick: (v) => {
+        if (v !== current) this._move(store, v);
+      },
+      placeholder: t('ungrouped — its own group'),
+      title: t('Move the store to another group (type its name), or clear to detach it'),
+      testid: `groups-move-${store}`,
+    });
   }
 
   _admins(group) {
@@ -262,15 +281,28 @@ export class PgcGroups extends PgcElement {
         ${t('A store group is a named set of stores that shares administration: its admins see and administer every store in it. The default group is the platform\'s own; a store outside every group is its own group of one.')}
       </p>
       ${this.error ? errorBox(this.error) : nothing}
-      ${
-        d?.can_manage
-          ? html`<div class="toolbar">
-              <button class="primary" @click=${() => (this.creating = !this.creating)} data-testid="groups-new">
+      <div class="toolbar">
+        ${
+          d?.can_manage
+            ? html`<button class="primary" @click=${() => (this.creating = !this.creating)} data-testid="groups-new">
                 ${t('New group')}
-              </button>
-            </div>`
-          : nothing
-      }
+              </button>`
+            : html`<span></span>`
+        }
+        ${
+          (d?.groups?.length ?? 0) > 8
+            ? html`<input
+                class="groups-search"
+                type="search"
+                placeholder=${t('search groups by name, description or store')}
+                .value=${this.q}
+                @input=${(e) => (this.q = e.target.value)}
+                data-testid="groups-search"
+              />`
+            : nothing
+        }
+      </div>
+      ${d ? groupList('dl-groups-all', d.groups.map((g) => g.name)) : nothing}
       ${
         this.creating
           ? html`<form class="card form" @submit=${this._create} data-testid="groups-form">
@@ -294,47 +326,52 @@ export class PgcGroups extends PgcElement {
           ? loading(3)
           : html`
               ${repeat(
-                d.groups,
+                this._visible().slice(0, PgcGroups.SHOW),
                 (g) => g.name,
                 (g) => html`<section class="card" data-testid="groups-row-${g.name}">
-                  <div class="row-head">
-                    <h3 class="mono">${g.name}</h3>
-                    ${
-                      this.editing === g.name
-                        ? html`<form class="form inline" @submit=${(e) => this._saveDescription(e, g.name)}>
-                            <input .value=${this.form.description ?? g.description} @input=${this._set('description')} />
-                            <button class="primary small" ?disabled=${this.busy}>${t('Save')}</button>
-                            <button type="button" class="small" @click=${() => (this.editing = '')}>${t('Cancel')}</button>
-                          </form>`
-                        : html`<span class="muted">${g.description || t('no description')}</span>
-                            ${
-                              g.capabilities?.can_manage_access
-                                ? html`<button
-                                    type="button"
-                                    class="small"
-                                    @click=${() => {
-                                      this.editing = g.name;
-                                      this.form = { description: g.description };
-                                    }}
-                                  >
-                                    ${t('Edit')}
-                                  </button>`
-                                : nothing
-                            }`
-                    }
-                    <span class="muted dim"
-                      >${t('{n} stores', { n: g.store_count })} · ${t('created {when} by {who}', { when: fmtTime(g.created_at), who: g.created_by })}</span
-                    >
-                    <button type="button" class="small" @click=${() => this._toggle(g.name)} data-testid="groups-admins-${g.name}">
-                      ${this.open === g.name ? t('Hide admins & sharing') : t('Admins & sharing')}
-                    </button>
-                    ${
-                      d.can_manage && g.name !== 'default' && g.store_count === 0
-                        ? html`<button type="button" class="small danger" @click=${() => this._delete(g.name)} data-testid="groups-delete-${g.name}">
-                            ${t('Delete')}
-                          </button>`
-                        : nothing
-                    }
+                  <div class="group-head">
+                    <div class="group-main">
+                      <h3 class="mono">${g.name}</h3>
+                      ${
+                        this.editing === g.name
+                          ? html`<form class="form inline" @submit=${(e) => this._saveDescription(e, g.name)}>
+                              <input .value=${this.form.description ?? g.description} @input=${this._set('description')} />
+                              <button class="primary small" ?disabled=${this.busy}>${t('Save')}</button>
+                              <button type="button" class="small" @click=${() => (this.editing = '')}>${t('Cancel')}</button>
+                            </form>`
+                          : html`<span class="muted">${g.description || t('no description')}</span>`
+                      }
+                      <span class="muted dim group-meta"
+                        >${t('{n} stores', { n: g.store_count })} · ${t('created {when} by {who}', { when: fmtTime(g.created_at), who: g.created_by })}</span
+                      >
+                    </div>
+                    <div class="actions group-actions">
+                      ${
+                        g.capabilities?.can_manage_access && this.editing !== g.name
+                          ? html`<button
+                              type="button"
+                              class="small"
+                              @click=${() => {
+                                this.editing = g.name;
+                                this.form = { description: g.description };
+                              }}
+                              data-testid="groups-edit-${g.name}"
+                            >
+                              ${t('Edit')}
+                            </button>`
+                          : nothing
+                      }
+                      <button type="button" class="small" @click=${() => this._toggle(g.name)} data-testid="groups-admins-${g.name}">
+                        ${this.open === g.name ? t('Hide admins & sharing') : t('Admins & sharing')}
+                      </button>
+                      ${
+                        d.can_manage && g.name !== 'default' && g.store_count === 0
+                          ? html`<button type="button" class="small danger" @click=${() => this._delete(g.name)} data-testid="groups-delete-${g.name}">
+                              ${t('Delete')}
+                            </button>`
+                          : nothing
+                      }
+                    </div>
                   </div>
                   ${
                     g.stores.length
@@ -356,9 +393,19 @@ export class PgcGroups extends PgcElement {
                 </section>`,
               )}
               ${
-                d.ungrouped?.length
+                this._visible().length > PgcGroups.SHOW
+                  ? html`<p class="help">${t('{n} more groups — narrow the search.', { n: this._visible().length - PgcGroups.SHOW })}</p>`
+                  : nothing
+              }
+              ${
+                this.q && !this._visible().length
+                  ? html`<p class="help">${t('No group matches.')}</p>`
+                  : nothing
+              }
+              ${
+                d.ungrouped?.length && !this.q
                   ? html`<section class="card" data-testid="groups-ungrouped">
-                      <div class="row-head">
+                      <div class="group-head">
                         <h3>${t('Ungrouped stores')}</h3>
                         <span class="muted">${t('Each is its own group of one; the platform admins administer it.')}</span>
                       </div>

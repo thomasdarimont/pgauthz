@@ -1,5 +1,5 @@
 import { html, nothing } from 'lit';
-import { PgcElement, help, errorBox, loading } from '../base.js';
+import { PgcElement, help, errorBox, loading, groupPick, groupList } from '../base.js';
 import { api } from '../api.js';
 import { t } from '../i18n.js';
 import { run, forbiddenText, fmtTime, parseList } from '../util.js';
@@ -20,6 +20,7 @@ export class PgcIssuers extends PgcElement {
     form: { state: true },
     confirming: { state: true },
     saved: { state: true },
+    warning: { state: true }, // the issuer a discovery document named instead
     audit: { state: true },
     page: { state: true },
     limit: { state: true },
@@ -35,6 +36,7 @@ export class PgcIssuers extends PgcElement {
     this.form = null;
     this.confirming = '';
     this.saved = '';
+    this.warning = '';
     /** @type {import('../types.js').IssuerAuditPage|null} */
     this.audit = null;
     this.page = 1;
@@ -153,6 +155,8 @@ export class PgcIssuers extends PgcElement {
       audience: '',
       audiences: '',
       signin_enabled: false,
+      signin_auto_login: false,
+      discovery_url: '',
       signin_label: '',
       signin_client_id: '',
       signin_client_secret: '',
@@ -176,6 +180,8 @@ export class PgcIssuers extends PgcElement {
       audience: b.audience ?? '',
       audiences: (b.audiences ?? []).join('\n'),
       signin_enabled: !!this.d?.signin?.[b.issuer]?.enabled,
+      signin_auto_login: !!this.d?.signin?.[b.issuer]?.auto_login,
+      discovery_url: this.d?.signin?.[b.issuer]?.discovery_url ?? '',
       signin_label: this.d?.signin?.[b.issuer]?.label ?? '',
       signin_client_id: this.d?.signin?.[b.issuer]?.client_id ?? '',
       signin_client_secret: '',
@@ -190,16 +196,15 @@ export class PgcIssuers extends PgcElement {
     if (!issuer) return;
     const r = await run(this, async () => {
       try {
-        return await api.platformIssuerDiscover(issuer);
+        return await api.platformIssuerDiscover(issuer, this.form.discovery_url?.trim() || '');
       } catch (err) {
         throw new Error(forbiddenText(err));
       }
     });
     if (!r) return;
     this.form = { ...this.form, jwks_url: r.jwks_uri ?? '' };
-    this.saved = r.matches
-      ? t('Discovered: the provider names itself as this issuer; JWKS URL filled in.')
-      : t('Discovered, but the provider names itself {issuer} — check the issuer URL.', { issuer: r.issuer });
+    this.warning = r.matches ? '' : r.issuer;
+    this.saved = r.matches ? t('Discovered: the provider names itself as this issuer; JWKS URL filled in.') : '';
   }
 
   _set(k) {
@@ -280,6 +285,8 @@ export class PgcIssuers extends PgcElement {
             client_id: f.signin_client_id?.trim() || '',
             client_secret: f.signin_client_secret || '',
             enabled: !!f.signin_enabled,
+            auto_login: !!f.signin_enabled && !!f.signin_auto_login,
+            discovery_url: f.discovery_url?.trim() || '',
           });
         } catch (err) {
           throw new Error(forbiddenText(err));
@@ -319,6 +326,7 @@ export class PgcIssuers extends PgcElement {
     const known = eff?.available ? (eff.issuers ?? []).map((i) => i.issuer) : [];
     return html`<form class="form card" data-testid="issuers-form" @submit=${(e) => this._save(e)}>
       <h4 class="wide">${f.isNew ? t('New binding') : t('Edit binding')}</h4>
+      <h5 class="wide form-section">${t('Identity provider')} ${help('Who the tokens come from. Trust itself (keys, audience) is the environment\'s for a platform issuer and this row\'s for a group issuer.')}</h5>
       <label class="field wide"
         ><span
           >${t('Issuer')}
@@ -335,18 +343,63 @@ export class PgcIssuers extends PgcElement {
         <datalist id="issuers-known">${known.map((i) => html`<option value=${i}></option>`)}</datalist>
       </label>
       <label class="field"
+        ><span>${t('Description')}</span
+        ><input .value=${f.description} @input=${this._set('description')} data-testid="issuers-description"
+      /></label>
+      <label class="check"
+        ><input
+          type="checkbox"
+          .checked=${f.enabled}
+          @change=${this._set('enabled')}
+          data-testid="issuers-enabled"
+        />
+        ${t('Enabled')}
+        ${help('Unchecked, every token of this issuer is refused (401) while its trust stays configured — pause an identity provider without a deploy.')}</label
+      >
+      <label class="field"
         ><span
           >${t('Store group')}
           ${help('A group issuer (ADR 0017): its tokens reach the stores of this group, as they are at any moment, and the group\'s admins manage it. With a group the Stores list below stays empty. Empty = a platform issuer bound by patterns.')}</span
         >
-        <select .value=${f.store_group ?? ''} @change=${this._set('store_group')} data-testid="issuers-store-group">
-          <option value="">${t('— none: a platform issuer, bound by patterns —')}</option>
-          ${(this.d?.known?.groups ?? []).map((g) => html`<option value=${g} ?selected=${g === f.store_group}>${g}</option>`)}
-        </select>
+        ${groupPick({
+          list: 'issuers-known-groups',
+          names: this.d?.known?.groups ?? [],
+          value: f.store_group ?? '',
+          onPick: (v) => (this.form = { ...this.form, store_group: v }),
+          placeholder: t('none — a platform issuer, bound by patterns'),
+          testid: 'issuers-store-group',
+        })}
+        ${groupList('issuers-known-groups', this.d?.known?.groups ?? [])}
       </label>
       ${
         f.store_group
           ? html`<label class="field wide"
+                ><span
+                  >${t('Discovery URL')}
+                  ${help('Optional: where the provider\'s openid-configuration is, when not at <issuer>/.well-known/openid-configuration (a proxy, a provider that serves it elsewhere). Used by Discover and, with console sign-in, by the sign-in itself.')}</span
+                >
+                <input
+                  type="url"
+                  class="mono"
+                  placeholder=${(f.issuer?.trim() || 'https://idp.example/realms/tenant') + '/.well-known/openid-configuration'}
+                  .value=${f.discovery_url ?? ''}
+                  @input=${this._set('discovery_url')}
+                  data-testid="issuers-discovery-url"
+                />
+              </label>
+              ${
+                this.warning
+                  ? html`<div class="notice warn wide" data-testid="issuers-issuer-mismatch">
+                      ${t('The discovery document names the issuer {issuer}, not the one above. Tokens carry that iss — a binding for another issuer never matches them.', { issuer: this.warning })}
+                      ${
+                        f.isNew
+                          ? html`<button type="button" class="small" @click=${() => { this.form = { ...this.form, issuer: this.warning }; this.warning = ''; }}>${t('Use {issuer}', { issuer: this.warning })}</button>`
+                          : nothing
+                      }
+                    </div>`
+                  : nothing
+              }
+              <label class="field wide"
                 ><span
                   >${t('JWKS URL')}
                   ${help('The provider\'s signing keys (https). With it this row is the group\'s own trust anchor: a provider the environment does not list is accepted for the group\'s stores only. Discover fills it from the issuer URL.')}</span
@@ -376,7 +429,7 @@ export class PgcIssuers extends PgcElement {
                 ><span>${t('Further audiences')}</span>
                 <textarea class="list" rows="2" .value=${f.audiences ?? ''} @input=${this._set('audiences')} data-testid="issuers-audiences"></textarea>
               </label>
-              <label class="field wide check"
+              <label class="check wide"
                 ><input type="checkbox" .checked=${!!f.signin_enabled} @change=${this._set('signin_enabled')} data-testid="issuers-signin-enabled" />
                 <span
                   >${t('Console sign-in through this provider')}
@@ -396,10 +449,23 @@ export class PgcIssuers extends PgcElement {
                       <label class="field"
                         ><span>${t('Client secret')} ${help('Leave empty to keep the stored one.')}</span>
                         <input type="password" class="mono" autocomplete="new-password" .value=${f.signin_client_secret ?? ''} @input=${this._set('signin_client_secret')} data-testid="issuers-signin-secret"
-                      /></label>`
+                      /></label>
+                      <label class="check wide"
+                        ><input type="checkbox" .checked=${!!f.signin_auto_login} @change=${(e) => (this.form = { ...this.form, signin_auto_login: e.target.checked })} data-testid="issuers-signin-auto-login" />
+                        <span
+                          >${t('Sign people in here automatically')}
+                          ${help('A signed-out visitor is sent to this provider without the chooser. One provider at most does this (the platform\'s takes precedence, CONSOLE_AUTO_LOGIN). The chooser stays reachable after a sign-out and at ?login=select; ?login=<issuer> deep-links into one provider.')}</span
+                        ></label
+                      >`
                   : nothing
               }`
-          : html`<label class="field"
+          : nothing
+      }
+      <h5 class="wide form-section">${t('Scope')} ${help('Which stores the tokens of this issuer may ask about. Every other setting below applies within this scope.')}</h5>
+      ${
+        f.store_group
+          ? html`<p class="help wide">${t('A group issuer\'s tokens reach the stores of its group, as the membership is at any moment (Platform → Groups).')}</p>`
+          : html`<label class="field wide"
               ><span
                 >${t('Stores')}
                 ${help('One anchored pattern per line (docs, tenant_a_.*). Tokens of this issuer may ask about these stores only. Must stay within what the environment binds — a row narrows, never widens; empty only when the environment leaves the issuer unbound.')}</span
@@ -413,10 +479,11 @@ export class PgcIssuers extends PgcElement {
               ${this._picker('stores', 'stores', t('Add a store…'))}
             </label>`
       }
+      <h5 class="wide form-section">${t('Database roles')} ${help('pgauthzd can run a request as a per-application PostgreSQL role (namespaced types are then enforced per calling application). The role comes from the token\'s DB_ROLE_CLAIM, else from the client map here, else from the instance\'s global map. DB roles is the allow-list for everything this issuer yields; a token yielding another role is refused (403).')}</h5>
       <label class="field"
         ><span
           >${t('DB roles')}
-          ${help('Anchored patterns of the per-app DB roles tokens of this issuer may claim (DB_ROLE_CLAIM / client roles). Empty = no restriction.')}</span
+          ${help('Anchored patterns of the per-app DB roles tokens of this issuer may yield, by claim or by the client map. Empty = unrestricted (a startup warning per unbound issuer; REQUIRE_DB_ROLE_BINDING makes it an error). The picker offers the per-app roles of this database: NOLOGIN roles that are members of authz_reader — what pgauthzd will assume.')}</span
         ><textarea
           class="list"
           rows="3"
@@ -429,7 +496,7 @@ export class PgcIssuers extends PgcElement {
       <label class="field"
         ><span
           >${t('Client DB roles')}
-          ${help('JSON object: client id (azp) → DB role, scoped to this issuer.')}</span
+          ${help('JSON object: client id (the token\'s azp) → DB role, for clients whose tokens carry no role claim. Scoped to this issuer, because azp is unique only within an issuer; each role must match the DB roles patterns.')}</span
         ><textarea
           class="list"
           rows="3"
@@ -438,10 +505,11 @@ export class PgcIssuers extends PgcElement {
           data-testid="issuers-client-db-roles"
         ></textarea>
       </label>
-      <label class="field"
+      <h5 class="wide form-section">${t('Trusted enforcement points')} ${help('By default a token may only ask about its own subject. A policy enforcement point (an API gateway, a backend asking on behalf of its users) may assert another subject in the request body — listed here, per client and store (ADR 0014).')}</h5>
+      <label class="field wide"
         ><span
           >${t('PEP clients')}
-          ${help('JSON object: client id → store patterns. These clients may assert a request-body subject (a trusted policy enforcement point), in those stores only — each pattern must be covered by the stores above.')}</span
+          ${help('JSON object: client id (azp) → store patterns, e.g. {"api-gateway": ["docs", "tenant_a_.*"]}. These clients may assert a request-body subject (and send what-if tuples) in those stores only — each pattern must lie within the scope above.')}</span
         ><textarea
           class="list"
           rows="3"
@@ -450,20 +518,6 @@ export class PgcIssuers extends PgcElement {
           data-testid="issuers-pep-clients"
         ></textarea>
       </label>
-      <label class="field wide"
-        ><span>${t('Description')}</span
-        ><input .value=${f.description} @input=${this._set('description')} data-testid="issuers-description"
-      /></label>
-      <label class="check wide"
-        ><input
-          type="checkbox"
-          .checked=${f.enabled}
-          @change=${this._set('enabled')}
-          data-testid="issuers-enabled"
-        />
-        ${t('Enabled')}
-        ${help('Unchecked, every token of this issuer is refused (401) while its trust stays configured — pause an identity provider without a deploy.')}</label
-      >
       <div class="actions wide">
         <button class="sm" ?disabled=${this.busy} data-testid="issuers-save">${t('Save binding')}</button>
         <button
@@ -607,7 +661,7 @@ export class PgcIssuers extends PgcElement {
                           ${b.issuer}
                           ${b.store_group ? html` <span class="badge muted" title=${t('a group issuer: reaches the stores of this group')}>${b.store_group}</span>` : nothing}
                           ${b.jwks_url ? html` <span class="badge ok" title=${b.jwks_url}>${t('own anchor')}</span>` : nothing}
-                          ${d.signin?.[b.issuer]?.enabled ? html` <span class="badge muted" title=${t('a button on the sign-in page')}>${t('sign-in')}</span>` : nothing}
+                          ${d.signin?.[b.issuer]?.enabled ? html` <span class="badge muted" title=${t('a button on the sign-in page')}>${t('sign-in')}</span>` : nothing}${d.signin?.[b.issuer]?.auto_login ? html` <span class="badge muted" title=${t('signs visitors in automatically')}>${t('auto')}</span>` : nothing}
                         </td>
                         <td class="mono">
                           ${b.stores.length ? b.stores.join(', ') : html`<span class="muted">${b.store_group ? t('no stores in the group yet') : t('as the environment')}</span>`}

@@ -1,5 +1,5 @@
 import { html, nothing } from 'lit';
-import { PgcElement, help, errorBox } from '../base.js';
+import { PgcElement, help, errorBox, groupPick, groupList } from '../base.js';
 import { api } from '../api.js';
 import { t, t2 } from '../i18n.js';
 import { capLabel, statusBadge, run, forbiddenText, fmtTime, fmtRelative } from '../util.js';
@@ -169,7 +169,7 @@ export class PgcStores extends PgcElement {
     const rows = (this.data?.stores ?? []).filter(
       (st) =>
         (this.showRetired || !st.retired_at) &&
-        (gf === '' || (gf === '-' ? !st.store_group : st.store_group === gf)) &&
+        (gf === '' || (gf === '-' ? !st.store_group : (st.store_group ?? '').toLowerCase().includes(gf.toLowerCase()))) &&
         words.every((w) => `${st.name} ${st.description ?? ''} ${st.store_group ?? ''}`.toLowerCase().includes(w)),
     );
     const { key, dir } = this.sort;
@@ -327,10 +327,15 @@ export class PgcStores extends PgcElement {
                   >${t('Store group')}
                   ${help('Which group administers the store (ADR 0017): the default group is the platform\'s own; ungrouped means the store is its own group of one.')}</span
                 >
-                <select class="mono" @change=${this._set('group')} data-testid="store-create-group">
-                  ${(this.groups ?? ['default']).map((g) => html`<option value=${g} ?selected=${g === 'default'}>${g}</option>`)}
-                  <option value="">${t('— ungrouped (its own group) —')}</option>
-                </select></label
+                ${groupPick({
+                  list: 'dl-store-groups',
+                  names: this.groups ?? ['default'],
+                  value: this.form.group ?? 'default',
+                  onPick: (v) => (this.form = { ...this.form, group: v }),
+                  placeholder: t('ungrouped — its own group'),
+                  testid: 'store-create-group',
+                })}
+                ${groupList('dl-store-groups', this.groups ?? ['default'])}</label
               >
               <label class="field wide"
                 ><span
@@ -388,19 +393,26 @@ export class PgcStores extends PgcElement {
                         ${(() => {
                           const names = [...new Set((this.data?.stores ?? []).map((s) => s.store_group).filter(Boolean))].sort();
                           const anyUngrouped = (this.data?.stores ?? []).some((s) => !s.store_group);
+                          // typed, over a datalist: a select does not scale to a tenant per group
                           return names.length || anyUngrouped
-                            ? html`<select
-                                class="group-filter"
-                                aria-label=${t('Group')}
-                                title=${t('Show the stores of one group')}
-                                .value=${this.groupFilter ?? ''}
-                                @change=${(e) => (this.groupFilter = e.target.value)}
-                                data-testid="stores-group-filter"
-                              >
-                                <option value="">${t('every group')}</option>
-                                ${names.map((n) => html`<option value=${n} ?selected=${this.groupFilter === n}>${n}</option>`)}
-                                ${anyUngrouped ? html`<option value="-" ?selected=${this.groupFilter === '-'}>${t('ungrouped')}</option>` : nothing}
-                              </select>`
+                            ? html`<input
+                                  class="mono group-filter"
+                                  list="dl-stores-group-filter"
+                                  aria-label=${t('Group')}
+                                  title=${t('Show the stores of one group (part of its name; - = ungrouped)')}
+                                  placeholder=${t('every group')}
+                                  autocomplete="off"
+                                  .value=${this.groupFilter ?? ''}
+                                  @input=${(e) => {
+                                    this.groupFilter = e.target.value;
+                                    this.page = 0;
+                                  }}
+                                  data-testid="stores-group-filter"
+                                />
+                                <datalist id="dl-stores-group-filter">
+                                  ${names.map((n) => html`<option value=${n}></option>`)}
+                                  ${anyUngrouped ? html`<option value="-">${t('ungrouped')}</option>` : nothing}
+                                </datalist>`
                             : nothing;
                         })()}
                         ${

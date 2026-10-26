@@ -80,6 +80,12 @@ spec:
             {{- if $issuer }}
             - { name: ISSUER,       value: {{ $issuer | quote }} }
             - { name: CLIENT_ID,    value: {{ .Values.console.clientId | quote }} }
+            {{- with .Values.console.providerLabel }}
+            - { name: PROVIDER_LABEL, value: {{ . | quote }} }
+            {{- end }}
+            {{- with .Values.console.autoLogin }}
+            - { name: CONSOLE_AUTO_LOGIN, value: {{ . | quote }} }
+            {{- end }}
             - name: CLIENT_SECRET
               valueFrom:
                 secretKeyRef: { name: {{ if .Values.secrets.existingSecret }}{{ .Values.secrets.existingSecret }}{{ else }}{{ $full }}-console-oidc{{ end }}, key: {{ if .Values.secrets.existingSecret }}console-client-secret{{ else }}client-secret{{ end }} }

@@ -22,3 +22,33 @@ func TestValidateSubjectIDClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The platform provider's button: PROVIDER_LABEL, else the issuer's host —
+// an EntraID tenant must not say "Keycloak".
+func TestProviderName(t *testing.T) {
+	if got := (Config{Issuer: "https://login.microsoftonline.com/abc/v2.0"}).ProviderName(); got != "login.microsoftonline.com" {
+		t.Fatalf("host fallback: %q", got)
+	}
+	if got := (Config{Issuer: "https://id.example/realms/x", ProviderLabel: "ACME SSO"}).ProviderName(); got != "ACME SSO" {
+		t.Fatalf("label: %q", got)
+	}
+}
+
+// CONSOLE_AUTO_LOGIN is a switch or an https issuer, nothing else.
+func TestValidateAutoLogin(t *testing.T) {
+	base := Config{SubjectIDClaims: []string{"sub"}}
+	for _, ok := range []string{"", "true", "false", "TRUE", "https://id.acme.test/realms/demo"} {
+		c := base
+		c.AutoLogin = ok
+		if err := c.Validate(); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"yes", "http://id.acme.test", "keycloak"} {
+		c := base
+		c.AutoLogin = bad
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "CONSOLE_AUTO_LOGIN") {
+			t.Errorf("%q must be refused, got %v", bad, err)
+		}
+	}
+}

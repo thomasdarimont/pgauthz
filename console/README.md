@@ -245,15 +245,27 @@ stores where nothing is shared (and always per tenant).
   for what they already started and denies what they start afterwards.
 - **More than one identity provider.** Besides the platform's provider
   (`ISSUER`, `CLIENT_ID`, `CLIENT_SECRET`; its button says `PROVIDER_LABEL`,
-  default "Keycloak"), a group issuer's admins can register the console as
-  a client at their own provider (Platform → Issuers, *Console sign-in
-  through this provider*: label, client id, client secret). The sign-in
-  page then offers one button per reachable provider, a session remembers
-  which one signed it in (refresh and logout go there), and the person's
-  id and memberships come from that provider's ID token the way they do
-  for the platform's — the delegated admin rule pgauthzd holds for the same
-  issuer must derive the same id. Registrations and secrets live in the
-  console's own database (`console_providers`), like the sessions.
+  default: the issuer's host), a group issuer's admins can register the
+  console as a client at their own provider (Platform → Issuers, *Console
+  sign-in through this provider*: label, client id, client secret, an
+  optional discovery URL when the provider's `openid-configuration` is not
+  at the issuer's well-known location). The sign-in page then offers one
+  button per reachable provider, a session remembers which one signed it
+  in (refresh and logout go there), and the person's id and memberships
+  come from that provider's ID token the way they do for the platform's —
+  the delegated admin rule pgauthzd holds for the same issuer must derive
+  the same id. A discovery document naming another issuer takes the
+  provider off the page (its tokens would never match). Registrations and
+  secrets live in the console's own database (`console_providers`), like
+  the sessions.
+- **Auto-login.** An internal deployment with one provider needs no
+  sign-in page: `CONSOLE_AUTO_LOGIN=true` sends a signed-out visitor
+  straight to the platform's provider (an issuer URL names a registered
+  one instead; a registered provider can also be marked *Sign people in
+  here automatically* — one provider at most, the platform's wins). The
+  chooser stays reachable: after a sign-out (once), at
+  `<console>/?login=select`, and `?login=<issuer>` deep-links into one
+  provider — a tenant's bookmark.
 - **Sessions live as long as the access token.** Memberships come from the
   token, so the BFF renews it with the refresh token shortly before expiry
   and ends the session (401, sign in again) when it cannot. The cookie's 8

@@ -193,7 +193,7 @@ export const api = {
   /** @param {import('./types.js').IssuerBinding} b */
   platformIssuerSave: (b) => call('api/platform/issuers', b, { method: 'PUT' }),
   platformIssuerDelete: (issuer, store_group = '') => call('api/platform/issuers/delete', store_group ? { issuer, store_group } : { issuer }),
-  platformIssuerDiscover: (issuer) => call(`api/platform/issuers/discover?issuer=${enc(issuer)}`),
+  platformIssuerDiscover: (issuer, url) => call(`api/platform/issuers/discover?issuer=${enc(issuer)}${url ? '&url=' + enc(url) : ''}`),
   platformIssuerSignin: (b) => call('api/platform/issuers/signin', b, { method: 'PUT' }),
   platformIssuerSigninDelete: (issuer, store_group) => call('api/platform/issuers/signin/delete', { issuer, store_group }),
   /** @returns {Promise<import('./types.js').PoliciesResponse>} */

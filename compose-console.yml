@@ -50,6 +50,7 @@ services:
       CLIENT_ID: console-bff
       CLIENT_SECRET: ${CONSOLE_BFF_CLIENT_SECRET:-console-bff-demo-secret}
       ISSUER: https://id.pgauthz.test/realms/pgauthz
+      PROVIDER_LABEL: Keycloak
       TLS_CA_FILE: /etc/pgauthz/rootCA.pem
       REDIRECT_URI: https://app.pgauthz.test/console/auth/callback
       BASE_URL: https://app.pgauthz.test

@@ -414,6 +414,11 @@ redirect URI `<baseUrl><basePath>/auth/callback` (`baseUrl` defaults to the
 ingress host). A private issuer CA goes in `console.tlsCaConfigMap` (key
 `ca.crt`).
 
+`console.providerLabel` names the sign-in button (default: the issuer's
+host); `console.autoLogin: "true"` sends a signed-out visitor straight to
+the provider — an internal deployment with one IdP needs no sign-in page
+(the chooser stays at `<console>/?login=select` and after a sign-out).
+
 **Without an IdP** — a first look, a test cluster — enable the local admin
 sign-in instead (or in addition):
 

@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -39,6 +38,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		next = s.cfg.BasePath + "/"
 	}
 	s.setCookie(w, authCookie, prov.Issuer+"|"+state+"|"+verifier+"|"+next, 300)
+	s.setCookie(w, signedOutCookie, "", -1)
 	q := url.Values{
 		"client_id":             {prov.ClientID},
 		"redirect_uri":          {s.cfg.RedirectURI},
@@ -133,9 +133,12 @@ func localCredentialsMatch(wantUser, wantPass, user, pass string) bool {
 
 // loginMethods tells the SPA which sign-ins this deployment offers: the
 // providers (one button each) and the local admin sign-in.
-func (s *Server) loginMethods(ctx context.Context) map[string]any {
-	providers := s.signinProviders(ctx)
-	return map[string]any{"oidc": len(providers) > 0, "local": s.cfg.LocalAdminEnabled(), "providers": providers}
+func (s *Server) loginMethods(r *http.Request) map[string]any {
+	providers, auto := s.signinProviders(r.Context())
+	if _, err := r.Cookie(signedOutCookie); err == nil {
+		auto = "" // just signed out: show the chooser once
+	}
+	return map[string]any{"oidc": len(providers) > 0, "local": s.cfg.LocalAdminEnabled(), "providers": providers, "auto_login": auto}
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -149,6 +152,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.setCookie(w, sessionCookie, "", -1)
+	s.setCookie(w, signedOutCookie, "1", 300)
 	prov, err := s.providerFor(r.Context(), issuer)
 	if local || err != nil || prov.meta.LogoutURL == "" {
 		// Nothing to end at an IdP.
@@ -167,7 +171,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	p := s.principal(r)
 	if p == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"authenticated": false, "login": s.loginMethods(r.Context())})
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"authenticated": false, "login": s.loginMethods(r)})
 		return
 	}
 	platform, err := s.capabilities(r.Context(), p, "platform", []string{s.cfg.PlatformID},

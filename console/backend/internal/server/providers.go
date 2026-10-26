@@ -8,10 +8,14 @@ package server
 // button per provider; a session remembers which one signed it in, so a
 // refresh and the logout go back to the right place. Discovery runs on
 // demand with a short timeout and is cached; a provider that does not
-// answer is left off the sign-in page until it does.
+// answer is left off the sign-in page until it does. One provider may be
+// the auto-login one (CONSOLE_AUTO_LOGIN for the platform's, the row's
+// auto_login for a registered one): a signed-out visitor goes straight
+// there; the chooser stays reachable at ?login=select and after a sign-out,
+// and ?login=<issuer> is a deep link into one provider (a tenant's bookmark).
 //
 //   GET  /api/providers                          the sign-in buttons (public)
-//   PUT  /api/platform/issuers/signin            {issuer, store_group, label, client_id, client_secret, enabled}
+//   PUT  /api/platform/issuers/signin            {issuer, store_group, label, client_id, client_secret, enabled, auto_login, discovery_url}
 //   POST /api/platform/issuers/signin/delete     {issuer, store_group}
 //
 // Who the signed-in person is comes from the ID token the way it does for
@@ -39,11 +43,17 @@ type signinProvider struct {
 	Group    string `json:"store_group,omitempty"`
 	ClientID string `json:"client_id,omitempty"`
 	Enabled  bool   `json:"enabled"`
-	secret   string
-	meta     oidc.Metadata
-	client   *oidc.Client
-	fetched  time.Time
-	err      error
+	// AutoLogin: a signed-out visitor is sent here without the chooser
+	// (the platform's: CONSOLE_AUTO_LOGIN). At most one provider wins.
+	AutoLogin bool `json:"auto_login"`
+	// DiscoveryURL: where the provider's openid-configuration is, when not
+	// at the issuer's well-known location (empty = derived from the issuer).
+	DiscoveryURL string `json:"discovery_url,omitempty"`
+	secret       string
+	meta         oidc.Metadata
+	client       *oidc.Client
+	fetched      time.Time
+	err          error
 }
 
 type providerCache struct {
@@ -59,7 +69,8 @@ func (s *Server) platformProvider() *signinProvider {
 	if s.oidc == nil {
 		return nil
 	}
-	return &signinProvider{Issuer: s.cfg.Issuer, Label: s.cfg.ProviderLabel, ClientID: s.cfg.ClientID, Enabled: true, meta: s.endpoints, client: s.oidc}
+	auto := strings.EqualFold(s.cfg.AutoLogin, "true") || strings.TrimRight(s.cfg.AutoLogin, "/") == strings.TrimRight(s.cfg.Issuer, "/")
+	return &signinProvider{Issuer: s.cfg.Issuer, Label: s.cfg.ProviderName(), ClientID: s.cfg.ClientID, Enabled: true, AutoLogin: auto, meta: s.endpoints, client: s.oidc}
 }
 
 // dbProviders reads the registered providers (secrets included: the
@@ -68,7 +79,7 @@ func (s *Server) dbProviders(ctx context.Context) ([]signinProvider, error) {
 	if s.db == nil {
 		return nil, nil
 	}
-	rows, err := s.db.Query(ctx, `SELECT issuer, coalesce(label, ''), coalesce(store_group, ''), client_id, client_secret, enabled FROM console_providers ORDER BY issuer`)
+	rows, err := s.db.Query(ctx, `SELECT issuer, coalesce(label, ''), coalesce(store_group, ''), client_id, client_secret, enabled, auto_login, coalesce(discovery_url, '') FROM console_providers ORDER BY issuer`)
 	if err != nil {
 		return nil, err
 	}
@@ -76,12 +87,17 @@ func (s *Server) dbProviders(ctx context.Context) ([]signinProvider, error) {
 	var out []signinProvider
 	for rows.Next() {
 		var p signinProvider
-		if err := rows.Scan(&p.Issuer, &p.Label, &p.Group, &p.ClientID, &p.secret, &p.Enabled); err != nil {
+		if err := rows.Scan(&p.Issuer, &p.Label, &p.Group, &p.ClientID, &p.secret, &p.Enabled, &p.AutoLogin, &p.DiscoveryURL); err != nil {
 			return nil, err
+		}
+		if p.Label == "" {
+			p.Label = p.Group
 		}
 		if p.Label == "" {
 			p.Label = p.Issuer
 		}
+		// the environment may name a registered provider as the auto-login one
+		p.AutoLogin = p.AutoLogin || strings.TrimRight(s.cfg.AutoLogin, "/") == strings.TrimRight(p.Issuer, "/")
 		out = append(out, p)
 	}
 	return out, rows.Err()
@@ -89,10 +105,16 @@ func (s *Server) dbProviders(ctx context.Context) ([]signinProvider, error) {
 
 // discoverOnce: one bounded discovery fetch (oidc.Discover retries for the
 // startup case; a registered provider must not stall the sign-in page).
-func (s *Server) discoverOnce(ctx context.Context, issuer string) (oidc.Metadata, error) {
+// The document is read at the issuer's well-known location, or at the URL
+// the registration names; a document naming another issuer is refused —
+// its tokens would carry that iss and never match.
+func (s *Server) discoverOnce(ctx context.Context, issuer, discoveryURL string) (oidc.Metadata, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(issuer, "/")+"/.well-known/openid-configuration", nil)
+	if discoveryURL == "" {
+		discoveryURL = strings.TrimRight(issuer, "/") + "/.well-known/openid-configuration"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, nil)
 	if err != nil {
 		return oidc.Metadata{}, err
 	}
@@ -114,6 +136,9 @@ func (s *Server) discoverOnce(ctx context.Context, issuer string) (oidc.Metadata
 	}
 	if m.AuthURL == "" || m.TokenURL == "" {
 		return oidc.Metadata{}, errors.New("discovery document names no authorization or token endpoint")
+	}
+	if m.Issuer != "" && strings.TrimRight(m.Issuer, "/") != strings.TrimRight(issuer, "/") {
+		return oidc.Metadata{}, errors.New("discovery document names issuer " + m.Issuer + ", not " + issuer)
 	}
 	return m, nil
 }
@@ -151,9 +176,9 @@ func (s *Server) providerFor(ctx context.Context, issuer string) (*signinProvide
 	if c != nil && c.err != nil {
 		ttl = providerErrTTL
 	}
-	if c == nil || time.Since(c.fetched) > ttl || c.ClientID != row.ClientID || c.secret != row.secret {
-		meta, err := s.discoverOnce(ctx, issuer)
-		c = &signinProvider{Issuer: issuer, Label: row.Label, Group: row.Group, ClientID: row.ClientID, Enabled: true, secret: row.secret, meta: meta, fetched: time.Now(), err: err}
+	if c == nil || time.Since(c.fetched) > ttl || c.ClientID != row.ClientID || c.secret != row.secret || c.DiscoveryURL != row.DiscoveryURL {
+		meta, err := s.discoverOnce(ctx, issuer, row.DiscoveryURL)
+		c = &signinProvider{Issuer: issuer, Label: row.Label, Group: row.Group, ClientID: row.ClientID, Enabled: true, AutoLogin: row.AutoLogin, DiscoveryURL: row.DiscoveryURL, secret: row.secret, meta: meta, fetched: time.Now(), err: err}
 		if err == nil {
 			hc := s.http
 			if hc == nil {
@@ -166,33 +191,57 @@ func (s *Server) providerFor(ctx context.Context, issuer string) (*signinProvide
 	if c.err != nil {
 		return nil, c.err
 	}
+	c.AutoLogin = row.AutoLogin // the row may have changed without a rediscovery
 	return c, nil
 }
 
 // signinProviders: what the sign-in page offers — the platform's provider
-// and every registered, enabled, reachable one.
-func (s *Server) signinProviders(ctx context.Context) []map[string]any {
+// and every registered, enabled, reachable one — and which of them, if
+// any, signs a visitor in without the chooser (the first marked one; the
+// platform's first).
+func (s *Server) signinProviders(ctx context.Context) ([]map[string]any, string) {
 	out := []map[string]any{}
+	auto := ""
+	add := func(p *signinProvider) {
+		m := map[string]any{"issuer": p.Issuer, "label": p.Label}
+		if p.Group != "" {
+			m["store_group"] = p.Group
+		}
+		if p.AutoLogin && auto == "" {
+			auto = p.Issuer
+			m["auto_login"] = true
+		}
+		out = append(out, m)
+	}
 	if p := s.platformProvider(); p != nil {
-		out = append(out, map[string]any{"issuer": p.Issuer, "label": p.Label})
+		add(p)
 	}
 	rows, err := s.dbProviders(ctx)
 	if err != nil {
-		return out
+		return out, auto
 	}
 	for _, r := range rows {
 		if !r.Enabled {
 			continue
 		}
 		if p, err := s.providerFor(ctx, r.Issuer); err == nil {
-			out = append(out, map[string]any{"issuer": p.Issuer, "label": p.Label, "store_group": p.Group})
+			add(p)
 		}
 	}
-	return out
+	return out, auto
 }
 
+// signedOutCookie marks a browser that just signed out: the next visit
+// shows the chooser even with auto-login, so a sign-out does not bounce
+// straight back into the provider. Cleared by the next login.
+const signedOutCookie = "pgc_signed_out"
+
 func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"providers": s.signinProviders(r.Context())})
+	providers, auto := s.signinProviders(r.Context())
+	if _, err := r.Cookie(signedOutCookie); err == nil {
+		auto = ""
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"providers": providers, "auto_login": auto})
 }
 
 // signinRows: the registered providers for the Issuers tab (no secrets),
@@ -223,6 +272,8 @@ type signinReq struct {
 	ClientID     string `json:"client_id"`
 	ClientSecret string `json:"client_secret"` // empty keeps the stored one
 	Enabled      bool   `json:"enabled"`
+	AutoLogin    bool   `json:"auto_login"`
+	DiscoveryURL string `json:"discovery_url"` // optional: where openid-configuration is
 }
 
 // handleSigninSave registers (or updates) the console as a client at an
@@ -242,6 +293,11 @@ func (s *Server) handleSigninSave(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "issuer (https) and client_id are required")
 		return
 	}
+	req.DiscoveryURL = strings.TrimSpace(req.DiscoveryURL)
+	if req.DiscoveryURL != "" && !strings.HasPrefix(req.DiscoveryURL, "https://") {
+		writeError(w, http.StatusBadRequest, "discovery_url must be an https:// URL")
+		return
+	}
 	objType, objID := "platform", s.cfg.PlatformID
 	if !platform {
 		if req.StoreGroup == "" {
@@ -259,12 +315,12 @@ func (s *Server) handleSigninSave(w http.ResponseWriter, r *http.Request) {
 	// lives in the console's own database (not the same transaction)
 	err := s.asPerson(r.Context(), p, "can_manage_issuers", objType, objID, map[string]any{"op": "signin_set", "issuer": req.Issuer, "enabled": req.Enabled}, func(pgx.Tx) error {
 		_, err := s.db.Exec(r.Context(), `
-			INSERT INTO console_providers (issuer, label, store_group, client_id, client_secret, enabled, created_by, updated_by)
-			VALUES ($1, $2, nullif($3, ''), $4, $5, $6, $7, $7)
+			INSERT INTO console_providers (issuer, label, store_group, client_id, client_secret, enabled, auto_login, discovery_url, created_by, updated_by)
+			VALUES ($1, $2, nullif($3, ''), $4, $5, $6, $7, nullif($8, ''), $9, $9)
 			ON CONFLICT (issuer) DO UPDATE SET label = EXCLUDED.label, store_group = EXCLUDED.store_group, client_id = EXCLUDED.client_id,
 			    client_secret = CASE WHEN EXCLUDED.client_secret = '' THEN console_providers.client_secret ELSE EXCLUDED.client_secret END,
-			    enabled = EXCLUDED.enabled, updated_at = now(), updated_by = EXCLUDED.updated_by`,
-			req.Issuer, strings.TrimSpace(req.Label), req.StoreGroup, strings.TrimSpace(req.ClientID), req.ClientSecret, req.Enabled, by)
+			    enabled = EXCLUDED.enabled, auto_login = EXCLUDED.auto_login, discovery_url = EXCLUDED.discovery_url, updated_at = now(), updated_by = EXCLUDED.updated_by`,
+			req.Issuer, strings.TrimSpace(req.Label), req.StoreGroup, strings.TrimSpace(req.ClientID), req.ClientSecret, req.Enabled, req.AutoLogin, req.DiscoveryURL, by)
 		return err
 	})
 	if err != nil {

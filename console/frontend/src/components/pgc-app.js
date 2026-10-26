@@ -27,6 +27,7 @@ export class PgcApp extends PgcElement {
     /** @type {import('../types.js').Me|null|undefined} */
     this.me = undefined; // undefined = loading, null = logged out
     this.login = { oidc: true, local: false }; // sign-ins this deployment offers (from api/me)
+    this.redirecting = ''; // the provider an auto-login is sending us to
     this.localUser = '';
     this.localPassword = '';
     this.path = this._currentPath();
@@ -97,11 +98,30 @@ export class PgcApp extends PgcElement {
       if (this.me && this.me.authenticated === false) {
         if (this.me.login) this.login = this.me.login;
         this.me = null;
+        this._autoLogin();
       }
     } catch (e) {
       this.me = null;
       this.error = forbiddenText(e);
     }
+  }
+
+  // Signed out: a provider marked for auto-login (or named by ?login=<issuer>,
+  // a tenant's deep link) takes the person straight there; ?login=select and
+  // a failed sign-in (?login_error=…) show the chooser instead.
+  _autoLogin() {
+    const q = new URLSearchParams(location.search);
+    if (q.has('login_error')) {
+      this.error = t('Sign-in failed: {reason}', { reason: q.get('login_error') });
+      return;
+    }
+    const want = q.get('login');
+    if (want === 'select') return;
+    const issuer = want || this.login.auto_login;
+    const p = issuer && (this.login.providers ?? []).find((x) => x.issuer === issuer);
+    if (!p) return;
+    this.redirecting = p.label;
+    api.login(location.pathname, p.issuer);
   }
 
   _area() {
@@ -204,8 +224,9 @@ export class PgcApp extends PgcElement {
                     ${t('Design, test, share and roll out authorization models — with your access decided by pgauthz itself.')}
                   </p>
                   ${this.error ? errorBox(this.error) : nothing}
+                  ${this.redirecting ? html`<p class="muted" data-testid="login-redirecting">${t('Taking you to {provider}…', { provider: this.redirecting })}</p>` : nothing}
                   ${
-                    this.login.oidc
+                    this.login.oidc && !this.redirecting
                       ? (this.login.providers ?? [{ label: 'Keycloak' }]).map(
                           (p, i) =>
                             html`<button
@@ -218,9 +239,9 @@ export class PgcApp extends PgcElement {
                         )
                       : nothing
                   }
-                  ${this.login.oidc && this.login.local ? html`<div class="login-or"><span>${t('or')}</span></div>` : nothing}
+                  ${this.login.oidc && this.login.local && !this.redirecting ? html`<div class="login-or"><span>${t('or')}</span></div>` : nothing}
                   ${
-                    this.login.local
+                    this.login.local && !this.redirecting
                       ? html`<form class="local-login" @submit=${this._localLogin}>
                           <label
                             >${t('Username')}
