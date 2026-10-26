@@ -61,7 +61,7 @@ service-token guarded and reachable only by OPA.
    ```bash
    # from the repo root
    docker build -f deploy/migrations/Dockerfile -t pgauthz-migrations:0.1.0 .
-   docker build -f pgauthzd/Dockerfile -t pgauthz-pgauthzd:0.1.0 ./pgauthzd
+   docker build -f pgauthzd/Dockerfile -t pgauthz-pgauthzd:0.1.0 .
    docker build -f console/Dockerfile -t pgauthz-console:0.1.0 .
    ```
    The single `pgauthz-pgauthzd` image serves every role — the reader

@@ -663,7 +663,7 @@ func Load() (*Config, error) {
 		// Audience is required (F21): an issuer without one accepts every token
 		// its IdP mints for any other API. Fail closed at startup unless the
 		// operator overrides deliberately.
-		if strings.TrimSpace(iss.Audience) == "" {
+		if strings.TrimSpace(iss.Audience) == "" && len(iss.Audiences) == 0 {
 			if c.IsProduction() {
 				// The production profile has no override for this one: an
 				// audience-less issuer is an authentication hole, not a
@@ -737,6 +737,21 @@ func Load() (*Config, error) {
 				}
 			default:
 				return nil, fmt.Errorf("ADMIN_CLIENT_CERTS[%d]: scope %q: expected platform (default) or issuer", i, e.Scope)
+			}
+			for _, c := range e.Capabilities {
+				switch c {
+				case issuers.AdminCapManage, issuers.AdminCapTest, issuers.AdminCapRead:
+				default:
+					return nil, fmt.Errorf("ADMIN_CLIENT_CERTS[%d]: capabilities %q: expected manage, test or read", i, c)
+				}
+			}
+			if len(e.Stores) > 0 && e.Scope != issuers.AdminScopeIssuer {
+				return nil, fmt.Errorf("ADMIN_CLIENT_CERTS[%d]: stores narrows a scope issuer mapping; platform reaches every store", i)
+			}
+			for _, s := range e.Stores {
+				if _, err := issuers.Anchored(s); err != nil {
+					return nil, fmt.Errorf("ADMIN_CLIENT_CERTS[%d]: invalid stores pattern %q: %w", i, s, err)
+				}
 			}
 		}
 		if c.AdminClientCA == "" {
@@ -1068,6 +1083,11 @@ type AdminClientCert struct {
 	URI     string `json:"uri,omitempty"`
 	Scope   string `json:"scope,omitempty"`
 	Issuer  string `json:"issuer,omitempty"`
+	// Capabilities and Stores narrow the mapping as an admin rule's do
+	// (issuers.AdminBinding): a CI runner's certificate holds ["test"] on
+	// the stores it tests.
+	Capabilities []string `json:"capabilities,omitempty"`
+	Stores       []string `json:"stores,omitempty"`
 }
 
 // HasAdminGate reports whether any credential could pass the admin gate: an
@@ -1077,7 +1097,7 @@ func (c *Config) HasAdminGate() bool {
 		return true
 	}
 	for _, iss := range c.Issuers {
-		if iss.Admin != nil && !iss.Admin.Empty() {
+		if len(iss.Admin) > 0 {
 			return true
 		}
 	}

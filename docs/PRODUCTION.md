@@ -488,9 +488,9 @@ engine functions otherwise.
 - **`pgauthzctl` over the admin API** (`--server` with `--token` or
   `--cert/--key`) is the long-run way to operate: no database credentials
   outside the cluster, the actor is the credential's; issuers, stores and
-  the model lifecycle (publish, plan, apply, rollout) all run over it.
-  `--dsn` stays for `model import`, `model test`, installation and
-  break-glass.
+  the model lifecycle (publish, test, plan, apply, rollout) all run over
+  it — a CI job tests fixtures with a token of a CI user, no database
+  access. `--dsn` stays for `model import`, installation and break-glass.
 - **Checklist:** keep `REQUIRE_STORE_BINDING=true` — the environment's
   binding is the ceiling a row narrows within, so an issuer unbound in the
   environment stays unbound unless a row binds it; give the admin identity

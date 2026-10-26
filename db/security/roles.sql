@@ -189,6 +189,10 @@ BEGIN
 END
 $$;
 GRANT authz_namespace_bypass TO pgauthzd_admin;   -- management crosses the per-application namespaces (the takeout walks every type)
+-- The admin API runs tests.authz.yaml fixtures (POST /pgauthz/v1/admin/models/test)
+-- in ephemeral stores; a fixture's contextual_tuples go through the gated
+-- injection functions, so the admin pool holds the contextual-reader grant.
+GRANT authz_contextual_reader TO pgauthzd_admin;
 
 -- Playground BFF metadata/explore role: a dedicated read-only LOGIN role for the
 -- web playground's ENGINE_DSN. It INHERITs authz_reader (check/explain/describe_model)

@@ -1493,6 +1493,81 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '501': { $ref: '#/components/responses/NotImplemented' }
+  /pgauthz/v1/admin/models/test:
+    post:
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      x-pgauthz-availability:
+        listeners: [public, admin]
+        public_listener: only-when-admin-api-enabled-without-admin-listener
+      operationId: adminTestModel
+      summary: Run a tests.authz.yaml fixture in an ephemeral store
+      description: >
+        What `pgauthzctl model test --server` and a CI job with a token of
+        the admin identity provider call: the fixture (the file's text) runs
+        through the shared runner in an ephemeral store inside one
+        transaction — model, seeds, assertions — and the store is dropped
+        with its audit rows before the commit (`keep_store` retains it for
+        debugging). A fixture naming a `model_file` sends the OpenFGA model
+        the file parses to as `openfga` (the server cannot read the client's
+        files; a `.fga` is parsed by the client); a registry ref (`model:`)
+        or a live store (`store:` in the fixture, or `store` in the request
+        for a fixture naming no model) needs none. Needs the `test`
+        capability of the credential's admin rule (manage implies it). A
+        fixture testing a live store needs a credential whose scope covers
+        that store; a fixture bringing its own model touches no store of
+        anyone's, so any admin credential may run it; `keep_store`, which
+        commits the ephemeral store, needs platform scope. Failed checks are a
+        200 with the report — the run itself succeeded; a fixture that
+        cannot run (a model the engine refuses, a seed a type restriction
+        turns down) is a 400 with the engine's message.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fixture]
+              properties:
+                fixture: { type: string, description: The tests.authz.yaml text (pgauthzctl/README.md → Fixture tests). }
+                openfga: { type: object, additionalProperties: true, description: The OpenFGA model a model_file fixture resolved to (schema_version and type_definitions). }
+                store: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]{0,62}$', description: "Test this live store's current model (a fixture without model_file / model)." }
+                keep_store: { type: boolean, default: false, description: Keep the ephemeral store for debugging; its name is in the report. }
+      responses:
+        '200':
+          description: The run's report, failed checks included.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [store, passed, failed, results, duration_ms]
+                properties:
+                  store: { type: string, description: The ephemeral store (kept only with keep_store). }
+                  passed: { type: integer }
+                  failed: { type: integer }
+                  duration_ms: { type: integer }
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, failed, test, kind, user, relation, object, expected]
+                      properties:
+                        name: { type: string }
+                        failed: { type: boolean }
+                        detail: { type: string }
+                        test: { type: integer, description: The index of the fixture test the assertion belongs to (-1 for a refused-seed assertion). }
+                        note: { type: string }
+                        kind: { type: string, description: "check, list_objects, list_subjects, list_actions, explain or tuple (a seed asserted refused)." }
+                        user: { type: string }
+                        relation: { type: string }
+                        object: { type: string }
+                        expected: { type: array, items: { type: string } }
+                        actual: { type: array, items: { type: string } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
   /pgauthz/v1/admin/models/{name}/versions:
     parameters:
       - { name: name, in: path, required: true, schema: { type: string, pattern: '^[a-zA-Z_][a-zA-Z0-9_]*$' } }
@@ -2904,6 +2979,7 @@ components:
             properties:
               issuer: { type: string }
               audience: { type: string }
+              audiences: { type: array, items: { type: string }, description: "Every accepted audience (any of), the audience first." }
               enabled: { type: boolean }
               binding_source: { type: string, enum: [env, db] }
               jwks: { type: string, enum: [url, file] }
@@ -2916,13 +2992,30 @@ components:
                 type: object
                 additionalProperties: { type: array, items: { type: string } }
               admin:
-                type: object
-                description: The issuer's management grant (environment only).
-                properties:
-                  scopes: { type: array, items: { type: string } }
-                  claims: { type: object, additionalProperties: { type: array, items: { type: string } } }
-                  clients: { type: array, items: { type: string } }
-                  scope: { type: string, enum: [issuer, platform] }
+                type: array
+                description: >
+                  The issuer's management rules (environment only), in the
+                  order they are tried: who matches (scopes, claims, clients)
+                  and how far they reach — scope, capabilities (manage is
+                  the default and implies test and read) and, for an
+                  issuer-scoped rule, the stores within the binding.
+                items:
+                  type: object
+                  properties:
+                    scopes: { type: array, items: { type: string } }
+                    claims: { type: object, additionalProperties: { type: array, items: { type: string } } }
+                    clients: { type: array, items: { type: string } }
+                    scope: { type: string, enum: [issuer, platform] }
+                    capabilities: { type: array, items: { type: string, enum: [manage, test, read] } }
+                    stores: { type: array, items: { type: string } }
+                    decide:
+                      type: object
+                      description: "The rule delegates to an authorization store (the management console's): the credential becomes subject_type:<subject_claim> of that store, its roles and scopes contextual team memberships, and each admin verb asks for the console relation the console checks itself."
+                      required: [store]
+                      properties:
+                        store: { type: string }
+                        subject_type: { type: string, default: user }
+                        subject_claim: { type: string, description: "Default: SUBJECT_ID_CLAIM (preferred_username); azp for a client credentials token." }
     IssuerBinding:
       type: object
       description: >

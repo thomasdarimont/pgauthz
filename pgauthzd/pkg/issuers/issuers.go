@@ -11,6 +11,7 @@
 package issuers
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
@@ -23,8 +24,13 @@ import (
 type Issuer struct {
 	Issuer   string `json:"issuer"`
 	Audience string `json:"audience"`
-	JWKSURL  string `json:"jwks_url"`
-	JWKSFile string `json:"jwks_file"`
+	// Audiences: further accepted `aud` values — a token must carry the
+	// audience OR one of these. Identity providers differ in what they put
+	// there (Keycloak a client id, others the API's URI); listing both
+	// lets a deployment move between them without a cut-over.
+	Audiences []string `json:"audiences,omitempty"`
+	JWKSURL   string   `json:"jwks_url"`
+	JWKSFile  string   `json:"jwks_file"`
 	// Stores restricts which pgauthz stores this issuer's tokens may access
 	// (store binding for multi-tenant setups: tenant A's IdP → tenant A's
 	// stores). Each entry is an ANCHORED regular expression (^(?:entry)$), so
@@ -59,10 +65,12 @@ type Issuer struct {
 	// replaced it, so a later row can still be checked against it.
 	EnvStores []string `json:"-"`
 	// Admin names the tokens of this issuer that may call the management
-	// API (ADMIN_API_ENABLED): every listed scope must be present, every
-	// listed claim value present, and the client listed when clients are.
-	// Environment only — the database never grants management.
-	Admin *AdminBinding `json:"admin,omitempty"`
+	// API (ADMIN_API_ENABLED) — one rule, or a list tried in order: every
+	// listed scope must be present, every listed claim value present, and
+	// the client listed when clients are; the first satisfied rule decides
+	// the credential's reach (scope, capabilities, stores). Environment
+	// only — the database never grants management.
+	Admin AdminRules `json:"admin,omitempty"`
 }
 
 // The scopes of an admin binding: a tenant admin manages the issuer's own
@@ -72,7 +80,18 @@ const (
 	AdminScopePlatform = "platform"
 )
 
-// AdminBinding is an issuer's management grant.
+// The capabilities of an admin rule: manage (every verb — the default, and
+// what a rule without capabilities grants), test (run fixtures:
+// POST /pgauthz/v1/admin/models/test), read (the GET verbs). manage
+// implies the other two.
+const (
+	AdminCapManage = "manage"
+	AdminCapTest   = "test"
+	AdminCapRead   = "read"
+)
+
+// AdminBinding is one management rule of an issuer: who matches (scopes,
+// claims, clients) and how far they reach (scope, capabilities, stores).
 type AdminBinding struct {
 	Scopes  []string            `json:"scopes,omitempty"`
 	Claims  map[string][]string `json:"claims,omitempty"`
@@ -80,11 +99,87 @@ type AdminBinding struct {
 	// Scope: "issuer" (default — this issuer's own binding) or "platform"
 	// (every issuer: the operator's admin identity provider).
 	Scope string `json:"scope,omitempty"`
+	// Capabilities narrows the verbs: manage (default), test, read. A CI
+	// credential that only runs fixtures holds ["test"] and no more.
+	Capabilities []string `json:"capabilities,omitempty"`
+	// Stores narrows an issuer-scoped rule to some of the issuer's stores
+	// (anchored patterns, within the issuer's stores binding); empty = all
+	// of them. Not for a platform rule.
+	Stores []string `json:"stores,omitempty"`
+	// Decide delegates the decision to an authorization store — the
+	// management console's — instead of capabilities and stores listed
+	// here: the credential becomes a subject of that store, and what it
+	// may manage is whatever the store grants it (a person's or a
+	// pipeline's platform and store roles, managed in the console). A rule
+	// with Decide needs no scopes, claims or clients: the store is the
+	// gate, a subject without tuples has nothing.
+	Decide *AdminDecision `json:"decide,omitempty"`
 }
 
-// Empty reports an admin binding that would admit every token of the issuer.
+// AdminDecision names the store that decides a delegated rule and how the
+// token becomes one of its subjects: SubjectType (default user) and the
+// claim the id is read from (default: the daemon's SUBJECT_ID_CLAIM —
+// preferred_username; azp for a client credentials token). The token's
+// roles and scopes travel into the check as contextual team memberships
+// (team:role_<role>#member, team:scope_<scope>#member), the console's own
+// convention, so a store shared with such a team covers everyone who
+// carries the role or scope.
+type AdminDecision struct {
+	Store        string `json:"store"`
+	SubjectType  string `json:"subject_type,omitempty"`
+	SubjectClaim string `json:"subject_claim,omitempty"`
+}
+
+// Empty reports an admin rule that would admit every token of the issuer —
+// unless a store decides for it, in which case admitting every token to
+// ask the store is the point.
 func (a *AdminBinding) Empty() bool {
-	return a == nil || (len(a.Scopes) == 0 && len(a.Claims) == 0 && len(a.Clients) == 0)
+	return a == nil || (len(a.Scopes) == 0 && len(a.Claims) == 0 && len(a.Clients) == 0 && a.Decide == nil)
+}
+
+// Can reports whether the rule grants the capability: an unset list is
+// manage, and manage implies every capability.
+func (a *AdminBinding) Can(capability string) bool {
+	if len(a.Capabilities) == 0 {
+		return true
+	}
+	for _, c := range a.Capabilities {
+		if c == AdminCapManage || c == capability {
+			return true
+		}
+	}
+	return false
+}
+
+// AdminRules is an issuer's management rules. In JSON it is one object
+// (the single-rule form every deployment used first) or a list; it always
+// marshals as a list.
+type AdminRules []AdminBinding
+
+func (r *AdminRules) UnmarshalJSON(b []byte) error {
+	trimmed := strings.TrimSpace(string(b))
+	if trimmed == "null" {
+		*r = nil
+		return nil
+	}
+	if strings.HasPrefix(trimmed, "{") {
+		var one AdminBinding
+		if err := json.Unmarshal(b, &one); err != nil {
+			return err
+		}
+		*r = AdminRules{one}
+		return nil
+	}
+	var list []AdminBinding
+	if err := json.Unmarshal(b, &list); err != nil {
+		return err
+	}
+	*r = list
+	return nil
+}
+
+func (r AdminRules) MarshalJSON() ([]byte, error) {
+	return json.Marshal([]AdminBinding(r))
 }
 
 // Binding is a database row of authz.issuer_bindings: what an issuer's
@@ -117,6 +212,9 @@ type Binding struct {
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
 	UpdatedBy string    `json:"updated_by,omitempty"`
 }
+
+// storeNameRe is a plain store (or type) name, as the engine accepts it.
+var storeNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]{0,62}$`)
 
 // regexMeta are the characters that make a store pattern a pattern rather
 // than a plain name.
@@ -166,29 +264,59 @@ func ValidateBindings(iss Issuer) error {
 			return fmt.Errorf("client_db_roles: a non-empty client id and role are required (got %q: %q)", client, role)
 		}
 	}
-	if iss.Admin != nil {
-		if iss.Admin.Empty() {
-			return fmt.Errorf("admin binding names no scopes, claims or clients — it would admit every token of the issuer to the management API")
+	for n, rule := range iss.Admin {
+		at := "admin"
+		if len(iss.Admin) > 1 {
+			at = fmt.Sprintf("admin[%d]", n)
 		}
-		for _, s := range iss.Admin.Scopes {
+		if rule.Empty() {
+			return fmt.Errorf("%s names no scopes, claims or clients — it would admit every token of the issuer to the management API", at)
+		}
+		for _, s := range rule.Scopes {
 			if strings.TrimSpace(s) == "" {
-				return fmt.Errorf("admin.scopes has an empty scope")
+				return fmt.Errorf("%s.scopes has an empty scope", at)
 			}
 		}
-		for claim, values := range iss.Admin.Claims {
+		for claim, values := range rule.Claims {
 			if strings.TrimSpace(claim) == "" || len(values) == 0 {
-				return fmt.Errorf("admin.claims[%q] needs a claim name and at least one value", claim)
+				return fmt.Errorf("%s.claims[%q] needs a claim name and at least one value", at, claim)
 			}
 		}
-		for _, c := range iss.Admin.Clients {
+		for _, c := range rule.Clients {
 			if strings.TrimSpace(c) == "" {
-				return fmt.Errorf("admin.clients has an empty client id")
+				return fmt.Errorf("%s.clients has an empty client id", at)
 			}
 		}
-		switch iss.Admin.Scope {
+		switch rule.Scope {
 		case "", AdminScopeIssuer, AdminScopePlatform:
 		default:
-			return fmt.Errorf("admin.scope %q: expected issuer (default) or platform", iss.Admin.Scope)
+			return fmt.Errorf("%s.scope %q: expected issuer (default) or platform", at, rule.Scope)
+		}
+		for _, c := range rule.Capabilities {
+			switch c {
+			case AdminCapManage, AdminCapTest, AdminCapRead:
+			default:
+				return fmt.Errorf("%s.capabilities %q: expected manage, test or read", at, c)
+			}
+		}
+		if len(rule.Stores) > 0 && rule.Scope == AdminScopePlatform {
+			return fmt.Errorf("%s.stores narrows an issuer-scoped rule; a platform rule reaches every store", at)
+		}
+		if d := rule.Decide; d != nil {
+			if !storeNameRe.MatchString(d.Store) {
+				return fmt.Errorf("%s.decide.store %q: a store name ([a-zA-Z_][a-zA-Z0-9_]*, at most 63 characters)", at, d.Store)
+			}
+			if d.SubjectType != "" && !storeNameRe.MatchString(d.SubjectType) {
+				return fmt.Errorf("%s.decide.subject_type %q: a type name", at, d.SubjectType)
+			}
+			if len(rule.Capabilities) > 0 || len(rule.Stores) > 0 || rule.Scope == AdminScopePlatform {
+				return fmt.Errorf("%s: decide (the store decides) takes no capabilities, stores or platform scope", at)
+			}
+		}
+		for _, p := range rule.Stores {
+			if _, err := Anchored(p); err != nil {
+				return fmt.Errorf("invalid %s.stores pattern %q: %w", at, p, err)
+			}
 		}
 	}
 	for client, patterns := range iss.PEPClients {

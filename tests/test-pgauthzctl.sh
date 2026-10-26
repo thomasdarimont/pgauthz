@@ -51,7 +51,7 @@ cleanup() {
     psqlq "DO \$\$ BEGIN PERFORM authz.delete_store('ctl_it_api', p_purge_audit => true); EXCEPTION WHEN OTHERS THEN NULL; END \$\$;" >/dev/null 2>&1 || true
     psqlq "DELETE FROM authz.model_registry WHERE name = 'ctl_it_api_model';" >/dev/null 2>&1 || true
     psqlq "DO \$\$ BEGIN PERFORM authz.delete_store('ctl_it_store', p_purge_audit => true); EXCEPTION WHEN OTHERS THEN NULL; END \$\$;" >/dev/null 2>&1 || true
-    rm -f /tmp/ctl-it-issuers.json /tmp/ctl-it-issuers-2.json
+    rm -f /tmp/ctl-it-issuers.json /tmp/ctl-it-issuers-2.json /tmp/ctl-it-flaky.authz.yaml /tmp/pgauthzctl-junit-api.xml
 }
 trap cleanup EXIT
 cleanup
@@ -142,7 +142,9 @@ check_fails "issuers delete of a missing row exits non-zero"     "$CTL" issuers 
 
 # The same verbs over the admin API (the long-run transport): the demo
 # stack serves it on :8096 behind ADMIN_ROLE=pgauthz_admin; a token of the
-# demo issuer with that role is the credential, and the audit names it.
+# demo issuer with that role is the credential, and the audit names it. The
+# narrowing row below lists demo only: the Keycloak overlay binds the demo
+# issuer to [demo] in the environment, and a row may only narrow.
 ADMIN_URL="${PGAUTHZD_ADMIN_URL:-http://localhost:8096}"
 if curl -sf "$ADMIN_URL/livez" >/dev/null 2>&1; then
     echo ""
@@ -155,7 +157,7 @@ if curl -sf "$ADMIN_URL/livez" >/dev/null 2>&1; then
     PGAUTHZ_TOKEN=$(make_token ctl-ops internal_user '["pgauthz_admin"]')
     cat > /tmp/ctl-it-issuers.json <<'JSON'
 {"bindings": [
-  {"issuer": "https://auth.example.com", "stores": ["demo", "todo", "gdrive", "fileshare", "aia_acme", "agents", "fourq", "authzen_cert", "console.*"], "db_roles": [], "client_db_roles": {}, "pep_clients": {}, "enabled": true, "description": "ctl-it over the admin API"}
+  {"issuer": "https://auth.example.com", "stores": ["demo"], "db_roles": [], "client_db_roles": {}, "pep_clients": {}, "enabled": true, "description": "ctl-it over the admin API"}
 ]}
 JSON
     echo '{"bindings":[{"issuer":"https://ctl-it.example/api","stores":["x"],"enabled":true}]}' > /tmp/ctl-it-issuers-2.json
@@ -231,6 +233,45 @@ JSON
         sh -c "'$CTL' subject export demo internal_user:alice | grep -q '\"events_about\"'"
     check_fails "api: there is no subject erase verb" \
         "$CTL" subject erase demo internal_user:nobody_ctl
+    # model test over the API: the fixture text and the parsed .fga travel,
+    # the daemon runs them in an ephemeral store (no database access for the
+    # CI job); a live store's scenarios (gdrive's use contextual tuples: the
+    # admin pool holds authz_contextual_reader); --junit; a failing check is
+    # the non-zero exit; a fixture that cannot run is the daemon's 400
+    check "api: model test runs a model_file fixture on the daemon (8 checks + junit)" \
+        sh -c "'$CTL' model test '$ROOT/pgauthzctl/testdata/tests.authz.yaml' --junit /tmp/pgauthzctl-junit-api.xml | grep -q '^==> 8 passed, 0 failed' && test -s /tmp/pgauthzctl-junit-api.xml"
+    for pair in demo:demo gdrive:gdrive fileshare:fileshare; do
+        check "api: examples/models/${pair%%:*}/scenarios.authz.yaml passes against store ${pair##*:}" \
+            "$CTL" model test "$ROOT/examples/models/${pair%%:*}/scenarios.authz.yaml" --store "${pair##*:}"
+    done
+    printf 'tests:\n  - name: nobody reads\n    check:\n      - {user: "user:nobody_ctl", object: "doc:design_spec", assertions: {can_read: true}}\n' > /tmp/ctl-it-flaky.authz.yaml
+    check_fails "api: a failing check exits non-zero" \
+        "$CTL" model test /tmp/ctl-it-flaky.authz.yaml --store gdrive
+    check "api: the failing check is reported by name" \
+        sh -c "'$CTL' model test /tmp/ctl-it-flaky.authz.yaml --store gdrive 2>&1 | grep -q 'FAIL  nobody reads'"
+    check "api: an engine error inside one check fails that check, not the run (the runner's savepoint)" \
+        sh -c "'$CTL' model test /tmp/ctl-it-flaky.authz.yaml --store demo 2>&1 | grep -q 'FAIL  nobody reads.*Unknown type: doc'"
+    check "api: a missing store is the daemon's refusal (400), not a crash" \
+        sh -c "'$CTL' model test /tmp/ctl-it-flaky.authz.yaml --store ctl_it_no_such_store 2>&1 | grep -q 'Unknown store: ctl_it_no_such_store'"
+    check "api: the ephemeral store left no trace" \
+        sh -c "docker exec -i '$DB_CONTAINER' psql -Atq -U authz -d authz -c \"SELECT count(*) FROM authz.stores WHERE name LIKE 'pgauthzd_test_%'\" | grep -q '^0\$'"
+    # least privilege: the Keycloak overlay's JWT_ISSUERS gives the demo issuer
+    # an admin rule for the pgauthz_tester role — test only, on demo only
+    if grep -q 'PGAUTHZ_KEYCLOAK="${PGAUTHZ_KEYCLOAK:-1}"' "$ROOT/.pgauthz-overlays" 2>/dev/null; then
+        TESTER_TOKEN=$(make_token ctl-tester internal_user '["pgauthz_tester"]')
+        check "api: a test-only credential runs the demo scenarios" \
+            sh -c "PGAUTHZ_TOKEN='$TESTER_TOKEN' '$CTL' model test '$ROOT/examples/models/demo/scenarios.authz.yaml' --store demo"
+        check "api: … and a model file of its own" \
+            sh -c "PGAUTHZ_TOKEN='$TESTER_TOKEN' '$CTL' model test '$ROOT/pgauthzctl/testdata/tests.authz.yaml' | grep -q '^==> 8 passed'"
+        check "api: … but not another store (outside its rule's stores)" \
+            sh -c "PGAUTHZ_TOKEN='$TESTER_TOKEN' '$CTL' model test '$ROOT/examples/models/gdrive/scenarios.authz.yaml' --store gdrive 2>&1 | grep -q \"does not manage store 'gdrive'\""
+        check "api: … not --keep-store (platform only)" \
+            sh -c "PGAUTHZ_TOKEN='$TESTER_TOKEN' '$CTL' model test '$ROOT/pgauthzctl/testdata/tests.authz.yaml' --keep-store 2>&1 | grep -q 'keep_store'"
+        check "api: … and no other verb (403 names the capabilities)" \
+            sh -c "PGAUTHZ_TOKEN='$TESTER_TOKEN' '$CTL' store list 2>&1 | grep -q 'may only test'"
+    else
+        echo "    SKIP  api: test-only credential checks (the admin rule lives in the Keycloak overlay; start with --keycloak)"
+    fi
     unset PGAUTHZ_SERVER PGAUTHZ_TOKEN
 else
     echo ""

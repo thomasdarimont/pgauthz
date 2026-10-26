@@ -62,3 +62,6 @@ graphify-out/
 # console browser tests (Playwright)
 console/frontend/test-results/
 console/frontend/playwright-report/
+
+# junit reports
+**/report.xml

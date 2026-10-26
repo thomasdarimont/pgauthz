@@ -70,7 +70,7 @@ if [ "${SKIP_BUILD:-}" != "1" ]; then
   # Deployment by PGAUTHORIZER_PROFILE (decision-only reader + AuthZEN API, full
   # writer, OPA-fronted AuthZEN gateway). No BINARY build-arg — the Dockerfile hardcodes
   # ./cmd/pgauthzd.
-  docker build -f "$REPO_ROOT/pgauthzd/Dockerfile" --build-arg VERSION="$IMAGE_TAG" -t "pgauthz-pgauthzd:$IMAGE_TAG" "$REPO_ROOT/pgauthzd"
+  docker build -f "$REPO_ROOT/pgauthzd/Dockerfile" --build-arg VERSION="$IMAGE_TAG" -t "pgauthz-pgauthzd:$IMAGE_TAG" "$REPO_ROOT"
   # The management console (console.enabled); cheap enough to always have.
   docker build -f "$REPO_ROOT/console/Dockerfile" --build-arg VERSION="$IMAGE_TAG" -t "pgauthz-console:$IMAGE_TAG" "$REPO_ROOT"
 

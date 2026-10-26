@@ -536,6 +536,21 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 		return ""
 	}
 
+	// Every assertion starts from a savepoint: an engine error — an unknown
+	// type, a relation the model lacks, a refused contextual tuple — fails
+	// that assertion alone instead of aborting the transaction for every
+	// assertion after it (25P02) and the commit ("commit unexpectedly
+	// resulted in rollback"). The cases only read, so returning to the
+	// savepoint discards nothing.
+	if _, err := db.Exec(ctx, "SAVEPOINT fixture_case"); err != nil {
+		return []Result{{Name: tc.Name, Failed: true, Detail: err.Error(), Note: note}}
+	}
+	defer func() {
+		_, _ = db.Exec(ctx, "ROLLBACK TO SAVEPOINT fixture_case")
+		_, _ = db.Exec(ctx, "RELEASE SAVEPOINT fixture_case")
+	}()
+	fresh := func() { _, _ = db.Exec(ctx, "ROLLBACK TO SAVEPOINT fixture_case") }
+
 	for _, c := range tc.Check {
 		at = Result{Kind: "check", User: c.User, Object: c.Object}
 		u, err := ParseRef(c.User)
@@ -553,6 +568,7 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 			name := fmt.Sprintf("%s: %s %s %s = %v", tc.Name, c.User, rel, c.Object, want)
 			at.Relation = rel
 			note = first(c.Notes[rel], c.Description, tc.Description)
+			fresh()
 			got, err := runFixtureCheck(ctx, db, store, u, rel, o, c)
 			at.Expected, at.Actual = []string{fmt.Sprint(want)}, nil
 			if err != nil {
@@ -569,6 +585,7 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 	}
 
 	for _, l := range tc.ListObjects {
+		fresh()
 		at = Result{Kind: "list_objects", User: l.User, Object: l.Type}
 		u, err := ParseRef(l.User)
 		if err != nil {
@@ -621,6 +638,7 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 	}
 
 	for _, l := range tc.ListSubjects {
+		fresh()
 		at = Result{Kind: "list_subjects", User: l.Type, Object: l.Object}
 		o, err := ParseRef(l.Object)
 		if err != nil {
@@ -675,6 +693,7 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 
 	var perms map[string]bool // the model's declared permissions, loaded once a list_actions case needs them
 	for _, a := range tc.ListActions {
+		fresh()
 		at = Result{Kind: "list_actions", User: a.User, Object: a.Object}
 		if perms == nil {
 			p, err := permissionNames(ctx, db, store)
@@ -732,6 +751,7 @@ func runFixtureCase(ctx context.Context, db DB, store string, tc FixtureTest) []
 	}
 
 	for _, e := range tc.Explain {
+		fresh()
 		at = Result{Kind: "explain", User: e.User, Relation: e.Relation, Object: e.Object}
 		u, err1 := ParseRef(e.User)
 		o, err2 := ParseRef(e.Object)
@@ -774,31 +794,22 @@ func setText(items []string) string {
 }
 
 // permissionNames — the relations the model declares as permissions
-// (metadata kind), so an action set can be read as "may …" (what the
-// subject can do) next to "is …" (the relations it holds). Empty when the
-// model declares no kinds (an OpenFGA-style model), and the set stays flat.
-//
-// Plain table reads through the public stores table (no internal helper
-// such as authz._s, which a service role may not execute); an error is
-// returned, never swallowed — inside a transaction a failed statement
-// aborts it, and a silent one would surface as "commit unexpectedly
-// resulted in rollback" much later.
+// (metadata.kind = permission), for the "may … · is …" reading of a
+// list_actions result. Read through authz.export_model, the engine's
+// SECURITY DEFINER export every reader may call — not the metadata tables,
+// which a service role (the daemon's admin pool, a CI role) cannot SELECT.
 func permissionNames(ctx context.Context, db DB, store string) (map[string]bool, error) {
-	out := map[string]bool{}
-	rows, err := db.Query(ctx, `SELECT r.name FROM authz.relations r JOIN authz.stores s ON s.id = r.store_id
-	                             WHERE s.name = $1 AND r.metadata->>'kind' = 'permission'`, store)
+	m, err := ExportModel(ctx, db, store)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
-			return nil, err
+	out := map[string]bool{}
+	for _, r := range m.Relations {
+		if r.Kind() == "permission" {
+			out[r.Name] = true
 		}
-		out[n] = true
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // actionsText — an action set as "may [perms] · is [relations]" when the

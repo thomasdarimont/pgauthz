@@ -7,6 +7,8 @@ package pgbackend
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"thomasdarimont.de/authz/pgauthzadm"
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 )
 
@@ -385,4 +388,24 @@ func (b *Backend) ExportSubject(ctx context.Context, store, subjectType, subject
 	err := b.pool.QueryRow(ctx, `SELECT authz.export_subject($1, $2, $3, $4::text[], true, true, true, $5)`,
 		store, subjectType, subjectID, relations, limit).Scan(&doc)
 	return doc, adminError(err)
+}
+
+// TestModel runs a fixture (pgauthzadm.RunFixture — the runner pgauthzctl
+// and the console's Scenarios share) in an ephemeral store inside one
+// transaction as the actor: the store is created, seeded, asserted against
+// and dropped with its audit rows before the commit, so a run leaves no
+// trace — unless keep retains the store for debugging. modelJSON is the
+// OpenFGA model a fixture's model_file resolved to (the client parses a
+// .fga); a registry ref or a live store needs none.
+func (b *Backend) TestModel(ctx context.Context, fix *pgauthzadm.Fixture, modelJSON []byte, keep bool, actor string) (*pgauthzadm.RunReport, error) {
+	rnd := make([]byte, 4)
+	_, _ = rand.Read(rnd)
+	opts := pgauthzadm.RunOptions{ModelJSON: modelJSON, Store: "pgauthzd_test_" + hex.EncodeToString(rnd), KeepStore: keep, PurgeAudit: true}
+	var report *pgauthzadm.RunReport
+	err := b.asActor(ctx, actor, func(tx pgx.Tx) error {
+		r, err := pgauthzadm.RunFixture(ctx, tx, fix, opts)
+		report = r
+		return err
+	})
+	return report, err
 }

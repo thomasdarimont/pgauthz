@@ -29,7 +29,7 @@ type issuerSet struct {
 	stores     map[string][]*regexp.Regexp  // issuer -> store patterns (absent = unrestricted)
 	pepClients map[string]map[string][]*regexp.Regexp
 	disabled   map[string]bool
-	admin      map[string]*compiledAdmin // issuer -> management grant (environment only)
+	admin      map[string][]*compiledAdmin // issuer -> management rules, in order (environment only)
 }
 
 // Issuers is the holder every reader goes through.
@@ -86,7 +86,7 @@ func newIssuerSet(cfgs []IssuerConfig, revision int64, prev *issuerSet) *issuerS
 		stores:     map[string][]*regexp.Regexp{},
 		pepClients: map[string]map[string][]*regexp.Regexp{},
 		disabled:   map[string]bool{},
-		admin:      map[string]*compiledAdmin{},
+		admin:      map[string][]*compiledAdmin{},
 	}
 	for _, ic := range cfgs {
 		var v *issuerValidator
@@ -109,8 +109,8 @@ func newIssuerSet(cfgs []IssuerConfig, revision int64, prev *issuerSet) *issuerS
 		if ic.Disabled {
 			set.disabled[ic.Issuer] = true
 		}
-		if ic.Admin != nil && !ic.Admin.Empty() {
-			set.admin[ic.Issuer] = compileAdmin(ic.Admin)
+		if len(ic.Admin) > 0 {
+			set.admin[ic.Issuer] = compileAdminRules(ic.Admin)
 		}
 		if len(ic.DBRoles) > 0 {
 			set.dbRoles[ic.Issuer] = compileAnchored(ic.DBRoles)
@@ -147,7 +147,7 @@ func IssuerConfigsFrom(list []issuers.Issuer) []IssuerConfig {
 	out := make([]IssuerConfig, 0, len(list))
 	for _, i := range list {
 		out = append(out, IssuerConfig{
-			Issuer: i.Issuer, Audience: i.Audience, JWKSURL: i.JWKSURL, JWKSFile: i.JWKSFile,
+			Issuer: i.Issuer, Audience: i.Audience, Audiences: i.Audiences, JWKSURL: i.JWKSURL, JWKSFile: i.JWKSFile,
 			DBRoles: i.DBRoles, ClientDBRoles: i.ClientDBRoles, Stores: i.Stores, PEPClients: i.PEPClients,
 			Disabled: i.Disabled, BindingSource: i.BindingSource, EnvStores: i.EnvStores, Admin: i.Admin,
 		})
@@ -213,6 +213,7 @@ func (h *Handler) writeIssuers(w http.ResponseWriter, configs []IssuerConfig) {
 		e := map[string]any{
 			"issuer":         ic.Issuer,
 			"audience":       ic.Audience,
+			"audiences":      ic.AcceptedAudiences(),
 			"enabled":        !ic.Disabled,
 			"binding_source": firstNonEmpty(ic.BindingSource, "env"),
 			"stores":         orEmpty(ic.Stores),
@@ -232,7 +233,7 @@ func (h *Handler) writeIssuers(w http.ResponseWriter, configs []IssuerConfig) {
 		if len(ic.PEPClients) > 0 {
 			e["pep_clients"] = ic.PEPClients
 		}
-		if ic.Admin != nil && !ic.Admin.Empty() {
+		if len(ic.Admin) > 0 {
 			e["admin"] = ic.Admin
 		}
 		out = append(out, e)

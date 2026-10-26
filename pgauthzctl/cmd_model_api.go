@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"thomasdarimont.de/authz/pgauthzadm"
 )
@@ -53,6 +54,33 @@ func (m *apiModel) apply(ctx context.Context, store, name string, version int) (
 	}
 	err := m.c.do(ctx, "PUT", "/pgauthz/v1/admin/stores/"+url.PathEscape(store)+"/model", map[string]string{"model": modelRef(name, version)}, &res)
 	return res.Applied, err
+}
+
+// test: POST /pgauthz/v1/admin/models/test — the fixture text as read, the
+// OpenFGA model a model_file resolved to, --store, --keep-store; the
+// daemon runs it in an ephemeral store and answers the report (a 200 even
+// with failed checks; a fixture that cannot run is the API's 400).
+func (m *apiModel) test(ctx context.Context, fixture, modelJSON []byte, store string, keep bool) (*pgauthzadm.RunReport, error) {
+	req := map[string]any{"fixture": string(fixture)}
+	if modelJSON != nil {
+		req["openfga"] = json.RawMessage(modelJSON)
+	}
+	if store != "" {
+		req["store"] = store
+	}
+	if keep {
+		req["keep_store"] = true
+	}
+	var res struct {
+		Store      string              `json:"store"`
+		Failed     int                 `json:"failed"`
+		Results    []pgauthzadm.Result `json:"results"`
+		DurationMS int64               `json:"duration_ms"`
+	}
+	if err := m.c.do(ctx, "POST", "/pgauthz/v1/admin/models/test", req, &res); err != nil {
+		return nil, err
+	}
+	return &pgauthzadm.RunReport{Store: res.Store, Results: res.Results, Failed: res.Failed, Duration: time.Duration(res.DurationMS) * time.Millisecond}, nil
 }
 
 func (m *apiModel) export(ctx context.Context, store string, dsl bool) (json.RawMessage, string, error) {

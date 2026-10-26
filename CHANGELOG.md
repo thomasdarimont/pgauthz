@@ -7,6 +7,60 @@ pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **`pgauthzctl model test --server`**: fixture tests over the admin API.
+  `POST /pgauthz/v1/admin/models/test` takes the `tests.authz.yaml` text
+  (plus the OpenFGA model a `model_file` parsed to, or a `store` to test)
+  and runs it through the shared runner in an ephemeral store on the
+  daemon's admin pool — a CI job needs a token of the admin identity
+  provider, no database access; `--junit`, `--store` and `--keep-store`
+  work as over `--dsn`. A fixture testing a live store needs a credential
+  whose scope covers the store; one bringing its own model runs under any
+  admin credential (`--keep-store` needs platform scope). Failed checks
+  are a 200 with the report. The pgauthzd image now builds from the repo
+  root (it depends on `pgauthzadm/`); `pgauthzd_admin` holds
+  `authz_contextual_reader` so fixtures with contextual tuples run.
+- **Admin rules with capabilities and stores** (least privilege for CI):
+  an issuer's `admin` binding takes a list of rules, tried in order, each
+  with optional `capabilities` (`manage` default, `test` = fixtures,
+  `read` = GETs) and, for issuer scope, `stores` within the binding;
+  `ADMIN_CLIENT_CERTS` entries take the same. The gate derives the needed
+  capability from the request and refuses with 403 naming both. The demo
+  Keycloak realm gets a `ci` service-account client with no role and the
+  `pgauthz:test` client scope (which carries the `authz-api` audience),
+  bound as `{"clients":["ci"],"scopes":["pgauthz:test"],"capabilities":["test"],"stores":["gdrive"]}`.
+  `GET /pgauthz/v1/admin/issuers` answers `admin` as a list.
+- **Delegated admin rules: the management console decides.** A rule with
+  `decide: {store, subject_type, subject_claim}` makes the token a subject
+  of that store (a person `user:<preferred_username>`, a client
+  `service_account:<azp>`; roles and scopes as contextual team
+  memberships) and asks it, per admin verb, for the relation the console
+  checks for the same action (`can_run_tests`, `can_rollout`,
+  `can_manage_access`, `can_publish`, `can_manage_issuers`, …). Access
+  for people and technical users is managed in the console's Access tabs;
+  the console model admits `service_account` subjects. The demo realm
+  gains the `pgauthz:test` / `read` / `manage` / `admin` client scopes
+  (each carrying the client-id and the URI audience) and delegates both
+  rules to the `console` store. The token's `pgauthz:*` scopes cap what
+  the store grants: test, read and manage on the granted stores, admin
+  for the platform; a token without one satisfies no delegated rule.
+- **Several audiences per issuer**: `audiences` in `JWT_ISSUERS` lists
+  further accepted `aud` values (any of) beside `audience`, so a client
+  id (Keycloak) and the API's URI (other identity providers) are both
+  accepted; `GET …/issuers` reports `audiences`.
+
+### Fixed
+
+- **Fixture runner**: an engine error inside one assertion (an unknown
+  type, a relation the model lacks) failed that assertion *and* aborted
+  the transaction, so every later assertion failed with `25P02` and the
+  commit with "commit unexpectedly resulted in rollback" (a 500 in the
+  console and over the API). Every assertion now starts from a savepoint.
+  The `list_actions` permission split reads relation kinds through
+  `authz.export_model` instead of the metadata tables, so a service role
+  without table grants runs it.
+
 ## [0.19.0] - 2026-10-25
 
 ### Added

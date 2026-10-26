@@ -173,14 +173,24 @@ func RolesFromContext(ctx context.Context) []string {
 	return nil
 }
 
+// AcceptedAudiences: the audience and the further audiences, in order.
+func (c IssuerConfig) AcceptedAudiences() []string {
+	var out []string
+	if c.Audience != "" {
+		out = append(out, c.Audience)
+	}
+	return append(out, c.Audiences...)
+}
+
 // IssuerConfig describes one trusted token issuer and where to find its signing
 // keys. A deployment can trust several issuers at once (e.g. a demo IdP for tests
 // and Keycloak for the playground); the token's "iss" claim selects the validator.
 type IssuerConfig struct {
-	Issuer   string
-	Audience string // optional; if set, the token's "aud" must contain it
-	JWKSURL  string
-	JWKSFile string // alternative to JWKSURL: load JWKS from a local file
+	Issuer    string
+	Audience  string   // optional; if set, the token's "aud" must contain it (or one of Audiences)
+	Audiences []string // further accepted audiences (any of)
+	JWKSURL   string
+	JWKSFile  string // alternative to JWKSURL: load JWKS from a local file
 	// DBRoles: anchored regex patterns of the per-app DB roles this issuer's
 	// tokens may yield (empty = unrestricted). Validated upstream in
 	// config.Load; a violating token is rejected with 403.
@@ -201,7 +211,7 @@ type IssuerConfig struct {
 	BindingSource string
 	EnvStores     []string
 	// Admin: who of this issuer may call the management API.
-	Admin *issuers.AdminBinding
+	Admin issuers.AdminRules
 }
 
 // JWTConfig holds JWT verification configuration.
@@ -433,8 +443,8 @@ func (m *JWTMiddleware) verifyToken(tokenStr string) (jwt.MapClaims, error) {
 	if v.cfg.Issuer != "" {
 		parserOpts = append(parserOpts, jwt.WithIssuer(v.cfg.Issuer))
 	}
-	if v.cfg.Audience != "" {
-		parserOpts = append(parserOpts, jwt.WithAudience(v.cfg.Audience))
+	if auds := v.cfg.AcceptedAudiences(); len(auds) > 0 {
+		parserOpts = append(parserOpts, jwt.WithAudience(auds...)) // any of
 	}
 
 	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (any, error) {

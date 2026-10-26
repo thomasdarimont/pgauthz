@@ -1,6 +1,7 @@
 package issuers
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -89,22 +90,57 @@ func TestMergeKeepsEnvStores(t *testing.T) {
 // An admin binding is the environment's business: validated with the
 // issuer, never empty, scope issuer or platform.
 func TestAdminBindingValidation(t *testing.T) {
-	ok := Issuer{Admin: &AdminBinding{Scopes: []string{"pgauthz:admin"}}}
+	ok := Issuer{Admin: AdminRules{{Scopes: []string{"pgauthz:admin"}}}}
 	if err := ValidateBindings(ok); err != nil {
 		t.Fatal(err)
 	}
-	if (&AdminBinding{}).Empty() != true || ok.Admin.Empty() {
+	if (&AdminBinding{}).Empty() != true || ok.Admin[0].Empty() {
 		t.Fatal("Empty")
 	}
 	for name, iss := range map[string]Issuer{
-		"empty":        {Admin: &AdminBinding{}},
-		"blank scope":  {Admin: &AdminBinding{Scopes: []string{" "}}},
-		"claim no val": {Admin: &AdminBinding{Claims: map[string][]string{"roles": {}}}},
-		"blank client": {Admin: &AdminBinding{Clients: []string{""}}},
-		"bad scope":    {Admin: &AdminBinding{Clients: []string{"tf"}, Scope: "everything"}},
+		"empty":        {Admin: AdminRules{{}}},
+		"blank scope":  {Admin: AdminRules{{Scopes: []string{" "}}}},
+		"claim no val": {Admin: AdminRules{{Claims: map[string][]string{"roles": {}}}}},
+		"blank client": {Admin: AdminRules{{Clients: []string{""}}}},
+		"bad scope":    {Admin: AdminRules{{Clients: []string{"tf"}, Scope: "everything"}}},
+		"bad cap":      {Admin: AdminRules{{Clients: []string{"ci"}, Capabilities: []string{"delete"}}}},
+		"platform+st":  {Admin: AdminRules{{Clients: []string{"ci"}, Scope: "platform", Stores: []string{"x"}}}},
+		"bad pattern":  {Admin: AdminRules{{Clients: []string{"ci"}, Stores: []string{"a("}}}},
+		"second empty": {Admin: AdminRules{{Clients: []string{"tf"}}, {}}},
 	} {
 		if err := ValidateBindings(iss); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// The admin rules parse from the single object every deployment started
+// with, or from a list; they always marshal as a list; capabilities
+// default to manage.
+func TestAdminRulesJSON(t *testing.T) {
+	var one Issuer
+	if err := json.Unmarshal([]byte(`{"issuer":"https://a","admin":{"clients":["tf"],"scope":"platform"}}`), &one); err != nil {
+		t.Fatal(err)
+	}
+	if len(one.Admin) != 1 || one.Admin[0].Scope != AdminScopePlatform || !one.Admin[0].Can(AdminCapManage) || !one.Admin[0].Can(AdminCapTest) {
+		t.Fatalf("%+v", one.Admin)
+	}
+	var many Issuer
+	if err := json.Unmarshal([]byte(`{"issuer":"https://a","admin":[{"clients":["tf"]},{"clients":["ci"],"capabilities":["test"],"stores":["docs"]}]}`), &many); err != nil {
+		t.Fatal(err)
+	}
+	if len(many.Admin) != 2 || many.Admin[1].Can(AdminCapManage) || !many.Admin[1].Can(AdminCapTest) || many.Admin[1].Can(AdminCapRead) || many.Admin[1].Stores[0] != "docs" {
+		t.Fatalf("%+v", many.Admin)
+	}
+	if err := ValidateBindings(many); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := json.Marshal(one)
+	if !strings.Contains(string(out), `"admin":[{"clients":["tf"],"scope":"platform"}]`) {
+		t.Fatalf("marshal: %s", out)
+	}
+	var none Issuer
+	if err := json.Unmarshal([]byte(`{"issuer":"https://a","admin":null}`), &none); err != nil || len(none.Admin) != 0 {
+		t.Fatalf("null: %v %+v", err, none.Admin)
 	}
 }

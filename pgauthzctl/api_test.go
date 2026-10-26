@@ -37,7 +37,8 @@ type fakeAdmin struct {
 	bindings map[string]map[string]any
 	stores   map[string]map[string]any
 	versions map[string][]map[string]any
-	blocked  bool // the plan reports blockers
+	tested   []string // the fixture texts POSTed to models/test
+	blocked  bool     // the plan reports blockers
 }
 
 func newFakeAdmin() *fakeAdmin {
@@ -218,6 +219,37 @@ func (f *fakeAdmin) handler(_ *testing.T) http.Handler {
 		v := len(f.versions[name]) + 1
 		f.versions[name] = append(f.versions[name], map[string]any{"name": name, "version": v, "checksum": "abcdef0123456789", "description": req["description"], "created_at": "2026-10-24T00:00:00Z", "created_by": "cert:ci"})
 		writeJSON(w, 200, map[string]any{"model": name, "version": v})
+	})
+	mux.HandleFunc("POST /pgauthz/v1/admin/models/test", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Fixture   string          `json:"fixture"`
+			OpenFGA   json.RawMessage `json:"openfga"`
+			Store     string          `json:"store"`
+			KeepStore bool            `json:"keep_store"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		f.mu.Lock()
+		f.tested = append(f.tested, req.Fixture)
+		f.mu.Unlock()
+		if strings.Contains(req.Fixture, "model_file:") && len(req.OpenFGA) == 0 {
+			fail(w, 400, "openfga is required when the fixture names a model_file")
+			return
+		}
+		if req.Store == "nope" {
+			fail(w, 400, "store nope not found")
+			return
+		}
+		results := []map[string]any{{"name": "direct ownership: bob can_read doc:readme = true", "failed": false, "test": 0, "kind": "check", "user": "user:bob", "relation": "can_read", "object": "doc:readme", "expected": []string{"true"}, "actual": []string{"true"}}}
+		failed := 0
+		if req.Store == "flaky" {
+			results = append(results, map[string]any{"name": "flaky: alice can_read doc:x = false", "failed": true, "detail": "got true", "test": 1, "kind": "check", "user": "user:alice", "relation": "can_read", "object": "doc:x", "expected": []string{"false"}, "actual": []string{"true"}, "note": "alice is not a viewer"})
+			failed = 1
+		}
+		store := "pgauthzd_test_0a1b2c3d"
+		if !req.KeepStore {
+			store = ""
+		}
+		writeJSON(w, 200, map[string]any{"store": store, "passed": len(results) - failed, "failed": failed, "results": results, "duration_ms": 42})
 	})
 	mux.HandleFunc("GET /pgauthz/v1/admin/models/{name}/rollout", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"model": r.PathValue("name"), "stores": []any{map[string]any{"store": "demo", "model_version": 1, "latest_version": 2, "in_sync": true, "applied_at": "2026-10-24T00:00:00Z"}}})
@@ -600,5 +632,51 @@ func TestSubjectVerbsOverAPI(t *testing.T) {
 	}
 	if err := cmdSubject("erase", []string{"demo", "user:alice"}); err == nil || !strings.Contains(err.Error(), "unknown subject verb") {
 		t.Fatalf("erase is not a verb: %v", err)
+	}
+}
+
+// model test over the API: the fixture text and the parsed .fga travel,
+// the report prints as over --dsn, --junit writes it, a failed check is
+// the non-zero exit, --store fills a bare fixture, the API's refusal is
+// the error — and no database is touched (PGAUTHZ_DSN is empty).
+func TestModelTestOverAPI(t *testing.T) {
+	f := newFakeAdmin()
+	srv := httptest.NewServer(f.handler(t))
+	defer srv.Close()
+	serverEnv(t, srv.URL, "tok")
+
+	junit := filepath.Join(t.TempDir(), "junit.xml")
+	out, err := capture(t, func() error { return cmdTest([]string{"testdata/tests.authz.yaml", "--junit", junit}) })
+	if err != nil || !strings.Contains(out, "PASS  direct ownership") || !strings.Contains(out, "==> 1 passed, 0 failed (of 1 checks)") || !f.called("POST /pgauthz/v1/admin/models/test") {
+		t.Fatalf("model test: %v %q", err, out)
+	}
+	if len(f.tested) != 1 || !strings.Contains(f.tested[0], "model_file: ./model.fga") {
+		t.Fatalf("the fixture text travels as read: %q", f.tested)
+	}
+	if b, err := os.ReadFile(junit); err != nil || !strings.Contains(string(b), `tests="1"`) || !strings.Contains(string(b), "direct ownership") {
+		t.Fatalf("junit: %v %s", err, b)
+	}
+	// --store fills a bare fixture; a failed check prints and exits non-zero
+	bare := filepath.Join(t.TempDir(), "scenarios.authz.yaml")
+	if err := os.WriteFile(bare, []byte("tests:\n  - name: flaky\n    check:\n      - {user: \"user:alice\", object: \"doc:x\", assertions: {can_read: false}}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err = capture(t, func() error { return cmdTest([]string{bare, "--store", "flaky"}) })
+	if err == nil || !strings.Contains(err.Error(), "1 fixture checks failed") || !strings.Contains(out, "FAIL  flaky: alice can_read doc:x = false  (got true)") || !strings.Contains(out, "note: alice is not a viewer") {
+		t.Fatalf("failed check: %v %q", err, out)
+	}
+	// --keep-store names the kept store
+	out, err = capture(t, func() error { return cmdTest([]string{bare, "--store", "demo", "--keep-store"}) })
+	if err != nil || !strings.Contains(out, "kept store: pgauthzd_test_0a1b2c3d") {
+		t.Fatalf("keep-store: %v %q", err, out)
+	}
+	// the API's refusal is the error; --store on a fixture naming its model is refused before any call
+	_, err = capture(t, func() error { return cmdTest([]string{bare, "--store", "nope"}) })
+	if err == nil || !strings.Contains(err.Error(), "store nope not found") {
+		t.Fatalf("api refusal: %v", err)
+	}
+	_, err = capture(t, func() error { return cmdTest([]string{"testdata/tests.authz.yaml", "--store", "demo"}) })
+	if err == nil || !strings.Contains(err.Error(), "already names its model") {
+		t.Fatalf("store on a model_file fixture: %v", err)
 	}
 }

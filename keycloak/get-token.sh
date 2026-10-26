@@ -9,7 +9,9 @@
 #   eval "$(./keycloak/get-token.sh --service app-dms)"  # client_credentials as the app-dms client
 #   curl -s https://api.pgauthz.test/v1/evaluation -H "Authorization: Bearer $TOKEN" ...
 #
-# Env overrides: ISSUER, CLIENT_ID, CLIENT_SECRET, DEMO_PASSWORD.
+# Env overrides: ISSUER, CLIENT_ID, CLIENT_SECRET, DEMO_PASSWORD, SCOPE (extra
+# scopes to request, e.g. SCOPE="pgauthz:admin" — the pgauthz:* scopes are the
+# token's cap on the management API, see keycloak/terraform/scopes.pgauthz.tf).
 # The client secret is read from `terraform output` if not supplied.
 set -euo pipefail
 
@@ -29,10 +31,10 @@ if [ -z "$CLIENT_SECRET" ] && [ -d "$script_dir/terraform/.terraform" ]; then
 fi
 
 if [ "${1:-}" = "--service" ]; then
-  grant="grant_type=client_credentials"
+  grant="grant_type=client_credentials${SCOPE:+&scope=${SCOPE}}"
 else
   user="${1:-alice}"
-  grant="grant_type=password&username=${user}&password=${PASSWORD}&scope=openid"
+  grant="grant_type=password&username=${user}&password=${PASSWORD}&scope=openid${SCOPE:+ ${SCOPE}}"
 fi
 
 resp="$(curl -sS "$TOKEN_URL" \

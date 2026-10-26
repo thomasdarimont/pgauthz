@@ -520,8 +520,8 @@ All configuration is via environment variables.
 | `JWKS_URL` | | URL to JWKS endpoint (required if `JWKS_FILE` not set) |
 | `JWKS_FILE` | | Path to local JWKS file (required if `JWKS_URL` not set) |
 | `JWT_ISSUER` | | Expected `iss` claim (optional) |
-| `JWT_AUDIENCE` | | Expected `aud` claim — **required** for the legacy single issuer (every issuer must pin an audience; see `ALLOW_MISSING_AUDIENCE`) |
-| `JWT_ISSUERS` | | Additional trusted issuers: JSON array of `{issuer, audience, jwks_url, jwks_file, stores, db_roles, client_db_roles, pep_clients, admin}`; `iss` selects the validator; `stores` / `db_roles` (anchored regex lists) bind the issuer to specific stores / per-app DB roles; `client_db_roles` maps this issuer's client ids to roles; `pep_clients` (client id → store patterns) names the clients that may assert a request-body subject, and where — see [Two ways to call pgauthzd](#two-ways-to-call-pgauthzd); `admin` `{scopes, claims, clients, scope}` names the tokens of this issuer that may call the [admin API](#admin-api-full-profile-admin_api_enabled) and whether they manage the issuer's own binding (`scope: issuer`, default) or every issuer (`platform`) |
+| `JWT_AUDIENCE` | | Expected `aud` claim — **required** for the legacy single issuer (every issuer must pin an audience; see `ALLOW_MISSING_AUDIENCE`). In `JWT_ISSUERS`, `audiences` lists further accepted values (any of): identity providers differ in what they put there — Keycloak a client id, others the API's URI — so a deployment can accept both |
+| `JWT_ISSUERS` | | Additional trusted issuers: JSON array of `{issuer, audience, jwks_url, jwks_file, stores, db_roles, client_db_roles, pep_clients, admin}`; `iss` selects the validator; `stores` / `db_roles` (anchored regex lists) bind the issuer to specific stores / per-app DB roles; `client_db_roles` maps this issuer's client ids to roles; `pep_clients` (client id → store patterns) names the clients that may assert a request-body subject, and where — see [Two ways to call pgauthzd](#two-ways-to-call-pgauthzd); `admin` — one rule `{scopes, claims, clients, scope, capabilities, stores}` or a list tried in order — names the tokens of this issuer that may call the [admin API](#admin-api-full-profile-admin_api_enabled) and how far they reach: the issuer's own binding (`scope: issuer`, default) or every issuer (`platform`); `capabilities` (`manage` default, `test` = run fixtures, `read` = the GET verbs) and, for an issuer rule, `stores` within the binding — a CI client gets `{"clients":["ci"],"scopes":["pgauthz:test"],"capabilities":["test"],"stores":["docs"]}`; `decide` `{store, subject_type, subject_claim}` delegates the decision to an authorization store — the management console's — instead |
 | `JWT_ROLES_CLAIM` | | Comma-separated dotted claim paths aggregated into the caller's roles (e.g. `realm_access.roles,resource_access.authz-api.roles`) |
 | `SEARCH_REQUIRED_ROLE` | | If set, the `search/*` endpoints require this role (`403` otherwise); empty = search open to any authenticated caller |
 | `WATCH_REQUIRED_ROLE` | *unset = watch disabled* | Gates the native changefeed on the public listener (review #10) — the feed exposes authorization topology. Unset: 403. A role name: JWT-role gate. `"*"`: explicitly open (discouraged). Callback listener unaffected |
@@ -572,7 +572,7 @@ All configuration is via environment variables.
 | `ADMIN_ROLE` | | Single-issuer shorthand for the admin gate: a role (`JWT_ROLES_CLAIM`) the token must hold; platform scope (every issuer) |
 | `ADMIN_DATABASE_URL` | | A second, small pool the management resources run on, connecting as the admin tier (`pgauthzd_admin`), so `DATABASE_URL` keeps the writer tier and the decision paths never run with admin rights. Unset: the main pool serves management and must hold `authz_admin` (`doctor` warns) |
 | `ADMIN_TLS_CERT` / `ADMIN_TLS_KEY` / `ADMIN_CLIENT_CA` | | mTLS on the admin listener (all three; needs `ADMIN_LISTEN_ADDR`): the listener terminates TLS and **requires** a client certificate chained to the CA. A verified certificate is a credential of its own when `ADMIN_CLIENT_CERTS` maps it |
-| `ADMIN_CLIENT_CERTS` | | JSON array mapping verified client certificates to admin scopes: `[{"cn":"terraform","scope":"platform"},{"uri":"spiffe://acme/ci/tenant-a","scope":"issuer","issuer":"https://idp.tenant-a"}]` (`subject` for the full RFC 2253 subject). The certificate's identity (SAN URI, else subject) is the recorded actor (`cert:…`). For machine identities — CI, Terraform runners; people keep using tokens |
+| `ADMIN_CLIENT_CERTS` | | JSON array mapping verified client certificates to admin scopes: `[{"cn":"terraform","scope":"platform"},{"uri":"spiffe://acme/ci/tenant-a","scope":"issuer","issuer":"https://idp.tenant-a","capabilities":["test"],"stores":["docs"]}]` (`subject` for the full RFC 2253 subject; `capabilities` and `stores` narrow as an admin rule's do). The certificate's identity (SAN URI, else subject) is the recorded actor (`cert:…`). For machine identities — CI, Terraform runners; people keep using tokens |
 | `TRACING` | `auto` | **OpenTelemetry master switch.** `auto`: tracing is on only when the `OTEL_*` environment configures an OTLP exporter — so it is **off by default**; `on`: propagation and spans even without an exporter (a caller's `traceparent` reaches the decision log); `off`: nothing — no header read, no span, no ids on the log line. Off means the untraced code path: no handler wrapper, no query tracer, no OPA transport wrapper |
 | `TRACING_IDENTIFIERS` | `false` | Put subject and resource **ids** on the decision span (`pgauthz.subject`, `pgauthz.resource`). Default: the **types** only (`pgauthz.subject.type`, `pgauthz.resource.type`) — a tracing backend is usually shared more widely than the decision log, which keeps the ids and is joined by `trace_id` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | | Set it (or `OTEL_TRACES_EXPORTER=otlp`) and pgauthzd exports spans over OTLP: one server span per request (health probes excluded), one `pgauthz.<endpoint>` span per decision with `pgauthz.store`, `.subject`, `.action`, `.resource`, `.decision`, `.state`, `.reason`, `.client`, a client span per engine query named after the `authz.*` function it calls (statement text and parameter count, never the arguments), and a client span per OPA call; the request's own span carries `pgauthz.store`, so traces are queried by store without parsing paths. The other standard variables apply as the SDK defines them: `OTEL_EXPORTER_OTLP_PROTOCOL` (`http/protobuf`, default, or `grpc`), `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME` (default `pgauthzd`), `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER` / `_ARG`; `OTEL_TRACES_EXPORTER=none` disables export. With tracing on, W3C `traceparent` and B3 are honoured and forwarded, exporter or not: the decision log's `trace_id` / `span_id` join a line to the application's trace, and `X-Request-ID` defaults to the trace id. Demo: `./start.sh --tracing` adds a Jaeger (`compose-tracing.yml`) and points every instance at it |
@@ -713,7 +713,7 @@ Without a configured native backend the routes return `501 Not Implemented`.
 | GET | `/pgauthz/v1/admin/issuers` | full + admin | The effective set within the caller's admin scope — see [Admin API](#admin-api-full-profile-admin_api_enabled). |
 | GET/PUT/DELETE | `/pgauthz/v1/admin/issuer-bindings` | full + admin | The database-managed issuer bindings (`authz.issuer_bindings`) within the caller's scope: list / one (`?issuer=`), create-or-replace (the whole row; validated, narrowing only, the issuer must be trusted), delete (`?issuer=`). |
 | GET/PUT/DELETE | `/pgauthz/v1/admin/stores/{store}`, `…/model` | full + admin | Stores and their models as upserts (create, describe, retire, delete; plan and apply a registry version) within the caller's scope — see [Admin API](#admin-api-full-profile-admin_api_enabled). |
-| GET/POST | `/pgauthz/v1/admin/models[/{name}/versions\|/rollout]` | full + admin (platform) | The model registry: versions, publish from a store or a definition, the fleet view. |
+| GET/POST | `/pgauthz/v1/admin/models[/{name}/versions\|/rollout\|/test]` | full + admin (platform) | The model registry: versions, publish from a store or a definition, the fleet view; `models/test` runs a `tests.authz.yaml` fixture in an ephemeral store (`pgauthzctl model test --server`; the `test` capability). |
 | POST | `/pgauthz/v1/list-objects` | direct | Objects of a type the subject can act on (`list_objects`); keyset-paginated. |
 | POST | `/pgauthz/v1/list-subjects` | direct | Subjects of a type that can act on the object (`list_subjects`); keyset-paginated. |
 | POST | `/pgauthz/v1/list-actions` | direct | Relations the subject holds on the object (`list_actions`). |
@@ -771,13 +771,15 @@ the second pool, on the main pool, which must then hold `authz_admin`.
 **The gate.** Every call needs a verified token (the same `JWT_ISSUERS` trust
 as the decision paths) that passes the admin gate:
 
-- the token's issuer carries an **`admin` binding** in `JWT_ISSUERS` —
+- the token's issuer carries **`admin` rules** in `JWT_ISSUERS` — one, or a
+  list tried in order —
   `{"admin":{"scopes":["pgauthz:admin"],"claims":{"realm_access.roles":["platform-admin"]},"clients":["terraform"],"scope":"platform"}}`:
   every listed scope must be in the token's `scope`, every listed claim value
   present (string or array claims, dotted paths), and the client (`azp` /
-  `client_id`) listed when clients are. An empty admin binding is refused
-  (it would admit every token of the issuer). The database never grants
-  management: admin bindings are the environment's;
+  `client_id`) listed when clients are; the first satisfied rule decides
+  the credential's reach. An empty rule is refused (it would admit every
+  token of the issuer). The database never grants management: admin rules
+  are the environment's;
 - or — the single-issuer shorthand — the token holds **`ADMIN_ROLE`**;
 - or, on an admin listener with **mTLS** (`ADMIN_TLS_CERT/KEY` +
   `ADMIN_CLIENT_CA`), the call carries no token and the verified **client
@@ -795,6 +797,66 @@ re-enables their own identity provider and sees only it. The whole fleet is
 reachable only with `scope: platform` — the operator's admin identity
 provider — or `ADMIN_ROLE`. The read-only `GET /pgauthz/v1/issuers` follows the
 same rule (own issuer unless platform admin).
+
+**Least privilege: capabilities and stores.** A rule may hold less than
+management. `capabilities` lists what the credential may do — `manage`
+(every verb; the default, and what a rule without the field grants),
+`test` (run fixtures: `POST …/models/test`) and `read` (the GET verbs);
+`manage` implies the other two. `stores` narrows an issuer-scoped rule to
+some of the issuer's stores (anchored patterns within the binding). The
+gate decides the needed capability from the request — the fixture runner
+needs `test`, a GET `read`, everything else `manage` — and refuses with
+`403` naming both. A CI pipeline therefore runs as a client with no role
+at all: `{"clients":["ci"],"scopes":["pgauthz:test"],"capabilities":["test"],"stores":["docs"]}`
+lets its token test the `docs` store and nothing else, and a stolen token
+can neither read nor change anything. The OAuth scope is the token's own
+statement of what it is for — the demo realm defines `pgauthz:test` as a
+client scope that carries the `authz-api` audience with it
+(`keycloak/terraform/scopes.pgauthz.tf`), one scope per capability. `ADMIN_CLIENT_CERTS` entries take
+the same two fields for certificate-based runners.
+
+**Delegated rules: the management console decides.** Instead of listing
+what a credential may do, a rule can name the authorization store that
+decides — the console's own: `{"scopes":["pgauthz:admin"],"decide":{"store":"console"}}`.
+The token becomes a subject of that store (`subject_type`, default
+`user`, with the id from `subject_claim`, default `SUBJECT_ID_CLAIM`;
+`{"subject_type":"service_account","subject_claim":"azp"}` for a client
+credentials token), its roles and scopes travel into the check as
+contextual team memberships (`team:role_<role>#member`,
+`team:scope_<scope>#member`, the console's own convention), and each admin
+verb asks for the relation the console checks for the same action:
+
+| Admin verb | Asks the store for |
+|---|---|
+| `GET …/stores` | `can_view` per store (every store with `can_view_all_stores` on `platform:default`) |
+| `GET …/stores/{s}…` | `can_view` on `store:{s}` (`can_export` for the data subject routes) |
+| `PUT …/stores/{s}` | `can_manage_access` on the store, or `can_create_store` on `platform:default` for a new one |
+| `DELETE …/stores/{s}…`, recorders, namespaces | `can_manage_access` on `store:{s}` |
+| `PUT …/stores/{s}/model` | `can_rollout` on `store:{s}` |
+| `POST …/models/test` | `can_run_tests` on the tested store; `can_view` on `registry:default` for a model of its own; `keep_store` needs `can_create_store` |
+| `GET …/models…` / `POST …/versions` | `can_view` / `can_publish` on `registry:default` |
+| issuers, issuer bindings | `can_manage_issuers` on `platform:default` |
+
+The token's own `pgauthz:*` scopes cap what the store grants — `pgauthz:test`
+(the fixture runner), `pgauthz:read` (the GET verbs on stores and the
+registry), `pgauthz:manage` (store writes, test and read included),
+`pgauthz:admin` (everything: the issuers, reading included, registry
+writes, creating a store, `keep_store`); a token without any of them does
+not satisfy a delegated rule. So a CI client's token says it may only test, a person's console
+session carries `pgauthz:admin`, and a token minted for another purpose
+manages nothing even for a platform admin. People and technical users are
+managed in one place, the console's Access tabs, and a person has the same
+rights through the console and through `pgauthzctl` with their own token. A rule with `decide` needs no
+scopes, claims or clients (the store is the gate: a subject without
+tuples has nothing), takes no capabilities or stores, and a token without
+the subject claim does not satisfy it (the next rule is tried). The
+deciding store is asked on the admin pool with every request — a revoked
+role ends the access at the next call — and an unreachable store is a
+refusal. The environment's static rules and `ADMIN_ROLE` remain the
+bootstrap and the break-glass. The demo realm maps a CI client and
+people this way (`compose-keycloak.yml`); technical users are
+`service_account:<client id>` in the console store (its model admits them
+on every store, registry and platform role, and in teams).
 
 **The resources** (conditions, gates and grant rules travel inside the
 model definition; every console management feature gets its endpoint here,
@@ -821,6 +883,7 @@ so configuration as code never needs the console's BFF):
 | GET | `/pgauthz/v1/admin/models[?name=]` | The registry's versions (platform scope) |
 | POST | `/pgauthz/v1/admin/models/{name}/versions` | Publish the next version from `from_store` or from a `definition` (the export shape; `publish_model_definition`), idempotent on the checksum (platform scope) |
 | GET | `/pgauthz/v1/admin/models/{name}/rollout` | Every store under the model with version and drift (platform scope) |
+| POST | `/pgauthz/v1/admin/models/test` | Run a `tests.authz.yaml` fixture (`{"fixture": "<the file's text>", "openfga": {…}, "store": "…", "keep_store": false}`) in an ephemeral store on the admin pool — what `pgauthzctl model test --server` and a CI job with a token call. `openfga` is the model a `model_file` parsed to (a `.fga` is parsed by the client); `store` tests a live store's current model (a fixture without a model line). Needs the `test` capability (`manage` implies it). A fixture testing a live store needs a credential whose scope covers that store; one bringing its own model touches no store of anyone's, so any admin credential runs it; `keep_store` needs platform scope. Failed checks are a `200` with the report (`passed`, `failed`, `results[]`, `duration_ms`); a fixture that cannot run is a `400` with the engine's message. The store is dropped with its audit rows before the commit unless `keep_store` |
 
 Writes are recorded in `authz.issuer_bindings_audit` with the token's subject
 and client (`user:alice via terraform-a`). `403` carries why the gate refused

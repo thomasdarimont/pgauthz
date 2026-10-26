@@ -12,7 +12,8 @@
 #
 # YAML anchors are file-scoped, so this overlay re-declares the pgauthzd build.
 x-pgauthzd-build: &pgauthzd-build
-  context: ./pgauthzd
+  context: .                 # repo root: the image also needs pgauthzadm/ (see pgauthzd/Dockerfile)
+  dockerfile: pgauthzd/Dockerfile
   args:
     VERSION: ${VERSION:-dev}
 

@@ -46,13 +46,14 @@ pgauthzctl issuers list --server https://pgauthz-admin.example:8082 \
 ```
 
 Every verb runs over it except `model import` (a direct import into a
-store) and `model test` (ephemeral stores): `publish` sends the parsed
-OpenFGA model and the daemon converts it (`publish_model_openfga`); `apply`
-is plan-first on the daemon and a blocked plan is the error; `--stores`
-applies one store at a time. **The direct database connection** (`--dsn`
-or `PGAUTHZ_DSN`, e.g. `postgres://authz:authz@localhost:55433/authz`)
-stays for those two verbs, installation and break-glass — the same trust
-tier as psql. Routine verbs over it print a note: it is on its way out for
+store): `publish` sends the parsed OpenFGA model and the daemon converts
+it (`publish_model_openfga`); `apply` is plan-first on the daemon and a
+blocked plan is the error; `--stores` applies one store at a time; `model
+test` sends the fixture text (and the model a `model_file` parsed to) and
+the daemon runs it in an ephemeral store, answering the report. **The
+direct database connection** (`--dsn` or `PGAUTHZ_DSN`, e.g.
+`postgres://authz:authz@localhost:55433/authz`) stays for `model import`,
+installation and break-glass — the same trust tier as psql. Routine verbs over it print a note: it is on its way out for
 them. Over `--dsn`, `plan`, `diff`, `export`, `status`, `versions`,
 `rollout`, `issuers list` and `issuers export` work with a reader-grade
 DSN; the rest needs admin.
@@ -61,7 +62,7 @@ DSN; the rest needs admin.
 
 ```bash
 # Author → test → publish → canary → fleet
-pgauthzctl model test  ./tests.authz.yaml --junit report.xml
+pgauthzctl model test  ./tests.authz.yaml --junit report.xml     # over --server or --dsn
 pgauthzctl model publish ./model.fga --name saas_core --message "$(git rev-parse --short HEAD)"
 pgauthzctl model plan  saas_core --store tenant_canary        # exit 1 on blockers → CI gate
 pgauthzctl model apply saas_core --store tenant_canary --plan-first
@@ -233,9 +234,42 @@ gates and grant rules included, which the DSL cannot carry); a fixture
 without a model line takes the store from `--store`, which is how the
 console's saved scenarios and the examples' `scenarios.authz.yaml` run:
 `pgauthzctl model test examples/models/gdrive/scenarios.authz.yaml --store gdrive`. `--junit out.xml` emits JUnit XML for CI; `--keep-store` retains the
-store for debugging. Fixtures using `contextual_tuples` need a DSN whose
-role holds `authz_contextual_reader` (the injection API is deliberately
-gated) — a superuser test database also works.
+store for debugging.
+
+Over `--server` the daemon runs the fixture (`POST
+/pgauthz/v1/admin/models/test`): the CLI reads the fixture and parses the
+`model_file` (a `.fga` through the shared parser), sends both, and prints
+the report the daemon answers — the same output, `--junit`, `--store` and
+`--keep-store`. That is the CI shape for teams without database access:
+create a CI user in the identity provider, bind its issuer (or a client
+certificate) to the admin API, obtain a token in the job, and run the
+tests against the daemon:
+
+```bash
+# CI job: a token for the ci user, then the fixture against the daemon
+PGAUTHZ_TOKEN=$(curl -s -d grant_type=client_credentials -d client_id=ci -d client_secret="$CI_SECRET" \
+    https://idp.example/realms/ops/protocol/openid-connect/token | jq -r .access_token)
+pgauthzctl model test ./tests.authz.yaml --server https://pgauthz-admin.example:8082 --junit report.xml
+pgauthzctl model test ./scenarios.authz.yaml --store tenant_canary --server https://pgauthz-admin.example:8082
+```
+
+The credential needs the `test` capability of an admin rule — the least
+privilege a CI identity should hold: `{"clients":["ci"],"scopes":["pgauthz:test"],"capabilities":["test"],"stores":["tenant_canary"]}`
+on its issuer lets it test that store and nothing else, with no role in
+the token at all — only the `pgauthz:test` scope, which says what the
+token is for and brings the API audience with it (see [pgauthzd/README.md → Admin API](../pgauthzd/README.md#admin-api-full-profile-admin_api_enabled)).
+A fixture testing a live store needs a scope covering that store; one
+bringing its own model (`model_file`, `model`) runs under any admin
+credential; `--keep-store` needs platform scope. Where the issuer's rule
+delegates to the management console (`"decide":{"store":"console"}`), the
+console's Access tab decides instead: `tester` on the store for a fixture
+against it, a registry role for a model of its own — the same for a person
+with their own token and for a CI client. Failed checks are the
+report and a non-zero exit, as over `--dsn`; a fixture that cannot run (a
+model the engine refuses) is the daemon's `400`. Over `--dsn`, fixtures
+using `contextual_tuples` need a DSN whose role holds
+`authz_contextual_reader` (the injection API is deliberately gated) — a
+superuser test database also works; the daemon's admin pool holds it.
 
 ## Conditions in DSL files
 

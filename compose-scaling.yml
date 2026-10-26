@@ -99,7 +99,8 @@ services:
   # pgauthzd (decision-only reader). Scale out near the read replicas.
   pgauthzd-reader:
     build:
-      context: ./pgauthzd
+      context: .
+      dockerfile: pgauthzd/Dockerfile
     environment:
       PGAUTHORIZER_PROFILE: "decision-only"
       LISTEN_ADDR: ":8080"
@@ -128,7 +129,8 @@ services:
   # DSN gives strict revocation when the replica is in synchronous_standby_names.
   # pgauthzd-writer:
   #   build:
-  #     context: ./pgauthzd
+  #     context: .
+  #     dockerfile: pgauthzd/Dockerfile
   #     args:
   #       BINARY: pgauthzd
   #   environment:

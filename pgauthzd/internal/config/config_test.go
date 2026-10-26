@@ -583,9 +583,25 @@ func TestAdminAPIConfig(t *testing.T) {
 	t.Setenv("ADMIN_ROLE", "")
 	t.Setenv("JWT_ISSUERS", `[{"issuer":"https://idp","audience":"api","jwks_file":"/dev/null","stores":["demo"],"admin":{"scopes":["pgauthz:admin"],"scope":"platform"}}]`)
 	c, err = Load()
-	if err != nil || !c.HasAdminGate() || c.Issuers[0].Admin == nil || c.Issuers[0].Admin.Scope != "platform" {
+	if err != nil || !c.HasAdminGate() || len(c.Issuers[0].Admin) != 1 || c.Issuers[0].Admin[0].Scope != "platform" {
 		t.Fatalf("an issuer admin binding is a gate, got %v", err)
 	}
+	// a list of rules, with capabilities and stores; the certificate mapping takes the same
+	t.Setenv("JWT_ISSUERS", `[{"issuer":"https://idp","audience":"api","jwks_file":"/dev/null","stores":["demo","docs"],"admin":[{"scopes":["pgauthz:admin"],"scope":"platform"},{"clients":["ci"],"capabilities":["test"],"stores":["docs"]}]}]`)
+	c, err = Load()
+	if err != nil || len(c.Issuers[0].Admin) != 2 || c.Issuers[0].Admin[1].Capabilities[0] != "test" {
+		t.Fatalf("admin rules: %v %+v", err, c.Issuers)
+	}
+	// audiences: any of several (a client id, the API's URI) satisfies the issuer
+	t.Setenv("JWT_ISSUERS", `[{"issuer":"https://idp","audiences":["api","https://api.example"],"jwks_file":"/dev/null","stores":["demo"],"admin":[{"scopes":["pgauthz:admin"],"scope":"platform"}]}]`)
+	if c, err := Load(); err != nil || len(c.Issuers[0].Audiences) != 2 {
+		t.Fatalf("audiences: %v", err)
+	}
+	t.Setenv("JWT_ISSUERS", `[{"issuer":"https://idp","audience":"api","jwks_file":"/dev/null","stores":["demo"],"admin":[{"clients":["ci"],"capabilities":["deploy"]}]}]`)
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "expected manage, test or read") {
+		t.Fatalf("an unknown capability must be refused, got %v", err)
+	}
+	t.Setenv("JWT_ISSUERS", `[{"issuer":"https://idp","audience":"api","jwks_file":"/dev/null","stores":["demo"],"admin":{"scopes":["pgauthz:admin"],"scope":"platform"}}]`)
 	t.Setenv("JWT_ISSUERS", `[{"issuer":"https://idp","audience":"api","jwks_file":"/dev/null","stores":["demo"],"admin":{}}]`)
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "admit every token") {
 		t.Fatalf("an empty admin binding must be refused, got %v", err)
@@ -657,6 +673,11 @@ func TestAdminClientCertsConfig(t *testing.T) {
 	if err != nil || len(c.AdminClientCerts) != 1 || c.AdminClientCerts[0].CN != "terraform" || !c.HasAdminGate() {
 		t.Fatalf("a mapping with mTLS is a gate: %+v %v", c, err)
 	}
+	// a CI runner's certificate: test only, on named stores of its issuer
+	t.Setenv("ADMIN_CLIENT_CERTS", `[{"cn":"ci","scope":"issuer","issuer":"https://idp","capabilities":["test"],"stores":["demo"]}]`)
+	if c, err := Load(); err != nil || c.AdminClientCerts[0].Capabilities[0] != "test" || c.AdminClientCerts[0].Stores[0] != "demo" {
+		t.Fatalf("certificate capabilities: %v", err)
+	}
 	for _, bad := range []string{
 		`[{"cn":"a","uri":"spiffe://x"}]`,
 		`[{"scope":"platform"}]`,
@@ -664,6 +685,9 @@ func TestAdminClientCertsConfig(t *testing.T) {
 		`[{"cn":"a","scope":"galaxy"}]`,
 		`[{"cn":"a","issuer":"https://x"}]`,
 		`[{"cn":"a","bogus":1}]`,
+		`[{"cn":"a","capabilities":["deploy"]}]`,
+		`[{"cn":"a","scope":"platform","stores":["demo"]}]`,
+		`[{"cn":"a","scope":"issuer","issuer":"https://idp","stores":["a("]}]`,
 	} {
 		t.Setenv("ADMIN_CLIENT_CERTS", bad)
 		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "ADMIN_CLIENT_CERTS") {

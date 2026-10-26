@@ -640,7 +640,7 @@ func setupLogging(level string) {
 func adminGateLabel(cfg *config.Config) string {
 	n := 0
 	for _, iss := range cfg.Issuers {
-		if iss.Admin != nil && !iss.Admin.Empty() {
+		if len(iss.Admin) > 0 {
 			n++
 		}
 	}

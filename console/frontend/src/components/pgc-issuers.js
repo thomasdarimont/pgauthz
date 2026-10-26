@@ -385,7 +385,11 @@ export class PgcIssuers extends PgcElement {
                             ${Object.keys(i.pep_clients ?? {}).join(', ') || html`<span class="muted">—</span>`}
                           </td>
                           <td class="mono">
-                            ${i.admin ? (i.admin.scope ?? 'issuer') : html`<span class="muted">—</span>`}
+                            ${i.admin?.length
+                              ? i.admin.map((r) => (r.decide
+                                  ? `→ ${r.decide.store} (${r.decide.subject_type ?? 'user'}:${r.decide.subject_claim ?? 'preferred_username'})`
+                                  : [r.scope ?? 'issuer', ...(r.capabilities ?? []), ...(r.stores ?? [])].join(' · '))).join('; ')
+                              : html`<span class="muted">—</span>`}
                           </td>
                         </tr>`,
                     )}

@@ -18,7 +18,9 @@ keycloak/
     generate-mkcerts.sh      # mkcert *.pgauthz.test → certs/
     certs/                   # cert.pem/key.pem/rootCA.pem (gitignored)
     proxy/                   # nginx: TLS termination + host routing
-  terraform/                 # realm, authz-api client, mappers, roles, users
+  terraform/                 # realm, authz-api client, mappers, roles, users,
+                             # pgauthz:* client scopes (scopes.pgauthz.tf: test/read/manage/admin,
+                             # each carrying the client-id AND the URI audience), the ci client
   get-token.sh               # fetch a real token (password / client_credentials)
 ```
 

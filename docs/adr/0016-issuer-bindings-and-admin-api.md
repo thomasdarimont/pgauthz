@@ -130,6 +130,24 @@ first and records every write in its action log; pgauthzd records the row's
 + the callback's effective set), which is what the console-local dev stack
 uses — the local admin has no token and the dev stack no certificates.
 
+## Addendum (2026-10-26): capabilities and stores on admin rules
+
+An issuer's `admin` binding is now a list of rules, tried in order, each
+with optional `capabilities` (`manage`, the default; `test`; `read`) and,
+for issuer scope, `stores` within the binding; `ADMIN_CLIENT_CERTS`
+entries take the same. The gate derives the needed capability from the
+request (the fixture runner `test`, a GET `read`, the rest `manage`), so
+a CI identity holds `test` on the stores it tests and no role at all.
+The single-object form still parses; the API always answers a list. The
+"resource-scoped gate" below is thereby built, at the capability grain.
+A rule may instead delegate (`decide: {store}`) to an authorization store,
+the management console's: the credential becomes one of its subjects,
+roles and scopes travel as contextual team memberships, and each verb
+asks for the relation the console checks itself — people and technical
+users managed in one Access tab, with environment rules and `ADMIN_ROLE`
+as bootstrap and break-glass. The token's `pgauthz:test|read|manage|admin`
+scopes cap the store's grants, so a token says itself what it is for.
+
 ## Consequences
 
 - Onboarding, narrowing and pausing an identity provider no longer need a

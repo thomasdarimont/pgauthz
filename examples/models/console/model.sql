@@ -106,6 +106,7 @@ SELECT authz.create_store(:'cs', 'pgauthz management console: who may manage whi
 -- Types
 ----------------------------------------------------------------------
 SELECT authz.model_register_type(:'cs', 'user',     p_description => 'a person logged in through the IdP (id = preferred_username)');
+SELECT authz.model_register_type(:'cs', 'service_account', p_description => 'a technical user: an OAuth client (id = client id / azp) calling the admin API — a CI pipeline, a Terraform runner');
 SELECT authz.model_register_type(:'cs', 'team',     p_description => 'a directory group: realm role, group or organization, as contextual tuples');
 SELECT authz.model_register_type(:'cs', 'platform', p_description => 'the console deployment itself (platform:default)');
 SELECT authz.model_register_type(:'cs', 'registry', p_description => 'the model registry (registry:default)');
@@ -130,6 +131,7 @@ SELECT authz.model_register_relation(:'cs', r) FROM unnest(ARRAY[
 ----------------------------------------------------------------------
 SELECT authz.model_add_rule(:'cs', 'team', 'member', 'direct');
 SELECT authz.model_add_type_restriction(:'cs', 'team', 'member', 'user');
+SELECT authz.model_add_type_restriction(:'cs', 'team', 'member', 'service_account');
 
 ----------------------------------------------------------------------
 -- platform
@@ -140,6 +142,7 @@ SELECT authz.model_add_rule(:'cs', 'platform', 'admin', 'direct');
 -- leave none is refused (SQLSTATE ZA002); offboarding a person is not.
 SELECT authz.model_set_relation_constraint(:'cs', 'platform', 'admin', p_min_direct => 1);
 SELECT authz.model_add_type_restriction(:'cs', 'platform', 'admin', 'user');
+SELECT authz.model_add_type_restriction(:'cs', 'platform', 'admin', 'service_account');
 SELECT authz.model_add_type_restriction(:'cs', 'platform', 'admin', 'team', 'member');
 SELECT authz.model_add_rule(:'cs', 'platform', r, 'computed', 'admin')
   FROM unnest(ARRAY['can_manage_issuers', 'can_view_health', 'can_create_store', 'can_view_all_stores', 'can_manage_access']) AS r;
@@ -147,6 +150,7 @@ SELECT authz.model_add_rule(:'cs', 'platform', r, 'computed', 'admin')
 -- delegable without the rest of platform administration.
 SELECT authz.model_add_rule(:'cs', 'platform', 'issuer_admin', 'direct');
 SELECT authz.model_add_type_restriction(:'cs', 'platform', 'issuer_admin', 'user');
+SELECT authz.model_add_type_restriction(:'cs', 'platform', 'issuer_admin', 'service_account');
 SELECT authz.model_add_type_restriction(:'cs', 'platform', 'issuer_admin', 'team', 'member');
 SELECT authz.model_add_rule(:'cs', 'platform', 'can_manage_issuers', 'computed', 'issuer_admin');
 
@@ -157,6 +161,7 @@ SELECT authz.model_add_rule(:'cs', 'registry', 'platform', 'direct');
 SELECT authz.model_add_type_restriction(:'cs', 'registry', 'platform', 'platform');
 SELECT authz.model_add_rule(:'cs', 'registry', r, 'direct') FROM unnest(ARRAY['publisher', 'viewer']) AS r;
 SELECT authz.model_add_type_restriction(:'cs', 'registry', r, 'user') FROM unnest(ARRAY['publisher', 'viewer']) AS r;
+SELECT authz.model_add_type_restriction(:'cs', 'registry', r, 'service_account') FROM unnest(ARRAY['publisher', 'viewer']) AS r;
 SELECT authz.model_add_type_restriction(:'cs', 'registry', r, 'team', 'member') FROM unnest(ARRAY['publisher', 'viewer']) AS r;
 
 SELECT authz.model_add_rule(:'cs', 'registry', 'can_publish', 'computed', 'publisher');
@@ -174,6 +179,10 @@ SELECT authz.model_add_type_restriction(:'cs', 'store', 'platform', 'platform');
 SELECT authz.model_add_rule(:'cs', 'store', r, 'direct')
   FROM unnest(ARRAY['owner', 'author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'exporter', 'viewer']) AS r;
 SELECT authz.model_add_type_restriction(:'cs', 'store', r, 'user')
+  FROM unnest(ARRAY['owner', 'author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'exporter', 'viewer']) AS r;
+-- technical users (service_account:<client id>) hold store roles like people:
+-- pgauthzd's admin gate asks this store for them (delegated admin rules)
+SELECT authz.model_add_type_restriction(:'cs', 'store', r, 'service_account')
   FROM unnest(ARRAY['owner', 'author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'exporter', 'viewer']) AS r;
 SELECT authz.model_add_type_restriction(:'cs', 'store', r, 'team', 'member')
   FROM unnest(ARRAY['owner', 'author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'exporter', 'viewer']) AS r;
@@ -231,6 +240,7 @@ SELECT authz.model_add_rule(:'cs', 'namespace', 'store', 'direct');
 SELECT authz.model_add_type_restriction(:'cs', 'namespace', 'store', 'store');
 SELECT authz.model_add_rule(:'cs', 'namespace', r, 'direct') FROM unnest(ARRAY['author', 'viewer']) AS r;
 SELECT authz.model_add_type_restriction(:'cs', 'namespace', r, 'user') FROM unnest(ARRAY['author', 'viewer']) AS r;
+SELECT authz.model_add_type_restriction(:'cs', 'namespace', r, 'service_account') FROM unnest(ARRAY['author', 'viewer']) AS r;
 SELECT authz.model_add_type_restriction(:'cs', 'namespace', r, 'team', 'member') FROM unnest(ARRAY['author', 'viewer']) AS r;
 SELECT authz.model_add_rule(:'cs', 'namespace', 'can_view', 'computed', r) FROM unnest(ARRAY['viewer', 'author']) AS r;
 SELECT authz.model_add_rule(:'cs', 'namespace', 'can_view', 'ttu', NULL, 'store', 'can_view');

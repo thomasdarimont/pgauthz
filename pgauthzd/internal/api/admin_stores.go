@@ -16,6 +16,7 @@ package api
 //   GET    /pgauthz/v1/admin/models[?name=]          the registry versions
 //   POST   /pgauthz/v1/admin/models/{name}/versions  {from_store | definition, description} publish
 //   GET    /pgauthz/v1/admin/models/{name}/rollout   every store under the model
+//   POST   /pgauthz/v1/admin/models/test            {fixture, openfga?, store?, keep_store?} run a tests.authz.yaml in an ephemeral store
 
 import (
 	"context"
@@ -27,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"thomasdarimont.de/authz/pgauthzadm"
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 	"thomasdarimont.de/authz/pgauthzd/internal/metrics"
 )
@@ -49,6 +51,10 @@ type StoreAdmin interface {
 	RolloutStatus(ctx context.Context, name string) ([]json.RawMessage, error)
 	PublishModel(ctx context.Context, name, fromStore string, definition, openfga json.RawMessage, description, actor string) (int, error)
 	DescribeModel(ctx context.Context, store string) (string, error)
+	// TestModel runs a fixture (pgauthzadm.RunFixture) in an ephemeral store
+	// as the actor; modelJSON resolves the fixture's model_file, keep
+	// retains the store. The report is the answer even when checks fail.
+	TestModel(ctx context.Context, fix *pgauthzadm.Fixture, modelJSON []byte, keep bool, actor string) (*pgauthzadm.RunReport, error)
 	RecorderActions(ctx context.Context, store string) ([]authz.RecorderRow, error)
 	SetRecorderActions(ctx context.Context, store, role string, actions []string, actor string) error
 	RevokeRecorderActions(ctx context.Context, store, role, actor string) (bool, error)
@@ -88,9 +94,16 @@ func (h *Handler) requireStoreScope(w http.ResponseWriter, r *http.Request) (adm
 		return scope, "", false
 	}
 	if !scope.coversStore(store) {
-		metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
-		writeForbidden(w, "management refused: this credential does not manage store '"+store+"' (its issuer's stores binding decides)")
-		return scope, "", false
+		// the store's refusal is the answer — unless a delegated credential
+		// may create a store it does not own yet (the platform's
+		// can_create_store, PUT on the store itself)
+		refusal := scope.refusal("this credential does not manage store '" + store + "' (its issuer's stores binding, narrowed by its admin rule's stores, decides)")
+		creating := scope.decide != nil && scope.decide.scopes["admin"] && r.Method == http.MethodPut && r.URL.Path == "/pgauthz/v1/admin/stores/"+store && scope.platformWide()
+		if !creating {
+			metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
+			writeForbidden(w, refusal)
+			return scope, "", false
+		}
 	}
 	return scope, store, true
 }
@@ -101,9 +114,9 @@ func (h *Handler) requirePlatform(w http.ResponseWriter, r *http.Request) bool {
 	if !ok {
 		return false
 	}
-	if !scope.platform {
+	if !scope.platformWide() {
 		metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
-		writeForbidden(w, "management refused: the model registry needs platform scope")
+		writeForbidden(w, scope.refusal("the model registry needs platform scope"))
 		return false
 	}
 	return true
@@ -500,6 +513,118 @@ func (h *Handler) adminPublishModel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"model": name, "version": version})
 }
 
+// ── model test: a fixture run in an ephemeral store ──────────────────────
+
+// testModelReq is a tests.authz.yaml plus what the file could not carry:
+// the OpenFGA model its model_file resolved to (the client parses a .fga),
+// a live store to test when the fixture names no model, keep_store.
+type testModelReq struct {
+	Fixture   string          `json:"fixture"`
+	OpenFGA   json.RawMessage `json:"openfga"`
+	Store     string          `json:"store"`
+	KeepStore bool            `json:"keep_store"`
+}
+
+// adminTestModel: POST /pgauthz/v1/admin/models/test — what `pgauthzctl
+// model test --server` and a CI job with a token call; the `test`
+// capability (requireAdmin). A fixture naming a live store (`store:` or
+// the request's store) is that store's business: a credential whose scope
+// covers the store may test it. A fixture bringing its own model
+// (model_file, a registry ref) touches no store of anyone's — the
+// ephemeral store lives and dies inside the transaction — so any admin
+// credential may run it; keep_store, which commits that store, needs
+// platform scope. Failed checks are a 200 with the report, not an error.
+func (h *Handler) adminTestModel(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	a, ok := h.storeAdmin(w)
+	if !ok {
+		return
+	}
+	var req testModelReq
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeBadRequest(w, "invalid JSON: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Fixture) == "" {
+		writeBadRequest(w, "fixture is required: the tests.authz.yaml text")
+		return
+	}
+	var fix pgauthzadm.Fixture
+	if err := pgauthzadm.UnmarshalFixture([]byte(req.Fixture), &fix); err != nil {
+		writeBadRequest(w, "fixture: "+err.Error())
+		return
+	}
+	if req.Store != "" {
+		if fix.ModelFile != "" || fix.Model != "" {
+			writeBadRequest(w, "store: the fixture already names its model (model_file / model)")
+			return
+		}
+		fix.Store = req.Store
+	}
+	if err := fix.Validate(); err != nil {
+		writeBadRequest(w, "fixture: "+err.Error())
+		return
+	}
+	if !rawSet(req.OpenFGA) {
+		req.OpenFGA = nil
+	}
+	if fix.ModelFile != "" && req.OpenFGA == nil {
+		writeBadRequest(w, "openfga is required when the fixture names a model_file: the OpenFGA model the file parses to (the server cannot read the client's files)")
+		return
+	}
+	if fix.ModelFile == "" && req.OpenFGA != nil {
+		writeBadRequest(w, "openfga is only taken with a fixture that names a model_file")
+		return
+	}
+	switch {
+	case fix.Store != "":
+		if !storeNameRe.MatchString(fix.Store) {
+			writeBadRequest(w, "store names are [a-zA-Z_][a-zA-Z0-9_]*, at most 63 characters")
+			return
+		}
+		if !scope.coversStore(fix.Store) {
+			metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
+			writeForbidden(w, scope.refusal("this credential does not manage store '"+fix.Store+"' (its issuer's stores binding, narrowed by its admin rule's stores, decides)"))
+			return
+		}
+	case scope.decide != nil && !scope.platformWide():
+		// a model of its own, decided by the console store: reading the registry
+		metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
+		writeForbidden(w, scope.refusal("a fixture with a model of its own needs the registry"))
+		return
+	}
+	keepAllowed := scope.platform
+	if scope.decide != nil {
+		keepAllowed = scope.decide.scopes["admin"] && scope.decide.allowed("can_create_store", "platform", "default")
+	}
+	if req.KeepStore && !keepAllowed {
+		metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
+		writeForbidden(w, scope.refusal("keep_store commits a store outside every issuer binding; it needs platform scope"))
+		return
+	}
+	report, err := a.TestModel(r.Context(), &fix, req.OpenFGA, req.KeepStore, actorLabel(r))
+	if err != nil {
+		writeDecisionError(w, err)
+		return
+	}
+	results := report.Results
+	if results == nil {
+		results = []pgauthzadm.Result{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"store":       report.Store,
+		"passed":      len(report.Results) - report.Failed,
+		"failed":      report.Failed,
+		"results":     results,
+		"duration_ms": report.Duration.Milliseconds(),
+	})
+}
+
 // ── recorder allowlists: who may record which actions (ADR 0012) ─────────
 
 func (h *Handler) adminRecorders(w http.ResponseWriter, r *http.Request) {
@@ -680,6 +805,7 @@ func registerAdminStores(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("GET /pgauthz/v1/admin/stores/{store}/model", h.adminStoreModel)
 	mux.HandleFunc("PUT /pgauthz/v1/admin/stores/{store}/model", h.adminApplyModel)
 	mux.HandleFunc("GET /pgauthz/v1/admin/models", h.adminModels)
+	mux.HandleFunc("POST /pgauthz/v1/admin/models/test", h.adminTestModel)
 	mux.HandleFunc("POST /pgauthz/v1/admin/models/{name}/versions", h.adminPublishModel)
 	mux.HandleFunc("GET /pgauthz/v1/admin/models/{name}/rollout", h.adminModelRollout)
 }

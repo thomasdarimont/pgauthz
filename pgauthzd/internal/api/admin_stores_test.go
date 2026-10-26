@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"thomasdarimont.de/authz/pgauthzadm"
 	"thomasdarimont.de/authz/pgauthzd/internal/authz"
 )
 
@@ -17,6 +18,7 @@ import (
 // stores by name, a registry of versions, a fixed plan verdict per store.
 type storeStub struct {
 	authz.Backend
+	grantStub
 	stores     map[string]*authz.StoreRow
 	versions   map[string][]int
 	blocked    map[string]bool // store → the plan reports blockers
@@ -24,6 +26,7 @@ type storeStub struct {
 	recorders  map[string]map[string][]string           // store → role → actions
 	deletions  map[string][]authz.StoreDeletion         // store → receipts
 	namespaces map[string]map[string]map[string][2]bool // store → namespace → role → (read, write)
+	tests      []testModelCall
 }
 
 // the data-subject methods: canned rows, the arguments remembered
@@ -211,11 +214,35 @@ func (s *storeStub) PublishModel(_ context.Context, name, fromStore string, _, _
 	return len(s.versions[name]), nil
 }
 
+// TestModel: the fixture and the model remembered, a canned report with
+// one failed check — the handler is the scope and the shape, the runner
+// is the library's.
+type testModelCall struct {
+	fix     *pgauthzadm.Fixture
+	openfga string
+	keep    bool
+	actor   string
+}
+
+func (s *storeStub) TestModel(_ context.Context, fix *pgauthzadm.Fixture, modelJSON []byte, keep bool, actor string) (*pgauthzadm.RunReport, error) {
+	s.actors = append(s.actors, actor)
+	s.tests = append(s.tests, testModelCall{fix: fix, openfga: string(modelJSON), keep: keep, actor: actor})
+	if fix.Store != "" {
+		if _, ok := s.stores[fix.Store]; !ok {
+			return nil, fmt.Errorf("%w: store %s not found", authz.ErrInvalidRequest, fix.Store)
+		}
+	}
+	return &pgauthzadm.RunReport{Store: "pgauthzd_test_abc", Failed: 1, Duration: 1500 * time.Millisecond, Results: []pgauthzadm.Result{
+		{Name: "alice can_read doc:a = true", Kind: "check", User: "user:alice", Relation: "can_read", Object: "doc:a", Expected: []string{"true"}, Actual: []string{"true"}},
+		{Name: "bob can_read doc:a = false", Kind: "check", Failed: true, Detail: "got true", User: "user:bob", Relation: "can_read", Object: "doc:a", Expected: []string{"false"}, Actual: []string{"true"}},
+	}}, nil
+}
+
 func storesFixture(t *testing.T) (*Handler, *storeStub) {
 	t.Helper()
 	h, _ := adminFixture(t)
 	stub := &storeStub{
-		stores:     map[string]*authz.StoreRow{"a_docs": {Name: "a_docs"}, "b_docs": {Name: "b_docs"}, "shared": {Name: "shared"}},
+		stores:     map[string]*authz.StoreRow{"a_docs": {Name: "a_docs"}, "b_docs": {Name: "b_docs"}, "shared": {Name: "shared"}, "c_docs": {Name: "c_docs"}, "c_other": {Name: "c_other"}},
 		versions:   map[string][]int{"core": {1, 2}},
 		blocked:    map[string]bool{"b_docs": true},
 		recorders:  map[string]map[string][]string{},
@@ -493,5 +520,254 @@ func TestAdminSubjects(t *testing.T) {
 		if w := serveAdmin(h, tenantAAdmin.request("GET", bad, "")); w.Code != 400 {
 			t.Fatalf("%s: %d %s", bad, w.Code, w.Body.String())
 		}
+	}
+}
+
+// Model test over the API: the fixture text runs through the backend's
+// runner; a fixture bringing its own model needs platform scope and the
+// OpenFGA model its model_file resolved to; a fixture naming a live store
+// is that store's business (the request's store fills a fixture without a
+// model line); failed checks are a 200 with the report; the actor is the
+// credential.
+func TestAdminTestModel(t *testing.T) {
+	h, stub := storesFixture(t)
+	const fileFixture = "model_file: model.fga\ntuples:\n  - {user: \"user:alice\", relation: owner, object: \"doc:a\"}\ntests:\n  - name: owner reads\n    check:\n      - {user: \"user:alice\", object: \"doc:a\", assertions: {can_read: true}}\n"
+	const storeFixture = "store: a_docs\ntests:\n  - name: owner reads\n    check:\n      - {user: \"user:alice\", object: \"doc:a\", assertions: {can_read: true}}\n"
+	const bareFixture = "tests:\n  - name: owner reads\n    check:\n      - {user: \"user:alice\", object: \"doc:a\", assertions: {can_read: true}}\n"
+	body := func(v map[string]any) string {
+		b, _ := json.Marshal(v)
+		return string(b)
+	}
+	post := func(tk token, v map[string]any) *httptest.ResponseRecorder {
+		return serveAdmin(h, tk.request("POST", "/pgauthz/v1/admin/models/test", body(v)))
+	}
+
+	// platform scope, model_file + openfga: the report, both checks, the model and actor remembered
+	w := post(platformAdmin, map[string]any{"fixture": fileFixture, "openfga": map[string]any{"schema_version": "1.1", "type_definitions": []any{}}})
+	if w.Code != 200 {
+		t.Fatalf("platform test: %d %s", w.Code, w.Body.String())
+	}
+	var rep struct {
+		Store      string `json:"store"`
+		Passed     int    `json:"passed"`
+		Failed     int    `json:"failed"`
+		DurationMS int    `json:"duration_ms"`
+		Results    []struct {
+			Name   string `json:"name"`
+			Failed bool   `json:"failed"`
+			Kind   string `json:"kind"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rep); err != nil {
+		t.Fatal(err)
+	}
+	if rep.Store != "pgauthzd_test_abc" || rep.Passed != 1 || rep.Failed != 1 || rep.DurationMS != 1500 || len(rep.Results) != 2 || !rep.Results[1].Failed || rep.Results[0].Kind != "check" {
+		t.Fatalf("report: %+v", rep)
+	}
+	if len(stub.tests) != 1 || stub.tests[0].fix.ModelFile != "model.fga" || !strings.Contains(stub.tests[0].openfga, "type_definitions") || stub.tests[0].keep || stub.tests[0].actor != "user:ops" {
+		t.Fatalf("call: %+v", stub.tests)
+	}
+	// keep_store reaches the runner
+	if w := post(platformAdmin, map[string]any{"fixture": fileFixture, "openfga": map[string]any{"schema_version": "1.1"}, "keep_store": true}); w.Code != 200 || !stub.tests[1].keep {
+		t.Fatalf("keep_store: %d %s %+v", w.Code, w.Body.String(), stub.tests[1])
+	}
+
+	// a model_file fixture without the model is a 400, as is openfga without a model_file
+	if w := post(platformAdmin, map[string]any{"fixture": fileFixture}); w.Code != 400 || !strings.Contains(w.Body.String(), "openfga is required") {
+		t.Fatalf("missing openfga: %d %s", w.Code, w.Body.String())
+	}
+	if w := post(platformAdmin, map[string]any{"fixture": storeFixture, "openfga": map[string]any{"schema_version": "1.1"}}); w.Code != 400 || !strings.Contains(w.Body.String(), "only taken with") {
+		t.Fatalf("stray openfga: %d %s", w.Code, w.Body.String())
+	}
+	// no fixture, bad YAML, an unknown field, a store override on a fixture that names its model
+	if w := post(platformAdmin, map[string]any{"fixture": "  "}); w.Code != 400 || !strings.Contains(w.Body.String(), "fixture is required") {
+		t.Fatalf("empty fixture: %d %s", w.Code, w.Body.String())
+	}
+	if w := post(platformAdmin, map[string]any{"fixture": "tests: [\n"}); w.Code != 400 || !strings.Contains(w.Body.String(), "fixture:") {
+		t.Fatalf("bad yaml: %d %s", w.Code, w.Body.String())
+	}
+	if w := post(platformAdmin, map[string]any{"fixture": bareFixture}); w.Code != 400 {
+		t.Fatalf("no model at all: %d %s", w.Code, w.Body.String())
+	}
+	if w := post(platformAdmin, map[string]any{"fixture": fileFixture, "openfga": map[string]any{}, "store": "a_docs"}); w.Code != 400 || !strings.Contains(w.Body.String(), "already names its model") {
+		t.Fatalf("store on a model_file fixture: %d %s", w.Code, w.Body.String())
+	}
+	if w := post(platformAdmin, map[string]any{"fixture": fileFixture, "openfga": map[string]any{}, "nope": 1}); w.Code != 400 {
+		t.Fatalf("unknown field: %d %s", w.Code, w.Body.String())
+	}
+
+	// a tenant admin: its own store's fixture runs (store: in the file, or the request's store on a bare fixture)
+	if w := post(tenantAAdmin, map[string]any{"fixture": storeFixture}); w.Code != 200 {
+		t.Fatalf("tenant a tests a_docs: %d %s", w.Code, w.Body.String())
+	}
+	if w := post(tenantAAdmin, map[string]any{"fixture": bareFixture, "store": "a_docs"}); w.Code != 200 || stub.tests[len(stub.tests)-1].fix.Store != "a_docs" {
+		t.Fatalf("tenant a tests a_docs via the request: %d %s", w.Code, w.Body.String())
+	}
+	// not another tenant's store, not a model of its own
+	if w := post(tenantAAdmin, map[string]any{"fixture": bareFixture, "store": "b_docs"}); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "does not manage store 'b_docs'") {
+		t.Fatalf("tenant a tests b_docs: %d %s", w.Code, w.Body.String())
+	}
+	// a model of its own (model_file, a registry ref) touches no store of anyone's: any admin runs it …
+	if w := post(tenantAAdmin, map[string]any{"fixture": fileFixture, "openfga": map[string]any{}}); w.Code != 200 {
+		t.Fatalf("tenant a brings a model: %d %s", w.Code, w.Body.String())
+	}
+	// … but keeping its store commits one outside every binding: platform only
+	if w := post(tenantAAdmin, map[string]any{"fixture": fileFixture, "openfga": map[string]any{}, "keep_store": true}); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "keep_store") {
+		t.Fatalf("tenant a keeps a store: %d %s", w.Code, w.Body.String())
+	}
+
+	// the CI credential (admin rule: client ci-a, capabilities [test], stores [a_docs]):
+	// tests a_docs and a model of its own, nothing else — not a_other (within the
+	// issuer's binding but outside the rule), not keep_store, not any other verb
+	if w := post(tenantACI, map[string]any{"fixture": bareFixture, "store": "a_docs"}); w.Code != 200 {
+		t.Fatalf("ci-a tests a_docs: %d %s", w.Code, w.Body.String())
+	}
+	if w := post(tenantACI, map[string]any{"fixture": fileFixture, "openfga": map[string]any{}}); w.Code != 200 {
+		t.Fatalf("ci-a tests a model file: %d %s", w.Code, w.Body.String())
+	}
+	if w := post(tenantACI, map[string]any{"fixture": bareFixture, "store": "a_other"}); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "does not manage store 'a_other'") {
+		t.Fatalf("ci-a tests a_other: %d %s", w.Code, w.Body.String())
+	}
+	if w := post(tenantACI, map[string]any{"fixture": bareFixture, "store": "a_docs", "keep_store": true}); w.Code != http.StatusForbidden {
+		t.Fatalf("ci-a keeps a store: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantACI.request("GET", "/pgauthz/v1/admin/stores", "")); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "may only test") || !strings.Contains(w.Body.String(), "needs read") {
+		t.Fatalf("ci-a lists stores: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantACI.request("PUT", "/pgauthz/v1/admin/stores/a_docs", `{"description":"x"}`)); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "needs manage") {
+		t.Fatalf("ci-a upserts a store: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantACI.request("DELETE", "/pgauthz/v1/admin/stores/a_docs", "")); w.Code != http.StatusForbidden {
+		t.Fatalf("ci-a deletes a store: %d %s", w.Code, w.Body.String())
+	}
+	// the terraform-a rule still manages (first rule, manage by default); ci-a's actor label is the credential
+	if w := serveAdmin(h, tenantAAdmin.request("GET", "/pgauthz/v1/admin/stores", "")); w.Code != 200 {
+		t.Fatalf("terraform-a lists stores: %d %s", w.Code, w.Body.String())
+	}
+	if last := stub.tests[len(stub.tests)-1]; last.actor != "user:ci via ci-a" {
+		t.Fatalf("ci-a actor: %q", last.actor)
+	}
+	// the engine's refusal (a missing store) is a 400 with its message
+	if w := post(platformAdmin, map[string]any{"fixture": bareFixture, "store": "nope"}); w.Code != 400 || !strings.Contains(w.Body.String(), "store nope not found") {
+		t.Fatalf("missing store: %d %s", w.Code, w.Body.String())
+	}
+	// a store name the engine would not take
+	if w := post(platformAdmin, map[string]any{"fixture": bareFixture, "store": "a-docs"}); w.Code != 400 {
+		t.Fatalf("bad store name: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// Delegated admin rules: the console store decides. A person becomes
+// user:<preferred_username> with their roles and scopes as contextual team
+// memberships; a client credentials token service_account:<azp>; each
+// admin verb asks for the console relation the console itself checks.
+func TestAdminDelegated(t *testing.T) {
+	h, stub := storesFixture(t)
+	stub.grants = map[string]bool{
+		"user:carol can_view store:c_docs":                true,
+		"user:carol can_run_tests store:c_docs":           true,
+		"user:carol can_rollout store:c_docs":             true,
+		"service_account:ci-c can_run_tests store:c_docs": true,
+	}
+	const bare = "tests:\n  - name: t\n    check:\n      - {user: \"user:a\", object: \"doc:a\", assertions: {can_read: true}}\n"
+	const file = "model_file: m.fga\n" + bare
+	body := func(v map[string]any) string { b, _ := json.Marshal(v); return string(b) }
+
+	// carol: sees the one store the console grants her, may test and roll out on it, nothing else
+	w := serveAdmin(h, tenantCUser.request("GET", "/pgauthz/v1/admin/stores", ""))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "c_docs") || strings.Contains(w.Body.String(), "c_other") || strings.Contains(w.Body.String(), "a_docs") {
+		t.Fatalf("carol's stores: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCUser.request("POST", "/pgauthz/v1/admin/models/test", body(map[string]any{"fixture": bare, "store": "c_docs"}))); w.Code != 200 {
+		t.Fatalf("carol tests c_docs: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCUser.request("PUT", "/pgauthz/v1/admin/stores/c_docs/model", `{"model":"core"}`)); w.Code != 200 {
+		t.Fatalf("carol applies on c_docs: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCUser.request("PUT", "/pgauthz/v1/admin/stores/c_docs", `{"description":"x"}`)); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "does not grant user:carol can_manage_access on store:c_docs") {
+		t.Fatalf("carol edits c_docs: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCUser.request("PUT", "/pgauthz/v1/admin/stores/c_new", `{"description":"x"}`)); w.Code != http.StatusForbidden {
+		t.Fatalf("carol creates a store: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCUser.request("GET", "/pgauthz/v1/admin/models", "")); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "can_view on registry:default") {
+		t.Fatalf("carol reads the registry: %d %s", w.Code, w.Body.String())
+	}
+	// the platform's grants open the rest: creating a store, the registry
+	stub.grants["user:carol can_create_store platform:default"] = true
+	stub.grants["user:carol can_view registry:default"] = true
+	if w := serveAdmin(h, tenantCUser.request("PUT", "/pgauthz/v1/admin/stores/c_new", `{"description":"x"}`)); w.Code != http.StatusCreated {
+		t.Fatalf("carol creates a store with can_create_store: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCUser.request("GET", "/pgauthz/v1/admin/models", "")); w.Code != 200 {
+		t.Fatalf("carol reads the registry with can_view: %d %s", w.Code, w.Body.String())
+	}
+	// her roles and scopes travelled as contextual team memberships
+	found := false
+	for _, c := range stub.checks {
+		if strings.HasPrefix(c, "console user:carol ") && strings.Contains(c, `"object_id":"role_console_admin"`) && strings.Contains(c, `"object_id":"scope_pgauthz:admin"`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("contextual memberships: %v", stub.checks)
+	}
+
+	// the ci-c client: service_account:ci-c may run fixtures on c_docs — and nothing else
+	if w := serveAdmin(h, tenantCCI.request("POST", "/pgauthz/v1/admin/models/test", body(map[string]any{"fixture": bare, "store": "c_docs"}))); w.Code != 200 {
+		t.Fatalf("ci-c tests c_docs: %d %s", w.Code, w.Body.String())
+	}
+	if last := stub.tests[len(stub.tests)-1]; last.actor != "user:ci-uuid via ci-c" {
+		t.Fatalf("ci-c actor: %q", last.actor)
+	}
+	if w := serveAdmin(h, tenantCCI.request("POST", "/pgauthz/v1/admin/models/test", body(map[string]any{"fixture": bare, "store": "c_other"}))); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "does not grant service_account:ci-c can_run_tests on store:c_other") {
+		t.Fatalf("ci-c tests c_other: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCCI.request("POST", "/pgauthz/v1/admin/models/test", body(map[string]any{"fixture": file, "openfga": map[string]any{}}))); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "registry:default") {
+		t.Fatalf("ci-c tests a model of its own: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCCI.request("POST", "/pgauthz/v1/admin/models/test", body(map[string]any{"fixture": bare, "store": "c_docs", "keep_store": true}))); w.Code != http.StatusForbidden {
+		t.Fatalf("ci-c keeps a store: %d %s", w.Code, w.Body.String())
+	}
+	// the token's scope caps it before the store is even asked: pgauthz:test covers no GET
+	if w := serveAdmin(h, tenantCCI.request("GET", "/pgauthz/v1/admin/stores", "")); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "pgauthz:test) do not cover this call; it needs pgauthz:read") {
+		t.Fatalf("ci-c lists stores: %d %s", w.Code, w.Body.String())
+	}
+	// pgauthz:manage: the store writes the store grants, test and read too — nothing platform-level
+	stub.grants["user:dave can_manage_access store:c_docs"] = true
+	stub.grants["user:dave can_run_tests store:c_docs"] = true
+	stub.grants["user:dave can_create_store platform:default"] = true
+	stub.grants["user:dave can_publish registry:default"] = true
+	if w := serveAdmin(h, tenantCManage.request("PUT", "/pgauthz/v1/admin/stores/c_docs", `{"description":"x"}`)); w.Code != 200 {
+		t.Fatalf("dave edits c_docs: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCManage.request("POST", "/pgauthz/v1/admin/models/test", body(map[string]any{"fixture": bare, "store": "c_docs"}))); w.Code != 200 {
+		t.Fatalf("dave tests c_docs: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCManage.request("PUT", "/pgauthz/v1/admin/stores/c_brand_new", `{"description":"x"}`)); w.Code != http.StatusForbidden {
+		t.Fatalf("dave creates a store without pgauthz:admin: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCManage.request("POST", "/pgauthz/v1/admin/models/core/versions", `{"from_store":"c_docs"}`)); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "needs pgauthz:admin") {
+		t.Fatalf("dave publishes without pgauthz:admin: %d %s", w.Code, w.Body.String())
+	}
+	// the platform itself is admin's, reading included
+	if w := serveAdmin(h, tenantCManage.request("GET", "/pgauthz/v1/admin/issuer-bindings", "")); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "needs pgauthz:admin") || strings.Contains(w.Body.String(), "(or pgauthz:admin)") {
+		t.Fatalf("dave reads the issuers without pgauthz:admin: %d %s", w.Code, w.Body.String())
+	}
+	// no pgauthz scope at all: the delegated rule is not satisfied
+	if w := serveAdmin(h, tenantCNoScope.request("GET", "/pgauthz/v1/admin/stores", "")); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "carries no pgauthz scope") {
+		t.Fatalf("erin without a pgauthz scope: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCCI.request("PUT", "/pgauthz/v1/admin/stores/c_docs", `{"description":"x"}`)); w.Code != http.StatusForbidden {
+		t.Fatalf("ci-c edits c_docs: %d %s", w.Code, w.Body.String())
+	}
+	// a token that satisfies no rule: not the ci client, no preferred_username for the people rule
+	if w := serveAdmin(h, tenantCNobody.request("GET", "/pgauthz/v1/admin/stores", "")); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "no preferred_username claim") {
+		t.Fatalf("nobody: %d %s", w.Code, w.Body.String())
+	}
+	// the deciding store unreachable: a refusal that says so, never an allow
+	stub.grants["err"] = true
+	if w := serveAdmin(h, tenantCUser.request("GET", "/pgauthz/v1/admin/stores/c_docs", "")); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "could not decide") {
+		t.Fatalf("store down: %d %s", w.Code, w.Body.String())
 	}
 }

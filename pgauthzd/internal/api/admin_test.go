@@ -6,6 +6,8 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -20,8 +22,26 @@ import (
 )
 
 // adminStub is the binding store behind the admin API in these tests.
+// grantStub answers delegated checks (a console store) from a map keyed
+// "type:id relation objtype:objid" and remembers every check with its
+// contextual tuples; the key "err" makes every check fail.
+type grantStub struct {
+	grants map[string]bool
+	checks []string
+}
+
+func (g *grantStub) CheckWithContextualTuples(_ context.Context, req authz.EvalRequest, ctxTuples json.RawMessage) (bool, error) {
+	key := fmt.Sprintf("%s:%s %s %s:%s", req.SubjectType, req.SubjectID, req.Action, req.ObjectType, req.ObjectID)
+	g.checks = append(g.checks, req.Store+" "+key+" "+string(ctxTuples))
+	if g.grants["err"] {
+		return false, errors.New("store " + req.Store + " not found")
+	}
+	return g.grants[key], nil
+}
+
 type adminStub struct {
 	authz.Backend
+	grantStub
 	rows map[string]issuers.Binding
 	rev  int64
 	by   []string // performed_by of every write
@@ -73,10 +93,18 @@ func adminFixture(t *testing.T) (*Handler, *adminStub) {
 	t.Helper()
 	env := []issuers.Issuer{
 		{Issuer: "https://platform-idp", Audience: "api", JWKSURL: "https://platform-idp/jwks",
-			Admin: &issuers.AdminBinding{Scopes: []string{"pgauthz:admin"}, Claims: map[string][]string{"realm_access.roles": {"platform-admin"}}, Scope: issuers.AdminScopePlatform}},
+			Admin: issuers.AdminRules{{Scopes: []string{"pgauthz:admin"}, Claims: map[string][]string{"realm_access.roles": {"platform-admin"}}, Scope: issuers.AdminScopePlatform}}},
+		// two rules: terraform-a manages the tenant's stores; ci-a may only
+		// run fixtures, and only against a_docs (a CI credential)
 		{Issuer: "https://tenant-a", Audience: "api", JWKSURL: "https://tenant-a/jwks", Stores: []string{"a_.*"},
-			Admin: &issuers.AdminBinding{Clients: []string{"terraform-a"}}},
+			Admin: issuers.AdminRules{{Clients: []string{"terraform-a"}}, {Clients: []string{"ci-a"}, Capabilities: []string{issuers.AdminCapTest}, Stores: []string{"a_docs"}}}},
 		{Issuer: "https://tenant-b", Audience: "api", JWKSURL: "https://tenant-b/jwks", Stores: []string{"b_.*"}},
+		// delegated: the console store decides — the ci-c client as
+		// service_account:ci-c, everyone else as user:<preferred_username>
+		{Issuer: "https://tenant-c", Audience: "api", JWKSURL: "https://tenant-c/jwks", Stores: []string{"c_.*"},
+			Admin: issuers.AdminRules{
+				{Clients: []string{"ci-c"}, Scopes: []string{"pgauthz:test"}, Decide: &issuers.AdminDecision{Store: "console", SubjectType: "service_account", SubjectClaim: "azp"}},
+				{Decide: &issuers.AdminDecision{Store: "console"}}}},
 	}
 	cfg := &config.Config{Profile: config.ProfileFull, Issuers: env, IssuersSource: "env+db", AdminAPIEnabled: true, AdminRole: "pgauthz_admin"}
 	stub := &adminStub{rows: map[string]issuers.Binding{
@@ -120,11 +148,17 @@ func (tk token) request(method, url, body string) *http.Request {
 }
 
 var (
-	platformAdmin = token{iss: "https://platform-idp", sub: "ops", scope: "openid pgauthz:admin", claims: jwt.MapClaims{"realm_access": map[string]any{"roles": []any{"platform-admin"}}}}
-	tenantAAdmin  = token{iss: "https://tenant-a", sub: "alice", client: "terraform-a"}
-	tenantAUser   = token{iss: "https://tenant-a", sub: "bob", client: "docs-app"}
-	tenantBUser   = token{iss: "https://tenant-b", sub: "carol"}
-	roleAdmin     = token{iss: "https://tenant-b", sub: "root", roles: []string{"pgauthz_admin"}}
+	platformAdmin  = token{iss: "https://platform-idp", sub: "ops", scope: "openid pgauthz:admin", claims: jwt.MapClaims{"realm_access": map[string]any{"roles": []any{"platform-admin"}}}}
+	tenantAAdmin   = token{iss: "https://tenant-a", sub: "alice", client: "terraform-a"}
+	tenantACI      = token{iss: "https://tenant-a", sub: "ci", client: "ci-a"} // test on a_docs, nothing else
+	tenantCUser    = token{iss: "https://tenant-c", sub: "carol-uuid", scope: "openid pgauthz:admin", roles: []string{"console_admin"}, claims: jwt.MapClaims{"preferred_username": "carol"}}
+	tenantCCI      = token{iss: "https://tenant-c", sub: "ci-uuid", client: "ci-c", scope: "pgauthz:test"}
+	tenantCNobody  = token{iss: "https://tenant-c", sub: "nobody-uuid"} // no preferred_username, not the ci client
+	tenantCManage  = token{iss: "https://tenant-c", sub: "dave-uuid", scope: "pgauthz:manage", claims: jwt.MapClaims{"preferred_username": "dave"}}
+	tenantCNoScope = token{iss: "https://tenant-c", sub: "erin-uuid", scope: "openid profile", claims: jwt.MapClaims{"preferred_username": "erin"}}
+	tenantAUser    = token{iss: "https://tenant-a", sub: "bob", client: "docs-app"}
+	tenantBUser    = token{iss: "https://tenant-b", sub: "carol"}
+	roleAdmin      = token{iss: "https://tenant-b", sub: "root", roles: []string{"pgauthz_admin"}}
 )
 
 func do(h *Handler, fn http.HandlerFunc, r *http.Request) *httptest.ResponseRecorder {
@@ -224,7 +258,7 @@ func TestAdminIssuerBindings(t *testing.T) {
 		t.Fatalf("the list carries the database revision: %s", w.Body.String())
 	}
 	w = do(h, h.adminIssuers, platformAdmin.request("GET", "/pgauthz/v1/admin/issuers", ""))
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `"admin":{"scopes":["pgauthz:admin"]`) || !strings.Contains(w.Body.String(), "tenant-b") {
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"admin":[{"scopes":["pgauthz:admin"]`) || !strings.Contains(w.Body.String(), "tenant-b") {
 		t.Fatalf("platform admin's issuers: %d %s", w.Code, w.Body.String())
 	}
 

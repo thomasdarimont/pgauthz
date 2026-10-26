@@ -12,7 +12,8 @@
 # sidecar are the OPT-IN overlay compose-opa.yml — enable with ./start.sh --opa.
 
 x-pgauthzd-build: &pgauthzd-build
-  context: ./pgauthzd
+  context: .                 # repo root: the image also needs pgauthzadm/ (see pgauthzd/Dockerfile)
+  dockerfile: pgauthzd/Dockerfile
   args:
     VERSION: ${VERSION:-dev}   # `VERSION=0.2.2 docker compose build` stamps it; else dev
 

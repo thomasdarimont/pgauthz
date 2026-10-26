@@ -56,13 +56,13 @@ Connection:
     bearer token of the admin identity provider) or --cert/--key /
     PGAUTHZ_CLIENT_CERT/_KEY (a client certificate the admin listener's mTLS
     maps) and --ca / PGAUTHZ_CA; the audit names the credential. Every verb
-    but model import and model test runs over it.
+    but model import runs over it.
 Subject verbs (pgauthzctl subject <verb> <store> <type:id>, over the admin API only):
   objects   every object the subject reaches, as a table or --csv (the GDPR takeout)
   export    the export document (JSON); erasure stays with the console and SQL
 
   --dsn or PGAUTHZ_DSN (e.g. postgres://authz:authz@localhost:55433/authz):
-    the direct database connection — model import, model test, installation
+    the direct database connection — model import, installation
     and break-glass. Routine verbs over it print a note: --dsn is on its
     way out for them.
 `

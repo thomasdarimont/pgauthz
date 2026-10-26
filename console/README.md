@@ -206,6 +206,15 @@ stores where nothing is shared (and always per tenant).
   Access tab (`user:bob tester store:demo`). The creator of a store becomes
   its first owner; ownership is transferable; the last owner cannot be
   removed.
+- **Technical users are subjects too.** A CI pipeline or a Terraform runner
+  is `service_account:<client id>` in the console store and holds store,
+  registry and platform roles like a person (`service_account:ci tester
+  store:gdrive`). pgauthzd's admin API asks this store for them — and for
+  people calling it with their own token — when the issuer's admin rule
+  delegates (`"decide":{"store":"console"}`, see
+  [pgauthzd/README.md → Admin API](../pgauthzd/README.md#admin-api-full-profile-admin_api_enabled)),
+  so one Access tab manages who may test, roll out or publish, whether the
+  caller is a person in the console or `pgauthzctl` in a job.
 - **Decided twice, the second time for real.** The screen asks before it
   shows a button; the BFF asks again *inside* the transaction that makes the
   change, after taking a per-object lock (`pg_advisory_xact_lock` on

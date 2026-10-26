@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -48,27 +50,120 @@ type IssuerBindingAdmin interface {
 }
 
 // adminScope is what a passing credential may manage: every issuer and
-// store (platform), or one issuer and the stores that issuer is bound to.
+// store (platform), or one issuer and the stores that issuer is bound to —
+// narrowed, when the rule says so, to some of those stores and to some
+// capabilities (a CI credential: test, on one store, nothing else).
 type adminScope struct {
 	platform bool             // every issuer, every store, the registry
 	issuer   string           // else: this issuer (the credential's own, or the certificate's mapped one)
 	stores   []*regexp.Regexp // the issuer's stores binding; nil = unbound (no store is managed)
+	only     []*regexp.Regexp // the rule's stores, within the binding; nil = the whole binding
+	caps     []string         // the rule's capabilities; nil = manage
+	decide   *delegated       // a delegated rule: the store answers instead of the fields above
 }
 
-func (s adminScope) covers(issuer string) bool { return s.platform || issuer == s.issuer }
+// delegated is a credential whose rights an authorization store decides —
+// the management console's: the subject the token became, the contextual
+// memberships its roles and scopes give it, and the relations THIS request
+// needs (admin verb → console relation, decided once in delegatedNeeds).
+// check asks the store on the admin pool; an error (no such store, the
+// pool down) is a refusal with the reason.
+type delegated struct {
+	store, subjType, subjID   string
+	ctxTuples                 json.RawMessage
+	scopes                    map[string]bool // the token's pgauthz:* scopes: its own cap on the store's grants
+	check                     func(relation, objType, objID string) (bool, error)
+	storeRel                  string // what the request needs on store:{store}, "" = nothing store-level
+	platRel, platType, platID string // what it needs platform-wide (platform:default / registry:default)
+	why                       string // the last refusal's reason, for the 403
+}
+
+// allowed asks the store, remembering the reason of a refusal.
+func (d *delegated) allowed(relation, objType, objID string) bool {
+	ok, err := d.check(relation, objType, objID)
+	switch {
+	case err != nil:
+		d.why = fmt.Sprintf("the %s store could not decide %s %s on %s:%s: %v", d.store, d.subjType+":"+d.subjID, relation, objType, objID, err)
+		return false
+	case !ok:
+		d.why = fmt.Sprintf("the %s store does not grant %s %s on %s:%s", d.store, d.subjType+":"+d.subjID, relation, objType, objID)
+		return false
+	}
+	return true
+}
+
+// platformWide: the credential reaches every issuer and store — a platform
+// rule, or (delegated) the platform-level relation this request needs.
+func (s adminScope) platformWide() bool {
+	if s.decide != nil {
+		return s.decide.platRel != "" && s.decide.allowed(s.decide.platRel, s.decide.platType, s.decide.platID)
+	}
+	return s.platform
+}
+
+func (s adminScope) covers(issuer string) bool { return s.platformWide() || issuer == s.issuer }
 
 // coversStore: a platform admin manages every store; a tenant admin the
-// stores its issuer is bound to (an unbound issuer manages none — bind it).
+// stores its issuer is bound to (an unbound issuer manages none — bind it),
+// and of those only the rule's when it names some; a delegated credential
+// the stores on which the deciding store grants it this request's relation.
 func (s adminScope) coversStore(store string) bool {
+	if s.decide != nil {
+		return s.decide.storeRel != "" && s.decide.allowed(s.decide.storeRel, "store", store)
+	}
+	if s.only != nil && !matchesAny(s.only, store) {
+		return false
+	}
 	if s.platform {
 		return true
 	}
-	for _, p := range s.stores {
+	return matchesAny(s.stores, store)
+}
+
+// refusal: why the scope does not cover what was asked — the deciding
+// store's answer for a delegated credential, the binding for the rest.
+func (s adminScope) refusal(what string) string {
+	if s.decide != nil && s.decide.why != "" {
+		return "management refused: " + s.decide.why
+	}
+	return "management refused: " + what
+}
+
+func matchesAny(patterns []*regexp.Regexp, store string) bool {
+	for _, p := range patterns {
 		if p.MatchString(store) {
 			return true
 		}
 	}
 	return false
+}
+
+// can: the credential holds the capability — manage (the default) implies
+// every one; a delegated credential's verbs are the store's relations.
+func (s adminScope) can(capability string) bool {
+	if len(s.caps) == 0 || s.decide != nil {
+		return true
+	}
+	for _, c := range s.caps {
+		if c == issuers.AdminCapManage || c == capability {
+			return true
+		}
+	}
+	return false
+}
+
+// neededCapability: what a request needs — test for the fixture runner,
+// read for the GET verbs, manage for everything else. Decided here, once,
+// for every admin route.
+func neededCapability(r *http.Request) string {
+	switch {
+	case r.Method == http.MethodPost && r.URL.Path == "/pgauthz/v1/admin/models/test":
+		return issuers.AdminCapTest
+	case r.Method == http.MethodGet || r.Method == http.MethodHead:
+		return issuers.AdminCapRead
+	default:
+		return issuers.AdminCapManage
+	}
 }
 
 // issuerScope: the scope of a tenant admin of issuer iss.
@@ -84,10 +179,15 @@ func (h *Handler) adminGate(r *http.Request) (adminScope, error) {
 		if h.cfg != nil {
 			for _, e := range h.cfg.AdminClientCerts {
 				if certMatches(cert, e) {
+					scope := adminScope{platform: true}
 					if e.Scope == issuers.AdminScopeIssuer {
-						return h.issuerScope(e.Issuer), nil
+						scope = h.issuerScope(e.Issuer)
 					}
-					return adminScope{platform: true, issuer: ""}, nil
+					scope.caps = e.Capabilities
+					if len(e.Stores) > 0 {
+						scope.only = compileAnchored(e.Stores)
+					}
+					return scope, nil
 				}
 			}
 		}
@@ -98,14 +198,29 @@ func (h *Handler) adminGate(r *http.Request) (adminScope, error) {
 		return adminScope{}, errors.New("management needs a verified token of an issuer with an admin binding, or a mapped client certificate")
 	}
 	var reasons []string
-	if ab := h.issuers.current().admin[iss]; ab != nil {
-		if err := ab.satisfiedBy(r.Context()); err == nil {
-			if ab.platform {
-				return adminScope{platform: true, issuer: iss}, nil
+	if rules := h.issuers.current().admin[iss]; len(rules) > 0 {
+		// the first satisfied rule decides; an unsatisfied one explains
+		for _, ab := range rules {
+			if err := ab.satisfiedBy(r.Context()); err != nil {
+				reasons = append(reasons, err.Error())
+				continue
 			}
-			return h.issuerScope(iss), nil
-		} else {
-			reasons = append(reasons, err.Error())
+			if ab.decide != nil {
+				d, err := h.delegate(r.Context(), ab.decide)
+				if err != nil {
+					reasons = append(reasons, err.Error())
+					continue
+				}
+				d.storeRel, d.platType, d.platID, d.platRel = delegatedNeeds(r)
+				return adminScope{issuer: iss, decide: d}, nil
+			}
+			scope := adminScope{platform: true, issuer: iss}
+			if !ab.platform {
+				scope = h.issuerScope(iss)
+			}
+			scope.caps = ab.caps
+			scope.only = ab.stores
+			return scope, nil
 		}
 	} else {
 		reasons = append(reasons, "issuer "+iss+" has no admin binding (JWT_ISSUERS: admin.scopes / claims / clients)")
@@ -156,7 +271,98 @@ func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) (adminSco
 		writeForbidden(w, "management refused: "+err.Error())
 		return adminScope{}, false
 	}
+	need := neededCapability(r)
+	if !scope.can(need) {
+		metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
+		writeForbidden(w, "management refused: this credential may only "+strings.Join(scope.caps, ", ")+" (its admin rule's capabilities); this call needs "+need)
+		return adminScope{}, false
+	}
+	if d := scope.decide; d != nil {
+		if want := d.scopeFor(r, need); !d.covers(want) {
+			metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
+			msg := "management refused: the token's pgauthz scopes (" + d.scopeList() + ") do not cover this call; it needs pgauthz:" + want
+			if want != "admin" {
+				msg += " (or pgauthz:admin)"
+			}
+			writeForbidden(w, msg)
+			return adminScope{}, false
+		}
+	}
 	return scope, true
+}
+
+// scopeFor: the pgauthz scope a request needs — test for the fixture
+// runner, read for a GET on a store or the registry, manage for a store
+// write; the platform itself — the issuers, reading included, a registry
+// write, creating a store — needs admin.
+func (d *delegated) scopeFor(r *http.Request, need string) string {
+	if strings.HasPrefix(r.URL.Path, "/pgauthz/v1/admin/issuer") {
+		return "admin"
+	}
+	if need == issuers.AdminCapManage && d.storeRel == "" {
+		return "admin"
+	}
+	return need
+}
+
+// covers: admin covers everything, manage covers test and read as well.
+func (d *delegated) covers(want string) bool {
+	if d.scopes["admin"] || d.scopes[want] {
+		return true
+	}
+	return d.scopes["manage"] && (want == issuers.AdminCapTest || want == issuers.AdminCapRead)
+}
+
+func (d *delegated) scopeList() string {
+	var out []string
+	for s := range d.scopes {
+		out = append(out, "pgauthz:"+s)
+	}
+	sort.Strings(out)
+	return strings.Join(out, ", ")
+}
+
+// delegatedNeeds maps an admin request onto the management console's
+// model (examples/models/console): the relation it needs on store:{store}
+// and the platform-wide one — platform:default for the fleet, registry:default
+// for the model registry. The console checks the same relations for the
+// same actions, so a person has the same rights through the console and
+// through pgauthzctl with their own token.
+func delegatedNeeds(r *http.Request) (storeRel, platType, platID, platRel string) {
+	p := strings.TrimPrefix(r.URL.Path, "/pgauthz/v1/admin/")
+	get := r.Method == http.MethodGet || r.Method == http.MethodHead
+	switch {
+	case strings.HasPrefix(p, "issuer"):
+		return "", "platform", "default", "can_manage_issuers"
+	case p == "models/test":
+		// a live store's fixture: run tests on it; a model of its own: read the registry
+		return "can_run_tests", "registry", "default", "can_view"
+	case strings.HasPrefix(p, "models"):
+		if get {
+			return "", "registry", "default", "can_view"
+		}
+		return "", "registry", "default", "can_publish"
+	case p == "stores":
+		return "can_view", "platform", "default", "can_view_all_stores"
+	case strings.HasPrefix(p, "stores/"):
+		rest := ""
+		if i := strings.Index(p[len("stores/"):], "/"); i >= 0 {
+			rest = p[len("stores/")+i:]
+		}
+		switch {
+		case strings.HasPrefix(rest, "/subjects"):
+			storeRel = "can_export"
+		case get:
+			storeRel = "can_view"
+		case rest == "/model":
+			storeRel = "can_rollout"
+		default: // the store itself, its decisions, recorders, namespaces
+			storeRel = "can_manage_access"
+		}
+		// creating a store is the platform's (PUT on a store nobody owns yet)
+		return storeRel, "platform", "default", "can_create_store"
+	}
+	return "", "platform", "default", "admin"
 }
 
 // compiledAdmin is an issuer's admin binding, ready to check a token.
@@ -165,20 +371,92 @@ type compiledAdmin struct {
 	claims   map[string][]string
 	clients  map[string]bool
 	platform bool
+	caps     []string         // nil = manage
+	stores   []*regexp.Regexp // nil = the issuer's whole binding
+	decide   *issuers.AdminDecision
+}
+
+// delegate turns the token into a subject of the deciding store: the id
+// from the rule's claim (a token without it does not satisfy the rule, so
+// the next rule is tried), the roles and scopes as contextual team
+// memberships, and the check bound to the admin pool.
+func (h *Handler) delegate(ctx context.Context, d *issuers.AdminDecision) (*delegated, error) {
+	claims := ClaimsFromContext(ctx)
+	claim := d.SubjectClaim
+	if claim == "" && h.cfg != nil {
+		claim = h.cfg.SubjectIDClaim
+	}
+	if claim == "" {
+		claim = "preferred_username"
+	}
+	id := strings.TrimSpace(claimStringPath(claims, claim))
+	if id == "" {
+		return nil, errors.New("the token has no " + claim + " claim (the admin rule's decide.subject_claim)")
+	}
+	typ := d.SubjectType
+	if typ == "" {
+		typ = "user"
+	}
+	type tuple struct {
+		UserType   string `json:"user_type"`
+		UserID     string `json:"user_id"`
+		Relation   string `json:"relation"`
+		ObjectType string `json:"object_type"`
+		ObjectID   string `json:"object_id"`
+	}
+	var memberships []tuple
+	for _, role := range RolesFromContext(ctx) {
+		memberships = append(memberships, tuple{typ, id, "member", "team", "role_" + role})
+	}
+	for _, s := range strings.Fields(claimString(claims, "scope")) {
+		memberships = append(memberships, tuple{typ, id, "member", "team", "scope_" + s})
+	}
+	ctxTuples, _ := json.Marshal(memberships)
+	// The token's own statement of what it is for caps the store's grants:
+	// pgauthz:test (fixtures), pgauthz:read (GETs), pgauthz:manage (store
+	// writes), pgauthz:admin (everything, the platform included).
+	scopes := map[string]bool{}
+	for _, s := range strings.Fields(claimString(claims, "scope")) {
+		if strings.HasPrefix(s, "pgauthz:") {
+			scopes[strings.TrimPrefix(s, "pgauthz:")] = true
+		}
+	}
+	if len(scopes) == 0 {
+		return nil, errors.New("the token carries no pgauthz scope (pgauthz:test, pgauthz:read, pgauthz:manage or pgauthz:admin): it was not issued for this API's management")
+	}
+	checker, _ := h.adminBackend().(authz.ContextualChecker)
+	return &delegated{store: d.Store, subjType: typ, subjID: id, ctxTuples: ctxTuples, scopes: scopes,
+		check: func(relation, objType, objID string) (bool, error) {
+			if checker == nil {
+				return false, errors.New("the backend cannot check with contextual tuples (a full instance's direct backend does)")
+			}
+			return checker.CheckWithContextualTuples(ctx, authz.EvalRequest{Store: d.Store, SubjectType: typ, SubjectID: id, Action: relation, ObjectType: objType, ObjectID: objID}, ctxTuples)
+		}}, nil
 }
 
 func compileAdmin(ab *issuers.AdminBinding) *compiledAdmin {
 	if ab == nil {
 		return nil
 	}
-	c := &compiledAdmin{scopes: ab.Scopes, claims: ab.Claims, platform: ab.Scope == issuers.AdminScopePlatform}
+	c := &compiledAdmin{scopes: ab.Scopes, claims: ab.Claims, platform: ab.Scope == issuers.AdminScopePlatform, caps: ab.Capabilities, decide: ab.Decide}
 	if len(ab.Clients) > 0 {
 		c.clients = map[string]bool{}
 		for _, id := range ab.Clients {
 			c.clients[id] = true
 		}
 	}
+	if len(ab.Stores) > 0 {
+		c.stores = compileAnchored(ab.Stores)
+	}
 	return c
+}
+
+func compileAdminRules(rules issuers.AdminRules) []*compiledAdmin {
+	out := make([]*compiledAdmin, 0, len(rules))
+	for i := range rules {
+		out = append(out, compileAdmin(&rules[i]))
+	}
+	return out
 }
 
 // satisfiedBy: every listed scope present in the token's `scope`; for every
@@ -213,7 +491,7 @@ func (c *compiledAdmin) satisfiedBy(ctx context.Context) error {
 // certificate mapping names — review #20: a certificate carries no iss).
 func (h *Handler) visibleIssuers(scope adminScope) []IssuerConfig {
 	all := h.issuers.current().configs
-	if scope.platform {
+	if scope.platformWide() {
 		return all
 	}
 	own := scope.issuer

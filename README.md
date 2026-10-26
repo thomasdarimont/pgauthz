@@ -32,7 +32,7 @@ in [`docs/slides/`](docs/slides).
 - **Contextual tuples** — ephemeral per-request relationships that are never persisted (VPN context, org selection)
 - **Multi-store** — independent authorization namespaces with isolated types, relations, models, and tuples
 - **Model registry** — named, immutable model versions shared across tenant stores: publish, canary, roll out, detect drift, dry-run applies — see [MODEL_DESIGN §16](docs/MODEL_DESIGN.md#16-sharing-one-model-across-stores-model-registry)
-- **Model-as-code toolchain (`pgauthzctl`)** — OpenFGA DSL in git, CI tests with YAML fixtures, registry publish and rollout — see [`pgauthzctl/`](pgauthzctl/README.md)
+- **Model-as-code toolchain (`pgauthzctl`)** — OpenFGA DSL in git, CI tests with YAML fixtures (over the admin API with a token, or a DSN), registry publish and rollout — see [`pgauthzctl/`](pgauthzctl/README.md)
 - **Batch operations** — `write_tuples` / `delete_tuples` for bulk changes
 - **Conditional / atomic writes** — `write_tuples_checked`: preconditions (stored-tuple `exists`/`absent`, or an access check `allowed`/`denied`: "grant only if the granter may") plus deletes and writes in one transaction (optimistic concurrency)
 - **Relation constraints** — per type and relation, how many subjects may hold it on one object: `max_direct` enforced on every write (active tuples, concurrency-exact, `409 relation_full`), `max_effective` advisory with `relation_usage` headroom — see [MODEL_DESIGN → Relation constraints](docs/MODEL_DESIGN.md#relation-constraints-how-many-may-hold-a-relation)
