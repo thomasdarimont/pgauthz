@@ -151,6 +151,9 @@ startup via ALLOW_OPEN_DIAGNOSTICS, so a hand-edited manifest cannot slip past).
 {{- with $is.groupHosts }}
 - { name: GROUP_ISSUER_HOSTS, value: {{ . | quote }} }
 {{- end }}
+{{- with $is.hostPolicy }}
+- { name: OUTBOUND_HOST_POLICY, value: {{ . | quote }} }
+{{- end }}
 {{- $ot := .root.Values.otel | default dict }}
 {{- with $ot.tracing }}
 - { name: TRACING, value: {{ . | quote }} }

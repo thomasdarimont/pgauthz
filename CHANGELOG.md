@@ -126,7 +126,10 @@ pre-1.0, minor versions may include breaking changes.
   `CONSOLE_OUTBOUND_HOSTS` on the console (the platform's issuer and the
   fleet's environment issuers always allowed; redirects never followed).
   Helm `issuers.groupHosts` / `console.outboundHosts`; the demo stack
-  allows `*.acme.test`.
+  allows `*.acme.test`. Behind a dedicated egress proxy the in-app checks
+  can be handed over: `OUTBOUND_HOST_POLICY=proxy` /
+  `CONSOLE_OUTBOUND_HOST_POLICY=proxy` (an `HTTPS_PROXY` must be set; the
+  console's custom transports now honour it), `off` for development.
 - **Issuer aliases** (migration 0031). A binding row — or a `JWT_ISSUERS`
   entry — carries a short `alias` (`[a-z0-9_-]`, unique) that stands for
   the issuer URL wherever an issuer is referenced: the admin API's

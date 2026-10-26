@@ -105,7 +105,7 @@ func main() {
 				log.Fatalf("CA file %s: %v", f, err)
 			}
 		}
-		adminClient = &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{Certificates: []tls.Certificate{pair}, RootCAs: roots, MinVersion: tls.VersionTLS12}}}
+		adminClient = &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, TLSClientConfig: &tls.Config{Certificates: []tls.Certificate{pair}, RootCAs: roots, MinVersion: tls.VersionTLS12}}}
 		log.Printf("admin API client certificate from %s", cfg.PgauthzdAdminCert)
 	}
 	if cfg.TLSCAFile != "" {
@@ -120,7 +120,9 @@ func main() {
 		if !certPool.AppendCertsFromPEM(pem) {
 			log.Fatalf("TLS_CA_FILE %s: no certificates parsed", cfg.TLSCAFile)
 		}
-		httpClient.Transport = &http.Transport{TLSClientConfig: &tls.Config{RootCAs: certPool}}
+		// Proxy: a custom transport does not inherit the default's proxy
+		// lookup; an egress proxy (CONSOLE_OUTBOUND_HOST_POLICY=proxy) must still apply
+		httpClient.Transport = &http.Transport{Proxy: http.ProxyFromEnvironment, TLSClientConfig: &tls.Config{RootCAs: certPool}}
 		log.Printf("trusting extra CA from %s", cfg.TLSCAFile)
 	}
 

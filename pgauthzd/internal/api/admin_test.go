@@ -107,7 +107,7 @@ func adminFixture(t *testing.T) (*Handler, *adminStub) {
 				{Decide: &issuers.AdminDecision{Store: "console"}}}},
 	}
 	cfg := &config.Config{Profile: config.ProfileFull, Issuers: env, IssuersSource: "env+db", AdminAPIEnabled: true, AdminRole: "pgauthz_admin",
-		GroupIssuerHosts: []string{"new-idp", "carol-idp", "other-idp"}} // the tenant IdP hosts the platform admits (GROUP_ISSUER_HOSTS)
+		GroupIssuerHosts: []string{"new-idp", "carol-idp", "other-idp"}, OutboundHostPolicy: config.OutboundHostPolicyAllowlist} // the tenant IdP hosts the platform admits (GROUP_ISSUER_HOSTS)
 	stub := &adminStub{rows: map[string]issuers.Binding{
 		"https://tenant-a": {Issuer: "https://tenant-a", Alias: "tenant-a", Stores: []string{"a_docs"}, Enabled: true},
 		"https://tenant-b": {Issuer: "https://tenant-b", Stores: []string{"b_docs"}, Enabled: true},

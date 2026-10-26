@@ -703,3 +703,40 @@ func TestAdminClientCertsConfig(t *testing.T) {
 		t.Fatalf("mTLS needs the admin listener, got %v", err)
 	}
 }
+
+// OUTBOUND_HOST_POLICY: allowlist checks GROUP_ISSUER_HOSTS here; proxy
+// hands the policy to an egress proxy and needs one configured; off is a
+// development setting, refused in production.
+func TestOutboundHostPolicy(t *testing.T) {
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("https_proxy", "")
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("http_proxy", "")
+	c := &Config{OutboundHostPolicy: "allowlist", GroupIssuerHosts: []string{"*.idp.example"}}
+	if err := c.validateOutboundHostPolicy(); err != nil || !c.MergeOptions().RestrictGroupIssuerHosts {
+		t.Fatalf("allowlist: %v", err)
+	}
+	c = &Config{OutboundHostPolicy: "allowlist", GroupIssuerHosts: []string{"*"}, DeploymentEnvironment: "production"}
+	if err := c.validateOutboundHostPolicy(); err == nil {
+		t.Fatal("* in production must be refused")
+	}
+	c = &Config{OutboundHostPolicy: "proxy"}
+	if err := c.validateOutboundHostPolicy(); err == nil || !strings.Contains(err.Error(), "HTTPS_PROXY") {
+		t.Fatalf("proxy without a proxy: %v", err)
+	}
+	t.Setenv("HTTPS_PROXY", "http://egress.internal:3128")
+	if err := c.validateOutboundHostPolicy(); err != nil || c.MergeOptions().RestrictGroupIssuerHosts {
+		t.Fatalf("proxy: %v", err)
+	}
+	c = &Config{OutboundHostPolicy: "off", DeploymentEnvironment: "production"}
+	if err := c.validateOutboundHostPolicy(); err == nil {
+		t.Fatal("off in production must be refused")
+	}
+	c = &Config{OutboundHostPolicy: "off"}
+	if err := c.validateOutboundHostPolicy(); err != nil || c.MergeOptions().RestrictGroupIssuerHosts {
+		t.Fatalf("off: %v", err)
+	}
+	if err := (&Config{OutboundHostPolicy: "maybe"}).validateOutboundHostPolicy(); err == nil {
+		t.Fatal("unknown policy")
+	}
+}

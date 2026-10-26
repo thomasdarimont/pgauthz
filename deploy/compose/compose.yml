@@ -76,6 +76,8 @@ x-pgauthzd-env: &pgauthzd-env
   # issuer (ADR 0017): the daemon fetches a group issuer's keys from its row,
   # so the hosts are allow-listed (*.idp.example, login.microsoftonline.com).
   GROUP_ISSUER_HOSTS: "${GROUP_ISSUER_HOSTS:-}"
+  # allowlist (the list above) | proxy (an egress proxy via HTTPS_PROXY decides) | off
+  OUTBOUND_HOST_POLICY: "${OUTBOUND_HOST_POLICY:-allowlist}"
   ISSUERS_REQUIRED_ROLE: "${ISSUERS_REQUIRED_ROLE:-}"
   TRACING: "${TRACING:-auto}"                           # auto | on | off
   TRACING_IDENTIFIERS: "${TRACING_IDENTIFIERS:-false}"  # subject/resource ids on spans (types always)
@@ -273,6 +275,7 @@ services:
       # The identity-provider hosts the console may reach for Discover and
       # registered sign-in providers (the platform's issuer is always allowed).
       CONSOLE_OUTBOUND_HOSTS: "${CONSOLE_OUTBOUND_HOSTS:-}"
+      CONSOLE_OUTBOUND_HOST_POLICY: "${CONSOLE_OUTBOUND_HOST_POLICY:-allowlist}"
       CONSOLE_LOCAL_ADMIN_USER: "${CONSOLE_LOCAL_ADMIN_USER:-}"
       CONSOLE_LOCAL_ADMIN_PASSWORD: "${CONSOLE_LOCAL_ADMIN_PASSWORD:-}"
       CONSOLE_LOCAL_ADMIN_TEAMS: "${CONSOLE_LOCAL_ADMIN_TEAMS:-role_console_admin}"

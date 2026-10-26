@@ -419,6 +419,12 @@ type Config struct {
 	// binding writer could point it at any reachable address (SSRF). Empty
 	// = no group issuer is admitted; "*" = any host (refused in production).
 	GroupIssuerHosts []string
+	// OutboundHostPolicy (OUTBOUND_HOST_POLICY) says who enforces where the
+	// daemon may fetch a group issuer's keys: "allowlist" (default —
+	// GroupIssuerHosts, checked here), "proxy" (an egress proxy enforces the
+	// policy: HTTPS_PROXY/HTTP_PROXY must be set and the check here is off)
+	// or "off" (no check, no proxy; refused in production).
+	OutboundHostPolicy string
 
 	// The admin API (ADMIN_API_ENABLED, default false): the privileged
 	// management surface under /pgauthz/v1/admin/ (issuer bindings first;
@@ -491,9 +497,68 @@ type Config struct {
 // (letters/digits/_/-, ≤32), since hooks gate on it.
 var deploymentEnvRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,31}$`)
 
-// MergeOptions is what the issuer merge may admit on this instance.
+// MergeOptions is what the issuer merge may admit on this instance: the
+// host allow-list for group issuers, unless an egress proxy (or nothing)
+// enforces the outbound policy.
 func (c *Config) MergeOptions() issuers.MergeOptions {
-	return issuers.MergeOptions{RestrictGroupIssuerHosts: true, GroupIssuerHosts: c.GroupIssuerHosts}
+	return issuers.MergeOptions{RestrictGroupIssuerHosts: c.OutboundHostPolicy == OutboundHostPolicyAllowlist, GroupIssuerHosts: c.GroupIssuerHosts}
+}
+
+// The outbound host policies (OUTBOUND_HOST_POLICY).
+const (
+	OutboundHostPolicyAllowlist = "allowlist" // GROUP_ISSUER_HOSTS, checked here
+	OutboundHostPolicyProxy     = "proxy"     // an egress proxy enforces it (HTTPS_PROXY / HTTP_PROXY)
+	OutboundHostPolicyOff       = "off"       // nothing does (not in production)
+)
+
+// validateOutboundHostPolicy checks OUTBOUND_HOST_POLICY and the setting it
+// relies on: the host list under allowlist, the proxy environment under
+// proxy; off is refused in production.
+func (c *Config) validateOutboundHostPolicy() error {
+	switch c.OutboundHostPolicy {
+	case OutboundHostPolicyAllowlist:
+		for _, h := range c.GroupIssuerHosts {
+			if h == "*" && c.IsProduction() {
+				return fmt.Errorf("GROUP_ISSUER_HOSTS=* admits any host as a tenant's identity provider; name the hosts, or set OUTBOUND_HOST_POLICY=proxy behind an egress proxy (DEPLOYMENT_ENVIRONMENT=%s)", c.DeploymentEnvironment)
+			}
+			if strings.ContainsAny(h, "/:") {
+				return fmt.Errorf("GROUP_ISSUER_HOSTS: %q is not a host (no scheme, path or port; e.g. *.idp.example)", h)
+			}
+		}
+	case OutboundHostPolicyProxy:
+		if !proxyConfigured() {
+			return fmt.Errorf("OUTBOUND_HOST_POLICY=proxy leaves the egress policy to a proxy, but none is configured: set HTTPS_PROXY (and HTTP_PROXY / NO_PROXY) for this process")
+		}
+		log.Printf("OUTBOUND_HOST_POLICY=proxy: group issuer hosts are not checked here; the egress proxy (%s) decides where keys may be fetched from", proxyDescription())
+	case OutboundHostPolicyOff:
+		if c.IsProduction() {
+			return fmt.Errorf("OUTBOUND_HOST_POLICY=off: a binding writer could point this instance at any reachable address; use allowlist (GROUP_ISSUER_HOSTS) or proxy (DEPLOYMENT_ENVIRONMENT=%s)", c.DeploymentEnvironment)
+		}
+		log.Printf("WARNING: OUTBOUND_HOST_POLICY=off — a group issuer's keys are fetched from whatever host its row names")
+	default:
+		return fmt.Errorf("unknown OUTBOUND_HOST_POLICY %q (allowlist | proxy | off)", c.OutboundHostPolicy)
+	}
+	return nil
+}
+
+// proxyConfigured: an egress proxy in the process environment (the Go
+// transport honours HTTPS_PROXY / HTTP_PROXY, upper or lower case).
+func proxyConfigured() bool {
+	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} {
+		if strings.TrimSpace(os.Getenv(k)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func proxyDescription() string {
+	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return k + "=" + v
+		}
+	}
+	return "none"
 }
 
 func Load() (*Config, error) {
@@ -517,6 +582,7 @@ func Load() (*Config, error) {
 		SearchRequiredRole:            env("SEARCH_REQUIRED_ROLE", ""),
 		AllowUnboundMultiIssuer:       envBool("ALLOW_UNBOUND_MULTI_ISSUER", false),
 		GroupIssuerHosts:              envList("GROUP_ISSUER_HOSTS"),
+		OutboundHostPolicy:            env("OUTBOUND_HOST_POLICY", OutboundHostPolicyAllowlist),
 		WatchRequiredRole:             env("WATCH_REQUIRED_ROLE", ""),
 		ExplainRequiredRole:           env("EXPLAIN_REQUIRED_ROLE", ""),
 		WriterRole:                    env("WRITER_ROLE", "authz_writer"),
@@ -733,13 +799,8 @@ func Load() (*Config, error) {
 	if c.IssuersPollInterval <= 0 {
 		return nil, fmt.Errorf("ISSUERS_POLL_INTERVAL %d: expected a positive number of seconds", c.IssuersPollInterval)
 	}
-	for _, h := range c.GroupIssuerHosts {
-		if h == "*" && c.IsProduction() {
-			return nil, fmt.Errorf("GROUP_ISSUER_HOSTS=* admits any host as a tenant's identity provider; name the hosts (DEPLOYMENT_ENVIRONMENT=%s)", c.DeploymentEnvironment)
-		}
-		if strings.ContainsAny(h, "/:") {
-			return nil, fmt.Errorf("GROUP_ISSUER_HOSTS: %q is not a host (no scheme, path or port; e.g. *.idp.example)", h)
-		}
+	if err := c.validateOutboundHostPolicy(); err != nil {
+		return nil, err
 	}
 	if c.PublicHealthDisabled && c.MetricsListenAddr == "" {
 		return nil, fmt.Errorf("PUBLIC_HEALTH_ENABLED=false needs a management listener for the probes: set MANAGEMENT_LISTEN_ADDR")

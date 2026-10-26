@@ -89,6 +89,9 @@ spec:
             {{- with .Values.console.outboundHosts }}
             - { name: CONSOLE_OUTBOUND_HOSTS, value: {{ . | quote }} }
             {{- end }}
+            {{- with .Values.console.outboundHostPolicy }}
+            - { name: CONSOLE_OUTBOUND_HOST_POLICY, value: {{ . | quote }} }
+            {{- end }}
             - name: CLIENT_SECRET
               valueFrom:
                 secretKeyRef: { name: {{ if .Values.secrets.existingSecret }}{{ .Values.secrets.existingSecret }}{{ else }}{{ $full }}-console-oidc{{ end }}, key: {{ if .Values.secrets.existingSecret }}console-client-secret{{ else }}client-secret{{ end }} }

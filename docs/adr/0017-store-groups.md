@@ -149,3 +149,6 @@ console (the platform's own issuer always allowed), fail closed when the
 list is empty, and never follow redirects. A tenant's identity provider
 is therefore admitted twice: its host by the platform operator, the issuer
 itself by the group's admins.
+A deployment whose egress proxy already enforces such a policy hands the
+check over (`OUTBOUND_HOST_POLICY=proxy`, `CONSOLE_OUTBOUND_HOST_POLICY=proxy`)
+rather than maintaining the list twice.

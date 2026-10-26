@@ -88,6 +88,9 @@ func (s *Server) outboundAllowed(ctx context.Context, raw string) error {
 	if h == "" {
 		return fmt.Errorf("%q is not a URL", raw)
 	}
+	if !s.cfg.ChecksOutboundHosts() {
+		return nil // CONSOLE_OUTBOUND_HOST_POLICY=proxy|off: the egress proxy (or nothing) decides
+	}
 	if !hostAllowed(s.outboundHosts(ctx), h) {
 		return fmt.Errorf("the console does not reach %s: not the platform's identity provider and not in CONSOLE_OUTBOUND_HOSTS (a platform operator adds the host)", h)
 	}

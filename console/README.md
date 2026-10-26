@@ -265,7 +265,12 @@ stores where nothing is shared (and always per tenant).
   anything else is refused with a message naming the setting, and
   redirects are never followed — an issuer admin cannot turn the console
   into a request proxy into the network. pgauthzd has the same list for
-  the keys it fetches: `GROUP_ISSUER_HOSTS`.
+  the keys it fetches: `GROUP_ISSUER_HOSTS`. Deployments with a dedicated
+  egress proxy that enforces the policy set
+  `CONSOLE_OUTBOUND_HOST_POLICY=proxy` (and `OUTBOUND_HOST_POLICY=proxy`
+  on pgauthzd) with `HTTPS_PROXY` / `NO_PROXY` in the environment: the
+  in-app checks are then off and the proxy decides. `off` is for
+  development and refused in production.
 - **Auto-login.** An internal deployment with one provider needs no
   sign-in page: `CONSOLE_AUTO_LOGIN=true` sends a signed-out visitor
   straight to the platform's provider (an issuer URL names a registered

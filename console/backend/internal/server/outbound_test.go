@@ -68,9 +68,33 @@ func TestOutboundAllowed(t *testing.T) {
 	resp.Body.Close()
 }
 
-// CONSOLE_OUTBOUND_HOSTS: hosts only; "*" is refused in production.
+// CONSOLE_OUTBOUND_HOSTS: hosts only; "*" is refused in production. The
+// policy: proxy needs an egress proxy configured and turns the check off;
+// off is refused in production.
 func TestValidateOutboundHosts(t *testing.T) {
+	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} {
+		t.Setenv(k, "")
+	}
 	base := config.Config{SubjectIDClaims: []string{"sub"}}
+	p := base
+	p.OutboundHostPolicy = "proxy"
+	if err := p.Validate(); err == nil || !strings.Contains(err.Error(), "HTTPS_PROXY") {
+		t.Fatalf("proxy without a proxy: %v", err)
+	}
+	t.Setenv("HTTPS_PROXY", "http://egress.internal:3128")
+	if err := p.Validate(); err != nil || p.ChecksOutboundHosts() {
+		t.Fatalf("proxy: %v", err)
+	}
+	s := &Server{cfg: p}
+	if err := s.outboundAllowed(context.Background(), "https://169.254.169.254/latest"); err != nil {
+		t.Fatalf("under proxy the console does not check hosts itself: %v", err)
+	}
+	o := base
+	o.OutboundHostPolicy = "off"
+	o.DeploymentEnvironment = "production"
+	if err := o.Validate(); err == nil {
+		t.Fatal("off in production must be refused")
+	}
 	c := base
 	c.OutboundHosts = []string{"*.acme.test", "idp.example"}
 	if err := c.Validate(); err != nil {

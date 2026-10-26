@@ -97,6 +97,10 @@ issuers:
   # keys from its row, so the hosts are allow-listed ("*.idp.example",
   # "login.microsoftonline.com"). Empty = no group issuer is admitted.
   groupHosts: ""
+  # OUTBOUND_HOST_POLICY: allowlist (groupHosts, checked by the daemon),
+  # proxy (an egress proxy enforces it — set HTTPS_PROXY/NO_PROXY in
+  # pgauthzd.extraEnv) or off (refused in production).
+  hostPolicy: allowlist
 # The admin API on the writer (/pgauthz/v1/admin/…: issuer bindings; the
 # configuration-as-code surface for Terraform / pgauthzctl / the console).
 # Off by default. Enabled, the writer serves the routes on their own listener
@@ -452,6 +456,7 @@ console:
   # ("*.idp.example"); the platform's issuer and the fleet's environment
   # issuers are always allowed. Pair with issuers.groupHosts.
   outboundHosts: ""
+  outboundHostPolicy: allowlist  # allowlist | proxy (HTTPS_PROXY via extraEnv) | off
   # The local admin sign-in — a username/password that needs no IdP, for a
   # first look and tests; signs in as <subjectType>:<user> with the teams
   # below (the seed makes team role_console_admin the platform admin). Set

@@ -45,12 +45,17 @@ type Config struct {
 	// make the console fetch a URL: without the list that is any address
 	// the console can reach (SSRF). "*" = any host (refused in production).
 	OutboundHosts []string
-	BaseURL       string // public app base, e.g. https://app.pgauthz.test
-	BasePath      string // public path prefix, e.g. /console
-	CookieSecure  bool
-	WebDir        string
-	Scopes        string
-	TLSCAFile     string // optional extra CA (mkcert dev root) for outbound TLS
+	// OutboundHostPolicy (CONSOLE_OUTBOUND_HOST_POLICY): who enforces where
+	// the console may reach — "allowlist" (default: OutboundHosts, checked
+	// here), "proxy" (an egress proxy does: HTTPS_PROXY/HTTP_PROXY must be
+	// set, the check here is off) or "off" (no check; refused in production).
+	OutboundHostPolicy string
+	BaseURL            string // public app base, e.g. https://app.pgauthz.test
+	BasePath           string // public path prefix, e.g. /console
+	CookieSecure       bool
+	WebDir             string
+	Scopes             string
+	TLSCAFile          string // optional extra CA (mkcert dev root) for outbound TLS
 
 	// ConsoleStore is the pgauthz store that answers "may this person do this
 	// in the console?" (examples/models/console). PlatformID / RegistryID are
@@ -189,22 +194,23 @@ func parseTeamClaims(spec string) []TeamClaim {
 // Load reads the configuration from the environment, applying defaults.
 func Load() Config {
 	return Config{
-		Addr:          env("ADDR", ":8080"),
-		PgDSN:         env("PG_DSN", "postgres://console:console@console-db:5432/pgauthz_console"),
-		EngineDSN:     env("ENGINE_DSN", "postgres://authz_console:authz@authz-db:5432/authz"),
-		ClientID:      env("CLIENT_ID", "console-bff"),
-		ClientSecret:  env("CLIENT_SECRET", "console-bff-demo-secret"),
-		Issuer:        env("ISSUER", ""), // empty = no OpenID Provider (local admin only)
-		RedirectURI:   env("REDIRECT_URI", "https://app.pgauthz.test/console/auth/callback"),
-		ProviderLabel: strings.TrimSpace(env("PROVIDER_LABEL", "")),
-		AutoLogin:     strings.TrimSpace(env("CONSOLE_AUTO_LOGIN", "")),
-		OutboundHosts: splitList(env("CONSOLE_OUTBOUND_HOSTS", "")),
-		BaseURL:       env("BASE_URL", "https://app.pgauthz.test"),
-		BasePath:      strings.TrimRight(env("BASE_PATH", "/console"), "/"),
-		CookieSecure:  env("COOKIE_SECURE", "true") == "true",
-		WebDir:        env("WEB_DIR", "/web"),
-		Scopes:        env("SCOPES", "openid profile"),
-		TLSCAFile:     env("TLS_CA_FILE", ""),
+		Addr:               env("ADDR", ":8080"),
+		PgDSN:              env("PG_DSN", "postgres://console:console@console-db:5432/pgauthz_console"),
+		EngineDSN:          env("ENGINE_DSN", "postgres://authz_console:authz@authz-db:5432/authz"),
+		ClientID:           env("CLIENT_ID", "console-bff"),
+		ClientSecret:       env("CLIENT_SECRET", "console-bff-demo-secret"),
+		Issuer:             env("ISSUER", ""), // empty = no OpenID Provider (local admin only)
+		RedirectURI:        env("REDIRECT_URI", "https://app.pgauthz.test/console/auth/callback"),
+		ProviderLabel:      strings.TrimSpace(env("PROVIDER_LABEL", "")),
+		AutoLogin:          strings.TrimSpace(env("CONSOLE_AUTO_LOGIN", "")),
+		OutboundHosts:      splitList(env("CONSOLE_OUTBOUND_HOSTS", "")),
+		OutboundHostPolicy: strings.ToLower(strings.TrimSpace(env("CONSOLE_OUTBOUND_HOST_POLICY", "allowlist"))),
+		BaseURL:            env("BASE_URL", "https://app.pgauthz.test"),
+		BasePath:           strings.TrimRight(env("BASE_PATH", "/console"), "/"),
+		CookieSecure:       env("COOKIE_SECURE", "true") == "true",
+		WebDir:             env("WEB_DIR", "/web"),
+		Scopes:             env("SCOPES", "openid profile"),
+		TLSCAFile:          env("TLS_CA_FILE", ""),
 
 		ConsoleStore:    env("CONSOLE_STORE", "console"),
 		PlatformID:      env("CONSOLE_PLATFORM_ID", "default"),
@@ -259,6 +265,23 @@ var TechnicalClaims = map[string]bool{
 	"auth_time": true, "session_state": true, "scope": true, "email_verified": true, "cnf": true,
 }
 
+// ChecksOutboundHosts says whether the console applies its own host
+// allow-list to the URLs issuer admins name (false under proxy / off).
+func (c Config) ChecksOutboundHosts() bool {
+	return c.OutboundHostPolicy == "" || c.OutboundHostPolicy == "allowlist"
+}
+
+// ProxyConfigured: an egress proxy in the process environment (the Go
+// transport honours HTTPS_PROXY / HTTP_PROXY, upper or lower case).
+func ProxyConfigured() bool {
+	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} {
+		if strings.TrimSpace(os.Getenv(k)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // aliasRe is an issuer alias's shape (authz.issuer_bindings.alias).
 var aliasRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
@@ -278,13 +301,26 @@ func (c Config) ProviderName() string {
 // claim list that is empty or names a technical claim; and an auto-login
 // value that is neither a switch nor an https issuer.
 func (c Config) Validate() error {
-	for _, h := range c.OutboundHosts {
-		if h == "*" && c.DeploymentEnvironment == "production" {
-			return fmt.Errorf("CONSOLE_OUTBOUND_HOSTS=* lets an issuer admin point the console at any host; name the hosts (DEPLOYMENT_ENVIRONMENT=production)")
+	switch c.OutboundHostPolicy {
+	case "allowlist", "":
+		for _, h := range c.OutboundHosts {
+			if h == "*" && c.DeploymentEnvironment == "production" {
+				return fmt.Errorf("CONSOLE_OUTBOUND_HOSTS=* lets an issuer admin point the console at any host; name the hosts, or set CONSOLE_OUTBOUND_HOST_POLICY=proxy behind an egress proxy (DEPLOYMENT_ENVIRONMENT=production)")
+			}
+			if strings.ContainsAny(h, "/:") {
+				return fmt.Errorf("CONSOLE_OUTBOUND_HOSTS: %q is not a host (no scheme, path or port; e.g. *.idp.example)", h)
+			}
 		}
-		if strings.ContainsAny(h, "/:") {
-			return fmt.Errorf("CONSOLE_OUTBOUND_HOSTS: %q is not a host (no scheme, path or port; e.g. *.idp.example)", h)
+	case "proxy":
+		if !ProxyConfigured() {
+			return fmt.Errorf("CONSOLE_OUTBOUND_HOST_POLICY=proxy leaves the egress policy to a proxy, but none is configured: set HTTPS_PROXY (and HTTP_PROXY / NO_PROXY) for this process")
 		}
+	case "off":
+		if c.DeploymentEnvironment == "production" {
+			return fmt.Errorf("CONSOLE_OUTBOUND_HOST_POLICY=off: an issuer admin could point the console at any reachable address; use allowlist (CONSOLE_OUTBOUND_HOSTS) or proxy (DEPLOYMENT_ENVIRONMENT=production)")
+		}
+	default:
+		return fmt.Errorf("unknown CONSOLE_OUTBOUND_HOST_POLICY %q (allowlist | proxy | off)", c.OutboundHostPolicy)
 	}
 	switch a := strings.ToLower(c.AutoLogin); {
 	case a == "" || a == "true" || a == "false":
