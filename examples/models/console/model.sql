@@ -177,6 +177,45 @@ SELECT authz.model_add_rule(:'cs', 'group', r, 'computed', 'admin')
 SELECT authz.model_add_rule(:'cs', 'group', r, 'ttu', NULL, 'platform', 'admin')
   FROM unnest(ARRAY['can_view', 'can_create_store', 'can_manage_access', 'can_manage_issuers']) AS r;
 SELECT authz.model_add_rule(:'cs', 'group', 'can_manage_issuers', 'computed', 'issuer_admin');
+-- Every store role exists on the group too (ADR 0017): a role on
+-- group:X is that role on every store of the group — a team may test all
+-- stores of groups A and B and view one store of group C. The group's
+-- capabilities mirror the store's, computed from the same roles, and each
+-- store capability is also "… from group".
+SELECT authz.model_add_rule(:'cs', 'group', r, 'direct')
+  FROM unnest(ARRAY['author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'exporter', 'viewer']) AS r;
+SELECT authz.model_add_type_restriction(:'cs', 'group', r, 'user')
+  FROM unnest(ARRAY['author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'exporter', 'viewer']) AS r;
+SELECT authz.model_add_type_restriction(:'cs', 'group', r, 'service_account')
+  FROM unnest(ARRAY['author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'exporter', 'viewer']) AS r;
+SELECT authz.model_add_type_restriction(:'cs', 'group', r, 'team', 'member')
+  FROM unnest(ARRAY['author', 'publisher', 'sharer', 'tester', 'supporter', 'auditor', 'exporter', 'viewer']) AS r;
+SELECT authz.model_add_rule(:'cs', 'group', 'can_view', 'computed', r)
+  FROM unnest(ARRAY['viewer', 'tester', 'supporter', 'sharer', 'author', 'publisher', 'auditor', 'exporter']) AS r;
+SELECT authz.model_add_rule(:'cs', 'group', 'can_run_tests', 'computed', r)
+  FROM unnest(ARRAY['tester', 'supporter', 'author', 'publisher', 'admin']) AS r;
+SELECT authz.model_add_rule(:'cs', 'group', 'can_test_others', 'computed', r)
+  FROM unnest(ARRAY['supporter', 'author', 'publisher', 'admin']) AS r;
+SELECT authz.model_add_rule(:'cs', 'group', 'can_test_explain_full', 'computed', r)
+  FROM unnest(ARRAY['supporter', 'author', 'publisher', 'admin']) AS r;
+SELECT authz.model_add_rule(:'cs', 'group', 'can_test_search', 'computed', r)
+  FROM unnest(ARRAY['author', 'publisher', 'admin']) AS r;
+SELECT authz.model_add_rule(:'cs', 'group', 'can_test_history', 'computed', r)
+  FROM unnest(ARRAY['auditor', 'author', 'publisher', 'admin']) AS r;
+SELECT authz.model_add_rule(:'cs', 'group', 'can_edit_model', 'computed', r)
+  FROM unnest(ARRAY['author', 'admin']) AS r;
+SELECT authz.model_add_rule(:'cs', 'group', 'can_publish', 'computed', r)
+  FROM unnest(ARRAY['publisher', 'admin']) AS r;
+SELECT authz.model_add_rule(:'cs', 'group', 'can_rollout', 'computed', r)
+  FROM unnest(ARRAY['publisher', 'admin']) AS r;
+SELECT authz.model_add_rule(:'cs', 'group', 'can_grant', 'computed', r)
+  FROM unnest(ARRAY['sharer', 'admin']) AS r;
+SELECT authz.model_add_rule(:'cs', 'group', 'can_view_audit', 'computed', r)
+  FROM unnest(ARRAY['auditor', 'admin']) AS r;
+SELECT authz.model_add_rule(:'cs', 'group', 'can_export', 'computed', r)
+  FROM unnest(ARRAY['exporter', 'admin']) AS r;
+SELECT authz.model_add_rule(:'cs', 'group', 'can_view_decisions', 'computed', r)
+  FROM unnest(ARRAY['auditor', 'publisher', 'admin']) AS r;
 
 ----------------------------------------------------------------------
 -- registry
@@ -261,6 +300,11 @@ SELECT authz.model_add_rule(:'cs', 'store', 'can_view_decisions', 'computed', r)
 SELECT authz.model_add_rule(:'cs', 'store', 'can_manage_access', 'computed', 'owner');
 SELECT authz.model_add_rule(:'cs', 'store', 'can_manage_access', 'ttu', NULL, 'platform', 'admin');
 SELECT authz.model_add_rule(:'cs', 'store', 'can_manage_access', 'ttu', NULL, 'group', 'admin');
+-- … and every store capability is also the group's (ADR 0017): a role on
+-- the group reaches each of its stores
+SELECT authz.model_add_rule(:'cs', 'store', c, 'ttu', NULL, 'group', c)
+  FROM unnest(ARRAY['can_view', 'can_run_tests', 'can_test_others', 'can_test_explain_full', 'can_test_search', 'can_test_history',
+                    'can_edit_model', 'can_publish', 'can_rollout', 'can_grant', 'can_view_audit', 'can_export', 'can_view_decisions']) AS c;
 
 ----------------------------------------------------------------------
 -- namespace: an application team's slice of a shared store

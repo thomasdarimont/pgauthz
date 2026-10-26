@@ -22,7 +22,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-var groupRoles = []string{"admin", "issuer_admin"}
+// groupRoles: a group's own two (admin, issuer_admin) and every store role,
+// which on a group reaches each of its stores (ADR 0017).
+var groupRoles = []string{"admin", "issuer_admin", "author", "publisher", "sharer", "tester", "supporter", "auditor", "exporter", "viewer"}
 
 type groupRow struct {
 	Name         string          `json:"name"`

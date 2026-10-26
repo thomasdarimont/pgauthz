@@ -275,6 +275,7 @@ func (s *Server) handleIssuers(w http.ResponseWriter, r *http.Request) {
 			"via":       "admin-api",
 			"known":     known,
 			"platform":  platform,
+			"signin":    s.signinRows(ctx, platform, managed),
 		})
 		return
 	}
@@ -309,6 +310,7 @@ func (s *Server) handleIssuers(w http.ResponseWriter, r *http.Request) {
 		"via":       "db",
 		"known":     known,
 		"platform":  platform,
+		"signin":    s.signinRows(ctx, platform, managed),
 	})
 }
 

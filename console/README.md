@@ -243,6 +243,17 @@ stores where nothing is shared (and always per tenant).
   come from `platform#admin`, store changes hold the platform lock shared
   and platform-admin changes take it exclusively: revoking an admin waits
   for what they already started and denies what they start afterwards.
+- **More than one identity provider.** Besides the platform's provider
+  (`ISSUER`, `CLIENT_ID`, `CLIENT_SECRET`; its button says `PROVIDER_LABEL`,
+  default "Keycloak"), a group issuer's admins can register the console as
+  a client at their own provider (Platform → Issuers, *Console sign-in
+  through this provider*: label, client id, client secret). The sign-in
+  page then offers one button per reachable provider, a session remembers
+  which one signed it in (refresh and logout go there), and the person's
+  id and memberships come from that provider's ID token the way they do
+  for the platform's — the delegated admin rule pgauthzd holds for the same
+  issuer must derive the same id. Registrations and secrets live in the
+  console's own database (`console_providers`), like the sessions.
 - **Sessions live as long as the access token.** Memberships come from the
   token, so the BFF renews it with the refresh token shortly before expiry
   and ends the session (401, sign in again) when it cannot. The cookie's 8
@@ -265,7 +276,12 @@ stores where nothing is shared (and always per tenant).
   them in step on every listing. New stores land in the `default` group
   unless the form says otherwise; a store outside every group is its own
   group of one. Moving a store between groups is the platform's, since it
-  changes who administers it. **Group issuers** (phase 2): under Platform →
+  changes who administers it. **Roles on a group reach its stores:** every
+  store role exists on `group:<name>` too (`tester`, `viewer`, `author`, …,
+  granted under *Admins & sharing*), and each store capability is also
+  "from group" — a team may test every store of groups A and B and view one
+  store of group C, with three grants. The stores list filters by group.
+  **Group issuers** (phase 2): under Platform →
   Issuers a row may name a store group instead of store patterns and carry
   the provider's own trust anchor (JWKS URL, discovered from the issuer
   URL, and the audiences); its tokens reach the group's stores and nothing

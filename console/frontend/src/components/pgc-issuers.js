@@ -152,6 +152,10 @@ export class PgcIssuers extends PgcElement {
       jwks_url: '',
       audience: '',
       audiences: '',
+      signin_enabled: false,
+      signin_label: '',
+      signin_client_id: '',
+      signin_client_secret: '',
       isNew: true,
     };
   }
@@ -171,6 +175,10 @@ export class PgcIssuers extends PgcElement {
       jwks_url: b.jwks_url ?? '',
       audience: b.audience ?? '',
       audiences: (b.audiences ?? []).join('\n'),
+      signin_enabled: !!this.d?.signin?.[b.issuer]?.enabled,
+      signin_label: this.d?.signin?.[b.issuer]?.label ?? '',
+      signin_client_id: this.d?.signin?.[b.issuer]?.client_id ?? '',
+      signin_client_secret: '',
       isNew: false,
     };
   }
@@ -261,6 +269,23 @@ export class PgcIssuers extends PgcElement {
         throw new Error(forbiddenText(err));
       }
     });
+    if (r && f.store_group && (f.signin_enabled || f.signin_client_id)) {
+      // the console as a client at the tenant's provider: one button on the sign-in page
+      await run(this, async () => {
+        try {
+          return await api.platformIssuerSignin({
+            issuer: f.issuer.trim(),
+            store_group: f.store_group,
+            label: f.signin_label?.trim() || '',
+            client_id: f.signin_client_id?.trim() || '',
+            client_secret: f.signin_client_secret || '',
+            enabled: !!f.signin_enabled,
+          });
+        } catch (err) {
+          throw new Error(forbiddenText(err));
+        }
+      });
+    }
     if (r) {
       this.saved = t(
         'Saved as revision {n}; every instance with ISSUERS_SOURCE=env+db applies it within its poll interval.',
@@ -350,7 +375,30 @@ export class PgcIssuers extends PgcElement {
               <label class="field"
                 ><span>${t('Further audiences')}</span>
                 <textarea class="list" rows="2" .value=${f.audiences ?? ''} @input=${this._set('audiences')} data-testid="issuers-audiences"></textarea>
-              </label>`
+              </label>
+              <label class="field wide check"
+                ><input type="checkbox" .checked=${!!f.signin_enabled} @change=${this._set('signin_enabled')} data-testid="issuers-signin-enabled" />
+                <span
+                  >${t('Console sign-in through this provider')}
+                  ${help('Register the console as a client at this identity provider (authorization code with PKCE, redirect URI as the platform\'s). The sign-in page then offers a button for it, and its people reach the console with whatever the console store grants them. The client secret stays in the console\'s own database.')}</span
+                ></label
+              >
+              ${
+                f.signin_enabled
+                  ? html`<label class="field"
+                        ><span>${t('Button label')}</span>
+                        <input .value=${f.signin_label ?? ''} placeholder=${f.store_group} @input=${this._set('signin_label')} data-testid="issuers-signin-label"
+                      /></label>
+                      <label class="field"
+                        ><span>${t('Client id')}</span>
+                        <input class="mono" .value=${f.signin_client_id ?? ''} @input=${this._set('signin_client_id')} data-testid="issuers-signin-client-id"
+                      /></label>
+                      <label class="field"
+                        ><span>${t('Client secret')} ${help('Leave empty to keep the stored one.')}</span>
+                        <input type="password" class="mono" autocomplete="new-password" .value=${f.signin_client_secret ?? ''} @input=${this._set('signin_client_secret')} data-testid="issuers-signin-secret"
+                      /></label>`
+                  : nothing
+              }`
           : html`<label class="field"
               ><span
                 >${t('Stores')}
@@ -559,6 +607,7 @@ export class PgcIssuers extends PgcElement {
                           ${b.issuer}
                           ${b.store_group ? html` <span class="badge muted" title=${t('a group issuer: reaches the stores of this group')}>${b.store_group}</span>` : nothing}
                           ${b.jwks_url ? html` <span class="badge ok" title=${b.jwks_url}>${t('own anchor')}</span>` : nothing}
+                          ${d.signin?.[b.issuer]?.enabled ? html` <span class="badge muted" title=${t('a button on the sign-in page')}>${t('sign-in')}</span>` : nothing}
                         </td>
                         <td class="mono">
                           ${b.stores.length ? b.stores.join(', ') : html`<span class="muted">${b.store_group ? t('no stores in the group yet') : t('as the environment')}</span>`}

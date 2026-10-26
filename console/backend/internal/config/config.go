@@ -24,12 +24,15 @@ type Config struct {
 	ClientSecret string
 	Issuer       string // OIDC issuer base; endpoints are resolved from its discovery doc
 	RedirectURI  string
-	BaseURL      string // public app base, e.g. https://app.pgauthz.test
-	BasePath     string // public path prefix, e.g. /console
-	CookieSecure bool
-	WebDir       string
-	Scopes       string
-	TLSCAFile    string // optional extra CA (mkcert dev root) for outbound TLS
+	// ProviderLabel (PROVIDER_LABEL) names the platform's provider on the
+	// sign-in page ("Sign in with …"); registered providers carry their own.
+	ProviderLabel string
+	BaseURL       string // public app base, e.g. https://app.pgauthz.test
+	BasePath      string // public path prefix, e.g. /console
+	CookieSecure  bool
+	WebDir        string
+	Scopes        string
+	TLSCAFile     string // optional extra CA (mkcert dev root) for outbound TLS
 
 	// ConsoleStore is the pgauthz store that answers "may this person do this
 	// in the console?" (examples/models/console). PlatformID / RegistryID are
@@ -168,19 +171,20 @@ func parseTeamClaims(spec string) []TeamClaim {
 // Load reads the configuration from the environment, applying defaults.
 func Load() Config {
 	return Config{
-		Addr:         env("ADDR", ":8080"),
-		PgDSN:        env("PG_DSN", "postgres://console:console@console-db:5432/pgauthz_console"),
-		EngineDSN:    env("ENGINE_DSN", "postgres://authz_console:authz@authz-db:5432/authz"),
-		ClientID:     env("CLIENT_ID", "console-bff"),
-		ClientSecret: env("CLIENT_SECRET", "console-bff-demo-secret"),
-		Issuer:       env("ISSUER", ""), // empty = no OpenID Provider (local admin only)
-		RedirectURI:  env("REDIRECT_URI", "https://app.pgauthz.test/console/auth/callback"),
-		BaseURL:      env("BASE_URL", "https://app.pgauthz.test"),
-		BasePath:     strings.TrimRight(env("BASE_PATH", "/console"), "/"),
-		CookieSecure: env("COOKIE_SECURE", "true") == "true",
-		WebDir:       env("WEB_DIR", "/web"),
-		Scopes:       env("SCOPES", "openid profile"),
-		TLSCAFile:    env("TLS_CA_FILE", ""),
+		Addr:          env("ADDR", ":8080"),
+		PgDSN:         env("PG_DSN", "postgres://console:console@console-db:5432/pgauthz_console"),
+		EngineDSN:     env("ENGINE_DSN", "postgres://authz_console:authz@authz-db:5432/authz"),
+		ClientID:      env("CLIENT_ID", "console-bff"),
+		ClientSecret:  env("CLIENT_SECRET", "console-bff-demo-secret"),
+		Issuer:        env("ISSUER", ""), // empty = no OpenID Provider (local admin only)
+		RedirectURI:   env("REDIRECT_URI", "https://app.pgauthz.test/console/auth/callback"),
+		ProviderLabel: env("PROVIDER_LABEL", "Keycloak"),
+		BaseURL:       env("BASE_URL", "https://app.pgauthz.test"),
+		BasePath:      strings.TrimRight(env("BASE_PATH", "/console"), "/"),
+		CookieSecure:  env("COOKIE_SECURE", "true") == "true",
+		WebDir:        env("WEB_DIR", "/web"),
+		Scopes:        env("SCOPES", "openid profile"),
+		TLSCAFile:     env("TLS_CA_FILE", ""),
 
 		ConsoleStore:    env("CONSOLE_STORE", "console"),
 		PlatformID:      env("CONSOLE_PLATFORM_ID", "default"),

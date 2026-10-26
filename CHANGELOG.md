@@ -98,7 +98,18 @@ pre-1.0, minor versions may include breaking changes.
   registry. Admin API: `…/admin/groups/{group}/consumers[/{consumer}]`.
   Console: *Models shared with* under each group, the owner in the
   Registry, the Group column in the stores list (sortable, searchable).
-  `pgauthzctl model versions` prints the owner.
+  `pgauthzctl model versions` prints the owner. Every store role exists on
+  a group too and each store capability is also "from group", so a set of
+  people can be given all stores of some groups plus selected stores with a
+  few grants; the stores list filters by group.
+- **Store groups, phase 4: the sign-in chooser** ([ADR 0017](docs/adr/0017-store-groups.md)).
+  The console signs people in through more than one OpenID Connect
+  provider: a group issuer's admins register the console as a client at
+  their provider under Platform → Issuers (label, client id, secret; kept
+  in the console's database), the sign-in page offers one button per
+  reachable provider (`GET /api/providers`), a session remembers its
+  provider for refresh and logout. `PROVIDER_LABEL` names the platform's
+  button.
 - **Every error names its request.** pgauthzd's and the console's JSON
   errors carry `request_id` (the response's `X-Request-ID`, unique per
   request, also on the request's log line and the decision log), so a

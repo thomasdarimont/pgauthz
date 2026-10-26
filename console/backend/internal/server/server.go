@@ -37,6 +37,7 @@ type Server struct {
 	adminHTTP *http.Client
 	oidc      *oidc.Client
 	endpoints oidc.Metadata
+	prov      providerCache // the registered sign-in providers, discovered on demand (providers.go)
 }
 
 // WithAdminHTTPClient sets the client that carries the console's own
@@ -97,6 +98,9 @@ func (s *Server) Routes() http.Handler {
 	h("POST /auth/local", s.handleLocalLogin)
 	h("GET /auth/logout", s.handleLogout)
 	h("GET /api/me", s.handleMe)
+	h("GET /api/providers", s.handleProviders)
+	h("PUT /api/platform/issuers/signin", s.handleSigninSave)
+	h("POST /api/platform/issuers/signin/delete", s.handleSigninDelete)
 	// Build identity, public: the footer shows it on the login page too.
 	h("GET /api/version", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, s.version) })
 	// Translation overrides, public like the SPA that needs them before login.

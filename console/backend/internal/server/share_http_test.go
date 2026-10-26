@@ -24,7 +24,7 @@ func httpSession(t *testing.T, s *Server, username string) *http.Cookie {
 		s.db = s.engine
 		// InitSchema's tables (sessions, scenarios): created here, dropped
 		// afterwards when this test created them.
-		for _, table := range []string{"sessions", "scenarios"} {
+		for _, table := range []string{"sessions", "scenarios", "console_providers"} {
 			var existed bool
 			if err := s.db.QueryRow(ctx, `SELECT to_regclass('public.'||$1) IS NOT NULL`, table).Scan(&existed); err != nil {
 				t.Fatal(err)

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -18,10 +19,16 @@ func pkce() (verifier, challenge string) {
 	return
 }
 
+// handleLogin — GET /auth/login[?issuer=…][&next=…]: the authorization code
+// flow at the chosen provider (the platform's without issuer; a registered
+// one otherwise, ADR 0017 phase 4). The auth cookie carries the provider so
+// the callback exchanges the code at the same one.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if s.oidc == nil {
-		// No OpenID Provider: the SPA offers the local sign-in instead.
-		http.Redirect(w, r, s.cfg.BasePath+"/", http.StatusFound)
+	prov, err := s.providerFor(r.Context(), strings.TrimSpace(r.URL.Query().Get("issuer")))
+	if err != nil {
+		// No OpenID Provider (the SPA offers the local sign-in instead), or
+		// a provider that is unknown or not reachable right now.
+		http.Redirect(w, r, s.cfg.BasePath+"/?login_error="+url.QueryEscape(err.Error()), http.StatusFound)
 		return
 	}
 	state := randToken(16)
@@ -31,9 +38,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasPrefix(next, s.cfg.BasePath+"/") || strings.Contains(next, "//") {
 		next = s.cfg.BasePath + "/"
 	}
-	s.setCookie(w, authCookie, state+"|"+verifier+"|"+next, 300)
+	s.setCookie(w, authCookie, prov.Issuer+"|"+state+"|"+verifier+"|"+next, 300)
 	q := url.Values{
-		"client_id":             {s.cfg.ClientID},
+		"client_id":             {prov.ClientID},
 		"redirect_uri":          {s.cfg.RedirectURI},
 		"response_type":         {"code"},
 		"scope":                 {s.cfg.Scopes},
@@ -41,22 +48,23 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"code_challenge":        {challenge},
 		"code_challenge_method": {"S256"},
 	}
-	http.Redirect(w, r, s.endpoints.AuthURL+"?"+q.Encode(), http.StatusFound)
+	http.Redirect(w, r, prov.meta.AuthURL+"?"+q.Encode(), http.StatusFound)
 }
 
 func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
-	if s.oidc == nil {
-		http.NotFound(w, r)
-		return
-	}
 	ac, err := r.Cookie(authCookie)
 	if err != nil {
 		http.Error(w, "missing auth cookie", http.StatusBadRequest)
 		return
 	}
-	parts := strings.SplitN(ac.Value, "|", 3)
-	if len(parts) != 3 || r.URL.Query().Get("state") != parts[0] {
+	parts := strings.SplitN(ac.Value, "|", 4)
+	if len(parts) != 4 || r.URL.Query().Get("state") != parts[1] {
 		http.Error(w, "state mismatch", http.StatusBadRequest)
+		return
+	}
+	prov, err := s.providerFor(r.Context(), parts[0])
+	if err != nil {
+		http.Error(w, "sign-in provider: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	code := r.URL.Query().Get("code")
@@ -64,24 +72,28 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing code: "+r.URL.Query().Get("error"), http.StatusBadRequest)
 		return
 	}
-	t, err := s.oidc.Exchange(r.Context(), url.Values{
+	t, err := prov.client.Exchange(r.Context(), url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
 		"redirect_uri":  {s.cfg.RedirectURI},
-		"code_verifier": {parts[1]},
+		"code_verifier": {parts[2]},
 	})
 	if err != nil {
 		http.Error(w, "token exchange: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	id, err := s.createSession(r.Context(), t)
+	issuer := prov.Issuer
+	if p := s.platformProvider(); p != nil && p.Issuer == issuer {
+		issuer = "" // the platform's: the default, as before
+	}
+	id, err := s.createSession(r.Context(), t, issuer)
 	if err != nil {
 		http.Error(w, "session: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.setCookie(w, authCookie, "", -1)
 	s.setCookie(w, sessionCookie, id, int((8 * time.Hour).Seconds()))
-	http.Redirect(w, r, parts[2], http.StatusFound)
+	http.Redirect(w, r, parts[3], http.StatusFound)
 }
 
 // handleLocalLogin — POST /auth/local {username, password}: the local admin
@@ -119,32 +131,35 @@ func localCredentialsMatch(wantUser, wantPass, user, pass string) bool {
 	return u&p == 1
 }
 
-// loginMethods tells the SPA which sign-ins this deployment offers.
-func (s *Server) loginMethods() map[string]any {
-	return map[string]any{"oidc": s.oidc != nil, "local": s.cfg.LocalAdminEnabled()}
+// loginMethods tells the SPA which sign-ins this deployment offers: the
+// providers (one button each) and the local admin sign-in.
+func (s *Server) loginMethods(ctx context.Context) map[string]any {
+	providers := s.signinProviders(ctx)
+	return map[string]any{"oidc": len(providers) > 0, "local": s.cfg.LocalAdminEnabled(), "providers": providers}
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	var idToken string
+	var idToken, issuer string
 	local := false
 	if se := s.sessionFromReq(r); se != nil {
-		idToken = se.idToken
+		idToken, issuer = se.idToken, se.issuer
 		local = se.local
 		if c, err := r.Cookie(sessionCookie); err == nil {
 			s.deleteSession(r.Context(), c.Value)
 		}
 	}
 	s.setCookie(w, sessionCookie, "", -1)
-	if local || s.oidc == nil || s.endpoints.LogoutURL == "" {
+	prov, err := s.providerFor(r.Context(), issuer)
+	if local || err != nil || prov.meta.LogoutURL == "" {
 		// Nothing to end at an IdP.
 		http.Redirect(w, r, s.cfg.BasePath+"/", http.StatusFound)
 		return
 	}
-	q := url.Values{"post_logout_redirect_uri": {s.cfg.BaseURL + s.cfg.BasePath + "/"}, "client_id": {s.cfg.ClientID}}
+	q := url.Values{"post_logout_redirect_uri": {s.cfg.BaseURL + s.cfg.BasePath + "/"}, "client_id": {prov.ClientID}}
 	if idToken != "" {
 		q.Set("id_token_hint", idToken)
 	}
-	http.Redirect(w, r, s.endpoints.LogoutURL+"?"+q.Encode(), http.StatusFound)
+	http.Redirect(w, r, prov.meta.LogoutURL+"?"+q.Encode(), http.StatusFound)
 }
 
 // handleMe tells the SPA who is logged in and which platform-level areas are
@@ -152,7 +167,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	p := s.principal(r)
 	if p == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"authenticated": false, "login": s.loginMethods()})
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"authenticated": false, "login": s.loginMethods(r.Context())})
 		return
 	}
 	platform, err := s.capabilities(r.Context(), p, "platform", []string{s.cfg.PlatformID},

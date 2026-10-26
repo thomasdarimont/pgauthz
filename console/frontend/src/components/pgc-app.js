@@ -206,9 +206,16 @@ export class PgcApp extends PgcElement {
                   ${this.error ? errorBox(this.error) : nothing}
                   ${
                     this.login.oidc
-                      ? html`<button class="primary wide" @click=${() => api.login()}>
-                          ${t('Sign in with Keycloak')}
-                        </button>`
+                      ? (this.login.providers ?? [{ label: 'Keycloak' }]).map(
+                          (p, i) =>
+                            html`<button
+                              class="${i === 0 ? 'primary' : ''} wide"
+                              @click=${() => api.login(undefined, p.issuer)}
+                              data-testid="login-provider-${i}"
+                            >
+                              ${t('Sign in with {provider}', { provider: p.label })}
+                            </button>`,
+                        )
                       : nothing
                   }
                   ${this.login.oidc && this.login.local ? html`<div class="login-or"><span>${t('or')}</span></div>` : nothing}

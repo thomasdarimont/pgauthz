@@ -33,6 +33,29 @@ func InitSchema(ctx context.Context, db *pgxpool.Pool) error {
 	if _, err = db.Exec(ctx, `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS local boolean NOT NULL DEFAULT false`); err != nil {
 		return err
 	}
+	// issuer: the sign-in provider of the session (ADR 0017 phase 4); '' = the platform's
+	if _, err = db.Exec(ctx, `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS issuer text NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	// console_providers: the sign-in providers registered besides the
+	// platform's — a group issuer's admins register the console as a client
+	// at their identity provider (providers.go). Secrets stay here, like the
+	// sessions' tokens.
+	if _, err = db.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS console_providers (
+			issuer        text PRIMARY KEY,
+			label         text,
+			store_group   text,
+			client_id     text NOT NULL,
+			client_secret text NOT NULL DEFAULT '',
+			enabled       boolean NOT NULL DEFAULT true,
+			created_at    timestamptz NOT NULL DEFAULT now(),
+			created_by    text,
+			updated_at    timestamptz NOT NULL DEFAULT now(),
+			updated_by    text
+		)`); err != nil {
+		return err
+	}
 	// scenarios: one tests.authz.yaml per managed store (scenarios.go).
 	_, err = db.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS scenarios (
@@ -52,6 +75,7 @@ type session struct {
 	username     string
 	expiresAt    time.Time
 	local        bool
+	issuer       string // the provider that signed the session in ("" = the platform's)
 }
 
 // createLocalSession opens a session for the local admin sign-in: no token,
@@ -70,7 +94,7 @@ const localSessionTTL = 8 * time.Hour
 // from the ID token — the claims OpenID Connect issues to the relying party
 // (the console) — never from the access token, which is for the API and
 // whose claims an identity provider shapes for the API's needs.
-func (s *Server) createSession(ctx context.Context, t *oidc.TokenResp) (string, error) {
+func (s *Server) createSession(ctx context.Context, t *oidc.TokenResp, issuer string) (string, error) {
 	id := randToken(32)
 	exp := time.Now().Add(time.Duration(t.ExpiresIn) * time.Second)
 	user, err := s.subjectID(claimMap(t.IDToken))
@@ -78,17 +102,17 @@ func (s *Server) createSession(ctx context.Context, t *oidc.TokenResp) (string, 
 		return "", err
 	}
 	_, err = s.db.Exec(ctx,
-		`INSERT INTO sessions (id, access_token, refresh_token, id_token, username, expires_at)
-		 VALUES ($1,$2,$3,$4,$5,$6)`, id, t.AccessToken, t.RefreshToken, t.IDToken, user, exp)
+		`INSERT INTO sessions (id, access_token, refresh_token, id_token, username, expires_at, issuer)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)`, id, t.AccessToken, t.RefreshToken, t.IDToken, user, exp, issuer)
 	return id, err
 }
 
 func (s *Server) getSession(ctx context.Context, id string) (*session, error) {
 	var se session
 	err := s.db.QueryRow(ctx,
-		`SELECT id, access_token, coalesce(refresh_token,''), coalesce(id_token,''), coalesce(username,''), expires_at, local
+		`SELECT id, access_token, coalesce(refresh_token,''), coalesce(id_token,''), coalesce(username,''), expires_at, local, coalesce(issuer,'')
 		 FROM sessions WHERE id=$1`, id).
-		Scan(&se.id, &se.accessToken, &se.refreshToken, &se.idToken, &se.username, &se.expiresAt, &se.local)
+		Scan(&se.id, &se.accessToken, &se.refreshToken, &se.idToken, &se.username, &se.expiresAt, &se.local, &se.issuer)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +136,12 @@ func (s *Server) getSession(ctx context.Context, id string) (*session, error) {
 			}
 			return &se, nil
 		}
-		t, err := s.oidc.Refresh(ctx, se.refreshToken)
+		prov, err := s.providerFor(ctx, se.issuer)
+		if err != nil {
+			s.deleteSession(ctx, se.id)
+			return nil, err
+		}
+		t, err := prov.client.Refresh(ctx, se.refreshToken)
 		if err != nil {
 			s.deleteSession(ctx, se.id)
 			return nil, err

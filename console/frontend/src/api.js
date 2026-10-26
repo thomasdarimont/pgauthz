@@ -38,8 +38,8 @@ export const api = {
   /** @returns {Promise<import('./types.js').Me>} */
   me: () => call('api/me', undefined, { allow: [401] }),
   version: () => call('api/version'),
-  login: (next) => {
-    location.href = 'auth/login?next=' + enc(next ?? location.pathname);
+  login: (next, issuer) => {
+    location.href = 'auth/login?next=' + enc(next ?? location.pathname) + (issuer ? '&issuer=' + enc(issuer) : '');
   },
   logout: () => {
     location.href = 'auth/logout';
@@ -194,6 +194,8 @@ export const api = {
   platformIssuerSave: (b) => call('api/platform/issuers', b, { method: 'PUT' }),
   platformIssuerDelete: (issuer, store_group = '') => call('api/platform/issuers/delete', store_group ? { issuer, store_group } : { issuer }),
   platformIssuerDiscover: (issuer) => call(`api/platform/issuers/discover?issuer=${enc(issuer)}`),
+  platformIssuerSignin: (b) => call('api/platform/issuers/signin', b, { method: 'PUT' }),
+  platformIssuerSigninDelete: (issuer, store_group) => call('api/platform/issuers/signin/delete', { issuer, store_group }),
   /** @returns {Promise<import('./types.js').PoliciesResponse>} */
   policies: (store) => call(`api/stores/${enc(store)}/policies`),
   /** @returns {Promise<import('./types.js').NamespacesResponse>} */

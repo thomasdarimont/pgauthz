@@ -377,6 +377,7 @@ textarea.dsl-editor { width: 100%; min-height: 20em; font: var(--t-sm)/1.5 var(-
 .chips { display: flex; flex-wrap: wrap; gap: var(--s-1); max-width: 22rem; }
 .chip { display: inline-block; padding: 1px 7px; border: 1px solid var(--c-border); border-radius: 999px; font-size: var(--t-xs); color: var(--c-fg); background: var(--c-surface-2); white-space: nowrap; }
 .field input.picker { margin-top: var(--s-1); font-size: var(--t-xs); }
+.toolbar select.group-filter { margin-left: var(--s-2); }
 .chip.dim { border-style: dashed; }
 .chip.more { color: var(--c-muted); background: transparent; }
 .dim { color: var(--c-muted); font-style: italic; }

@@ -16,6 +16,7 @@ export class PgcStores extends PgcElement {
     creating: { state: true },
     form: { state: true },
     groups: { state: true }, // the store groups a new store can be placed in (ADR 0017)
+    groupFilter: { state: true }, // '' = every group, '-' = ungrouped, else a group name
     deleting: { state: true },
     deleteName: { state: true },
     q: { state: true }, // search text: matches name and description, instantly
@@ -164,9 +165,11 @@ export class PgcStores extends PgcElement {
 
   _visible() {
     const words = this.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const gf = this.groupFilter ?? '';
     const rows = (this.data?.stores ?? []).filter(
       (st) =>
         (this.showRetired || !st.retired_at) &&
+        (gf === '' || (gf === '-' ? !st.store_group : st.store_group === gf)) &&
         words.every((w) => `${st.name} ${st.description ?? ''} ${st.store_group ?? ''}`.toLowerCase().includes(w)),
     );
     const { key, dir } = this.sort;
@@ -382,6 +385,24 @@ export class PgcStores extends PgcElement {
                             }}
                           />
                         </label>
+                        ${(() => {
+                          const names = [...new Set((this.data?.stores ?? []).map((s) => s.store_group).filter(Boolean))].sort();
+                          const anyUngrouped = (this.data?.stores ?? []).some((s) => !s.store_group);
+                          return names.length || anyUngrouped
+                            ? html`<select
+                                class="group-filter"
+                                aria-label=${t('Group')}
+                                title=${t('Show the stores of one group')}
+                                .value=${this.groupFilter ?? ''}
+                                @change=${(e) => (this.groupFilter = e.target.value)}
+                                data-testid="stores-group-filter"
+                              >
+                                <option value="">${t('every group')}</option>
+                                ${names.map((n) => html`<option value=${n} ?selected=${this.groupFilter === n}>${n}</option>`)}
+                                ${anyUngrouped ? html`<option value="-" ?selected=${this.groupFilter === '-'}>${t('ungrouped')}</option>` : nothing}
+                              </select>`
+                            : nothing;
+                        })()}
                         ${
                           this.q && this._visible().length !== d.stores.length
                             ? html`<span class="muted"
