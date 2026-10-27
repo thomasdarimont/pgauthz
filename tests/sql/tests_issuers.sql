@@ -86,8 +86,8 @@ BEGIN
     PERFORM _test_assert('ib_17_role_tiers',
         has_function_privilege('authz_reader', 'authz.list_issuer_bindings()', 'EXECUTE')::text || ','
         || has_function_privilege('authz_reader', 'authz.issuer_bindings_revision()', 'EXECUTE')::text || ','
-        || has_function_privilege('authz_reader', 'authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text, text, text, text, text[], jsonb, text, text)', 'EXECUTE')::text || ','
-        || has_function_privilege('authz_admin', 'authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text, text, text, text, text[], jsonb, text, text)', 'EXECUTE')::text || ','
+        || has_function_privilege('authz_reader', 'authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text, text, text, text, text[], jsonb, text, text, boolean)', 'EXECUTE')::text || ','
+        || has_function_privilege('authz_admin', 'authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text, text, text, text, text[], jsonb, text, text, boolean)', 'EXECUTE')::text || ','
         || has_function_privilege('authz_auditor', 'authz.list_issuer_bindings_audit(text, int, bigint, text[])', 'EXECUTE')::text,
         'true,true,false,true,true');
 
@@ -205,6 +205,19 @@ BEGIN
         (SELECT count(*) FROM authz.list_issuer_bindings_audit(v_iss, 10, NULL, ARRAY['own_b']))::text || '/' ||
         authz.count_issuer_bindings_audit(v_iss, ARRAY['own_a', 'own_b'])::text || '/' ||
         authz.count_issuer_bindings_audit(v_iss)::text, '1/1/2/2');
+    -- create-only (a NEW row, as the caller found none): the row exists → refused, untouched;
+    -- update-only on a row that is gone → refused
+    v_state := NULL; v_err := NULL; BEGIN PERFORM authz.set_issuer_binding(v_iss, p_store_group => 'own_a', p_jwks_url => 'https://test-own/jwks', p_audience => 'a', p_expect_exists => false);
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; v_err := SQLERRM; END;
+    PERFORM _test_assert('own_04b_create_only_conflict', v_state || ' ' || (position('already exists, owned by group own_b' in v_err) > 0)::text, 'ZA003 true');
+    PERFORM _test_assert('own_04c_row_untouched', (SELECT store_group FROM authz.list_issuer_bindings() WHERE issuer = v_iss), 'own_b');
+    v_state := NULL; BEGIN PERFORM authz.set_issuer_binding(v_iss || '-gone', p_store_group => 'own_b', p_jwks_url => 'https://test-own/jwks', p_audience => 'a', p_expect_group => 'own_b', p_expect_exists => true);
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('own_04d_update_only_missing', v_state, 'ZA003');
+    -- update-only as the owner, then the history names both groups the row belonged to
+    PERFORM authz.set_issuer_binding(v_iss, p_store_group => 'own_b', p_jwks_url => 'https://test-own/jwks', p_audience => 'a', p_description => 'b edit', p_expect_group => 'own_b', p_expect_exists => true);
+    PERFORM _test_assert('own_04e_update_only_ok', (SELECT description FROM authz.list_issuer_bindings() WHERE issuer = v_iss), 'b edit');
+    PERFORM _test_assert('own_04f_history_groups', (SELECT string_agg(g, ',') FROM authz.issuer_binding_history_groups(v_iss) g), 'own_a,own_b');
     -- the delete holds the same precondition
     v_state := NULL; BEGIN PERFORM authz.delete_issuer_binding(v_iss, NULL, 'own_a'); EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
     PERFORM _test_assert('own_05_delete_wrong_group', v_state, 'ZA003');

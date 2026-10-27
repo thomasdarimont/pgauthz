@@ -675,9 +675,11 @@ func (s *Server) handleIssuerSave(w http.ResponseWriter, r *http.Request) {
 			admin = string(b.Admin)
 		}
 		err = s.asPerson(r.Context(), p, "can_manage_issuers", objType, objID, payload, func(tx pgx.Tx) error {
-			return tx.QueryRow(r.Context(), `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15)`,
+			// what the gate found travels with the write: a create that does
+			// nothing on conflict, or an update conditional on the owner (409 otherwise)
+			return tx.QueryRow(r.Context(), `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16)`,
 				b.Issuer, orList(b.Stores), orList(b.DBRoles), string(cdr), string(pep), b.Enabled, nullable(b.Description), p.typ+":"+p.id,
-				nullable(b.StoreGroup), nullable(b.JWKSURL), nullable(b.Audience), orList(b.Audiences), admin, nullable(strings.ToLower(strings.TrimSpace(b.Alias))), expectGroup).Scan(&revision)
+				nullable(b.StoreGroup), nullable(b.JWKSURL), nullable(b.Audience), orList(b.Audiences), admin, nullable(strings.ToLower(strings.TrimSpace(b.Alias))), expectGroup, exists).Scan(&revision)
 		})
 	}
 	if err != nil {

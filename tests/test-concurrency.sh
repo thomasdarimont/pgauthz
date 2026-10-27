@@ -47,6 +47,10 @@
 #      admin's write (authorized against the old group) waits on the row
 #      lock: the write is refused by the ownership precondition (ZA003),
 #      never overwriting the transferred row; a stale delete likewise.
+#   O. Two groups create the SAME new issuer at once: the second creator
+#      (create only) waits on the unique key and is refused — the first
+#      group's row is never overwritten (no row to lock, so the write
+#      itself is the check).
 #
 # Synchronization: the holder session runs its statement and then pg_sleep(2)
 # in one transaction; the second session is launched only once pg_stat_activity
@@ -342,6 +346,23 @@ out=$(q "SELECT authz.delete_issuer_binding('$ISS', NULL, 'conc_ga')")
 case "$out" in *"owned by group conc_gb now"*) ok "conc_N_stale_delete_refused" ;; *) bad "conc_N_stale_delete_refused" "$out" ;; esac
 check "conc_N_owner_delete_ok" "$(q "SELECT authz.delete_issuer_binding('$ISS', NULL, 'conc_gb')")" "t"
 q "SELECT authz.delete_store_group('conc_ga'); SELECT authz.delete_store_group('conc_gb');" >/dev/null
+
+echo "==> O. two groups create the same new issuer at once (create-only precondition)"
+# Both admins found no row and authorized against their own group. The first
+# INSERT holds the unique key; the second (create only: ON CONFLICT DO
+# NOTHING) waits for it, then updates nothing and is refused (ZA003) — the
+# first group's row is never overwritten.
+ISS="https://test-conc/new-$(now_ms)"
+q "SELECT authz.create_store_group('conc_ga'); SELECT authz.create_store_group('conc_gb');" >/dev/null
+session "SELECT authz.set_issuer_binding('$ISS', p_store_group => 'conc_ga', p_jwks_url => 'https://test-conc/jwks', p_audience => 'a', p_expect_exists => false);"
+t0=$(now_ms)
+out=$(q "SELECT authz.set_issuer_binding('$ISS', p_store_group => 'conc_gb', p_jwks_url => 'https://test-conc/jwks', p_audience => 'a', p_expect_exists => false)")
+dt=$(( $(now_ms) - t0 ))
+wait
+case "$out" in *"already exists, owned by group conc_ga"*) ok "conc_O_second_creator_refused_after_waiting" ;; *) bad "conc_O_second_creator_refused_after_waiting" "$out" ;; esac
+[ "$dt" -ge 1000 ] && ok "conc_O_second_creator_waited (${dt} ms)" || bad "conc_O_second_creator_waited" "${dt} ms — did not wait"
+check "conc_O_first_creator_row_kept" "$(q "SELECT store_group FROM authz.list_issuer_bindings() WHERE issuer = '$ISS'")" "conc_ga"
+q "SELECT authz.delete_issuer_binding('$ISS'); SELECT authz.delete_store_group('conc_ga'); SELECT authz.delete_store_group('conc_gb');" >/dev/null
 
 echo "==> ${pass} passed, ${fail} failed (of $((pass + fail)) concurrency checks)"
 [ "$fail" -eq 0 ]

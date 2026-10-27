@@ -220,6 +220,16 @@ var ErrOwnership = errors.New("the issuer binding's owner changed")
 // ExpectAny is the ExpectGroup value that skips the ownership check.
 const ExpectAny = "*"
 
+// Expect is the ownership precondition a binding write carries — what the
+// caller found when it authorized: no row (Exists false: the write is a
+// create that does nothing on conflict) or a row owned by Group (Exists
+// true: the write is an update conditional on that owner). The engine
+// enforces it in the write statement itself; nil = unchecked upsert.
+type Expect struct {
+	Exists bool
+	Group  string // the owning store group ("" = the platform's); only with Exists
+}
+
 type Binding struct {
 	Issuer        string              `json:"issuer"`
 	Alias         string              `json:"alias,omitempty"`

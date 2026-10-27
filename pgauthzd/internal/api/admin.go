@@ -47,12 +47,15 @@ type IssuerBindingAdmin interface {
 	// (nil = all) narrows to the rows written while the issuer belonged to
 	// one of them.
 	IssuerBindingsAudit(ctx context.Context, issuer string, groups []string, limit int, before *int64) ([]issuers.AuditRow, int64, error)
-	// SetIssuerBinding / DeleteIssuerBinding carry the store group the caller
-	// authorized against (expectGroup: "" = no row yet, issuers.ExpectAny =
-	// unchecked); the engine refuses the write (issuers.ErrOwnership) when
-	// the row is owned otherwise by then — the ownership check and the
-	// write are one step.
-	SetIssuerBinding(ctx context.Context, b issuers.Binding, performedBy, expectGroup string) (int64, error)
+	// IssuerBindingHistoryGroups: the store groups an issuer's binding ever
+	// belonged to — who may read its history after a transfer or removal.
+	IssuerBindingHistoryGroups(ctx context.Context, issuer string) ([]string, error)
+	// SetIssuerBinding carries what the caller found when it authorized
+	// (issuers.Expect: no row, or a row owned by a group; nil = unchecked);
+	// DeleteIssuerBinding the owning group (issuers.ExpectAny = unchecked).
+	// The engine enforces the precondition in the write statement itself
+	// and refuses with issuers.ErrOwnership when it no longer holds.
+	SetIssuerBinding(ctx context.Context, b issuers.Binding, performedBy string, expect *issuers.Expect) (int64, error)
 	DeleteIssuerBinding(ctx context.Context, issuer, performedBy, expectGroup string) (bool, error)
 }
 
@@ -673,8 +676,9 @@ func (h *Handler) adminIssuerBindingsAudit(w http.ResponseWriter, r *http.Reques
 	}
 	// Who may read which history: the platform everything; a tenant-scoped
 	// credential its own issuer's; a group's issuer admins (ADR 0017) the
-	// rows written while the issuer belonged to their group — never what
-	// another group did with it before a transfer.
+	// rows written while the issuer belonged to a group they manage — of
+	// every group it ever belonged to, so a transfer or a removal does not
+	// take a group's own history away; never another group's rows.
 	var groups []string
 	if !scope.platformWide() {
 		switch {
@@ -685,17 +689,22 @@ func (h *Handler) adminIssuerBindingsAudit(w http.ResponseWriter, r *http.Reques
 			writeForbidden(w, "management refused: name the issuer whose history to read (a group's issuer admin reads the group's issuers)")
 			return
 		case issuer != scope.issuer:
-			row, exists, err := bindingRow(r.Context(), a, issuer)
+			ever, err := a.IssuerBindingHistoryGroups(r.Context(), issuer)
 			if err != nil {
 				writeInternalError(w, err)
 				return
 			}
-			if !exists || row.StoreGroup == "" || !h.scopeManagesGroup(scope, row.StoreGroup) {
+			groups = []string{}
+			for _, g := range ever {
+				if h.scopeManagesGroup(scope, g) {
+					groups = append(groups, g)
+				}
+			}
+			if len(groups) == 0 {
 				metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
 				writeForbidden(w, "management refused: this credential reads the history of its own issuer, or of its store groups' issuers")
 				return
 			}
-			groups = []string{row.StoreGroup}
 		}
 	}
 	limit, _ := strconv.Atoi(q.Get("limit"))
@@ -782,9 +791,8 @@ func (h *Handler) adminSetIssuerBinding(w http.ResponseWriter, r *http.Request) 
 		writeInternalError(w, err)
 		return
 	}
-	expectGroup := ""
+	expect := &issuers.Expect{Exists: exists, Group: cur.StoreGroup} // what was found: the write holds only if it still is so
 	if exists {
-		expectGroup = cur.StoreGroup
 		ownsCurrent := scope.platformWide() || scope.covers(b.Issuer) || (cur.StoreGroup != "" && h.scopeManagesGroup(scope, cur.StoreGroup))
 		if !ownsCurrent {
 			metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
@@ -870,7 +878,7 @@ func (h *Handler) adminSetIssuerBinding(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	rev, err := a.SetIssuerBinding(r.Context(), b, actorLabel(r), expectGroup)
+	rev, err := a.SetIssuerBinding(r.Context(), b, actorLabel(r), expect)
 	if err != nil {
 		writeBindingError(w, err)
 		return

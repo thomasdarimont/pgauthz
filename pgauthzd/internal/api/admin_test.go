@@ -79,9 +79,13 @@ func (s *adminStub) IssuerBindingsAudit(_ context.Context, issuer string, groups
 	return out, int64(len(out)), nil
 }
 
-func (s *adminStub) SetIssuerBinding(_ context.Context, b issuers.Binding, by, expectGroup string) (int64, error) {
-	if err := s.expect(b.Issuer, expectGroup); err != nil {
-		return 0, err
+func (s *adminStub) SetIssuerBinding(_ context.Context, b issuers.Binding, by string, expect *issuers.Expect) (int64, error) {
+	// the engine's precondition in the write: create only / update only on the owner
+	if expect != nil {
+		cur, exists := s.rows[b.Issuer]
+		if (!expect.Exists && exists) || (expect.Exists && (!exists || cur.StoreGroup != expect.Group)) {
+			return 0, issuers.ErrOwnership
+		}
 	}
 	s.rows[b.Issuer] = b
 	s.rev++
@@ -89,8 +93,22 @@ func (s *adminStub) SetIssuerBinding(_ context.Context, b issuers.Binding, by, e
 	return s.rev, nil
 }
 
-// expect is the engine's ownership precondition (authz.set_issuer_binding
-// p_expect_group): the row must still be owned as the caller authorized.
+// IssuerBindingHistoryGroups: the groups of the stub's audit rows, plus the
+// current row's group.
+func (s *adminStub) IssuerBindingHistoryGroups(_ context.Context, issuer string) ([]string, error) {
+	out := []string{}
+	if issuer == "https://group-idp" {
+		out = append(out, "tenant_x", "tenant_c")
+	}
+	if cur, ok := s.rows[issuer]; ok && cur.StoreGroup != "" && !slices.Contains(out, cur.StoreGroup) {
+		out = append(out, cur.StoreGroup)
+	}
+	return out, nil
+}
+
+// expect is the engine's ownership precondition on a delete
+// (authz.delete_issuer_binding p_expect_group): the row must still be
+// owned as the caller authorized.
 func (s *adminStub) expect(issuer, expectGroup string) error {
 	if expectGroup == issuers.ExpectAny {
 		return nil
@@ -680,11 +698,26 @@ func TestAdminBindingOwnership(t *testing.T) {
 	if w := serveAdmin(hr, tenantCUser.request("DELETE", "/pgauthz/v1/admin/issuer-bindings?issuer=https://race-idp", "")); w.Code != http.StatusConflict {
 		t.Fatalf("racing delete: %d %s", w.Code, w.Body.String())
 	}
-	// P2: carol reads her group's issuer's history — the tenant_c rows only, not what tenant_x did with it
-	stub.rows["https://group-idp"] = issuers.Binding{Issuer: "https://group-idp", StoreGroup: "tenant_c", Enabled: true}
+	// two groups create the same NEW issuer at once: the second creator's
+	// write is a create that does nothing on conflict — 409, the first row kept
+	delete(stub.rows, "https://race-idp")
+	racing.flip = "https://race-idp"
+	if w := serveAdmin(hr, tenantCUser.request("PUT", "/pgauthz/v1/admin/issuer-bindings", `{"issuer":"https://race-idp","store_group":"tenant_c","jwks_url":"https://race-idp/jwks","audience":"a","enabled":true}`)); w.Code != http.StatusConflict {
+		t.Fatalf("create race: %d %s", w.Code, w.Body.String())
+	}
+	if stub.rows["https://race-idp"].StoreGroup != "tenant_x" {
+		t.Fatalf("the first creator's row must be kept: %+v", stub.rows["https://race-idp"])
+	}
+	// P2: carol reads her group's issuer's history — the tenant_c rows only, not what tenant_x did with it;
+	// and still after the issuer left her group (transferred, or removed): the history is hers
+	stub.rows["https://group-idp"] = issuers.Binding{Issuer: "https://group-idp", StoreGroup: "tenant_x", Enabled: true}
 	w := serveAdmin(h, tenantCUser.request("GET", "/pgauthz/v1/admin/issuer-bindings/audit?issuer=https://group-idp", ""))
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"store_group":"tenant_c"`) || strings.Contains(w.Body.String(), `"store_group":"tenant_x"`) || !strings.Contains(w.Body.String(), `"total":1`) {
-		t.Fatalf("group admin reads its history: %d %s", w.Code, w.Body.String())
+		t.Fatalf("group admin reads its history after a transfer: %d %s", w.Code, w.Body.String())
+	}
+	delete(stub.rows, "https://group-idp")
+	if w := serveAdmin(h, tenantCUser.request("GET", "/pgauthz/v1/admin/issuer-bindings/audit?issuer=https://group-idp", "")); w.Code != 200 || !strings.Contains(w.Body.String(), `"total":1`) {
+		t.Fatalf("group admin reads its history after a removal: %d %s", w.Code, w.Body.String())
 	}
 	if w := serveAdmin(h, tenantCUser.request("GET", "/pgauthz/v1/admin/issuer-bindings/audit?issuer=https://x-idp", "")); w.Code != http.StatusForbidden {
 		t.Fatalf("another group's history: %d %s", w.Code, w.Body.String())
@@ -705,13 +738,17 @@ type racingStub struct {
 	flip string
 }
 
-func (r *racingStub) SetIssuerBinding(ctx context.Context, b issuers.Binding, by, expectGroup string) (int64, error) {
+func (r *racingStub) SetIssuerBinding(ctx context.Context, b issuers.Binding, by string, expect *issuers.Expect) (int64, error) {
 	if b.Issuer == r.flip {
-		row := r.rows[r.flip]
-		row.StoreGroup = "tenant_x"
-		r.rows[r.flip] = row
+		if row, ok := r.rows[r.flip]; ok {
+			row.StoreGroup = "tenant_x"
+			r.rows[r.flip] = row
+		} else {
+			// a concurrent creator (tenant_x) got there first
+			r.rows[r.flip] = issuers.Binding{Issuer: r.flip, StoreGroup: "tenant_x", JWKSURL: "https://" + strings.TrimPrefix(r.flip, "https://") + "/jwks", Audience: "a", Enabled: true}
+		}
 	}
-	return r.storeStub.SetIssuerBinding(ctx, b, by, expectGroup)
+	return r.storeStub.SetIssuerBinding(ctx, b, by, expect)
 }
 
 func (r *racingStub) DeleteIssuerBinding(ctx context.Context, issuer, by, expectGroup string) (bool, error) {

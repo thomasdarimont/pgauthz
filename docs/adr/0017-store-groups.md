@@ -158,8 +158,10 @@ rather than maintaining the list twice.
 A row is owned by the group it belongs to *now*, not by the group a
 request names: its admins change or remove it, the platform alone moves it
 to another group or binds a platform issuer to a group. The group a caller
-authorized against is passed to the engine, which re-checks it under the
-row lock, so a transfer between the read and the write fails the write
-(SQLSTATE `ZA003`, HTTP 409) rather than being overwritten. The binding
-history is read the same way: a group's admins see the rows written while
-the issuer was theirs.
+authorized against — a row owned by a group, or no row at all — is passed
+to the engine, which enforces it in the write statement itself: a create
+does nothing on conflict, an update is conditional on the owner, so a
+concurrent creation or transfer fails the later write (SQLSTATE `ZA003`,
+HTTP 409) rather than being overwritten. The binding history is read by
+the groups an issuer ever belonged to: a group's admins see the rows
+written while it was theirs, after a transfer or a removal too.

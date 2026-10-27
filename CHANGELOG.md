@@ -124,12 +124,16 @@ pre-1.0, minor versions may include breaking changes.
   group's admins can no longer take another group's row by submitting it
   under their group, nor claim a platform issuer; moving a row between
   groups is the platform's alone. The group the caller authorized against
-  travels to the engine (`set_issuer_binding` / `delete_issuer_binding`
-  `p_expect_group`), which re-checks it under the row lock — a concurrent
-  transfer answers `409 ownership_changed` instead of being overwritten.
+  travels to the engine (`set_issuer_binding` `p_expect_exists` +
+  `p_expect_group`, `delete_issuer_binding` `p_expect_group`), which enforces
+  it in the write statement itself: a create does nothing on conflict, an
+  update is conditional on the owner — a concurrent creation or transfer
+  answers `409 ownership_changed` instead of being overwritten.
   A group's issuer admins read their group's binding history
-  (`list_issuer_bindings_audit` / `count_…` take `p_store_groups`): the rows
-  written while the issuer belonged to their group, never another group's.
+  (`list_issuer_bindings_audit` / `count_…` take `p_store_groups`,
+  `issuer_binding_history_groups` says which groups an issuer ever had):
+  the rows written while the issuer belonged to their group — still after
+  a transfer or a removal — never another group's.
   `tests/test-concurrency.sh` scenario N exercises the transfer race with
   two real sessions. `pgauthzctl issuers export/import` now round-trip the
   whole row (group issuers: `store_group`, `jwks_url`, audiences, `admin`);

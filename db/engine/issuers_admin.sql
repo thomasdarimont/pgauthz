@@ -157,6 +157,7 @@ DROP FUNCTION IF EXISTS authz.set_issuer_binding(text, text[], text[], jsonb, js
 -- precondition) are dropped so a reload never leaves two overloads behind.
 DROP FUNCTION IF EXISTS authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text, text, text, text, text[], jsonb);
 DROP FUNCTION IF EXISTS authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text, text, text, text, text[], jsonb, text);
+DROP FUNCTION IF EXISTS authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text, text, text, text, text[], jsonb, text, text);
 CREATE OR REPLACE FUNCTION authz.set_issuer_binding(
     p_issuer          text,
     p_stores          text[]  DEFAULT '{}',
@@ -172,7 +173,8 @@ CREATE OR REPLACE FUNCTION authz.set_issuer_binding(
     p_audiences       text[]  DEFAULT '{}',
     p_admin           jsonb   DEFAULT '[]'::jsonb, -- delegated admin rules only
     p_alias           text    DEFAULT NULL,      -- a short handle for the issuer (0031): [a-z0-9_-], unique
-    p_expect_group    text    DEFAULT '*'        -- ownership precondition: the row's current store group ('' = no row yet; '*' = unchecked)
+    p_expect_group    text    DEFAULT '*',       -- ownership precondition: the row's current store group ('' = the platform's; '*' = unchecked)
+    p_expect_exists   boolean DEFAULT NULL       -- false: create only (no row may exist); true: update only (the row, owned as p_expect_group says); NULL: upsert
 ) RETURNS bigint
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -181,23 +183,28 @@ DECLARE
     v_other  text;
     v_cur    text;
     v_exists boolean;
+    v_iss    text := btrim(p_issuer);
 BEGIN
-    IF p_issuer IS NULL OR btrim(p_issuer) = '' THEN
+    IF p_issuer IS NULL OR v_iss = '' THEN
         RAISE EXCEPTION 'issuer is required (the token''s iss)' USING ERRCODE = 'invalid_parameter_value';
     END IF;
-    -- Who owns the row is decided by the caller against the row it READ; the
-    -- write holds only if the row is still owned the same way (the lock
-    -- makes the check and the write one step: a concurrent transfer fails
-    -- this write instead of being silently overwritten — SQLSTATE ZA003).
-    SELECT b.store_group INTO v_cur FROM authz.issuer_bindings b WHERE b.issuer = btrim(p_issuer) FOR UPDATE;
-    v_exists := FOUND;
-    IF COALESCE(p_expect_group, '*') <> '*' THEN
+    -- Who owns the row is decided by the caller against the row it READ
+    -- (or did not find); the write holds only if that is still so, and
+    -- the check and the write are ONE statement: a create is an INSERT
+    -- that does nothing on conflict (a concurrent creator's row is never
+    -- overwritten — the unique key serializes them), an update is a
+    -- conditional UPDATE on the owning group (a concurrent transfer fails
+    -- it). Either refusal is SQLSTATE ZA003: read the row again.
+    IF p_expect_exists IS NULL AND COALESCE(p_expect_group, '*') <> '*' THEN
+        -- the older protocol: an upsert checked against a locked row
+        SELECT b.store_group INTO v_cur FROM authz.issuer_bindings b WHERE b.issuer = v_iss FOR UPDATE;
+        v_exists := FOUND;
         IF v_exists AND COALESCE(v_cur, '') <> p_expect_group THEN
-            RAISE EXCEPTION 'issuer binding of % is owned by % now (expected %): read it again', btrim(p_issuer),
+            RAISE EXCEPTION 'issuer binding of % is owned by % now (expected %): read it again', v_iss,
                 COALESCE('group ' || v_cur, 'the platform'), COALESCE(NULLIF('group ' || p_expect_group, 'group '), 'the platform')
                 USING ERRCODE = 'ZA003';
         ELSIF NOT v_exists AND p_expect_group <> '' THEN
-            RAISE EXCEPTION 'issuer binding of % no longer exists (expected group %)', btrim(p_issuer), p_expect_group USING ERRCODE = 'ZA003';
+            RAISE EXCEPTION 'issuer binding of % no longer exists (expected group %): read it again', v_iss, p_expect_group USING ERRCODE = 'ZA003';
         END IF;
     END IF;
     IF v_alias IS NOT NULL THEN
@@ -218,22 +225,50 @@ BEGIN
                                            NULLIF(btrim(COALESCE(p_store_group, '')), ''), NULLIF(btrim(COALESCE(p_jwks_url, '')), ''),
                                            NULLIF(btrim(COALESCE(p_audience, '')), ''), COALESCE(p_audiences, '{}'), COALESCE(p_admin, '[]'::jsonb));
     PERFORM set_config('authz.performed_by', COALESCE(p_performed_by, ''), true);
-    -- created_at / created_by are set once (the INSERT) and kept by a replace.
-    INSERT INTO authz.issuer_bindings (issuer, stores, db_roles, client_db_roles, pep_clients, enabled, description,
-                                       store_group, jwks_url, audience, audiences, admin, alias,
-                                       created_at, created_by, updated_at, updated_by)
-    VALUES (btrim(p_issuer), COALESCE(p_stores, '{}'), COALESCE(p_db_roles, '{}'), COALESCE(p_client_db_roles, '{}'::jsonb),
-            COALESCE(p_pep_clients, '{}'::jsonb), COALESCE(p_enabled, true), p_description,
-            NULLIF(btrim(COALESCE(p_store_group, '')), ''), NULLIF(btrim(COALESCE(p_jwks_url, '')), ''),
-            NULLIF(btrim(COALESCE(p_audience, '')), ''), COALESCE(p_audiences, '{}'), COALESCE(p_admin, '[]'::jsonb), v_alias,
-            now(), COALESCE(NULLIF(p_performed_by, ''), current_user),
-            now(), COALESCE(NULLIF(p_performed_by, ''), current_user))
-    ON CONFLICT (issuer) DO UPDATE SET
-        stores = EXCLUDED.stores, db_roles = EXCLUDED.db_roles, client_db_roles = EXCLUDED.client_db_roles,
-        pep_clients = EXCLUDED.pep_clients, enabled = EXCLUDED.enabled, description = EXCLUDED.description,
-        store_group = EXCLUDED.store_group, jwks_url = EXCLUDED.jwks_url, audience = EXCLUDED.audience,
-        audiences = EXCLUDED.audiences, admin = EXCLUDED.admin, alias = EXCLUDED.alias,
-        updated_at = now(), updated_by = EXCLUDED.updated_by;
+    IF p_expect_exists IS TRUE THEN
+        -- update only: the row, still owned as the caller saw it
+        UPDATE authz.issuer_bindings SET
+            stores = COALESCE(p_stores, '{}'), db_roles = COALESCE(p_db_roles, '{}'), client_db_roles = COALESCE(p_client_db_roles, '{}'::jsonb),
+            pep_clients = COALESCE(p_pep_clients, '{}'::jsonb), enabled = COALESCE(p_enabled, true), description = p_description,
+            store_group = NULLIF(btrim(COALESCE(p_store_group, '')), ''), jwks_url = NULLIF(btrim(COALESCE(p_jwks_url, '')), ''),
+            audience = NULLIF(btrim(COALESCE(p_audience, '')), ''), audiences = COALESCE(p_audiences, '{}'), admin = COALESCE(p_admin, '[]'::jsonb), alias = v_alias,
+            updated_at = now(), updated_by = COALESCE(NULLIF(p_performed_by, ''), current_user)
+         WHERE issuer = v_iss
+           AND (COALESCE(p_expect_group, '*') = '*' OR COALESCE(store_group, '') = p_expect_group);
+        IF NOT FOUND THEN
+            SELECT b.store_group INTO v_cur FROM authz.issuer_bindings b WHERE b.issuer = v_iss;
+            IF FOUND THEN
+                RAISE EXCEPTION 'issuer binding of % is owned by % now (expected %): read it again', v_iss,
+                    COALESCE('group ' || v_cur, 'the platform'), COALESCE(NULLIF('group ' || p_expect_group, 'group '), 'the platform')
+                    USING ERRCODE = 'ZA003';
+            END IF;
+            RAISE EXCEPTION 'issuer binding of % no longer exists: read it again', v_iss USING ERRCODE = 'ZA003';
+        END IF;
+    ELSE
+        -- created_at / created_by are set once (the INSERT) and kept by a replace.
+        INSERT INTO authz.issuer_bindings (issuer, stores, db_roles, client_db_roles, pep_clients, enabled, description,
+                                           store_group, jwks_url, audience, audiences, admin, alias,
+                                           created_at, created_by, updated_at, updated_by)
+        VALUES (v_iss, COALESCE(p_stores, '{}'), COALESCE(p_db_roles, '{}'), COALESCE(p_client_db_roles, '{}'::jsonb),
+                COALESCE(p_pep_clients, '{}'::jsonb), COALESCE(p_enabled, true), p_description,
+                NULLIF(btrim(COALESCE(p_store_group, '')), ''), NULLIF(btrim(COALESCE(p_jwks_url, '')), ''),
+                NULLIF(btrim(COALESCE(p_audience, '')), ''), COALESCE(p_audiences, '{}'), COALESCE(p_admin, '[]'::jsonb), v_alias,
+                now(), COALESCE(NULLIF(p_performed_by, ''), current_user),
+                now(), COALESCE(NULLIF(p_performed_by, ''), current_user))
+        ON CONFLICT (issuer) DO UPDATE SET
+            stores = EXCLUDED.stores, db_roles = EXCLUDED.db_roles, client_db_roles = EXCLUDED.client_db_roles,
+            pep_clients = EXCLUDED.pep_clients, enabled = EXCLUDED.enabled, description = EXCLUDED.description,
+            store_group = EXCLUDED.store_group, jwks_url = EXCLUDED.jwks_url, audience = EXCLUDED.audience,
+            audiences = EXCLUDED.audiences, admin = EXCLUDED.admin, alias = EXCLUDED.alias,
+            updated_at = now(), updated_by = EXCLUDED.updated_by
+        WHERE p_expect_exists IS NULL;   -- create only (false): a conflict updates nothing
+        IF NOT FOUND THEN
+            -- create only, and the row exists (a concurrent creator won): its owner, for the message
+            SELECT b.store_group INTO v_cur FROM authz.issuer_bindings b WHERE b.issuer = v_iss;
+            RAISE EXCEPTION 'issuer binding of % already exists, owned by %: read it again', v_iss,
+                COALESCE('group ' || v_cur, 'the platform') USING ERRCODE = 'ZA003';
+        END IF;
+    END IF;
     SELECT revision INTO v_rev FROM authz.issuer_bindings_revision;
     RETURN v_rev;
 END;

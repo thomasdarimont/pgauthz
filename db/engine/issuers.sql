@@ -102,6 +102,17 @@ LANGUAGE sql STABLE AS $$
      LIMIT p_limit;
 $$;
 
+-- issuer_binding_history_groups: the store groups an issuer's binding ever
+-- belonged to (its audit trail) — a group's admins read the history of an
+-- issuer that WAS theirs, after a transfer or a removal too.
+CREATE OR REPLACE FUNCTION authz.issuer_binding_history_groups(p_issuer text)
+RETURNS SETOF text
+LANGUAGE sql STABLE AS $$
+    SELECT DISTINCT store_group FROM authz.issuer_bindings_audit
+     WHERE issuer = COALESCE(authz.resolve_issuer(p_issuer), p_issuer) AND store_group IS NOT NULL
+     ORDER BY 1;
+$$;
+
 -- count_issuer_bindings_audit: how many history rows (for a pager).
 DROP FUNCTION IF EXISTS authz.count_issuer_bindings_audit(text);
 CREATE OR REPLACE FUNCTION authz.count_issuer_bindings_audit(p_issuer text DEFAULT NULL, p_store_groups text[] DEFAULT NULL)

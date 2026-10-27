@@ -132,7 +132,15 @@ func (b *Backend) AssertAdmin(ctx context.Context) error {
 
 // SetIssuerBinding creates or replaces a binding (authz.set_issuer_binding)
 // as the connection role; the actor is recorded in the audit row.
-func (b *Backend) SetIssuerBinding(ctx context.Context, bnd issuers.Binding, performedBy, expectGroup string) (int64, error) {
+func (b *Backend) SetIssuerBinding(ctx context.Context, bnd issuers.Binding, performedBy string, expect *issuers.Expect) (int64, error) {
+	var expectExists any
+	expectGroup := issuers.ExpectAny
+	if expect != nil {
+		expectExists = expect.Exists
+		if expect.Exists {
+			expectGroup = expect.Group
+		}
+	}
 	cdr, _ := json.Marshal(orMap(bnd.ClientDBRoles))
 	pep, _ := json.Marshal(orMapList(bnd.PEPClients))
 	admin, _ := json.Marshal(bnd.Admin)
@@ -140,9 +148,9 @@ func (b *Backend) SetIssuerBinding(ctx context.Context, bnd issuers.Binding, per
 		admin = []byte("[]")
 	}
 	var rev int64
-	err := b.pool.QueryRow(ctx, `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15)`,
+	err := b.pool.QueryRow(ctx, `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16)`,
 		bnd.Issuer, orSlice(bnd.Stores), orSlice(bnd.DBRoles), string(cdr), string(pep), bnd.Enabled, nullable(bnd.Description), nullable(performedBy),
-		nullable(bnd.StoreGroup), nullable(bnd.JWKSURL), nullable(bnd.Audience), orSlice(bnd.Audiences), string(admin), nullable(bnd.Alias), expectGroup).Scan(&rev)
+		nullable(bnd.StoreGroup), nullable(bnd.JWKSURL), nullable(bnd.Audience), orSlice(bnd.Audiences), string(admin), nullable(bnd.Alias), expectGroup, expectExists).Scan(&rev)
 	return rev, bindingError(err)
 }
 
@@ -162,6 +170,25 @@ func bindingError(err error) error {
 		}
 	}
 	return err
+}
+
+// IssuerBindingHistoryGroups: the store groups an issuer's binding ever
+// belonged to (authz.issuer_binding_history_groups).
+func (b *Backend) IssuerBindingHistoryGroups(ctx context.Context, issuer string) ([]string, error) {
+	rows, err := b.readPool(ctx).Query(ctx, `SELECT g FROM authz.issuer_binding_history_groups($1) g`, issuer)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var g string
+		if err := rows.Scan(&g); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
 }
 
 // DeleteIssuerBinding drops a binding (authz.delete_issuer_binding).
