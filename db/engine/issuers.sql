@@ -68,10 +68,15 @@ $$;
 
 -- list_issuer_bindings_audit: the change history, newest first; keyset
 -- paged — p_before_seq continues below the last seq of the previous page.
+-- p_store_groups narrows to the rows written while the issuer belonged to
+-- one of those groups (a group's admins read their group's history, never
+-- what another group did with the issuer before a transfer).
+DROP FUNCTION IF EXISTS authz.list_issuer_bindings_audit(text, int, bigint);
 CREATE OR REPLACE FUNCTION authz.list_issuer_bindings_audit(
-    p_issuer     text   DEFAULT NULL,
-    p_limit      int    DEFAULT 200,
-    p_before_seq bigint DEFAULT NULL
+    p_issuer       text   DEFAULT NULL,
+    p_limit        int    DEFAULT 200,
+    p_before_seq   bigint DEFAULT NULL,
+    p_store_groups text[] DEFAULT NULL
 )
 RETURNS TABLE (
     seq             bigint,
@@ -84,20 +89,25 @@ RETURNS TABLE (
     client_db_roles jsonb,
     pep_clients     jsonb,
     enabled         boolean,
-    description     text
+    description     text,
+    store_group     text
 )
 LANGUAGE sql STABLE AS $$
-    SELECT seq, action, performed_at, performed_by, issuer, stores, db_roles, client_db_roles, pep_clients, enabled, description
+    SELECT seq, action, performed_at, performed_by, issuer, stores, db_roles, client_db_roles, pep_clients, enabled, description, store_group
       FROM authz.issuer_bindings_audit
      WHERE (p_issuer IS NULL OR issuer = COALESCE(authz.resolve_issuer(p_issuer), p_issuer))
+       AND (p_store_groups IS NULL OR store_group = ANY(p_store_groups))
        AND (p_before_seq IS NULL OR seq < p_before_seq)
      ORDER BY seq DESC
      LIMIT p_limit;
 $$;
 
 -- count_issuer_bindings_audit: how many history rows (for a pager).
-CREATE OR REPLACE FUNCTION authz.count_issuer_bindings_audit(p_issuer text DEFAULT NULL)
+DROP FUNCTION IF EXISTS authz.count_issuer_bindings_audit(text);
+CREATE OR REPLACE FUNCTION authz.count_issuer_bindings_audit(p_issuer text DEFAULT NULL, p_store_groups text[] DEFAULT NULL)
 RETURNS bigint
 LANGUAGE sql STABLE AS $$
-    SELECT count(*) FROM authz.issuer_bindings_audit WHERE p_issuer IS NULL OR issuer = COALESCE(authz.resolve_issuer(p_issuer), p_issuer);
+    SELECT count(*) FROM authz.issuer_bindings_audit
+     WHERE (p_issuer IS NULL OR issuer = COALESCE(authz.resolve_issuer(p_issuer), p_issuer))
+       AND (p_store_groups IS NULL OR store_group = ANY(p_store_groups));
 $$;

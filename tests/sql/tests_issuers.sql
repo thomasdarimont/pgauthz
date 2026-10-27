@@ -86,9 +86,9 @@ BEGIN
     PERFORM _test_assert('ib_17_role_tiers',
         has_function_privilege('authz_reader', 'authz.list_issuer_bindings()', 'EXECUTE')::text || ','
         || has_function_privilege('authz_reader', 'authz.issuer_bindings_revision()', 'EXECUTE')::text || ','
-        || has_function_privilege('authz_reader', 'authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text, text, text, text, text[], jsonb, text)', 'EXECUTE')::text || ','
-        || has_function_privilege('authz_admin', 'authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text, text, text, text, text[], jsonb, text)', 'EXECUTE')::text || ','
-        || has_function_privilege('authz_auditor', 'authz.list_issuer_bindings_audit(text, int, bigint)', 'EXECUTE')::text,
+        || has_function_privilege('authz_reader', 'authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text, text, text, text, text[], jsonb, text, text)', 'EXECUTE')::text || ','
+        || has_function_privilege('authz_admin', 'authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text, text, text, text, text[], jsonb, text, text)', 'EXECUTE')::text || ','
+        || has_function_privilege('authz_auditor', 'authz.list_issuer_bindings_audit(text, int, bigint, text[])', 'EXECUTE')::text,
         'true,true,false,true,true');
 
     DELETE FROM authz.issuer_bindings WHERE issuer LIKE 'https://test-issuer%';
@@ -160,7 +160,10 @@ BEGIN
     PERFORM _test_assert('al_02_resolve_alias', authz.resolve_issuer('tenant-a'), 'https://test-alias/a');
     PERFORM _test_assert('al_03_resolve_url', authz.resolve_issuer('https://test-alias/a'), 'https://test-alias/a');
     PERFORM _test_assert('al_04_resolve_unknown', COALESCE(authz.resolve_issuer('nope'), 'NULL'), 'NULL');
-    PERFORM _test_assert('al_05_audit_by_alias', (SELECT count(*) FROM authz.list_issuer_bindings_audit('tenant-a'))::text, '1');
+    -- (earlier runs leave audit rows behind: compare the alias's view with the URL's, not a fixed count)
+    PERFORM _test_assert('al_05_audit_by_alias',
+        ((SELECT count(*) FROM authz.list_issuer_bindings_audit('tenant-a')) = (SELECT count(*) FROM authz.list_issuer_bindings_audit('https://test-alias/a'))
+         AND (SELECT count(*) FROM authz.list_issuer_bindings_audit('tenant-a')) >= 1)::text, 'true');
     v_err := NULL; BEGIN PERFORM authz.set_issuer_binding('https://test-alias/b', ARRAY['docs'], p_alias => 'tenant-a'); EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
     PERFORM _test_assert('al_06_unique', v_err, 'alias tenant-a already names issuer https://test-alias/a');
     v_err := NULL; BEGIN PERFORM authz.set_issuer_binding('https://test-alias/b', ARRAY['docs'], p_alias => 'bad alias!'); EXCEPTION WHEN OTHERS THEN v_err := SQLERRM; END;
@@ -171,6 +174,42 @@ BEGIN
     PERFORM authz.set_issuer_binding('https://test-alias/a', ARRAY['docs'], p_alias => 'tenant_a');
     PERFORM _test_assert('al_09_delete_by_alias', authz.delete_issuer_binding('tenant_a')::text, 'true');
     PERFORM _test_assert('al_10_gone', (SELECT count(*) FROM authz.list_issuer_bindings() WHERE issuer = 'https://test-alias/a')::text, '0');
+END;
+$$;
+
+-- Ownership precondition (review P1): a write names the store group it
+-- authorized against; a row owned otherwise by then refuses the write
+-- (ZA003) — a cross-group transfer cannot be slipped past the check, and a
+-- concurrent transfer fails the later write instead of being overwritten.
+-- The audit readers narrow to the groups a reader manages.
+DO $$
+DECLARE v_err text; v_state text;
+        v_iss text := 'https://test-own/idp-' || extract(epoch FROM clock_timestamp())::bigint::text;  -- the audit is immutable: a fresh issuer per run
+BEGIN
+    PERFORM authz.create_store_group('own_a'); PERFORM authz.create_store_group('own_b');
+    PERFORM authz.set_issuer_binding(v_iss, p_store_group => 'own_a', p_jwks_url => 'https://test-own/jwks', p_audience => 'a', p_expect_group => '');
+    -- group b's admin, having authorized against b, cannot take the row (it is a's)
+    v_state := NULL; BEGIN PERFORM authz.set_issuer_binding(v_iss, p_store_group => 'own_b', p_jwks_url => 'https://test-own/jwks', p_audience => 'a', p_expect_group => 'own_b');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; v_err := SQLERRM; END;
+    PERFORM _test_assert('own_01_other_group_refused', v_state || ' ' || (position('owned by group own_a' in v_err) > 0)::text, 'ZA003 true');
+    -- a write that expects a row where none is (deleted meanwhile) is refused too
+    v_state := NULL; BEGIN PERFORM authz.set_issuer_binding('https://test-own/none', p_store_group => 'own_b', p_jwks_url => 'https://test-own/jwks', p_audience => 'a', p_expect_group => 'own_b');
+    EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('own_02_vanished_refused', v_state, 'ZA003');
+    -- the platform (authorized against a, the row as it is) transfers it to b
+    PERFORM authz.set_issuer_binding(v_iss, p_store_group => 'own_b', p_jwks_url => 'https://test-own/jwks', p_audience => 'a', p_expect_group => 'own_a');
+    PERFORM _test_assert('own_03_transferred', (SELECT store_group FROM authz.list_issuer_bindings() WHERE issuer = v_iss), 'own_b');
+    -- the history: group a's admins see the rows written under a, b's those under b
+    PERFORM _test_assert('own_04_audit_by_group',
+        (SELECT count(*) FROM authz.list_issuer_bindings_audit(v_iss, 10, NULL, ARRAY['own_a']))::text || '/' ||
+        (SELECT count(*) FROM authz.list_issuer_bindings_audit(v_iss, 10, NULL, ARRAY['own_b']))::text || '/' ||
+        authz.count_issuer_bindings_audit(v_iss, ARRAY['own_a', 'own_b'])::text || '/' ||
+        authz.count_issuer_bindings_audit(v_iss)::text, '1/1/2/2');
+    -- the delete holds the same precondition
+    v_state := NULL; BEGIN PERFORM authz.delete_issuer_binding(v_iss, NULL, 'own_a'); EXCEPTION WHEN OTHERS THEN v_state := SQLSTATE; END;
+    PERFORM _test_assert('own_05_delete_wrong_group', v_state, 'ZA003');
+    PERFORM _test_assert('own_06_delete_right_group', authz.delete_issuer_binding(v_iss, NULL, 'own_b')::text, 'true');
+    PERFORM authz.delete_store_group('own_a'); PERFORM authz.delete_store_group('own_b');
 END;
 $$;
 

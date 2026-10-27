@@ -118,6 +118,23 @@ pre-1.0, minor versions may include breaking changes.
   provider (and for the Issuers form's Discover) for providers whose
   `openid-configuration` is not at the well-known location; a document
   naming another issuer is flagged in the form and refused at sign-in.
+- **Binding ownership (review).** An existing issuer binding is changed or
+  removed by whoever manages it *as it is* — the platform, the issuer's
+  tenant credential, or the admins of the store group it belongs to; a
+  group's admins can no longer take another group's row by submitting it
+  under their group, nor claim a platform issuer; moving a row between
+  groups is the platform's alone. The group the caller authorized against
+  travels to the engine (`set_issuer_binding` / `delete_issuer_binding`
+  `p_expect_group`), which re-checks it under the row lock — a concurrent
+  transfer answers `409 ownership_changed` instead of being overwritten.
+  A group's issuer admins read their group's binding history
+  (`list_issuer_bindings_audit` / `count_…` take `p_store_groups`): the rows
+  written while the issuer belonged to their group, never another group's.
+  `tests/test-concurrency.sh` scenario N exercises the transfer race with
+  two real sessions. `pgauthzctl issuers export/import` now round-trip the
+  whole row (group issuers: `store_group`, `jwks_url`, audiences, `admin`);
+  the pgauthzctl suite backs up and restores the bindings its `--prune`
+  would otherwise remove from a shared deployment.
 - **Outbound host allow-lists (SSRF).** A group issuer's row names the
   `jwks_url` pgauthzd fetches keys from, and the console's Discover and
   registered sign-in providers fetch URLs an issuer admin typed. Both are

@@ -43,10 +43,31 @@ type IssuerBindingAdmin interface {
 	IssuerBindings(ctx context.Context) ([]issuers.Binding, error)
 	IssuerBindingsRevision(ctx context.Context) (int64, error)
 	// IssuerBindingsAudit is one page of the history, newest first, keyset
-	// by seq (before = the previous page's last seq), and the total.
-	IssuerBindingsAudit(ctx context.Context, issuer string, limit int, before *int64) ([]issuers.AuditRow, int64, error)
-	SetIssuerBinding(ctx context.Context, b issuers.Binding, performedBy string) (int64, error)
-	DeleteIssuerBinding(ctx context.Context, issuer, performedBy string) (bool, error)
+	// by seq (before = the previous page's last seq), and the total; groups
+	// (nil = all) narrows to the rows written while the issuer belonged to
+	// one of them.
+	IssuerBindingsAudit(ctx context.Context, issuer string, groups []string, limit int, before *int64) ([]issuers.AuditRow, int64, error)
+	// SetIssuerBinding / DeleteIssuerBinding carry the store group the caller
+	// authorized against (expectGroup: "" = no row yet, issuers.ExpectAny =
+	// unchecked); the engine refuses the write (issuers.ErrOwnership) when
+	// the row is owned otherwise by then — the ownership check and the
+	// write are one step.
+	SetIssuerBinding(ctx context.Context, b issuers.Binding, performedBy, expectGroup string) (int64, error)
+	DeleteIssuerBinding(ctx context.Context, issuer, performedBy, expectGroup string) (bool, error)
+}
+
+// bindingRow: the current row of an issuer, if any.
+func bindingRow(ctx context.Context, a IssuerBindingAdmin, issuer string) (issuers.Binding, bool, error) {
+	rows, err := a.IssuerBindings(ctx)
+	if err != nil {
+		return issuers.Binding{}, false, err
+	}
+	for _, b := range rows {
+		if b.Issuer == issuer {
+			return b, true, nil
+		}
+	}
+	return issuers.Binding{}, false, nil
 }
 
 // adminScope is what a passing credential may manage: every issuer and
@@ -650,13 +671,31 @@ func (h *Handler) adminIssuerBindingsAudit(w http.ResponseWriter, r *http.Reques
 			issuer = resolved // an alias reads as its URL
 		}
 	}
+	// Who may read which history: the platform everything; a tenant-scoped
+	// credential its own issuer's; a group's issuer admins (ADR 0017) the
+	// rows written while the issuer belonged to their group — never what
+	// another group did with it before a transfer.
+	var groups []string
 	if !scope.platformWide() {
-		if issuer == "" {
+		switch {
+		case issuer == "" && scope.issuer != "":
 			issuer = scope.issuer
-		} else if issuer != scope.issuer {
+		case issuer == "":
 			metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
-			writeForbidden(w, "management refused: this credential reads the history of the issuer "+scope.issuer+" only")
+			writeForbidden(w, "management refused: name the issuer whose history to read (a group's issuer admin reads the group's issuers)")
 			return
+		case issuer != scope.issuer:
+			row, exists, err := bindingRow(r.Context(), a, issuer)
+			if err != nil {
+				writeInternalError(w, err)
+				return
+			}
+			if !exists || row.StoreGroup == "" || !h.scopeManagesGroup(scope, row.StoreGroup) {
+				metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
+				writeForbidden(w, "management refused: this credential reads the history of its own issuer, or of its store groups' issuers")
+				return
+			}
+			groups = []string{row.StoreGroup}
 		}
 	}
 	limit, _ := strconv.Atoi(q.Get("limit"))
@@ -672,7 +711,7 @@ func (h *Handler) adminIssuerBindingsAudit(w http.ResponseWriter, r *http.Reques
 		}
 		before = &n
 	}
-	rows, total, err := a.IssuerBindingsAudit(r.Context(), issuer, limit, before)
+	rows, total, err := a.IssuerBindingsAudit(r.Context(), issuer, groups, limit, before)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -732,9 +771,40 @@ func (h *Handler) adminSetIssuerBinding(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	// a group issuer (ADR 0017) is the group's business: its admins write it
+	// Ownership (review P1): an existing row is written by whoever manages
+	// it AS IT IS — the platform, the issuer's own tenant credential, or the
+	// admins of the group it belongs to; a change of group (a transfer, or
+	// a platform issuer's row becoming a group's) is the platform's alone.
+	// The group the caller authorized against travels to the engine, which
+	// refuses the write if the row changed hands meanwhile.
+	cur, exists, err := bindingRow(r.Context(), a, b.Issuer)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	expectGroup := ""
+	if exists {
+		expectGroup = cur.StoreGroup
+		ownsCurrent := scope.platformWide() || scope.covers(b.Issuer) || (cur.StoreGroup != "" && h.scopeManagesGroup(scope, cur.StoreGroup))
+		if !ownsCurrent {
+			metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
+			if cur.StoreGroup == "" {
+				writeForbidden(w, scope.refusal("this token manages the issuer "+scope.issuer+" only"))
+			} else {
+				writeForbidden(w, scope.refusal("this binding belongs to "+ownerLabel(cur.StoreGroup)+": its admins or the platform change it"))
+			}
+			return
+		}
+		if b.StoreGroup != cur.StoreGroup && !scope.platformWide() {
+			metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
+			writeForbidden(w, scope.refusal("moving an issuer from "+ownerLabel(cur.StoreGroup)+" to "+ownerLabel(b.StoreGroup)+" is a platform decision"))
+			return
+		}
+	}
+	// a NEW row: a group issuer (ADR 0017) is the group's business — its
+	// admins write it; anything else needs the issuer's own scope
 	groupManaged := b.StoreGroup != "" && h.scopeManagesGroup(scope, b.StoreGroup)
-	if !scope.covers(b.Issuer) && !groupManaged {
+	if !exists && !scope.covers(b.Issuer) && !groupManaged {
 		metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
 		writeForbidden(w, scope.refusal("this token manages the issuer "+scope.issuer+" only (a group issuer needs can_manage_issuers on its group)"))
 		return
@@ -760,6 +830,14 @@ func (h *Handler) adminSetIssuerBinding(w http.ResponseWriter, r *http.Request) 
 		trusted = true
 		if ic.AnchorSource == "db" {
 			break // a group issuer's own row: the engine resolves its stores, nothing to narrow
+		}
+		// an environment-anchored (platform) issuer: its row scopes the
+		// platform's own provider — a group's admins cannot claim it for
+		// their group (the group check above is for issuers the group brings)
+		if !exists && b.StoreGroup != "" && !scope.platformWide() && !scope.covers(b.Issuer) {
+			metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
+			writeForbidden(w, scope.refusal("issuer "+b.Issuer+" is the platform's (JWT_ISSUERS): binding it to a store group is a platform decision"))
+			return
 		}
 		envStores := ic.Stores
 		if ic.BindingSource == "db" {
@@ -792,12 +870,30 @@ func (h *Handler) adminSetIssuerBinding(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	rev, err := a.SetIssuerBinding(r.Context(), b, actorLabel(r))
+	rev, err := a.SetIssuerBinding(r.Context(), b, actorLabel(r), expectGroup)
 	if err != nil {
-		writeDecisionError(w, err)
+		writeBindingError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"issuer": b.Issuer, "revision": rev})
+}
+
+// ownerLabel names who a binding belongs to, for refusals.
+func ownerLabel(group string) string {
+	if group == "" {
+		return "the platform"
+	}
+	return "store group '" + group + "'"
+}
+
+// writeBindingError: an ownership race is a 409 the caller resolves by
+// reading the row again; the rest as any decision error.
+func writeBindingError(w http.ResponseWriter, err error) {
+	if errors.Is(err, issuers.ErrOwnership) {
+		writeJSON(w, http.StatusConflict, map[string]any{"status": http.StatusConflict, "error": "ownership_changed", "message": err.Error()})
+		return
+	}
+	writeDecisionError(w, err)
 }
 
 // adminDeleteIssuerBinding — DELETE /pgauthz/v1/admin/issuer-bindings?issuer=…
@@ -819,25 +915,27 @@ func (h *Handler) adminDeleteIssuerBinding(w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
+	cur, exists, err := bindingRow(r.Context(), a, iss)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	expectGroup := issuers.ExpectAny
+	if exists {
+		expectGroup = cur.StoreGroup // the row as authorized: a transfer meanwhile fails the delete (409)
+	}
 	if !scope.covers(iss) {
 		// a group issuer's row: the group's admins remove it (ADR 0017)
-		group := ""
-		if rows, err := a.IssuerBindings(r.Context()); err == nil {
-			for _, b := range rows {
-				if b.Issuer == iss {
-					group = b.StoreGroup
-				}
-			}
-		}
-		if group == "" || !h.scopeManagesGroup(scope, group) {
+		group := cur.StoreGroup
+		if !exists || group == "" || !h.scopeManagesGroup(scope, group) {
 			metrics.AuthzDenied.WithLabelValues("admin_scope").Inc()
 			writeForbidden(w, scope.refusal("this token manages the issuer "+scope.issuer+" only"))
 			return
 		}
 	}
-	existed, err := a.DeleteIssuerBinding(r.Context(), iss, actorLabel(r))
+	existed, err := a.DeleteIssuerBinding(r.Context(), iss, actorLabel(r), expectGroup)
 	if err != nil {
-		writeDecisionError(w, err)
+		writeBindingError(w, err)
 		return
 	}
 	if !existed {

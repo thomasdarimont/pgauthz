@@ -836,7 +836,10 @@ paths:
       summary: Delete an issuer's binding
       description: >
         The issuer falls back to its environment bindings (JWT_ISSUERS).
-        The issuer must be within the caller's scope.
+        The issuer must be within the caller's scope: the platform, the
+        issuer's own tenant credential, or the admins of the store group the
+        row belongs to. `409 ownership_changed` when the row changed hands
+        between the read and the delete.
       parameters:
         - name: issuer
           in: query
@@ -1098,7 +1101,7 @@ paths:
         pager. A tenant admin reads its own issuer's history only — the
         filter is set for it, another issuer is refused (403).
       parameters:
-        - { name: issuer, in: query, required: false, schema: { type: string }, description: One issuer's history (a tenant admin's own); the URL or its alias. }
+        - { name: issuer, in: query, required: false, schema: { type: string }, description: "One issuer's history: the URL or its alias. A tenant admin's own issuer, or (a group's issuer admin) a group issuer — then only the rows written while it belonged to that group; the platform reads everything." }
         - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 500, default: 25 } }
         - { name: before, in: query, required: false, schema: { type: integer, format: int64 }, description: The previous page's `next`. }
       responses:

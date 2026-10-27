@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -57,12 +58,18 @@ func (s *adminStub) IssuerBindings(context.Context) ([]issuers.Binding, error) {
 
 func (s *adminStub) IssuerBindingsRevision(context.Context) (int64, error) { return s.rev, nil }
 
-func (s *adminStub) IssuerBindingsAudit(_ context.Context, issuer string, limit int, _ *int64) ([]issuers.AuditRow, int64, error) {
+func (s *adminStub) IssuerBindingsAudit(_ context.Context, issuer string, groups []string, limit int, _ *int64) ([]issuers.AuditRow, int64, error) {
 	out := []issuers.AuditRow{}
 	seq := int64(100)
-	for _, iss := range []string{"https://tenant-a", "https://tenant-b"} {
-		if issuer == "" || issuer == iss {
-			out = append(out, issuers.AuditRow{Seq: seq, Action: "set", PerformedBy: "test", Issuer: iss, Stores: []string{}})
+	// tenant-a and tenant-b as platform rows; the group issuer's history: one
+	// row under tenant_x (before a transfer), one under tenant_c
+	all := []issuers.AuditRow{
+		{Issuer: "https://tenant-a"}, {Issuer: "https://tenant-b"},
+		{Issuer: "https://group-idp", StoreGroup: "tenant_x"}, {Issuer: "https://group-idp", StoreGroup: "tenant_c"},
+	}
+	for _, row := range all {
+		if (issuer == "" || issuer == row.Issuer) && (groups == nil || slices.Contains(groups, row.StoreGroup)) {
+			out = append(out, issuers.AuditRow{Seq: seq, Action: "set", PerformedBy: "test", Issuer: row.Issuer, Stores: []string{}, StoreGroup: row.StoreGroup})
 		}
 		seq--
 	}
@@ -72,14 +79,33 @@ func (s *adminStub) IssuerBindingsAudit(_ context.Context, issuer string, limit 
 	return out, int64(len(out)), nil
 }
 
-func (s *adminStub) SetIssuerBinding(_ context.Context, b issuers.Binding, by string) (int64, error) {
+func (s *adminStub) SetIssuerBinding(_ context.Context, b issuers.Binding, by, expectGroup string) (int64, error) {
+	if err := s.expect(b.Issuer, expectGroup); err != nil {
+		return 0, err
+	}
 	s.rows[b.Issuer] = b
 	s.rev++
 	s.by = append(s.by, by)
 	return s.rev, nil
 }
 
-func (s *adminStub) DeleteIssuerBinding(_ context.Context, issuer, by string) (bool, error) {
+// expect is the engine's ownership precondition (authz.set_issuer_binding
+// p_expect_group): the row must still be owned as the caller authorized.
+func (s *adminStub) expect(issuer, expectGroup string) error {
+	if expectGroup == issuers.ExpectAny {
+		return nil
+	}
+	cur, exists := s.rows[issuer]
+	if (exists && cur.StoreGroup != expectGroup) || (!exists && expectGroup != "") {
+		return issuers.ErrOwnership
+	}
+	return nil
+}
+
+func (s *adminStub) DeleteIssuerBinding(_ context.Context, issuer, by, expectGroup string) (bool, error) {
+	if err := s.expect(issuer, expectGroup); err != nil {
+		return false, err
+	}
 	_, ok := s.rows[issuer]
 	delete(s.rows, issuer)
 	s.by = append(s.by, by)
@@ -107,7 +133,7 @@ func adminFixture(t *testing.T) (*Handler, *adminStub) {
 				{Decide: &issuers.AdminDecision{Store: "console"}}}},
 	}
 	cfg := &config.Config{Profile: config.ProfileFull, Issuers: env, IssuersSource: "env+db", AdminAPIEnabled: true, AdminRole: "pgauthz_admin",
-		GroupIssuerHosts: []string{"new-idp", "carol-idp", "other-idp"}, OutboundHostPolicy: config.OutboundHostPolicyAllowlist} // the tenant IdP hosts the platform admits (GROUP_ISSUER_HOSTS)
+		GroupIssuerHosts: []string{"new-idp", "carol-idp", "other-idp", "x-idp", "c-idp", "race-idp", "group-idp"}, OutboundHostPolicy: config.OutboundHostPolicyAllowlist} // the tenant IdP hosts the platform admits (GROUP_ISSUER_HOSTS)
 	stub := &adminStub{rows: map[string]issuers.Binding{
 		"https://tenant-a": {Issuer: "https://tenant-a", Alias: "tenant-a", Stores: []string{"a_docs"}, Enabled: true},
 		"https://tenant-b": {Issuer: "https://tenant-b", Stores: []string{"b_docs"}, Enabled: true},
@@ -595,4 +621,104 @@ func TestAdminIssuerAlias(t *testing.T) {
 	if _, still := stub.rows["https://tenant-b"]; still {
 		t.Fatal("the row named by alias was not deleted")
 	}
+}
+
+// Review P1/P2 — ownership of a binding row. A group's admins write the
+// rows of THEIR group as they are: taking a row that belongs to another
+// group by submitting their own group is refused, moving a row between
+// groups is the platform's alone, a platform (environment) issuer cannot
+// be claimed for a group, the engine's precondition turns a concurrent
+// transfer into a 409, and a group's admins read the audit history of
+// their group's issuer — only the rows written while it was theirs.
+func TestAdminBindingOwnership(t *testing.T) {
+	h, stub := storesFixture(t)
+	stub.grants = map[string]bool{"user:carol can_manage_issuers group:tenant_c": true}
+	put := func(tk token, body string) *httptest.ResponseRecorder {
+		return serveAdmin(h, tk.request("PUT", "/pgauthz/v1/admin/issuer-bindings", body))
+	}
+	// a group issuer of tenant_x (another group), written by the platform
+	stub.rows["https://x-idp"] = issuers.Binding{Issuer: "https://x-idp", StoreGroup: "tenant_x", JWKSURL: "https://x-idp/jwks", Audience: "a", Enabled: true}
+	// carol (tenant_c) submits it with her own group: a takeover — refused
+	if w := put(tenantCUser, `{"issuer":"https://x-idp","store_group":"tenant_c","jwks_url":"https://x-idp/jwks","audience":"a","enabled":true}`); w.Code != http.StatusForbidden {
+		t.Fatalf("cross-group takeover: %d %s", w.Code, w.Body.String())
+	}
+	if stub.rows["https://x-idp"].StoreGroup != "tenant_x" {
+		t.Fatal("the row must be untouched")
+	}
+	// the platform's own issuer (environment): carol cannot bind it to her group
+	if w := put(tenantCUser, `{"issuer":"https://tenant-a","store_group":"tenant_c","enabled":true}`); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "platform") {
+		t.Fatalf("claiming a platform issuer: %d %s", w.Code, w.Body.String())
+	}
+	// her own group's row she may change — but not move to another group
+	stub.rows["https://c-idp"] = issuers.Binding{Issuer: "https://c-idp", StoreGroup: "tenant_c", JWKSURL: "https://c-idp/jwks", Audience: "a", Enabled: true}
+	if w := put(tenantCUser, `{"issuer":"https://c-idp","store_group":"tenant_c","jwks_url":"https://c-idp/jwks","audience":"a","enabled":false}`); w.Code != 200 || stub.rows["https://c-idp"].Enabled {
+		t.Fatalf("own row: %d %s", w.Code, w.Body.String())
+	}
+	if w := put(tenantCUser, `{"issuer":"https://c-idp","store_group":"tenant_x","jwks_url":"https://c-idp/jwks","audience":"a","enabled":true}`); w.Code != http.StatusForbidden || stub.rows["https://c-idp"].StoreGroup != "tenant_c" {
+		t.Fatalf("moving own row away: %d %s", w.Code, w.Body.String())
+	}
+	// the platform moves it, having read it as tenant_c's
+	if w := put(platformAdmin, `{"issuer":"https://c-idp","store_group":"tenant_x","jwks_url":"https://c-idp/jwks","audience":"a","enabled":true}`); w.Code != 200 || stub.rows["https://c-idp"].StoreGroup != "tenant_x" {
+		t.Fatalf("platform transfer: %d %s", w.Code, w.Body.String())
+	}
+	// … after which carol's write of "her" row is refused (it is tenant_x's now)
+	if w := put(tenantCUser, `{"issuer":"https://c-idp","store_group":"tenant_c","jwks_url":"https://c-idp/jwks","audience":"a","enabled":true}`); w.Code != http.StatusForbidden {
+		t.Fatalf("after the transfer: %d %s", w.Code, w.Body.String())
+	}
+	// a concurrent transfer between the handler's read and the engine's write: 409, nothing written
+	stub.rows["https://race-idp"] = issuers.Binding{Issuer: "https://race-idp", StoreGroup: "tenant_c", JWKSURL: "https://race-idp/jwks", Audience: "a", Enabled: true}
+	racing := &racingStub{storeStub: stub, flip: "https://race-idp"}
+	hr := NewHandler(nil, nil, racing, h.cfg, WithIssuers(h.issuers))
+	if w := serveAdmin(hr, tenantCUser.request("PUT", "/pgauthz/v1/admin/issuer-bindings", `{"issuer":"https://race-idp","store_group":"tenant_c","jwks_url":"https://race-idp/jwks","audience":"a","enabled":false}`)); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "ownership_changed") {
+		t.Fatalf("race: %d %s", w.Code, w.Body.String())
+	}
+	if !stub.rows["https://race-idp"].Enabled || stub.rows["https://race-idp"].StoreGroup != "tenant_x" {
+		t.Fatalf("the racing write must not land: %+v", stub.rows["https://race-idp"])
+	}
+	// the delete carries the same precondition
+	stub.rows["https://race-idp"] = issuers.Binding{Issuer: "https://race-idp", StoreGroup: "tenant_c", Enabled: true}
+	if w := serveAdmin(hr, tenantCUser.request("DELETE", "/pgauthz/v1/admin/issuer-bindings?issuer=https://race-idp", "")); w.Code != http.StatusConflict {
+		t.Fatalf("racing delete: %d %s", w.Code, w.Body.String())
+	}
+	// P2: carol reads her group's issuer's history — the tenant_c rows only, not what tenant_x did with it
+	stub.rows["https://group-idp"] = issuers.Binding{Issuer: "https://group-idp", StoreGroup: "tenant_c", Enabled: true}
+	w := serveAdmin(h, tenantCUser.request("GET", "/pgauthz/v1/admin/issuer-bindings/audit?issuer=https://group-idp", ""))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"store_group":"tenant_c"`) || strings.Contains(w.Body.String(), `"store_group":"tenant_x"`) || !strings.Contains(w.Body.String(), `"total":1`) {
+		t.Fatalf("group admin reads its history: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, tenantCUser.request("GET", "/pgauthz/v1/admin/issuer-bindings/audit?issuer=https://x-idp", "")); w.Code != http.StatusForbidden {
+		t.Fatalf("another group's history: %d %s", w.Code, w.Body.String())
+	}
+	// no issuer named: her own issuer's history (the delegated scope's), as before
+	if w := serveAdmin(h, tenantCUser.request("GET", "/pgauthz/v1/admin/issuer-bindings/audit", "")); w.Code != 200 || !strings.Contains(w.Body.String(), `"issuer":"https://tenant-c"`) {
+		t.Fatalf("no issuer named: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveAdmin(h, platformAdmin.request("GET", "/pgauthz/v1/admin/issuer-bindings/audit?issuer=https://group-idp", "")); w.Code != 200 || !strings.Contains(w.Body.String(), `"total":2`) {
+		t.Fatalf("platform reads all of it: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// racingStub flips one row to another group between the handler's read and
+// the engine's write — the concurrent transfer the precondition catches.
+type racingStub struct {
+	*storeStub
+	flip string
+}
+
+func (r *racingStub) SetIssuerBinding(ctx context.Context, b issuers.Binding, by, expectGroup string) (int64, error) {
+	if b.Issuer == r.flip {
+		row := r.rows[r.flip]
+		row.StoreGroup = "tenant_x"
+		r.rows[r.flip] = row
+	}
+	return r.storeStub.SetIssuerBinding(ctx, b, by, expectGroup)
+}
+
+func (r *racingStub) DeleteIssuerBinding(ctx context.Context, issuer, by, expectGroup string) (bool, error) {
+	if issuer == r.flip {
+		row := r.rows[r.flip]
+		row.StoreGroup = "tenant_x"
+		r.rows[r.flip] = row
+	}
+	return r.storeStub.DeleteIssuerBinding(ctx, issuer, by, expectGroup)
 }

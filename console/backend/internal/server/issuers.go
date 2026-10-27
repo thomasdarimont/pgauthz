@@ -179,6 +179,7 @@ type issuerAuditRow struct {
 	Stores      []string  `json:"stores"`
 	Enabled     *bool     `json:"enabled"`
 	Description string    `json:"description"`
+	StoreGroup  string    `json:"store_group,omitempty"` // the group the row belonged to when written
 }
 
 // effectiveIssuers is pgauthzd's GET /pgauthz/v1/issuers, as the callback
@@ -418,7 +419,9 @@ func (s *Server) effectiveIssuersAdmin(ctx context.Context, r *http.Request) eff
 // one page of the history, newest first, keyset by seq (`before` is the
 // previous page's `next`), with the total for the pager.
 func (s *Server) handleIssuersAudit(w http.ResponseWriter, r *http.Request) {
-	p := s.require(w, r, "can_manage_issuers", "platform", s.cfg.PlatformID)
+	// the platform's issuer admins read everything; a group's issuer admins
+	// (ADR 0017) the rows written while an issuer belonged to their groups
+	p, platform, managed := s.issuerManager(w, r)
 	if p == nil {
 		return
 	}
@@ -457,13 +460,21 @@ func (s *Server) handleIssuersAudit(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(page)
 		return
 	}
-	rows, err := s.issuerAudit(r.Context(), issuer, limit, before)
+	var groups []string
+	if !platform {
+		groups = managed // never another group's doings with an issuer, before or after a transfer
+	}
+	rows, err := s.issuerAudit(r.Context(), issuer, groups, limit, before)
 	if err != nil {
 		writeEngineError(w, err)
 		return
 	}
+	var grp any
+	if groups != nil {
+		grp = groups
+	}
 	var total int64
-	if err := s.engine.QueryRow(r.Context(), `SELECT authz.count_issuer_bindings_audit($1)`, nullable(issuer)).Scan(&total); err != nil {
+	if err := s.engine.QueryRow(r.Context(), `SELECT authz.count_issuer_bindings_audit($1, $2)`, nullable(issuer), grp).Scan(&total); err != nil {
 		writeEngineError(w, err)
 		return
 	}
@@ -512,10 +523,16 @@ func (s *Server) issuerBindings(ctx context.Context) ([]issuerBinding, error) {
 	return out, rows.Err()
 }
 
-func (s *Server) issuerAudit(ctx context.Context, issuer string, limit int, before *int64) ([]issuerAuditRow, error) {
+// issuerAudit: one page of the history; groups (nil = all) narrows to the
+// rows written while the issuer belonged to one of them.
+func (s *Server) issuerAudit(ctx context.Context, issuer string, groups []string, limit int, before *int64) ([]issuerAuditRow, error) {
+	var grp any
+	if groups != nil {
+		grp = groups
+	}
 	rows, err := s.engine.Query(ctx, `
-		SELECT seq, action, performed_at, performed_by, issuer, stores, enabled, coalesce(description, '')
-		  FROM authz.list_issuer_bindings_audit($1, $2, $3)`, nullable(issuer), limit, before)
+		SELECT seq, action, performed_at, performed_by, issuer, stores, enabled, coalesce(description, ''), coalesce(store_group, '')
+		  FROM authz.list_issuer_bindings_audit($1, $2, $3, $4)`, nullable(issuer), limit, before, grp)
 	if err != nil {
 		return nil, err
 	}
@@ -523,7 +540,7 @@ func (s *Server) issuerAudit(ctx context.Context, issuer string, limit int, befo
 	out := []issuerAuditRow{}
 	for rows.Next() {
 		var a issuerAuditRow
-		if err := rows.Scan(&a.Seq, &a.Action, &a.PerformedAt, &a.PerformedBy, &a.Issuer, &a.Stores, &a.Enabled, &a.Description); err != nil {
+		if err := rows.Scan(&a.Seq, &a.Action, &a.PerformedAt, &a.PerformedBy, &a.Issuer, &a.Stores, &a.Enabled, &a.Description, &a.StoreGroup); err != nil {
 			return nil, err
 		}
 		if a.Stores == nil {
@@ -592,14 +609,38 @@ func (s *Server) handleIssuerSave(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "issuer is required (the token's iss, as in JWT_ISSUERS)")
 		return
 	}
-	// a group issuer is the group's business; everything else the platform's
+	// Ownership (review P1): an existing row is changed by whoever manages
+	// it AS IT IS — the platform, or the admins of the group it belongs to;
+	// moving it to another group (or binding a platform issuer to a group)
+	// is the platform's alone. The group authorized against travels to the
+	// engine, which refuses the write if the row changed hands meanwhile
+	// (409). A new group issuer is its group's business.
+	cur, exists, err := s.bindingRow(r.Context(), b.Issuer)
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	expectGroup := ""
+	if exists {
+		expectGroup = cur.StoreGroup
+	}
 	objType, objID := "platform", s.cfg.PlatformID
 	if !platform {
-		if b.StoreGroup == "" {
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": "a platform issuer needs can_manage_issuers on platform:" + s.cfg.PlatformID + "; name a store group you manage for a group issuer", "required": "can_manage_issuers", "object": "platform:" + s.cfg.PlatformID})
+		switch {
+		case exists && cur.StoreGroup == "":
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "this binding is the platform's: changing it needs can_manage_issuers on platform:" + s.cfg.PlatformID, "required": "can_manage_issuers", "object": "platform:" + s.cfg.PlatformID})
 			return
+		case exists && b.StoreGroup != cur.StoreGroup:
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "moving an issuer to another store group is a platform decision (can_manage_issuers on platform:" + s.cfg.PlatformID + ")", "required": "can_manage_issuers", "object": "platform:" + s.cfg.PlatformID})
+			return
+		case exists:
+			objType, objID = "group", cur.StoreGroup
+		case b.StoreGroup == "" || b.JWKSURL == "":
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "a platform issuer needs can_manage_issuers on platform:" + s.cfg.PlatformID + "; a group issuer you manage brings its own trust anchor (store group + JWKS URL)", "required": "can_manage_issuers", "object": "platform:" + s.cfg.PlatformID})
+			return
+		default:
+			objType, objID = "group", b.StoreGroup
 		}
-		objType, objID = "group", b.StoreGroup
 	}
 	if ok, err := s.can(r.Context(), p, "can_manage_issuers", objType, objID); err != nil || !ok {
 		if err != nil {
@@ -613,7 +654,6 @@ func (s *Server) handleIssuerSave(w http.ResponseWriter, r *http.Request) {
 	pep, _ := json.Marshal(orMapList(b.PEPClients))
 	var revision int64
 	payload := map[string]any{"op": "set", "issuer": b.Issuer, "stores": orList(b.Stores), "enabled": b.Enabled}
-	var err error
 	if s.adminAPI() {
 		// the console's action log records the attempt as the person; the
 		// row itself is written by pgauthzd as whoever the credential names
@@ -635,9 +675,9 @@ func (s *Server) handleIssuerSave(w http.ResponseWriter, r *http.Request) {
 			admin = string(b.Admin)
 		}
 		err = s.asPerson(r.Context(), p, "can_manage_issuers", objType, objID, payload, func(tx pgx.Tx) error {
-			return tx.QueryRow(r.Context(), `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14)`,
+			return tx.QueryRow(r.Context(), `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15)`,
 				b.Issuer, orList(b.Stores), orList(b.DBRoles), string(cdr), string(pep), b.Enabled, nullable(b.Description), p.typ+":"+p.id,
-				nullable(b.StoreGroup), nullable(b.JWKSURL), nullable(b.Audience), orList(b.Audiences), admin, nullable(strings.ToLower(strings.TrimSpace(b.Alias)))).Scan(&revision)
+				nullable(b.StoreGroup), nullable(b.JWKSURL), nullable(b.Audience), orList(b.Audiences), admin, nullable(strings.ToLower(strings.TrimSpace(b.Alias))), expectGroup).Scan(&revision)
 		})
 	}
 	if err != nil {
@@ -647,6 +687,25 @@ func (s *Server) handleIssuerSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"issuer": b.Issuer, "revision": revision})
+}
+
+// bindingRow: the current row of an issuer (URL or alias), if any — the
+// engine's view, which both modes decide ownership against.
+func (s *Server) bindingRow(ctx context.Context, issuer string) (issuerBinding, bool, error) {
+	rows, err := s.issuerBindings(ctx)
+	if err != nil {
+		return issuerBinding{}, false, err
+	}
+	var resolved string
+	if err := s.engine.QueryRow(ctx, `SELECT coalesce(authz.resolve_issuer($1), $1)`, issuer).Scan(&resolved); err != nil {
+		return issuerBinding{}, false, err
+	}
+	for _, b := range rows {
+		if b.Issuer == resolved {
+			return b, true, nil
+		}
+	}
+	return issuerBinding{}, false, nil
 }
 
 // handleIssuerDelete — POST /api/platform/issuers/delete {issuer}: the
@@ -663,20 +722,30 @@ func (s *Server) handleIssuerDelete(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if !platform {
-		if req.StoreGroup == "" || !slices.Contains(managed, req.StoreGroup) {
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": "removing this binding needs can_manage_issuers on platform:" + s.cfg.PlatformID + ", or on the row's store group", "required": "can_manage_issuers", "object": "platform:" + s.cfg.PlatformID})
-			return
-		}
-	}
-
 	req.Issuer = strings.TrimSpace(req.Issuer)
 	if req.Issuer == "" {
 		writeError(w, http.StatusBadRequest, "issuer is required")
 		return
 	}
+	// the row's group as it IS decides who may remove it (not the group
+	// the request names); the engine re-checks it under the row lock
+	cur, exists, err := s.bindingRow(r.Context(), req.Issuer)
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	expectGroup := "*"
+	if exists {
+		expectGroup = cur.StoreGroup
+	}
+	if !platform {
+		if !exists || cur.StoreGroup == "" || !slices.Contains(managed, cur.StoreGroup) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "removing this binding needs can_manage_issuers on platform:" + s.cfg.PlatformID + ", or on the row's store group", "required": "can_manage_issuers", "object": "platform:" + s.cfg.PlatformID})
+			return
+		}
+		req.StoreGroup = cur.StoreGroup
+	}
 	var existed bool
-	var err error
 	if s.adminAPI() {
 		err = s.asPerson(r.Context(), p, "can_manage_issuers", "platform", s.cfg.PlatformID,
 			map[string]any{"op": "delete", "issuer": req.Issuer, "via": "admin-api"}, func(pgx.Tx) error {
@@ -685,7 +754,7 @@ func (s *Server) handleIssuerDelete(w http.ResponseWriter, r *http.Request) {
 	} else {
 		err = s.asPerson(r.Context(), p, "can_manage_issuers", "platform", s.cfg.PlatformID,
 			map[string]any{"op": "delete", "issuer": req.Issuer}, func(tx pgx.Tx) error {
-				if err := tx.QueryRow(r.Context(), `SELECT authz.delete_issuer_binding($1, $2)`, req.Issuer, p.typ+":"+p.id).Scan(&existed); err != nil {
+				if err := tx.QueryRow(r.Context(), `SELECT authz.delete_issuer_binding($1, $2, $3)`, req.Issuer, p.typ+":"+p.id, expectGroup).Scan(&existed); err != nil {
 					return err
 				}
 				if !existed {

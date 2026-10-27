@@ -51,14 +51,18 @@ func (b *Backend) IssuerBindings(ctx context.Context) ([]issuers.Binding, error)
 
 // IssuerBindingsAudit: one page of authz.issuer_bindings_audit (newest
 // first, keyset by seq) and the total, for one issuer or every one.
-func (b *Backend) IssuerBindingsAudit(ctx context.Context, issuer string, limit int, before *int64) ([]issuers.AuditRow, int64, error) {
+func (b *Backend) IssuerBindingsAudit(ctx context.Context, issuer string, groups []string, limit int, before *int64) ([]issuers.AuditRow, int64, error) {
 	var iss any
 	if issuer != "" {
 		iss = issuer
 	}
+	var grp any
+	if groups != nil {
+		grp = groups
+	}
 	rows, err := b.readPool(ctx).Query(ctx, `
-		SELECT seq, action, performed_at, coalesce(performed_by, ''), issuer, stores, enabled, coalesce(description, '')
-		  FROM authz.list_issuer_bindings_audit($1, $2, $3)`, iss, limit, before)
+		SELECT seq, action, performed_at, coalesce(performed_by, ''), issuer, stores, enabled, coalesce(description, ''), coalesce(store_group, '')
+		  FROM authz.list_issuer_bindings_audit($1, $2, $3, $4)`, iss, limit, before, grp)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -66,7 +70,7 @@ func (b *Backend) IssuerBindingsAudit(ctx context.Context, issuer string, limit 
 	out := []issuers.AuditRow{}
 	for rows.Next() {
 		var a issuers.AuditRow
-		if err := rows.Scan(&a.Seq, &a.Action, &a.PerformedAt, &a.PerformedBy, &a.Issuer, &a.Stores, &a.Enabled, &a.Description); err != nil {
+		if err := rows.Scan(&a.Seq, &a.Action, &a.PerformedAt, &a.PerformedBy, &a.Issuer, &a.Stores, &a.Enabled, &a.Description, &a.StoreGroup); err != nil {
 			return nil, 0, err
 		}
 		if a.Stores == nil {
@@ -78,7 +82,7 @@ func (b *Backend) IssuerBindingsAudit(ctx context.Context, issuer string, limit 
 		return nil, 0, err
 	}
 	var total int64
-	err = b.readPool(ctx).QueryRow(ctx, `SELECT authz.count_issuer_bindings_audit($1)`, iss).Scan(&total)
+	err = b.readPool(ctx).QueryRow(ctx, `SELECT authz.count_issuer_bindings_audit($1, $2)`, iss, grp).Scan(&total)
 	return out, total, err
 }
 
@@ -128,7 +132,7 @@ func (b *Backend) AssertAdmin(ctx context.Context) error {
 
 // SetIssuerBinding creates or replaces a binding (authz.set_issuer_binding)
 // as the connection role; the actor is recorded in the audit row.
-func (b *Backend) SetIssuerBinding(ctx context.Context, bnd issuers.Binding, performedBy string) (int64, error) {
+func (b *Backend) SetIssuerBinding(ctx context.Context, bnd issuers.Binding, performedBy, expectGroup string) (int64, error) {
 	cdr, _ := json.Marshal(orMap(bnd.ClientDBRoles))
 	pep, _ := json.Marshal(orMapList(bnd.PEPClients))
 	admin, _ := json.Marshal(bnd.Admin)
@@ -136,27 +140,34 @@ func (b *Backend) SetIssuerBinding(ctx context.Context, bnd issuers.Binding, per
 		admin = []byte("[]")
 	}
 	var rev int64
-	err := b.pool.QueryRow(ctx, `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14)`,
+	err := b.pool.QueryRow(ctx, `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15)`,
 		bnd.Issuer, orSlice(bnd.Stores), orSlice(bnd.DBRoles), string(cdr), string(pep), bnd.Enabled, nullable(bnd.Description), nullable(performedBy),
-		nullable(bnd.StoreGroup), nullable(bnd.JWKSURL), nullable(bnd.Audience), orSlice(bnd.Audiences), string(admin), nullable(bnd.Alias)).Scan(&rev)
+		nullable(bnd.StoreGroup), nullable(bnd.JWKSURL), nullable(bnd.Audience), orSlice(bnd.Audiences), string(admin), nullable(bnd.Alias), expectGroup).Scan(&rev)
 	return rev, bindingError(err)
 }
 
 // bindingError surfaces the engine's validation of a binding
 // (authz._validate_issuer_binding raises invalid_parameter_value) as the
-// caller's 400 with the engine's message; anything else stays a fault.
+// caller's 400 with the engine's message, an ownership race (ZA003: the
+// row changed hands since the caller read it) as issuers.ErrOwnership
+// (409); anything else stays a fault.
 func bindingError(err error) error {
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "22023" {
-		return fmt.Errorf("%w: %s", authz.ErrInvalidRequest, pgErr.Message)
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "22023":
+			return fmt.Errorf("%w: %s", authz.ErrInvalidRequest, pgErr.Message)
+		case "ZA003":
+			return fmt.Errorf("%w: %s", issuers.ErrOwnership, pgErr.Message)
+		}
 	}
 	return err
 }
 
 // DeleteIssuerBinding drops a binding (authz.delete_issuer_binding).
-func (b *Backend) DeleteIssuerBinding(ctx context.Context, issuer, performedBy string) (bool, error) {
+func (b *Backend) DeleteIssuerBinding(ctx context.Context, issuer, performedBy, expectGroup string) (bool, error) {
 	var existed bool
-	err := b.pool.QueryRow(ctx, `SELECT authz.delete_issuer_binding($1, $2)`, issuer, nullable(performedBy)).Scan(&existed)
+	err := b.pool.QueryRow(ctx, `SELECT authz.delete_issuer_binding($1, $2, $3)`, issuer, nullable(performedBy), expectGroup).Scan(&existed)
 	return existed, bindingError(err)
 }
 

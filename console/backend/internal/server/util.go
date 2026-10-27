@@ -71,8 +71,11 @@ func writeEngineError(w http.ResponseWriter, err error) {
 			msg += " — " + pgErr.Hint
 		}
 		status := http.StatusBadRequest
-		if pgErr.Code == "42501" { // insufficient_privilege
+		switch pgErr.Code {
+		case "42501": // insufficient_privilege
 			status = http.StatusForbidden
+		case "ZA003": // the issuer binding changed hands between the read and the write
+			status = http.StatusConflict
 		}
 		writeJSON(w, status, map[string]any{"error": msg, "code": pgErr.Code})
 		return

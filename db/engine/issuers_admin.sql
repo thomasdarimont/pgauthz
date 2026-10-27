@@ -153,9 +153,10 @@ $$;
 -- The signature grew in 0029 (group issuers): the old overload is dropped so
 -- a positional call cannot be ambiguous between the two.
 DROP FUNCTION IF EXISTS authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text);
--- The 13-parameter signature (before the alias, migration 0031) is dropped so
--- a reload never leaves two overloads behind.
+-- Earlier signatures (before the alias, 0031; before the ownership
+-- precondition) are dropped so a reload never leaves two overloads behind.
 DROP FUNCTION IF EXISTS authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text, text, text, text, text[], jsonb);
+DROP FUNCTION IF EXISTS authz.set_issuer_binding(text, text[], text[], jsonb, jsonb, boolean, text, text, text, text, text, text[], jsonb, text);
 CREATE OR REPLACE FUNCTION authz.set_issuer_binding(
     p_issuer          text,
     p_stores          text[]  DEFAULT '{}',
@@ -170,16 +171,34 @@ CREATE OR REPLACE FUNCTION authz.set_issuer_binding(
     p_audience        text    DEFAULT NULL,
     p_audiences       text[]  DEFAULT '{}',
     p_admin           jsonb   DEFAULT '[]'::jsonb, -- delegated admin rules only
-    p_alias           text    DEFAULT NULL       -- a short handle for the issuer (0031): [a-z0-9_-], unique
+    p_alias           text    DEFAULT NULL,      -- a short handle for the issuer (0031): [a-z0-9_-], unique
+    p_expect_group    text    DEFAULT '*'        -- ownership precondition: the row's current store group ('' = no row yet; '*' = unchecked)
 ) RETURNS bigint
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_rev   bigint;
-    v_alias text := NULLIF(lower(btrim(COALESCE(p_alias, ''))), '');
-    v_other text;
+    v_rev    bigint;
+    v_alias  text := NULLIF(lower(btrim(COALESCE(p_alias, ''))), '');
+    v_other  text;
+    v_cur    text;
+    v_exists boolean;
 BEGIN
     IF p_issuer IS NULL OR btrim(p_issuer) = '' THEN
         RAISE EXCEPTION 'issuer is required (the token''s iss)' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    -- Who owns the row is decided by the caller against the row it READ; the
+    -- write holds only if the row is still owned the same way (the lock
+    -- makes the check and the write one step: a concurrent transfer fails
+    -- this write instead of being silently overwritten — SQLSTATE ZA003).
+    SELECT b.store_group INTO v_cur FROM authz.issuer_bindings b WHERE b.issuer = btrim(p_issuer) FOR UPDATE;
+    v_exists := FOUND;
+    IF COALESCE(p_expect_group, '*') <> '*' THEN
+        IF v_exists AND COALESCE(v_cur, '') <> p_expect_group THEN
+            RAISE EXCEPTION 'issuer binding of % is owned by % now (expected %): read it again', btrim(p_issuer),
+                COALESCE('group ' || v_cur, 'the platform'), COALESCE(NULLIF('group ' || p_expect_group, 'group '), 'the platform')
+                USING ERRCODE = 'ZA003';
+        ELSIF NOT v_exists AND p_expect_group <> '' THEN
+            RAISE EXCEPTION 'issuer binding of % no longer exists (expected group %)', btrim(p_issuer), p_expect_group USING ERRCODE = 'ZA003';
+        END IF;
     END IF;
     IF v_alias IS NOT NULL THEN
         IF v_alias !~ '^[a-z0-9][a-z0-9_-]{0,63}$' THEN
@@ -223,18 +242,31 @@ $$;
 ------------------------------------------------------------------------
 -- delete_issuer_binding: drop the row — the issuer falls back to its
 -- environment bindings. Returns true when a row existed. p_issuer is the
--- URL or the row's alias (resolve_issuer).
+-- URL or the row's alias (resolve_issuer); p_expect_group as in
+-- set_issuer_binding (the row's store group the caller authorized against).
 ------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS authz.delete_issuer_binding(text, text);
 CREATE OR REPLACE FUNCTION authz.delete_issuer_binding(
     p_issuer       text,
-    p_performed_by text DEFAULT NULL
+    p_performed_by text DEFAULT NULL,
+    p_expect_group text DEFAULT '*'
 ) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_n integer;
+    v_n   integer;
+    v_iss text := COALESCE(authz.resolve_issuer(p_issuer), btrim(p_issuer));
+    v_cur text;
 BEGIN
     PERFORM set_config('authz.performed_by', COALESCE(p_performed_by, ''), true);
-    DELETE FROM authz.issuer_bindings WHERE issuer = COALESCE(authz.resolve_issuer(p_issuer), btrim(p_issuer));
+    IF COALESCE(p_expect_group, '*') <> '*' THEN
+        SELECT b.store_group INTO v_cur FROM authz.issuer_bindings b WHERE b.issuer = v_iss FOR UPDATE;
+        IF FOUND AND COALESCE(v_cur, '') <> p_expect_group THEN
+            RAISE EXCEPTION 'issuer binding of % is owned by % now (expected %): read it again', v_iss,
+                COALESCE('group ' || v_cur, 'the platform'), COALESCE(NULLIF('group ' || p_expect_group, 'group '), 'the platform')
+                USING ERRCODE = 'ZA003';
+        END IF;
+    END IF;
+    DELETE FROM authz.issuer_bindings WHERE issuer = v_iss;
     GET DIAGNOSTICS v_n = ROW_COUNT;
     RETURN v_n > 0;
 END;

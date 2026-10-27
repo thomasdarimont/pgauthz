@@ -307,3 +307,89 @@ func TestIssuersOverAdminAPI(t *testing.T) {
 		t.Fatalf("the local admin presents the certificate, got %q", kind)
 	}
 }
+
+// Review P1/P2 on the console's own (DB-mode) handlers: a group's issuer
+// admin changes the rows of THEIR group as they are — submitting another
+// group's row under their own group is refused, moving a row between
+// groups is the platform's, a platform row is not theirs; they read the
+// history of their group's issuers only, never what another group did.
+func TestIssuerOwnershipHTTP(t *testing.T) {
+	s, pool, ctx := testServer(t)
+	cs := s.cfg.ConsoleStore
+	const issX, issY = "https://console-gotest.example/own-x", "https://console-gotest.example/own-y"
+	cleanup := func() {
+		for _, iss := range []string{issX, issY} {
+			_, _ = pool.Exec(context.Background(), `DELETE FROM authz.issuer_bindings WHERE issuer = $1`, iss)
+		}
+		_, _ = pool.Exec(context.Background(), `SELECT authz.delete_tuple($1, 'user', 'own_x_admin', 'issuer_admin', 'group', 'own_gx')`, cs)
+		for _, g := range []string{"own_gx", "own_gy"} {
+			_, _ = pool.Exec(context.Background(), `SELECT authz.delete_store_group($1)`, g)
+		}
+	}
+	cleanup()
+	defer cleanup()
+	for _, g := range []string{"own_gx", "own_gy"} {
+		if _, err := pool.Exec(ctx, `SELECT authz.create_store_group($1)`, g); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// a row per group, written by the platform; own_x_admin manages gx's issuers
+	for _, r := range [][2]string{{issX, "own_gx"}, {issY, "own_gy"}} {
+		if _, err := pool.Exec(ctx, `SELECT authz.set_issuer_binding($1, p_store_group => $2, p_jwks_url => 'https://console-gotest.example/jwks', p_audience => 'a')`, r[0], r[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `SELECT authz.write_tuple($1, 'user', 'own_x_admin', 'issuer_admin', 'group', 'own_gx')`, cs); err != nil {
+		t.Fatal(err)
+	}
+	gx := httpSession(t, s, "own_x_admin")
+	h := s.Routes()
+	do := func(method, target, body string) (int, map[string]any) {
+		t.Helper()
+		req := httptest.NewRequest(method, target, strings.NewReader(body))
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		req.AddCookie(gx)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		var m map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &m)
+		return rec.Code, m
+	}
+	group := func(iss, g string) string {
+		return `{"issuer":"` + iss + `","store_group":"` + g + `","jwks_url":"https://console-gotest.example/jwks","audience":"a","enabled":false}`
+	}
+	// gy's row submitted under gx: a takeover — refused, the row untouched
+	if code, m := do("PUT", "/api/platform/issuers", group(issY, "own_gx")); code != 403 {
+		t.Fatalf("takeover: %d %v", code, m)
+	}
+	var owner string
+	if err := pool.QueryRow(ctx, `SELECT store_group FROM authz.list_issuer_bindings() WHERE issuer = $1`, issY).Scan(&owner); err != nil || owner != "own_gy" {
+		t.Fatalf("gy's row must stay gy's: %q %v", owner, err)
+	}
+	// gx's own row: changed; moved to gy: refused
+	if code, m := do("PUT", "/api/platform/issuers", group(issX, "own_gx")); code != 200 {
+		t.Fatalf("own row: %d %v", code, m)
+	}
+	if code, m := do("PUT", "/api/platform/issuers", group(issX, "own_gy")); code != 403 {
+		t.Fatalf("moving own row: %d %v", code, m)
+	}
+	// deleting gy's row, whatever group the request names: refused
+	if code, m := do("POST", "/api/platform/issuers/delete", `{"issuer":"`+issY+`","store_group":"own_gx"}`); code != 403 {
+		t.Fatalf("delete another group's row: %d %v", code, m)
+	}
+	// the history: gx's rows only (the platform wrote gy's)
+	code, m := do("GET", "/api/platform/issuers/audit?limit=50", "")
+	if code != 200 {
+		t.Fatalf("audit: %d %v", code, m)
+	}
+	for _, r := range m["rows"].([]any) {
+		if row := r.(map[string]any); row["issuer"] == issY || row["store_group"] != "own_gx" {
+			t.Fatalf("a group admin reads their group's history only: %v", row)
+		}
+	}
+	if len(m["rows"].([]any)) == 0 {
+		t.Fatal("gx's own rows must be listed")
+	}
+}

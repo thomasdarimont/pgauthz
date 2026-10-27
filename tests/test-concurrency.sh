@@ -43,6 +43,10 @@
 #   M. The floor is raised while a revocation waits for the object lock: the
 #      revocation re-reads the floor under the lock and is refused by the new
 #      value (a cap lowered meanwhile is re-read the same way).
+#   N. An issuer binding is moved to another store group while a group
+#      admin's write (authorized against the old group) waits on the row
+#      lock: the write is refused by the ownership precondition (ZA003),
+#      never overwriting the transferred row; a stale delete likewise.
 #
 # Synchronization: the holder session runs its statement and then pg_sleep(2)
 # in one transaction; the second session is launched only once pg_stat_activity
@@ -90,7 +94,8 @@ await_holder(){
 }
 holder_alive(){ kill -0 "$HOLDER_PID" 2>/dev/null; }
 
-cleanup(){ q "SELECT authz.delete_store('$S', p_purge_audit => true)" >/dev/null 2>&1 || true; }
+cleanup(){ q "SELECT authz.delete_store('$S', p_purge_audit => true)" >/dev/null 2>&1 || true
+           q "DELETE FROM authz.issuer_bindings WHERE issuer LIKE 'https://test-conc/%'; SELECT authz.delete_store_group('conc_ga'); SELECT authz.delete_store_group('conc_gb');" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 cleanup
 q "SELECT authz.create_store('$S');
@@ -315,6 +320,28 @@ wait
 case "$out" in *"would drop below its minimum: 2 of 2"*) ok "conc_M_raised_floor_counts" ;; *) bad "conc_M_raised_floor_counts" "$out" ;; esac
 [ "$dt" -ge 1000 ] && ok "conc_M_revocation_waited (${dt} ms)" || bad "conc_M_revocation_waited" "${dt} ms — did not wait"
 check "conc_M_two_owners_remain" "$(q "SELECT count(*) FROM authz.tuples t WHERE t.store_id = authz._s('$S') AND t.object_id = 'v2'")" "2"
+
+echo "==> N. an issuer binding transferred while a group admin's write waits (ownership precondition)"
+# Review P1 (2026-10-27): the write names the group it authorized against;
+# the engine re-reads the row under FOR UPDATE. The platform's transfer
+# (A → B) holds the row lock; group A's admin, having read the row as A's,
+# waits — and is refused once the transfer committed (SQLSTATE ZA003),
+# instead of overwriting B's row. A matching delete is refused the same way.
+ISS="https://test-conc/idp-$(now_ms)"
+q "SELECT authz.create_store_group('conc_ga'); SELECT authz.create_store_group('conc_gb');
+   SELECT authz.set_issuer_binding('$ISS', p_store_group => 'conc_ga', p_jwks_url => 'https://test-conc/jwks', p_audience => 'a', p_expect_group => '');" >/dev/null
+session "SELECT authz.set_issuer_binding('$ISS', p_store_group => 'conc_gb', p_jwks_url => 'https://test-conc/jwks', p_audience => 'a', p_expect_group => 'conc_ga');"
+t0=$(now_ms)
+out=$(q "SELECT authz.set_issuer_binding('$ISS', p_store_group => 'conc_ga', p_jwks_url => 'https://test-conc/jwks', p_audience => 'a', p_description => 'group a edit', p_expect_group => 'conc_ga')")
+dt=$(( $(now_ms) - t0 ))
+wait
+case "$out" in *"owned by group conc_gb now (expected group conc_ga)"*) ok "conc_N_stale_owner_refused_after_waiting" ;; *) bad "conc_N_stale_owner_refused_after_waiting" "$out" ;; esac
+[ "$dt" -ge 1000 ] && ok "conc_N_group_admin_write_waited (${dt} ms)" || bad "conc_N_group_admin_write_waited" "${dt} ms — did not wait"
+check "conc_N_row_is_b_untouched" "$(q "SELECT store_group || '|' || coalesce(description, '-') FROM authz.list_issuer_bindings() WHERE issuer = '$ISS'")" "conc_gb|-"
+out=$(q "SELECT authz.delete_issuer_binding('$ISS', NULL, 'conc_ga')")
+case "$out" in *"owned by group conc_gb now"*) ok "conc_N_stale_delete_refused" ;; *) bad "conc_N_stale_delete_refused" "$out" ;; esac
+check "conc_N_owner_delete_ok" "$(q "SELECT authz.delete_issuer_binding('$ISS', NULL, 'conc_gb')")" "t"
+q "SELECT authz.delete_store_group('conc_ga'); SELECT authz.delete_store_group('conc_gb');" >/dev/null
 
 echo "==> ${pass} passed, ${fail} failed (of $((pass + fail)) concurrency checks)"
 [ "$fail" -eq 0 ]

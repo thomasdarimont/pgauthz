@@ -88,12 +88,24 @@ func (s *dbIssuerStore) set(ctx context.Context, b issuerBinding, by string) (in
 		desc = b.Description
 	}
 	var rev int64
-	var alias any
-	if b.Alias != "" {
-		alias = b.Alias
+	nz := func(v string) any {
+		if v == "" {
+			return nil
+		}
+		return v
 	}
-	err := s.exec().QueryRow(ctx, `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, p_alias => $9)`,
-		b.Issuer, b.Stores, b.DBRoles, string(cdr), string(pep), b.Enabled, desc, by, alias).Scan(&rev)
+	admin := "[]"
+	if len(b.Admin) > 0 {
+		admin = string(b.Admin)
+	}
+	audiences := b.Audiences
+	if audiences == nil {
+		audiences = []string{}
+	}
+	err := s.exec().QueryRow(ctx, `SELECT authz.set_issuer_binding($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8,
+	                                  p_store_group => $9, p_jwks_url => $10, p_audience => $11, p_audiences => $12, p_admin => $13::jsonb, p_alias => $14)`,
+		b.Issuer, b.Stores, b.DBRoles, string(cdr), string(pep), b.Enabled, desc, by,
+		nz(b.StoreGroup), nz(b.JWKSURL), nz(b.Audience), audiences, admin, nz(b.Alias)).Scan(&rev)
 	return rev, err
 }
 
@@ -163,16 +175,25 @@ type issuerBinding struct {
 	PEPClients    map[string][]string `json:"pep_clients"`
 	Enabled       bool                `json:"enabled"`
 	Description   string              `json:"description,omitempty"`
-	CreatedAt     *time.Time          `json:"created_at,omitempty"`
-	CreatedBy     string              `json:"created_by,omitempty"`
-	UpdatedAt     *time.Time          `json:"updated_at,omitempty"`
-	UpdatedBy     string              `json:"updated_by,omitempty"`
+	// a group issuer (ADR 0017): the group whose stores it reaches (then
+	// stores is the engine's resolution, not written back), its own trust
+	// anchor, delegated admin rules — exported and imported like the rest
+	StoreGroup string          `json:"store_group,omitempty"`
+	JWKSURL    string          `json:"jwks_url,omitempty"`
+	Audience   string          `json:"audience,omitempty"`
+	Audiences  []string        `json:"audiences,omitempty"`
+	Admin      json.RawMessage `json:"admin,omitempty"`
+	CreatedAt  *time.Time      `json:"created_at,omitempty"`
+	CreatedBy  string          `json:"created_by,omitempty"`
+	UpdatedAt  *time.Time      `json:"updated_at,omitempty"`
+	UpdatedBy  string          `json:"updated_by,omitempty"`
 }
 
 func readIssuerBindings(ctx context.Context, conn *pgx.Conn) ([]issuerBinding, error) {
 	rows, err := conn.Query(ctx, `
-		SELECT issuer, stores, db_roles, client_db_roles, pep_clients, enabled, coalesce(description, ''),
-		       created_at, coalesce(created_by, ''), updated_at, coalesce(updated_by, ''), coalesce(alias, '')
+		SELECT issuer, CASE WHEN store_group IS NULL THEN stores ELSE '{}'::text[] END, db_roles, client_db_roles, pep_clients, enabled, coalesce(description, ''),
+		       created_at, coalesce(created_by, ''), updated_at, coalesce(updated_by, ''), coalesce(alias, ''),
+		       coalesce(store_group, ''), coalesce(jwks_url, ''), coalesce(audience, ''), audiences, admin
 		  FROM authz.list_issuer_bindings()`)
 	if err != nil {
 		return nil, err
@@ -181,9 +202,13 @@ func readIssuerBindings(ctx context.Context, conn *pgx.Conn) ([]issuerBinding, e
 	out := []issuerBinding{}
 	for rows.Next() {
 		var b issuerBinding
+		var admin []byte
 		if err := rows.Scan(&b.Issuer, &b.Stores, &b.DBRoles, &b.ClientDBRoles, &b.PEPClients, &b.Enabled, &b.Description,
-			&b.CreatedAt, &b.CreatedBy, &b.UpdatedAt, &b.UpdatedBy, &b.Alias); err != nil {
+			&b.CreatedAt, &b.CreatedBy, &b.UpdatedAt, &b.UpdatedBy, &b.Alias, &b.StoreGroup, &b.JWKSURL, &b.Audience, &b.Audiences, &admin); err != nil {
 			return nil, err
+		}
+		if len(admin) > 0 && string(admin) != "[]" {
+			b.Admin = json.RawMessage(admin)
 		}
 		out = append(out, normalizeBinding(b))
 	}
@@ -209,8 +234,18 @@ func normalizeBinding(b issuerBinding) issuerBinding {
 // same reports whether a row and a file entry bind the same (the audit
 // columns do not count).
 func sameBinding(a, b issuerBinding) bool {
-	ja, _ := json.Marshal(issuerBinding{Issuer: a.Issuer, Stores: a.Stores, DBRoles: a.DBRoles, ClientDBRoles: a.ClientDBRoles, PEPClients: a.PEPClients, Enabled: a.Enabled, Description: a.Description})
-	jb, _ := json.Marshal(issuerBinding{Issuer: b.Issuer, Stores: b.Stores, DBRoles: b.DBRoles, ClientDBRoles: b.ClientDBRoles, PEPClients: b.PEPClients, Enabled: b.Enabled, Description: b.Description})
+	strip := func(x issuerBinding) issuerBinding {
+		x.CreatedAt, x.CreatedBy, x.UpdatedAt, x.UpdatedBy = nil, "", nil, ""
+		if len(x.Admin) == 0 || string(x.Admin) == "[]" {
+			x.Admin = nil
+		}
+		if len(x.Audiences) == 0 {
+			x.Audiences = nil
+		}
+		return normalizeBinding(x)
+	}
+	ja, _ := json.Marshal(strip(a))
+	jb, _ := json.Marshal(strip(b))
 	return string(ja) == string(jb)
 }
 

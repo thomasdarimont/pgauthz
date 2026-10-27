@@ -152,3 +152,14 @@ itself by the group's admins.
 A deployment whose egress proxy already enforces such a policy hands the
 check over (`OUTBOUND_HOST_POLICY=proxy`, `CONSOLE_OUTBOUND_HOST_POLICY=proxy`)
 rather than maintaining the list twice.
+
+## Addendum: who may change a group issuer's row
+
+A row is owned by the group it belongs to *now*, not by the group a
+request names: its admins change or remove it, the platform alone moves it
+to another group or binds a platform issuer to a group. The group a caller
+authorized against is passed to the engine, which re-checks it under the
+row lock, so a transfer between the read and the write fails the write
+(SQLSTATE `ZA003`, HTTP 409) rather than being overwritten. The binding
+history is read the same way: a group's admins see the rows written while
+the issuer was theirs.

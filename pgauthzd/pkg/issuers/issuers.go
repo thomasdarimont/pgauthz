@@ -12,6 +12,7 @@ package issuers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -208,7 +209,16 @@ type AuditRow struct {
 	Stores      []string  `json:"stores"`
 	Enabled     *bool     `json:"enabled"`
 	Description string    `json:"description,omitempty"`
+	StoreGroup  string    `json:"store_group,omitempty"` // the group the row belonged to when written
 }
+
+// ErrOwnership: a binding write or delete named the store group it had
+// authorized against (ExpectGroup), and the row is owned otherwise by now
+// — a concurrent transfer; the caller reads the row again (HTTP 409).
+var ErrOwnership = errors.New("the issuer binding's owner changed")
+
+// ExpectAny is the ExpectGroup value that skips the ownership check.
+const ExpectAny = "*"
 
 type Binding struct {
 	Issuer        string              `json:"issuer"`

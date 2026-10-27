@@ -1256,5 +1256,7 @@
   "Alias": "Alias",
   "A short name that stands for the issuer URL wherever an issuer is referenced: the admin API and pgauthzctl (issuers delete tenant-a), the console sign-in (?login=tenant-a, CONSOLE_AUTO_LOGIN). Letters, digits, _ and -; unique.": "Ein Kurzname, der überall für die Issuer-URL steht, wo ein Issuer referenziert wird: Admin-API und pgauthzctl (issuers delete tenant-a), die Konsolen-Anmeldung (?login=tenant-a, CONSOLE_AUTO_LOGIN). Buchstaben, Ziffern, _ und -; eindeutig.",
   "alias: stands for the issuer URL in the admin API, pgauthzctl and sign-in links": "Alias: steht in Admin-API, pgauthzctl und Anmeldelinks für die Issuer-URL",
-  "{a}–{b} of {n}": "{a}–{b} von {n}"
+  "{a}–{b} of {n}": "{a}–{b} von {n}",
+  "every issuer": "alle Issuer",
+  "Every change to the bindings (authz.issuer_bindings_audit), newest first: the row as it was after the change, or before a removal. A store group's issuer admins see the rows written while an issuer belonged to their group.": "Jede Änderung an den Bindungen (authz.issuer_bindings_audit), neueste zuerst: die Zeile, wie sie nach der Änderung war, oder vor einer Entfernung. Die Issuer-Admins einer Store-Gruppe sehen die Zeilen, die geschrieben wurden, während ein Issuer zu ihrer Gruppe gehörte."
 }

@@ -23,6 +23,7 @@ export class PgcIssuers extends PgcElement {
     saved: { state: true },
     warning: { state: true }, // the issuer a discovery document named instead
     audit: { state: true },
+    auditIssuer: { state: true }, // the history's issuer filter ('' = every issuer, the platform's view)
     page: { state: true },
     limit: { state: true },
   };
@@ -72,6 +73,11 @@ export class PgcIssuers extends PgcElement {
     if (page > 1 && !before) return;
     const p = { limit: this.limit };
     if (before) p.before = before;
+    // one issuer's history, or everything (the platform's view); a group's
+    // issuer admin sees their groups' rows — pgauthzd's admin API wants an
+    // issuer named, so the first of their bindings is the default
+    const issuer = this.auditIssuer || (this.d && !this.d.platform ? (this.d.bindings?.[0]?.issuer ?? '') : '');
+    if (issuer) p.issuer = issuer;
     const r = await run(this, () => api.platformIssuersAudit(p));
     if (!r) return;
     this.audit = r;
@@ -748,10 +754,27 @@ export class PgcIssuers extends PgcElement {
 
   _audit() {
     const a = this.audit?.rows ?? [];
+    const bindings = this.d?.bindings ?? [];
     return html`<section class="card" data-testid="issuers-audit">
       <h3>
         ${t('History')}
-        ${help('Every change to the bindings (authz.issuer_bindings_audit), newest first: the row as it was after the change, or before a removal.')}
+        ${help('Every change to the bindings (authz.issuer_bindings_audit), newest first: the row as it was after the change, or before a removal. A store group\'s issuer admins see the rows written while an issuer belonged to their group.')}
+        ${
+          bindings.length
+            ? html`<select
+                class="mono"
+                .value=${this.auditIssuer ?? ''}
+                @change=${(e) => {
+                  this.auditIssuer = e.target.value;
+                  void this._goto(1, true);
+                }}
+                data-testid="issuers-audit-issuer"
+              >
+                ${this.d?.platform ? html`<option value="">${t('every issuer')}</option>` : nothing}
+                ${bindings.map((b) => html`<option value=${b.issuer} ?selected=${b.issuer === this.auditIssuer}>${b.alias ? `${b.alias} = ${b.issuer}` : b.issuer}</option>`)}
+              </select>`
+            : nothing
+        }
       </h3>
       ${this._pager()} ${a.length ? nothing : html`<p class="muted">${t('No changes recorded yet.')}</p>`}
       <div class="table-wrap">

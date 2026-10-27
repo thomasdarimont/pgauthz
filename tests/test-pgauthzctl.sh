@@ -45,6 +45,12 @@ check_fails() {
 }
 
 cleanup() {
+    # the bindings that were there before (a tenant's group issuer, …): the
+    # import --prune below must not leave the deployment without them
+    if [ -s /tmp/ctl-it-backup.json ] && [ -x "${CTL:-}" ]; then
+        "$CTL" issuers import /tmp/ctl-it-backup.json --prune >/dev/null 2>&1 || true
+        rm -f /tmp/ctl-it-backup.json
+    fi
     psqlq "DO \$\$ BEGIN PERFORM authz.delete_store('ctl_it_tenant'); EXCEPTION WHEN OTHERS THEN NULL; END \$\$;" >/dev/null 2>&1 || true
     psqlq "DELETE FROM authz.model_registry WHERE name = 'ctl_it_model';" >/dev/null 2>&1 || true
     psqlq "DELETE FROM authz.issuer_bindings WHERE issuer LIKE 'https://ctl-it.example/%' OR description = 'ctl-it over the admin API';" >/dev/null 2>&1 || true
@@ -118,6 +124,7 @@ check_fails "plan exits non-zero on blockers" \
 echo ""
 echo "==> Running pgauthzctl issuers checks..."
 echo ""
+"$CTL" issuers export --out /tmp/ctl-it-backup.json >/dev/null   # restored by cleanup (other rows survive the prune)
 cat > /tmp/ctl-it-issuers.json <<'JSON'
 {"bindings": [
   {"issuer": "https://ctl-it.example/a", "stores": ["ctl_a_.*"], "db_roles": [], "client_db_roles": {}, "pep_clients": {"gw": ["ctl_a_docs"]}, "enabled": true, "description": "tenant a"},
@@ -133,8 +140,9 @@ cat > /tmp/ctl-it-issuers.json <<'JSON'
   {"issuer": "https://ctl-it.example/a", "stores": ["ctl_a_docs"], "db_roles": [], "client_db_roles": {}, "pep_clients": {"gw": ["ctl_a_docs"]}, "enabled": true, "description": "tenant a, narrowed"}
 ]}
 JSON
-check "issuers import --dry-run reports the update and the prune without applying"     sh -c "'$CTL' issuers import /tmp/ctl-it-issuers.json --prune --dry-run | grep -q '^dry run: 0 to create, 1 to update, 1 to delete' && '$CTL' issuers list | grep -q 'ctl-it.example/b'"
-check "issuers import --prune updates a and deletes b"     sh -c "'$CTL' issuers import /tmp/ctl-it-issuers.json --prune --performed-by ci | grep -q '0 created, 1 updated, 1 deleted'"
+# (other bindings may exist in the deployment and are pruned too — the backup restores them)
+check "issuers import --dry-run reports the update and the prune without applying"     sh -c "'$CTL' issuers import /tmp/ctl-it-issuers.json --prune --dry-run > /tmp/ctl-it-dry.out && grep -q '^~ update https://ctl-it.example/a' /tmp/ctl-it-dry.out && grep -q '^- delete https://ctl-it.example/b' /tmp/ctl-it-dry.out && grep -q '^dry run: 0 to create, 1 to update' /tmp/ctl-it-dry.out && '$CTL' issuers list | grep -q 'ctl-it.example/b'"
+check "issuers import --prune updates a and deletes b"     sh -c "'$CTL' issuers import /tmp/ctl-it-issuers.json --prune --performed-by ci | grep -q '0 created, 1 updated, [0-9]* deleted' && ! '$CTL' issuers list | grep -q 'ctl-it.example/b'"
 check "the audit trail names the actor"     sh -c "docker exec -i '$DB_CONTAINER' psql -Atq -U authz -d authz -c \"SELECT performed_by FROM authz.list_issuer_bindings_audit('https://ctl-it.example/b', 1)\" | grep -q '^ci\$'"
 check_fails "issuers import refuses a bad pattern (the engine's validation)"     sh -c "echo '{\"bindings\":[{\"issuer\":\"https://ctl-it.example/a\",\"stores\":[\"ctl_(\"],\"enabled\":true}]}' > /tmp/ctl-it-issuers-2.json && '$CTL' issuers import /tmp/ctl-it-issuers-2.json"
 check "issuers delete drops the row"     sh -c "'$CTL' issuers delete https://ctl-it.example/a | grep -q '^deleted'"
