@@ -49,6 +49,10 @@ func RunPlan(t *testing.T, suite *Suite, plan PlanDefinition, pdp PDP) {
 				}
 			case result.FinishedWith("WARNING") && !suite.Settings().Strict:
 				t.Logf("WARNING (accepted; CTS_STRICT=true fails it): %s", result.Summary())
+			case result.FinishedWith("SKIPPED"):
+				// The suite skips a module whose precondition the PDP legitimately does not
+				// meet (e.g. a search answered in one page leaves no page token to vary).
+				t.Skipf("skipped by the suite, not a PDP failure: %s", result.URL)
 			default:
 				if issue, ok := knownIssue(result); ok {
 					t.Skipf("known conformance suite issue %s, not a PDP failure (%s): %s", issue.Issue, result.URL, issue.Reason)

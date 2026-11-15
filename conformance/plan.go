@@ -111,5 +111,8 @@ func (p PlanDefinition) Config(pdp PDP) (json.RawMessage, error) {
 		section["search_action_endpoint"] = pdp.BaseURL + "/access/v1/search/action"
 	}
 	config["pdp"] = section
+	// Suites after release-v5.3.2 read the credential from a `client` section; the pinned
+	// release reads pdp.api_key. Both are set, each suite ignores the other.
+	config["client"] = map[string]any{"api_key": pdp.APIKey}
 	return json.Marshal(config)
 }

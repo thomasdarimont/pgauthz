@@ -70,7 +70,8 @@ func TestPlanConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	var parsed struct {
-		PDP map[string]string `json:"pdp"`
+		PDP    map[string]string `json:"pdp"`
+		Client map[string]string `json:"client"`
 	}
 	if err := json.Unmarshal(config, &parsed); err != nil {
 		t.Fatal(err)
@@ -88,6 +89,9 @@ func TestPlanConfig(t *testing.T) {
 		if parsed.PDP[name] != value {
 			t.Fatalf("%s: want %q, got %q", name, value, parsed.PDP[name])
 		}
+	}
+	if parsed.Client["api_key"] != "k" {
+		t.Fatalf("client.api_key: got %q", parsed.Client["api_key"])
 	}
 	if !strings.HasPrefix(string(config), "{") {
 		t.Fatal("config is not a JSON object")
