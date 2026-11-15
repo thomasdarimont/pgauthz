@@ -83,7 +83,7 @@ the key and — static only — the endpoints filled in at run time.
 
 `known_issues.go` lists defects of the suite itself; a module that fails exactly that way is
 skipped with the reason, and reported if it passes, so the entry is removed once the suite is
-fixed. As of release-v5.3.2:
+fixed. As of release-v5.3.2 … release-v5.3.4:
 
 - `authzen-pdp-evaluation-invalid-credentials-returns-401`
   ([conformance-suite#2040](https://gitlab.com/openid/conformance-suite/-/work_items/2040))
@@ -102,6 +102,16 @@ fixed. As of release-v5.3.2:
   discovery — advertising the public URL behind the https front (`TRUST_FORWARDED_HEADERS`,
   `BASE_URL`) — is verified by its unit tests and by hand; `TestDiscoveryPlans` is skipped
   until the suite is fixed (`CTS_DISCOVERY=true` runs it regardless).
+
+- `authzen-pdp-evaluations-evaluation-level-errors`,
+  `…-missing-subject-returns-decision-false` and `…-batch-with-default-value-merging` expect
+  what [openid/authzen#763](https://github.com/openid/authzen/issues/763) has since reversed:
+  a 200 with a decision-false entry for an incomplete evaluation, and sub-field merging with
+  the top-level default. pgauthzd answers 400 and replaces the entity whole, as later suites test.
+
+Suites after release-v5.3.4 read the api_key from a `client` section instead of `pdp.api_key`
+(the harness sends both) and no longer show either issue: run them with
+`CTS_SUITE_IMAGE=<image> CTS_DISCOVERY=true`.
 
 ## Not covered yet
 

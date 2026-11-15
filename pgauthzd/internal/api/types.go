@@ -24,17 +24,27 @@ type EvalResponseBody struct {
 // --- Batch Evaluations ---
 
 type EvalsBatchRequest struct {
-	Subject     *Subject          `json:"subject,omitempty"`
-	Action      *Action           `json:"action,omitempty"`
-	Resource    *Resource         `json:"resource,omitempty"`
-	Evaluations []EvalRequestBody `json:"evaluations"`
-	Context     map[string]any    `json:"context,omitempty"`
+	Subject     *Subject         `json:"subject,omitempty"`
+	Action      *Action          `json:"action,omitempty"`
+	Resource    *Resource        `json:"resource,omitempty"`
+	Evaluations []EvalsBatchItem `json:"evaluations"`
+	Context     map[string]any   `json:"context,omitempty"`
 	// Options carries the AuthZEN 1.0 §7.1.2 request options
 	// (options.evaluations_semantic).
 	Options *EvalsOptions `json:"options,omitempty"`
 	// Semantic is the pre-1.0 top-level spelling of the evaluations semantic,
 	// still accepted; options.evaluations_semantic wins when both are sent.
 	Semantic string `json:"semantic,omitempty"`
+}
+
+// EvalsBatchItem is one entry of the evaluations array. Its entities are
+// pointers because presence matters: an entity the item carries REPLACES the
+// top-level default as a whole (§7.1.1), an absent one inherits it.
+type EvalsBatchItem struct {
+	Subject  *Subject       `json:"subject,omitempty"`
+	Action   *Action        `json:"action,omitempty"`
+	Resource *Resource      `json:"resource,omitempty"`
+	Context  map[string]any `json:"context,omitempty"`
 }
 
 // EvalsOptions is the AuthZEN 1.0 `options` object of a batch request.

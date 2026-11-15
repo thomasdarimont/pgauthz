@@ -2990,9 +2990,9 @@ components:
           schema: { type: string }
     UnsupportedMediaType:
       description: >
-        The request declared a Content-Type other than application/json
-        (AuthZEN 1.0 §10.1). A charset parameter and +json suffixes are fine;
-        a request without a Content-Type header is read as JSON.
+        The request declared a Content-Type other than application/json, or
+        none at all (AuthZEN 1.0 §10.1). A charset parameter and +json
+        suffixes are fine.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
@@ -3357,6 +3357,10 @@ components:
           description: Pre-1.0 spelling of limit, still read (limit wins).
     PageResult:
       type: object
+      description: >
+        Present when more results follow, and on the last page of a search
+        that was continued with a page token — there with an empty next_token
+        (§8.2). A search answered in one response carries no page.
       properties:
         next_token: { type: string }
       required: [next_token]
@@ -3411,10 +3415,12 @@ components:
           type: array
           items: { $ref: '#/components/schemas/EvaluationRequest' }
       description: >
-        Top-level subject/action/resource/context are shared defaults merged
-        into each evaluation. An evaluation that still lacks a subject, action
-        or resource after merging is answered as {"decision": false} in its
-        place (§7.1.1), not as a 400. Without an evaluations array — absent or
+        Top-level subject/action/resource are defaults for the evaluations:
+        an entity an evaluation carries replaces the default as a whole (no
+        sub-field merging), an absent one inherits it; context is merged per
+        key. An evaluation that does not resolve to a complete subject, action
+        and resource makes the whole request a 400, under every semantic
+        (§7.1.1, §10.1.1). Without an evaluations array — absent or
         empty — the request is handled exactly like the single Access
         Evaluation API and answered in the single-decision form (§7.1).
     EvaluationsResponse:

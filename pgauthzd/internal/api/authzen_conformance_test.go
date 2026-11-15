@@ -175,34 +175,32 @@ func TestEvaluationsWithoutArrayAnswersInSingleForm(t *testing.T) {
 	}
 }
 
-// §7.1.1 / certification profile 3.4.1: an evaluation that cannot be resolved
-// is a decision-false item in a 200 response, not a 400 for the batch
-// (modules …-evaluation-level-errors and …-missing-subject-returns-decision-false).
-func TestEvaluationsUnresolvedItemIsDecisionFalse(t *testing.T) {
+// §7.1.1 / §10.1.1 (openid/authzen#763): an evaluation that does not resolve
+// to a complete subject, action and resource makes the whole request a 400,
+// under every semantic and without the engine being called; an entity in an
+// item replaces the top-level default, there is no sub-field merging (modules
+// …-evaluation-level-errors, …-incomplete-entity, …-missing-subject,
+// …-missing-action, …-subject-missing-type).
+func TestEvaluationsIncompleteItemIsBadRequest(t *testing.T) {
 	mux, b := certMux(t, true)
-
-	w := pep(mux, http.MethodPost, "/access/v1/evaluations", "application/json",
-		`{"subject":{"type":"user","id":"alice"},"action":{"name":"read"},"evaluations":[{"resource":{"type":"record","id":"record-1"}},{}]}`)
-	if w.Code != http.StatusOK {
-		t.Fatalf("empty item: want 200, got %d: %s", w.Code, w.Body.String())
+	cases := map[string]string{
+		"empty item, no top-level resource":  `{"subject":{"type":"user","id":"alice"},"action":{"name":"read"},"evaluations":[{"resource":{"type":"record","id":"record-1"}},{}]}`,
+		"item resource replaces the default": `{"subject":{"type":"user","id":"alice"},"action":{"name":"read"},"resource":{"type":"record","id":"record-1"},"evaluations":[{},{"resource":{"type":"record"}}]}`,
+		"no subject anywhere":                `{"action":{"name":"read"},"evaluations":[{"resource":{"type":"record","id":"record-1"}}]}`,
+		"no action anywhere":                 `{"subject":{"type":"user","id":"alice"},"evaluations":[{"resource":{"type":"record","id":"record-1"}}]}`,
+		"subject default without type":       `{"subject":{"id":"alice"},"action":{"name":"read"},"evaluations":[{"resource":{"type":"record","id":"record-1"}}]}`,
+		"past a short-circuit point": `{"subject":{"type":"user","id":"alice"},"action":{"name":"read"},"options":{"evaluations_semantic":"permit_on_first_permit"},` +
+			`"evaluations":[{"resource":{"type":"record","id":"record-1"}},{}]}`,
 	}
-	if got := decisions(t, w); !equalBools(got, []bool{true, false}) {
-		t.Fatalf("empty item: want [true false], got %v", got)
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if w := pep(mux, http.MethodPost, "/access/v1/evaluations", "application/json", body); w.Code != http.StatusBadRequest {
+				t.Fatalf("want 400, got %d: %s", w.Code, w.Body.String())
+			}
+		})
 	}
-	if len(b.batches) != 1 || len(b.batches[0]) != 1 {
-		t.Fatalf("only the resolvable item reaches the engine, got %v", b.batches)
-	}
-
-	w = pep(mux, http.MethodPost, "/access/v1/evaluations", "application/json",
-		`{"action":{"name":"read"},"evaluations":[{"resource":{"type":"record","id":"record-1"}}]}`)
-	if w.Code != http.StatusOK {
-		t.Fatalf("no subject anywhere: want 200, got %d: %s", w.Code, w.Body.String())
-	}
-	if got := decisions(t, w); !equalBools(got, []bool{false}) {
-		t.Fatalf("no subject anywhere: want [false], got %v", got)
-	}
-	if len(b.batches) != 1 {
-		t.Fatalf("nothing resolvable: the engine must not be called, got %v", b.batches)
+	if len(b.batches) != 0 {
+		t.Fatalf("a malformed batch must not reach the engine, got %v", b.batches)
 	}
 
 	// With a user subject on the credential the documented JWT fallback still
@@ -213,7 +211,7 @@ func TestEvaluationsUnresolvedItemIsDecisionFalse(t *testing.T) {
 	r.Header.Set("Content-Type", "application/json")
 	ctx := context.WithValue(r.Context(), ctxSubjectType, "user")
 	ctx = context.WithValue(ctx, ctxSubjectID, "alice")
-	w = httptest.NewRecorder()
+	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r.WithContext(ctx))
 	if got := decisions(t, w); !equalBools(got, []bool{true}) {
 		t.Fatalf("JWT fallback: want [true], got %v (%s)", got, w.Body.String())
@@ -222,7 +220,7 @@ func TestEvaluationsUnresolvedItemIsDecisionFalse(t *testing.T) {
 
 // The secure default is unchanged: a body subject that contradicts the
 // authenticated subject is an impersonation attempt and stays a 403 for the
-// whole batch — it is not an "unresolvable item".
+// whole batch, not the 400 of a malformed item.
 func TestEvaluationsSubjectOverrideStillForbidden(t *testing.T) {
 	mux, _ := certMux(t, false)
 	r := httptest.NewRequest(http.MethodPost, "/access/v1/evaluations", strings.NewReader(
@@ -275,24 +273,11 @@ func TestEvaluationsSemantic(t *testing.T) {
 			}
 		})
 	}
-
-	// An unresolvable item under deny_on_first_deny is the first deny: the
-	// array ends there and the engine never sees what follows.
-	mux, b := certMux(t, true)
-	w := pep(mux, http.MethodPost, "/access/v1/evaluations", "application/json",
-		`{"subject":{"type":"user","id":"alice"},"action":{"name":"read"},"options":{"evaluations_semantic":"deny_on_first_deny"},`+
-			`"evaluations":[{"resource":{"type":"record","id":"record-1"}},{},{"resource":{"type":"record","id":"record-1"}}]}`)
-	if got := decisions(t, w); !equalBools(got, []bool{true, false}) {
-		t.Fatalf("want [true false], got %v (%s)", got, w.Body.String())
-	}
-	if len(b.batches) != 1 || len(b.batches[0]) != 1 {
-		t.Fatalf("only the item before the unresolvable one reaches the engine, got %v", b.batches)
-	}
 }
 
 // §10.1: requests carry Content-Type application/json. A declared other media
-// type is refused with 415 on every AuthZEN route; a charset parameter is fine;
-// a request without the header is still read as JSON.
+// type is refused with 415 on every AuthZEN route, and so is a request without
+// the header; a charset parameter is fine.
 func TestAuthZENContentType(t *testing.T) {
 	mux, _ := certMux(t, true)
 	routes := map[string]string{
@@ -311,7 +296,10 @@ func TestAuthZENContentType(t *testing.T) {
 			if w := pep(mux, http.MethodPost, path, "application/x-www-form-urlencoded", body); w.Code != http.StatusUnsupportedMediaType {
 				t.Fatalf("form: want 415, got %d: %s", w.Code, w.Body.String())
 			}
-			for _, ct := range []string{"application/json", "application/json; charset=utf-8", "APPLICATION/JSON", ""} {
+			if w := pep(mux, http.MethodPost, path, "", body); w.Code != http.StatusUnsupportedMediaType {
+				t.Fatalf("no Content-Type: want 415, got %d: %s", w.Code, w.Body.String())
+			}
+			for _, ct := range []string{"application/json", "application/json; charset=utf-8", "APPLICATION/JSON"} {
 				if w := pep(mux, http.MethodPost, path, ct, body); w.Code != http.StatusOK {
 					t.Fatalf("%q: want 200, got %d: %s", ct, w.Code, w.Body.String())
 				}
@@ -507,29 +495,30 @@ func TestPropertiesBecomeConditionContext(t *testing.T) {
 }
 
 // A batch evaluates every item with ITS context: the shared context overridden
-// per key by the item's own (§7.1), plus the item's entity properties after the
-// default-value merge (an item's `resource: {id, properties}` inherits the
-// top-level type). Modules …-batch-with-properties-validated,
-// …-batch-with-subject-properties-validated, …-batch-with-default-value-merging,
-// …-batch-with-context-inheritance.
+// per key by the item's own (§7.1), plus the properties of the entities it
+// resolves to — its own where it carries the entity (which replaces the
+// default whole, properties included), the top-level default's otherwise.
+// Modules …-batch-with-properties-validated,
+// …-batch-with-subject-properties-validated,
+// …-batch-override-replaces-default-entity, …-batch-with-context-inheritance.
 func TestBatchItemsCarryTheirOwnContext(t *testing.T) {
 	mux, b := certMux(t, true)
 	pep(mux, http.MethodPost, "/access/v1/evaluations", "application/json", `{
-		"subject": {"type": "user", "id": "alice"},
+		"subject": {"type": "user", "id": "alice", "properties": {"role": "admin"}},
 		"action": {"name": "write"},
-		"resource": {"type": "record"},
+		"resource": {"type": "record", "id": "record-2"},
 		"context": {"time": "t0", "source": "batch"},
 		"evaluations": [
-			{"resource": {"id": "record-1", "properties": {"status": "active"}}},
+			{"resource": {"type": "record", "id": "record-1", "properties": {"status": "active"}}},
 			{"resource": {"type": "record", "id": "record-2", "properties": {"status": "archived"}}, "context": {"source": "item"}},
-			{"subject": {"type": "user", "id": "bob", "properties": {"role": "admin"}}, "resource": {"id": "record-2"}}
+			{"subject": {"type": "user", "id": "bob"}}
 		]}`)
 	if len(b.batches) != 1 || len(b.batches[0]) != 3 {
 		t.Fatalf("want one batch of 3, got %v", b.batches)
 	}
 	items := b.batches[0]
 	if items[0].ObjectType != "record" || ctxPath(items[0].Context, "resource", "type") != "record" || ctxPath(items[0].Context, "resource", "properties", "status") != "active" {
-		t.Fatalf("item 0 (type inherited, own properties): %+v", items[0])
+		t.Fatalf("item 0 (own resource and properties): %+v", items[0])
 	}
 	if items[0].Context["source"] != "batch" || items[0].Context["time"] != "t0" {
 		t.Fatalf("item 0 inherits the shared context: %v", items[0].Context)
@@ -537,8 +526,14 @@ func TestBatchItemsCarryTheirOwnContext(t *testing.T) {
 	if ctxPath(items[1].Context, "resource", "properties", "status") != "archived" || items[1].Context["source"] != "item" || items[1].Context["time"] != "t0" {
 		t.Fatalf("item 1 overrides one shared key and keeps the other: %v", items[1].Context)
 	}
-	if items[2].SubjectID != "bob" || ctxPath(items[2].Context, "subject", "properties", "role") != "admin" {
-		t.Fatalf("item 2 subject properties: %+v", items[2])
+	if ctxPath(items[0].Context, "subject", "properties", "role") != "admin" {
+		t.Fatalf("item 0 inherits the default subject with its properties: %v", items[0].Context)
+	}
+	if _, has := items[2].Context["subject"]; items[2].SubjectID != "bob" || has {
+		t.Fatalf("item 2 subject replaces the default whole, no properties inherited: %+v", items[2])
+	}
+	if items[2].ObjectID != "record-2" {
+		t.Fatalf("item 2 inherits the default resource: %+v", items[2])
 	}
 	if _, has := items[2].Context["resource"]; has {
 		t.Fatalf("item 2 resource has no properties, no block expected: %v", items[2].Context)
@@ -601,5 +596,29 @@ func TestUnknownTypeIsBadRequest(t *testing.T) {
 		`{"subject":{"type":"user","id":"alice"},"evaluations":[{"action":{"name":"fly"},"resource":{"type":"record","id":"record-1"}}]}`)
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "Unknown relation: fly") {
 		t.Fatalf("evaluations: want 400 naming the relation, got %d %s", w.Code, w.Body.String())
+	}
+}
+
+// §8.2: the last page of a paginated search — one whose request carried a page
+// token — ends with a page object whose next_token is empty; a search answered
+// in a single response carries no page (modules …-request-with-page-limit).
+func TestSearchLastPageHasEmptyNextToken(t *testing.T) {
+	mux, _ := certMux(t, true)
+	bodies := map[string]string{
+		"/access/v1/search/subject":  `{"subject":{"type":"user"},"action":{"name":"read"},"resource":{"type":"record","id":"record-1"}%s}`,
+		"/access/v1/search/resource": `{"subject":{"type":"user","id":"alice"},"action":{"name":"read"},"resource":{"type":"record"}%s}`,
+	}
+	for path, body := range bodies {
+		t.Run(path, func(t *testing.T) {
+			w := pep(mux, http.MethodPost, path, "application/json", fmt.Sprintf(body, `,"page":{"limit":5}`))
+			if strings.Contains(w.Body.String(), `"page"`) {
+				t.Fatalf("single response: no page expected: %s", w.Body.String())
+			}
+			w = pep(mux, http.MethodPost, path, "application/json",
+				fmt.Sprintf(body, `,"page":{"limit":5,"token":"`+EncodePageAfter("a")+`"}`))
+			if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"page":{"next_token":""}`) {
+				t.Fatalf("last page: want page.next_token \"\", got %d: %s", w.Code, w.Body.String())
+			}
+		})
 	}
 }

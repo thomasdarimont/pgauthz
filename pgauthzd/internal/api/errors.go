@@ -73,6 +73,10 @@ func writeUnauthorized(w http.ResponseWriter, r *http.Request) {
 // writeUnsupportedMediaType is the 415 for a request body whose Content-Type
 // is not JSON (AuthZEN 1.0 §10.1: requests MUST carry application/json).
 func writeUnsupportedMediaType(w http.ResponseWriter, got string) {
+	if got == "" {
+		writeError(w, http.StatusUnsupportedMediaType, "missing Content-Type: the request body must be application/json")
+		return
+	}
 	writeError(w, http.StatusUnsupportedMediaType, "unsupported Content-Type "+strconv.Quote(got)+": the request body must be application/json")
 }
 

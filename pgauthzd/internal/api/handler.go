@@ -267,17 +267,14 @@ func MaxBody(n int64) func(http.Handler) http.Handler {
 // requireJSON refuses a request whose declared Content-Type is not JSON with
 // 415 (AuthZEN 1.0 §10.1: requests MUST carry application/json). Media-type
 // parameters (application/json; charset=utf-8) and +json structured suffixes
-// are accepted. A request WITHOUT a Content-Type header is let through — its
-// body is parsed as JSON regardless — so clients that never set the header
-// keep working; only an explicit, different media type is an error.
+// are accepted. A request without a Content-Type header is refused too.
 func requireJSON(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if ct := r.Header.Get("Content-Type"); ct != "" {
-			mt, _, err := mime.ParseMediaType(ct)
-			if err != nil || !isJSONMediaType(mt) {
-				writeUnsupportedMediaType(w, ct)
-				return
-			}
+		ct := r.Header.Get("Content-Type")
+		mt, _, err := mime.ParseMediaType(ct)
+		if err != nil || !isJSONMediaType(mt) {
+			writeUnsupportedMediaType(w, ct)
+			return
 		}
 		next(w, r)
 	}
@@ -800,69 +797,53 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 	jwtType, jwtID := SubjectFromContext(r.Context())
 	assert := h.mayAssertSubject(r, store)
 
-	// Build the per-evaluation requests, merging the shared subject/action/
-	// resource defaults. An evaluation that cannot be resolved after merging
-	// (no subject, action or resource) is NOT a request error: §7.1.1 and
-	// certification profile 3.4.1 make it a {"decision": false} entry in the
-	// response array, with the batch still answered 200 — only a rejected
-	// subject override stays a 403 for the whole request (it is the caller's
-	// authorization problem, not a malformed item). Under deny_on_first_deny
-	// an unresolvable item is the first deny: nothing after it is evaluated.
+	// Build the per-evaluation requests. An entity the item carries replaces
+	// the top-level default as a whole; an absent one inherits it (§7.1.1).
+	// An evaluation that does not resolve to a complete subject, action and
+	// resource makes the WHOLE request malformed — 400 under every semantic,
+	// even when the other items are complete and even past a short-circuit
+	// point (§10.1.1, openid/authzen#763) — so every item is validated before
+	// anything is evaluated. A rejected subject override is a 403.
 	n := len(req.Evaluations)
 	evals := make([]authz.EvalRequest, 0, n)
-	unresolved := make([]bool, n)
 	for i, e := range req.Evaluations {
-		// Effective body subject: per-evaluation, falling back to the
-		// batch-level subject. The override policy (vs the JWT subject) is
-		// then applied centrally by resolveSubjectPair.
-		bodyType := e.Subject.Type
-		if bodyType == "" && req.Subject != nil {
-			bodyType = req.Subject.Type
+		subject := e.Subject
+		if subject == nil {
+			subject = req.Subject
 		}
-		bodyID := e.Subject.ID
-		if bodyID == "" && req.Subject != nil {
-			bodyID = req.Subject.ID
+		if subject == nil {
+			subject = &Subject{} // the JWT subject may still supply it
 		}
-
-		subType, subID, serr := h.resolveSubjectPair(bodyType, bodyID, jwtType, jwtID, assert, authenticated(r))
-		if serr != nil && errors.Is(serr, errSubjectForbidden) {
-			writeForbidden(w, fmt.Sprintf("evaluation[%d]: %s", i, h.assertionDenied(r, store).Error()))
+		subType, subID, serr := h.resolveSubjectPair(subject.Type, subject.ID, jwtType, jwtID, assert, authenticated(r))
+		if serr != nil {
+			if errors.Is(serr, errSubjectForbidden) {
+				writeForbidden(w, fmt.Sprintf("evaluation[%d]: %s", i, h.assertionDenied(r, store).Error()))
+				return
+			}
+			writeBadRequest(w, fmt.Sprintf("evaluation[%d]: %s", i, serr.Error()))
 			return
 		}
-		subProps := e.Subject.Properties
-		if subProps == nil && req.Subject != nil {
-			subProps = req.Subject.Properties
-		}
+		subProps := subject.Properties
 
-		action := e.Action.Name
-		if action == "" && req.Action != nil {
-			action = req.Action.Name
+		act := e.Action
+		if act == nil {
+			act = req.Action
 		}
-		actProps := e.Action.Properties
-		if actProps == nil && req.Action != nil {
-			actProps = req.Action.Properties
+		if act == nil || act.Name == "" {
+			writeBadRequest(w, fmt.Sprintf("evaluation[%d]: action.name is required (in the evaluation or at the top level)", i))
+			return
 		}
+		action, actProps := act.Name, act.Properties
 
-		resType := e.Resource.Type
-		if resType == "" && req.Resource != nil {
-			resType = req.Resource.Type
+		res := e.Resource
+		if res == nil {
+			res = req.Resource
 		}
-		resID := e.Resource.ID
-		if resID == "" && req.Resource != nil {
-			resID = req.Resource.ID
+		if res == nil || res.Type == "" || res.ID == "" {
+			writeBadRequest(w, fmt.Sprintf("evaluation[%d]: resource.type and resource.id are required (in the evaluation or at the top level)", i))
+			return
 		}
-		resProps := e.Resource.Properties
-		if resProps == nil && req.Resource != nil {
-			resProps = req.Resource.Properties
-		}
-
-		if serr != nil || action == "" || resType == "" || resID == "" {
-			unresolved[i] = true
-			if semantic == "deny_on_first_deny" {
-				break
-			}
-			continue
-		}
+		resType, resID, resProps := res.Type, res.ID, res.Properties
 
 		// The item's context: the shared one overridden per key by its own
 		// (§7.1), then the entity properties as condition input.
@@ -887,10 +868,8 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 		err     error
 	)
 	start := time.Now()
-	if len(evals) > 0 {
-		results, err = h.backend.CheckAccessBatch(r.Context(), store, evals, req.Context, semantic)
-		h.logBatch(r, "evaluations", h.viaLabel(), evals, req.Context, results, start, err)
-	}
+	results, err = h.backend.CheckAccessBatch(r.Context(), store, evals, req.Context, semantic)
+	h.logBatch(r, "evaluations", h.viaLabel(), evals, req.Context, results, start, err)
 	if err != nil {
 		// A policy-hook veto (ADR 0011) rejects the whole batch: 403, never a
 		// fake all-false result. The structured `denials` disclose hook
@@ -915,24 +894,14 @@ func (h *Handler) Evaluations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Merge the decisions back in request order (unresolved items are false),
-	// then apply the short-circuit on the wire (§7.1.2.1): the response array
-	// ends with the decision that stopped processing — the engine evaluates
+	// Apply the short-circuit on the wire (§7.1.2.1): the response array ends
+	// with the decision that stopped processing — the engine evaluates
 	// nothing past it, and the caller must not mistake its placeholders for
 	// decisions.
 	resp := EvalsBatchResponse{Evaluations: make([]EvalResponseBody, 0, n)}
-	next := 0
-	for i := 0; i < n; i++ {
-		decision := false
-		if !unresolved[i] {
-			if next >= len(results) {
-				break // past the point the batch was cut short
-			}
-			decision = results[next].Decision
-			next++
-		}
-		resp.Evaluations = append(resp.Evaluations, EvalResponseBody{Decision: decision})
-		if (semantic == "deny_on_first_deny" && !decision) || (semantic == "permit_on_first_permit" && decision) {
+	for _, result := range results {
+		resp.Evaluations = append(resp.Evaluations, EvalResponseBody{Decision: result.Decision})
+		if (semantic == "deny_on_first_deny" && !result.Decision) || (semantic == "permit_on_first_permit" && result.Decision) {
 			break
 		}
 	}
@@ -1005,6 +974,10 @@ func (h *Handler) SearchSubject(w http.ResponseWriter, r *http.Request) {
 	}
 	if pageResp != nil && pageResp.HasMore {
 		resp.Page = &PageResult{NextToken: bindCursor(pageResp.NextToken, freshTok)}
+	} else if req.Page != nil && req.Page.Token != "" {
+		// §8.2: the last page of a paginated search says so, with an empty
+		// next_token; a search answered in one response carries no page.
+		resp.Page = &PageResult{}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -1076,6 +1049,10 @@ func (h *Handler) SearchResource(w http.ResponseWriter, r *http.Request) {
 	}
 	if pageResp != nil && pageResp.HasMore {
 		resp.Page = &PageResult{NextToken: bindCursor(pageResp.NextToken, freshTok)}
+	} else if req.Page != nil && req.Page.Token != "" {
+		// §8.2: the last page of a paginated search says so, with an empty
+		// next_token; a search answered in one response carries no page.
+		resp.Page = &PageResult{}
 	}
 
 	writeJSON(w, http.StatusOK, resp)

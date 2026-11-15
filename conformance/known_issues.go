@@ -17,7 +17,14 @@ type KnownSuiteIssue struct {
 	Issue string
 }
 
-// KnownSuiteIssues as of release-v5.3.2.
+// superseded763 is why three batch modules of the released suites (up to release-v5.3.4) fail:
+// they expect the reading of §7.1.1 the working group has since reversed.
+const superseded763 = "The module expects HTTP 200 for a batch whose evaluation does not resolve to a complete " +
+	"subject, action and resource (a decision-false entry), or sub-field merging of an evaluation's entity " +
+	"with the top-level default. The AuthZEN working group settled the opposite (openid/authzen#763): such a " +
+	"request is a 400 and an entity replaces the default whole — which pgauthzd implements and later suites test."
+
+// KnownSuiteIssues as of release-v5.3.2 … release-v5.3.4.
 var KnownSuiteIssues = []KnownSuiteIssue{
 	{
 		Module:  "authzen-pdp-evaluation-invalid-credentials-returns-401",
@@ -40,6 +47,24 @@ var KnownSuiteIssues = []KnownSuiteIssue{
 			"INTERRUPTED before it calls the PDP. The static variant keeps the configured object " +
 			"(GetPDPStaticServerConfiguration) and works.",
 		Issue: "https://gitlab.com/openid/conformance-suite/-/work_items/2041",
+	},
+	{
+		Module:  "authzen-pdp-evaluations-evaluation-level-errors",
+		Failure: "EnsureHttpStatusCodeIs200",
+		Reason:  superseded763,
+		Issue:   "https://github.com/openid/authzen/issues/763",
+	},
+	{
+		Module:  "authzen-pdp-evaluations-missing-subject-returns-decision-false",
+		Failure: "EnsureHttpStatusCodeIs200",
+		Reason:  superseded763,
+		Issue:   "https://github.com/openid/authzen/issues/763",
+	},
+	{
+		Module:  "authzen-pdp-evaluations-batch-with-default-value-merging",
+		Failure: "EnsureHttpStatusCodeIs200",
+		Reason:  superseded763,
+		Issue:   "https://github.com/openid/authzen/issues/763",
 	},
 }
 

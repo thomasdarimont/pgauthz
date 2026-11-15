@@ -151,9 +151,10 @@ short-circuit behavior:
 
 With a short-circuit the response array ends with the decision that stopped
 processing. Every item is evaluated with its own context: the shared `context`
-overridden per key by the item's own, then the item's entity properties. An evaluation that lacks a subject, action or resource after the
-shared defaults are merged in comes back as `{"decision": false}` in its place
-(§7.1.1) rather than failing the batch; a request without an `evaluations`
+overridden per key by the item's own, then the item's entity properties. An entity an evaluation carries replaces the
+top-level default as a whole (no sub-field merging); an evaluation that does not
+resolve to a complete subject, action and resource makes the whole request a
+`400`, under every semantic (§7.1.1, §10.1.1); a request without an `evaluations`
 array is handled like the single Access Evaluation API and answered as
 `{"decision": …}` (§7.1).
 
@@ -340,7 +341,7 @@ pgauthzd. Both are first-class; pick per instance, not per request.
 | Who calls | the application, with the end user's access token (a BFF, a gateway, Swagger UI after login) | a backend with its **own** credential (service account, workload identity), on behalf of whichever user it serves |
 | Configuration | the default | per client and store: the issuer's `pep_clients` (`"document-service": ["documents", "tenant-.*"]`, keyed by the token's `azp`); or `ALLOW_SUBJECT_OVERRIDE=true` for every token of every issuer |
 | Subject of the decision | the token: `preferred_username` + `subject_type` (configurable claims) | the request body: `subject`, per item in a batch |
-| Body `subject` | optional; if present it must equal the token's (else `403`) | required (a missing one is `400`, an unresolvable batch item `decision: false`) |
+| Body `subject` | optional; if present it must equal the token's (else `403`) | required (a missing one is `400`, in a batch for the whole request) |
 | Can ask about other users? | no — that is the point (a token without any subject claim cannot name one either) | yes — that is the point; the token proves the caller is a PEP you trust |
 | Writes / recorded events attributed to | the token's subject (`performed_by` / `recorded_by` must match it) | the body's assertion (same trust) |
 | Decision log | `actor` = `subject` | `actor` = the PEP's identity, `subject` = who was decided about |

@@ -445,13 +445,22 @@ run_tests() {
         -H "$AUTH_ALICE" \
         -d '{"evaluations":[]}'
 
-    # §7.1.1 / certification profile 3.4.1: an item that cannot be resolved is
-    # a decision-false entry, not a 400 for the batch.
-    check_json "Batch: unresolvable item is decision false" \
-        "$base_url/access/v1/evaluations" "$AUTH_ALICE" \
-        '{"action":{"name":"can_read"},"evaluations":[{"resource":{"type":"document","id":"doc_payroll_001"}},{}]}' \
-        '[.evaluations[].decision]' \
-        "[true,false]"
+    # §7.1.1 / §10.1.1: an item that does not resolve to a complete subject,
+    # action and resource makes the whole batch a 400.
+    check_http "400 on a batch with an incomplete item" \
+        "400" \
+        -X POST "$base_url/access/v1/evaluations" \
+        -H "Content-Type: application/json" \
+        -H "$AUTH_ALICE" \
+        -d '{"action":{"name":"can_read"},"evaluations":[{"resource":{"type":"document","id":"doc_payroll_001"}},{}]}'
+
+    # §10.1: a request without a Content-Type is refused like a non-JSON one.
+    check_http "415 on a request without Content-Type" \
+        "415" \
+        -X POST "$base_url/access/v1/evaluation" \
+        -H "Content-Type:" \
+        -H "$AUTH_ALICE" \
+        -d '{"action":{"name":"can_read"},"resource":{"type":"document","id":"doc_payroll_001"}}'
 
     # §7.1.2.1: the semantic lives in options.evaluations_semantic; a
     # short-circuit truncates the response array at the triggering decision.

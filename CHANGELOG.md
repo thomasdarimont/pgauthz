@@ -200,6 +200,19 @@ pre-1.0, minor versions may include breaking changes.
   id (Keycloak) and the API's URI (other identity providers) are both
   accepted; `GET …/issuers` reports `audiences`.
 
+### Changed
+
+- **AuthZEN conformance, as the suite after release-v5.3.2 reads the
+  specification** (breaking for lenient clients): a batch whose evaluation
+  does not resolve to a complete subject, action and resource is a `400`
+  for the whole request under every semantic, no longer a
+  `{"decision": false}` entry (§7.1.1, §10.1.1, openid/authzen#763); an
+  entity in an evaluation replaces the top-level default whole, without
+  sub-field merging; a request without `Content-Type` is a `415`; the last
+  page of a search continued with a page token carries
+  `"page": {"next_token": ""}`. The conformance harness sends the api_key
+  in the `client` section too and skips modules the suite skips.
+
 ### Fixed
 
 - **Fixture runner**: an engine error inside one assertion (an unknown
